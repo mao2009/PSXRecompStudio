@@ -1,0 +1,71 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PSXRecompStudio.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="500"
+        x:Class="PSXRecompStudio.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="PSXRecompStudio"
+        Width="800" Height="500">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <DockPanel>
+        <!-- Header -->
+        <TextBlock DockPanel.Dock="Top"
+                   Text="{Binding AppName}"
+                   FontSize="32" FontWeight="Bold"
+                   HorizontalAlignment="Center"
+                   Margin="0,40,0,8"/>
+
+        <TextBlock DockPanel.Dock="Top"
+                   Text="{Binding Version}"
+                   FontSize="14" Foreground="Gray"
+                   HorizontalAlignment="Center"
+                   Margin="0,0,0,24"/>
+
+        <!-- Status -->
+        <Border DockPanel.Dock="Top"
+                Background="#2D2D30" CornerRadius="8"
+                Padding="16,12" Margin="60,0"
+                HorizontalAlignment="Center">
+            <TextBlock Text="{Binding Status}"
+                       FontSize="14" Foreground="#4EC9B0"/>
+        </Border>
+
+        <!-- Spacer -->
+        <Rectangle DockPanel.Dock="Top" Height="32"/>
+
+        <!-- Environment Info -->
+        <Border DockPanel.Dock="Bottom"
+                Background="#1E1E1E" CornerRadius="8"
+                Padding="20,16" Margin="60,0,60,30">
+            <StackPanel Spacing="8">
+                <TextBlock Text="Development Environment" FontSize="16" FontWeight="SemiBold" Foreground="#569CD6"/>
+                <Separator Background="#3F3F46"/>
+                <TextBlock>
+                    <TextBlock.Text>
+                        <MultiBinding StringFormat="Runtime: {0}">
+                            <Binding Path="RuntimeInfo"/>
+                        </MultiBinding>
+                    </TextBlock.Text>
+                </TextBlock>
+                <TextBlock>
+                    <TextBlock.Text>
+                        <MultiBinding StringFormat="Platform: {0}">
+                            <Binding Path="PlatformInfo"/>
+                        </MultiBinding>
+                    </TextBlock.Text>
+                </TextBlock>
+                <Separator Background="#3F3F46"/>
+                <TextBlock Text="Targets: Windows / Linux / macOS" FontSize="12" Foreground="#808080"/>
+                <TextBlock Text="UI: Avalonia UI (MVVM)" FontSize="12" Foreground="#808080"/>
+            </StackPanel>
+        </Border>
+    </DockPanel>
+
+</Window>

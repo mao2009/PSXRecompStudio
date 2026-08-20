@@ -1,0 +1,109 @@
+# ====================
+# Build output
+# ====================
+bin/
+obj/
+out/
+build/
+publish/
+
+# ====================
+# .NET / C#
+# ====================
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.nupkg
+*.snupkg
+project.nuget.cache
+.vs/
+*.rsuser
+
+# ====================
+# ROM / BIOS / Game data
+# ====================
+rom/*.bin
+rom/*.iso
+rom/*.img
+rom/*.cue
+rom/*.chd
+rom/*.mds
+rom/*.mdf
+rom/*.pbp
+rom/*.ecm
+rom/*.cso
+rom/*.bios
+rom/*.EXE
+rom/*.exe
+rom/**/*.bin
+rom/**/*.iso
+rom/**/*.img
+rom/**/*.cue
+rom/**/*.chd
+rom/**/*.exe
+rom/**/*.EXE
+
+# ====================
+# Save data
+# ====================
+*.sav
+*.save
+*.SRM
+*.srm
+*.eep
+*.sra
+*.flash
+
+# ====================
+# Debug artifacts
+# ====================
+*.pdb
+*.dSYM/
+Debug/
+Release/
+x64/
+x86/
+*.log
+*.trace
+
+# ====================
+# IDE / Editor
+# ====================
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+*.code-workspace
+
+# ====================
+# OS-specific
+# ====================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ====================
+# Secrets / Environment
+# ====================
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+appsettings.Development.json
+
+# ====================
+# Temporary files
+# ====================
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
