@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dotnet:
+    name: .NET Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.slnx
+
+      - name: Build
+        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
+
+  native:
+    name: Native Core Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/native --parallel
+
+      - name: Test
+        run: ctest --test-dir build/native --output-on-failure
+
+  ci:
+    name: CI Gate
+    if: always()
+    needs: [dotnet, native]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all checks to pass
+        run: |
+          if [[ "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" ]]; then
+            echo "Required CI jobs did not all succeed."
+            exit 1
+          fi
+          echo "All required CI jobs passed."
