@@ -23,30 +23,51 @@
 
 ## SR (System Status Register) - cop0r12
 
+R3000Aは3レベルのステータススタックを使用する。
+
 ```
 Bit  Name    Description
-0    IE      Interrupt Enable
-1    EXL     Exception Level
-2    BEV     Bootstrap Exception Vector
-3-5  *       未使用
-6-7  CU0/1   Coprocessor Usability (bit6=CP0, bit7=CP1)
+0    KUc     Current Kernel/User mode (0=Kernel, 1=User)
+1    IEc     Current Interrupt Enable
+2    KUp     Previous Kernel/User mode
+3    IEp     Previous Interrupt Enable
+4    KUo     Oldest Kernel/User mode
+5    IEo     Oldest Interrupt Enable
+6    CU0     Coprocessor 0 Usability (未使用, always 1 on PSX)
+7    CU1     Coprocessor 1 Usability (FPU, 未使用 on PSX)
 8-15 IM[7:0] Interrupt Mask (hardware)
-16-25 IM[9:8] Interrupt Mask (software, R/W in CAUSE)
+16-17 SW     Software Interrupt (R/W)
+18-25 IM[9:8] Interrupt Mask (software)
 26-27 *      未使用
 28    CU2     Coprocessor 2 Usability (GTE)
 29    CU3     Coprocessor 3 Usability
 30-31 *      未使用
 ```
 
-### IE (Interrupt Enable)
+### KUc (Kernel/User Current)
+
+- 0: カーネルモード
+- 1: ユーザーモード
+
+### IEc (Interrupt Enable Current)
 
 - 0: 割り込み無効
 - 1: 割り込み有効
 
-### EXL (Exception Level)
+### 3-Level Stack
 
-- 0: 通常動作
-- 1: 例外処理中（割り込み無効）
+例外発生時に:
+```
+KUo ← KUp, IEo ← IEp
+KUp ← KUc, IEp ← IEc
+KUc ← 0 (カーネル), IEc ← 0 (割り込み無効)
+```
+
+RFE時に:
+```
+KUc ← KUp, IEc ← IEp
+KUp ← KUo, IEp ← IEo
+```
 
 ### BEV (Bootstrap Exception Vector)
 

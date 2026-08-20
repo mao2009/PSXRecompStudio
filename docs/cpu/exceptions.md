@@ -36,15 +36,18 @@ PSXでは通常BEV=1（BIOS起動時）からBEV=0（BIOSが変更）に切り�
 1. **EPC保存**: EPC = 遅延スロット内なら分岐命令のアドレス、それ以外なら現在のPC
 2. **BD設定**: CAUSE.BD = 1（遅延スロット内なら）
 3. **CAUSE設定**: CAUSE.Excode = 例外コード
-4. **SR退避**: SRのCurrent-modeをPrevious-modeに退避
-5. **割り込み無効化**: SR.IE = 0
+4. **SRスタック退避**: 3レベルスタックを右にシフト
+   - KUo ← KUp, IEo ← IEp
+   - KUp ← KUc, IEp ← IEc
+5. **割り込み無効化**: KUc ← 0（カーネル）, IEc ← 0（割り込み無効）
 6. **PC転送**: PC = 例外ベクトルアドレス
 
 ### RFE (Return From Exception)
 
-1. SRのCurrent-modeビットをPrevious-modeに復元
-2. IPフィールドを右に2ビットシフト
-3. PC = EPC
+1. SRの3レベルスタックをポップ
+   - KUc ← KUp, IEc ← IEp
+   - KUp ← KUo, IEp ← IEo
+2. PC = EPC（遅延スロット内で例外が発生した場合は分岐命令のアドレスからリターン）
 
 ## Interrupt Handling
 
@@ -73,7 +76,7 @@ PSXでは通常BEV=1（BIOS起動時）からBEV=0（BIOSが変更）に切り�
 
 1. I_STAT & I_MASK が非ゼロなら割り込み発生
 2. COP0 CAUSE.Ipフィールドに割り込みペンディングを設定
-3. SR.IE=1 & SR.EXL=0 の場合、例外として処理
+3. IEc=1 の場合、例外として処理（KUc/I stacksに退避）
 
 ## Exception Priority
 
@@ -93,13 +96,13 @@ lowest:   ...
 例外ハンドラ内でSRを退避/復元しないと、ネストされた例外で問題が生じる。
 
 ```asm
-# 例外ハンドラ例
+# 例外ハンドラ例（R3000A 3-level stack）
 mfc0 k0, C0_SR     # SR退避
 sw   k0, saved_sr
-ori  k0, k0, 0x3   # EXL=1, IE=1
-mtc0 k0, C0_SR     # ネスト許可
+ori  k0, k0, 0x3   # KUc=0, IEc=0 (カーネル、割り込み無効)
+mtc0 k0, C0_SR     # スタック退避完了
 # ... 処理 ...
 lw   k0, saved_sr
 mtc0 k0, C0_SR     # SR復元
-rfe                # 例外から復帰
+rfe                # 3-levelスタックから復帰
 ```

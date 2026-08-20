@@ -1087,19 +1087,50 @@ instructions:
         role: source
     semantics: |
       addr = GPR[base] + sign_extend(offset)
-      # アラインメントに依存したバイト結合
+      # アラインメントに依存したバイト結合（リトルエンディアン）
       # LWRはロードの下位バイトを結合
       byte_offset = addr & 0x3
-      word_addr = addr & ~0x3
       case byte_offset of
-        0: GPR[rt][7:0] = memory[word_addr]
-        1: GPR[rt][15:0] = memory[word_addr:word_addr+1]
-        2: GPR[rt][23:0] = memory[word_addr:word_addr+2]
-        3: GPR[rt][31:0] = memory[word_addr:word_addr+3]
+        0: GPR[rt][7:0] = memory[addr]          # 1 byte
+        1: GPR[rt][15:0] = memory[addr-1:addr]  # 2 bytes
+        2: GPR[rt][23:0] = memory[addr-2:addr]  # 3 bytes
+        3: GPR[rt][31:0] = memory[addr-3:addr]  # 4 bytes (full word)
     delay_slot: false
     exceptions:
       - AdEL
-    psx_notes: "アンラインワードロード（右）。LWLと組み合わせて使用。load delay内で先行ロードを読む特殊回路あり。"
+    psx_notes: "アンラインワードロード（右）。LWLと組み合わせて使用。連続するLWL/LWRペアは先行ロードを読む特殊回路あり。"
+
+  # =========================================================================
+  # Coprocessor Load/Store Instructions
+  # =========================================================================
+
+  - name: LWC2
+    mnemonic: "lwc2"
+    opcode: 0x36
+    format: COP2
+    category: coprocessor
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+        coprocessor: 2
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      COP2_data = memory[addr:32]
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "COP2 (GTE)へのワードロード。PSXでは未使用だが定義上存在。"
 
   # =========================================================================
   # Store Instructions
@@ -1241,18 +1272,45 @@ instructions:
         role: source
     semantics: |
       addr = GPR[base] + sign_extend(offset)
-      # アラインメントに依存したバイト分解
+      # アラインメントに依存したバイト分解（リトルエンディアン）
       byte_offset = addr & 0x3
-      word_addr = addr & ~0x3
       case byte_offset of
-        0: memory[word_addr] = GPR[rt][7:0]
-        1: memory[word_addr:word_addr+1] = GPR[rt][15:0]
-        2: memory[word_addr:word_addr+2] = GPR[rt][23:0]
-        3: memory[word_addr:word_addr+3] = GPR[rt][31:0]
+        0: memory[addr] = GPR[rt][7:0]          # 1 byte
+        1: memory[addr-1:addr] = GPR[rt][15:0]  # 2 bytes
+        2: memory[addr-2:addr] = GPR[rt][23:0]  # 3 bytes
+        3: memory[addr-3:addr] = GPR[rt][31:0]  # 4 bytes (full word)
     delay_slot: false
     exceptions:
       - AdES
     psx_notes: "アンラインワードストア（右）。SWLと組み合わせて使用。"
+
+  - name: SWC2
+    mnemonic: "swc2"
+    opcode: 0x3E
+    format: COP2
+    category: coprocessor
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+        coprocessor: 2
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      memory[addr:32] = COP2_data
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "COP2 (GTE)からのワードストア。PSXでは未使用だが定義上存在。"
 
   # =========================================================================
   # Jump Instructions
@@ -1269,7 +1327,7 @@ instructions:
         bits: [25, 0]
         role: source
     semantics: |
-      target = (PC[31:28] << 2) | (instr_index << 2)
+      target = ((PC + 4) & 0xF0000000) | (instr_index << 2)
       # Delay slot is executed next
       # PC will be updated to target after delay slot
     delay_slot: true
@@ -1288,7 +1346,7 @@ instructions:
         bits: [25, 0]
         role: source
     semantics: |
-      target = (PC[31:28] << 2) | (instr_index << 2)
+      target = ((PC + 4) & 0xF0000000) | (instr_index << 2)
       GPR[31] = PC + 8  # return address
       # Delay slot is executed next
     delay_slot: true
@@ -1459,6 +1517,7 @@ instructions:
   - name: BLTZ
     mnemonic: "bltz"
     opcode: 0x01
+    rt: 0x00
     format: REGIMM
     category: branch
     operands:
@@ -1485,6 +1544,7 @@ instructions:
   - name: BGEZ
     mnemonic: "bgez"
     opcode: 0x01
+    rt: 0x01
     format: REGIMM
     category: branch
     operands:
@@ -1511,6 +1571,7 @@ instructions:
   - name: BLTZAL
     mnemonic: "bltzal"
     opcode: 0x01
+    rt: 0x10
     format: REGIMM
     category: branch
     operands:
@@ -1538,6 +1599,7 @@ instructions:
   - name: BGEZAL
     mnemonic: "bgezal"
     opcode: 0x01
+    rt: 0x11
     format: REGIMM
     category: branch
     operands:
@@ -1650,9 +1712,11 @@ instructions:
     category: coprocessor
     operands: []
     semantics: |
-      # Return From Exception
-      SR[7:0] = SR[9:2]     # Current mode ← Previous mode
-      SR[9:8] = SR[11:10]   # IP ← next level
+      # Return From Exception (R3000A model)
+      # SR uses a 3-level stack: bits[5:0] = {IEo, KUo, IEp, KUp, IEc, KUc}
+      # RFE shifts the stack right by 2 bits:
+      #   IEc ← IEp, KUc ← KUp, IEp ← IEo, KUp ← KUo
+      SR[5:0] = SR[5:0] >> 2  # 3-level status stack pop
       PC = EPC
     delay_slot: false
     exceptions: []
