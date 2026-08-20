@@ -20,9 +20,12 @@
           IgnoreExitCode="false" />
   </Target>
 
-  <ItemGroup>
-    <None Include="$(NativeBuildDir)/$(NativeLibName)"
-          Condition="Exists('$(NativeBuildDir)/$(NativeLibName)')"
-          CopyToOutputDirectory="PreserveNewest" Link="$(NativeLibName)" />
-  </ItemGroup>
+  <Target Name="IncludeNativeLibrary" AfterTargets="BuildNative"
+          BeforeTargets="CoreCompile;ResolvePackageAssets">
+    <ItemGroup>
+      <None Include="$(NativeBuildDir)/$(NativeLibName)"
+            Condition="Exists('$(NativeBuildDir)/$(NativeLibName)')"
+            CopyToOutputDirectory="PreserveNewest" Link="$(NativeLibName)" />
+    </ItemGroup>
+  </Target>
 </Project>
