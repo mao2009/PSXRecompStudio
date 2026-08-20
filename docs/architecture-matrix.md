@@ -16,7 +16,7 @@
 | **Domain** | Domain | ✅ YES | Same layer, internal dependencies |
 | **Domain** | Application | ❌ NO | Domain should not depend on Application (UI layer is outer layer) |
 | **Domain** | Infrastructure | ✅ YES | Via C ABI (P/Invoke) |
-| **Application** | Domain | ✅ YES | Application → Domain (UI layer) |
+| **Application** | Domain | ✅ YES | Application → Domain (P/Invoke wrappers) |
 | **Application** | Infrastructure | ❌ NO | Application should not depend on Infrastructure directly (cross-layer dependency) |
 | **Infrastructure** | Domain | ✅ YES | Infrastructure → Domain (C ABI boundary) |
 | **Infrastructure** | Application | ❌ NO | Infrastructure should not depend on Application directly |
@@ -94,6 +94,22 @@ PSXRecomp.Native (Infrastructure/C++)
 | `[Test]` | Special | ✅ | Test classes | Unit/integration tests |
 | `[Generated]` | Special | ✅ | Generated code | Auto-generated artifacts |
 
+### Applicability by Type
+
+- **class**: All attribute types applicable
+- **record**: `[Domain]`, `[Application]`, `[Infrastructure]` applicable
+- **struct**: `[Domain]`, `[Application]` applicable (no side effects)
+- **interface**: `[Domain]` applicable (contract, no implementation)
+- **enum**: `[Domain]` applicable (pure values)
+- **delegate**: `[Domain]` applicable (pure function pointers)
+- **partial type**: Attributes split across partial parts
+
+### Layer/Boundary Classification
+
+- **Tests**: Attributes used for test categorization; Analyzer may exclude test projects
+- **Analyzer**: `[Analyzer]` attribute used on enforcement classes; Analyzer itself may have exceptions
+- **Generated Code**: `[Generated]` attribute applied; Namespace validation and Forbidden API checks may be relaxed
+
 ## Namespace Matrix
 
 | Project | Namespace | Responsibility |
@@ -134,22 +150,30 @@ PSXRecomp.Native (Infrastructure/C++)
    - Tests and Generated code as Special layers
    - Excluded from main dependency chains
 
-## SSOT Status
+## Issues Identified
+
+1. **Missing Analyzer Project** - `PSXRecomp.Analyzer` project does not exist yet (will be created in Issue #8)
+2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (Issue #8)
+3. **Missing Special Layer** - Analyzer and Tests projects need to be formally declared
+4. **C ABI Contract** - Need to ensure `NativeInterop.cs` follows the documented pattern
+
+## Recommendations
+
+- Add `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects (Issue #8)
+- Ensure `NativeInterop.cs` uses proper `[LibraryImport]` attributes
+- Document the C ABI boundary clearly in the codebase
+- Add Forbidden API checks to Roslyn Analyzer (separate rule set, Issue #8)
+- Update `architecture-matrix.md` with finalized tables above
+
+---
+
+**SSOT Status**
 
 - Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined
-- Dependency Matrix: ⚠️ VERIFIED - Entries confirmed against actual project structure; Row 17 corrected (Domain → Application: ❌ NO)
+- Dependency Matrix: ✅ VERIFIED - Entries confirmed against actual project structure; Domain → Application corrected to ❌ NO
 - Forbidden API Matrix: ✅ ESTABLISHED - Layer-specific API restrictions documented
 - Architecture Attribute Contract: ✅ DOCUMENTED - Attribute types and scopes defined
 - Namespace Matrix: ✅ DOCUMENTED - Project-to-namespace mappings assigned
 - C ABI Boundary: ✅ DEFINED - Clear separation via NativeInterop.cs and LibraryImport
 - **Missing Items**: PSXRecomp.Analyzer project, PSXRecomp.Generated project not yet created (Issue #8)
 - Status: ⚠️ WORK_IN_PROGRESS - SSOT established but incomplete; see Issue #8 for Analyzer implementation
-
----
-
-## Issues Identified
-
-1. **Missing Analyzer Project** - `PSXRecomp.Analyzer` project does not exist yet (will be created)
-2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined
-3. **Missing Special Layer** - Analyzer and Tests projects need to be formally declared
-4. **C ABI Contract** - Need to ensure `NativeInterop.cs` follows the documented pattern
