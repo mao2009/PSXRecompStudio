@@ -1104,7 +1104,7 @@ instructions:
 
   - name: LWC2
     mnemonic: "lwc2"
-    opcode: 0x36
+    opcode: 0x32
     format: I
     category: coprocessor
     operands:
@@ -1284,7 +1284,7 @@ instructions:
 
   - name: SWC2
     mnemonic: "swc2"
-    opcode: 0x3E
+    opcode: 0x3A
     format: I
     category: coprocessor
     operands:
@@ -1365,11 +1365,13 @@ instructions:
         role: source
     semantics: |
       target = GPR[rs]
+      if target[0:1] != 0 then trap(AdEL)  # アラインメントチェック
       # Delay slot is executed next
     delay_slot: true
     delay_slot_type: unconditional
-    exceptions: []
-    psx_notes: "レジスタ指定ジャンプ。"
+    exceptions:
+      - AdEL
+    psx_notes: "レジスタ指定ジャンプ。ターゲットがワード非アラインならAdEL。"
 
   - name: JALR
     mnemonic: "jalr"
@@ -1389,12 +1391,14 @@ instructions:
         role: source
     semantics: |
       target = GPR[rs]
+      if target[0:1] != 0 then trap(AdEL)  # アラインメントチェック
       GPR[rd] = PC + 8  # return address (default: $31)
       # Delay slot is executed next
     delay_slot: true
     delay_slot_type: unconditional
-    exceptions: []
-    psx_notes: "レジスタ指定ジャンプ＆リンク。rdは省略時$31。"
+    exceptions:
+      - AdEL
+    psx_notes: "レジスタ指定ジャンプ＆リンク。rdは省略時$31。ターゲットがワード非アラインならAdEL。"
 
   # =========================================================================
   # Branch Instructions
@@ -1706,16 +1710,19 @@ instructions:
     mnemonic: "rfe"
     opcode: 0x10
     rs: 0x10
+    funct: 0x10
     format: COP
     category: coprocessor
     operands: []
     semantics: |
       # Return From Exception (R3000A model)
       # SR uses a 3-level stack: bits[5:0] = {IEo, KUo, IEp, KUp, IEc, KUc}
-      # RFE shifts the stack right by 2 bits:
-      #   IEc ← IEp, KUc ← KUp, IEp ← IEo, KUp ← KUo
-      SR[5:0] = SR[5:0] >> 2  # 3-level status stack pop
-      PC = EPC
+      # RFE pops the stack (shifts right by 2 bits):
+      #   SR[1:0] = SR[3:2]  (KUc ← KUp, IEc ← IEp)
+      #   SR[3:2] = SR[5:4]  (KUp ← KUo, IEp ← IEo)
+      # RFE does NOT restore PC. Software returns via JR.
+      SR[3:0] = SR[5:2]
+      SR[5:4] = 0  # Clear oldest level
     delay_slot: false
     exceptions: []
-    psx_notes: "例外から復帰。SRを復元し、EPCからPCを復元。"
+    psx_notes: "SRステータススタックをポップ。PC復元は行わない（ソフトウェアがJRで復帰）。"

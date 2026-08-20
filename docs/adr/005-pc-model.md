@@ -93,9 +93,18 @@ BEV=1:
 ### RFE (Return From Exception)
 
 ```text
-1. SRのCurrent-modeビットをPrevious-modeに復元
-2. IPフィールドを右に2ビットシフト
-3. EPCからPCを復元
+RFEはSRステータススタックをポップするのみ。PC復元は行わない。
+
+1. SR[3:0] = SR[5:2]  (KUc←KUp, IEc←IEp, KUp←KUo, IEp←IEo)
+2. SR[5:4] = 0        (最古のレベルをクリア)
+3. ソフトウェアがJRで復帰（通常: JR $ra）
+```
+
+BD=1時の例外復帰:
+```text
+1. EPCは分岐命令のアドレスを指す
+2. 例外ハンドラは分岐命令と遅延スロットを再実行する必要がある
+3. 分岐先に到達するか、分岐未成立で続行
 ```
 
 ## Consequences

@@ -89,7 +89,9 @@ void execute_branch(uint32_t target, bool condition) {
 **仕様**:
 - 例外が遅延スロット内で発生した場合、BD(CAUSE bit 31)がセットされる
 - EPCは分岐命令のアドレスを指す（遅延スロットのアドレスではなく）
-- 例外ハンドラはBDを確認し、EPC+8（遅延スロットの次の命令）にリターンする必要がある
+- 例外ハンドラはBDを確認する:
+  - BD=0: 通常復帰。RFE + JRでEPC+4にリターン
+  - BD=1: 分岐命令と遅延スロットを再実行する必要がある。RFE後、分岐先（taken）またはEPC+8（not-taken）に復帰
 
 ## Consequences
 
