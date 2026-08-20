@@ -43,6 +43,13 @@ public class PSXCpuRegisterTests : IDisposable
     }
 
     [Fact]
+    public void GPR_Zero_AlwaysZero()
+    {
+        _core.SetGpr(0, 0x12345678);
+        _core.GetGpr(0).Should().Be(0);
+    }
+
+    [Fact]
     public void GPR_OutOfRange_ThrowsArgumentOutOfRange()
     {
         var act = () => _core.GetGpr(-1);

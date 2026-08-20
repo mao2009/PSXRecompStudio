@@ -73,6 +73,15 @@ static void test_cpu_gpr_set_get() {
     PASS();
 }
 
+static void test_cpu_gpr_zero_always_zero() {
+    TEST("CPU GPR[0] always zero (MIPS $zero)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 0, 0x12345678);
+    ASSERT_EQ(PSXCore_GetGPR(core, 0), 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_cpu_pc_set_get() {
     TEST("CPU PC set/get");
     PSXCore* core = PSXCore_Create();
@@ -154,6 +163,7 @@ int main() {
     test_cpu_pc_initial();
     test_cpu_hi_lo_initial();
     test_cpu_gpr_set_get();
+    test_cpu_gpr_zero_always_zero();
     test_cpu_pc_set_get();
     test_cpu_hi_lo_set_get();
     test_ram_size();

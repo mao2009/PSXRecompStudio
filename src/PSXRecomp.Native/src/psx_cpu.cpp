@@ -15,11 +15,13 @@ void PSXCpu::Reset() {
 
 uint32_t PSXCpu::GetGPR(int index) const {
     if (index < 0 || index >= PSX_GPR_COUNT) return 0;
+    if (index == 0) return 0;
     return gpr_[index];
 }
 
 void PSXCpu::SetGPR(int index, uint32_t value) {
     if (index < 0 || index >= PSX_GPR_COUNT) return;
+    if (index == 0) return;
     gpr_[index] = value;
 }
 

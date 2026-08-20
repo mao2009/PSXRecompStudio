@@ -16,7 +16,7 @@ PlayStation 1 (PSX) タイトルを解析・再コンパイルし、Windows / Li
 
 ## コンポーネント構成
 
-```
+```text
 src/
 ├── PSXRecompStudio/           # Avalonia UI アプリケーション
 ├── PSXRecomp.Core/            # C# Core: P/Invoke バインディング + ラッパー
@@ -51,7 +51,7 @@ mcp/                           # MCP Server (Node.js / TypeScript)
 
 C# から Native への呼び出しは **C ABI** 経由のみ。
 
-```
+```text
 C# (PSXRecomp.Core)
   ↓ P/Invoke
 C ABI (psx_core.h)
@@ -193,7 +193,7 @@ Rust も検討したが、既存 PSX エミュレータの知見や C# P/Invoke 
 
 ## ビルド構成
 
-```
+```text
 Native Core:    CMake + Ninja → .so / .dll / .dylib
 C# Core:        dotnet build → .dll
 UI:             dotnet build → 実行ファイル
@@ -202,7 +202,7 @@ UI:             dotnet build → 実行ファイル
 
 ## 将来コンポーネント
 
-```
+```text
 PSXRecompStudio       → UI (Avalonia)
 PSXRecomp.Core        → P/Invoke + ラッパー
 PSXRecomp.Native      → PSX エミュレーション核

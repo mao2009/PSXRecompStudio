@@ -1,10 +1,15 @@
 #include "psx_core.h"
 #include "psx_core.cpp"
+#include <new>
 
 extern "C" {
 
 PSXCore* PSXCore_Create(void) {
-    return new PSXCore();
+    try {
+        return new PSXCore();
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 void PSXCore_Destroy(PSXCore* core) {

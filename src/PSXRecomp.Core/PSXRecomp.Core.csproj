@@ -6,9 +6,23 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
+    <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
+    <NativeLibName>libPSXRecomp.Native.so</NativeLibName>
+  </PropertyGroup>
+
+  <Target Name="BuildNative" BeforeTargets="CoreCompile"
+          Condition="'$(BuildingInsideVisualStudio)' != 'true'">
+    <Exec Command="cmake -B $(NativeBuildDir) -S $(NativeProjectDir) -G Ninja -DCMAKE_BUILD_TYPE=Release"
+          IgnoreExitCode="false" />
+    <Exec Command="cmake --build $(NativeBuildDir)"
+          IgnoreExitCode="false" />
+  </Target>
+
   <ItemGroup>
-    <None Include="../../src/PSXRecomp.Native/build/libPSXRecomp.Native.so"
-          Condition="Exists('../../src/PSXRecomp.Native/build/libPSXRecomp.Native.so')"
-          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(NativeBuildDir)/$(NativeLibName)"
+          Condition="Exists('$(NativeBuildDir)/$(NativeLibName)')"
+          CopyToOutputDirectory="PreserveNewest" Link="$(NativeLibName)" />
   </ItemGroup>
 </Project>

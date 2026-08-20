@@ -17,11 +17,11 @@ public class NativeInteropTests
         using var core1 = new PSXCoreWrapper();
         using var core2 = new PSXCoreWrapper();
 
-        core1.SetGpr(0, 0x1111);
-        core2.SetGpr(0, 0x2222);
+        core1.SetGpr(1, 0x1111);
+        core2.SetGpr(1, 0x2222);
 
-        core1.GetGpr(0).Should().Be(0x1111);
-        core2.GetGpr(0).Should().Be(0x2222);
+        core1.GetGpr(1).Should().Be(0x1111);
+        core2.GetGpr(1).Should().Be(0x2222);
     }
 
     [Fact]
