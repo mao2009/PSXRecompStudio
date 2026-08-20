@@ -107,3 +107,18 @@ temp/
 *.tmp
 *.bak
 *.orig
+
+# ====================
+# CMake / C++ Build
+# ====================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build/
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
