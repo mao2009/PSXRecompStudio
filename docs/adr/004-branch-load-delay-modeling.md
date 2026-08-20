@@ -29,7 +29,7 @@ PSX R3000A CPUはMIPS I ISAに基づいており、branch delay slotとload dela
 2. 分岐条件を評価
 3. 遅延スロットの命令を実行
 4. 分岐条件が成立していたら、ターゲットPCにジャンプ
-5. 成立していなかったら、PC = PC + 4を継続
+5. 成立していなかったら、PC = delay_slot_pc + 4を継続
 ```
 
 **実装方針**:
@@ -72,14 +72,16 @@ void execute_branch(uint32_t target, bool condition) {
 
 次の命令実行時:
 1. load_pendingな命令がある場合、そのレジスタへの書き込みは保留
-2. LWL/LWRはload_pendingな値を読むことができる（特殊回路）
+2. 連続するLWL/LWRペアはload_pendingな値を読むことができる（特殊回路）
 3. それ以外の命令はload_pendingな値を見ない
 4. load_pendingをクリア
 ```
 
 **LWL/LWRの特殊動作**:
-- LWL/LWRは直前のロード命令の結果を読むことができる
+- LWL/LWRは **連続するLWL/LWRペア** でのみ直前のロード結果を読むことができる
+- LWL→LWRまたはLWR→LWLの順序で同一レジスタを対象とする場合に限る
 - これはハードウェアの特殊回路によるもの
+- 2番目の命令の後に通常のload delayが残る
 - テストではこの挙動を検証する必要がある
 
 ### Exception時のBDビット

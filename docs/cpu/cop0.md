@@ -25,7 +25,7 @@
 
 R3000Aは3レベルのステータススタックを使用する。
 
-```
+```text
 Bit  Name    Description
 0    KUc     Current Kernel/User mode (0=Kernel, 1=User)
 1    IEc     Current Interrupt Enable
@@ -57,14 +57,14 @@ Bit  Name    Description
 ### 3-Level Stack
 
 例外発生時に:
-```
+```text
 KUo ← KUp, IEo ← IEp
 KUp ← KUc, IEp ← IEc
 KUc ← 0 (カーネル), IEc ← 0 (割り込み無効)
 ```
 
 RFE時に:
-```
+```text
 KUc ← KUp, IEc ← IEp
 KUp ← KUo, IEp ← IEo
 ```

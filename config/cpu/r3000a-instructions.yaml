@@ -56,9 +56,7 @@ formats:
       opcode: { bits: [31, 26], width: 6 }
       rs:     { bits: [25, 21], width: 5 }
       rt:     { bits: [20, 16], width: 5 }
-      rd:     { bits: [15, 11], width: 5 }
-      shamt:  { bits: [10, 6],  width: 5 }
-      funct:  { bits: [5, 0],   width: 6 }
+      cofun:  { bits: [15, 0],  width: 16 }
 
 # Instruction Definitions
 instructions:
@@ -1107,7 +1105,7 @@ instructions:
   - name: LWC2
     mnemonic: "lwc2"
     opcode: 0x36
-    format: COP2
+    format: I
     category: coprocessor
     operands:
       - name: rt
@@ -1287,7 +1285,7 @@ instructions:
   - name: SWC2
     mnemonic: "swc2"
     opcode: 0x3E
-    format: COP2
+    format: I
     category: coprocessor
     operands:
       - name: rt

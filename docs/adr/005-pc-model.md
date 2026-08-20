@@ -47,7 +47,7 @@ PC状態:
 ```text
 J/JAL命令:
 1. ジャンプ命令をフェッチ・デコード
-2. target = (pc & 0xF0000000) | (instr_index << 2)
+2. target = ((pc + 4) & 0xF0000000) | (instr_index << 2)
 3. 遅延スロットを実行
 4. pc = target
 5. next_pc = pc + 4
