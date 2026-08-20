@@ -52,6 +52,18 @@ jobs:
       - name: Restore
         run: dotnet restore src/PSXRecompStudio.slnx
 
+      - name: Check NuGet vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=$(dotnet list src/PSXRecompStudio.slnx package --vulnerable --include-transitive 2>&1 || true)
+          echo "$report"
+
+          if grep -Eiq '(^|[^[:alpha:]])(High|Critical)([^[:alpha:]]|$)|高 重大度|重大度.*高|critical severity|high severity' <<< "$report"; then
+            echo "High or Critical NuGet vulnerabilities detected. CI cannot proceed."
+            exit 1
+          fi
+
       - name: Build
         run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
 
