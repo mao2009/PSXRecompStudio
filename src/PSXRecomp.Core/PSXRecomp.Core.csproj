@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
+    <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
+    <NativeLibName>libPSXRecomp.Native.so</NativeLibName>
+  </PropertyGroup>
+
+  <Target Name="BuildNative" BeforeTargets="CoreCompile"
+          Condition="'$(BuildingInsideVisualStudio)' != 'true'">
+    <Exec Command="cmake -B $(NativeBuildDir) -S $(NativeProjectDir) -G Ninja -DCMAKE_BUILD_TYPE=Release"
+          IgnoreExitCode="false" />
+    <Exec Command="cmake --build $(NativeBuildDir)"
+          IgnoreExitCode="false" />
+  </Target>
+
+  <Target Name="IncludeNativeLibrary" AfterTargets="BuildNative"
+          BeforeTargets="CoreCompile;ResolvePackageAssets">
+    <ItemGroup>
+      <None Include="$(NativeBuildDir)/$(NativeLibName)"
+            Condition="Exists('$(NativeBuildDir)/$(NativeLibName)')"
+            CopyToOutputDirectory="PreserveNewest" Link="$(NativeLibName)" />
+    </ItemGroup>
+  </Target>
+</Project>
