@@ -1,0 +1,1728 @@
+# PSX R3000A CPU Instruction Set Definitions
+# Machine-readable SSOT for Decoder, Interpreter, Recompiler, Test Generator, Debugger, MCP
+#
+# References:
+#   - MIPS R3000 Hardware Manual
+#   - PSX-SX (psx-spx.consoledev.net)
+#   - IDT R30xx Family Software Reference Manual
+#   - docs/cpu/instruction-set.md
+
+meta:
+  version: "1.0"
+  description: "PSX R3000A CPU Instruction Set Definitions"
+  cpu: "MIPS R3000A (LSI CW33300)"
+  isa: "MIPS I"
+  endianness: "little"
+  word_size: 32
+  references:
+    - name: "MIPS R3000 Hardware Manual"
+      url: "https://cgi.cse.unsw.edu.au/~cs3231/doc/R3000.pdf"
+    - name: "PlayStation Specifications (psx-spx)"
+      url: "https://psx-spx.consoledev.net/cpuspecifications/"
+    - name: "IDT R30xx Family Software Reference Manual"
+      url: "https://student.cs.uwaterloo.ca/~cs350/common/r3000-manual.pdf"
+    - name: "The R3000A - Everything You Have Always Wanted to Know about the Playstation"
+      url: "https://archives.somnolescent.net/web/cammy_v1/games/everything_psx/r3000a.html"
+
+# Instruction Format Definitions
+formats:
+  R:
+    name: "R-Type (Register)"
+    fields:
+      opcode: { bits: [31, 26], width: 6 }
+      rs:     { bits: [25, 21], width: 5 }
+      rt:     { bits: [20, 16], width: 5 }
+      rd:     { bits: [15, 11], width: 5 }
+      shamt:  { bits: [10, 6],  width: 5 }
+      funct:  { bits: [5, 0],   width: 6 }
+
+  I:
+    name: "I-Type (Immediate)"
+    fields:
+      opcode:     { bits: [31, 26], width: 6 }
+      rs:         { bits: [25, 21], width: 5 }
+      rt:         { bits: [20, 16], width: 5 }
+      immediate:  { bits: [15, 0],  width: 16, sign_extend: true }
+
+  J:
+    name: "J-Type (Jump)"
+    fields:
+      opcode:      { bits: [31, 26], width: 6 }
+      instr_index: { bits: [25, 0],  width: 26 }
+
+  COP:
+    name: "Coprocessor"
+    fields:
+      opcode: { bits: [31, 26], width: 6 }
+      rs:     { bits: [25, 21], width: 5 }
+      rt:     { bits: [20, 16], width: 5 }
+      cofun:  { bits: [15, 0],  width: 16 }
+
+# Instruction Definitions
+instructions:
+
+  # =========================================================================
+  # Arithmetic Instructions
+  # =========================================================================
+
+  - name: ADD
+    mnemonic: "add"
+    opcode: 0x00
+    funct: 0x20
+    format: R
+    category: arithmetic
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      temp = GPR[rs] + GPR[rt]
+      if overflow(GPR[rs], GPR[rt], temp) then
+        trap(OverflowException)
+      else
+        GPR[rd] = temp[31:0]
+    flags:
+      overflow: true
+      signed: true
+    delay_slot: false
+    exceptions:
+      - Ov
+    psx_notes: "符号付き加算。オーバーフロー時に例外発生。"
+
+  - name: ADDU
+    mnemonic: "addu"
+    opcode: 0x00
+    funct: 0x21
+    format: R
+    category: arithmetic
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rs] + GPR[rt]
+    flags:
+      overflow: false
+      signed: false
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし加算。オーバーフロー無視。"
+
+  - name: ADDI
+    mnemonic: "addi"
+    opcode: 0x08
+    format: I
+    category: arithmetic
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+    semantics: |
+      temp = GPR[rs] + sign_extend(immediate)
+      if overflow(GPR[rs], sign_extend(immediate), temp) then
+        trap(OverflowException)
+      else
+        GPR[rt] = temp[31:0]
+    flags:
+      overflow: true
+      signed: true
+    delay_slot: false
+    exceptions:
+      - Ov
+    psx_notes: "符号付き即値加算。"
+
+  - name: ADDIU
+    mnemonic: "addiu"
+    opcode: 0x09
+    format: I
+    category: arithmetic
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+    semantics: |
+      GPR[rt] = GPR[rs] + sign_extend(immediate)
+    flags:
+      overflow: false
+      signed: false
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし即値加算。オーバーフロー無視。"
+
+  - name: SUB
+    mnemonic: "sub"
+    opcode: 0x00
+    funct: 0x22
+    format: R
+    category: arithmetic
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      temp = GPR[rs] - GPR[rt]
+      if underflow(GPR[rs], GPR[rt], temp) then
+        trap(OverflowException)
+      else
+        GPR[rd] = temp[31:0]
+    flags:
+      overflow: true
+      signed: true
+    delay_slot: false
+    exceptions:
+      - Ov
+    psx_notes: "符号付き減算。"
+
+  - name: SUBU
+    mnemonic: "subu"
+    opcode: 0x00
+    funct: 0x23
+    format: R
+    category: arithmetic
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rs] - GPR[rt]
+    flags:
+      overflow: false
+      signed: false
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし減算。"
+
+  - name: SLT
+    mnemonic: "slt"
+    opcode: 0x00
+    funct: 0x2A
+    format: R
+    category: comparison
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = (GPR[rs] < GPR[rt]) ? 1 : 0  # signed comparison
+    flags:
+      overflow: false
+      signed: true
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号付き比較。"
+
+  - name: SLTU
+    mnemonic: "sltu"
+    opcode: 0x00
+    funct: 0x2B
+    format: R
+    category: comparison
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = (GPR[rs] < GPR[rt]) ? 1 : 0  # unsigned comparison
+    flags:
+      overflow: false
+      signed: false
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし比較。"
+
+  - name: SLTI
+    mnemonic: "slti"
+    opcode: 0x0A
+    format: I
+    category: comparison
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+    semantics: |
+      GPR[rt] = (GPR[rs] < sign_extend(immediate)) ? 1 : 0  # signed
+    flags:
+      overflow: false
+      signed: true
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号付き即値比較。"
+
+  - name: SLTIU
+    mnemonic: "sltiu"
+    opcode: 0x0B
+    format: I
+    category: comparison
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+    semantics: |
+      GPR[rt] = (GPR[rs] < sign_extend(immediate)) ? 1 : 0  # unsigned
+    flags:
+      overflow: false
+      signed: false
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし即値比較。即値は符号拡張後に符号なし比較。"
+
+  # =========================================================================
+  # Logical Instructions
+  # =========================================================================
+
+  - name: AND
+    mnemonic: "and"
+    opcode: 0x00
+    funct: 0x24
+    format: R
+    category: logical
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rs] & GPR[rt]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "ビット単位AND。"
+
+  - name: OR
+    mnemonic: "or"
+    opcode: 0x00
+    funct: 0x25
+    format: R
+    category: logical
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rs] | GPR[rt]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "ビット単位OR。"
+
+  - name: XOR
+    mnemonic: "xor"
+    opcode: 0x00
+    funct: 0x26
+    format: R
+    category: logical
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rs] ^ GPR[rt]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "ビット単位XOR。"
+
+  - name: NOR
+    mnemonic: "nor"
+    opcode: 0x00
+    funct: 0x27
+    format: R
+    category: logical
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      GPR[rd] = ~(GPR[rs] | GPR[rt])
+    delay_slot: false
+    exceptions: []
+    psx_notes: "ビット単位NOR。"
+
+  - name: ANDI
+    mnemonic: "andi"
+    opcode: 0x0C
+    format: I
+    category: logical
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: false
+        zero_extend: true
+        role: source
+    semantics: |
+      GPR[rt] = GPR[rs] & zero_extend(immediate)
+    delay_slot: false
+    exceptions: []
+    psx_notes: "即値は0拡張。"
+
+  - name: ORI
+    mnemonic: "ori"
+    opcode: 0x0D
+    format: I
+    category: logical
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: false
+        zero_extend: true
+        role: source
+    semantics: |
+      GPR[rt] = GPR[rs] | zero_extend(immediate)
+    delay_slot: false
+    exceptions: []
+    psx_notes: "即値は0拡張。"
+
+  - name: XORI
+    mnemonic: "xori"
+    opcode: 0x0E
+    format: I
+    category: logical
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        sign_extend: false
+        zero_extend: true
+        role: source
+    semantics: |
+      GPR[rt] = GPR[rs] ^ zero_extend(immediate)
+    delay_slot: false
+    exceptions: []
+    psx_notes: "即値は0拡張。"
+
+  - name: LUI
+    mnemonic: "lui"
+    opcode: 0x0F
+    format: I
+    category: logical
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: immediate
+        type: immediate
+        bits: [15, 0]
+        role: source
+    semantics: |
+      GPR[rt] = immediate << 16
+    delay_slot: false
+    exceptions: []
+    psx_notes: "即値を上位16ビットにロード。下位16ビットはゼロ。"
+
+  # =========================================================================
+  # Shift Instructions
+  # =========================================================================
+
+  - name: SLL
+    mnemonic: "sll"
+    opcode: 0x00
+    funct: 0x00
+    format: R
+    category: shift
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: shamt
+        type: immediate
+        bits: [10, 6]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rt] << shamt
+    delay_slot: false
+    exceptions: []
+    psx_notes: "論理左シフト。即値シフト量。"
+
+  - name: SRL
+    mnemonic: "srl"
+    opcode: 0x00
+    funct: 0x02
+    format: R
+    category: shift
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: shamt
+        type: immediate
+        bits: [10, 6]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rt] >> shamt  # logical
+    delay_slot: false
+    exceptions: []
+    psx_notes: "論理右シフト。"
+
+  - name: SRA
+    mnemonic: "sra"
+    opcode: 0x00
+    funct: 0x03
+    format: R
+    category: shift
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: shamt
+        type: immediate
+        bits: [10, 6]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rt] >> shamt  # arithmetic (sign-extend)
+    delay_slot: false
+    exceptions: []
+    psx_notes: "算術右シフト。"
+
+  - name: SLLV
+    mnemonic: "sllv"
+    opcode: 0x00
+    funct: 0x04
+    format: R
+    category: shift
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rt] << GPR[rs][4:0]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "レジスタ指定左シフト。下位5ビットのみ使用。"
+
+  - name: SRLV
+    mnemonic: "srlv"
+    opcode: 0x00
+    funct: 0x06
+    format: R
+    category: shift
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rt] >> GPR[rs][4:0]  # logical
+    delay_slot: false
+    exceptions: []
+    psx_notes: "レジスタ指定論理右シフト。"
+
+  - name: SRAV
+    mnemonic: "srav"
+    opcode: 0x00
+    funct: 0x07
+    format: R
+    category: shift
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      GPR[rd] = GPR[rt] >> GPR[rs][4:0]  # arithmetic
+    delay_slot: false
+    exceptions: []
+    psx_notes: "レジスタ指定算術右シフト。"
+
+  # =========================================================================
+  # Multiply / Divide Instructions
+  # =========================================================================
+
+  - name: MULT
+    mnemonic: "mult"
+    opcode: 0x00
+    funct: 0x18
+    format: R
+    category: multiply_divide
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      result = signed_multiply(GPR[rs], GPR[rt])  # 64-bit result
+      HI = result[63:32]
+      LO = result[31:0]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号付き乗算。64ビット結果をHI:LOに格納。"
+
+  - name: MULTU
+    mnemonic: "multu"
+    opcode: 0x00
+    funct: 0x19
+    format: R
+    category: multiply_divide
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      result = unsigned_multiply(GPR[rs], GPR[rt])  # 64-bit result
+      HI = result[63:32]
+      LO = result[31:0]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし乗算。"
+
+  - name: DIV
+    mnemonic: "div"
+    opcode: 0x00
+    funct: 0x1A
+    format: R
+    category: multiply_divide
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      if GPR[rt] != 0 then
+        LO = signed_divide(GPR[rs], GPR[rt])  # quotient
+        HI = signed_modulo(GPR[rs], GPR[rt])  # remainder
+      else
+        # PSX division by zero behavior
+        if GPR[rs] >= 0 then
+          LO = 0xFFFFFFFF  # -1
+        else
+          LO = 0x00000001  # +1
+        HI = GPR[rs]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号付き除算。ゼロ除算時はPSX固有の挙動。"
+
+  - name: DIVU
+    mnemonic: "divu"
+    opcode: 0x00
+    funct: 0x1B
+    format: R
+    category: multiply_divide
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+    semantics: |
+      if GPR[rt] != 0 then
+        LO = unsigned_divide(GPR[rs], GPR[rt])
+        HI = unsigned_modulo(GPR[rs], GPR[rt])
+      else
+        LO = 0xFFFFFFFF  # -1
+        HI = GPR[rs]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "符号なし除算。ゼロ除算時は商=-1、余り=被除数。"
+
+  - name: MFHI
+    mnemonic: "mfhi"
+    opcode: 0x00
+    funct: 0x10
+    format: R
+    category: move
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+    semantics: |
+      GPR[rd] = HI
+    delay_slot: false
+    exceptions: []
+    psx_notes: "HIからレジスタへ転送。"
+
+  - name: MTHI
+    mnemonic: "mthi"
+    opcode: 0x00
+    funct: 0x11
+    format: R
+    category: move
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      HI = GPR[rs]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "レジスタからHIへ転送。"
+
+  - name: MFLO
+    mnemonic: "mflo"
+    opcode: 0x00
+    funct: 0x12
+    format: R
+    category: move
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+    semantics: |
+      GPR[rd] = LO
+    delay_slot: false
+    exceptions: []
+    psx_notes: "LOからレジスタへ転送。"
+
+  - name: MTLO
+    mnemonic: "mtlo"
+    opcode: 0x00
+    funct: 0x13
+    format: R
+    category: move
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      LO = GPR[rs]
+    delay_slot: false
+    exceptions: []
+    psx_notes: "レジスタからLOへ転送。"
+
+  # =========================================================================
+  # Load Instructions
+  # =========================================================================
+
+  - name: LB
+    mnemonic: "lb"
+    opcode: 0x20
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      GPR[rt] = sign_extend(memory[addr])
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "バイトロード。符号拡張。"
+
+  - name: LBU
+    mnemonic: "lbu"
+    opcode: 0x24
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      GPR[rt] = zero_extend(memory[addr])
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "バイトロード。0拡張。"
+
+  - name: LH
+    mnemonic: "lh"
+    opcode: 0x21
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      GPR[rt] = sign_extend(memory[addr:16])
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "ハーフワードロード。2バイトアラインメント必要。"
+
+  - name: LHU
+    mnemonic: "lhu"
+    opcode: 0x25
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      GPR[rt] = zero_extend(memory[addr:16])
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "ハーフワードロード。0拡張。"
+
+  - name: LW
+    mnemonic: "lw"
+    opcode: 0x23
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      GPR[rt] = memory[addr:32]
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "ワードロード。4バイトアラインメント必要。"
+
+  - name: LWL
+    mnemonic: "lwl"
+    opcode: 0x22
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      # アラインメントに依存したバイト結合
+      # LWLはロードの上位バイトを結合
+      byte_offset = addr & 0x3
+      word_addr = addr & ~0x3
+      case byte_offset of
+        0: GPR[rt][31:24] = memory[word_addr]
+        1: GPR[rt][31:16] = memory[word_addr+1:word_addr]
+        2: GPR[rt][31:8] = memory[word_addr+2:word_addr]
+        3: GPR[rt][31:0] = memory[word_addr+3:word_addr]
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "アンラインワードロード（左）。LWRと組み合わせて使用。load delay内で先行ロードを読む特殊回路あり。"
+
+  - name: LWR
+    mnemonic: "lwr"
+    opcode: 0x26
+    format: I
+    category: load
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      # アラインメントに依存したバイト結合（リトルエンディアン）
+      # LWRはロードの下位バイトを結合
+      byte_offset = addr & 0x3
+      case byte_offset of
+        0: GPR[rt][7:0] = memory[addr]          # 1 byte
+        1: GPR[rt][15:0] = memory[addr-1:addr]  # 2 bytes
+        2: GPR[rt][23:0] = memory[addr-2:addr]  # 3 bytes
+        3: GPR[rt][31:0] = memory[addr-3:addr]  # 4 bytes (full word)
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "アンラインワードロード（右）。LWLと組み合わせて使用。連続するLWL/LWRペアは先行ロードを読む特殊回路あり。"
+
+  # =========================================================================
+  # Coprocessor Load/Store Instructions
+  # =========================================================================
+
+  - name: LWC2
+    mnemonic: "lwc2"
+    opcode: 0x32
+    format: I
+    category: coprocessor
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+        coprocessor: 2
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      COP2_data = memory[addr:32]
+    delay_slot: false
+    exceptions:
+      - AdEL
+    psx_notes: "COP2 (GTE)へのワードロード。PSXでは未使用だが定義上存在。"
+
+  # =========================================================================
+  # Store Instructions
+  # =========================================================================
+
+  - name: SB
+    mnemonic: "sb"
+    opcode: 0x28
+    format: I
+    category: store
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      memory[addr] = GPR[rt][7:0]
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "バイトストア。"
+
+  - name: SH
+    mnemonic: "sh"
+    opcode: 0x29
+    format: I
+    category: store
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      memory[addr:16] = GPR[rt][15:0]
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "ハーフワードストア。2バイトアラインメント必要。"
+
+  - name: SW
+    mnemonic: "sw"
+    opcode: 0x2B
+    format: I
+    category: store
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      memory[addr:32] = GPR[rt]
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "ワードストア。4バイトアラインメント必要。"
+
+  - name: SWL
+    mnemonic: "swl"
+    opcode: 0x2A
+    format: I
+    category: store
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      # アラインメントに依存したバイト分解
+      byte_offset = addr & 0x3
+      word_addr = addr & ~0x3
+      case byte_offset of
+        0: memory[word_addr] = GPR[rt][31:24]
+        1: memory[word_addr:word_addr+1] = GPR[rt][31:16]
+        2: memory[word_addr:word_addr+2] = GPR[rt][31:8]
+        3: memory[word_addr:word_addr+3] = GPR[rt][31:0]
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "アンラインワードストア（左）。SWRと組み合わせて使用。"
+
+  - name: SWR
+    mnemonic: "swr"
+    opcode: 0x2E
+    format: I
+    category: store
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      # アラインメントに依存したバイト分解（リトルエンディアン）
+      byte_offset = addr & 0x3
+      case byte_offset of
+        0: memory[addr] = GPR[rt][7:0]          # 1 byte
+        1: memory[addr-1:addr] = GPR[rt][15:0]  # 2 bytes
+        2: memory[addr-2:addr] = GPR[rt][23:0]  # 3 bytes
+        3: memory[addr-3:addr] = GPR[rt][31:0]  # 4 bytes (full word)
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "アンラインワードストア（右）。SWLと組み合わせて使用。"
+
+  - name: SWC2
+    mnemonic: "swc2"
+    opcode: 0x3A
+    format: I
+    category: coprocessor
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+        coprocessor: 2
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        role: source
+      - name: base
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      addr = GPR[base] + sign_extend(offset)
+      memory[addr:32] = COP2_data
+    delay_slot: false
+    exceptions:
+      - AdES
+    psx_notes: "COP2 (GTE)からのワードストア。PSXでは未使用だが定義上存在。"
+
+  # =========================================================================
+  # Jump Instructions
+  # =========================================================================
+
+  - name: J
+    mnemonic: "j"
+    opcode: 0x02
+    format: J
+    category: jump
+    operands:
+      - name: instr_index
+        type: immediate
+        bits: [25, 0]
+        role: source
+    semantics: |
+      target = ((PC + 4) & 0xF0000000) | (instr_index << 2)
+      # Delay slot is executed next
+      # PC will be updated to target after delay slot
+    delay_slot: true
+    delay_slot_type: unconditional
+    exceptions: []
+    psx_notes: "無条件ジャンプ。遅延スロットあり。"
+
+  - name: JAL
+    mnemonic: "jal"
+    opcode: 0x03
+    format: J
+    category: jump
+    operands:
+      - name: instr_index
+        type: immediate
+        bits: [25, 0]
+        role: source
+    semantics: |
+      target = ((PC + 4) & 0xF0000000) | (instr_index << 2)
+      GPR[31] = PC + 8  # return address
+      # Delay slot is executed next
+    delay_slot: true
+    delay_slot_type: unconditional
+    exceptions: []
+    psx_notes: "無条件ジャンプ＆リンク。ra=$31にリターンアドレス格納。"
+
+  - name: JR
+    mnemonic: "jr"
+    opcode: 0x00
+    funct: 0x08
+    format: R
+    category: jump
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      target = GPR[rs]
+      if target[0:1] != 0 then trap(AdEL)  # アラインメントチェック
+      # Delay slot is executed next
+    delay_slot: true
+    delay_slot_type: unconditional
+    exceptions:
+      - AdEL
+    psx_notes: "レジスタ指定ジャンプ。ターゲットがワード非アラインならAdEL。"
+
+  - name: JALR
+    mnemonic: "jalr"
+    opcode: 0x00
+    funct: 0x09
+    format: R
+    category: jump
+    operands:
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+        default: 31  # $ra
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+    semantics: |
+      target = GPR[rs]
+      if target[0:1] != 0 then trap(AdEL)  # アラインメントチェック
+      GPR[rd] = PC + 8  # return address (default: $31)
+      # Delay slot is executed next
+    delay_slot: true
+    delay_slot_type: unconditional
+    exceptions:
+      - AdEL
+    psx_notes: "レジスタ指定ジャンプ＆リンク。rdは省略時$31。ターゲットがワード非アラインならAdEL。"
+
+  # =========================================================================
+  # Branch Instructions
+  # =========================================================================
+
+  - name: BEQ
+    mnemonic: "beq"
+    opcode: 0x04
+    format: I
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      if GPR[rs] == GPR[rt] then
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "等値分岐。"
+
+  - name: BNE
+    mnemonic: "bne"
+    opcode: 0x05
+    format: I
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      if GPR[rs] != GPR[rt] then
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "非等値分岐。"
+
+  - name: BLEZ
+    mnemonic: "blez"
+    opcode: 0x06
+    format: I
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      if GPR[rs] <= 0 then  # signed
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "符号付き0以下分岐。"
+
+  - name: BGTZ
+    mnemonic: "bgtz"
+    opcode: 0x07
+    format: I
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      if GPR[rs] > 0 then  # signed
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "符号付き0超分岐。"
+
+  - name: BLTZ
+    mnemonic: "bltz"
+    opcode: 0x01
+    rt: 0x00
+    format: REGIMM
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      if GPR[rs] < 0 then  # signed
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "符号付き0未満分岐。REGIMM encoding (rt=0x00)。"
+
+  - name: BGEZ
+    mnemonic: "bgez"
+    opcode: 0x01
+    rt: 0x01
+    format: REGIMM
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      if GPR[rs] >= 0 then  # signed
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "符号付き0以上分岐。REGIMM encoding (rt=0x01)。"
+
+  - name: BLTZAL
+    mnemonic: "bltzal"
+    opcode: 0x01
+    rt: 0x10
+    format: REGIMM
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      GPR[31] = PC + 8  # return address
+      if GPR[rs] < 0 then  # signed
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "符号付き0未満分岐＆リンク。ra=$31にリターンアドレス。REGIMM (rt=0x10)。"
+
+  - name: BGEZAL
+    mnemonic: "bgezal"
+    opcode: 0x01
+    rt: 0x11
+    format: REGIMM
+    category: branch
+    operands:
+      - name: rs
+        type: register
+        bits: [25, 21]
+        role: source
+      - name: offset
+        type: immediate
+        bits: [15, 0]
+        sign_extend: true
+        scale: 4
+        role: source
+    semantics: |
+      target = PC + 4 + (sign_extend(offset) << 2)
+      GPR[31] = PC + 8  # return address
+      if GPR[rs] >= 0 then  # signed
+        branch_taken = true
+        branch_target = target
+    delay_slot: true
+    delay_slot_type: conditional
+    exceptions: []
+    psx_notes: "符号付き0以上分岐＆リンク。ra=$31にリターンアドレス。REGIMM (rt=0x11)。"
+
+  # =========================================================================
+  # Special Instructions
+  # =========================================================================
+
+  - name: SYSCALL
+    mnemonic: "syscall"
+    opcode: 0x00
+    funct: 0x0C
+    format: R
+    category: special
+    operands: []
+    semantics: |
+      trap(SyscallException)
+    delay_slot: false
+    exceptions:
+      - Sys
+    psx_notes: "システムコール。例外ベクトルにジャンプ。"
+
+  - name: BREAK
+    mnemonic: "break"
+    opcode: 0x00
+    funct: 0x0D
+    format: R
+    category: special
+    operands: []
+    semantics: |
+      trap(BreakpointException)
+    delay_slot: false
+    exceptions:
+      - Bp
+    psx_notes: "ブレークポイント。20ビット即値は例外ハンドラで取得可能。"
+
+  # =========================================================================
+  # Coprocessor Instructions (COP0)
+  # =========================================================================
+
+  - name: MFC0
+    mnemonic: "mfc0"
+    opcode: 0x10
+    rs: 0x00
+    format: COP
+    category: coprocessor
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: destination
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: source
+    semantics: |
+      GPR[rt] = COP0[rd]
+    delay_slot: false
+    exceptions:
+      - CpU
+    psx_notes: "COP0レジスタからCPUレジスタへ転送。"
+
+  - name: MTC0
+    mnemonic: "mtc0"
+    opcode: 0x10
+    rs: 0x04
+    format: COP
+    category: coprocessor
+    operands:
+      - name: rt
+        type: register
+        bits: [20, 16]
+        role: source
+      - name: rd
+        type: register
+        bits: [15, 11]
+        role: destination
+    semantics: |
+      COP0[rd] = GPR[rt]
+    delay_slot: false
+    exceptions:
+      - CpU
+    psx_notes: "CPUレジスタからCOP0レジスタへ転送。"
+
+  - name: RFE
+    mnemonic: "rfe"
+    opcode: 0x10
+    rs: 0x10
+    funct: 0x10
+    format: COP
+    category: coprocessor
+    operands: []
+    semantics: |
+      # Return From Exception (R3000A model)
+      # SR uses a 3-level stack: bits[5:0] = {IEo, KUo, IEp, KUp, IEc, KUc}
+      # RFE pops the stack (shifts right by 2 bits):
+      #   SR[1:0] = SR[3:2]  (KUc ← KUp, IEc ← IEp)
+      #   SR[3:2] = SR[5:4]  (KUp ← KUo, IEp ← IEo)
+      # RFE does NOT restore PC. Software returns via JR.
+      SR[3:0] = SR[5:2]
+      SR[5:4] = 0  # Clear oldest level
+    delay_slot: false
+    exceptions: []
+    psx_notes: "SRステータススタックをポップ。PC復元は行わない（ソフトウェアがJRで復帰）。"
