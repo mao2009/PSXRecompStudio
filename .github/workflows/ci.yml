@@ -10,27 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  dotnet:
-    name: .NET Build and Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.x'
-
-      - name: Restore
-        run: dotnet restore src/PSXRecompStudio.slnx
-
-      - name: Build
-        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
-
-      - name: Test
-        run: dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
-
   native:
     name: Native Core Build and Test
     runs-on: ubuntu-latest
@@ -49,6 +28,47 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/native --output-on-failure
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: psxrecomp-native-linux-x64
+          path: build/native/libPSXRecomp.Native.so
+          if-no-files-found: error
+
+  dotnet:
+    name: .NET Build and Test
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.slnx
+
+      - name: Build
+        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: psxrecomp-native-linux-x64
+          path: native
+
+      - name: Install native library for .NET tests
+        run: |
+          test -f native/libPSXRecomp.Native.so
+          cp native/libPSXRecomp.Native.so src/PSXRecomp.Tests/bin/Release/net10.0/
+          ls -l src/PSXRecomp.Tests/bin/Release/net10.0/libPSXRecomp.Native.so
+
+      - name: Test
+        run: dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
 
   ci:
     name: CI Gate
