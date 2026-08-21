@@ -31,7 +31,7 @@ internal sealed class ForbiddenApiRule
 
         if (isConstructor)
         {
-            return WholeType;
+            return WholeType || MemberName is null;
         }
 
         return WholeType

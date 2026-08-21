@@ -234,6 +234,34 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
     }
 
     [Fact]
+    public async Task NewProcessInDomain_ReportsPsxr005()
+    {
+        const string source = """
+            using System;
+            using System.Diagnostics;
+            using PSXRecomp.Architecture;
+
+            namespace Scenario;
+
+            [Domain]
+            public sealed class Runner
+            {
+                internal readonly Process Child = new Process();
+            }
+            """;
+
+        var expected = ExpectedDiagnostic(
+            "PSXR005",
+            10,
+            39,
+            "new Process()",
+            "Domain",
+            "process control is an Infrastructure responsibility");
+
+        await VerifyAsync(source, expected);
+    }
+
+    [Fact]
     public async Task DeterministicApisInDomain_AreAllowed()
     {
         const string source = """
