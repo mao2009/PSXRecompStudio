@@ -31,4 +31,15 @@
   <ItemGroup>
     <ProjectReference Include="../PSXRecomp.Core/PSXRecomp.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PSXRecomp.Analyzer\PSXRecomp.Analyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\PSXRecomp.Analyzer\Architecture\PSXRecompArchitectureAttributes.cs"
+             Link="Architecture\PSXRecompArchitectureAttributes.cs" />
+  </ItemGroup>
 </Project>

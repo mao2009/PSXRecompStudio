@@ -1,5 +1,8 @@
-﻿namespace PSXRecompStudio.ViewModels;
+﻿using PSXRecomp.Architecture;
 
+namespace PSXRecompStudio.ViewModels;
+
+[Application]
 public partial class MainWindowViewModel : ViewModelBase
 {
     public string AppName { get; } = "PSXRecompStudio";

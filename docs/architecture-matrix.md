@@ -122,7 +122,26 @@ PSXRecomp.Native (Infrastructure/C++)
 | `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic) + Interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | (C++ - no managed namespace) | Infrastructure (CPU emulation) |
 | `PSXRecomp.Tests` | `PSXRecomp.Tests` | Special (test infrastructure) |
-| `PSXRecomp.Analyzer` | (TBD) | Special (architecture enforcement) |
+| `PSXRecomp.Analyzer` | `PSXRecomp.Analyzer` | Special (architecture enforcement) |
+
+## Mechanical Enforcement (Roslyn Analyzer)
+
+The rules in this matrix are enforced at compile time by `PSXRecomp.Analyzer` (see ADR-006). All diagnostics are reported as **errors** and fail the build.
+
+| ID | Rule | Scope |
+|----|------|-------|
+| `PSXR001` | Missing architecture attribute on class | All classes (marker namespace and generated code exempt) |
+| `PSXR002` | Multiple architecture attributes on one type | All classes |
+| `PSXR003` | Attribute layer does not match namespace mapping | All classes |
+| `PSXR004` | Forbidden dependency edge (inner → outer, Production → Test) | All classes |
+| `PSXR005` | Forbidden API usage per layer (Forbidden API Matrix) | All classes |
+| `PSXR006` | P/Invoke (`DllImport` / `LibraryImport`) outside `PSXRecomp.Core` | All classes |
+
+Enforcement notes:
+
+- Production → Analyzer / Generated dependencies are **not** enforced yet; the SSOT does not declare these edges explicitly (tracked for clarification).
+- Enforcement scope is **classes** (including records); structs, interfaces, enums, and delegates are recognized but not required to be annotated in this iteration.
+- CI fails on any violation because all diagnostics have error severity.
 
 ## Consistency Checks
 
@@ -135,14 +154,14 @@ PSXRecomp.Native (Infrastructure/C++)
    - Domain → Application: ❌ NO (Domain should not depend on Application (UI layer is outer layer))
    - Application → Domain: ✅ YES (Application → Domain via NativeInterop in PSXRecomp.Core (P/Invoke))
    - Infrastructure → Domain: ✅ YES (Infrastructure → Domain (C ABI))
-   - Infrastructure → Application: **Forbidden** (no such ProjectReference exists; enforcement pending via Analyzer, Issue #8)
+   - Infrastructure → Application: **Forbidden** (no such ProjectReference exists; enforced by Roslyn Analyzer, PSXR004)
    - Tests → Production: Allowed (verification)
    - Production → Tests: **Forbidden** (tests depend on production)
 
-3. **Forbidden API** NOT YET VERIFIED
+3. **Forbidden API** ENFORCED
    - All listed APIs correctly classified as forbidden for respective layers
    - Layer-specific restrictions respected
-   - *Note: Mechanical enforcement requires Roslyn Analyzer (Issue #8)*
+   - *Mechanically enforced by Roslyn Analyzer (PSXR005)*
 
 4. **C ABI Boundary** NOT YET VERIFIED
    - Clear separation: `PSXRecomp.Core` ↔ `PSXRecomp.Native` via `NativeInterop.cs`
@@ -150,36 +169,34 @@ PSXRecomp.Native (Infrastructure/C++)
    - P/Invoke contracts properly documented
    - *Note: Runtime verification requires native build and integration tests*
 
-5. **Special Tools** NOT YET VERIFIED
+5. **Special Tools** ENFORCED
    - Analyzer treated as Special layer
    - Tests and Generated code as Special layers
    - Excluded from main dependency chains
-   - *Note: Analyzer rule implementation pending (Issue #8)*
+   - *Analyzer rules implemented (Issue #8); Production → Analyzer / Generated edges pending clarification*
 
 ## Issues Identified
 
-1. **Missing Analyzer Project** - `PSXRecomp.Analyzer` project does not exist yet (will be created in Issue #8)
-2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (Issue #8)
-3. **Incomplete Special Layer Declaration** - Special layer is defined in this matrix; `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects are absent; enforcement tooling does not exist yet
+1. **Missing Analyzer Project** - RESOLVED: `PSXRecomp.Analyzer` project exists and enforces this matrix (Issue #8)
+2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (generated code is exempted by path convention until then)
+3. **Incomplete Special Layer Declaration** - RESOLVED for `PSXRecomp.Analyzer`; `PSXRecomp.Generated` project remains absent
 4. **C ABI Contract** - Runtime integration verification remains pending (native build passes locally; CI-level integration tests pending)
 
 ## Recommendations
 
-- Add `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects (Issue #8)
+- Define the `PSXRecomp.Generated` project and decide on Production → Generated dependency policy
 - Verify the native build and integration tests for the documented `NativeInterop` boundary
 - Document the C ABI boundary clearly in the codebase
-- Add Forbidden API checks to Roslyn Analyzer (separate rule set, Issue #8)
-- Update `architecture-matrix.md` with finalized tables above
 
 ---
 
 **SSOT Status**
 
 - Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined; entries cross-checked against actual project structure (manual)
-- Dependency Matrix: ✅ DOCUMENTED - Entries cross-checked against actual `.csproj` ProjectReferences; Domain → Application corrected to ❌ NO; contradictory edges resolved; Production explicitly defined; *mechanical enforcement pending (Issue #8)*
-- Forbidden API Matrix: ✅ ESTABLISHED - Layer-specific API restrictions documented; *Note: Mechanical enforcement requires Roslyn Analyzer (Issue #8)*
-- Architecture Attribute Contract: ✅ DOCUMENTED - Attribute types and scopes defined
+- Dependency Matrix: ✅ ENFORCED - Entries cross-checked against actual `.csproj` ProjectReferences; Domain → Application corrected to ❌ NO; contradictory edges resolved; Production explicitly defined; *mechanically enforced by Roslyn Analyzer (PSXR004)*
+- Forbidden API Matrix: ✅ ENFORCED - Layer-specific API restrictions documented; *mechanically enforced by Roslyn Analyzer (PSXR005)*
+- Architecture Attribute Contract: ✅ ENFORCED - Attribute types and scopes defined; *presence, uniqueness, and namespace mapping enforced (PSXR001-003)*
 - Namespace Matrix: ✅ DOCUMENTED - Project-to-namespace mappings assigned
-- C ABI Boundary: ✅ DEFINED - Clear separation via NativeInterop.cs and LibraryImport; *Note: Runtime verification requires native build and integration tests*
-- **Missing Items**: PSXRecomp.Analyzer project, PSXRecomp.Generated project not yet created (Issue #8)
-- Status: ⚠️ WORK_IN_PROGRESS - SSOT established but incomplete; see Issue #8 for Analyzer implementation
+- C ABI Boundary: ✅ DEFINED - Clear separation via NativeInterop.cs and LibraryImport; P/Invoke location enforced (PSXR006); *Note: Runtime verification requires native build and integration tests*
+- **Missing Items**: PSXRecomp.Generated project not yet created; Production → Analyzer / Generated dependency policy pending clarification
+- Status: ✅ ESTABLISHED AND MECHANICALLY ENFORCED - see "Mechanical Enforcement" section and ADR-006

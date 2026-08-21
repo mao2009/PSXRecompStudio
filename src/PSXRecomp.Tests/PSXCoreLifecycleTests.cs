@@ -2,6 +2,7 @@ using PSXRecomp.Core;
 
 namespace PSXRecomp.Tests;
 
+[Test]
 public class PSXCoreLifecycleTests : IDisposable
 {
     private readonly PSXCoreWrapper _core = new();

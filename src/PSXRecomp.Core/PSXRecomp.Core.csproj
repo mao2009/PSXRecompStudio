@@ -12,6 +12,17 @@
     <NativeLibName>libPSXRecomp.Native.so</NativeLibName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\PSXRecomp.Analyzer\PSXRecomp.Analyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\PSXRecomp.Analyzer\Architecture\PSXRecompArchitectureAttributes.cs"
+             Link="Architecture\PSXRecompArchitectureAttributes.cs" />
+  </ItemGroup>
+
   <Target Name="BuildNative" BeforeTargets="CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
     <Exec Command="cmake -B $(NativeBuildDir) -S $(NativeProjectDir) -G Ninja -DCMAKE_BUILD_TYPE=Release"

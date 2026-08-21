@@ -1,10 +1,12 @@
 using System;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
+using PSXRecomp.Architecture;
 using PSXRecompStudio.ViewModels;
 
 namespace PSXRecompStudio;
 
+[Application]
 public class ViewLocator : IDataTemplate
 {
 
