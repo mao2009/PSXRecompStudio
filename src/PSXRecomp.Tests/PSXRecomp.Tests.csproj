@@ -6,7 +6,8 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-  </PropertyGroup>
+      <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+</PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
@@ -28,8 +29,4 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="..\PSXRecomp.Analyzer\Architecture\PSXRecompArchitectureAttributes.cs"
-             Link="Architecture\PSXRecompArchitectureAttributes.cs" />
-  </ItemGroup>
 </Project>

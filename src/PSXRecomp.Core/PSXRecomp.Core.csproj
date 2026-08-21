@@ -4,7 +4,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-  </PropertyGroup>
+      <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+</PropertyGroup>
 
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
@@ -18,10 +19,6 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="..\PSXRecomp.Analyzer\Architecture\PSXRecompArchitectureAttributes.cs"
-             Link="Architecture\PSXRecompArchitectureAttributes.cs" />
-  </ItemGroup>
 
   <Target Name="BuildNative" BeforeTargets="CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">

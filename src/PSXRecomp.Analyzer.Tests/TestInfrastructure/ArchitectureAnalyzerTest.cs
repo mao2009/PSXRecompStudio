@@ -1,17 +1,17 @@
+using System.IO;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Testing;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Testing;
-using Microsoft.CodeAnalysis.Testing.Verifiers;
 
 namespace PSXRecomp.Analyzer.Tests.TestInfrastructure;
 
-public abstract class ArchitectureAnalyzerTest : CSharpAnalyzerTest<PSXRecompArchitectureAnalyzer, XUnitVerifier>
+public abstract class ArchitectureAnalyzerTest : CSharpAnalyzerTest<PSXRecompArchitectureAnalyzer, XUnit29Verifier>
 {
     protected ArchitectureAnalyzerTest()
     {
         ReferenceAssemblies = ReferenceAssemblies.Net.Net90;
-        TestState.Sources.Add((AttributesFileName, AttributesSourceText));
+        TestState.Sources.Add((AttributesFileName, File.ReadAllText(AttributesSourcePath)));
     }
 
     protected static DiagnosticResult ExpectedDiagnostic(string id, int line, int column, params object[] arguments)
@@ -23,41 +23,11 @@ public abstract class ArchitectureAnalyzerTest : CSharpAnalyzerTest<PSXRecompArc
     }
 
     protected const string AttributesFileName = "PSXRecompArchitectureAttributes.cs";
+
     protected const string ScenarioFilePath = "/0/Test1.cs";
-    protected const string AttributesSourceText = """
-        using System;
 
-        namespace PSXRecomp.Architecture
-        {
-            [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-            internal sealed class DomainAttribute : Attribute
-            {
-            }
-
-            [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-            internal sealed class ApplicationAttribute : Attribute
-            {
-            }
-
-            [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-            internal sealed class InfrastructureAttribute : Attribute
-            {
-            }
-
-            [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-            internal sealed class AnalyzerAttribute : Attribute
-            {
-            }
-
-            [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-            internal sealed class TestAttribute : Attribute
-            {
-            }
-
-            [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-            internal sealed class GeneratedAttribute : Attribute
-            {
-            }
-        }
-        """;
+    private static string AttributesSourcePath { get; } = Path.Combine(
+        AppContext.BaseDirectory,
+        "..", "..", "..", "..",
+        "PSXRecomp.Analyzer", "Architecture", "PSXRecompArchitectureAttributes.cs");
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -15,8 +16,6 @@ namespace PSXRecomp.Analyzer;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
 {
-    private const string InteropNamespace = "PSXRecomp.Core";
-
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         ArchitectureDiagnostics.MissingArchitectureAttribute,
         ArchitectureDiagnostics.MultipleArchitectureAttributes,
@@ -33,7 +32,7 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
         context.RegisterSymbolAction(AnalyzeNamedType, SymbolKind.NamedType);
         context.RegisterCompilationStartAction(startContext =>
         {
-            var reported = new HashSet<string>(StringComparer.Ordinal);
+            var reported = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
             startContext.RegisterSyntaxNodeAction(
                 nodeContext => AnalyzeDependencyDirection(nodeContext, reported),
                 SyntaxKind.IdentifierName,
@@ -67,6 +66,12 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
 
         if (applied.Count == 0)
         {
+            if (type.ContainingType is not null
+                && ArchitectureFacts.ResolveLayer(type.ContainingType) != ArchitectureLayer.Unknown)
+            {
+                return;
+            }
+
             context.ReportDiagnostic(Diagnostic.Create(
                 ArchitectureDiagnostics.MissingArchitectureAttribute,
                 location,
@@ -101,7 +106,7 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    private static void AnalyzeDependencyDirection(SyntaxNodeAnalysisContext context, HashSet<string> reported)
+    private static void AnalyzeDependencyDirection(SyntaxNodeAnalysisContext context, ConcurrentDictionary<string, byte> reported)
     {
         if (ArchitectureFacts.IsGeneratedPath(context.Node.SyntaxTree.FilePath))
         {
@@ -109,7 +114,7 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
         }
 
         var name = (SimpleNameSyntax)context.Node;
-        if (name.Ancestors().Any(static ancestor => ancestor is AttributeSyntax))
+        if (name.FirstAncestorOrSelf<AttributeSyntax>() is not null)
         {
             return;
         }
@@ -143,7 +148,7 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
         }
 
         var key = sourceType.ToDisplayString() + "->" + targetType.ToDisplayString();
-        if (!reported.Add(key))
+        if (!reported.TryAdd(key, 0))
         {
             return;
         }
@@ -286,7 +291,7 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
         }
 
         var namespaceName = ArchitectureFacts.GetNamespaceName(method.ContainingNamespace);
-        if (namespaceName == InteropNamespace || namespaceName.StartsWith(InteropNamespace + ".", StringComparison.Ordinal))
+        if (ArchitectureFacts.IsWithin(namespaceName, ArchitectureFacts.InteropNamespaceRoot))
         {
             return;
         }

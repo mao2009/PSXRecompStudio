@@ -38,7 +38,7 @@ mcp/                           # MCP Server (Node.js / TypeScript)
 - SSOT: [docs/architecture-matrix.md](docs/architecture-matrix.md)
 - 設計判断: [docs/adr/006-architecture-analyzer-enforcement.md](docs/adr/006-architecture-analyzer-enforcement.md)
 
-すべてのクラスにレイヤー属性が必要。違反はビルドエラーとなり CI も失敗する。
+すべてのクラスにレイヤー属性が必要（マーカー名前空間 `PSXRecomp.Architecture.*`、生成コード、属性済み型の入れ子クラスは除外）。違反はビルドエラーとなり CI も失敗する。
 
 ## C# / Native 責務分担
 

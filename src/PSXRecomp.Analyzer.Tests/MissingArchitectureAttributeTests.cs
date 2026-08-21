@@ -65,6 +65,59 @@ public class MissingArchitectureAttributeTests : ArchitectureAnalyzerTest
     }
 
     [Fact]
+    public async Task NestedClassInsideAttributedOuter_InheritsLayer()
+    {
+        const string source = """
+            using PSXRecomp.Architecture;
+
+            namespace Scenario;
+
+            [Domain]
+            public sealed class Outer
+            {
+                public sealed class Inner
+                {
+                }
+            }
+            """;
+
+        await VerifyAsync(source);
+    }
+
+    [Fact]
+    public async Task UntaggedFamilyInUnmappedNamespace_ReportsPsxr001OnEveryClass()
+    {
+        const string source = """
+            namespace Scenario;
+
+            public class OuterUntagged
+            {
+                public class InnerUntagged
+                {
+                }
+            }
+            """;
+
+        var expected = new[]
+        {
+            ExpectedDiagnostic(
+                "PSXR001",
+                3,
+                14,
+                "Scenario.OuterUntagged",
+                "Domain, Application, Infrastructure, Analyzer, Test, Generated"),
+            ExpectedDiagnostic(
+                "PSXR001",
+                5,
+                18,
+                "Scenario.OuterUntagged.InnerUntagged",
+                "Domain, Application, Infrastructure, Analyzer, Test, Generated"),
+        };
+
+        await VerifyAsync(source, expected);
+    }
+
+    [Fact]
     public async Task GeneratedFileWithoutAttribute_IsExempt()
     {
         const string generatedSource = """

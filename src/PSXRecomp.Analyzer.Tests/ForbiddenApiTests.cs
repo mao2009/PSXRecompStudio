@@ -87,6 +87,33 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
     }
 
     [Fact]
+    public async Task NewRandomInDomain_ReportsPsxr005()
+    {
+        const string source = """
+            using System;
+            using PSXRecomp.Architecture;
+
+            namespace Scenario;
+
+            [Domain]
+            public sealed class Picker
+            {
+                public Random Make() => new Random();
+            }
+            """;
+
+        var expected = ExpectedDiagnostic(
+            "PSXR005",
+            9,
+            29,
+            "new Random()",
+            "Domain",
+            "non-deterministic randomness is forbidden");
+
+        await VerifyAsync(source, expected);
+    }
+
+    [Fact]
     public async Task GuidNewGuidInDomain_ReportsPsxr005()
     {
         const string source = """

@@ -19,6 +19,8 @@ internal static class ArchitectureFacts
 {
     public const string MarkerNamespace = "PSXRecomp.Architecture";
 
+    public const string InteropNamespaceRoot = "PSXRecomp.Core";
+
     public const string AllAttributeNames = "Domain, Application, Infrastructure, Analyzer, Test, Generated";
 
     private static readonly Dictionary<string, ArchitectureLayer> AttributeFullNameToLayer = new(StringComparer.Ordinal)
@@ -67,7 +69,7 @@ internal static class ArchitectureFacts
 
     public static ArchitectureLayer FromNamespace(string namespaceName)
     {
-        if (IsWithin(namespaceName, "PSXRecomp.Core"))
+        if (IsWithin(namespaceName, InteropNamespaceRoot))
         {
             return ArchitectureLayer.Domain;
         }
@@ -75,6 +77,11 @@ internal static class ArchitectureFacts
         if (IsWithin(namespaceName, "PSXRecompStudio"))
         {
             return ArchitectureLayer.Application;
+        }
+
+        if (IsWithin(namespaceName, "PSXRecomp.Infrastructure"))
+        {
+            return ArchitectureLayer.Infrastructure;
         }
 
         if (IsWithin(namespaceName, "PSXRecomp.Tests"))
@@ -119,8 +126,8 @@ internal static class ArchitectureFacts
             return true;
         }
 
-        return normalized.Contains("/obj/", StringComparison.Ordinal)
-            || normalized.Contains("/bin/", StringComparison.Ordinal);
+        return normalized.IndexOf("/obj/", StringComparison.Ordinal) >= 0
+            || normalized.IndexOf("/bin/", StringComparison.Ordinal) >= 0;
     }
 
     public static bool IsForbiddenDependency(ArchitectureLayer source, ArchitectureLayer target, out string reason)
@@ -146,7 +153,7 @@ internal static class ArchitectureFacts
         }
     }
 
-    private static bool IsWithin(string namespaceName, string root)
+    public static bool IsWithin(string namespaceName, string root)
     {
         return namespaceName == root || namespaceName.StartsWith(root + ".", StringComparison.Ordinal);
     }

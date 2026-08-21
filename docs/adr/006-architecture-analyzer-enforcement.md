@@ -27,14 +27,21 @@ Roslyn Analyzer（`PSXRecomp.Analyzer`）を導入し、SSOTのルールをコ�
 
 ### 属性の配布方式
 
-6つの属性（`[Domain]` `[Application]` `[Infrastructure]` `[Analyzer]` `[Test]` `[Generated]`）は `PSXRecomp.Architecture` 名前空間の internal 属性として、リンクされたソースファイル（`<Compile Include="..." Link="..." />`）で各プロジェクトに取り込む。新しいアセンブリやプロジェクト参照グラフを作らない。属性は完全修飾名で照合する。
+6つの属性（`[Domain]` `[Application]` `[Infrastructure]` `[Analyzer]` `[Test]` `[Generated]`）は `PSXRecomp.Architecture` 名前空間の internal 属性として、リポジトリ直下の `Directory.Build.props` が配布するリンクされたソースファイル（`<Compile Include="..." Link="..." />`）で各プロジェクトに取り込む。消費プロジェクトは `<CompileArchitectureAttributes>true</CompileArchitectureAttributes>` でオプトインする。新しいアセンブリやプロジェクト参照グラフを作らない。属性は完全修飾名で照合する。
 
 ### 適用スコープと除外
 
 - 強制対象は **クラス**（record を含む）。struct / interface / enum / delegate は本イテレーションでは認識のみで必須としない（Issue #8 の文言に基づく）
 - partial 型はどれか1部分に属性があれば満たす
+- 入れ子クラスは外側の属性付き型のレイヤーを継承する（`ResolveLayer` の ContainingType チェーンと PSXR001 を一致させた）
 - `PSXRecomp.Architecture.*` 名前空間は PSXR001 対象外（マーカー名前空間）
 - 生成コードはパス規約（`.g.cs` / `.designer.cs` / `obj/` 等）と `IsImplicitlyDeclared` で除外
+- 名前空間→レイヤー解決はルート接頭辞一致（`PSXRecomp.Analyzer.Tests` → Analyzer 等）。`PSXRecomp.Infrastructure` → Infrastructure も将来のプロジェクト用に予約済み
+
+### Forbidden API の補足
+
+- Domain は SSOT の行（`Random.Shared`）に加え **`System.Random` 全体**（`new Random()` 含む）を禁止する。行の理由欄（非決定的ランダム性の禁止）を型全体に適用したもの
+- Test / Analyzer / Generated レイヤーで正当な用途（テストの一時ファイル等）がある場合は `#pragma warning disable PSXR005` または `.editorconfig` / `NoWarn` で抑制でき、レビューで根拠を示す
 
 ### 未強制の依存エッジ
 

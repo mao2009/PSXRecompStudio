@@ -7,10 +7,16 @@ namespace PSXRecomp.Analyzer.Architecture;
 internal sealed class ForbiddenApiRule
 {
     public ForbiddenApiRule(string typeFullName, string? memberName, bool wholeType, string reason)
+        : this(typeFullName, memberName, wholeType, false, reason)
+    {
+    }
+
+    internal ForbiddenApiRule(string typeFullName, string? memberName, bool wholeType, bool constructorsOnly, string reason)
     {
         TypeFullName = typeFullName;
         MemberName = memberName;
         WholeType = wholeType;
+        ConstructorsOnly = constructorsOnly;
         Reason = reason;
     }
 
@@ -19,6 +25,8 @@ internal sealed class ForbiddenApiRule
     public string? MemberName { get; }
 
     public bool WholeType { get; }
+
+    public bool ConstructorsOnly { get; }
 
     public string Reason { get; }
 
@@ -31,7 +39,12 @@ internal sealed class ForbiddenApiRule
 
         if (isConstructor)
         {
-            return WholeType;
+            return WholeType || ConstructorsOnly;
+        }
+
+        if (ConstructorsOnly)
+        {
+            return false;
         }
 
         return WholeType
@@ -70,6 +83,7 @@ internal static class ForbiddenApiCatalog
             NamedMember("System.DateTime", "UtcNow", TimeReason),
             NamedMember("System.Guid", "NewGuid", RandomnessReason),
             NamedMember("System.Random", "Shared", RandomnessReason),
+            Constructor("System.Random", RandomnessReason),
             WholeType("System.Net.Http.HttpClient", NetworkReason),
             WholeType("System.Net.Sockets.Socket", NetworkReason));
 
@@ -78,13 +92,20 @@ internal static class ForbiddenApiCatalog
             AnyMember("System.IO.File", IoReason),
             AnyMember("System.IO.Directory", IoReason));
 
+        const string AdapterReason = "external I/O must be abstracted behind an adapter interface";
+
+        var infrastructure = ImmutableArray.Create(
+            AnyMember("System.Console", "standard output must be abstracted behind an adapter interface"),
+            AnyMember("System.IO.File", AdapterReason),
+            AnyMember("System.IO.Directory", AdapterReason));
+
         var special = ImmutableArray.Create(
             AnyMember("System.Console", ConsoleReason),
             AnyMember("System.IO.File", IoReason),
             AnyMember("System.IO.Directory", IoReason),
             AnyMember("System.Environment", EnvironmentReason),
             AnyMember("System.Diagnostics.Process", ProcessReason),
-            AnyMember("System.Threading.Thread", "thread management is forbidden in Special code"),
+            AnyMember("System.Threading.Thread", "manual thread management breaks deterministic execution"),
             NamedMember("System.DateTime", "Now", TimeReason),
             NamedMember("System.DateTime", "UtcNow", TimeReason),
             NamedMember("System.Guid", "NewGuid", RandomnessReason),
@@ -95,7 +116,7 @@ internal static class ForbiddenApiCatalog
         {
             [ArchitectureLayer.Domain] = domain,
             [ArchitectureLayer.Application] = application,
-            [ArchitectureLayer.Infrastructure] = application,
+            [ArchitectureLayer.Infrastructure] = infrastructure,
             [ArchitectureLayer.Test] = special,
             [ArchitectureLayer.Analyzer] = special,
             [ArchitectureLayer.Generated] = special,
@@ -115,5 +136,10 @@ internal static class ForbiddenApiCatalog
     private static ForbiddenApiRule WholeType(string typeFullName, string reason)
     {
         return new ForbiddenApiRule(typeFullName, null, true, reason);
+    }
+
+    private static ForbiddenApiRule Constructor(string typeFullName, string reason)
+    {
+        return new ForbiddenApiRule(typeFullName, null, false, true, reason);
     }
 }

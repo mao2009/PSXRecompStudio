@@ -47,6 +47,23 @@ public class NamespaceLayerMismatchTests : ArchitectureAnalyzerTest
         await VerifyAsync(source);
     }
 
+    [Fact]
+    public async Task InfrastructureAttributeInInfrastructureNamespace_ProducesNoDiagnostic()
+    {
+        const string source = """
+            using PSXRecomp.Architecture;
+
+            namespace PSXRecomp.Infrastructure;
+
+            [Infrastructure]
+            internal sealed class NativeAdapter
+            {
+            }
+            """;
+
+        await VerifyAsync(source);
+    }
+
     private static Task VerifyAsync(string source, params DiagnosticResult[] expected)
     {
         var test = new Test { TestState = { Sources = { source } } };

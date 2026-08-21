@@ -6,7 +6,8 @@
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-  </PropertyGroup>
+      <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+</PropertyGroup>
 
   <ItemGroup>
     <Folder Include="Models\" />
@@ -38,8 +39,4 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="..\PSXRecomp.Analyzer\Architecture\PSXRecompArchitectureAttributes.cs"
-             Link="Architecture\PSXRecompArchitectureAttributes.cs" />
-  </ItemGroup>
 </Project>

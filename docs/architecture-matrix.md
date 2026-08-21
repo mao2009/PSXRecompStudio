@@ -115,12 +115,15 @@ PSXRecomp.Native (Infrastructure/C++)
 
 ## Namespace Matrix
 
+Namespace resolution matches by **root prefix**: a namespace equal to the root or any descendant (`Root` / `Root.*`) maps to that root's layer. For example, `PSXRecomp.Analyzer.Tests` resolves to the Analyzer layer and `PSXRecomp.Core.Interop` resolves to Domain.
+
 | Project | Namespace | Responsibility |
 |---------|-----------|----------------|
 | `PSXRecompStudio` | `PSXRecompStudio` | Application (UI, ViewModels) |
 | `PSXRecompStudio` | `PSXRecompStudio.ViewModels` | Application (UI models) |
 | `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic) + Interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | (C++ - no managed namespace) | Infrastructure (CPU emulation) |
+| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Infrastructure (reserved; managed adapters, project planned) |
 | `PSXRecomp.Tests` | `PSXRecomp.Tests` | Special (test infrastructure) |
 | `PSXRecomp.Analyzer` | `PSXRecomp.Analyzer` | Special (architecture enforcement) |
 
@@ -139,8 +142,11 @@ The rules in this matrix are enforced at compile time by `PSXRecomp.Analyzer` (s
 
 Enforcement notes:
 
+- **Exemptions from PSXR001**: types in the marker namespace `PSXRecomp.Architecture.*`; generated code (`.g.cs`, `.g.i.cs`, `.designer.cs`, `.generated.cs`, `TemporaryGeneratedFile*`, anything under `obj/` or `bin/`); nested classes inherit the layer of an enclosing attributed type; partial classes are satisfied by any attributed part.
 - Production → Analyzer / Generated dependencies are **not** enforced yet; the SSOT does not declare these edges explicitly (tracked for clarification).
 - Enforcement scope is **classes** (including records); structs, interfaces, enums, and delegates are recognized but not required to be annotated in this iteration.
+- Domain additionally forbids **all uses of `System.Random`** (including `new Random()`); the Forbidden API Matrix row lists `Random.Shared` as the canonical example — the analyzer enforces the row's non-determinism rationale on the whole type.
+- Escape hatch for legitimate Special-layer usage (e.g., temp files in tests): suppress per site with `#pragma warning disable PSXR005` or per project via `.editorconfig` (`dotnet_diagnostic.PSXR005.severity = none`) / `NoWarn`. Suppressions must be justified in review.
 - CI fails on any violation because all diagnostics have error severity.
 
 ## Consistency Checks
