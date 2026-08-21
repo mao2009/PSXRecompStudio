@@ -47,14 +47,14 @@
 PSXRecompStudio (Application)
     ↓ ProjectReference (allowed)
 PSXRecomp.Core (Domain/Interop)
-    ↓ NativeInterop (internal static class, [LibraryImport])
+    ↓ NativeInterop (internal static partial class, [LibraryImport])
 PSXRecomp.Native (Infrastructure/C++)
 ```
 
 - **PSXRecompStudio → PSXRecomp.Core** ProjectReference is **allowed** (regular dependency for UI layer)
 - **PSXRecompStudio → PSXRecomp.Native** direct access or dependency is **prohibited** (must go through Core interop)
-- **PSXRecomp.Core** exposes `PSXCore` wrapper via `NativeInterop.cs`
-- `NativeInterop.cs` uses `[LibraryImport("PSXRecomp.Native")]` to import C ABI functions
+- `NativeInterop.cs` declares the P/Invoke bindings: `internal static partial class NativeInterop` with `[LibraryImport("PSXRecomp.Native")]`
+- `PSXCoreWrapper.cs` exposes the public `PSXCoreWrapper` wrapper (`IDisposable`, native handle owner) over those bindings
 - **Boundary**: `PSXRecomp.Core` ↔ `PSXRecomp.Native` (P/Invoke contract)
 - **No direct dependency** from `PSXRecomp.Native` → `PSXRecomp.Core` (reverse prohibited)
 - **No direct dependency** from `PSXRecompStudio` → `PSXRecomp.Native` (UI layer must not bypass Core interop)
@@ -119,7 +119,7 @@ PSXRecomp.Native (Infrastructure/C++)
 |---------|-----------|----------------|
 | `PSXRecompStudio` | `PSXRecompStudio` | Application (UI, ViewModels) |
 | `PSXRecompStudio` | `PSXRecompStudio.ViewModels` | Application (UI models) |
-| `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic, P/Invoke wrappers) |
+| `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic) + Interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | (C++ - no managed namespace) | Infrastructure (CPU emulation) |
 | `PSXRecomp.Tests` | `PSXRecomp.Tests` | Special (test infrastructure) |
 | `PSXRecomp.Analyzer` | (TBD) | Special (architecture enforcement) |
@@ -135,7 +135,7 @@ PSXRecomp.Native (Infrastructure/C++)
    - Domain → Application: ❌ NO (Domain should not depend on Application (UI layer is outer layer))
    - Application → Domain: ✅ YES (Application → Domain via NativeInterop in PSXRecomp.Core (P/Invoke))
    - Infrastructure → Domain: ✅ YES (Infrastructure → Domain (C ABI))
-   - Infrastructure → Application: **Forbidden** (properly enforced)
+   - Infrastructure → Application: **Forbidden** (no such ProjectReference exists; enforcement pending via Analyzer, Issue #8)
    - Tests → Production: Allowed (verification)
    - Production → Tests: **Forbidden** (tests depend on production)
 
@@ -160,13 +160,13 @@ PSXRecomp.Native (Infrastructure/C++)
 
 1. **Missing Analyzer Project** - `PSXRecomp.Analyzer` project does not exist yet (will be created in Issue #8)
 2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (Issue #8)
-3. **Missing Special Layer** - Analyzer and Tests projects need to be formally declared
-4. **C ABI Contract** - Need to ensure `NativeInterop.cs` follows the documented pattern
+3. **Incomplete Special Layer Declaration** - Special layer is defined in this matrix; `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects are absent; enforcement tooling does not exist yet
+4. **C ABI Contract** - Runtime integration verification remains pending (native build passes locally; CI-level integration tests pending)
 
 ## Recommendations
 
 - Add `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects (Issue #8)
-- Ensure `NativeInterop.cs` uses proper `[LibraryImport]` attributes
+- Verify the native build and integration tests for the documented `NativeInterop` boundary
 - Document the C ABI boundary clearly in the codebase
 - Add Forbidden API checks to Roslyn Analyzer (separate rule set, Issue #8)
 - Update `architecture-matrix.md` with finalized tables above
@@ -175,8 +175,8 @@ PSXRecomp.Native (Infrastructure/C++)
 
 **SSOT Status**
 
-- Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined; entries verified against actual project structure
-- Dependency Matrix: ✅ VERIFIED - Entries confirmed against actual project structure; Domain → Application corrected to ❌ NO; contradictory edges resolved; Production explicitly defined
+- Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined; entries cross-checked against actual project structure (manual)
+- Dependency Matrix: ✅ DOCUMENTED - Entries cross-checked against actual `.csproj` ProjectReferences; Domain → Application corrected to ❌ NO; contradictory edges resolved; Production explicitly defined; *mechanical enforcement pending (Issue #8)*
 - Forbidden API Matrix: ✅ ESTABLISHED - Layer-specific API restrictions documented; *Note: Mechanical enforcement requires Roslyn Analyzer (Issue #8)*
 - Architecture Attribute Contract: ✅ DOCUMENTED - Attribute types and scopes defined
 - Namespace Matrix: ✅ DOCUMENTED - Project-to-namespace mappings assigned
