@@ -196,6 +196,10 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
             return;
         }
 
+        // A single expression chain (e.g. Random.Shared.Next()) can match the same
+        // whole-type rule at several operations; report each rule once per member.
+        var reportedRules = new HashSet<int>();
+
         foreach (var block in context.OperationBlocks)
         {
             foreach (var operation in EnumerateOperations(block))
@@ -228,9 +232,10 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
                 var matchName = GetMatchName(member, out var isConstructor);
                 var ownerFullName = owner.OriginalDefinition.ToDisplayString();
 
-                foreach (var rule in rules)
+                for (var ruleIndex = 0; ruleIndex < rules.Length; ruleIndex++)
                 {
-                    if (!rule.Matches(ownerFullName, matchName, isConstructor))
+                    if (!rules[ruleIndex].Matches(ownerFullName, matchName, isConstructor)
+                        || !reportedRules.Add(ruleIndex))
                     {
                         continue;
                     }
@@ -240,7 +245,7 @@ public sealed class PSXRecompArchitectureAnalyzer : DiagnosticAnalyzer
                         location,
                         FormatApi(owner, member),
                         sourceLayer.ToString(),
-                        rule.Reason));
+                        rules[ruleIndex].Reason));
                 }
             }
         }

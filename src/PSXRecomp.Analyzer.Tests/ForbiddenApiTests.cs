@@ -60,7 +60,7 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
     }
 
     [Fact]
-    public async Task RandomSharedInDomain_ReportsPsxr005()
+    public async Task RandomUsageChainInDomain_ReportsPsxr005()
     {
         const string source = """
             using System;
@@ -79,7 +79,7 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
             "PSXR005",
             9,
             26,
-            "Random.Shared",
+            "Random.Next",
             "Domain",
             "non-deterministic randomness is forbidden");
 
@@ -87,7 +87,7 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
     }
 
     [Fact]
-    public async Task NewRandomInDomain_ReportsPsxr005()
+    public async Task ExistingRandomInstanceInDomain_ReportsPsxr005()
     {
         const string source = """
             using System;
@@ -96,19 +96,31 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
             namespace Scenario;
 
             [Domain]
-            public sealed class Picker
+            public sealed class Roller
             {
-                public Random Make() => new Random();
+                private readonly Random _random = new Random(42);
+
+                public int Roll() => _random.Next();
             }
             """;
 
-        var expected = ExpectedDiagnostic(
-            "PSXR005",
-            9,
-            29,
-            "new Random()",
-            "Domain",
-            "non-deterministic randomness is forbidden");
+        var expected = new[]
+        {
+            ExpectedDiagnostic(
+                "PSXR005",
+                9,
+                39,
+                "new Random()",
+                "Domain",
+                "non-deterministic randomness is forbidden"),
+            ExpectedDiagnostic(
+                "PSXR005",
+                11,
+                26,
+                "Random.Next",
+                "Domain",
+                "non-deterministic randomness is forbidden"),
+        };
 
         await VerifyAsync(source, expected);
     }
