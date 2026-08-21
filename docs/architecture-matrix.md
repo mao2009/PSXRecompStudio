@@ -4,9 +4,10 @@
 
 | Layer | Responsibility | Projects |
 |-------|----------------|----------|
-| **Domain** | Pure business logic, PSX concept model, deterministic computation | `PSXRecomp.Core` |
+| **Domain** | Pure business logic, PSX concept model, deterministic computation | `PSXRecomp.Core` (Domain + C ABI interop wrappers) |
 | **Application** | Avalonia UI, user interface, presentation | `PSXRecompStudio` |
 | **Infrastructure** | CPU emulation, memory management, hardware abstraction (C ABI) | `PSXRecomp.Native` |
+| **Interop** | C ABI boundary, native library loading, P/Invoke wrappers | `PSXRecomp.Core` (native-handle & NativeInterop residency) |
 | **Special** | Analyzer, Tests, Generated code | `PSXRecomp.Analyzer`, `PSXRecomp.Tests`, `PSXRecomp.Generated` |
 
 ## Dependency Matrix
@@ -15,8 +16,8 @@
 |------|-----|---------|---------|
 | **Domain** | Domain | ✅ YES | Same layer, internal dependencies |
 | **Domain** | Application | ❌ NO | Domain should not depend on Application (UI layer is outer layer) |
-| **Domain** | Infrastructure | ✅ YES | Via C ABI (P/Invoke) |
-| **Application** | Domain | ✅ YES | Application → Domain (UI layer) |
+| **Domain** | Infrastructure | ✅ YES | Via C ABI (P/Invoke); Domain defines wrapper contract |
+| **Application** | Domain | ✅ YES | Application → Domain via NativeInterop in PSXRecomp.Core (P/Invoke wrappers) |
 | **Application** | Infrastructure | ❌ NO | Application should not depend on Infrastructure directly (cross-layer dependency) |
 | **Infrastructure** | Domain | ✅ YES | Infrastructure → Domain (C ABI boundary) |
 | **Infrastructure** | Application | ❌ NO | Infrastructure should not depend on Application directly |
@@ -24,6 +25,10 @@
 | **Special** | Domain | ✅ YES | Special → Domain (analysis, testing) |
 | **Special** | Application | ✅ YES | Special → Application (testing, validation) |
 | **Special** | Infrastructure | ✅ YES | Special → Infrastructure (generation, debugging) |
+| **Production** | Domain | ✅ YES | Production → Domain (specification) |
+| **Production** | Application | ✅ YES | Production → Application (integration) |
+| **Production** | Infrastructure | ✅ YES | Production → Infrastructure (deployment) |
+| **Production** | Tests | ❌ NO | Production → Tests (tests depend on production, not vice versa) |
 | **Tests** | Production | ✅ YES | Test → Production (verification) |
 | **Tests** | Domain | ✅ YES | Test → Domain (validation) |
 | **Tests** | Infrastructure | ✅ YES | Test → Infrastructure (fixtures) |
@@ -35,26 +40,24 @@
 | **Generated code** | Production | ✅ YES | Generated → Production (deployment) |
 | **Generated code** | Domain | ✅ YES | Generated → Domain (usage) |
 | **Generated code** | Application | ✅ YES | Generated → Application (usage) |
-| **Production** | Tests | ❌ NO | Production → Tests (tests depend on production, not vice versa) |
-| **Production** | Domain | ✅ YES | Production → Domain (specification) |
-| **Production** | Application | ✅ YES | Production → Application (integration) |
-| **Production** | Infrastructure | ✅ YES | Production → Infrastructure (deployment) |
 
 ## C ABI / P/Invoke Boundary
 
-```
+```text
 PSXRecompStudio (Application)
-    ↓ ProjectReference
-PSXRecomp.Core (Domain)
-    ↓ NativeInterop (internal static class, [LibraryImport])
+    ↓ ProjectReference (allowed)
+PSXRecomp.Core (Domain/Interop)
+    ↓ NativeInterop (internal static partial class, [LibraryImport])
 PSXRecomp.Native (Infrastructure/C++)
 ```
 
-- **PSXRecomp.Core** exposes `PSXCore` wrapper via `NativeInterop.cs`
-- `NativeInterop.cs` uses `[LibraryImport("PSXRecomp.Native")]` to import C ABI functions
+- **PSXRecompStudio → PSXRecomp.Core** ProjectReference is **allowed** (regular dependency for UI layer)
+- **PSXRecompStudio → PSXRecomp.Native** direct access or dependency is **prohibited** (must go through Core interop)
+- `NativeInterop.cs` declares the P/Invoke bindings: `internal static partial class NativeInterop` with `[LibraryImport("PSXRecomp.Native")]`
+- `PSXCoreWrapper.cs` exposes the public `PSXCoreWrapper` wrapper (`IDisposable`, native handle owner) over those bindings
 - **Boundary**: `PSXRecomp.Core` ↔ `PSXRecomp.Native` (P/Invoke contract)
 - **No direct dependency** from `PSXRecomp.Native` → `PSXRecomp.Core` (reverse prohibited)
-- **No direct dependency** from `PSXRecompStudio` → `PSXRecomp.Core` (UI layer should not depend on domain internals)
+- **No direct dependency** from `PSXRecompStudio` → `PSXRecomp.Native` (UI layer must not bypass Core interop)
 
 ## Forbidden API Matrix
 
@@ -63,25 +66,25 @@ PSXRecomp.Native (Infrastructure/C++)
 | **Domain** | `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.*` | ❌ NO | ✅ YES | Loss of determinism |
 | **Domain** | `Guid.NewGuid()`, `Random.Shared` | ❌ NO | ✅ YES | Non-deterministic randomness |
 | **Domain** | `Environment.*` | ❌ NO | ✅ YES | Execution environment dependency |
-| **Domain** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (UI layer responsibility) |
-| **Domain** | `Console.*` | ❌ NO | ✅ YES | Standard output (UI layer responsibility) |
-| **Domain** | `Process.*` | ❌ NO | ✅ YES | Process control (UI layer responsibility) |
-| **Domain** | `HttpClient`, `Socket` | ❌ NO | ✅ YES | Network (UI layer responsibility) |
-| **Application** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (UI layer responsibility) |
-| **Application** | `Console.*` | ❌ NO | ✅ YES | Standard output (UI layer responsibility) |
-| **Infrastructure** | All external I/O | ❌ NO | ✅ YES | Emulator purity requirement |
-| **Infrastructure** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (should be abstracted) |
-| **Infrastructure** | `Console.*` | ❌ NO | ✅ YES | Standard output (should be abstracted) |
-| **Special** | `DateTime.Now`, `DateTime.UtcNow` | ❌ NO | ✅ YES | Determinism requirement |
-| **Special** | `Guid.NewGuid()` | ❌ NO | ✅ YES | Non-deterministic randomness |
-| **Special** | `Environment.*` | ❌ NO | ✅ YES | Execution environment dependency |
-| **Special** | `Console.*` | ❌ NO | ✅ YES | Standard output (UI layer responsibility) |
-| **Special** | `File.*` | ❌ NO | ✅ YES | External I/O (UI layer responsibility) |
-| **Special** | `Directory.*` | ❌ NO | ✅ YES | External I/O (UI layer responsibility) |
-| **Special** | `Process.*` | ❌ NO | ✅ YES | Process control (UI layer responsibility) |
-| **Special** | `Thread.*` | ❌ NO | ✅ YES | Thread safety concerns |
-| **Special** | `Task.Delay` | ❌ NO | ✅ YES | Asynchronous timing (UI layer responsibility) |
-| **Special** | `Random` | ❌ NO | ✅ YES | Non-deterministic randomness |
+| **Domain** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (Infrastructure/Adapter responsibility) |
+| **Domain** | `Console.*` | ❌ NO | ✅ YES | Standard output (Infrastructure/Adapter responsibility) |
+| **Domain** | `Process.*` | ❌ NO | ✅ YES | Process control (Infrastructure/Adapter responsibility) |
+| **Domain** | `HttpClient`, `Socket` | ❌ NO | ✅ YES | Network (Infrastructure/Adapter responsibility) |
+| **Application** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (UI layer orchestrates via Infrastructure adapters) |
+| **Application** | `Console.*` | ❌ NO | ✅ YES | Standard output (UI layer orchestrates via Infrastructure adapters) |
+| **Infrastructure** | All external I/O | ❌ NO | ✅ YES | Emulator purity requirement; must abstract for testability |
+| **Infrastructure** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (should be abstracted behind adapter interface) |
+| **Infrastructure** | `Console.*` | ❌ NO | ✅ YES | Standard output (should be abstracted behind adapter interface) |
+| **Special** | `DateTime.Now`, `DateTime.UtcNow` | ❌ NO | ✅ YES | Determinism requirement (Tests must use frozen clocks) |
+| **Special** | `Guid.NewGuid()` | ❌ NO | ✅ YES | Non-deterministic randomness (Tests should use deterministic IDs) |
+| **Special** | `Environment.*` | ❌ NO | ✅ YES | Execution environment dependency (Tests mock/isolate) |
+| **Special** | `Console.*` | ❌ NO | ✅ YES | Standard output (Tests capture / suppress output) |
+| **Special** | `File.*` | ❌ NO | ✅ YES | External I/O (Tests use temporary isolated paths) |
+| **Special** | `Directory.*` | ❌ NO | ✅ YES | External I/O (Tests use isolated temp directories) |
+| **Special** | `Process.*` | ❌ NO | ✅ YES | Process control (Tests spawn subprocess with resource limits) |
+| **Special** | `Thread.*` | ❌ NO | ✅ YES | Thread safety concerns (Tests run in isolated contexts) |
+| **Special** | `Task.Delay` | ❌ NO | ✅ YES | Asynchronous timing (Tests use controlled schedulers) |
+| **Special** | `Random` | ❌ NO | ✅ YES | Non-deterministic randomness (Tests use deterministic PRNGs) |
 
 ## Architecture Attribute Contract
 
@@ -94,13 +97,29 @@ PSXRecomp.Native (Infrastructure/C++)
 | `[Test]` | Special | ✅ | Test classes | Unit/integration tests |
 | `[Generated]` | Special | ✅ | Generated code | Auto-generated artifacts |
 
+### Applicability by Type
+
+- **class**: All attribute types applicable
+- **record**: `[Domain]`, `[Application]`, `[Infrastructure]` applicable
+- **struct**: `[Domain]`, `[Application]` applicable (no side effects)
+- **interface**: `[Domain]` applicable (contract, no implementation)
+- **enum**: `[Domain]` applicable (pure values)
+- **delegate**: `[Domain]` applicable (pure function pointers)
+- **partial type**: Attributes split across partial parts
+
+### Layer/Boundary Classification
+
+- **Tests**: Attributes used for test categorization; Analyzer may exclude test projects
+- **Analyzer**: `[Analyzer]` attribute used on enforcement classes; Analyzer itself may have exceptions
+- **Generated Code**: `[Generated]` attribute applied; Namespace validation and Forbidden API checks may be relaxed
+
 ## Namespace Matrix
 
 | Project | Namespace | Responsibility |
 |---------|-----------|----------------|
 | `PSXRecompStudio` | `PSXRecompStudio` | Application (UI, ViewModels) |
 | `PSXRecompStudio` | `PSXRecompStudio.ViewModels` | Application (UI models) |
-| `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic, P/Invoke wrappers) |
+| `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic) + Interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | (C++ - no managed namespace) | Infrastructure (CPU emulation) |
 | `PSXRecomp.Tests` | `PSXRecomp.Tests` | Special (test infrastructure) |
 | `PSXRecomp.Analyzer` | (TBD) | Special (architecture enforcement) |
@@ -112,44 +131,55 @@ PSXRecomp.Native (Infrastructure/C++)
    - `PSXRecomp.Core` → `PSXRecomp.Native` (P/Invoke contract confirmed)
    - `PSXRecomp.Tests` → `PSXRecomp.Core` (Test dependency confirmed)
 
-2. **Architecture Matrix** ✅
+2. **Architecture Matrix** DOCUMENTED
    - Domain → Application: ❌ NO (Domain should not depend on Application (UI layer is outer layer))
-   - Application → Domain: ✅ YES (Application → Domain (P/Invoke))
+   - Application → Domain: ✅ YES (Application → Domain via NativeInterop in PSXRecomp.Core (P/Invoke))
    - Infrastructure → Domain: ✅ YES (Infrastructure → Domain (C ABI))
-   - Infrastructure → Application: **Forbidden** (properly enforced)
+   - Infrastructure → Application: **Forbidden** (no such ProjectReference exists; enforcement pending via Analyzer, Issue #8)
    - Tests → Production: Allowed (verification)
    - Production → Tests: **Forbidden** (tests depend on production)
 
-3. **Forbidden API** ✅
+3. **Forbidden API** NOT YET VERIFIED
    - All listed APIs correctly classified as forbidden for respective layers
    - Layer-specific restrictions respected
+   - *Note: Mechanical enforcement requires Roslyn Analyzer (Issue #8)*
 
-4. **C ABI Boundary** ✅
+4. **C ABI Boundary** NOT YET VERIFIED
    - Clear separation: `PSXRecomp.Core` ↔ `PSXRecomp.Native` via `NativeInterop.cs`
    - No reverse dependency allowed
    - P/Invoke contracts properly documented
+   - *Note: Runtime verification requires native build and integration tests*
 
-5. **Special Tools** ✅
+5. **Special Tools** NOT YET VERIFIED
    - Analyzer treated as Special layer
    - Tests and Generated code as Special layers
    - Excluded from main dependency chains
-
-## SSOT Status
-
-- Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined
-- Dependency Matrix: ⚠️ VERIFIED - Entries confirmed against actual project structure; Row 17 corrected (Domain → Application: ❌ NO)
-- Forbidden API Matrix: ✅ ESTABLISHED - Layer-specific API restrictions documented
-- Architecture Attribute Contract: ✅ DOCUMENTED - Attribute types and scopes defined
-- Namespace Matrix: ✅ DOCUMENTED - Project-to-namespace mappings assigned
-- C ABI Boundary: ✅ DEFINED - Clear separation via NativeInterop.cs and LibraryImport
-- **Missing Items**: PSXRecomp.Analyzer project, PSXRecomp.Generated project not yet created (Issue #8)
-- Status: ⚠️ WORK_IN_PROGRESS - SSOT established but incomplete; see Issue #8 for Analyzer implementation
-
----
+   - *Note: Analyzer rule implementation pending (Issue #8)*
 
 ## Issues Identified
 
-1. **Missing Analyzer Project** - `PSXRecomp.Analyzer` project does not exist yet (will be created)
-2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined
-3. **Missing Special Layer** - Analyzer and Tests projects need to be formally declared
-4. **C ABI Contract** - Need to ensure `NativeInterop.cs` follows the documented pattern
+1. **Missing Analyzer Project** - `PSXRecomp.Analyzer` project does not exist yet (will be created in Issue #8)
+2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (Issue #8)
+3. **Incomplete Special Layer Declaration** - Special layer is defined in this matrix; `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects are absent; enforcement tooling does not exist yet
+4. **C ABI Contract** - Runtime integration verification remains pending (native build passes locally; CI-level integration tests pending)
+
+## Recommendations
+
+- Add `PSXRecomp.Analyzer` and `PSXRecomp.Generated` projects (Issue #8)
+- Verify the native build and integration tests for the documented `NativeInterop` boundary
+- Document the C ABI boundary clearly in the codebase
+- Add Forbidden API checks to Roslyn Analyzer (separate rule set, Issue #8)
+- Update `architecture-matrix.md` with finalized tables above
+
+---
+
+**SSOT Status**
+
+- Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined; entries cross-checked against actual project structure (manual)
+- Dependency Matrix: ✅ DOCUMENTED - Entries cross-checked against actual `.csproj` ProjectReferences; Domain → Application corrected to ❌ NO; contradictory edges resolved; Production explicitly defined; *mechanical enforcement pending (Issue #8)*
+- Forbidden API Matrix: ✅ ESTABLISHED - Layer-specific API restrictions documented; *Note: Mechanical enforcement requires Roslyn Analyzer (Issue #8)*
+- Architecture Attribute Contract: ✅ DOCUMENTED - Attribute types and scopes defined
+- Namespace Matrix: ✅ DOCUMENTED - Project-to-namespace mappings assigned
+- C ABI Boundary: ✅ DEFINED - Clear separation via NativeInterop.cs and LibraryImport; *Note: Runtime verification requires native build and integration tests*
+- **Missing Items**: PSXRecomp.Analyzer project, PSXRecomp.Generated project not yet created (Issue #8)
+- Status: ⚠️ WORK_IN_PROGRESS - SSOT established but incomplete; see Issue #8 for Analyzer implementation
