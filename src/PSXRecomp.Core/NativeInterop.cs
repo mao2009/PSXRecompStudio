@@ -1,7 +1,9 @@
 using System.Runtime.InteropServices;
+using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Core;
 
+[Domain]
 internal static partial class NativeInterop
 {
     private const string LibName = "PSXRecomp.Native";

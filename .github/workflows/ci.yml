@@ -80,7 +80,9 @@ jobs:
           ls -l src/PSXRecomp.Tests/bin/Release/net10.0/libPSXRecomp.Native.so
 
       - name: Test
-        run: dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
+        run: |
+          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
+          dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
 
   ci:
     name: CI Gate

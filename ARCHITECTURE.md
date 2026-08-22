@@ -21,6 +21,8 @@ src/
 ├── PSXRecompStudio/           # Avalonia UI アプリケーション
 ├── PSXRecomp.Core/            # C# Core: P/Invoke バインディング + ラッパー
 ├── PSXRecomp.Native/          # C++ Core: PSX エミュレーション核 (C ABI)
+├── PSXRecomp.Analyzer/        # Roslyn Analyzer: アーキテクチャ強制
+├── PSXRecomp.Analyzer.Tests/  # アナライザーのテスト
 ├── PSXRecomp.Runtime/         # 将来: PSX ランタイム管理
 ├── PSXRecomp.Recompiler/      # 将来: 再コンパイラ
 ├── PSXRecomp.Debugger/        # 将来: デバッガー
@@ -28,6 +30,15 @@ src/
 └── PSXRecomp.Tests/           # xUnit テスト
 mcp/                           # MCP Server (Node.js / TypeScript)
 ```
+
+## アーキテクチャ強制
+
+レイヤー属性（`[Domain]` `[Application]` `[Infrastructure]` 等）と依存方向は `PSXRecomp.Analyzer` によりコンパイル時に強制される（PSXR001-006、すべて Error）。
+
+- SSOT: [docs/architecture-matrix.md](docs/architecture-matrix.md)
+- 設計判断: [docs/adr/006-architecture-analyzer-enforcement.md](docs/adr/006-architecture-analyzer-enforcement.md)
+
+すべてのクラスにレイヤー属性が必要（マーカー名前空間 `PSXRecomp.Architecture.*`、生成コード、属性済み型の入れ子クラスは除外）。違反はビルドエラーとなり CI も失敗する。
 
 ## C# / Native 責務分担
 

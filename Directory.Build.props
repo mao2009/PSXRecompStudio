@@ -1,0 +1,14 @@
+<Project>
+
+  <!--
+    Architecture attribute contract (Issue #8):
+    Consumer projects opt in with <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+    so every assembly carries the same internal PSXRecomp.Architecture.* attribute types,
+    matched by fully qualified name by PSXRecomp.Analyzer.
+  -->
+  <ItemGroup Condition="'$(CompileArchitectureAttributes)' == 'true'">
+    <Compile Include="$(MSBuildThisFileDirectory)src/PSXRecomp.Analyzer/Architecture/PSXRecompArchitectureAttributes.cs"
+             Link="Architecture/PSXRecompArchitectureAttributes.cs" />
+  </ItemGroup>
+
+</Project>

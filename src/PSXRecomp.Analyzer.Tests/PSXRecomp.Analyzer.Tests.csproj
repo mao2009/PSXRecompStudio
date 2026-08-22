@@ -5,9 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-      <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
-</PropertyGroup>
+  </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
@@ -17,16 +15,13 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="FluentAssertions" Version="7.2.2" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.12.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzer.Testing" Version="1.1.2" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Analyzer.Testing" Version="1.1.2" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Testing.Verifiers.Xunit" Version="1.1.2" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../PSXRecomp.Core/PSXRecomp.Core.csproj" />
+    <ProjectReference Include="../PSXRecomp.Analyzer/PSXRecomp.Analyzer.csproj" />
   </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\PSXRecomp.Analyzer\PSXRecomp.Analyzer.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-  </ItemGroup>
-
 </Project>

@@ -1,5 +1,8 @@
+using PSXRecomp.Architecture;
+
 namespace PSXRecomp.Core;
 
+[Domain]
 public sealed class PSXCoreWrapper : IDisposable
 {
     private IntPtr _handle;

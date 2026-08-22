@@ -4,13 +4,21 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-  </PropertyGroup>
+      <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+</PropertyGroup>
 
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
     <NativeLibName>libPSXRecomp.Native.so</NativeLibName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PSXRecomp.Analyzer\PSXRecomp.Analyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
 
   <Target Name="BuildNative" BeforeTargets="CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
