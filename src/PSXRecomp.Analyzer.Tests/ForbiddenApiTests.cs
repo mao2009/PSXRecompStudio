@@ -262,6 +262,34 @@ public class ForbiddenApiTests : ArchitectureAnalyzerTest
     }
 
     [Fact]
+    public async Task NewThreadInTest_ReportsPsxr005()
+    {
+        const string source = """
+            using System;
+            using System.Threading;
+            using PSXRecomp.Architecture;
+
+            namespace Scenario;
+
+            [Test]
+            public sealed class Worker
+            {
+                internal readonly Thread WorkerThread = new Thread(() => { });
+            }
+            """;
+
+        var expected = ExpectedDiagnostic(
+            "PSXR005",
+            10,
+            45,
+            "new Thread()",
+            "Test",
+            "manual thread management breaks deterministic execution");
+
+        await VerifyAsync(source, expected);
+    }
+
+    [Fact]
     public async Task DeterministicApisInDomain_AreAllowed()
     {
         const string source = """
