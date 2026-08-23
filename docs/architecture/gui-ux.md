@@ -4,7 +4,7 @@
 
 **Authority:** SSOT
 
-**Related Issue:** #75
+**Related Issues:** #75
 
 ## Purpose
 
