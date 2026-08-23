@@ -2,7 +2,9 @@
 
 **Status:** Stable
 
-**Authority:** SSOT index
+**Authority:** SSOT
+
+**Document Type:** Architecture Index
 
 This section describes the intended architecture of PSXRecompStudio. Subsystem pages are authoritative for their respective responsibilities and constraints.
 
