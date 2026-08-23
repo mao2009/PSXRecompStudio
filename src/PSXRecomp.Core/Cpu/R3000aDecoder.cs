@@ -50,6 +50,7 @@ public static class R3000aDecoder
     private const uint SixBitFieldMask = 0x3F;
     private const uint HalfwordFieldMask = 0xFFFF;
     private const uint JumpIndexFieldMask = 0x03FFFFFF;
+    private const uint CoFunFieldMask = 0x01FFFFFF;
 
     private const byte CoprocessorZeroId = 0;
     private const byte CoprocessorTwoId = 2;
@@ -57,13 +58,14 @@ public static class R3000aDecoder
     private const byte MoveFromCoprocessorSelector = 0x00;
     private const byte RegimmBranchLessThanZeroSelector = 0x00;
     private const byte RegimmBranchGreaterOrEqualZeroSelector = 0x01;
-    private const byte CoprocessorCommandSelector = 0x02;
+    private const byte MoveControlFromCoprocessorSelector = 0x02;
     private const byte MoveToCoprocessorSelector = 0x04;
-    private const byte MoveControlFromCoprocessorSelector = 0x06;
-    private const byte MoveControlToCoprocessorSelector = 0x08;
+    private const byte MoveControlToCoprocessorSelector = 0x06;
     private const byte ReturnFromExceptionSelector = 0x10;
+    private const byte ReturnFromExceptionFunct = 0x10;
     private const byte RegimmBranchLessThanZeroAndLinkSelector = 0x10;
     private const byte RegimmBranchGreaterOrEqualZeroAndLinkSelector = 0x11;
+    private const byte CoprocessorOperationSelectorMask = 0x10;
 
     public static R3000aInstruction Decode(uint encodedWord)
     {
@@ -102,8 +104,8 @@ public static class R3000aDecoder
             StoreWordLeftOpcodeField => DecodeMemoryAccess(encodedWord, R3000aOpcode.Swl),
             StoreWordOpcodeField => DecodeMemoryAccess(encodedWord, R3000aOpcode.Sw),
             StoreWordRightOpcodeField => DecodeMemoryAccess(encodedWord, R3000aOpcode.Swr),
-            LoadWordCoprocessorTwoOpcodeField => DecodeMemoryAccess(encodedWord, R3000aOpcode.Lwc2),
-            StoreWordCoprocessorTwoOpcodeField => DecodeMemoryAccess(encodedWord, R3000aOpcode.Swc2),
+            LoadWordCoprocessorTwoOpcodeField => DecodeCoprocessorDataTransfer(encodedWord, R3000aOpcode.Lwc2),
+            StoreWordCoprocessorTwoOpcodeField => DecodeCoprocessorDataTransfer(encodedWord, R3000aOpcode.Swc2),
             _ => CreateReserved(encodedWord),
         };
     }
@@ -412,7 +414,7 @@ public static class R3000aDecoder
         var selector = ExtractRs(encodedWord);
         if (selector != MoveFromCoprocessorSelector
             && selector != MoveToCoprocessorSelector
-            && selector != ReturnFromExceptionSelector)
+            && !(selector == ReturnFromExceptionSelector && ExtractFunct(encodedWord) == ReturnFromExceptionFunct))
         {
             return CreateReserved(encodedWord);
         }
@@ -442,13 +444,19 @@ public static class R3000aDecoder
     private static R3000aInstruction DecodeCoprocessorTwo(uint encodedWord)
     {
         var selector = ExtractRs(encodedWord);
+        if ((selector & CoprocessorOperationSelectorMask) != 0)
+        {
+            return CreateCoprocessorInstruction(
+                encodedWord,
+                R3000aOpcode.Cop2Command,
+                R3000aCopInfo.CreateExecuteCommand(CoprocessorTwoId, ExtractCoFun(encodedWord)));
+        }
 
         var copInfo = selector switch
         {
             MoveFromCoprocessorSelector => R3000aCopInfo.CreateMoveFromCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
-            CoprocessorCommandSelector => R3000aCopInfo.CreateExecuteCommand(CoprocessorTwoId, ExtractImmediate(encodedWord)),
-            MoveToCoprocessorSelector => R3000aCopInfo.CreateMoveToCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
             MoveControlFromCoprocessorSelector => R3000aCopInfo.CreateMoveControlFromCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
+            MoveToCoprocessorSelector => R3000aCopInfo.CreateMoveToCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
             MoveControlToCoprocessorSelector => R3000aCopInfo.CreateMoveControlToCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
             _ => (R3000aCopInfo?)null,
         };
@@ -459,6 +467,18 @@ public static class R3000aDecoder
         }
 
         return CreateCoprocessorInstruction(encodedWord, R3000aOpcode.Cop2Command, copInfo.Value);
+    }
+
+    private static R3000aInstruction DecodeCoprocessorDataTransfer(uint encodedWord, R3000aOpcode opcode)
+    {
+        return new R3000aInstruction(
+            encodedWord,
+            opcode,
+            R3000aInstructionFormat.I,
+            R3000aOperand.CreateCopReg(CoprocessorTwoId, ExtractRt(encodedWord)),
+            R3000aOperand.CreateMemoryOffset(ExtractRs(encodedWord), ExtractImmediate(encodedWord)),
+            default,
+            operandCount: 2);
     }
 
     private static R3000aInstruction CreateCoprocessorInstruction(
@@ -504,4 +524,6 @@ public static class R3000aDecoder
     private static ushort ExtractImmediate(uint encodedWord) => (ushort)(encodedWord & HalfwordFieldMask);
 
     private static uint ExtractJumpIndex(uint encodedWord) => encodedWord & JumpIndexFieldMask;
+
+    private static uint ExtractCoFun(uint encodedWord) => encodedWord & CoFunFieldMask;
 }

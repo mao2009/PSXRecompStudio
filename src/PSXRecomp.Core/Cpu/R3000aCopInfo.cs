@@ -21,13 +21,14 @@ public readonly record struct R3000aCopInfo
 {
     public const byte MaxCoprocessorId = 3;
     public const byte MaxCopRegisterNumber = 31;
+    public const uint MaxCommandValue = 0x01FFFFFF;
 
     private readonly byte _coprocessorId;
     private readonly byte _operation;
     private readonly byte _copRegisterNumber;
-    private readonly ushort _command;
+    private readonly uint _command;
 
-    private R3000aCopInfo(byte coprocessorId, R3000aCopOperationKind operation, byte copRegisterNumber, ushort command)
+    private R3000aCopInfo(byte coprocessorId, R3000aCopOperationKind operation, byte copRegisterNumber, uint command)
     {
         _coprocessorId = coprocessorId;
         _operation = (byte)operation;
@@ -38,7 +39,7 @@ public readonly record struct R3000aCopInfo
     public byte CoprocessorId => _coprocessorId;
     public R3000aCopOperationKind Operation => (R3000aCopOperationKind)_operation;
     public byte CopRegisterNumber => _copRegisterNumber;
-    public ushort Command => _command;
+    public uint Command => _command;
 
     public static R3000aCopInfo None => default;
 
@@ -70,9 +71,14 @@ public readonly record struct R3000aCopInfo
         return new R3000aCopInfo(coprocessorId, R3000aCopOperationKind.MoveControlToCoprocessor, copRegisterNumber, 0);
     }
 
-    public static R3000aCopInfo CreateExecuteCommand(byte coprocessorId, ushort cofun)
+    public static R3000aCopInfo CreateExecuteCommand(byte coprocessorId, uint cofun)
     {
         EnsureCoprocessorIdInRange(coprocessorId);
+        if (cofun > MaxCommandValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(cofun), cofun, "The cofun field must be a 25-bit value.");
+        }
+
         return new R3000aCopInfo(coprocessorId, R3000aCopOperationKind.ExecuteCommand, 0, cofun);
     }
 

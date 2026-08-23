@@ -25,14 +25,14 @@ public class R3000aDomainModelLayoutTests
     }
 
     [Fact]
-    public void CopInfo_Size_Is6Bytes()
+    public void CopInfo_Size_Is8Bytes()
     {
-        Unsafe.SizeOf<R3000aCopInfo>().Should().Be(6);
+        Unsafe.SizeOf<R3000aCopInfo>().Should().Be(8);
     }
 
     [Fact]
-    public void Instruction_Size_Is44Bytes()
+    public void Instruction_Size_Is48Bytes()
     {
-        Unsafe.SizeOf<R3000aInstruction>().Should().Be(44);
+        Unsafe.SizeOf<R3000aInstruction>().Should().Be(48);
     }
 }

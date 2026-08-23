@@ -118,12 +118,22 @@ public class R3000aInstructionMetadataTests
     }
 
     [Fact]
-    public void CopInfo_ExecuteCommand_HoldsRawCofun()
+    public void CopInfo_ExecuteCommand_HoldsTwentyFiveBitCoFun()
     {
-        var info = R3000aCopInfo.CreateExecuteCommand(2, 0xABCD);
+        var info = R3000aCopInfo.CreateExecuteCommand(2, 0x0180001);
         info.CoprocessorId.Should().Be(2);
         info.Operation.Should().Be(R3000aCopOperationKind.ExecuteCommand);
-        info.Command.Should().Be(0xABCD);
+        info.Command.Should().Be(0x0180001);
+
+        var maxValue = R3000aCopInfo.CreateExecuteCommand(2, 0x01FFFFFF);
+        maxValue.Command.Should().Be(0x01FFFFFF);
+    }
+
+    [Fact]
+    public void CopInfo_CommandAbove25Bits_Throws()
+    {
+        var act = () => R3000aCopInfo.CreateExecuteCommand(2, 0x02000000);
+        act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]

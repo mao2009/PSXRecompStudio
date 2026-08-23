@@ -30,7 +30,11 @@ public class R3000aDecoderTotalFunctionTests
 
     private static readonly byte[] DefinedCoprocessorZeroSelectors = { 0x00, 0x04, 0x10 };
 
-    private static readonly byte[] DefinedCoprocessorTwoSelectors = { 0x00, 0x02, 0x04, 0x06, 0x08 };
+    private static readonly byte[] DefinedCoprocessorTwoSelectors = { 0x00, 0x02, 0x04, 0x06 };
+
+    private const byte CoprocessorOperationSelectorMask = 0x10;
+
+    private const uint CoFunFieldMask = 0x01FFFFFF;
 
     [Fact]
     public void Decode_AllSixtyFourOpcodeFields_ReturnWithoutThrowing()
@@ -198,7 +202,8 @@ public class R3000aDecoderTotalFunctionTests
     {
         for (var selector = 0; selector <= 31; selector++)
         {
-            if (DefinedCoprocessorTwoSelectors.Contains((byte)selector))
+            if (DefinedCoprocessorTwoSelectors.Contains((byte)selector)
+                || ((byte)selector & CoprocessorOperationSelectorMask) != 0)
             {
                 continue;
             }
@@ -206,6 +211,44 @@ public class R3000aDecoderTotalFunctionTests
             var word = (0x12u << 26) | ((uint)selector << 21) | (14u << 11);
             R3000aDecoder.Decode(word).Opcode.Should().Be(R3000aOpcode.Reserved,
                 "COP2 form with rs=0x{0:X2} is absent from the SSOT", selector);
+        }
+    }
+
+    [Fact]
+    public void Decode_CoprocessorTwoOperationSelectors_AlwaysDecodeAsCommands()
+    {
+        for (var selector = 0x10; selector <= 31; selector++)
+        {
+            foreach (var cofunPattern in new[] { 0u, 1u, 0x12345u, CoFunFieldMask })
+            {
+                var word = (0x12u << 26) | ((uint)selector << 21) | cofunPattern;
+                var instruction = R3000aDecoder.Decode(word);
+                instruction.Opcode.Should().Be(R3000aOpcode.Cop2Command,
+                    "rs=0x{0:X2} lies in the COP2 operation range", selector);
+                instruction.CopInfo.Operation.Should().Be(R3000aCopOperationKind.ExecuteCommand);
+                instruction.CopInfo.Command.Should().Be(word & CoFunFieldMask);
+            }
+        }
+    }
+
+    [Fact]
+    public void Decode_CoprocessorZeroOperationSpace_OnlyRfeFunctionDecodesAsRfe()
+    {
+        for (var funct = 0; funct <= 63; funct++)
+        {
+            var word = (0x10u << 26) | (0x10u << 21) | (uint)funct;
+            var instruction = R3000aDecoder.Decode(word);
+
+            if (funct == 0x10)
+            {
+                instruction.Opcode.Should().Be(R3000aOpcode.Rfe,
+                    "funct=0x10 with rs=0x10 is the RFE encoding");
+            }
+            else
+            {
+                instruction.Opcode.Should().Be(R3000aOpcode.Reserved,
+                    "COP0 operation funct 0x{0:X2} is absent from the SSOT", funct);
+            }
         }
     }
 

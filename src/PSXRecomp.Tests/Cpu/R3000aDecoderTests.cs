@@ -348,20 +348,21 @@ public class R3000aDecoderTests
     }
 
     [Fact]
-    public void Decode_Lwc2AndSwc2_UseStandardMemoryOffsetForm()
+    public void Decode_Lwc2AndSwc2_HoldCop2DataRegisterWithGprBaseMemoryOffset()
     {
         var lwc2 = R3000aDecoder.Decode(IType(0x32, 8, 2, 0x40));
         lwc2.Opcode.Should().Be(R3000aOpcode.Lwc2);
         lwc2.OperandCount.Should().Be(2);
-        lwc2.GetOperand(0).Should().Be(R3000aOperand.CreateRegister(2));
+        lwc2.GetOperand(0).Should().Be(R3000aOperand.CreateCopReg(2, 2));
+        lwc2.GetOperand(0).Kind.Should().Be(R3000aOperandKind.CopReg);
         lwc2.GetOperand(1).Should().Be(R3000aOperand.CreateMemoryOffset(8, 0x40));
         lwc2.LoadDelayInfo.ProducesLoadDelay.Should().BeFalse();
 
-        var swc2 = R3000aDecoder.Decode(IType(0x3A, 8, 2, 0x40));
+        var swc2 = R3000aDecoder.Decode(IType(0x3A, 29, 30, 0xFFF0));
         swc2.Opcode.Should().Be(R3000aOpcode.Swc2);
         swc2.OperandCount.Should().Be(2);
-        swc2.GetOperand(0).Should().Be(R3000aOperand.CreateRegister(2));
-        swc2.GetOperand(1).Should().Be(R3000aOperand.CreateMemoryOffset(8, 0x40));
+        swc2.GetOperand(0).Should().Be(R3000aOperand.CreateCopReg(2, 30));
+        swc2.GetOperand(1).Should().Be(R3000aOperand.CreateMemoryOffset(29, 0xFFF0));
     }
 
     [Fact]
@@ -489,6 +490,23 @@ public class R3000aDecoderTests
         instruction.Opcode.Should().Be(R3000aOpcode.Rfe);
         instruction.CopInfo.Operation.Should().Be(R3000aCopOperationKind.ReturnFromException);
         instruction.ControlFlow.Should().Be(R3000aControlFlowKind.Coprocessor);
+
+        var canonicalWord = R3000aDecoder.Decode(0x42000010u);
+        canonicalWord.Opcode.Should().Be(R3000aOpcode.Rfe);
+    }
+
+    [Theory]
+    [InlineData(0x00)]
+    [InlineData(0x01)]
+    [InlineData(0x02)]
+    [InlineData(0x08)]
+    [InlineData(0x0F)]
+    [InlineData(0x11)]
+    [InlineData(0x20)]
+    [InlineData(0x3F)]
+    public void Decode_CoprocessorZeroOperationWithNonRfeFunction_ReturnsReserved(uint funct)
+    {
+        AssertReserved(R3000aDecoder.Decode(RType(0x10, 0x10, 0, 0, 0, funct)));
     }
 
     [Theory]
@@ -515,32 +533,64 @@ public class R3000aDecoderTests
         cop3.CopInfo.Operation.Should().Be(R3000aCopOperationKind.None);
     }
 
-    [Fact]
-    public void Decode_CoprocessorTwoCommand_HoldsRawCofun()
+    [Theory]
+    [InlineData(0x4A180001u, 0x0180001u)]
+    [InlineData(0x4A280030u, 0x0280030u)]
+    [InlineData(0x4B400006u, 0x1400006u)]
+    public void Decode_CoprocessorTwoGteCommands_HoldTwentyFiveBitCoFun(uint word, uint cofun)
     {
-        var instruction = R3000aDecoder.Decode(RType(0x12, 0x02, 0, 0, 0, 0x0001));
+        var instruction = R3000aDecoder.Decode(word);
         instruction.Opcode.Should().Be(R3000aOpcode.Cop2Command);
         instruction.Format.Should().Be(R3000aInstructionFormat.Cop);
         instruction.ControlFlow.Should().Be(R3000aControlFlowKind.Coprocessor);
         instruction.CopInfo.CoprocessorId.Should().Be(2);
         instruction.CopInfo.Operation.Should().Be(R3000aCopOperationKind.ExecuteCommand);
-        instruction.CopInfo.Command.Should().Be(0x0001);
+        instruction.CopInfo.Command.Should().Be(cofun);
         instruction.OperandCount.Should().Be(0);
     }
 
-    [Theory]
-    [InlineData(0x00, R3000aCopOperationKind.MoveFromCoprocessor)]
-    [InlineData(0x04, R3000aCopOperationKind.MoveToCoprocessor)]
-    [InlineData(0x06, R3000aCopOperationKind.MoveControlFromCoprocessor)]
-    [InlineData(0x08, R3000aCopOperationKind.MoveControlToCoprocessor)]
-    public void Decode_CoprocessorTwoTransfers_ExpressOperationsViaCopInfo(
-        uint selector, R3000aCopOperationKind operation)
+    [Fact]
+    public void Decode_CoprocessorTwoCommand_HoldsRawCofun()
     {
-        var instruction = R3000aDecoder.Decode(RType(0x12, selector, 0, 14, 0, 0));
+        var instruction = R3000aDecoder.Decode((0x12u << 26) | (0x10u << 21) | 0x12345u);
         instruction.Opcode.Should().Be(R3000aOpcode.Cop2Command);
+        instruction.Format.Should().Be(R3000aInstructionFormat.Cop);
+        instruction.ControlFlow.Should().Be(R3000aControlFlowKind.Coprocessor);
+        instruction.CopInfo.CoprocessorId.Should().Be(2);
+        instruction.CopInfo.Operation.Should().Be(R3000aCopOperationKind.ExecuteCommand);
+        instruction.CopInfo.Command.Should().Be(0x12345u);
+        instruction.OperandCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Decode_CoprocessorTwoCommand_AcceptsEverySelectorInOperationRange()
+    {
+        for (var selector = 0x10; selector <= 0x1F; selector++)
+        {
+            var word = (0x12u << 26) | ((uint)selector << 21) | 1u;
+            var instruction = R3000aDecoder.Decode(word);
+            instruction.Opcode.Should().Be(R3000aOpcode.Cop2Command,
+                "rs=0x{0:X2} lies in the COP2 operation range", selector);
+            instruction.CopInfo.Operation.Should().Be(R3000aCopOperationKind.ExecuteCommand);
+            instruction.CopInfo.Command.Should().Be(word & 0x01FFFFFFu);
+        }
+    }
+
+    [Theory]
+    [InlineData(0x48087000u, R3000aCopOperationKind.MoveFromCoprocessor)]
+    [InlineData(0x48487000u, R3000aCopOperationKind.MoveControlFromCoprocessor)]
+    [InlineData(0x48887000u, R3000aCopOperationKind.MoveToCoprocessor)]
+    [InlineData(0x48C87000u, R3000aCopOperationKind.MoveControlToCoprocessor)]
+    public void Decode_CoprocessorTwoTransfers_ExpressOperationsViaCopInfo(uint word, R3000aCopOperationKind operation)
+    {
+        var instruction = R3000aDecoder.Decode(word);
+        instruction.Opcode.Should().Be(R3000aOpcode.Cop2Command);
+        instruction.Format.Should().Be(R3000aInstructionFormat.Cop);
+        instruction.ControlFlow.Should().Be(R3000aControlFlowKind.Coprocessor);
         instruction.CopInfo.CoprocessorId.Should().Be(2);
         instruction.CopInfo.Operation.Should().Be(operation);
         instruction.CopInfo.CopRegisterNumber.Should().Be(14);
+        instruction.OperandCount.Should().Be(0);
     }
 
     [Theory]
@@ -548,11 +598,14 @@ public class R3000aDecoderTests
     [InlineData(0x03)]
     [InlineData(0x05)]
     [InlineData(0x07)]
+    [InlineData(0x08)]
+    [InlineData(0x09)]
     [InlineData(0x0A)]
-    [InlineData(0x1F)]
+    [InlineData(0x0E)]
+    [InlineData(0x0F)]
     public void Decode_CoprocessorTwoUnknownForm_ReturnsReserved(uint selector)
     {
-        AssertReserved(R3000aDecoder.Decode(RType(0x12, selector, 0, 0, 0, 0)));
+        AssertReserved(R3000aDecoder.Decode(RType(0x12, selector, 0, 14, 0, 0)));
     }
 
     [Theory]
