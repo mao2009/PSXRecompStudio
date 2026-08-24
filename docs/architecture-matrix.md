@@ -149,6 +149,10 @@ Enforcement notes:
 - Escape hatch for legitimate Special-layer usage (e.g., temp files in tests): suppress per site with `#pragma warning disable PSXR005` or per project via `.editorconfig` (`dotnet_diagnostic.PSXR005.severity = none`) / `NoWarn`. Suppressions must be justified in review.
 - CI fails on any violation because all diagnostics have error severity.
 
+### Quality Gate Verification Record
+
+- **2026-08-24 (Issue #105, PR #107)**: The gate was verified end-to-end with a temporary fixture project (`verification/PSXRecomp.ArchitectureGateVerification`). A deliberate Domain → Application reference produced exactly one `error PSXR004` at the reference site, failed `dotnet build` (exit code 1), and failed the CI `.NET Build and Test` job plus the `CI Gate` job (run 32725699731). Removing only the violating files returned CI to fully green (run 32725880786). The clean fixture produced no diagnostics. Severity for PSXR001–006 is pinned in `.editorconfig`. To re-run: recreate a fixture project that references `PSXRecomp.Analyzer` via `OutputItemType="Analyzer"` and compiles the architecture attributes (`CompileArchitectureAttributes=true`), add one forbidden dependency, and build.
+
 ## Consistency Checks
 
 1. **Repository Structure** ✅
