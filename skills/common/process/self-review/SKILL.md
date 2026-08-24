@@ -7,8 +7,6 @@ description: >
 version: 0.1.0
 scope: process
 platform: agent-agnostic
-related-issues:
-  - PSXRecompStudio#85
 ---
 
 # Pre-PR Self Review
@@ -38,7 +36,10 @@ The gate itself is never skipped. Its *depth* scales with risk:
 
 Gather before reviewing:
 
-1. The full diff against the base branch (`git diff <base>...`), including new files.
+1. The full diff against the base branch, **including working-tree changes**.
+   `git diff <base>...` only covers committed work; run `git status --short`
+   and either commit pending changes first or explicitly include modified and
+   untracked files in the review.
 2. The driving Issue(s): requirements, acceptance criteria, explicit non-goals.
 3. Project Profile contents: authoritative documents (SSOT), ADR index,
    architecture constraints, verification commands, review-history sources.
@@ -73,6 +74,8 @@ classification (see [Classification](#finding-classification)).
 - [ ] No changes outside the Issue's intent are included.
 - [ ] Nothing unrelated rode along (build artifacts, temp files, editor noise,
       unintended renames/formatting).
+- [ ] Working-tree state accounted for: all reviewed changes are committed, or
+      modified/untracked files were explicitly included in the review.
 
 ### 2. Authoritative documents
 
@@ -89,6 +92,8 @@ classification (see [Classification](#finding-classification)).
 - [ ] Error handling and boundary conditions covered: empty input, zero, max
       values, overflow/wraparound, total-function behavior on non-applicable inputs.
 - [ ] No duplicated parallel logic where an existing equivalent exists.
+- [ ] No project-, environment-, or agent-specific values embedded in shared,
+      portable, or generic artifacts (issue refs, concrete paths, tool names).
 - [ ] Consistent with neighboring code and established patterns.
 
 ### 4. Tests and verification
@@ -181,7 +186,9 @@ Profile containing:
 5. Sources of historical review findings (bot history location, review log convention).
 6. Issue/PR conventions (PR body required sections, closing-keyword policy).
 
-In PSXRecompStudio the profile lives at `skills/project/psxrecomp-studio/profile.md`.
+The profile's location and naming are defined by the host repository's skill
+documentation (e.g. a `skills/` index); this skill does not assume any
+specific path, project name, or issue tracker reference.
 
 ## Completion criteria
 
