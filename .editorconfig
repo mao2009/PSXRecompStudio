@@ -23,6 +23,15 @@ dotnet_diagnostic.LVP0003.severity = warning
 # FluentIf (FIF) - control flow safety
 dotnet_diagnostic.FIF0001.severity = error
 
+# Microsoft .NET Analyzers (CA) - standard .NET quality gate (Issue #102)
+# General .NET API usage / reliability rules delegated to official analyzers,
+# complementing PureSharp (project-specific purity) and PSXR (architecture).
+# Severity pinned explicitly per the #105 gate-contract convention.
+dotnet_diagnostic.CA2201.severity = error
+dotnet_diagnostic.CA2200.severity = error
+dotnet_diagnostic.CA1069.severity = error
+dotnet_diagnostic.CA1816.severity = error
+
 # PSXRecomp Architecture Analyzer (PSXR) - architecture quality gate
 # Severity is pinned explicitly so the gate contract does not rely on
 # descriptor defaults and cannot be weakened silently. See docs/architecture-matrix.md.
