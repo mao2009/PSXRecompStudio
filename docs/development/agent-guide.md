@@ -18,6 +18,13 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 6. Inspect the relevant code.
 7. Check architectural constraints before proposing changes.
 
+## Before creating a pull request
+
+Perform the mandatory pre-PR self review defined in
+`skills/common/process/self-review/SKILL.md`, loading project-specific inputs
+from the matching `skills/project/<project>/profile.md`. Do not open a PR until
+that skill's completion criteria are met.
+
 ## Authority hierarchy
 
 Prefer information in this order when determining current intent:
