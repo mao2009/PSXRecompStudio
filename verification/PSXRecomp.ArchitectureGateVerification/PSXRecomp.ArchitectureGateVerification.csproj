@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!--
+      Issue #105 verification fixture: proves the Architecture Analyzer quality gate
+      (PSXR001-006) fails a real `dotnet build` / CI run on forbidden dependencies.
+      This project is NOT part of the product; it exists only on verification branches.
+    -->
+    <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/PSXRecomp.Analyzer/PSXRecomp.Analyzer.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>
