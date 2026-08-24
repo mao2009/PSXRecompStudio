@@ -1,0 +1,24 @@
+root = true
+
+[*.cs]
+
+# PureSharp 0.1.6 diagnostics configuration
+# Essential rules for purity and immutability are enforced as errors (quality gate)
+# Naming convention suggestions are warnings for gradual improvement
+
+# Referential Transparency (RT) - core purity rules
+dotnet_diagnostic.RT0001.severity = error
+dotnet_diagnostic.RT0002.severity = error
+dotnet_diagnostic.RT0003.severity = error
+
+# Local Variable Purity (LVP) - immutability enforcement
+dotnet_diagnostic.LVP0001.severity = error
+dotnet_diagnostic.LVP0002.severity = error
+
+# Naming convention suggestion - gradual improvement
+# LVP0003 recommends underscore prefix for effectively immutable variables
+# Set to warning to guide development without breaking builds
+dotnet_diagnostic.LVP0003.severity = warning
+
+# FluentIf (FIF) - control flow safety
+dotnet_diagnostic.FIF0001.severity = error

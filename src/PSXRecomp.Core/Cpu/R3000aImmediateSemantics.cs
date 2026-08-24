@@ -22,15 +22,15 @@ public static class R3000aImmediateSemantics
                 return false;
         }
 
-        var immediateOperand = instruction.GetOperand(instruction.OperandCount - 1);
-        if (immediateOperand.Kind != R3000aOperandKind.Immediate)
+        var _immediateOperand = instruction.GetOperand(instruction.OperandCount - 1);
+        if (_immediateOperand.Kind != R3000aOperandKind.Immediate)
         {
             immediate = 0;
             return false;
         }
 
-        var rawImmediate = (ushort)immediateOperand.Value;
-        immediate = IsZeroExtension(instruction.Opcode) ? rawImmediate : (short)rawImmediate;
+        var _rawImmediate = (ushort)_immediateOperand.Value;
+        immediate = IsZeroExtension(instruction.Opcode) ? _rawImmediate : (short)_rawImmediate;
         return true;
     }
 

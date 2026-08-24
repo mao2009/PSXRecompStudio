@@ -27,6 +27,7 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.1" />
     <!--Issue #24: pin transitive Tmds.DBus.Protocol (via Avalonia.FreeDesktop) to patched 0.21.3 (CVE-2026-39959 / GHSA-xrw6-gwf8-vvr9).-->
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+    <PackageReference Include="loach.PureSharp" Version="0.1.6" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
