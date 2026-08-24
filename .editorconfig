@@ -22,3 +22,14 @@ dotnet_diagnostic.LVP0003.severity = warning
 
 # FluentIf (FIF) - control flow safety
 dotnet_diagnostic.FIF0001.severity = error
+
+# PSXRecomp Architecture Analyzer (PSXR) - architecture quality gate
+# Severity is pinned explicitly so the gate contract does not rely on
+# descriptor defaults and cannot be weakened silently. See docs/architecture-matrix.md.
+# Verified end-to-end (build + CI failure on violation) in Issue #105 / PR #107.
+dotnet_diagnostic.PSXR001.severity = error
+dotnet_diagnostic.PSXR002.severity = error
+dotnet_diagnostic.PSXR003.severity = error
+dotnet_diagnostic.PSXR004.severity = error
+dotnet_diagnostic.PSXR005.severity = error
+dotnet_diagnostic.PSXR006.severity = error
