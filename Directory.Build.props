@@ -1,6 +1,18 @@
 <Project>
 
   <!--
+    Microsoft .NET Analyzers (Issue #102):
+    Enabled explicitly for every project in this repository so the quality gate
+    contract does not depend on SDK defaults. Rule severities are pinned in
+    .editorconfig; new .csproj files inherit this automatically.
+  -->
+  <PropertyGroup>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <CodeAnalysisTreatWarningsAsErrors>false</CodeAnalysisTreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!--
     Architecture attribute contract (Issue #8):
     Consumer projects opt in with <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
     so every assembly carries the same internal PSXRecomp.Architecture.* attribute types,

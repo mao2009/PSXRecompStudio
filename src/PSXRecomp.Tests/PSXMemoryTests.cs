@@ -7,7 +7,11 @@ public class PSXMemoryTests : IDisposable
 {
     private readonly PSXCoreWrapper _core = new();
 
-    public void Dispose() => _core.Dispose();
+    public void Dispose()
+    {
+        _core.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     [Fact]
     public void RamSize_Is2MB()

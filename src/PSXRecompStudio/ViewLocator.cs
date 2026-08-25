@@ -15,15 +15,15 @@ public class ViewLocator : IDataTemplate
         if (param is null)
             return null;
         
-        var name = param.GetType().FullName!.Replace("ViewModel", "View", StringComparison.Ordinal);
-        var type = Type.GetType(name);
+        var _name = param.GetType().FullName!.Replace("ViewModel", "View", StringComparison.Ordinal);
+        var _type = Type.GetType(_name);
 
-        if (type != null)
+        if (_type != null)
         {
-            return (Control)Activator.CreateInstance(type)!;
+            return (Control)Activator.CreateInstance(_type)!;
         }
-        
-        return new TextBlock { Text = "Not Found: " + name };
+
+        return new TextBlock { Text = "Not Found: " + _name };
     }
 
     public bool Match(object? data)
