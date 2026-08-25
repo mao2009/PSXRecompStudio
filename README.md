@@ -139,6 +139,10 @@ AI エージェントを含む開発者は、実装前にリポジトリ内の S
 - [`docs/architecture/gui-ux.md`](docs/architecture/gui-ux.md) — GUI / UX 設計文書
 - [`docs/development/agent-guide.md`](docs/development/agent-guide.md) — AI 開発エージェント向けガイド
 
+## ライセンス
+
+本プロジェクトは [MIT License](LICENSE) の下で公開されています。
+
 ## 注意事項
 
 本リポジトリには著作権のある ROM、ISO、BIOS 等は含まれません。対象ファイルは各自の環境で合法的に入手し、Git 管理対象へ追加しないでください。
