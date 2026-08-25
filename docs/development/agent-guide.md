@@ -18,9 +18,28 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 6. Inspect the relevant code.
 7. Check architectural constraints before proposing changes.
 
+## Git Workflow
+
+main ブランチは GitHub Repository Rules により保護されています。直接 push は禁止です。
+
+開発フロー：
+1. `git checkout -b feature/your-feature` で feature branch 作成
+2. 変更をコミット・push
+3. PR 作成 → CI 通過 → レビュー → main へマージ
+
+main への変更は Pull Request 経由でのみ可能です。
+
 ## Before creating a pull request
 
-Perform the mandatory pre-PR self review defined in
+When the change touched implementation, architecture, CI/build/test
+infrastructure, developer process or repository policy, policy configuration,
+or process artifacts (skills, profiles, agent guides), first run the
+documentation synchronization gate defined in
+`skills/common/process/doc-sync/SKILL.md`, loading project-specific inputs
+from the matching `skills/project/<project>/profile.md`, and record its
+update/no-update decisions for the PR body.
+
+Then perform the mandatory pre-PR self review defined in
 `skills/common/process/self-review/SKILL.md`, loading project-specific inputs
 from the matching `skills/project/<project>/profile.md`. Do not open a PR until
 that skill's completion criteria are met.

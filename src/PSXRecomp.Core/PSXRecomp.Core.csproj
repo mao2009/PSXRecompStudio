@@ -10,7 +10,8 @@
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
-    <NativeLibName>libPSXRecomp.Native.so</NativeLibName>
+    <NativeLibName Condition="'$(OS)' == 'Windows_NT'">libPSXRecomp.Native.dll</NativeLibName>
+    <NativeLibName Condition="'$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
   </PropertyGroup>
 
   <ItemGroup>

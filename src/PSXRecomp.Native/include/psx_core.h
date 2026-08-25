@@ -42,6 +42,16 @@ PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 PSX_API void     PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value);
 PSX_API int      PSXCore_GetDmaInterruptPending(PSXCore* core);
 
+PSX_API int PSXCore_Step(PSXCore* core);
+PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
+
+PSX_API uint32_t PSXCore_ReadMemory32(PSXCore* core, uint32_t address);
+PSX_API void PSXCore_WriteMemory32(PSXCore* core, uint32_t address, uint32_t value);
+PSX_API uint16_t PSXCore_ReadMemory16(PSXCore* core, uint32_t address);
+PSX_API void PSXCore_WriteMemory16(PSXCore* core, uint32_t address, uint16_t value);
+PSX_API uint8_t PSXCore_ReadMemory8(PSXCore* core, uint32_t address);
+PSX_API void PSXCore_WriteMemory8(PSXCore* core, uint32_t address, uint8_t value);
+
 #ifdef __cplusplus
 }
 #endif

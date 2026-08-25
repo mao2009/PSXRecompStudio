@@ -87,4 +87,44 @@ int PSXCore_GetDmaInterruptPending(PSXCore* core) {
     return core->dma.GetInterruptPending() ? 1 : 0;
 }
 
+int PSXCore_Step(PSXCore* core) {
+    if (!core) return -1;
+    return core->cpu.Step(core->memory);
+}
+
+int PSXCore_Run(PSXCore* core, uint32_t maxInstructions) {
+    if (!core) return -1;
+    return core->cpu.Run(core->memory, maxInstructions);
+}
+
+uint32_t PSXCore_ReadMemory32(PSXCore* core, uint32_t address) {
+    if (!core) return 0;
+    return core->memory.Read32(address);
+}
+
+void PSXCore_WriteMemory32(PSXCore* core, uint32_t address, uint32_t value) {
+    if (!core) return;
+    core->memory.Write32(address, value);
+}
+
+uint16_t PSXCore_ReadMemory16(PSXCore* core, uint32_t address) {
+    if (!core) return 0;
+    return core->memory.Read16(address);
+}
+
+void PSXCore_WriteMemory16(PSXCore* core, uint32_t address, uint16_t value) {
+    if (!core) return;
+    core->memory.Write16(address, value);
+}
+
+uint8_t PSXCore_ReadMemory8(PSXCore* core, uint32_t address) {
+    if (!core) return 0;
+    return core->memory.Read8(address);
+}
+
+void PSXCore_WriteMemory8(PSXCore* core, uint32_t address, uint8_t value) {
+    if (!core) return;
+    core->memory.Write8(address, value);
+}
+
 }

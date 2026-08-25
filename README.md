@@ -139,8 +139,25 @@ AI エージェントを含む開発者は、実装前にリポジトリ内の S
 - [`docs/architecture/gui-ux.md`](docs/architecture/gui-ux.md) — GUI / UX 設計文書
 - [`docs/development/agent-guide.md`](docs/development/agent-guide.md) — AI 開発エージェント向けガイド
 
+## Git Workflow（main ブランチ保護）
+
+main ブランチは GitHub Repository Rules により保護されています。直接 push は禁止です。
+
+正式な開発フロー：
+
+1. feature branch を作成: `git checkout -b feature/your-feature`
+2. 変更をコミット・push
+3. Pull Request を作成
+4. CI が通過し、レビューを経て main へマージ
+
+main への変更は Pull Request 経由でのみ可能です。
+
+## ライセンス
+
+本プロジェクトは [MIT License](LICENSE) の下で公開されています。
+
 ## 注意事項
 
 本リポジトリには著作権のある ROM、ISO、BIOS 等は含まれません。対象ファイルは各自の環境で合法的に入手し、Git 管理対象へ追加しないでください。
 
-ビルド成果物や一時生成物もリポジトリへ含めない方針です。
+ビルド成果物や一時生成物もリポジトリへ含めない方針です。この方針は [Repository Artifact Policy](docs/development/artifact-policy.md) として SSOT 化されており、CI の `Artifact Contamination Gate` ジョブが merge 前に機械的に検証します。

@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #85, #84, #81
+**Related Issues:** #85, #84, #81, #89
 
 ## Purpose
 
@@ -18,6 +18,7 @@ Two kinds of content are deliberately separated:
 skills/
 ├── common/            # Generic, portable process skills (no project specifics)
 │   └── process/
+│       ├── doc-sync/
 │       └── self-review/
 └── project/           # Per-project inputs consumed by common skills
     └── psxrecomp-studio/
@@ -32,6 +33,7 @@ skills/
 
 | Skill | Scope | Introduced by |
 |---|---|---|
+| `common/process/doc-sync` | Documentation synchronization gate: impact mapping, minimal updates, recorded no-op decisions | #89 |
 | `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
 
 ## Relationship to Issue #81

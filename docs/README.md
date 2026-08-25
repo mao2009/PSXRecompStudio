@@ -29,6 +29,7 @@ Architecture
 
 Development
 ├── Agent Guide
+├── Repository Artifact Policy
 └── Terminology
 
 Decisions
@@ -78,6 +79,8 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 
 - [Architecture SSOT](architecture/README.md)
 - [GUI / UX](architecture/gui-ux.md)
+- [Development Agent Guide](development/agent-guide.md)
+- [Repository Artifact Policy](development/artifact-policy.md)
 - CPU / R3000A — planned
 - Decoder — planned
 - Analyzer — planned
