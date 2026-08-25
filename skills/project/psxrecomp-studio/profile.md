@@ -126,23 +126,31 @@ Levels follow the skill's semantics (Update / Check / —).
 | CI / build / test infra | Check `README.md` (build/test sections) | Check `docs/README.md` | — | Update¹ | Update relevant `docs/development/*.md` | Check profile §4–5 |
 | Dev workflow / repo policy | Update `README.md` | Check `docs/README.md` | — | Update¹ | Update relevant `docs/development/*.md` | Update affected skills/profile |
 | Configuration-as-policy (e.g. `config/artifact-policy.json`) | Check `README.md` | Check `docs/README.md` | — | Update¹ | Update the policy's development page | Check profile §1, §5 |
+| Process artifacts (skills, profiles, agent guides) | — | — | — | Check¹ | Check `docs/development/agent-guide.md` | Update affected skills/profile |
+
+Internal-only work maps to no row by design: its expected outcome is a
+recorded no-op across all columns.
 
 1. Only for significant design decisions per the self-review skill's ADR
    conditions; an ADR addition alone never forces a README edit.
 
 ### SSOT precedence
 
-This repository follows the doc-sync skill's default order. It matches the
-authority hierarchy in `docs/development/agent-guide.md` and the
-SSOT/Reference/Draft/Deprecated model in `docs/README.md`:
+This repository uses the doc-sync skill's default order unchanged:
 
 Architecture SSOT → accepted ADRs → development/reference docs →
 skills & profiles → README.
 
+It is consistent with (but not identical to) two existing sources: the
+Authority model in `docs/README.md` (SSOT outranks Reference), and the
+agent-guide's authority hierarchy, which additionally ranks open Issues,
+current code, and historical discussions for determining current intent.
+
 ### Worked example: Issue #91 / PR #110 (Artifact Contamination Gate)
 
 Why the doc-sync gate exists, in one concrete change. The CI/policy feature
-touched **nine** files across six documentation-bearing locations:
+touched nine tracked files, eight of which carry documentation-relevant
+content:
 
 - Policy SSOT: `config/artifact-policy.json` (new)
 - Enforcement: `scripts/ci/check-artifact-policy.ps1` (new), `.github/workflows/ci.yml`

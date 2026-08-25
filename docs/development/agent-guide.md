@@ -21,7 +21,8 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 ## Before creating a pull request
 
 When the change touched implementation, architecture, CI/build/test
-infrastructure, developer process, or policy configuration, first run the
+infrastructure, developer process or repository policy, policy configuration,
+or process artifacts (skills, profiles, agent guides), first run the
 documentation synchronization gate defined in
 `skills/common/process/doc-sync/SKILL.md`, loading project-specific inputs
 from the matching `skills/project/<project>/profile.md`, and record its
