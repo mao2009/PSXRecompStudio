@@ -20,7 +20,15 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 
 ## Before creating a pull request
 
-Perform the mandatory pre-PR self review defined in
+When the change touched implementation, architecture, CI/build/test
+infrastructure, developer process or repository policy, policy configuration,
+or process artifacts (skills, profiles, agent guides), first run the
+documentation synchronization gate defined in
+`skills/common/process/doc-sync/SKILL.md`, loading project-specific inputs
+from the matching `skills/project/<project>/profile.md`, and record its
+update/no-update decisions for the PR body.
+
+Then perform the mandatory pre-PR self review defined in
 `skills/common/process/self-review/SKILL.md`, loading project-specific inputs
 from the matching `skills/project/<project>/profile.md`. Do not open a PR until
 that skill's completion criteria are met.

@@ -23,15 +23,15 @@ public static class R3000aBranchSemantics
                 return false;
         }
 
-        var offsetOperand = instruction.GetOperand(instruction.OperandCount - 1);
-        if (offsetOperand.Kind != R3000aOperandKind.Immediate)
+        var _offsetOperand = instruction.GetOperand(instruction.OperandCount - 1);
+        if (_offsetOperand.Kind != R3000aOperandKind.Immediate)
         {
             target = 0;
             return false;
         }
 
-        var scaledOffset = (uint)((int)(short)(ushort)offsetOperand.Value << 2);
-        target = unchecked(pc + 4u + scaledOffset);
+        var _scaledOffset = (uint)((int)(short)(ushort)_offsetOperand.Value << 2);
+        target = unchecked(pc + 4u + _scaledOffset);
         return true;
     }
 }

@@ -19,6 +19,9 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="loach.PureSharp" Version="0.1.6" PrivateAssets="all" />
+  </ItemGroup>
 
   <Target Name="BuildNative" BeforeTargets="CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">

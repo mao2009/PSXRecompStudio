@@ -69,8 +69,8 @@ public static class R3000aDecoder
 
     public static R3000aInstruction Decode(uint encodedWord)
     {
-        var opcodeField = ExtractOpcode(encodedWord);
-        return opcodeField switch
+        var _opcodeField = ExtractOpcode(encodedWord);
+        return _opcodeField switch
         {
             SpecialOpcodeField => DecodeSpecial(encodedWord),
             RegimmOpcodeField => DecodeRegimm(encodedWord),
@@ -112,8 +112,8 @@ public static class R3000aDecoder
 
     private static R3000aInstruction DecodeSpecial(uint encodedWord)
     {
-        var funct = ExtractFunct(encodedWord);
-        return funct switch
+        var _funct = ExtractFunct(encodedWord);
+        return _funct switch
         {
             0x00 => DecodeShiftByImmediate(encodedWord, R3000aOpcode.Sll),
             0x02 => DecodeShiftByImmediate(encodedWord, R3000aOpcode.Srl),
@@ -149,8 +149,8 @@ public static class R3000aDecoder
 
     private static R3000aInstruction DecodeRegimm(uint encodedWord)
     {
-        var selector = ExtractRt(encodedWord);
-        return selector switch
+        var _selector = ExtractRt(encodedWord);
+        return _selector switch
         {
             RegimmBranchLessThanZeroSelector => DecodeCompareWithZeroBranch(
                 encodedWord, R3000aOpcode.Bltz, R3000aControlFlowKind.ConditionalBranch),
@@ -351,19 +351,19 @@ public static class R3000aDecoder
 
     private static R3000aInstruction DecodeJumpAndLinkRegister(uint encodedWord)
     {
-        var rd = ExtractRd(encodedWord);
+        var _rd = ExtractRd(encodedWord);
 
         return new R3000aInstruction(
             encodedWord,
             R3000aOpcode.Jalr,
             R3000aInstructionFormat.R,
-            R3000aOperand.CreateRegister(rd),
+            R3000aOperand.CreateRegister(_rd),
             R3000aOperand.CreateRegister(ExtractRs(encodedWord)),
             default,
             operandCount: 2,
             R3000aControlFlowKind.JumpRegister,
             R3000aDelaySlotKind.Unconditional,
-            linkInfo: R3000aLinkInfo.Create((byte)rd));
+            linkInfo: R3000aLinkInfo.Create((byte)_rd));
     }
 
     private static R3000aInstruction DecodeTrap(uint encodedWord, R3000aOpcode opcode)
@@ -381,20 +381,20 @@ public static class R3000aDecoder
 
     private static R3000aInstruction DecodeLoad(uint encodedWord, R3000aOpcode opcode, bool pairSpecial)
     {
-        var targetRegister = ExtractRt(encodedWord);
-        var loadDelayInfo = pairSpecial
-            ? R3000aLoadDelayInfo.CreateLwlLwrPair(targetRegister)
-            : R3000aLoadDelayInfo.Create(targetRegister);
+        var _targetRegister = ExtractRt(encodedWord);
+        var _loadDelayInfo = pairSpecial
+            ? R3000aLoadDelayInfo.CreateLwlLwrPair(_targetRegister)
+            : R3000aLoadDelayInfo.Create(_targetRegister);
 
         return new R3000aInstruction(
             encodedWord,
             opcode,
             R3000aInstructionFormat.I,
-            R3000aOperand.CreateRegister(targetRegister),
+            R3000aOperand.CreateRegister(_targetRegister),
             R3000aOperand.CreateMemoryOffset(ExtractRs(encodedWord), ExtractImmediate(encodedWord)),
             default,
             operandCount: 2,
-            loadDelayInfo: loadDelayInfo);
+            loadDelayInfo: _loadDelayInfo);
     }
 
     private static R3000aInstruction DecodeMemoryAccess(uint encodedWord, R3000aOpcode opcode)
@@ -411,29 +411,29 @@ public static class R3000aDecoder
 
     private static R3000aInstruction DecodeCoprocessorZero(uint encodedWord)
     {
-        var selector = ExtractRs(encodedWord);
-        if (selector != MoveFromCoprocessorSelector
-            && selector != MoveToCoprocessorSelector
-            && !(selector == ReturnFromExceptionSelector && ExtractFunct(encodedWord) == ReturnFromExceptionFunct))
+        var _selector = ExtractRs(encodedWord);
+        if (_selector != MoveFromCoprocessorSelector
+            && _selector != MoveToCoprocessorSelector
+            && !(_selector == ReturnFromExceptionSelector && ExtractFunct(encodedWord) == ReturnFromExceptionFunct))
         {
             return CreateReserved(encodedWord);
         }
 
-        var opcode = selector switch
+        var _opcode = _selector switch
         {
             MoveFromCoprocessorSelector => R3000aOpcode.Mfc0,
             MoveToCoprocessorSelector => R3000aOpcode.Mtc0,
             _ => R3000aOpcode.Rfe,
         };
 
-        var copInfo = selector switch
+        var _copInfo = _selector switch
         {
             MoveFromCoprocessorSelector => R3000aCopInfo.CreateMoveFromCoprocessor(CoprocessorZeroId, ExtractRd(encodedWord)),
             MoveToCoprocessorSelector => R3000aCopInfo.CreateMoveToCoprocessor(CoprocessorZeroId, ExtractRd(encodedWord)),
             _ => R3000aCopInfo.CreateReturnFromException(),
         };
 
-        return CreateCoprocessorInstruction(encodedWord, opcode, copInfo);
+        return CreateCoprocessorInstruction(encodedWord, _opcode, _copInfo);
     }
 
     private static R3000aInstruction DecodeUnusableCoprocessor(uint encodedWord, R3000aOpcode opcode)
@@ -443,8 +443,8 @@ public static class R3000aDecoder
 
     private static R3000aInstruction DecodeCoprocessorTwo(uint encodedWord)
     {
-        var selector = ExtractRs(encodedWord);
-        if ((selector & CoprocessorOperationSelectorMask) != 0)
+        var _selector = ExtractRs(encodedWord);
+        if ((_selector & CoprocessorOperationSelectorMask) != 0)
         {
             return CreateCoprocessorInstruction(
                 encodedWord,
@@ -452,7 +452,7 @@ public static class R3000aDecoder
                 R3000aCopInfo.CreateExecuteCommand(CoprocessorTwoId, ExtractCoFun(encodedWord)));
         }
 
-        var copInfo = selector switch
+        var _copInfo = _selector switch
         {
             MoveFromCoprocessorSelector => R3000aCopInfo.CreateMoveFromCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
             MoveControlFromCoprocessorSelector => R3000aCopInfo.CreateMoveControlFromCoprocessor(CoprocessorTwoId, ExtractRd(encodedWord)),
@@ -461,12 +461,12 @@ public static class R3000aDecoder
             _ => (R3000aCopInfo?)null,
         };
 
-        if (copInfo is null)
+        if (_copInfo is null)
         {
             return CreateReserved(encodedWord);
         }
 
-        return CreateCoprocessorInstruction(encodedWord, R3000aOpcode.Cop2Command, copInfo.Value);
+        return CreateCoprocessorInstruction(encodedWord, R3000aOpcode.Cop2Command, _copInfo.Value);
     }
 
     private static R3000aInstruction DecodeCoprocessorDataTransfer(uint encodedWord, R3000aOpcode opcode)

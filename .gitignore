@@ -73,6 +73,7 @@ x86/
 .vs/
 .vscode/
 .idea/
+.omc/
 *.swp
 *.swo
 *~

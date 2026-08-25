@@ -19,15 +19,15 @@ public static class R3000aJumpSemantics
                 return false;
         }
 
-        var indexOperand = instruction.GetOperand(instruction.OperandCount - 1);
-        if (indexOperand.Kind != R3000aOperandKind.JumpIndex)
+        var _indexOperand = instruction.GetOperand(instruction.OperandCount - 1);
+        if (_indexOperand.Kind != R3000aOperandKind.JumpIndex)
         {
             target = 0;
             return false;
         }
 
-        var delaySlotAddress = unchecked(pc + 4u);
-        target = (delaySlotAddress & RegionMask) | (indexOperand.Value << 2);
+        var _delaySlotAddress = unchecked(pc + 4u);
+        target = (_delaySlotAddress & RegionMask) | (_indexOperand.Value << 2);
         return true;
     }
 }
