@@ -70,8 +70,8 @@ public class MemoryBusTests : IDisposable
         var callbackInvoked = false;
         _dmaAdapter.SetInterruptCallback(_ => { callbackInvoked = true; });
 
-        uint masterEnable = 1u << 15;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint forceIrq = 1u << 15;
         _memoryBus.Write(Ps1MemoryMap.Dicr, masterEnable | forceIrq);
 
         callbackInvoked.Should().BeTrue();
@@ -128,9 +128,9 @@ public class MemoryBusTests : IDisposable
     [Fact]
     public void Dicr_ThroughMemoryBus()
     {
-        uint masterEnable = 1u << 15;
-        uint ch0Enable = 1u << 16;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint ch0Enable = 1u << 24;
+        uint forceIrq = 1u << 15;
         uint writableBits = masterEnable | ch0Enable | forceIrq;
         _memoryBus.Write(Ps1MemoryMap.Dicr, writableBits);
         uint expected = writableBits | (1u << 31);

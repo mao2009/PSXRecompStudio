@@ -10,9 +10,9 @@ static constexpr uint32_t PSX_DMA_DPCR = 0x1F8010F0;
 static constexpr uint32_t PSX_DMA_DICR = 0x1F8010F4;
 
 static constexpr uint32_t DICR_FLAGS_MASK   = 0x007F;
-static constexpr uint32_t DICR_MASTER_EN    = 1u << 15;
-static constexpr uint32_t DICR_ENABLES_MASK = 0x7F0000;
-static constexpr uint32_t DICR_FORCE_IRQ    = 1u << 23;
+static constexpr uint32_t DICR_FORCE_IRQ    = 1u << 15;
+static constexpr uint32_t DICR_MASTER_EN    = 1u << 23;
+static constexpr uint32_t DICR_ENABLES_MASK = 0x7F000000;
 static constexpr uint32_t DICR_IRQ_STATUS   = 1u << 31;
 
 struct PSXDmaChannelState {
@@ -68,12 +68,12 @@ inline int PSXDmaController::GetRegisterOffset(uint32_t address) const {
 
 inline uint32_t PSXDmaController::ComputeDicrRead() const {
     uint32_t flags = dicr_ & DICR_FLAGS_MASK;
-    uint32_t enables = (dicr_ & DICR_ENABLES_MASK) >> 16;
+    uint32_t enables = (dicr_ & DICR_ENABLES_MASK) >> 24;
     bool master = (dicr_ & DICR_MASTER_EN) != 0;
     bool any_active = ((flags & enables) != 0) && master;
     bool irq = any_active || ((dicr_ & DICR_FORCE_IRQ) != 0);
     return flags | (dicr_ & (DICR_MASTER_EN | DICR_ENABLES_MASK | DICR_FORCE_IRQ))
-           | (flags << 24) | (irq ? DICR_IRQ_STATUS : 0);
+           | (irq ? DICR_IRQ_STATUS : 0);
 }
 
 inline uint32_t PSXDmaController::ReadRegister(uint32_t address) {
@@ -123,7 +123,7 @@ inline void PSXDmaController::WriteRegister(uint32_t address, uint32_t value) {
 
 inline bool PSXDmaController::GetInterruptPending() const {
     uint32_t flags = dicr_ & DICR_FLAGS_MASK;
-    uint32_t enables = (dicr_ & DICR_ENABLES_MASK) >> 16;
+    uint32_t enables = (dicr_ & DICR_ENABLES_MASK) >> 24;
     bool master = (dicr_ & DICR_MASTER_EN) != 0;
     return ((flags & enables) != 0 && master) || ((dicr_ & DICR_FORCE_IRQ) != 0);
 }

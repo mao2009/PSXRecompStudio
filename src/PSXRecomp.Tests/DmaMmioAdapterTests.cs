@@ -95,9 +95,9 @@ public class DmaMmioAdapterTests : IDisposable
     [Fact]
     public void WriteRegister_Dicr_ThenRead_ReturnsDerivedValue()
     {
-        uint masterEnable = 1u << 15;
-        uint ch0Enable = 1u << 16;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint ch0Enable = 1u << 24;
+        uint forceIrq = 1u << 15;
         uint writableBits = masterEnable | ch0Enable | forceIrq;
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, writableBits);
         uint expected = writableBits | (1u << 31);
@@ -125,8 +125,8 @@ public class DmaMmioAdapterTests : IDisposable
     [Fact]
     public void GetInterruptPending_True_WhenForceIrqSet()
     {
-        uint masterEnable = 1u << 15;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint forceIrq = 1u << 15;
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, masterEnable | forceIrq);
         _adapter.GetInterruptPending().Should().BeTrue();
     }
@@ -142,8 +142,8 @@ public class DmaMmioAdapterTests : IDisposable
             callbackAddress = addr;
         });
 
-        uint masterEnable = 1u << 15;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint forceIrq = 1u << 15;
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, masterEnable | forceIrq);
 
         callbackInvoked.Should().BeTrue();

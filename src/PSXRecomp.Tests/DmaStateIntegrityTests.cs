@@ -71,8 +71,8 @@ public class DmaStateIntegrityTests : IDisposable
     [Fact]
     public void WriteAndRead_Dicr_StateConsistent()
     {
-        uint masterEnable = 1u << 15;
-        uint ch0Enable = 1u << 16;
+        uint masterEnable = 1u << 23;
+        uint ch0Enable = 1u << 24;
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, masterEnable | ch0Enable);
         var readValue = _adapter.ReadRegister(Ps1MemoryMap.Dicr);
         readValue.Should().Be(masterEnable | ch0Enable,
@@ -102,9 +102,9 @@ public class DmaStateIntegrityTests : IDisposable
     [Fact]
     public void InterruptPending_MasterEnableAndFlagSet()
     {
-        uint masterEnable = 1u << 15;
-        uint ch0Enable = 1u << 16;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint ch0Enable = 1u << 24;
+        uint forceIrq = 1u << 15;
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, masterEnable | ch0Enable | forceIrq);
         _adapter.GetInterruptPending().Should().BeTrue("master enable + force IRQ should trigger interrupt");
     }
@@ -112,8 +112,8 @@ public class DmaStateIntegrityTests : IDisposable
     [Fact]
     public void InterruptPending_FlagWriteOneToClear()
     {
-        uint masterEnable = 1u << 15;
-        uint forceIrq = 1u << 23;
+        uint masterEnable = 1u << 23;
+        uint forceIrq = 1u << 15;
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, masterEnable | forceIrq);
         _adapter.GetInterruptPending().Should().BeTrue();
         _adapter.WriteRegister(Ps1MemoryMap.Dicr, masterEnable);
@@ -123,7 +123,7 @@ public class DmaStateIntegrityTests : IDisposable
     [Fact]
     public void InterruptPending_ForceIrq()
     {
-        _adapter.WriteRegister(Ps1MemoryMap.Dicr, 1u << 23);
+        _adapter.WriteRegister(Ps1MemoryMap.Dicr, 1u << 15);
         _adapter.GetInterruptPending().Should().BeTrue("force IRQ bit should trigger interrupt regardless of flags");
     }
 
