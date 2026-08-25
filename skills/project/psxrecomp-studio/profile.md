@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #85
+**Related Issues:** #85, #89
 
 Project-specific inputs consumed by the generic skills in
 `skills/common/`. This file is the only place that needs rewriting when a
@@ -76,9 +76,9 @@ cmake --build build/native --parallel
 ctest --test-dir build/native --output-on-failure
 ```
 
-CI (GitHub Actions, ubuntu-latest): native build+ctest → .NET 10 restore,
-NuGet vulnerability gate (High/Critical fails), Release build, both test
-projects, aggregate CI Gate job.
+CI (GitHub Actions, ubuntu-latest): artifact contamination gate → native
+build+ctest → .NET 10 restore, NuGet vulnerability gate (High/Critical fails),
+Release build, both test projects, aggregate CI Gate job.
 
 ## 5. Known environment caveats
 
@@ -109,3 +109,60 @@ projects, aggregate CI Gate job.
 - PR body must include: implemented scope, verification results, remaining
   items, and reason when an Issue is intentionally left open.
 - Prefer one concern per PR; keep unrelated refactors out.
+
+## 8. Documentation synchronization inputs
+
+Project-specific inputs for the `common/process/doc-sync` skill (#89).
+
+### Concrete impact map
+
+Refinement of the generic impact matrix onto this repository's actual files.
+Levels follow the skill's semantics (Update / Check / —).
+
+| Change category | Entry-point README | Docs index | Architecture SSOT | ADR (`docs/adr/`) | Dev / process docs | Skills / profile |
+|---|---|---|---|---|---|---|
+| User-facing feature/capability | Update `README.md` | Check `docs/README.md` | Check `ARCHITECTURE.md`, affected `docs/cpu/*.md` / `docs/architecture/*` | Check¹ | — | — |
+| Architecture / design | Check `README.md` | Check `docs/README.md` | Update `ARCHITECTURE.md` + affected SSOT page (`docs/architecture-matrix.md`, `docs/cpu/*`) | Update¹ | Check `docs/development/agent-guide.md` | Check `skills/project/psxrecomp-studio/profile.md` |
+| CI / build / test infra | Check `README.md` (build/test sections) | Check `docs/README.md` | — | Update¹ | Update relevant `docs/development/*.md` | Check profile §4–5 |
+| Dev workflow / repo policy | Update `README.md` | Check `docs/README.md` | — | Update¹ | Update relevant `docs/development/*.md` | Update affected skills/profile |
+| Configuration-as-policy (e.g. `config/artifact-policy.json`) | Check `README.md` | Check `docs/README.md` | — | Update¹ | Update the policy's development page | Check profile §1, §5 |
+| Process artifacts (skills, profiles, agent guides) | — | — | — | Check¹ | Check `docs/development/agent-guide.md`; update the `skills/README.md` index when adding/renaming/removing a skill | Update affected skills/profile |
+
+Internal-only work maps to no row by design: its expected outcome is a
+recorded no-op across all columns.
+
+1. Only for significant design decisions per the self-review skill's ADR
+   conditions; an ADR addition alone never forces a README edit.
+
+### SSOT precedence
+
+This repository uses the doc-sync skill's default order unchanged:
+
+Architecture SSOT → accepted ADRs → development/reference docs →
+skills & profiles → README.
+
+It is consistent with (but not identical to) two existing sources: the
+Authority model in `docs/README.md` (SSOT outranks Reference), and the
+agent-guide's authority hierarchy, which additionally ranks open Issues,
+current code, and historical discussions for determining current intent.
+
+### Worked example: Issue #91 / PR #110 (Artifact Contamination Gate)
+
+Why the doc-sync gate exists, in one concrete change. The CI/policy feature
+touched nine tracked files, eight of which carry documentation-relevant
+content:
+
+- Policy SSOT: `config/artifact-policy.json` (new)
+- Enforcement: `scripts/ci/check-artifact-policy.ps1` (new), `.github/workflows/ci.yml`
+- Decision record: `docs/adr/007-repository-artifact-policy.md` (new)
+- Operating rules: `docs/development/artifact-policy.md` (new)
+- Entry points: `README.md` (注意事項 section now names the gate),
+  `docs/README.md` (hierarchy + current-subsystem list)
+- Agent inputs: this profile (§1 authoritative docs, §5 caveats)
+
+Categories tagged: configuration-as-policy + CI infra + repo policy → matrix
+produced exactly these candidates; every one was updated in the same change,
+so no no-op decisions were recorded. Missing any single link (e.g. leaving
+the README's "成果物をリポジトリに含めない" bullet unbacked by the policy
+page, or an agent not knowing the local gate command) is precisely the drift
+class this skill prevents.
