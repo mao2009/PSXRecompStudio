@@ -1,0 +1,29 @@
+#!/bin/sh
+# PSXRecompStudio - pre-commit hook
+# Prevents direct commits to main branch
+
+# Get current branch name
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$branch" ]; then
+    echo "❌ Cannot determine current branch. Commit rejected."
+    exit 1
+fi
+
+# Check if we're on main branch
+if [ "$branch" = "main" ]; then
+    echo ""
+    echo "❌  main ブランチへの直接コミットは禁止されています"
+    echo ""
+    echo "理由: main は保護ブランチです。feature branch を作成し、PR 経由で main へ変更を取り込んでください。"
+    echo ""
+    echo "推奨フロー:"
+    echo "  1. feature branch を作成:  git checkout -b feature/your-feature"
+    echo "  2. 変更をコミット"
+    echo "  3. PR を作成:  git push -u origin feature/your-feature"
+    echo "  4. PR がレビュー・CI を通過したら main へマージ"
+    echo ""
+    exit 1
+fi
+
+# Allow commit on any other branch
+exit 0

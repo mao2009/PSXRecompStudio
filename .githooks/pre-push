@@ -1,0 +1,37 @@
+#!/bin/sh
+# PSXRecompStudio - pre-push hook
+# Prevents direct pushes to main branch
+
+# Get current branch name (handles detached HEAD gracefully)
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$branch" ]; then
+    echo "❌ Cannot determine current branch. Push rejected."
+    exit 1
+fi
+
+# Handle detached HEAD - in this case, we can't reliably determine the branch
+# We'll allow push but warn the user
+if [ "$branch" = "HEAD" ]; then
+    echo "⚠️  Detached HEAD 状態です。ブランチ名を特定できません。"
+    echo "   現在のコミットが main 由来でないことを確認してから push してください。"
+    exit 0
+fi
+
+# Check if we're on main branch
+if [ "$branch" = "main" ]; then
+    echo ""
+    echo "❌  main ブランチへの直接 push は禁止されています"
+    echo ""
+    echo "理由: main は保護ブランチです。feature branch から PR を作成し、レビュー・CI を経て main へマージしてください。"
+    echo ""
+    echo "推奨フロー:"
+    echo "  1. feature branch で作業:  git checkout -b feature/your-feature"
+    echo "  2. 変更をコミット・push:  git push -u origin feature/your-feature"
+    echo "  3. GitHub で PR を作成"
+    echo "  4. PR がレビュー・CI を通過したら main へマージ"
+    echo ""
+    exit 1
+fi
+
+# Allow push on any other branch
+exit 0
