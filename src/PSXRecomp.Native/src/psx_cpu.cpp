@@ -1,4 +1,6 @@
 #include "psx_cpu.h"
+#include "psx_memory.h"
+#include <cstdint>
 
 PSXCpu::PSXCpu() {
     Reset();
@@ -33,3 +35,575 @@ void PSXCpu::SetHI(uint32_t value) { hi_ = value; }
 
 uint32_t PSXCpu::GetLO() const { return lo_; }
 void PSXCpu::SetLO(uint32_t value) { lo_ = value; }
+
+uint32_t PSXCpu::FetchInstruction(PSXMemory& memory) {
+    uint32_t addr = pc_;
+    uint8_t* ram = memory.GetRAM();
+    uint32_t instruction = 
+        (static_cast<uint32_t>(ram[addr]) << 24) |
+        (static_cast<uint32_t>(ram[addr + 1]) << 16) |
+        (static_cast<uint32_t>(ram[addr + 2]) << 8) |
+        static_cast<uint32_t>(ram[addr + 3]);
+    return instruction;
+}
+
+int PSXCpu::Step(PSXMemory& memory) {
+    uint32_t instruction = FetchInstruction(memory);
+    pc_ += 4;
+    ExecuteInstruction(instruction, memory);
+    return 0;
+}
+
+int PSXCpu::Run(PSXMemory& memory, uint32_t maxInstructions) {
+    for (uint32_t i = 0; i < maxInstructions; i++) {
+        int result = Step(memory);
+        if (result != 0) {
+            return result;
+        }
+    }
+    return 0;
+}
+
+void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
+    uint32_t opcode = instruction >> 26;
+    
+    switch (opcode) {
+        case 0x00: { // SPECIAL
+            uint32_t funct = instruction & 0x3F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rd = (instruction >> 11) & 0x1F;
+            uint32_t shamt = (instruction >> 6) & 0x1F;
+            
+            switch (funct) {
+                case 0x20: ExecAdd(rd, rs, rt); break;
+                case 0x21: ExecAddu(rd, rs, rt); break;
+                case 0x22: ExecSub(rd, rs, rt); break;
+                case 0x23: ExecSubu(rd, rs, rt); break;
+                case 0x24: ExecAnd(rd, rs, rt); break;
+                case 0x25: ExecOr(rd, rs, rt); break;
+                case 0x26: ExecXor(rd, rs, rt); break;
+                case 0x27: ExecNor(rd, rs, rt); break;
+                case 0x2A: ExecSlt(rd, rs, rt); break;
+                case 0x2B: ExecSltu(rd, rs, rt); break;
+                case 0x00: ExecSll(rd, rt, shamt); break;
+                case 0x02: ExecSrl(rd, rt, shamt); break;
+                case 0x03: ExecSra(rd, rt, shamt); break;
+                case 0x04: ExecSllv(rd, rt, rs); break;
+                case 0x06: ExecSrlv(rd, rt, rs); break;
+                case 0x07: ExecSrav(rd, rt, rs); break;
+                case 0x18: ExecMult(rs, rt); break;
+                case 0x19: ExecMultu(rs, rt); break;
+                case 0x1A: ExecDiv(rs, rt); break;
+                case 0x1B: ExecDivu(rs, rt); break;
+                case 0x10: ExecMfhi(rd); break;
+                case 0x11: ExecMthi(rs); break;
+                case 0x12: ExecMflo(rd); break;
+                case 0x13: ExecMtlo(rs); break;
+                case 0x08: ExecJr(rs); break;
+                case 0x09: ExecJalr(rd, rs); break;
+                case 0x0C: ExecSyscall(); break;
+                case 0x0D: ExecBreak(); break;
+                default: break; // Reserved/Unimplemented
+            }
+            break;
+        }
+        case 0x01: { // REGIMM
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            
+            switch (rt) {
+                case 0x00: ExecBltz(rs, offset); break;
+                case 0x01: ExecBgez(rs, offset); break;
+                case 0x10: ExecBltzal(rs, offset); break;
+                case 0x11: ExecBgezal(rs, offset); break;
+                default: break;
+            }
+            break;
+        }
+        case 0x02: { // J
+            uint32_t target = instruction & 0x03FFFFFF;
+            ExecJ(target);
+            break;
+        }
+        case 0x03: { // JAL
+            uint32_t target = instruction & 0x03FFFFFF;
+            ExecJal(target);
+            break;
+        }
+        case 0x04: { // BEQ
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecBeq(rs, rt, offset);
+            break;
+        }
+        case 0x05: { // BNE
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecBne(rs, rt, offset);
+            break;
+        }
+        case 0x06: { // BLEZ
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecBlez(rs, offset);
+            break;
+        }
+        case 0x07: { // BGTZ
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecBgtz(rs, offset);
+            break;
+        }
+        case 0x08: { // ADDI
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t imm = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecAddi(rt, rs, imm);
+            break;
+        }
+        case 0x09: { // ADDIU
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t imm = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecAddiu(rt, rs, imm);
+            break;
+        }
+        case 0x0A: { // SLTI
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t imm = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSlti(rt, rs, imm);
+            break;
+        }
+        case 0x0B: { // SLTIU
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t imm = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSltiu(rt, rs, imm);
+            break;
+        }
+        case 0x0C: { // ANDI
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint16_t imm = static_cast<uint16_t>(instruction & 0xFFFF);
+            ExecAndi(rt, rs, imm);
+            break;
+        }
+        case 0x0D: { // ORI
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint16_t imm = static_cast<uint16_t>(instruction & 0xFFFF);
+            ExecOri(rt, rs, imm);
+            break;
+        }
+        case 0x0E: { // XORI
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint16_t imm = static_cast<uint16_t>(instruction & 0xFFFF);
+            ExecXori(rt, rs, imm);
+            break;
+        }
+        case 0x0F: { // LUI
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint16_t imm = static_cast<uint16_t>(instruction & 0xFFFF);
+            ExecLui(rt, imm);
+            break;
+        }
+        case 0x20: { // LB
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLb(rt, rs, offset, memory);
+            break;
+        }
+        case 0x21: { // LH
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLh(rt, rs, offset, memory);
+            break;
+        }
+        case 0x23: { // LW
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLw(rt, rs, offset, memory);
+            break;
+        }
+        case 0x24: { // LBU
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLbu(rt, rs, offset, memory);
+            break;
+        }
+        case 0x25: { // LHU
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLhu(rt, rs, offset, memory);
+            break;
+        }
+        case 0x28: { // SB
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSb(rt, rs, offset, memory);
+            break;
+        }
+        case 0x29: { // SH
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSh(rt, rs, offset, memory);
+            break;
+        }
+        case 0x2B: { // SW
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSw(rt, rs, offset, memory);
+            break;
+        }
+        case 0x10: { // COP0
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rd = (instruction >> 11) & 0x1F;
+            uint32_t funct = instruction & 0x3F;
+            
+            if (rs == 0x00) { // MFC0
+                ExecMfc0(rt, rd);
+            } else if (rs == 0x04) { // MTC0
+                ExecMtc0(rt, rd);
+            } else if (rs == 0x10 && funct == 0x10) { // RFE
+                ExecRfe();
+            }
+            break;
+        }
+        default:
+            break; // Reserved/Unimplemented
+    }
+}
+
+// Arithmetic/Logical
+void PSXCpu::ExecAdd(uint32_t rd, uint32_t rs, uint32_t rt) {
+    int32_t result = ToSigned(gpr_[rs]) + ToSigned(gpr_[rt]);
+    SetGPR(rd, static_cast<uint32_t>(result));
+}
+
+void PSXCpu::ExecAddu(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, gpr_[rs] + gpr_[rt]);
+}
+
+void PSXCpu::ExecSub(uint32_t rd, uint32_t rs, uint32_t rt) {
+    int32_t result = ToSigned(gpr_[rs]) - ToSigned(gpr_[rt]);
+    SetGPR(rd, static_cast<uint32_t>(result));
+}
+
+void PSXCpu::ExecSubu(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, gpr_[rs] - gpr_[rt]);
+}
+
+void PSXCpu::ExecAnd(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, gpr_[rs] & gpr_[rt]);
+}
+
+void PSXCpu::ExecOr(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, gpr_[rs] | gpr_[rt]);
+}
+
+void PSXCpu::ExecXor(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, gpr_[rs] ^ gpr_[rt]);
+}
+
+void PSXCpu::ExecNor(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, ~(gpr_[rs] | gpr_[rt]));
+}
+
+void PSXCpu::ExecSlt(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, ToSigned(gpr_[rs]) < ToSigned(gpr_[rt]) ? 1 : 0);
+}
+
+void PSXCpu::ExecSltu(uint32_t rd, uint32_t rs, uint32_t rt) {
+    SetGPR(rd, gpr_[rs] < gpr_[rt] ? 1 : 0);
+}
+
+// Immediate arithmetic
+void PSXCpu::ExecAddi(uint32_t rt, uint32_t rs, int16_t imm) {
+    int32_t result = ToSigned(gpr_[rs]) + imm;
+    SetGPR(rt, static_cast<uint32_t>(result));
+}
+
+void PSXCpu::ExecAddiu(uint32_t rt, uint32_t rs, int16_t imm) {
+    SetGPR(rt, gpr_[rs] + SignExtend16(imm));
+}
+
+void PSXCpu::ExecAndi(uint32_t rt, uint32_t rs, uint16_t imm) {
+    SetGPR(rt, gpr_[rs] & ZeroExtend16(imm));
+}
+
+void PSXCpu::ExecOri(uint32_t rt, uint32_t rs, uint16_t imm) {
+    SetGPR(rt, gpr_[rs] | ZeroExtend16(imm));
+}
+
+void PSXCpu::ExecXori(uint32_t rt, uint32_t rs, uint16_t imm) {
+    SetGPR(rt, gpr_[rs] ^ ZeroExtend16(imm));
+}
+
+void PSXCpu::ExecLui(uint32_t rt, uint16_t imm) {
+    SetGPR(rt, static_cast<uint32_t>(imm) << 16);
+}
+
+void PSXCpu::ExecSlti(uint32_t rt, uint32_t rs, int16_t imm) {
+    SetGPR(rt, ToSigned(gpr_[rs]) < imm ? 1 : 0);
+}
+
+void PSXCpu::ExecSltiu(uint32_t rt, uint32_t rs, int16_t imm) {
+    SetGPR(rt, gpr_[rs] < ZeroExtend16(imm) ? 1 : 0);
+}
+
+// Shift
+void PSXCpu::ExecSll(uint32_t rd, uint32_t rt, uint32_t shamt) {
+    SetGPR(rd, gpr_[rt] << shamt);
+}
+
+void PSXCpu::ExecSrl(uint32_t rd, uint32_t rt, uint32_t shamt) {
+    SetGPR(rd, gpr_[rt] >> shamt);
+}
+
+void PSXCpu::ExecSra(uint32_t rd, uint32_t rt, uint32_t shamt) {
+    SetGPR(rd, static_cast<uint32_t>(static_cast<int32_t>(gpr_[rt]) >> shamt));
+}
+
+void PSXCpu::ExecSllv(uint32_t rd, uint32_t rt, uint32_t rs) {
+    SetGPR(rd, gpr_[rt] << (gpr_[rs] & 0x1F));
+}
+
+void PSXCpu::ExecSrlv(uint32_t rd, uint32_t rt, uint32_t rs) {
+    SetGPR(rd, gpr_[rt] >> (gpr_[rs] & 0x1F));
+}
+
+void PSXCpu::ExecSrav(uint32_t rd, uint32_t rt, uint32_t rs) {
+    SetGPR(rd, static_cast<uint32_t>(static_cast<int32_t>(gpr_[rt]) >> (gpr_[rs] & 0x1F)));
+}
+
+// Multiply/Divide
+void PSXCpu::ExecMult(uint32_t rs, uint32_t rt) {
+    int64_t result = static_cast<int64_t>(ToSigned(gpr_[rs])) * static_cast<int64_t>(ToSigned(gpr_[rt]));
+    hi_ = static_cast<uint32_t>(result >> 32);
+    lo_ = static_cast<uint32_t>(result & 0xFFFFFFFF);
+}
+
+void PSXCpu::ExecMultu(uint32_t rs, uint32_t rt) {
+    uint64_t result = static_cast<uint64_t>(gpr_[rs]) * static_cast<uint64_t>(gpr_[rt]);
+    hi_ = static_cast<uint32_t>(result >> 32);
+    lo_ = static_cast<uint32_t>(result & 0xFFFFFFFF);
+}
+
+void PSXCpu::ExecDiv(uint32_t rs, uint32_t rt) {
+    int32_t dividend = ToSigned(gpr_[rs]);
+    int32_t divisor = ToSigned(gpr_[rt]);
+    if (divisor != 0) {
+        lo_ = static_cast<uint32_t>(dividend / divisor);
+        hi_ = static_cast<uint32_t>(dividend % divisor);
+    }
+}
+
+void PSXCpu::ExecDivu(uint32_t rs, uint32_t rt) {
+    uint32_t dividend = gpr_[rs];
+    uint32_t divisor = gpr_[rt];
+    if (divisor != 0) {
+        lo_ = dividend / divisor;
+        hi_ = dividend % divisor;
+    }
+}
+
+void PSXCpu::ExecMfhi(uint32_t rd) {
+    SetGPR(rd, hi_);
+}
+
+void PSXCpu::ExecMflo(uint32_t rd) {
+    SetGPR(rd, lo_);
+}
+
+void PSXCpu::ExecMthi(uint32_t rs) {
+    hi_ = gpr_[rs];
+}
+
+void PSXCpu::ExecMtlo(uint32_t rs) {
+    lo_ = gpr_[rs];
+}
+
+// Memory
+void PSXCpu::ExecLb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    int8_t value = static_cast<int8_t>(ram[addr]);
+    SetGPR(rt, SignExtend16(value));
+}
+
+void PSXCpu::ExecLbu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    SetGPR(rt, ram[addr]);
+}
+
+void PSXCpu::ExecLh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    int16_t value = static_cast<int16_t>((ram[addr] << 8) | ram[addr + 1]);
+    SetGPR(rt, SignExtend16(value));
+}
+
+void PSXCpu::ExecLhu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    uint16_t value = (ram[addr] << 8) | ram[addr + 1];
+    SetGPR(rt, value);
+}
+
+void PSXCpu::ExecLw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    uint32_t value = (ram[addr] << 24) | (ram[addr + 1] << 16) | (ram[addr + 2] << 8) | ram[addr + 3];
+    SetGPR(rt, value);
+}
+
+void PSXCpu::ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    ram[addr] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+}
+
+void PSXCpu::ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    ram[addr] = static_cast<uint8_t>(gpr_[rt] >> 8);
+    ram[addr + 1] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+}
+
+void PSXCpu::ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    ram[addr] = static_cast<uint8_t>(gpr_[rt] >> 24);
+    ram[addr + 1] = static_cast<uint8_t>(gpr_[rt] >> 16);
+    ram[addr + 2] = static_cast<uint8_t>(gpr_[rt] >> 8);
+    ram[addr + 3] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+}
+
+// Branch
+void PSXCpu::ExecBeq(uint32_t rs, uint32_t rt, int16_t offset) {
+    if (gpr_[rs] == gpr_[rt]) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBne(uint32_t rs, uint32_t rt, int16_t offset) {
+    if (gpr_[rs] != gpr_[rt]) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBlez(uint32_t rs, int16_t offset) {
+    if (ToSigned(gpr_[rs]) <= 0) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBgtz(uint32_t rs, int16_t offset) {
+    if (ToSigned(gpr_[rs]) > 0) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBltz(uint32_t rs, int16_t offset) {
+    if (ToSigned(gpr_[rs]) < 0) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBgez(uint32_t rs, int16_t offset) {
+    if (ToSigned(gpr_[rs]) >= 0) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBltzal(uint32_t rs, int16_t offset) {
+    SetGPR(31, pc_);
+    if (ToSigned(gpr_[rs]) < 0) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+void PSXCpu::ExecBgezal(uint32_t rs, int16_t offset) {
+    SetGPR(31, pc_);
+    if (ToSigned(gpr_[rs]) >= 0) {
+        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
+    }
+}
+
+// Jump
+void PSXCpu::ExecJ(uint32_t target) {
+    pc_ = (pc_ & 0xF0000000) | (target << 2);
+}
+
+void PSXCpu::ExecJal(uint32_t target) {
+    SetGPR(31, pc_);
+    pc_ = (pc_ & 0xF0000000) | (target << 2);
+}
+
+void PSXCpu::ExecJr(uint32_t rs) {
+    pc_ = gpr_[rs] - 4;
+}
+
+void PSXCpu::ExecJalr(uint32_t rd, uint32_t rs) {
+    uint32_t link = pc_;
+    pc_ = gpr_[rs] - 4;
+    if (rd != 0) {
+        SetGPR(rd, link);
+    }
+}
+
+// System
+void PSXCpu::ExecSyscall() {
+    // For now, just continue execution
+}
+
+void PSXCpu::ExecBreak() {
+    // For now, just continue execution
+}
+
+// Coprocessor 0
+void PSXCpu::ExecMfc0(uint32_t rt, uint32_t rd) {
+    // Simplified: only implement Status (12) and Cause (13) for now
+    switch (rd) {
+        case 12: SetGPR(rt, 0); break; // Status
+        case 13: SetGPR(rt, 0); break; // Cause
+        default: SetGPR(rt, 0); break;
+    }
+}
+
+void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {
+    // Simplified: ignore for now
+}
+
+void PSXCpu::ExecRfe() {
+    // Simplified: ignore for now
+}
+
+// Helpers
+uint32_t PSXCpu::SignExtend16(int16_t value) const {
+    return static_cast<uint32_t>(static_cast<int32_t>(value));
+}
+
+uint32_t PSXCpu::ZeroExtend16(uint16_t value) const {
+    return static_cast<uint32_t>(value);
+}
+
+int32_t PSXCpu::ToSigned(uint32_t value) const {
+    return static_cast<int32_t>(value);
+}

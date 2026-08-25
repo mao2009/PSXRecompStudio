@@ -93,6 +93,56 @@ public sealed class PSXCoreWrapper : IDisposable
 
     public static uint GetRamSize() => NativeInterop.PSXCore_GetRAMSize();
 
+    // Instruction execution
+    public int Step()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_Step(_handle);
+    }
+
+    public int Run(uint maxInstructions)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_Run(_handle, maxInstructions);
+    }
+
+    // Memory access
+    public uint ReadMemory32(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_ReadMemory32(_handle, address);
+    }
+
+    public void WriteMemory32(uint address, uint value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_WriteMemory32(_handle, address, value);
+    }
+
+    public ushort ReadMemory16(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_ReadMemory16(_handle, address);
+    }
+
+    public void WriteMemory16(uint address, ushort value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_WriteMemory16(_handle, address, value);
+    }
+
+    public byte ReadMemory8(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_ReadMemory8(_handle, address);
+    }
+
+    public void WriteMemory8(uint address, byte value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_WriteMemory8(_handle, address, value);
+    }
+
     public void Dispose()
     {
         if (!_disposed)
