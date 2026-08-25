@@ -10,6 +10,17 @@ permissions:
   contents: read
 
 jobs:
+  artifact-policy:
+    name: Artifact Contamination Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check artifact policy
+        shell: pwsh
+        run: ./scripts/ci/check-artifact-policy.ps1
+
   native:
     name: Native Core Build and Test
     runs-on: ubuntu-latest
@@ -87,12 +98,12 @@ jobs:
   ci:
     name: CI Gate
     if: always()
-    needs: [dotnet, native]
+    needs: [artifact-policy, dotnet, native]
     runs-on: ubuntu-latest
     steps:
       - name: Require all checks to pass
         run: |
-          if [[ "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" ]]; then
+          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" ]]; then
             echo "Required CI jobs did not all succeed."
             exit 1
           fi
