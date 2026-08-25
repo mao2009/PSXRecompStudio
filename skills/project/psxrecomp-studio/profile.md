@@ -76,9 +76,9 @@ cmake --build build/native --parallel
 ctest --test-dir build/native --output-on-failure
 ```
 
-CI (GitHub Actions, ubuntu-latest): native build+ctest → .NET 10 restore,
-NuGet vulnerability gate (High/Critical fails), Release build, both test
-projects, aggregate CI Gate job.
+CI (GitHub Actions, ubuntu-latest): artifact contamination gate → native
+build+ctest → .NET 10 restore, NuGet vulnerability gate (High/Critical fails),
+Release build, both test projects, aggregate CI Gate job.
 
 ## 5. Known environment caveats
 
