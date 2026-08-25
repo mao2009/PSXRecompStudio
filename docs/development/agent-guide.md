@@ -18,6 +18,25 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 6. Inspect the relevant code.
 7. Check architectural constraints before proposing changes.
 
+## Git Hook Setup (Required)
+
+本リポジトリでは main ブランチを保護する Git hook を導入しています。作業開始前に必ず有効化してください：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+これにより以下が適用されます：
+- **pre-commit**: main ブランチでの直接 commit を拒否
+- **pre-push**: main ブランチでの直接 push を拒否
+
+開発フロー：
+1. `git checkout -b feature/your-feature` で feature branch 作成
+2. 変更をコミット・push
+3. PR 作成 → レビュー・CI 通過 → main へマージ
+
+main への直接操作は hook により防止されます。
+
 ## Before creating a pull request
 
 When the change touched implementation, architecture, CI/build/test
