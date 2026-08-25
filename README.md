@@ -143,4 +143,4 @@ AI エージェントを含む開発者は、実装前にリポジトリ内の S
 
 本リポジトリには著作権のある ROM、ISO、BIOS 等は含まれません。対象ファイルは各自の環境で合法的に入手し、Git 管理対象へ追加しないでください。
 
-ビルド成果物や一時生成物もリポジトリへ含めない方針です。
+ビルド成果物や一時生成物もリポジトリへ含めない方針です。この方針は [Repository Artifact Policy](docs/development/artifact-policy.md) として SSOT 化されており、CI の `Artifact Contamination Gate` ジョブが merge 前に機械的に検証します。

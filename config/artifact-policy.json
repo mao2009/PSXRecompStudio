@@ -1,0 +1,76 @@
+{
+  "$comment": "Repository Artifact Policy SSOT (Issue #91). Consumed by scripts/ci/check-artifact-policy.ps1. See docs/development/artifact-policy.md before editing.",
+  "forbiddenExtensions": [
+    ".iso",
+    ".bin",
+    ".img",
+    ".cue",
+    ".ccd",
+    ".sub",
+    ".toc",
+    ".nrg",
+    ".mds",
+    ".mdf",
+    ".pbp",
+    ".ecm",
+    ".cso",
+    ".chd",
+    ".rom",
+    ".bios",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".a",
+    ".lib",
+    ".o",
+    ".obj",
+    ".pdb"
+  ],
+  "forbiddenPathSegments": [
+    "rom",
+    "bios",
+    "bin",
+    "obj",
+    "build",
+    "out",
+    "publish",
+    "artifacts",
+    "dist",
+    "node_modules"
+  ],
+  "maxFileSizeBytes": 1048576,
+  "contentSignatures": [
+    {
+      "name": "PS-X EXE executable",
+      "offset": 0,
+      "hex": "50532D5820455845"
+    },
+    {
+      "name": "ISO 9660 CD-ROM image",
+      "offset": 32769,
+      "hex": "4344303031"
+    },
+    {
+      "name": "CHD disk image",
+      "offset": 0,
+      "hex": "4D436F6D70724844"
+    },
+    {
+      "name": "CSO compressed ISO",
+      "offset": 0,
+      "hex": "4349534F"
+    },
+    {
+      "name": "PBP PlayStation portable executable",
+      "offset": 0,
+      "hex": "00504250"
+    },
+    {
+      "name": "MDS media descriptor sheet",
+      "offset": 0,
+      "hex": "4D454449412044455343524950544F52"
+    }
+  ],
+  "allowedPaths": []
+}

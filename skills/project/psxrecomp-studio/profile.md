@@ -21,6 +21,7 @@ common skill is ported to another project.
 | Architecture overview | `docs/architecture/README.md` |
 | CPU/R3000A subsystem specs | `docs/cpu/instruction-set.md`, `docs/cpu/instruction-format.md`, `docs/cpu/registers.md`, `docs/cpu/r3000a.md`, `docs/cpu/pipeline.md`, `docs/cpu/memory.md`, `docs/cpu/exceptions.md`, `docs/cpu/cop0.md` |
 | Test specification | `docs/cpu/test-specification.md` |
+| Repository artifact policy | `docs/development/artifact-policy.md` (SSOT: `config/artifact-policy.json`) |
 
 ## 2. ADR directory
 
@@ -36,6 +37,7 @@ Current records:
 | 004 | Branch / Load-Delay Modeling | Accepted |
 | 005 | PC Update Model | Accepted |
 | 006 | Architecture Enforcement via Analyzer | Accepted |
+| 007 | Repository Artifact Policy and CI Contamination Gate | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).
@@ -85,7 +87,9 @@ projects, aggregate CI Gate job.
   CI (Linux) as the authoritative result.
 - Sync local main only with fast-forward: `git pull --ff-only`.
 - Do not commit anything under `build/`, `bin/`, `obj/`; ROM/BIOS files under
-  `rom/` are gitignored.
+  `rom/` are gitignored. The artifact policy gate
+  (`pwsh ./scripts/ci/check-artifact-policy.ps1`) enforces this mechanically;
+  run it before committing binary-ish files.
 
 ## 6. Historical review findings sources
 
