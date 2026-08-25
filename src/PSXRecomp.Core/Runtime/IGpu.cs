@@ -11,7 +11,7 @@ namespace PSXRecomp.Core.Runtime;
 /// GPUSTAT (0x1F801814): GPU status register (read-only).
 ///
 /// VBlank triggers IRQ0 on the interrupt controller.
-/// GPU command completion triggers IRQ1 (acknowledged via GP1(02h)).
+/// GPU command interrupt via GP0(1Fh), acknowledged via GP1(02h).
 /// </summary>
 [Domain]
 public interface IGpu

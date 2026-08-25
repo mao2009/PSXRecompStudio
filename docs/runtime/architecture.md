@@ -113,13 +113,13 @@ Physical Address
 
 | チャンネル | 用途 | 方向 | 同期モード |
 |-----------|------|------|-----------|
-| 0: MDECin | MDEC入力 | ToRam (RAM→MDEC) | Slice (CHCR sync=1) |
-| 1: MDECout | MDEC出力 | FromRam (MDEC→RAM) | Slice (CHCR sync=1) |
+| 0: MDECin | MDEC入力 | FromRam (RAM→MDEC) | Slice (CHCR sync=1) |
+| 1: MDECout | MDEC出力 | ToRam (MDEC→RAM) | Slice (CHCR sync=1) |
 | 2: GPU | 描画 | 双方向 | Burst/Slice/LinkedList |
 | 3: CD-ROM | セクタ読み取り | FromRam (CD→RAM) | Burst (CHCR sync=0) |
 | 4: SPU | 音声データ | 双方向 | Slice (CHCR sync=1) |
 | 5: PIO | 拡張ポート | 双方向 | Burst (CHCR sync=0) |
-| 6: OTC | リバースクリア | FromRam (OTC→RAM) | Burst (CHCR sync=0) |
+| 6: OTC | リバースクリア | ToRam (OTC→RAM) | Burst (CHCR sync=0) |
 
 - DMA完了時に IInterruptController.Raise(IRQ3) を呼ぶ
 - OTC は連結リストのリバースクリア専用 (GPU OT用)
@@ -143,7 +143,7 @@ GP0/GP1 の2つのレジスタで制御する。
 - **GPUREAD (0x1F801810)**: GP0/GP1 の結果読み取り
 - **GPUSTAT (0x1F801814)**: GPUステータスレジスタ (読み取り専用)
 - **VBlank**: 垂直帰線時に IRQ0 を発火
-- **GPU命令完了**: IRQ1 を発火 (GP1(02h) で Acknowledge)
+- **GPU IRQ1**: GP0(1Fh) コマンドで要求, GP1(02h) で Acknowledge
 
 ## SPU Model
 

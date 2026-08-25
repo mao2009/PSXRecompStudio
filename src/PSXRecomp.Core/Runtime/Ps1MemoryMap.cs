@@ -50,7 +50,7 @@ public static class Ps1MemoryMap
     public static bool IsScratchpad(uint address) => address >= ScratchpadStart && address <= ScratchpadEnd;
     public static bool IsHardwareRegister(uint address) => address >= HardwareRegisterStart && address <= HardwareRegisterEnd;
     public static bool IsSpu(uint address) => address >= SpuStart && address <= SpuEnd;
-    public static bool IsCacheControl(uint address) => address == CacheControlAddress;
+    public static bool IsCacheControl(uint address) => address >= CacheControlAddress && address <= CacheControlAddress + 3;
 
     public static uint MaskRamAddress(uint address) => address & 0x1FFFFF;
     public static uint MaskBiosAddress(uint address) => (address - BiosStart) & 0x7FFFF;
