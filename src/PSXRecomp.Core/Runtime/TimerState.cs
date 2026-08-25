@@ -24,16 +24,17 @@ public sealed class TimerState
 
     public void Tick(uint cycles)
     {
-        if ((Mode & 0x01) == 0)
+        if ((Mode & 0x01) != 0 && (Mode & 0x06) != 0)
             return;
 
-        uint _prev = Count;
-        Count += cycles;
+        uint _prev = Count & 0xFFFF;
+        Count = (Count + cycles) & 0xFFFF;
+        uint _newCount = Count;
 
-        if ((Mode & 0x0010) != 0 && _prev <= Target && Count >= Target)
+        if ((Mode & 0x0010) != 0 && _prev <= Target && _newCount >= Target)
             InterruptPending = true;
 
-        if ((Mode & 0x0020) != 0 && Count < _prev)
+        if ((Mode & 0x0020) != 0 && _newCount < _prev)
             InterruptPending = true;
     }
 }

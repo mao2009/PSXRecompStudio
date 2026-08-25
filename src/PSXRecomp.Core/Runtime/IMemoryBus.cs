@@ -8,11 +8,11 @@ namespace PSXRecomp.Core.Runtime;
 /// based on the physical address mapping.
 ///
 /// PS1 Memory Map:
-///   0x00000000-0x001FFFFF: RAM (2MB, mirrored to 8MB)
-///   0x1F000000-0x1F07FFFF: BIOS (512KB)
-///   0x1F800000-0x1F8003FF: Hardware Registers (cached)
-///   0x1F801000-0x1F801FFF: Hardware Registers (uncached)
-///   0xFFFE0000-0xFFFFFFFF: Kernel RAM (mirror)
+///   0x00000000-0x007FFFFF: RAM (2MB, mirrored to 8MB)
+///   0x1F000000-0x1F07FFFF: Expansion Region 1 (ROM/RAM)
+///   0x1F800000-0x1F8003FF: Scratchpad (1KB Fast RAM)
+///   0x1F801000-0x1F801FFF: I/O Ports (Hardware Registers)
+///   0x1FC00000-0x1FC7FFFF: BIOS ROM (512KB)
 /// </summary>
 [Domain]
 public interface IMemoryBus

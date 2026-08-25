@@ -20,19 +20,19 @@ public sealed class InterruptControllerState
 
     public void Raise(int irq)
     {
-        if (irq >= 0 && irq <= 9)
+        if (irq >= 0 && irq <= 10)
             Status |= (1u << irq);
     }
 
     public void Clear(int irq)
     {
-        if (irq >= 0 && irq <= 9)
+        if (irq >= 0 && irq <= 10)
             Status &= ~(1u << irq);
     }
 
     public void Acknowledge(uint value)
     {
-        Status &= ~value;
+        Status &= value;
     }
 
     public bool HasPending => (Status & Mask) != 0;

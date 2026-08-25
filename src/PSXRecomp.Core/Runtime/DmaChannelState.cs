@@ -14,9 +14,8 @@ public sealed class DmaChannelState
     public uint ChannelControl { get; set; }
     public uint WordsTransferred { get; set; }
 
-    public bool Enabled => (ChannelControl & 0x80000000) != 0;
-    public bool Active => (ChannelControl & 0x00000001) != 0;
-    public bool IsToRam => (ChannelControl & 0x00000002) == 0;
+    public bool Enabled => (ChannelControl & 0x01000000) != 0;
+    public bool IsToRam => (ChannelControl & 0x00000001) == 0;
 
     public void Reset()
     {

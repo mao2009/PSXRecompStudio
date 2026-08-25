@@ -21,10 +21,10 @@ namespace PSXRecomp.Core.Runtime;
 ///   - Channel base + 0x04: BCR (Block Control)
 ///   - Channel base + 0x08: CHCR (Channel Control)
 ///
-/// DMA transfer modes:
-///   - 0: Immediate (linked list for GPU)
-///   - 1: Sync to DMA request (GPU, SPU, CD-ROM)
-///   - 2: Sync to blocks (decompression)
+/// DMA transfer modes (CHCR bits 9-10):
+///   - 0: Burst (transfer all at once after DREQ)
+///   - 1: Slice (transfer in blocks on DREQ)
+///   - 2: Linked-list (GPU command lists)
 /// </summary>
 [Domain]
 public interface IDmaController
@@ -53,13 +53,13 @@ public interface IDmaController
     }
 
     /// <summary>
-    /// DMA transfer mode.
+    /// DMA transfer mode (CHCR bits 9-10).
     /// </summary>
     enum DmaSyncMode
     {
-        Immediate = 0,
-        DmaRequest = 1,
-        Blocks = 2
+        Burst = 0,
+        Slice = 1,
+        LinkedList = 2
     }
 
     /// <summary>
