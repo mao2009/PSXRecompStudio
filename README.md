@@ -139,25 +139,18 @@ AI エージェントを含む開発者は、実装前にリポジトリ内の S
 - [`docs/architecture/gui-ux.md`](docs/architecture/gui-ux.md) — GUI / UX 設計文書
 - [`docs/development/agent-guide.md`](docs/development/agent-guide.md) — AI 開発エージェント向けガイド
 
-## Git Hooks（main ブランチ保護）
+## Git Workflow（main ブランチ保護）
 
-本リポジトリでは、main ブランチへの直接 commit / push を防止する Git hook を導入しています。
+main ブランチは GitHub Repository Rules により保護されています。直接 push は禁止です。
 
-clone 後、以下を実行して hook を有効化してください：
+正式な開発フロー：
 
-```bash
-git config core.hooksPath .githooks
-```
-
-これにより、以下が自動的に適用されます：
-
-- **pre-commit**: main ブランチ上での commit を拒否
-- **pre-push**: main ブランチ上での push を拒否
-
-推奨フロー：
 1. feature branch を作成: `git checkout -b feature/your-feature`
 2. 変更をコミット・push
-3. PR を作成し、レビュー・CI を通過したら main へマージ
+3. Pull Request を作成
+4. CI が通過し、レビューを経て main へマージ
+
+main への変更は Pull Request 経由でのみ可能です。
 
 ## ライセンス
 
