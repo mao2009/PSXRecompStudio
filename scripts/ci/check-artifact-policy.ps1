@@ -89,7 +89,11 @@ foreach ($rel in $tracked) {
         Add-Violation -Rule 'UNREADABLE_FILE' -File $norm -Reason 'tracked file does not exist on disk'
         continue
     }
-    $item = Get-Item -LiteralPath $full
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+    if (-not $item) {
+        Add-Violation -Rule 'UNREADABLE_FILE' -File $norm -Reason 'tracked file could not be read from disk'
+        continue
+    }
 
     # Rule 1: forbidden path segment (directory-level policy).
     $segments = $lower -split '/'
