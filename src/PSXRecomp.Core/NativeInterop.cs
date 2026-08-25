@@ -46,4 +46,13 @@ internal static partial class NativeInterop
 
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_GetRAMSize();
+
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_ReadDmaRegister(IntPtr core, uint address);
+
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_WriteDmaRegister(IntPtr core, uint address, uint value);
+
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetDmaInterruptPending(IntPtr core);
 }
