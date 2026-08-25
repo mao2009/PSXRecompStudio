@@ -38,6 +38,10 @@ PSX_API void     PSXCore_SetLO(PSXCore* core, uint32_t value);
 PSX_API uint8_t* PSXCore_GetRAM(PSXCore* core);
 PSX_API uint32_t PSXCore_GetRAMSize(void);
 
+PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
+PSX_API void     PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value);
+PSX_API int      PSXCore_GetDmaInterruptPending(PSXCore* core);
+
 PSX_API int PSXCore_Step(PSXCore* core);
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

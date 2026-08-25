@@ -93,6 +93,24 @@ public sealed class PSXCoreWrapper : IDisposable
 
     public static uint GetRamSize() => NativeInterop.PSXCore_GetRAMSize();
 
+    public uint ReadDmaRegister(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_ReadDmaRegister(_handle, address);
+    }
+
+    public void WriteDmaRegister(uint address, uint value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_WriteDmaRegister(_handle, address, value);
+    }
+
+    public bool GetDmaInterruptPending()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetDmaInterruptPending(_handle) != 0;
+    }
+
     // Instruction execution
     public int Step()
     {
