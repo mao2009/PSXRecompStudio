@@ -132,7 +132,7 @@ foreach ($rel in $tracked) {
                 if ($n -le 0) { break }
                 $read += $n
             }
-            if ($read -eq $sigLen -and ([Convert]::ToHexString($buffer) -eq $expectedHex)) {
+            if ($read -eq $sigLen -and ((-join ($buffer | ForEach-Object { $_.ToString('X2') })) -eq $expectedHex)) {
                 Add-Violation -Rule 'CONTENT_SIGNATURE' -File $norm -Reason "content matches '$($sig.name)' signature at offset $offset"
             }
         } finally {
