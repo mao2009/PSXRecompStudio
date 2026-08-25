@@ -126,7 +126,7 @@ Levels follow the skill's semantics (Update / Check / —).
 | CI / build / test infra | Check `README.md` (build/test sections) | Check `docs/README.md` | — | Update¹ | Update relevant `docs/development/*.md` | Check profile §4–5 |
 | Dev workflow / repo policy | Update `README.md` | Check `docs/README.md` | — | Update¹ | Update relevant `docs/development/*.md` | Update affected skills/profile |
 | Configuration-as-policy (e.g. `config/artifact-policy.json`) | Check `README.md` | Check `docs/README.md` | — | Update¹ | Update the policy's development page | Check profile §1, §5 |
-| Process artifacts (skills, profiles, agent guides) | — | — | — | Check¹ | Check `docs/development/agent-guide.md` | Update affected skills/profile |
+| Process artifacts (skills, profiles, agent guides) | — | — | — | Check¹ | Check `docs/development/agent-guide.md`; update the `skills/README.md` index when adding/renaming/removing a skill | Update affected skills/profile |
 
 Internal-only work maps to no row by design: its expected outcome is a
 recorded no-op across all columns.
