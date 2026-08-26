@@ -6,14 +6,16 @@
 
 .DESCRIPTION
     Launched as a child process by the Batch Orchestrator.
-    Invokes OpenCode AI Agent to investigate, implement, test, commit, and create PR.
+    Invokes AI Agent (Claude Code, OpenCode, etc.) to investigate, implement, test, commit, and create PR.
+    Uses AgentProvider abstraction for multi-agent support.
     Writes completion state to a result file for orchestrator consumption.
 
 .NOTES
-    Version: 1.1.0
-    Issue: #159
+    Version: 2.0.0 (Provider-based, Claude Code ready)
+    Issue: #159, #160, #161
     Runtime: PowerShell Core 7.x
     Platform: Cross-platform (Windows, Linux, macOS)
+    Agents: Claude Code (default), OpenCode (legacy)
 #>
 
 param(
@@ -114,38 +116,39 @@ IMPORTANT RULES:
 - After committing, print the commit SHA clearly as: COMMIT_SHA: <sha>
 "@
 
-        Write-AgentLog "Phase 1-4: Invoking OpenCode AI Agent..."
-        $timeoutSeconds = $TimeoutMinutes * 60
+        Write-AgentLog "Phase 1-4: Invoking AI Agent (Claude Code)..."
 
-        $openCodeExe = "$env:APPDATA\npm\node_modules\opencode-ai\bin\opencode.exe"
-        if (-not (Test-Path $openCodeExe)) {
-            $openCodeExe = "opencode"
+        # Import AgentProvider module
+        $agent_provider_module = Join-Path (Split-Path $PSScriptRoot) "Modules\AgentProvider.psm1"
+        if (-not (Test-Path $agent_provider_module)) {
+            throw "AgentProvider module not found: $agent_provider_module"
         }
 
-        $agentOutput = ""
-        $agentExitCode = 1
+        Import-Module $agent_provider_module -Force
 
-        try {
-            $promptFile = Join-Path $env:TEMP "opencode-prompt-$IssueId.txt"
-            $agentPrompt | Set-Content -Path $promptFile -Force
-
-            $promptContent = Get-Content $promptFile -Raw
-            $ocProcess = Start-Process -FilePath $openCodeExe -ArgumentList "run", $promptContent, "--pure" -WorkingDirectory $WorktreePath -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$env:TEMP\opencode-stdout-$IssueId.txt" -RedirectStandardError "$env:TEMP\opencode-stderr-$IssueId.txt"
-            $agentExitCode = $ocProcess.ExitCode
-            $stdoutPath = "$env:TEMP\opencode-stdout-$IssueId.txt"
-            $stderrPath = "$env:TEMP\opencode-stderr-$IssueId.txt"
-            if (Test-Path $stdoutPath) { $agentOutput = Get-Content $stdoutPath -Raw -ErrorAction SilentlyContinue }
-            if (Test-Path $stderrPath) { $agentError = Get-Content $stderrPath -Raw -ErrorAction SilentlyContinue }
-            if (Test-Path $promptFile) { Remove-Item $promptFile -Force }
-        } catch {
-            Write-AgentLog "OpenCode invocation failed: $($_.Exception.Message)" "ERROR"
-            $agentOutput = ""
+        # Create Claude Code provider
+        $provider = New-ClaudeCodeProvider
+        $result_dir = Join-Path $WorktreePath ".subagent"
+        if (-not (Test-Path $result_dir)) {
+            New-Item -ItemType Directory -Path $result_dir -Force | Out-Null
         }
 
-        Write-AgentLog "OpenCode completed (exit code: $agentExitCode)"
-        if ($agentOutput) {
-            Write-AgentLog "Agent output length: $($agentOutput.Length) chars"
-        }
+        # Invoke Claude Code
+        Write-AgentLog ("Invoking: {0}" -f $provider.Executable)
+        $provider_result = Invoke-ClaudeCodeProvider `
+            -ProviderConfig $provider `
+            -Prompt $agentPrompt `
+            -WorkingDirectory $WorktreePath `
+            -ResultDirectory $result_dir
+
+        $agentExitCode = $provider_result.ExitCode
+        $agentOutput = $provider_result.StdoutContent
+        $agentError = $provider_result.StderrContent
+        $stdoutPath = $provider_result.StdoutPath
+        $stderrPath = $provider_result.StderrPath
+
+        Write-AgentLog ("AI Agent completed (exit code: {0})" -f $agentExitCode)
+        Write-AgentLog ("Output: stdout={0} bytes, stderr={1} bytes" -f $agentOutput.Length, $agentError.Length)
 
         Write-AgentLog "Phase 5: Commit and Push"
 
