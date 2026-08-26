@@ -113,6 +113,10 @@ function New-ClaudeCodeProvider {
     <#
     .SYNOPSIS
         Creates a Claude Code provider configuration.
+
+    .DESCRIPTION
+        Uses Claude Code in non-interactive mode (-p/--print) for batch processing.
+        Disables session persistence to prevent prompt dialogs.
     #>
     [CmdletBinding()]
     param()
@@ -126,7 +130,7 @@ function New-ClaudeCodeProvider {
         -Name "claude-code" `
         -Type "claude-code" `
         -Executable $claude_exe `
-        -Arguments @("-p", "--no-ask-approve")
+        -Arguments @("-p", "--permission-mode", "auto", "--no-session-persistence")
 }
 
 function Invoke-ClaudeCodeProvider {
