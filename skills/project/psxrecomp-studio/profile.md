@@ -110,6 +110,62 @@ Release build, both test projects, aggregate CI Gate job.
   items, and reason when an Issue is intentionally left open.
 - Prefer one concern per PR; keep unrelated refactors out.
 
+## 8. Batch Processing (Issue #145)
+
+For parallel Issue-driven development using the `common/process/batch` skill:
+
+### Workflow
+
+```text
+Issue
+  ↓
+Orchestrator creates Worktree
+  ↓
+Environment initialization
+  ↓
+Sub-agent investigates & implements
+  ↓
+Sub-agent creates PR with detailed report
+  ↓
+User reviews and approves
+  ↓
+Orchestrator performs mandatory rebase
+  ↓
+Conflict resolution (if needed)
+  ↓
+Merge into main
+  ↓
+Cleanup Worktree and Branch
+```
+
+### Naming Conventions
+
+- Branch: `issue/<number>-<short-description>`
+- Worktree: `../worktrees/<number>-<short-description>`
+
+### Required Reports
+
+Sub-agents must provide:
+- Summary
+- Investigation
+- Design Decision
+- Changes
+- Tests
+- Risks / Limitations
+- Related Issues
+- Verification
+
+### Merge Conditions
+
+All must be satisfied:
+- User approval for latest artifact
+- Branch based on latest main HEAD
+- Rebase successful
+- No conflicts
+- Required tests passed
+- PR mergeable
+- Sub-agent report exists
+
 ## 8. Documentation synchronization inputs
 
 Project-specific inputs for the `common/process/doc-sync` skill (#89).
