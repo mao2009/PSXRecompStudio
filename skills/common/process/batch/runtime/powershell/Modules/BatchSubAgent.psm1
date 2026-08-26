@@ -380,33 +380,32 @@ function Invoke-SubAgentLaunch {
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
 
-    $process = [System.Diagnostics.Process]::Start($psi)
-    if ($null -eq $process) {
+    $subagent_process = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $subagent_process) {
         throw "Failed to start Sub-agent process for $IssueId"
     }
 
-    # Capture output in background
-    $outJob = $process.StandardOutput | Out-String -Stream
-    $errJob = $process.StandardError | Out-String -Stream
+    $subagent_pid = $subagent_process.Id
 
     # Write launch info to log
     @"
 === Sub-agent Process Launch Log ===
 IssueId: $IssueId
-ProcessId: $($process.Id)
+ProcessId: $subagent_pid
 StartedAt: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 Script: $SubAgentScript
 WorktreePath: $WorktreePath
 BranchName: $BranchName
+ResultFile: $resultFile
 
 === Process Running ===
 "@ | Set-Content -Path $logFile -Force
 
     return @{
-        ProcessId = $process.Id
+        ProcessId = $subagent_pid
         StartedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
         LogFile = $logFile
-        Process = $process
+        Process = $subagent_process
     }
 }
 
