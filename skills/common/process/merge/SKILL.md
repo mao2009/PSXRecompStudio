@@ -1,0 +1,463 @@
+---
+name: pr-merge
+description: >
+  Safe PR Merge Skill for Batch and Standalone use.
+  Enforces mandatory approval → rebase → validation → normal merge flow.
+  Prevents admin bypass and protection rule circumvention.
+version: 1.0.0
+scope: process
+platform: agent-agnostic
+related-issues: "#146"
+---
+
+# PR Merge Skill
+
+A safe, standalone PR Merge Skill that enforces a strict merge flow:
+**User Approval → Latest Main HEAD Rebase → Validation → Normal Merge**.
+
+This Skill prevents admin bypass and protection rule circumvention,
+ensuring that merges only happen through the standard GitHub merge path.
+
+## Core Principles
+
+1. **Safety over speed**: Never merge if conditions are not met
+2. **No admin bypass**: Never use `--admin`, force push, or protection circumvention
+3. **Mandatory rebase**: Always rebase onto latest main HEAD before merge
+4. **Approval as gate**: User approval is required and tied to commit SHA
+5. **Conflict delegation**: Conflicts are delegated back to Sub-agent, not auto-resolved
+6. **Standalone and Batch compatible**: Same safety conditions regardless of invocation
+
+## When to apply
+
+This Skill is triggered when:
+
+| Condition | Description |
+|-----------|-------------|
+| PR exists | A GitHub PR is ready for merge |
+| User approval | User has explicitly approved the PR |
+| All checks pass | Required checks are green |
+| No conflicts | Branch is up-to-date with main |
+
+### Invocation Modes
+
+| Mode | Description |
+|------|-------------|
+| **Standalone** | Direct invocation for single PR merge |
+| **Batch** | Called by Batch Skill orchestrator |
+
+## Inputs
+
+1. **PR Number** (required): The GitHub PR number to merge
+2. **Repository** (optional): owner/repo format (auto-detected if not provided)
+3. **Worktree Path** (optional): Path to the Worktree (for Batch mode)
+4. **Branch Name** (optional): Branch name (for cleanup after merge)
+
+## Procedure
+
+### 1. Trigger Check
+
+Verify preconditions before proceeding:
+
+```text
+1. PR exists and is open
+2. Target branch is main
+3. PR is mergeable (not draft, no conflicts)
+4. Required checks are passing
+```
+
+If any precondition fails, **stop and report**.
+
+### 2. Approval Validation
+
+Check for valid user approval:
+
+```text
+1. Load approval record (if exists)
+2. Verify approval exists
+3. Verify approved_commit_sha matches current_commit_sha
+4. Verify main_head_sha matches current main HEAD
+5. If approval is invalid, require re-approval
+```
+
+**No approval = No merge.**
+
+### 3. Main Head Refresh
+
+Fetch the latest main HEAD:
+
+```text
+1. git fetch origin main
+2. Record current main HEAD SHA
+3. Update approval record with new main HEAD (if needed)
+```
+
+### 4. Mandatory Rebase
+
+Always rebase onto latest main HEAD:
+
+```text
+1. git rebase origin/main
+2. If clean → proceed to validation
+3. If conflict → stop, delegate to Sub-agent
+```
+
+**Never skip rebase, even if branch appears up-to-date.**
+
+### 5. Conflict Handling
+
+If rebase produces conflicts:
+
+```text
+1. Record conflict state
+2. Abort rebase (git rebase --abort)
+3. Return to caller with conflict information
+4. Sub-agent resolves conflicts
+5. Sub-agent updates PR
+6. Approval invalidated
+7. User re-approves
+8. Merge Skill re-fired
+```
+
+**Never auto-resolve conflicts.**
+
+### 6. Validation
+
+After successful rebase:
+
+```text
+1. Verify no merge conflicts exist
+2. Run required tests (if configured)
+3. Verify PR is still mergeable
+4. Record validation result
+```
+
+### 7. Normal Merge
+
+Execute merge through standard GitHub path:
+
+```text
+1. gh pr merge <pr-number> --merge
+2. Verify merge succeeded
+3. Record merge commit SHA
+```
+
+**NEVER use:**
+- `gh pr merge --admin`
+- Force push
+- Direct push to main
+- Protection rule bypass
+
+### 8. Post-Merge Verification
+
+Verify the merge on GitHub:
+
+```text
+1. Confirm PR state is MERGED
+2. Verify merge commit exists on main
+3. Record final state
+```
+
+### 9. Cleanup
+
+After successful merge verification:
+
+```text
+1. Delete Worktree (if provided)
+2. Delete local Branch
+3. Delete remote Branch
+4. Prune stale references
+5. Mark COMPLETED
+```
+
+**Merge and Cleanup are separate states.**
+
+## State Machine
+
+### States
+
+```text
+TRIGGER_CHECK
+APPROVAL_VALIDATION
+MAIN_HEAD_REFRESH
+REBASE
+CONFLICT
+VALIDATING
+MERGING
+MERGED
+CLEANUP
+COMPLETED
+FAILED
+```
+
+### Transitions
+
+```text
+TRIGGER_CHECK
+    ↓
+APPROVAL_VALIDATION
+    ↓
+MAIN_HEAD_REFRESH
+    ↓
+REBASE
+    ├─ conflict → CONFLICT → (return to caller)
+    └─ clean → VALIDATING
+                   ↓
+                 MERGING
+                   ↓
+                 MERGED
+                   ↓
+                 CLEANUP
+                   ↓
+                 COMPLETED
+```
+
+### Transition Rules
+
+| From | To | Condition |
+|------|----|-----------|
+| TRIGGER_CHECK | APPROVAL_VALIDATION | Preconditions met |
+| TRIGGER_CHECK | FAILED | Preconditions not met |
+| APPROVAL_VALIDATION | MAIN_HEAD_REFRESH | Approval valid |
+| APPROVAL_VALIDATION | FAILED | No approval or invalid |
+| MAIN_HEAD_REFRESH | REBASE | Main HEAD fetched |
+| REBASE | VALIDATING | Rebase clean |
+| REBASE | CONFLICT | Rebase conflicts |
+| VALIDATING | MERGING | Validation passed |
+| VALIDATING | FAILED | Validation failed |
+| MERGING | MERGED | Merge succeeded |
+| MERGING | FAILED | Merge failed |
+| MERGED | CLEANUP | Verification passed |
+| CLEANUP | COMPLETED | Cleanup succeeded |
+| CLEANUP | FAILED | Cleanup failed |
+
+## Approval Model
+
+### Approval Record
+
+| Field | Description |
+|-------|-------------|
+| `pr_number` | The PR number |
+| `issue_number` | The Issue number |
+| `commit_sha` | The commit SHA being approved |
+| `main_head_sha` | The main HEAD SHA at approval time |
+| `approved_by` | Who approved |
+| `approved_at` | When approved (ISO 8601) |
+| `is_valid` | Whether approval is still valid |
+| `notes` | Optional notes |
+
+### Approval Invalidation
+
+An approval is invalidated when:
+
+- Rebase changed content
+- Conflict resolution changed code
+- Tests affected by changes
+- PR content changed
+- Artifact changes
+
+### Validation
+
+To validate an approval:
+
+```text
+1. Check is_valid flag
+2. Compare approved_commit_sha with current commit
+3. Compare approved_main_head_sha with current main HEAD
+```
+
+**All must match for approval to be valid.**
+
+## Conflict Handling
+
+### Flow
+
+When conflicts occur during rebase:
+
+```text
+1. Detect conflicts
+2. Record conflict state
+3. Abort rebase
+4. Return to caller with conflict information
+5. Sub-agent resolves conflicts in same Branch/Worktree
+6. Sub-agent re-tests
+7. Sub-agent updates PR
+8. Approval invalidated
+9. User re-approves
+10. Merge Skill re-fired
+11. New rebase attempt
+```
+
+### Conflict Information
+
+Return to caller:
+
+| Field | Description |
+|-------|-------------|
+| `has_conflicts` | Boolean |
+| `conflict_files` | List of conflicting files |
+| `worktree_path` | Path to Worktree |
+| `branch_name` | Branch name |
+
+## Merge Strategy
+
+### Standard Merge
+
+Use standard GitHub merge:
+
+```text
+gh pr merge <pr-number> --merge
+```
+
+### What is NOT allowed
+
+| Method | Reason |
+|--------|--------|
+| `gh pr merge --admin` | Bypasses protection rules |
+| `--squash` | Changes commit history |
+| `--rebase` | May cause issues |
+| Force push | Bypasses all checks |
+| Direct push | Bypasses PR process |
+| API merge with bypass | Circumvents protections |
+
+## Batch Invocation
+
+When called from Batch Skill:
+
+```text
+Batch Skill
+    ↓
+Merge Skill (PR #149)
+    ↓
+Preconditions check
+    ↓
+Approval validation
+    ↓
+Main HEAD refresh
+    ↓
+Rebase
+    ↓
+Validation
+    ↓
+Normal merge
+    ↓
+Cleanup
+    ↓
+Return to Batch Skill
+```
+
+**Batch Skill is NOT a merge condition.**
+
+## Standalone Invocation
+
+When invoked directly:
+
+```text
+User
+    ↓
+Merge Skill (PR #149)
+    ↓
+Preconditions check
+    ↓
+Approval validation
+    ↓
+Main HEAD refresh
+    ↓
+Rebase
+    ↓
+Validation
+    ↓
+Normal merge
+    ↓
+Cleanup
+```
+
+## Cleanup Process
+
+After merge confirmation:
+
+```text
+1. Confirm PR merged on GitHub
+2. Verify merge commit exists on main
+3. Delete Worktree (if provided)
+4. Delete local Branch
+5. Delete remote Branch
+6. Verify no remaining references
+7. Mark COMPLETED
+```
+
+**Important:** Merge and Cleanup are separate states.
+Cleanup failure does not revert merge.
+
+## Resumability
+
+### Persisted State
+
+| Field | Description |
+|-------|-------------|
+| `pr_number` | The PR number |
+| `issue_number` | The Issue number |
+| `branch_name` | The Branch name |
+| `worktree_path` | The Worktree path |
+| `current_state` | The current state |
+| `current_commit_sha` | Current commit SHA |
+| `approved_commit_sha` | Approved commit SHA |
+| `main_head_sha` | Main HEAD SHA |
+| `created_at` | Creation timestamp |
+| `updated_at` | Last update timestamp |
+
+### Recovery Process
+
+To resume a stopped process:
+
+```text
+1. Load persisted state
+2. Verify PR exists and is open
+3. Check current state
+4. Resume from last known state
+```
+
+## Configuration
+
+Project-specific configuration is externalized in `config/`:
+
+```text
+config/
+└── merge-config.json    # Project configuration
+```
+
+## Runtime
+
+The actual implementation lives in `runtime/`:
+
+```text
+runtime/
+├── README.md               # Runtime documentation
+└── <runtime-name>/         # Specific runtime implementation
+    ├── modules/            # Reusable modules
+    ├── scripts/            # Entry-point scripts
+    └── tests/              # Tests
+```
+
+### Current Runtimes
+
+| Runtime | Status | Platform |
+|---------|--------|----------|
+| PowerShell Core 7.x | Implemented | Windows, Linux, macOS |
+
+## Porting to Another Project
+
+To use this Skill in another project:
+
+1. Copy the `skills/common/process/merge/` directory
+2. Update `config/merge-config.json` with project-specific settings
+3. Ensure the required Runtime is available
+4. No changes to SKILL.md required
+
+## Non-goals
+
+- Replacing human judgment on merge timing
+- Automatic merge without user approval
+- Conflict resolution by Merge Skill
+- Skipping rebase for "simple" changes
+- Compromising main branch history
+- Admin bypass or protection circumvention
