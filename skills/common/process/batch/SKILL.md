@@ -4,7 +4,8 @@ description: >
   Parallel Issue execution Orchestrator for Batch Skill.
   Manages concurrent Sub-agents with dependency scheduling,
   retry, failure isolation, and serial merge via Merge Skill.
-version: 1.0.0
+  Cross-platform: POSIX shell (default) and PowerShell implementations.
+version: 2.0.0
 scope: process
 platform: agent-agnostic
 related-issues: "#155"
@@ -28,21 +29,43 @@ scheduling and serial merge through the Merge Skill.
 
 ## Architecture
 
+### Primary Path (Shell / POSIX)
+
 ```text
-Orchestrator
+batch.sh (entry point)
     ↓
-Scheduler (concurrency limit)
+Orchestrator (orchestrator.sh)
     ↓
-Sub-agent (per Issue)
+Host Agent → Built-in Sub-agent / Task tool
     ↓
-Worktree / Branch (independent)
-    ↓
-PR
-    ↓
-Merge Skill (serial)
-    ↓
-main
+Task execution (worktree → commit → PR)
 ```
+
+### Provider Hierarchy
+
+The Agent Runtime Interface dispatches tasks through providers:
+
+| Priority | Provider | Description | Required |
+|----------|----------|-------------|----------|
+| 1 | built-in-subagent | Host agent's Task tool | No (requires host agent) |
+| 2 | claude-code | Claude Code CLI | No (optional fallback) |
+| 3 | test | Deterministic test provider | No (CI/testing) |
+
+**No AI CLI is required.** The orchestrator works with any host agent that supports the Task tool interface. CLI adapters are optional fallbacks.
+
+### Legacy Path (PowerShell)
+
+```text
+batch.ps1 (entry point)
+    ↓
+Orchestrator (Invoke-BatchOrchestrator.ps1)
+    ↓
+Sub-agent Worker (pwsh child process)
+    ↓
+Task execution
+```
+
+Both implementations are functionally equivalent. The Shell version is the default for cross-platform use.
 
 ## Batch State Machine
 
@@ -273,15 +296,69 @@ After merge confirmation:
 4. Prune stale references
 5. Mark Issue as COMPLETED
 
+## Dependencies
+
+### Required
+
+| Tool | Purpose |
+|------|---------|
+| git | Repository operations, worktree management |
+
+### Optional
+
+| Tool | Purpose | Used By |
+|------|---------|---------|
+| gh | GitHub PR/issue operations | github-operations.sh, merge-queue.sh |
+| claude | Claude Code CLI | adapters/claude-code/ |
+| pwsh | PowerShell (for PS runtime only) | powershell/ |
+
+### Not Required
+
+| Tool | Notes |
+|------|-------|
+| jq | Shell version uses sed-based JSON |
+| python | Not needed |
+| node | Not needed |
+| opencode | Not a required dependency |
+| codex | Not a required dependency |
+
+When `gh` is not available, GitHub-dependent operations (PR creation, approval checks, merge) return graceful errors. The orchestrator continues processing and stops safely before any merge that requires approval verification.
+
 ## Configuration
 
 Project-specific configuration in `config/batch-config.json`.
 
 ## Runtime
 
+### Shell (POSIX sh) — Default
+
 ```text
 runtime/
-├── README.md
+├── batch.sh                          # CLI entry point
+├── orchestrator.sh                   # Main orchestrator loop
+├── persistence.sh                    # JSON state I/O (atomic writes)
+├── git-operations.sh                 # Worktree CRUD, branch ops
+├── agent-runtime.sh                  # Provider dispatch interface
+├── github-operations.sh              # PR management via gh CLI
+├── merge-queue.sh                    # Serial merge with approval gate
+├── core/                             # Pure logic (zero I/O)
+│   ├── state-machine.sh              # Batch/issue state transitions
+│   ├── dependency-graph.sh           # DAG, cycle detection
+│   ├── scheduler.sh                  # Concurrency-aware scheduling
+│   ├── retry.sh                      # Exponential backoff
+│   ├── contracts.sh                  # State schema validation
+│   └── tests/                        # 227 tests
+├── adapters/
+│   ├── test/adapter.sh               # Test provider (no AI agent)
+│   ├── built-in-subagent/adapter.sh  # Host agent Task tool contract
+│   └── claude-code/adapter.sh        # Optional CLI fallback
+└── tests/                            # 122 tests
+```
+
+### PowerShell — Legacy
+
+```text
+runtime/
 └── powershell/
     ├── Modules/
     │   ├── BatchStateMachine.psm1
@@ -298,7 +375,39 @@ runtime/
         └── Test-BatchSkill.ps1
 ```
 
+### Design Principles
+
+- **Core Logic**: Pure functions, zero I/O, zero external dependencies
+- **Runtime Layer**: POSIX sh compatible, sources Core modules
+- **Git**: Only hard dependency
+- **Agent Runtime**: Provider-agnostic dispatch via adapter pattern
+- **State**: JSON files with atomic writes (temp + mv)
+
 ## Usage
+
+### Shell (POSIX sh) — Cross-platform
+
+```sh
+# Run batch with issue numbers
+batch.sh run batch-100 101 102 103
+
+# Run with test provider (no AI agent needed)
+batch.sh run batch-100 101 102 --provider test
+
+# Run with custom concurrency and retries
+batch.sh run batch-100 101 102 103 --max-concurrency 5 --max-retries 5
+
+# Resume after interruption (syncs with GitHub)
+batch.sh resume batch-100
+
+# Check status
+batch.sh status batch-100
+
+# Show help
+batch.sh help
+```
+
+### PowerShell (Windows / pwsh)
 
 ```powershell
 # Run batch with issues file
@@ -316,6 +425,15 @@ runtime/
 # Run tests
 .\wrapper\batch.ps1 test
 ```
+
+### Provider Selection
+
+| Scenario | Recommended Provider |
+|----------|---------------------|
+| Host agent with Task tool | built-in-subagent (default) |
+| Claude Code installed | claude-code (fallback) |
+| CI / deterministic testing | test |
+| No AI agent available | test |
 
 ## Non-goals
 

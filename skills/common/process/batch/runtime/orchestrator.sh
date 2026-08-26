@@ -42,6 +42,22 @@ _ORC_DIR=$(cd "$(dirname "$0")" && pwd)
 # Logging
 # ============================================================
 
+# Insert issue state into issues JSON using awk (POSIX-compatible)
+# Usage: _orc_insert_issue <issues_file> <issue_state_file>
+_orc_insert_issue() {
+    _file="$1"
+    _state_file="$2"
+    awk '
+        index($0, "\"issues\": {") > 0 {
+            print $0
+            while ((getline line < "'$_state_file'") > 0) print line
+            close("'$_state_file'")
+            next
+        }
+        { print $0 }
+    ' "$_file"
+}
+
 _ORC_LOG_LEVEL="${ORC_LOG_LEVEL:-INFO}"
 
 _orc_log() {
@@ -133,13 +149,21 @@ _orc_run() {
         return 1
     fi
 
-    # Add issues to state (POSIX-compatible, no sed \n)
+    # Validate initial state via contracts
+    _contract_result=$(_contracts_validate_batch_state "$_ORC_BATCH_ID" "BATCH_INITIALIZING" "$_issue_count")
+    if [ $? -ne 0 ]; then
+        _orc_log ERROR "State validation failed: $_contract_result"
+        return 1
+    fi
+
+    # Add issues to state (POSIX-compatible, uses awk for multi-line insert)
     _issues_file="$_ORC_STATE_DIR/.batch-issues-${_ORC_BATCH_ID}.json"
     for _id in $_issue_ids; do
-        _issue_state=$(_persistence_new_issue_state "issue-${_id}" "$_id" "Issue #${_id}")
+        _issue_state_file="${_issues_file}.state-${_id}.tmp.$$"
+        _persistence_new_issue_state "issue-${_id}" "$_id" "Issue #${_id}" > "$_issue_state_file"
         _tmp="${_issues_file}.tmp.$$"
-        sed "/\"issues\": {/a\\
-${_issue_state}" "$_issues_file" > "$_tmp" && mv "$_tmp" "$_issues_file"
+        _orc_insert_issue "$_issues_file" "$_issue_state_file" > "$_tmp" && mv "$_tmp" "$_issues_file"
+        rm -f "$_issue_state_file"
     done
 
     # Transition to PLANNING
@@ -152,14 +176,65 @@ ${_issue_state}" "$_issues_file" > "$_tmp" && mv "$_tmp" "$_issues_file"
 }
 
 # Resume an existing batch
-# Usage: _orc_resume <batch_id>
+# Usage: _orc_resume <batch_id> [state_dir] [repo]
 _orc_resume() {
     _ORC_BATCH_ID="$1"
+    _ORC_STATE_DIR="${2:-$_ORC_STATE_DIR}"
+    _ORC_REPO="${3:-$_ORC_REPO}"
+    _ORC_STATE_DIR_PATH="$_ORC_STATE_DIR"
     _orc_log INFO "Resuming batch $_ORC_BATCH_ID"
 
     _persistence_set_state_dir "$_ORC_STATE_DIR"
     _batch_json=$(_persistence_load_batch "$_ORC_BATCH_ID")
     _batch_state=$(echo "$_batch_json" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    _issue_count=$(echo "$_batch_json" | sed -n 's/.*"issue_count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+
+    # Validate state via contracts
+    _contract_result=$(_contracts_validate_batch_state "$_ORC_BATCH_ID" "$_batch_state" "$_issue_count")
+    if [ $? -ne 0 ]; then
+        _orc_log WARN "State validation warning: $_contract_result"
+    fi
+
+    # Sync with GitHub before resuming (PR states, merges, etc.)
+    if _github_is_available; then
+        _orc_log INFO "Syncing state with GitHub..."
+        _issues_file=$(_persistence_get_issue_states_path "$_ORC_BATCH_ID")
+        if [ -f "$_issues_file" ]; then
+            _issue_ids=$(grep -oE '"issue-[0-9]+"' "$_issues_file" 2>/dev/null | sed 's/"//g; s/issue-//')
+            for _id in $_issue_ids; do
+                _issue_json=$(sed -n "/\"issue-${_id}\"/,/}/p" "$_issues_file")
+                _pr_number=$(printf '%s' "$_issue_json" | sed -n 's/.*"pr_number"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' | head -1)
+                _issue_state=$(printf '%s' "$_issue_json" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+
+                if [ -n "$_pr_number" ] && [ "$_pr_number" != "null" ] && [ -n "$_issue_state" ]; then
+                    _gh_state=$(_github_sync_pr_state "$_pr_number" "$_ORC_REPO")
+                    _gh_exists=$(printf '%s' "$_gh_state" | sed -n 's/.*"exists"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')
+                    _gh_pr_state=$(printf '%s' "$_gh_state" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+                    _gh_merge_sha=$(printf '%s' "$_gh_state" | sed -n 's/.*"merge_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+                    if [ "$_gh_exists" = "true" ]; then
+                        # PR was merged externally
+                        if [ "$_gh_pr_state" = "MERGED" ] && [ -n "$_gh_merge_sha" ] && [ "$_gh_merge_sha" != "null" ]; then
+                            if [ "$_issue_state" != "COMPLETED" ]; then
+                                _orc_log INFO "Issue #${_id}: PR #${_pr_number} merged externally, updating state"
+                                _persistence_update_issue_state "$_ORC_BATCH_ID" "$_id" "COMPLETED" "commit_sha" "$_gh_merge_sha"
+                            fi
+                        # PR was closed without merge
+                        elif [ "$_gh_pr_state" = "CLOSED" ]; then
+                            if [ "$_issue_state" != "FAILED" ] && [ "$_issue_state" != "COMPLETED" ]; then
+                                _orc_log WARN "Issue #${_id}: PR #${_pr_number} closed without merge"
+                                _persistence_update_issue_state "$_ORC_BATCH_ID" "$_id" "FAILED" "error" "PR closed without merge"
+                            fi
+                        fi
+                    else
+                        _orc_log WARN "Issue #${_id}: PR #${_pr_number} not found on GitHub"
+                    fi
+                fi
+            done
+        fi
+    else
+        _orc_log WARN "gh CLI not available, skipping GitHub sync"
+    fi
 
     _orc_log INFO "Current state: $_batch_state"
     _orc_main_loop

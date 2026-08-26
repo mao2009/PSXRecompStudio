@@ -131,16 +131,22 @@ _merge_queue_process_next() {
         return 2
     fi
 
-    # 3. Check PR is approved (if gh available)
+    # 3. Check PR is approved (mandatory — no merge without approval)
     if command -v gh >/dev/null 2>&1; then
         _review=$(gh pr view "$_pr" --json "reviewDecision" 2>/dev/null | sed -n 's/.*"reviewDecision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
         if [ "$_review" != "APPROVED" ]; then
-            # Put back in queue
+            # Not approved — put back in queue, do not merge
             _MQ_PENDING="$_first $_MQ_PENDING"
             _MQ_CURRENTLY_MERGING=""
-            echo "PR #$_pr not yet approved (review: $_review)" >&2
+            echo "PR #$_pr not approved (review: ${_review:-unknown}), blocking merge" >&2
             return 1
         fi
+    else
+        # gh CLI unavailable — cannot verify approval, block merge for safety
+        _MQ_PENDING="$_first $_MQ_PENDING"
+        _MQ_CURRENTLY_MERGING=""
+        echo "ERROR: gh CLI not available, cannot verify PR approval for #$_pr — merge blocked" >&2
+        return 1
     fi
 
     # 4. Attempt merge
