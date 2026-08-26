@@ -745,6 +745,40 @@ Invoke-BatchTest -Name "Test-ValidBatchTransition allows all defined transitions
 }
 
 # ============================================================
+# Agent Provider Tests
+# ============================================================
+Write-Host "`n=== Agent Provider Tests ===" -ForegroundColor Green
+
+Import-Module (Join-Path (Split-Path $PSScriptRoot) "Modules\AgentProvider.psm1") -Force
+
+Invoke-BatchTest -Name "New-ClaudeCodeProvider creates config" -Test {
+    $config = New-ClaudeCodeProvider
+    if ($config.Name -ne "claude-code") { throw "Name should be claude-code" }
+    if ($config.Type -ne "claude-code") { throw "Type should be claude-code" }
+    if (-not $config.Executable) { throw "Executable should be set" }
+    if ($config.Arguments.Count -eq 0) { throw "Arguments should be provided" }
+}
+
+Invoke-BatchTest -Name "New-AgentProviderResult creates result" -Test {
+    $result = New-AgentProviderResult `
+        -ProviderName "claude-code" `
+        -Success $true `
+        -ExitCode 0
+
+    if ($result.ProviderName -ne "claude-code") { throw "ProviderName mismatch" }
+    if (-not $result.Success) { throw "Success should be true" }
+}
+
+Invoke-BatchTest -Name "Claude Code executable resolves" -Test {
+    $config = New-ClaudeCodeProvider
+    if (-not (Get-Command $config.Executable -ErrorAction SilentlyContinue)) {
+        if (-not (Test-Path $config.Executable)) {
+            throw ("Claude Code executable not found: {0}" -f $config.Executable)
+        }
+    }
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host "`n=== Test Summary ===" -ForegroundColor Green

@@ -370,6 +370,8 @@ function Invoke-SubAgentLaunch {
         "-TimeoutMinutes", $TimeoutMinutes.ToString()
     )
 
+    $logFile = Join-Path $resultDir "launch.log"
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "pwsh"
     $psi.Arguments = "-File `"$SubAgentScript`" $($scriptArgs -join ' ')"
@@ -383,9 +385,28 @@ function Invoke-SubAgentLaunch {
         throw "Failed to start Sub-agent process for $IssueId"
     }
 
+    # Capture output in background
+    $outJob = $process.StandardOutput | Out-String -Stream
+    $errJob = $process.StandardError | Out-String -Stream
+
+    # Write launch info to log
+    @"
+=== Sub-agent Process Launch Log ===
+IssueId: $IssueId
+ProcessId: $($process.Id)
+StartedAt: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+Script: $SubAgentScript
+WorktreePath: $WorktreePath
+BranchName: $BranchName
+
+=== Process Running ===
+"@ | Set-Content -Path $logFile -Force
+
     return @{
         ProcessId = $process.Id
         StartedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        LogFile = $logFile
+        Process = $process
     }
 }
 
