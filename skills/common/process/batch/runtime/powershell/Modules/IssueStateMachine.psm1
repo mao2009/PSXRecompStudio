@@ -43,7 +43,7 @@ $Script:IssueTransitions = @{
     READY_FOR_MERGE      = @("MERGING")
     MERGING              = @("COMPLETED", "FAILED", "PR_READY")
     COMPLETED            = @()
-    BLOCKED              = @()
+    BLOCKED              = @("WAITING_FOR_SUBAGENT")
     FAILED               = @()
 }
 

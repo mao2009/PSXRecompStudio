@@ -175,12 +175,21 @@ function Invoke-MergeQueueProcess {
             }
         } else {
             $Queue.Pending.Dequeue() | Out-Null
-            $Queue.Failed += $item
+            $outputText = ""
+            if ($exitCode -eq 2) {
+                $Queue.Conflicted += $item
+                $outputText = "Conflict detected during rebase"
+                Write-Host "PR #$($item.PrNumber) has conflicts" -ForegroundColor Yellow
+            } else {
+                $Queue.Failed += $item
+                $outputText = "Merge Skill returned exit code $exitCode"
+                Write-Host "PR #$($item.PrNumber) merge failed" -ForegroundColor Red
+            }
             $Queue.CurrentlyMerging = $null
-            Write-Host "PR #$($item.PrNumber) merge failed" -ForegroundColor Red
             return @{
                 Success = $false
-                Reason = "Merge Skill returned exit code $exitCode"
+                Reason = $outputText
+                IsConflict = ($exitCode -eq 2)
                 Item = $item
             }
         }
