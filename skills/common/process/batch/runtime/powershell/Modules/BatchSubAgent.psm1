@@ -134,21 +134,27 @@ function Test-SubAgentRetryable {
 function Get-SubAgentBackoffDuration {
     <#
     .SYNOPSIS
-        Calculates exponential backoff duration.
+        Calculates exponential backoff duration with max cap enforcement.
     .PARAMETER SubAgentState
         The Sub-agent state.
+    .PARAMETER MaxBackoffSeconds
+        Maximum backoff duration in seconds (default: 120).
     .OUTPUTS
         Duration in seconds.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [hashtable]$SubAgentState
+        [hashtable]$SubAgentState,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxBackoffSeconds = 120
     )
 
     $exponential = $SubAgentState.BackoffSeconds * [Math]::Pow(2, $SubAgentState.RetryCount)
-    $jitter = Get-Random -Minimum 0 -Maximum ($exponential * 0.1)
-    return [Math]::Ceiling($exponential + $jitter)
+    $jitter = Get-Random -Minimum 0 -Maximum ([Math]::Max(1, [int]($exponential * 0.1)))
+    $duration = [Math]::Ceiling($exponential + $jitter)
+    return [Math]::Min($duration, $MaxBackoffSeconds)
 }
 
 function Invoke-SubAgentRetry {
@@ -303,6 +309,171 @@ function Get-SubAgentFailureCategory {
     return "transient"
 }
 
+function Invoke-SubAgentLaunch {
+    <#
+    .SYNOPSIS
+        Launches a Sub-agent as a child process in a specified worktree.
+    .PARAMETER IssueId
+        The issue identifier.
+    .PARAMETER IssueNumber
+        The GitHub issue number.
+    .PARAMETER Description
+        Issue description.
+    .PARAMETER WorktreePath
+        Path to the worktree.
+    .PARAMETER BranchName
+        Branch name.
+    .PARAMETER SubAgentScript
+        Path to the sub-agent worker script.
+    .PARAMETER TimeoutMinutes
+        Timeout in minutes.
+    .OUTPUTS
+        Hashtable with ProcessId and StartedAt.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$IssueId,
+
+        [Parameter(Mandatory = $false)]
+        [int]$IssueNumber = 0,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Description = "",
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorktreePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BranchName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SubAgentScript,
+
+        [Parameter(Mandatory = $false)]
+        [int]$TimeoutMinutes = 30
+    )
+
+    $resultDir = Join-Path $WorktreePath ".subagent"
+    if (-not (Test-Path $resultDir)) {
+        New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+    }
+    $resultFile = Join-Path $resultDir "result.json"
+
+    $scriptArgs = @(
+        "-IssueId", $IssueId,
+        "-IssueNumber", $IssueNumber.ToString(),
+        "-Description", $Description,
+        "-WorktreePath", $WorktreePath,
+        "-BranchName", $BranchName,
+        "-ResultFile", $resultFile,
+        "-TimeoutMinutes", $TimeoutMinutes.ToString()
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "pwsh"
+    $psi.Arguments = "-File `"$SubAgentScript`" $($scriptArgs -join ' ')"
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $process) {
+        throw "Failed to start Sub-agent process for $IssueId"
+    }
+
+    return @{
+        ProcessId = $process.Id
+        StartedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+}
+
+function Get-SubAgentResult {
+    <#
+    .SYNOPSIS
+        Reads Sub-agent completion result from the result file.
+    .PARAMETER ResultFile
+        Path to the result file.
+    .OUTPUTS
+        Hashtable with completion status, or $null if not yet complete.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ResultFile
+    )
+
+    if (-not (Test-Path $ResultFile)) {
+        return $null
+    }
+
+    try {
+        $result = Get-Content $ResultFile -Raw | ConvertFrom-Json -AsHashtable
+        return $result
+    } catch {
+        return $null
+    }
+}
+
+function Test-SubAgentProcessRunning {
+    <#
+    .SYNOPSIS
+        Tests if a Sub-agent process is still running.
+    .PARAMETER ProcessId
+        The process ID.
+    .OUTPUTS
+        Boolean indicating if process is running.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        return $null -ne $process
+    } catch {
+        return $false
+    }
+}
+
+function Stop-SubAgentProcess {
+    <#
+    .SYNOPSIS
+        Stops a Sub-agent process.
+    .PARAMETER ProcessId
+        The process ID.
+    .PARAMETER Force
+        Force kill the process.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$Force = $false
+    )
+
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($null -ne $process) {
+            if ($Force) {
+                $process.Kill()
+            } else {
+                $process.CloseMainWindow() | Out-Null
+                if (-not $process.WaitForExit(5000)) {
+                    $process.Kill()
+                }
+            }
+        }
+    } catch {
+        Write-Warning "Failed to stop process $ProcessId`: $_"
+    }
+}
+
 Export-ModuleMember -Function @(
     'New-SubAgentConfig',
     'New-SubAgentState',
@@ -311,5 +482,9 @@ Export-ModuleMember -Function @(
     'Invoke-SubAgentRetry',
     'New-SubAgentReport',
     'Test-SubAgentReportComplete',
-    'Get-SubAgentFailureCategory'
+    'Get-SubAgentFailureCategory',
+    'Invoke-SubAgentLaunch',
+    'Get-SubAgentResult',
+    'Test-SubAgentProcessRunning',
+    'Stop-SubAgentProcess'
 )

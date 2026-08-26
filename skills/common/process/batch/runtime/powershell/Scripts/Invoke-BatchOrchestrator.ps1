@@ -80,6 +80,20 @@ function Write-BatchLog {
     Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor $color
 }
 
+function Set-BatchStateTransition {
+    param(
+        [hashtable]$BatchState,
+        [string]$ToState,
+        [string]$FilePath
+    )
+
+    $fromState = $BatchState.State
+    if (-not (Test-ValidBatchTransition -FromState $fromState -ToState $ToState)) {
+        throw "Invalid batch state transition: $fromState -> $ToState"
+    }
+    $BatchState.State = $ToState
+}
+
 function Invoke-BatchOrchestration {
     Write-Host "=== Batch Orchestrator ===" -ForegroundColor Green
     Write-Host "Batch ID: $BatchId" -ForegroundColor Cyan
@@ -140,7 +154,7 @@ function Invoke-BatchOrchestration {
         switch ($batchState.State) {
             "BATCH_INITIALIZING" {
                 Write-BatchLog "=== Phase: Initialization ===" "INFO"
-                $batchState.State = "PLANNING"
+                Set-BatchStateTransition -BatchState $batchState -ToState "PLANNING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
             }
@@ -171,7 +185,7 @@ function Invoke-BatchOrchestration {
                 $cycleCheck = Test-DependencyCycle -Graph $graph
                 if ($cycleCheck.HasCycle) {
                     Write-BatchLog "Cycle detected: $($cycleCheck.CyclePath -join ' -> ')" "ERROR"
-                    $batchState.State = "FAILED"
+                    try { Set-BatchStateTransition -BatchState $batchState -ToState "FAILED" } catch { $batchState.State = "FAILED" }
                     $batchState.FailureReason = "Dependency cycle detected"
                     Save-BatchState -State $batchState -FilePath $batchStateFile
                     return
@@ -194,7 +208,7 @@ function Invoke-BatchOrchestration {
                     Write-BatchLog "  Wave $($i + 1): $($concurrencyGroups[$i] -join ', ')" "INFO"
                 }
 
-                $batchState.State = "SCHEDULING"
+                Set-BatchStateTransition -BatchState $batchState -ToState "SCHEDULING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
             }
@@ -220,7 +234,7 @@ function Invoke-BatchOrchestration {
                     $issueStates[$issueId].State = "WAITING_FOR_SUBAGENT"
                 }
 
-                $batchState.State = "RUNNING"
+                Set-BatchStateTransition -BatchState $batchState -ToState "RUNNING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
             }
@@ -239,6 +253,9 @@ function Invoke-BatchOrchestration {
                         $completedIssues += $issueId
                     }
                 }
+
+                $subAgentWorkerScript = Join-Path $scriptPath "Invoke-SubAgentWorker.ps1"
+                $activeProcesses = @{}
 
                 $allDone = $false
                 while (-not $allDone) {
@@ -270,10 +287,35 @@ function Invoke-BatchOrchestration {
 
                                 $subAgentConfig = New-SubAgentConfig -MaxRetries $MaxRetries
                                 $subAgentState = New-SubAgentState -IssueId $issueId -Config $subAgentConfig
-                                $subAgentState.State = "SUBAGENT_RUNNING"
-                                $issueStates[$issueId].State = "SUBAGENT_RUNNING"
 
-                                Write-BatchLog "Sub-agent for $issueId started" "SUCCESS"
+                                $worktreePath = $issueStates[$issueId].WorktreePath
+                                $branchName = $issueStates[$issueId].BranchName
+
+                                if (-not $worktreePath -or -not $branchName) {
+                                    $issueStates[$issueId].State = "BLOCKED"
+                                    $issueStates[$issueId].LastError = "Missing worktree or branch"
+                                    Write-BatchLog "Issue $issueId BLOCKED: missing worktree/branch" "ERROR"
+                                    Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage "Missing worktree/branch"
+                                    continue
+                                }
+
+                                try {
+                                    $launchResult = Invoke-SubAgentLaunch -IssueId $issueId -IssueNumber $issueStates[$issueId].IssueNumber -Description $issueStates[$issueId].Description -WorktreePath $worktreePath -BranchName $branchName -SubAgentScript $subAgentWorkerScript -TimeoutMinutes $subAgentConfig.TimeoutMinutes
+
+                                    $subAgentState.ProcessId = $launchResult.ProcessId
+                                    $subAgentState.State = "SUBAGENT_RUNNING"
+                                    $subAgentState.StartedAt = $launchResult.StartedAt
+                                    $issueStates[$issueId].State = "SUBAGENT_RUNNING"
+                                    $issueStates[$issueId].SubAgentProcessId = $launchResult.ProcessId
+                                    $activeProcesses[$issueId] = $subAgentState
+
+                                    Write-BatchLog "Sub-agent for $issueId started (PID: $($launchResult.ProcessId))" "SUCCESS"
+                                } catch {
+                                    $issueStates[$issueId].State = "BLOCKED"
+                                    $issueStates[$issueId].LastError = "Launch failed: $($_.Exception.Message)"
+                                    Write-BatchLog "Issue $issueId BLOCKED: launch failed - $($_.Exception.Message)" "ERROR"
+                                    Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $_.Exception.Message
+                                }
                             }
                         }
                     }
@@ -289,20 +331,105 @@ function Invoke-BatchOrchestration {
                     $newlyCompleted = @()
                     foreach ($issueId in $activeIssues) {
                         $issue = $issueStates[$issueId]
-                        if ($issue.PrNumber -and $issue.CommitSha) {
-                            $issue.State = "PR_READY"
-                            $issue.CompletedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-                            $completedIssues += $issueId
-                            $newlyCompleted += $issueId
-                            Complete-SchedulerIssue -Scheduler $scheduler -IssueId $issueId
-                            Write-BatchLog "Issue $issueId: PR #$($issue.PrNumber) ready" "SUCCESS"
+                        $worktreePath = $issue.WorktreePath
+                        $resultFile = if ($worktreePath) { Join-Path $worktreePath ".subagent" "result.json" } else { $null }
+
+                        if ($resultFile -and (Test-Path $resultFile)) {
+                            $result = Get-SubAgentResult -ResultFile $resultFile
+                            if ($null -ne $result -and $result.ContainsKey("Success")) {
+                                if ($result.Success -and $result.PrNumber -and $result.CommitSha) {
+                                    $issue.State = "PR_READY"
+                                    $issue.PrNumber = $result.PrNumber
+                                    $issue.CommitSha = $result.CommitSha
+                                    $issue.CompletedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                                    $issue.Report = $result.Report
+                                    $completedIssues += $issueId
+                                    $newlyCompleted += $issueId
+                                    Complete-SchedulerIssue -Scheduler $scheduler -IssueId $issueId
+                                    if ($activeProcesses.ContainsKey($issueId)) {
+                                        $activeProcesses.Remove($issueId)
+                                    }
+                                    Write-BatchLog "Issue $issueId: PR #$($issue.PrNumber) ready (SHA: $($issue.CommitSha))" "SUCCESS"
+                                } elseif (-not $result.Success) {
+                                    $processId = $issue.SubAgentProcessId
+                                    if ($processId -and -not (Test-SubAgentProcessRunning -ProcessId $processId)) {
+                                        $errorMsg = if ($result.ContainsKey("Error")) { $result.Error } else { "Sub-agent failed" }
+                                        $errorCategory = Get-SubAgentFailureCategory -ErrorMessage $errorMsg
+                                        $subAgentState = if ($activeProcesses.ContainsKey($issueId)) { $activeProcesses[$issueId] } else { $null }
+
+                                        if ($null -ne $subAgentState) {
+                                            $retryCheck = Test-SubAgentRetryable -SubAgentState $subAgentState -ErrorCategory $errorCategory
+                                            if ($retryCheck.Retryable) {
+                                                Write-BatchLog "Issue $issueId: Retrying (category: $errorCategory, attempt $($subAgentState.RetryCount + 1)/$($subAgentState.MaxRetries))" "WARN"
+                                                $subAgentState = Invoke-SubAgentRetry -SubAgentState $subAgentState -ErrorCategory $errorCategory
+                                                $activeProcesses[$issueId] = $subAgentState
+                                                $issue.RetryCount = $subAgentState.RetryCount
+                                                $issue.State = $subAgentState.State
+                                                $issue.LastError = $subAgentState.LastError
+                                                $issue.SubAgentProcessId = $null
+                                                $resultFilePath = Join-Path $worktreePath ".subagent" "result.json"
+                                                if (Test-Path $resultFilePath) {
+                                                    Remove-Item $resultFilePath -Force
+                                                }
+                                            } else {
+                                                $issue.State = "SUBAGENT_FAILED"
+                                                $issue.LastError = $retryCheck.Reason
+                                                $completedIssues += $issueId
+                                                Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $retryCheck.Reason
+                                                if ($activeProcesses.ContainsKey($issueId)) {
+                                                    $activeProcesses.Remove($issueId)
+                                                }
+                                                Write-BatchLog "Issue $issueId: FAILED ($($retryCheck.Reason))" "ERROR"
+                                            }
+                                        } else {
+                                            $issue.State = "SUBAGENT_FAILED"
+                                            $issue.LastError = $errorMsg
+                                            $completedIssues += $issueId
+                                            Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $errorMsg
+                                            Write-BatchLog "Issue $issueId: FAILED ($errorMsg)" "ERROR"
+                                        }
+                                    }
+                                }
+                            }
+                        } elseif ($issue.SubAgentProcessId -and -not (Test-SubAgentProcessRunning -ProcessId $issue.SubAgentProcessId)) {
+                            $errorMsg = "Sub-agent process exited without result file"
+                            $errorCategory = "transient"
+                            $subAgentState = if ($activeProcesses.ContainsKey($issueId)) { $activeProcesses[$issueId] } else { $null }
+
+                            if ($null -ne $subAgentState) {
+                                $retryCheck = Test-SubAgentRetryable -SubAgentState $subAgentState -ErrorCategory $errorCategory
+                                if ($retryCheck.Retryable) {
+                                    Write-BatchLog "Issue $issueId: Process exited, retrying (attempt $($subAgentState.RetryCount + 1)/$($subAgentState.MaxRetries))" "WARN"
+                                    $subAgentState = Invoke-SubAgentRetry -SubAgentState $subAgentState -ErrorCategory $errorCategory
+                                    $activeProcesses[$issueId] = $subAgentState
+                                    $issue.RetryCount = $subAgentState.RetryCount
+                                    $issue.State = $subAgentState.State
+                                    $issue.LastError = $subAgentState.LastError
+                                    $issue.SubAgentProcessId = $null
+                                } else {
+                                    $issue.State = "SUBAGENT_FAILED"
+                                    $issue.LastError = $retryCheck.Reason
+                                    $completedIssues += $issueId
+                                    Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $retryCheck.Reason
+                                    if ($activeProcesses.ContainsKey($issueId)) {
+                                        $activeProcesses.Remove($issueId)
+                                    }
+                                    Write-BatchLog "Issue $issueId: FAILED (process exit, no retry)" "ERROR"
+                                }
+                            } else {
+                                $issue.State = "SUBAGENT_FAILED"
+                                $issue.LastError = $errorMsg
+                                $completedIssues += $issueId
+                                Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $errorMsg
+                                Write-BatchLog "Issue $issueId: FAILED ($errorMsg)" "ERROR"
+                            }
                         }
                     }
 
                     $allActive = @()
                     foreach ($issueId in $issueStates.Keys) {
                         $state = $issueStates[$issueId].State
-                        if ($state -notin @("COMPLETED", "FAILED", "BLOCKED")) {
+                        if ($state -notin @("COMPLETED", "FAILED", "BLOCKED", "SUBAGENT_FAILED")) {
                             $allActive += $issueId
                         }
                     }
@@ -319,7 +446,7 @@ function Invoke-BatchOrchestration {
                 }
 
                 $batchState.CompletedCount = ($issueStates.Values | Where-Object { $_.State -eq "COMPLETED" }).Count
-                $batchState.FailedCount = ($issueStates.Values | Where-Object { $_.State -eq "FAILED" }).Count
+                $batchState.FailedCount = ($issueStates.Values | Where-Object { $_.State -in @("FAILED", "SUBAGENT_FAILED") }).Count
                 $batchState.BlockedCount = ($issueStates.Values | Where-Object { $_.State -eq "BLOCKED" }).Count
 
                 $prReadyIssues = @()
@@ -329,13 +456,13 @@ function Invoke-BatchOrchestration {
                     }
                 }
 
-                if ($prReadyIssues.Count -gt 0) {
-                    $batchState.State = "WAITING_FOR_MERGE"
-                } elseif ($batchState.FailedCount -gt 0 -or $batchState.BlockedCount -gt 0) {
-                    $batchState.State = "FAILED"
-                    $batchState.FailureReason = "$($batchState.FailedCount) failed, $($batchState.BlockedCount) blocked"
+                if ($prReadyIssues.Count -gt 0 -and $batchState.FailedCount -eq 0 -and $batchState.BlockedCount -eq 0) {
+                    Set-BatchStateTransition -BatchState $batchState -ToState "WAITING_FOR_MERGE"
+                } elseif ($prReadyIssues.Count -gt 0) {
+                    Set-BatchStateTransition -BatchState $batchState -ToState "WAITING_FOR_MERGE"
                 } else {
-                    $batchState.State = "WAITING_FOR_MERGE"
+                    try { Set-BatchStateTransition -BatchState $batchState -ToState "FAILED" } catch { $batchState.State = "FAILED" }
+                    $batchState.FailureReason = "$($batchState.FailedCount) failed, $($batchState.BlockedCount) blocked"
                 }
 
                 Save-BatchState -State $batchState -FilePath $batchStateFile
@@ -349,14 +476,89 @@ function Invoke-BatchOrchestration {
                 foreach ($issueId in $issueStates.Keys) {
                     if ($issueStates[$issueId].State -eq "PR_READY") {
                         $prReadyIssues += $issueId
-                        Write-BatchLog "  Issue $issueId: PR #$($issueStates[$issueId].PrNumber)" "INFO"
                     }
                 }
 
-                Write-BatchLog "All $($prReadyIssues.Count) PRs are ready for merge." "INFO"
-                Write-BatchLog "Please approve each PR, then re-run to proceed with merge." "INFO"
+                if ($prReadyIssues.Count -eq 0) {
+                    Write-BatchLog "No PRs ready for merge" "WARN"
+                    try { Set-BatchStateTransition -BatchState $batchState -ToState "FAILED" } catch { $batchState.State = "FAILED" }
+                    $batchState.FailureReason = "No PRs ready for merge"
+                    Save-BatchState -State $batchState -FilePath $batchStateFile
+                    Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
+                    return
+                }
 
-                $batchState.State = "MERGING"
+                Write-BatchLog "Checking approval status for $($prReadyIssues.Count) PRs..." "INFO"
+                $allApproved = $true
+                $approvedIssues = @()
+                $unapprovedIssues = @()
+
+                foreach ($issueId in $prReadyIssues) {
+                    $issue = $issueStates[$issueId]
+                    $prNumber = $issue.PrNumber
+
+                    if (-not $prNumber) {
+                        Write-BatchLog "Issue $issueId: No PR number" "ERROR"
+                        $allApproved = $false
+                        $unapprovedIssues += $issueId
+                        continue
+                    }
+
+                    try {
+                        $prJson = & gh pr view $prNumber --json "reviewDecision,reviews,headRefOid" 2>$null
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-BatchLog "Issue $issueId: Failed to query PR #$prNumber" "ERROR"
+                            $allApproved = $false
+                            $unapprovedIssues += $issueId
+                            continue
+                        }
+
+                        $pr = $prJson | ConvertFrom-Json
+                        $reviewDecision = $pr.reviewDecision
+                        $headSha = $pr.headRefOid
+
+                        $isApproved = ($reviewDecision -eq "APPROVED")
+
+                        if (-not $isApproved) {
+                            Write-BatchLog "Issue $issueId: PR #$prNumber not yet approved (status: $reviewDecision)" "WARN"
+                            $allApproved = $false
+                            $unapprovedIssues += $issueId
+                            continue
+                        }
+
+                        if ($issue.CommitSha -and $headSha -ne $issue.CommitSha) {
+                            Write-BatchLog "Issue $issueId: PR #$prNumber HEAD SHA changed ($($issue.CommitSha) -> $headSha). Approval invalidated." "WARN"
+                            $issue.ApprovedCommitSha = $null
+                            $allApproved = $false
+                            $unapprovedIssues += $issueId
+                            continue
+                        }
+
+                        $issue.ApprovedCommitSha = $issue.CommitSha
+                        $approvedIssues += $issueId
+                        Write-BatchLog "Issue $issueId: PR #$prNumber approved (SHA: $($issue.CommitSha))" "SUCCESS"
+                    } catch {
+                        Write-BatchLog "Issue $issueId: Error checking approval - $($_.Exception.Message)" "ERROR"
+                        $allApproved = $false
+                        $unapprovedIssues += $issueId
+                    }
+                }
+
+                foreach ($issueId in $approvedIssues) {
+                    $issueStates[$issueId].State = "READY_FOR_MERGE"
+                }
+                foreach ($issueId in $unapprovedIssues) {
+                    $issueStates[$issueId].State = "WAITING_FOR_APPROVAL"
+                }
+
+                if ($allApproved) {
+                    Write-BatchLog "All PRs approved. Proceeding to merge." "SUCCESS"
+                    Set-BatchStateTransition -BatchState $batchState -ToState "MERGING"
+                } else {
+                    Write-BatchLog "$($unapprovedIssues.Count) PR(s) not yet approved. Please approve, then re-run." "INFO"
+                    Write-BatchLog "Unapproved: $($unapprovedIssues -join ', ')" "INFO"
+                }
+
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
             }
@@ -368,7 +570,7 @@ function Invoke-BatchOrchestration {
 
                 foreach ($issueId in $issueStates.Keys) {
                     $issue = $issueStates[$issueId]
-                    if ($issue.State -eq "PR_READY" -or $issue.State -eq "READY_FOR_MERGE") {
+                    if ($issue.State -eq "READY_FOR_MERGE") {
                         if ($issue.PrNumber -and $issue.WorktreePath -and $issue.BranchName) {
                             Add-MergeQueueItem -Queue $mergeQueue -PrNumber $issue.PrNumber -IssueId $issueId -WorktreePath $issue.WorktreePath -BranchName $issue.BranchName
                             $issue.State = "MERGING"
@@ -393,11 +595,12 @@ function Invoke-BatchOrchestration {
 
                     foreach ($item in $mergeQueue.Conflicted) {
                         $issueStates[$item.IssueId].State = "PR_READY"
-                        $issueStates[$item.IssueId].LastError = "Conflict during rebase"
+                        $issueStates[$item.IssueId].LastError = "Conflict during rebase - requires resolution and re-approval"
+                        Write-BatchLog "Issue $($item.IssueId): Conflict detected. PR returned to PR_READY for resolution." "WARN"
                     }
                 }
 
-                $batchState.State = "CLEANUP"
+                Set-BatchStateTransition -BatchState $batchState -ToState "CLEANUP"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
             }
@@ -415,7 +618,7 @@ function Invoke-BatchOrchestration {
                     }
                 }
 
-                $batchState.State = "COMPLETED"
+                Set-BatchStateTransition -BatchState $batchState -ToState "COMPLETED"
                 $batchState.CompletedCount = ($issueStates.Values | Where-Object { $_.State -eq "COMPLETED" }).Count
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
@@ -439,7 +642,7 @@ function Invoke-BatchOrchestration {
 
             default {
                 Write-BatchLog "Unknown state: $($batchState.State)" "ERROR"
-                $batchState.State = "FAILED"
+                try { Set-BatchStateTransition -BatchState $batchState -ToState "FAILED" } catch { $batchState.State = "FAILED" }
                 $batchState.FailureReason = "Unknown state: $($batchState.State)"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
             }
@@ -447,7 +650,7 @@ function Invoke-BatchOrchestration {
     } catch {
         Write-BatchLog "Error: $($_.Exception.Message)" "ERROR"
         Write-BatchLog $_.ScriptStackTrace "ERROR"
-        $batchState.State = "FAILED"
+        try { Set-BatchStateTransition -BatchState $batchState -ToState "FAILED" } catch { $batchState.State = "FAILED" }
         $batchState.FailureReason = "Exception: $($_.Exception.Message)"
         Save-BatchState -State $batchState -FilePath $batchStateFile
     }

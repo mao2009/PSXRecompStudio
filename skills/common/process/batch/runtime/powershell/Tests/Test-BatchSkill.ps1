@@ -24,6 +24,7 @@ Import-Module (Join-Path $modulePath "BatchScheduler.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchSubAgent.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchPersistence.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchGitUtilities.psm1") -Force
+Import-Module (Join-Path $modulePath "BatchMergeQueue.psm1") -Force
 
 $testResults = @{
     Passed = 0
@@ -145,7 +146,7 @@ Invoke-BatchTest -Name "Issue state machine has all 13 states" -Test {
 }
 
 Invoke-BatchTest -Name "Issue terminal states have no transitions" -Test {
-    $terminals = @("SUBAGENT_FAILED", "COMPLETED", "BLOCKED", "FAILED")
+    $terminals = @("SUBAGENT_FAILED", "COMPLETED", "FAILED")
     foreach ($s in $terminals) {
         $transitions = Get-ValidIssueTransitions -State $s
         if ($transitions.Count -ne 0) { throw "Terminal state $s should have no transitions" }
@@ -485,6 +486,78 @@ Invoke-BatchTest -Name "Test-SubAgentReportComplete validates complete report" -
 }
 
 # ============================================================
+# Sub-agent Launch Tests
+# ============================================================
+Write-Host "`n=== Sub-agent Launch Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Invoke-SubAgentLaunch creates result directory and returns PID" -Test {
+    $tempDir = Join-Path $env:TEMP "test-launch-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $workerScript = Join-Path $scriptPath ".." "Scripts" "Invoke-SubAgentWorker.ps1"
+        $result = Invoke-SubAgentLaunch -IssueId "test-launch" -IssueNumber 999 -Description "test" -WorktreePath $tempDir -BranchName "issue/999-test" -SubAgentScript $workerScript -TimeoutMinutes 1
+        if ($null -eq $result.ProcessId) { throw "ProcessId should not be null" }
+        if ($null -eq $result.StartedAt) { throw "StartedAt should not be null" }
+        if ($result.ProcessId -le 0) { throw "ProcessId should be positive" }
+        Stop-SubAgentProcess -ProcessId $result.ProcessId -Force $true
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Invoke-BatchTest -Name "Get-SubAgentResult returns null for missing file" -Test {
+    $result = Get-SubAgentResult -ResultFile "/nonexistent/result.json"
+    if ($null -ne $result) { throw "Should return null for missing file" }
+}
+
+Invoke-BatchTest -Name "Get-SubAgentResult reads valid result file" -Test {
+    $tempFile = Join-Path $env:TEMP "test-result-$(Get-Random).json"
+    try {
+        @{ Success = $true; PrNumber = 42; CommitSha = "abc123" } | ConvertTo-Json | Set-Content $tempFile
+        $result = Get-SubAgentResult -ResultFile $tempFile
+        if (-not $result.Success) { throw "Should be success" }
+        if ($result.PrNumber -ne 42) { throw "PrNumber should be 42" }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Test-SubAgentProcessRunning returns false for non-existent process" -Test {
+    $result = Test-SubAgentProcessRunning -ProcessId 99999999
+    if ($result) { throw "Non-existent process should not be running" }
+}
+
+Invoke-BatchTest -Name "Stop-SubAgentProcess handles non-existent process gracefully" -Test {
+    Stop-SubAgentProcess -ProcessId 99999999 -Force $true
+}
+
+# ============================================================
+# Backoff Max Cap Tests
+# ============================================================
+Write-Host "`n=== Backoff Max Cap Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Get-SubAgentBackoffDuration respects max cap" -Test {
+    $config = New-SubAgentConfig -MaxRetries 10 -BackoffBaseSeconds 5
+    $state = New-SubAgentState -IssueId "test" -Config $config
+    $state.RetryCount = 10
+    $duration = Get-SubAgentBackoffDuration -SubAgentState $state -MaxBackoffSeconds 120
+    if ($duration -gt 120) { throw "Duration $duration should not exceed 120 seconds" }
+}
+
+Invoke-BatchTest -Name "Get-SubAgentBackoffDuration increases with retry count" -Test {
+    $config = New-SubAgentConfig -MaxRetries 5 -BackoffBaseSeconds 5
+    $state = New-SubAgentState -IssueId "test" -Config $config
+    $state.RetryCount = 0
+    $d0 = Get-SubAgentBackoffDuration -SubAgentState $state -MaxBackoffSeconds 120
+    $state.RetryCount = 1
+    $d1 = Get-SubAgentBackoffDuration -SubAgentState $state -MaxBackoffSeconds 120
+    $state.RetryCount = 2
+    $d2 = Get-SubAgentBackoffDuration -SubAgentState $state -MaxBackoffSeconds 120
+    if ($d0 -ge $d1) { throw "Backoff should increase with retry count" }
+    if ($d1 -ge $d2) { throw "Backoff should increase with retry count" }
+}
+
+# ============================================================
 # Persistence Tests
 # ============================================================
 Write-Host "`n=== Persistence Tests ===" -ForegroundColor Green
@@ -591,6 +664,84 @@ Invoke-BatchTest -Name "Config enforces approval SHA binding" -Test {
     if (-not $config.approval.sha_bound) { throw "Approval should be SHA-bound" }
     if (-not $config.approval.invalidate_on_rebase) { throw "Approval should invalidate on rebase" }
     if (-not $config.approval.per_issue_independent) { throw "Approval should be per-issue" }
+}
+
+# ============================================================
+# BLOCKED Recovery Tests
+# ============================================================
+Write-Host "`n=== BLOCKED Recovery Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "BLOCKED can transition to WAITING_FOR_SUBAGENT" -Test {
+    $result = Test-ValidIssueTransition -FromState "BLOCKED" -ToState "WAITING_FOR_SUBAGENT"
+    if (-not $result) { throw "BLOCKED -> WAITING_FOR_SUBAGENT should be valid" }
+}
+
+Invoke-BatchTest -Name "BLOCKED cannot transition to SUBAGENT_RUNNING" -Test {
+    $result = Test-ValidIssueTransition -FromState "BLOCKED" -ToState "SUBAGENT_RUNNING"
+    if ($result) { throw "BLOCKED -> SUBAGENT_RUNNING should be invalid" }
+}
+
+Invoke-BatchTest -Name "BLOCKED cannot transition to COMPLETED" -Test {
+    $result = Test-ValidIssueTransition -FromState "BLOCKED" -ToState "COMPLETED"
+    if ($result) { throw "BLOCKED -> COMPLETED should be invalid" }
+}
+
+# ============================================================
+# BatchMergeQueue Conflicted Tests
+# ============================================================
+Write-Host "`n=== BatchMergeQueue Conflicted Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "New-MergeQueue has empty Conflicted array" -Test {
+    $queue = New-MergeQueue
+    if ($queue.Conflicted.Count -ne 0) { throw "Conflicted should be empty" }
+}
+
+Invoke-BatchTest -Name "Get-MergeQueueStatus includes ConflictedCount" -Test {
+    $queue = New-MergeQueue
+    $status = Get-MergeQueueStatus -Queue $queue
+    if ($status.ConflictedCount -ne 0) { throw "ConflictedCount should be 0" }
+}
+
+# ============================================================
+# State Transition Validation Tests
+# ============================================================
+Write-Host "`n=== State Transition Validation Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Test-ValidBatchTransition rejects invalid transitions" -Test {
+    $invalid = @(
+        @{ From = "RUNNING"; To = "PLANNING" },
+        @{ From = "CLEANUP"; To = "RUNNING" },
+        @{ From = "COMPLETED"; To = "MERGING" },
+        @{ From = "FAILED"; To = "RUNNING" }
+    )
+    foreach ($t in $invalid) {
+        $result = Test-ValidBatchTransition -FromState $t.From -ToState $t.To
+        if ($result) { throw "$($t.From) -> $($t.To) should be invalid" }
+    }
+}
+
+Invoke-BatchTest -Name "Test-ValidBatchTransition allows all defined transitions" -Test {
+    $valid = @(
+        @{ From = "BATCH_INITIALIZING"; To = "PLANNING" },
+        @{ From = "BATCH_INITIALIZING"; To = "FAILED" },
+        @{ From = "PLANNING"; To = "SCHEDULING" },
+        @{ From = "PLANNING"; To = "FAILED" },
+        @{ From = "SCHEDULING"; To = "RUNNING" },
+        @{ From = "SCHEDULING"; To = "FAILED" },
+        @{ From = "RUNNING"; To = "WAITING_FOR_MERGE" },
+        @{ From = "RUNNING"; To = "FAILED" },
+        @{ From = "WAITING_FOR_MERGE"; To = "MERGING" },
+        @{ From = "WAITING_FOR_MERGE"; To = "COMPLETED" },
+        @{ From = "WAITING_FOR_MERGE"; To = "FAILED" },
+        @{ From = "MERGING"; To = "CLEANUP" },
+        @{ From = "MERGING"; To = "FAILED" },
+        @{ From = "CLEANUP"; To = "COMPLETED" },
+        @{ From = "CLEANUP"; To = "FAILED" }
+    )
+    foreach ($t in $valid) {
+        $result = Test-ValidBatchTransition -FromState $t.From -ToState $t.To
+        if (-not $result) { throw "$($t.From) -> $($t.To) should be valid" }
+    }
 }
 
 # ============================================================
