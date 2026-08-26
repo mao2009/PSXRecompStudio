@@ -116,7 +116,7 @@ IMPORTANT RULES:
 - After committing, print the commit SHA clearly as: COMMIT_SHA: <sha>
 "@
 
-        Write-AgentLog "Phase 1-4: Invoking AI Agent (Claude Code)..."
+        Write-AgentLog "Phase 1-4: Invoking configured AI Agent Provider..."
 
         # Import AgentProvider module
         $agent_provider_module = Join-Path (Split-Path $PSScriptRoot) "Modules\AgentProvider.psm1"
@@ -126,16 +126,23 @@ IMPORTANT RULES:
 
         Import-Module $agent_provider_module -Force
 
-        # Create Claude Code provider
-        $provider = New-ClaudeCodeProvider
+        # Get configured provider (default: claude-code)
+        # Provider can be overridden via environment variable BATCH_AGENT_PROVIDER
+        $provider_name = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "claude-code" }
+        Write-AgentLog ("Using provider: {0}" -f $provider_name)
+
+        # Load provider configuration
+        $provider = Get-AgentProvider -ProviderName $provider_name
+
         $result_dir = Join-Path $WorktreePath ".subagent"
         if (-not (Test-Path $result_dir)) {
             New-Item -ItemType Directory -Path $result_dir -Force | Out-Null
         }
 
-        # Invoke Claude Code
+        # Invoke provider (abstracted - works with any provider)
         Write-AgentLog ("Invoking: {0}" -f $provider.Executable)
-        $provider_result = Invoke-ClaudeCodeProvider `
+        $provider_result = Invoke-AgentProvider `
+            -ProviderName $provider_name `
             -ProviderConfig $provider `
             -Prompt $agentPrompt `
             -WorkingDirectory $WorktreePath `

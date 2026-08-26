@@ -1,0 +1,26 @@
+{
+  "agentProvider": {
+    "enabled": true,
+    "default": "claude-code",
+    "providers": {
+      "claude-code": {
+        "name": "claude-code",
+        "type": "claude-code",
+        "enabled": true,
+        "description": "Claude Code AI Agent (default for current runtime)"
+      },
+      "opencode": {
+        "name": "opencode",
+        "type": "opencode",
+        "enabled": false,
+        "description": "OpenCode AI Agent (legacy, disabled)"
+      },
+      "test-provider": {
+        "name": "test-provider",
+        "type": "test",
+        "enabled": false,
+        "description": "Test mock provider (for unit tests only)"
+      }
+    }
+  }
+}

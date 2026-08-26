@@ -260,9 +260,112 @@ function Invoke-ClaudeCodeProvider {
 # Exports
 # ============================================================
 
+# ============================================================
+# Provider Loader (Configuration-based)
+# ============================================================
+
+function Get-AgentProvider {
+    <#
+    .SYNOPSIS
+        Gets the configured Agent Provider.
+
+    .PARAMETER ProviderName
+        Name of the provider (e.g., "claude-code", "opencode")
+
+    .OUTPUTS
+        Hashtable with provider configuration
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$ProviderName = "claude-code"
+    )
+
+    switch ($ProviderName) {
+        "claude-code" {
+            return New-ClaudeCodeProvider
+        }
+        "opencode" {
+            throw "OpenCode provider not yet implemented"
+        }
+        "test" {
+            return @{
+                Name        = "test"
+                Type        = "test"
+                Executable  = "echo"
+                Arguments   = @()
+                IsTestProvider = $true
+            }
+        }
+        default {
+            throw "Unknown provider: $ProviderName"
+        }
+    }
+}
+
+function Invoke-AgentProvider {
+    <#
+    .SYNOPSIS
+        Generic Agent Provider invoker.
+
+    .DESCRIPTION
+        Invokes the configured agent provider without provider-specific logic.
+        Supports multiple providers through abstraction.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProviderName,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ProviderConfig,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ResultDirectory
+    )
+
+    # Dispatch to provider-specific invoker
+    switch ($ProviderConfig.Type) {
+        "claude-code" {
+            return Invoke-ClaudeCodeProvider `
+                -ProviderConfig $ProviderConfig `
+                -Prompt $Prompt `
+                -WorkingDirectory $WorkingDirectory `
+                -ResultDirectory $ResultDirectory
+        }
+        "test" {
+            # Test provider: return immediate success
+            return @{
+                ProviderName    = "test"
+                Success         = $true
+                ExitCode        = 0
+                ProcessId       = 0
+                StartedAt       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                FinishedAt      = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                StdoutPath      = ""
+                StderrPath      = ""
+                StdoutContent   = "Test provider executed"
+                StderrContent   = ""
+                Error           = ""
+            }
+        }
+        default {
+            throw "Unknown provider type: $($ProviderConfig.Type)"
+        }
+    }
+}
+
 Export-ModuleMember -Function @(
     'New-AgentProviderConfig',
     'New-AgentProviderResult',
     'New-ClaudeCodeProvider',
-    'Invoke-ClaudeCodeProvider'
+    'Invoke-ClaudeCodeProvider',
+    'Get-AgentProvider',
+    'Invoke-AgentProvider'
 )
