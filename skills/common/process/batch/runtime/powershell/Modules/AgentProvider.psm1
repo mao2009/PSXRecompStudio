@@ -174,15 +174,17 @@ function Invoke-ClaudeCodeProvider {
     }
 
     try {
-        # Build arguments
+        # Build arguments (without prompt - will be passed via stdin)
         $args = @()
-        $args += $ProviderConfig.Arguments  # -p, --no-ask-approve
-        $args += $Prompt
+        $args += $ProviderConfig.Arguments  # -p, --permission-mode, auto, --no-session-persistence
+        $args += "--input-format", "text"   # Explicitly set input format
+        $args += "--tools", "Edit,Bash,Read,Git"  # Explicitly allow tools
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $ProviderConfig.Executable
         $psi.Arguments = $args -join ' '
         $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true   # CRITICAL: Accept stdin
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.CreateNoWindow = $true
@@ -204,6 +206,11 @@ function Invoke-ClaudeCodeProvider {
 
         $process_id = $process.Id
         Write-Host ("  Process ID: {0}" -f $process_id)
+
+        # Send prompt via stdin
+        Write-Host "  Sending prompt to Claude Code..."
+        $process.StandardInput.WriteLine($Prompt)
+        $process.StandardInput.Close()
 
         # Capture output
         $stdout = $process.StandardOutput.ReadToEnd()
