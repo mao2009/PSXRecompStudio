@@ -234,6 +234,13 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
             ExecLw(rt, rs, offset, memory);
             break;
         }
+        case 0x22: { // LWL
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLwl(rt, rs, offset, memory);
+            break;
+        }
         case 0x24: { // LBU
             uint32_t rt = (instruction >> 16) & 0x1F;
             uint32_t rs = (instruction >> 21) & 0x1F;
@@ -246,6 +253,13 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
             uint32_t rs = (instruction >> 21) & 0x1F;
             int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
             ExecLhu(rt, rs, offset, memory);
+            break;
+        }
+        case 0x26: { // LWR
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecLwr(rt, rs, offset, memory);
             break;
         }
         case 0x28: { // SB
@@ -267,6 +281,20 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
             uint32_t rs = (instruction >> 21) & 0x1F;
             int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
             ExecSw(rt, rs, offset, memory);
+            break;
+        }
+        case 0x2A: { // SWL
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSwl(rt, rs, offset, memory);
+            break;
+        }
+        case 0x2E: { // SWR
+            uint32_t rt = (instruction >> 16) & 0x1F;
+            uint32_t rs = (instruction >> 21) & 0x1F;
+            int16_t offset = static_cast<int16_t>(instruction & 0xFFFF);
+            ExecSwr(rt, rs, offset, memory);
             break;
         }
         case 0x10: { // COP0
@@ -407,7 +435,19 @@ void PSXCpu::ExecMultu(uint32_t rs, uint32_t rt) {
 void PSXCpu::ExecDiv(uint32_t rs, uint32_t rt) {
     int32_t dividend = ToSigned(gpr_[rs]);
     int32_t divisor = ToSigned(gpr_[rt]);
-    if (divisor != 0) {
+    if (divisor == 0) {
+        // PS1-specific: division by zero
+        if (dividend >= 0) {
+            lo_ = 0xFFFFFFFF;
+        } else {
+            lo_ = 1;
+        }
+        hi_ = static_cast<uint32_t>(dividend);
+    } else if (dividend == static_cast<int32_t>(0x80000000) && divisor == -1) {
+        // PS1-specific: overflow
+        lo_ = 0x80000000;
+        hi_ = 0;
+    } else {
         lo_ = static_cast<uint32_t>(dividend / divisor);
         hi_ = static_cast<uint32_t>(dividend % divisor);
     }
@@ -416,7 +456,11 @@ void PSXCpu::ExecDiv(uint32_t rs, uint32_t rt) {
 void PSXCpu::ExecDivu(uint32_t rs, uint32_t rt) {
     uint32_t dividend = gpr_[rs];
     uint32_t divisor = gpr_[rt];
-    if (divisor != 0) {
+    if (divisor == 0) {
+        // PS1-specific: division by zero
+        lo_ = 0xFFFFFFFF;
+        hi_ = dividend;
+    } else {
         lo_ = dividend / divisor;
         hi_ = dividend % divisor;
     }
@@ -493,6 +537,70 @@ void PSXCpu::ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
     ram[addr + 1] = static_cast<uint8_t>(gpr_[rt] >> 16);
     ram[addr + 2] = static_cast<uint8_t>(gpr_[rt] >> 8);
     ram[addr + 3] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+}
+
+// Load Word Left - unaligned load, left bytes
+void PSXCpu::ExecLwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    uint32_t reg = gpr_[rt];
+    uint32_t shift = (addr & 3) * 8;
+    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
+                       (ram[addr - (addr & 3) + 1] << 16) |
+                       (ram[addr - (addr & 3) + 2] << 8) |
+                       ram[addr - (addr & 3) + 3];
+    uint32_t mask = 0xFFFFFFFF << shift;
+    SetGPR(rt, (mem_val << shift) | (reg & ~mask));
+}
+
+// Load Word Right - unaligned load, right bytes
+void PSXCpu::ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    uint32_t reg = gpr_[rt];
+    uint32_t shift = (3 - (addr & 3)) * 8;
+    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
+                       (ram[addr - (addr & 3) + 1] << 16) |
+                       (ram[addr - (addr & 3) + 2] << 8) |
+                       ram[addr - (addr & 3) + 3];
+    uint32_t mask = 0xFFFFFFFF >> shift;
+    SetGPR(rt, (reg & ~mask) | (mem_val >> shift));
+}
+
+// Store Word Left - unaligned store, left bytes
+void PSXCpu::ExecSwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    uint32_t reg = gpr_[rt];
+    uint32_t shift = (addr & 3) * 8;
+    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
+                       (ram[addr - (addr & 3) + 1] << 16) |
+                       (ram[addr - (addr & 3) + 2] << 8) |
+                       ram[addr - (addr & 3) + 3];
+    uint32_t mask = 0xFFFFFFFF >> shift;
+    uint32_t result = (reg >> shift) | (mem_val & ~mask);
+    ram[addr - (addr & 3)] = static_cast<uint8_t>(result >> 24);
+    ram[addr - (addr & 3) + 1] = static_cast<uint8_t>(result >> 16);
+    ram[addr - (addr & 3) + 2] = static_cast<uint8_t>(result >> 8);
+    ram[addr - (addr & 3) + 3] = static_cast<uint8_t>(result & 0xFF);
+}
+
+// Store Word Right - unaligned store, right bytes
+void PSXCpu::ExecSwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
+    uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    uint8_t* ram = memory.GetRAM();
+    uint32_t reg = gpr_[rt];
+    uint32_t shift = (3 - (addr & 3)) * 8;
+    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
+                       (ram[addr - (addr & 3) + 1] << 16) |
+                       (ram[addr - (addr & 3) + 2] << 8) |
+                       ram[addr - (addr & 3) + 3];
+    uint32_t mask = 0xFFFFFFFF << shift;
+    uint32_t result = (mem_val & ~mask) | (reg << shift);
+    ram[addr - (addr & 3)] = static_cast<uint8_t>(result >> 24);
+    ram[addr - (addr & 3) + 1] = static_cast<uint8_t>(result >> 16);
+    ram[addr - (addr & 3) + 2] = static_cast<uint8_t>(result >> 8);
+    ram[addr - (addr & 3) + 3] = static_cast<uint8_t>(result & 0xFF);
 }
 
 // Branch
