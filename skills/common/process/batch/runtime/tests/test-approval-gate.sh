@@ -81,10 +81,7 @@ _merge_queue_init
 _merge_queue_add "999" "issue-999" "$_REPO_DIR" "main"
 
 # Simulate no gh by PATH manipulation (gh not installed in test env anyway)
-_merge_queue_process_next "$_REPO_DIR"
-_result=$?
-
-assert_exit_code "process_next returns 1 (blocked)" 1 test "$_result" -eq 1
+assert_exit_code "process_next returns 1 (blocked)" 1 _merge_queue_process_next "$_REPO_DIR"
 
 # Item should be back in queue (not in failed)
 _merge_queue_init
@@ -128,15 +125,16 @@ _output=$(_merge_queue_process_all "$_REPO_DIR" 2>&1)
 # Should process 0 merges (all blocked by approval gate)
 assert_output_contains "processed 0 merges" "Processed 0 merge" printf '%s' "$_output"
 
-# --- Test 5: gh unavailable produces error message ---
+# --- Test 5: Approval gate produces blocking message ---
 echo ""
-echo "--- gh unavailable produces error message ---"
+echo "--- Approval gate produces blocking message ---"
 
 _merge_queue_init
 _merge_queue_add "800" "issue-800" "$_REPO_DIR" "main"
 _output=$(_merge_queue_process_next "$_REPO_DIR" 2>&1)
-assert_output_contains "error mentions gh CLI" "gh CLI" printf '%s' "$_output"
-assert_output_contains "error mentions merge blocked" "blocked" printf '%s' "$_output"
+# When gh unavailable: "gh CLI not available ... merge blocked"
+# When gh available but PR not approved: "not approved ... merge blocked"
+assert_output_contains "error mentions merge blocked" "merge blocked" printf '%s' "$_output"
 
 # --- Summary ---
 echo ""

@@ -138,14 +138,14 @@ _merge_queue_process_next() {
             # Not approved — put back in queue, do not merge
             _MQ_PENDING="$_first $_MQ_PENDING"
             _MQ_CURRENTLY_MERGING=""
-            echo "PR #$_pr not approved (review: ${_review:-unknown}), blocking merge" >&2
+            echo "PR #$_pr not approved (review: ${_review:-unknown}), merge blocked"
             return 1
         fi
     else
         # gh CLI unavailable — cannot verify approval, block merge for safety
         _MQ_PENDING="$_first $_MQ_PENDING"
         _MQ_CURRENTLY_MERGING=""
-        echo "ERROR: gh CLI not available, cannot verify PR approval for #$_pr — merge blocked" >&2
+            echo "ERROR: gh CLI not available, cannot verify PR approval for #$_pr — merge blocked"
         return 1
     fi
 
