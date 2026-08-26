@@ -87,9 +87,13 @@ private:
     void ExecLh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecLhu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecLw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
+    void ExecLwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
+    void ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
+    void ExecSwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
+    void ExecSwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     
     // Branch
     void ExecBeq(uint32_t rs, uint32_t rt, int16_t offset);
