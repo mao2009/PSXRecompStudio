@@ -1,0 +1,86 @@
+{
+  "$schema": "merge-config-schema.json",
+  "version": "1.0.0",
+  "description": "PR Merge Skill project configuration",
+  
+  "repository": {
+    "default_branch": "main",
+    "remote_name": "origin"
+  },
+  
+  "branch": {
+    "naming_pattern": "issue/{issue_number}-{short_description}",
+    "allowed_types": ["issue", "feature", "bugfix", "hotfix"]
+  },
+  
+  "worktree": {
+    "root": "../worktrees",
+    "naming_pattern": "{issue_number}-{short_description}"
+  },
+  
+  "approval": {
+    "require_explicit_approval": true,
+    "invalidate_on_rebase": true,
+    "invalidate_on_conflict_resolution": true,
+    "invalidate_on_pr_update": true,
+    "tracked_fields": [
+      "approved_commit_sha",
+      "current_commit_sha",
+      "main_head_sha"
+    ]
+  },
+  
+  "rebase": {
+    "mandatory_before_merge": true,
+    "always_rebase": true,
+    "delegate_conflicts_to_subagent": true
+  },
+  
+  "merge": {
+    "require_approval": true,
+    "require_rebase": true,
+    "require_no_conflicts": true,
+    "require_tests": true,
+    "require_validation": true,
+    "strategy": "--merge",
+    "forbid_admin_bypass": true,
+    "forbid_force_push": true,
+    "forbid_direct_push": true,
+    "forbid_protection_bypass": true
+  },
+  
+  "cleanup": {
+    "delete_worktree": true,
+    "delete_local_branch": true,
+    "delete_remote_branch": true,
+    "verify_merge_before_cleanup": true
+  },
+  
+  "state": {
+    "persistence": "json_file",
+    "file_pattern": ".merge-state-{pr_number}.json",
+    "fields": [
+      "pr_number",
+      "issue_number",
+      "branch_name",
+      "worktree_path",
+      "current_state",
+      "current_commit_sha",
+      "approved_commit_sha",
+      "main_head_sha",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  
+  "external_tools": {
+    "git": {
+      "command": "git",
+      "required": true
+    },
+    "github_cli": {
+      "command": "gh",
+      "required": true
+    }
+  }
+}

@@ -35,6 +35,8 @@ skills/
 |---|---|---|
 | `common/process/doc-sync` | Documentation synchronization gate: impact mapping, minimal updates, recorded no-op decisions | #89 |
 | `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
+| `common/process/batch` | Orchestrator/Sub-agent based batch processing for Issue-driven development | #145 |
+| `common/process/merge` | Safe PR Merge Skill with mandatory approval → rebase → validation → normal merge flow | #146 |
 
 ## Relationship to Issue #81
 
