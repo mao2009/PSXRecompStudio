@@ -234,12 +234,15 @@ function Invoke-ClaudeCodeProvider {
             $process.WaitForExit(10000) | Out-Null
 
             $end_time = Get-Date
-            $timed_out = $true
-            # Collect whatever output we can
+            # Collect whatever output we can, bounded to 5s per stream
             $stdout = ""
             $stderr = ""
-            try { $stdout = $stdout_task.GetAwaiter().GetResult() } catch { $stdout = "" }
-            try { $stderr = $stderr_task.GetAwaiter().GetResult() } catch { $stderr = "" }
+            try {
+                if ($stdout_task.Wait(5000)) { $stdout = $stdout_task.Result }
+            } catch { }
+            try {
+                if ($stderr_task.Wait(5000)) { $stderr = $stderr_task.Result }
+            } catch { }
 
             $stdout | Set-Content -Path $stdout_file -Force
             $stderr | Set-Content -Path $stderr_file -Force
