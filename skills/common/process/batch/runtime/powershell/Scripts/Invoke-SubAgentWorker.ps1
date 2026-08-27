@@ -290,7 +290,7 @@ $($changedFiles -join "`n")
         $prCreated = $LASTEXITCODE -eq 0
         $prNumber = 0
         $prResultText = $prResult -join "`n"
-        if ($prCreated -and $prResultText -match '(\d+)') {
+        if ($prCreated -and $prResultText -match '/pull/(\d+)') {
             $prNumber = [int]$Matches[1]
         }
         if (-not $prCreated -or $prNumber -le 0) {

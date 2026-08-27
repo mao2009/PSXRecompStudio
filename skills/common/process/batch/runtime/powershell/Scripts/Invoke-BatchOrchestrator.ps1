@@ -158,7 +158,7 @@ function Test-GitPrExists {
     )
     $remoteUrl = & git -C $Repository remote get-url origin 2>$null
     if (-not $remoteUrl) { return $null }
-    $repoId = $remoteUrl -replace '\.git$', '' -replace '^git@[^:]+:', '' -replace '^https?://[^/]+/', ''
+    $repoId = $remoteUrl -replace '\.git$', '' -replace '^git@[^:]+:', '' -replace '^ssh://git@[^/]+/', '' -replace '^https?://[^/]+/', ''
     if (-not $repoId) { return $null }
     $result = & gh pr list --repo $repoId --head $BranchName --json number --state open 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }

@@ -29,6 +29,9 @@ function Get-CheckpointDirectory {
         [Parameter(Mandatory = $false)]
         [switch]$Create
     )
+    if ([string]::IsNullOrWhiteSpace($BatchId)) {
+        throw "BatchId must not be empty or whitespace-only"
+    }
     if ($BatchId -match '[/\\]|(\.\.)') {
         throw "BatchId contains invalid path characters: $BatchId"
     }

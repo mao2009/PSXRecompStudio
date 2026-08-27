@@ -24,6 +24,9 @@ function Get-BatchStateFilePath {
         [Parameter(Mandatory = $false)]
         [string]$StateDir = "."
     )
+    if ([string]::IsNullOrWhiteSpace($BatchId)) {
+        throw "BatchId must not be empty or whitespace-only"
+    }
     if ($BatchId -match '[/\\]|(\.\.)') {
         throw "BatchId contains invalid path characters: $BatchId"
     }
