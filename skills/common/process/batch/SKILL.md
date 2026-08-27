@@ -278,13 +278,243 @@ Each Issue has independent approval tracked by commit SHA.
 |------|---------|
 | `.batch-state-{id}.json` | Batch-level state |
 | `.batch-issues-{id}.json` | Per-Issue states |
+| `.batch-checkpoints-{id}/batch-checkpoint.json` | Batch checkpoint with worker summaries |
+| `.batch-checkpoints-{id}/worker-{issueId}.json` | Per-worker runtime checkpoints |
+| `.batch-log-{id}.jsonl` | Transition audit log (JSONL) |
 
-### Recovery Process
+### Checkpoint Lifecycle
 
-1. Load persisted state
-2. Sync with GitHub reality
-3. Resume from last known state
-4. Continue processing
+Checkpoints are saved atomically at key transitions:
+
+```text
+BATCH_INITIALIZING → PLANNING → SCHEDULING → RUNNING
+    ↓                                                    ↓
+    └→ FAILED                              WAITING_FOR_MERGE → MERGING → CLEANUP → COMPLETED
+                                               ↓                                        ↓
+                                            COMPLETED                               FAILED
+                                               ↓
+                                            FAILED
+```
+
+Worker checkpoints are saved at:
+- Phase transitions: `agent_completed` → `commit` → `push` → `pr_created`
+- State changes: `PENDING` → `RUNNING` → `SUCCESS`/`ORPHANED`/`FAILED`
+- Retry events: increment `retryCount`, update `lastRetryAt`
+- Before git operations: capture `changedFiles`, `branch`, `baseCommit`
+
+### Checkpoint Schema (Provider-Neutral)
+
+Core schema (version 1) is independent of any specific agent provider:
+
+**Batch Checkpoint:**
+```json
+{
+  "schemaVersion": 1,
+  "batchId": "batch-123",
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "batchState": "RUNNING",
+  "issueCount": 5,
+  "completedCount": 2,
+  "failedCount": 0,
+  "blockedCount": 1,
+  "failureReason": null,
+  "workers": {
+    "issue-1": { "state": "SUCCESS", "updatedAt": "..." }
+  }
+}
+```
+
+**Worker Checkpoint:**
+```json
+{
+  "schemaVersion": 1,
+  "issueId": "issue-1",
+  "issueNumber": 42,
+  "description": "Add feature X",
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "provider": "claude-code",
+  "lifecycleState": "RUNNING",
+  "completedPhases": ["agent_completed", "commit"],
+  "branch": "issue/42-feature-x",
+  "baseCommit": "abc123",
+  "currentCommit": "def456",
+  "resultCommit": null,
+  "prNumber": null,
+  "prState": null,
+  "worktreePath": "/tmp/worktree/issue-42",
+  "testResult": null,
+  "testPassed": false,
+  "remainingWork": null,
+  "failureReason": null,
+  "failureCategory": null,
+  "retryCount": 0,
+  "maxRetries": 3,
+  "lastRetryAt": null,
+  "processId": 12345,
+  "startedAt": "2026-01-01T00:00:00Z",
+  "completedAt": null,
+  "providerMetadata": { "sessionId": "abc" }
+}
+```
+
+### Lifecycle States (Worker Checkpoint)
+
+| State | Meaning | Source Issue State |
+|-------|---------|-------------------|
+| `PENDING` | Not yet started | `WAITING_DEPENDENCY`, `WAITING_FOR_SUBAGENT` |
+| `RUNNING` | Active execution | `SUBAGENT_STARTING`, `SUBAGENT_RUNNING`, `SUBAGENT_RETRYING`, `PR_READY` |
+| `ORPHANED` | Process died, no result | `ORPHANED` |
+| `SUCCESS` | Completed, PR ready | `COMPLETED` |
+| `FAILED` | Exhausted retries | `SUBAGENT_FAILED`, `FAILED` |
+
+### ORPHANED Detection and Recovery
+
+1. **Detection**: On resume, `Test-OrphanedProcess` checks:
+   - Process liveness via PID
+   - Result file existence and JSON validity
+   - Corrupt result.json → treat as orphaned
+
+2. **Recovery Flow**:
+   ```
+   ORPHANED detected
+       ↓
+   retryCount < maxRetries?
+       ├─ YES → retryCount++ → WAITING_FOR_SUBAGENT → redispatch
+       └─ NO  → SUBAGENT_FAILED (NOT added to completedIssues)
+   ```
+
+3. **Retry Budget Continuation**: `retryCount` and `maxRetries` persist in checkpoint and survive orchestrator restarts.
+
+### Retry Budget
+
+- Per-issue `maxRetries` (default 3, configurable)
+- `retryCount` increments on each retry attempt
+- Checkpointed at every retry transition
+- On resume, `Test-SubAgentRetryable` observes persisted count
+
+### Idempotency
+
+- **PR Existence Check**: Before launching worker, `Test-GitPrExists` runs regardless of branch existence
+- **Git Operation Validation**: `$LASTEXITCODE` checked after `git add/commit/push`; commit SHA verified
+- **Duplicate Prevention**: Existing PR → transition to `PR_READY`, skip worker launch
+
+### Atomic Persistence
+
+All writes use temp-file + atomic rename:
+
+```powershell
+$tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
+$Data | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
+Move-Item -Path $tmpFile -Destination $FilePath -Force
+```
+
+Transition log uses `Add-Content -ErrorAction Stop` with parent directory auto-creation.
+
+### Corrupt State Handling (Fail-Closed)
+
+| Scenario | Behavior |
+|----------|----------|
+| Missing state file | Return `$null` (new run) |
+| Existing file, corrupt JSON | **Throw error** (fail-closed) |
+| Existing file, valid JSON | Return parsed state |
+
+Prevents silent progress loss and duplicate dispatch.
+
+### Safe Filename Generation
+
+**Checkpoint Directory**: `.batch-checkpoints-{BatchId}`
+
+**Worker Filename**: `worker-{safeIssueId}.json`
+
+**Encoding Rules**:
+- Safe IssueIds (`^[a-zA-Z0-9_-]+$`): used directly → `worker-issue-1.json`
+- Unsafe IssueIds: `~` + uppercase hex of UTF-8 bytes → `worker-~69737375652F31.json` for `issue/1`
+- Blank/whitespace IssueIds: **rejected** before filename generation
+
+**Injectivity Guarantee**: Distinct IssueIds always produce distinct filenames. No collision between `issue/1` (`~69737375652F31`) and `issue_2F1` (safe, unchanged).
+
+### BatchId / IssueId Validation
+
+Rejected patterns at all path construction points:
+- Empty or whitespace-only
+- Path separators: `/` `\`
+- Parent traversal: `..`
+
+Applied in: `Get-CheckpointDirectory`, `Get-BatchStateFilePath`, `Get-TransitionLogPath`, `Get-WorkerCheckpointPath`.
+
+### Resume Behavior
+
+1. Load batch checkpoint (`Get-BatchCheckpoint`)
+2. Load all worker checkpoints (`Get-AllWorkerCheckpoints`)
+3. Load legacy state (`Get-BatchState`, `Get-IssueStates`)
+4. Build recovery context (`New-RecoveryContext`)
+5. Reconcile: checkpoint data takes precedence when legacy state is missing/stale
+6. Restore `retryCount`, `completedPhases`, `currentCommit`, `prNumber`, `providerMetadata`
+7. Detect ORPHANED workers from checkpoint + process liveness
+8. Resume scheduling from `RUNNING` state
+
+### Provider-Neutral Design
+
+- Core checkpoint schema contains NO provider-specific logic
+- `providerMetadata` field isolates provider-specific data (e.g., session ID)
+- New providers only add to `providerMetadata`; core fields unchanged
+- `Save-AllCheckpoints` resolves active provider once from `BATCH_AGENT_PROVIDER` (default `claude-code`)
+
+### Cross-Platform Considerations
+
+| Platform | Notes |
+|----------|-------|
+| **Windows** | Native `Move-Item -Force` atomic rename; NTFS supports |
+| **Linux/macOS** | `Move-Item` atomic on same filesystem; PowerShell Core 7.x |
+| **Linux without pwsh** | Shell implementation (orchestrator.sh) uses same atomic pattern; no pwsh required |
+
+The Shell runtime (`orchestrator.sh`, `persistence.sh`) provides equivalent checkpoint/resume without PowerShell dependency. PowerShell is ONLY needed for the legacy `batch.ps1` entry point.
+
+### Provider Implementation Details Isolation
+
+Provider-specific implementation details MUST NOT leak into core checkpoint schema:
+- Session tokens, API keys → `providerMetadata` only
+- Provider-specific phase names → map to standard `completedPhases` values
+- Provider-specific error categories → map to standard `failureCategory` values
+
+### Configuration
+
+Checkpoint behavior controlled in `config/batch-config.json`:
+
+```json
+{
+  "checkpoint": {
+    "enabled": true,
+    "provider_neutral": true,
+    "recovery": {
+      "orphan_detection": true,
+      "idempotency_protection": true
+    }
+  }
+}
+```
+
+### Recovery Process (Detailed)
+
+```text
+1. Resume invoked (batch.sh resume / batch.ps1 resume)
+2. Load batch checkpoint → Get-BatchCheckpoint
+3. Load worker checkpoints → Get-AllWorkerCheckpoints
+4. Load legacy state → Get-BatchState, Get-IssueStates
+5. Sync-StateWithGitHub → verify PR/branch reality
+6. For each issue with worker checkpoint:
+   a. Build recovery context → New-RecoveryContext
+   b. If ORPHANED in checkpoint + process dead → Test-OrphanedProcess
+   c. If retry eligible → increment retryCount → WAITING_FOR_SUBAGENT
+   d. If retry exhausted → SUBAGENT_FAILED
+7. For issues without worker checkpoint:
+   a. Use legacy issue state
+   b. Apply ORPHANED detection from process liveness
+8. Enter RUNNING loop with restored state
+9. Continue scheduling and dispatch
+```
 
 ## Cleanup
 

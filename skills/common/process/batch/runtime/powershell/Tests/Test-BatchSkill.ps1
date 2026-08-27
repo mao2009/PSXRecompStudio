@@ -1120,6 +1120,24 @@ Invoke-BatchTest -Name "Checkpoint filenames are injective between unsafe and sa
     }
 }
 
+Invoke-BatchTest -Name "Get-WorkerCheckpointPath rejects empty IssueId" -Test {
+    try {
+        Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "" -StateDir "/tmp"
+        throw "Should have thrown for empty IssueId"
+    } catch {
+        if (-not $_.Exception.Message -match "empty") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+Invoke-BatchTest -Name "Get-WorkerCheckpointPath rejects whitespace-only IssueId" -Test {
+    try {
+        Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "   " -StateDir "/tmp"
+        throw "Should have thrown for whitespace-only IssueId"
+    } catch {
+        if (-not $_.Exception.Message -match "empty") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
 # ============================================================
 # Transition Log BatchId Validation Tests
 # ============================================================
@@ -1193,9 +1211,12 @@ Invoke-BatchTest -Name "Write-TransitionLog creates parent directory if needed" 
     $tempDir = Join-Path $env:TEMP "test-log-parent-$(Get-Random)"
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     try {
-        Write-TransitionLog -BatchId "test-log" -EntityType "worker" -EntityId "issue-1" -FromState "WAITING" -ToState "RUNNING" -StateDir $tempDir
-        $entries = Get-TransitionLog -BatchId "test-log" -StateDir $tempDir
+        $nestedStateDir = Join-Path $tempDir "nested" "subdir"
+        Write-TransitionLog -BatchId "test-log" -EntityType "worker" -EntityId "issue-1" -FromState "WAITING" -ToState "RUNNING" -StateDir $nestedStateDir
+        $entries = Get-TransitionLog -BatchId "test-log" -StateDir $nestedStateDir
         if ($entries.Count -ne 1) { throw "Expected 1 entry" }
+        $logPath = Join-Path $nestedStateDir ".batch-log-test-log.jsonl"
+        if (-not (Test-Path $logPath)) { throw "Log file should exist at nested path" }
     } finally {
         if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
     }

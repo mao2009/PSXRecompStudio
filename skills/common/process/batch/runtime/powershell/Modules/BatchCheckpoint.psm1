@@ -68,6 +68,9 @@ function Get-WorkerCheckpointPath {
         [Parameter(Mandatory = $false)]
         [switch]$Create
     )
+    if ([string]::IsNullOrWhiteSpace($IssueId)) {
+        throw "IssueId must not be empty or whitespace-only"
+    }
     $dir = Get-CheckpointDirectory -BatchId $BatchId -StateDir $StateDir -Create:$Create
     if ($IssueId -match '^[a-zA-Z0-9_-]+$') {
         $safeId = $IssueId

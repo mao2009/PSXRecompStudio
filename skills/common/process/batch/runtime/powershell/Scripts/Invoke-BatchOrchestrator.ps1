@@ -413,8 +413,8 @@ function Invoke-BatchOrchestration {
                             } else {
                                 Write-BatchLog "Issue ${issueId}: ORPHANED recovery exhausted ($($retryCheck.Reason))" "ERROR"
                                 $issue.LastError = "Orphaned: $($retryCheck.Reason)"
-                                $completedIssues += $issueId
                                 Set-IssueStateTransition -IssueState $issue -ToState "SUBAGENT_FAILED" -BatchId $BatchId -Reason "Recovery: retry exhausted"
+                                Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage "Recovery exhausted: $($retryCheck.Reason)"
                             }
                         }
                     }
@@ -460,17 +460,18 @@ function Invoke-BatchOrchestration {
                                     continue
                                 }
 
+                                $existingPr = Test-GitPrExists -BranchName $branchName -Repository $Repository
+                                if ($existingPr) {
+                                    Write-BatchLog "Issue ${issueId}: Found existing PR #$existingPr, recovering state" "INFO"
+                                    $issueStates[$issueId].PrNumber = $existingPr
+                                    Complete-SchedulerIssue -Scheduler $scheduler -IssueId $issueId
+                                    $completedIssues += $issueId
+                                    Set-IssueStateTransition -IssueState $issueStates[$issueId] -ToState "PR_READY" -BatchId $BatchId -Reason "Idempotency: existing PR #$existingPr"
+                                    continue
+                                }
+
                                 if (-not (Test-GitBranchExists -BranchName $branchName -Repository $Repository)) {
-                                    Write-BatchLog "Issue ${issueId}: Branch '$branchName' not found, checking for existing PR" "WARN"
-                                    $existingPr = Test-GitPrExists -BranchName $branchName -Repository $Repository
-                                    if ($existingPr) {
-                                        Write-BatchLog "Issue ${issueId}: Found existing PR #$existingPr, recovering state" "INFO"
-                                        $issueStates[$issueId].PrNumber = $existingPr
-                                        Complete-SchedulerIssue -Scheduler $scheduler -IssueId $issueId
-                                        $completedIssues += $issueId
-                                        Set-IssueStateTransition -IssueState $issueStates[$issueId] -ToState "PR_READY" -BatchId $BatchId -Reason "Idempotency: existing PR #$existingPr"
-                                        continue
-                                    }
+                                    Write-BatchLog "Issue ${issueId}: Branch '$branchName' not found, launching new worker" "WARN"
                                 }
 
                                 try {
@@ -548,7 +549,6 @@ function Invoke-BatchOrchestration {
                                             } else {
                                                 $issue.State = "SUBAGENT_FAILED"
                                                 $issue.LastError = $retryCheck.Reason
-                                                $completedIssues += $issueId
                                                 Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $retryCheck.Reason
                                                 if ($activeProcesses.ContainsKey($issueId)) {
                                                     $activeProcesses.Remove($issueId)
@@ -558,7 +558,6 @@ function Invoke-BatchOrchestration {
                                         } else {
                                             $issue.State = "SUBAGENT_FAILED"
                                             $issue.LastError = $errorMsg
-                                            $completedIssues += $issueId
                                             Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $errorMsg
                                             Write-BatchLog "Issue ${issueId}: FAILED ($errorMsg)" "ERROR"
                                         }
