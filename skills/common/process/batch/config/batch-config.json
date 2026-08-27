@@ -79,6 +79,24 @@
     "sync_with_github_on_resume": true
   },
 
+  "checkpoint": {
+    "enabled": true,
+    "directory_pattern": ".batch-checkpoints-{batch_id}",
+    "schema_version": 1,
+    "atomic_writes": true,
+    "provider_neutral": true,
+    "transition_log": true,
+    "transition_log_pattern": ".batch-log-{batch_id}.jsonl",
+    "recovery": {
+      "orphan_detection": true,
+      "orphan_recovery": true,
+      "max_recovery_retries": 3,
+      "idempotency_protection": true,
+      "duplicate_branch_check": true,
+      "duplicate_pr_check": true
+    }
+  },
+
   "cleanup": {
     "delete_worktree": true,
     "delete_local_branch": true,

@@ -9,8 +9,8 @@
     Sub-agent execution, retry, approval, merge, and cleanup.
 
 .NOTES
-    Version: 1.0.0
-    Issue: #155
+    Version: 1.1.0
+    Issue: #155, #170
     Runtime: PowerShell Core 7.x
     Platform: Cross-platform (Windows, Linux, macOS)
 #>
@@ -20,6 +20,7 @@ $Script:IssueStates = @{
     SUBAGENT_RUNNING       = "SUBAGENT_RUNNING"
     SUBAGENT_RETRYING      = "SUBAGENT_RETRYING"
     SUBAGENT_FAILED        = "SUBAGENT_FAILED"
+    ORPHANED               = "ORPHANED"
     WAITING_FOR_SUBAGENT   = "WAITING_FOR_SUBAGENT"
     WAITING_DEPENDENCY     = "WAITING_DEPENDENCY"
     PR_READY               = "PR_READY"
@@ -32,10 +33,11 @@ $Script:IssueStates = @{
 }
 
 $Script:IssueTransitions = @{
-    SUBAGENT_STARTING    = @("SUBAGENT_RUNNING", "SUBAGENT_RETRYING", "SUBAGENT_FAILED")
-    SUBAGENT_RUNNING     = @("PR_READY", "SUBAGENT_RETRYING", "SUBAGENT_FAILED")
-    SUBAGENT_RETRYING    = @("SUBAGENT_STARTING", "SUBAGENT_FAILED")
+    SUBAGENT_STARTING    = @("SUBAGENT_RUNNING", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED", "PR_READY")
+    SUBAGENT_RUNNING     = @("PR_READY", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED")
+    SUBAGENT_RETRYING    = @("SUBAGENT_STARTING", "SUBAGENT_FAILED", "ORPHANED")
     SUBAGENT_FAILED      = @()
+    ORPHANED             = @("SUBAGENT_STARTING", "SUBAGENT_FAILED", "WAITING_FOR_SUBAGENT")
     WAITING_FOR_SUBAGENT = @("SUBAGENT_STARTING", "BLOCKED")
     WAITING_DEPENDENCY   = @("SUBAGENT_STARTING")
     PR_READY             = @("WAITING_FOR_APPROVAL")
@@ -52,6 +54,7 @@ $Script:IssueStateDescriptions = @{
     SUBAGENT_RUNNING     = "Sub-agent actively investigating, implementing, testing"
     SUBAGENT_RETRYING    = "Sub-agent failed, attempting retry"
     SUBAGENT_FAILED      = "Sub-agent failed after retry limit exhausted"
+    ORPHANED             = "Sub-agent process lost (crash/timeout), recovery pending"
     WAITING_FOR_SUBAGENT = "Waiting for Sub-agent to start (concurrency slot available)"
     WAITING_DEPENDENCY   = "Waiting for dependent Issue to complete"
     PR_READY             = "PR created, awaiting user approval"
@@ -161,6 +164,17 @@ function Test-IssueStateActive {
     return $State -in $activeStates
 }
 
+function Test-IssueStateRecoverable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$State
+    )
+
+    $recoverableStates = @("ORPHANED", "BLOCKED")
+    return $State -in $recoverableStates
+}
+
 Export-ModuleMember -Function @(
     'Get-IssueState',
     'Test-ValidIssueTransition',
@@ -168,5 +182,6 @@ Export-ModuleMember -Function @(
     'Get-AllIssueStates',
     'Get-IssueStateDefinition',
     'Test-IssueStateTerminal',
-    'Test-IssueStateActive'
+    'Test-IssueStateActive',
+    'Test-IssueStateRecoverable'
 )

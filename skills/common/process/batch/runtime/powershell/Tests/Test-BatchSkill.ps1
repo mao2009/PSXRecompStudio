@@ -25,6 +25,7 @@ Import-Module (Join-Path $modulePath "BatchSubAgent.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchPersistence.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchGitUtilities.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchMergeQueue.psm1") -Force
+Import-Module (Join-Path $modulePath "BatchCheckpoint.psm1") -Force
 
 $testResults = @{
     Passed = 0
@@ -131,18 +132,18 @@ Invoke-BatchTest -Name "Get-BatchStateDefinition returns complete definition" -T
 # ============================================================
 Write-Host "`n=== Issue State Machine Tests ===" -ForegroundColor Green
 
-Invoke-BatchTest -Name "Issue state machine has all 13 states" -Test {
+Invoke-BatchTest -Name "Issue state machine has all 14 states" -Test {
     $states = Get-AllIssueStates
     $expected = @(
         "SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
-        "SUBAGENT_FAILED", "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY",
+        "SUBAGENT_FAILED", "ORPHANED", "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY",
         "PR_READY", "WAITING_FOR_APPROVAL", "READY_FOR_MERGE",
         "MERGING", "COMPLETED", "BLOCKED", "FAILED"
     )
     foreach ($s in $expected) {
         if ($s -notin $states) { throw "Missing issue state: $s" }
     }
-    if ($states.Count -ne 13) { throw "Expected 13 states, got $($states.Count)" }
+    if ($states.Count -ne 14) { throw "Expected 14 states, got $($states.Count)" }
 }
 
 Invoke-BatchTest -Name "Issue terminal states have no transitions" -Test {
@@ -184,7 +185,7 @@ Invoke-BatchTest -Name "Test-IssueStateActive correctly identifies active states
     $active = @("SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
                  "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY", "PR_READY",
                  "WAITING_FOR_APPROVAL", "READY_FOR_MERGE", "MERGING")
-    $inactive = @("SUBAGENT_FAILED", "COMPLETED", "BLOCKED", "FAILED")
+    $inactive = @("SUBAGENT_FAILED", "COMPLETED", "BLOCKED", "FAILED", "ORPHANED")
 
     foreach ($s in $active) {
         if (-not (Test-IssueStateActive -State $s)) { throw "$s should be active" }
@@ -612,6 +613,38 @@ Invoke-BatchTest -Name "Get-BatchState returns null for missing file" -Test {
     if ($null -ne $result) { throw "Should return null for missing file" }
 }
 
+Invoke-BatchTest -Name "Get-BatchState throws for corrupt file" -Test {
+    $tempFile = Join-Path $env:TEMP "test-corrupt-state-$(Get-Random).json"
+    try {
+        Set-Content -Path $tempFile -Value "not valid JSON"
+        $threw = $false
+        try {
+            Get-BatchState -FilePath $tempFile | Out-Null
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "Should throw for corrupt batch state file" }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-IssueStates throws for corrupt file" -Test {
+    $tempFile = Join-Path $env:TEMP "test-corrupt-issues-$(Get-Random).json"
+    try {
+        Set-Content -Path $tempFile -Value "not valid JSON"
+        $threw = $false
+        try {
+            Get-IssueStates -FilePath $tempFile | Out-Null
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "Should throw for corrupt issue states file" }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+    }
+}
+
 # ============================================================
 # Worktree Tests
 # ============================================================
@@ -777,6 +810,605 @@ Invoke-BatchTest -Name "Claude Code executable resolves" -Test {
             Write-Host ("  SKIP: Claude Code CLI not installed ({0})" -f $config.Executable) -ForegroundColor Yellow
         }
     }
+}
+
+# ============================================================
+# ORPHANED State Tests
+# ============================================================
+Write-Host "`n=== ORPHANED State Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Issue state machine has ORPHANED state" -Test {
+    $states = Get-AllIssueStates
+    if ("ORPHANED" -notin $states) { throw "Missing ORPHANED state" }
+}
+
+Invoke-BatchTest -Name "ORPHANED is not terminal" -Test {
+    if (Test-IssueStateTerminal -State "ORPHANED") { throw "ORPHANED should not be terminal" }
+}
+
+Invoke-BatchTest -Name "ORPHANED can transition to SUBAGENT_STARTING" -Test {
+    $result = Test-ValidIssueTransition -FromState "ORPHANED" -ToState "SUBAGENT_STARTING"
+    if (-not $result) { throw "ORPHANED -> SUBAGENT_STARTING should be valid" }
+}
+
+Invoke-BatchTest -Name "ORPHANED can transition to SUBAGENT_FAILED" -Test {
+    $result = Test-ValidIssueTransition -FromState "ORPHANED" -ToState "SUBAGENT_FAILED"
+    if (-not $result) { throw "ORPHANED -> SUBAGENT_FAILED should be valid" }
+}
+
+Invoke-BatchTest -Name "ORPHANED cannot transition to COMPLETED" -Test {
+    $result = Test-ValidIssueTransition -FromState "ORPHANED" -ToState "COMPLETED"
+    if ($result) { throw "ORPHANED -> COMPLETED should be invalid" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_RUNNING can transition to ORPHANED" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_RUNNING" -ToState "ORPHANED"
+    if (-not $result) { throw "SUBAGENT_RUNNING -> ORPHANED should be valid" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_STARTING can transition to ORPHANED" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_STARTING" -ToState "ORPHANED"
+    if (-not $result) { throw "SUBAGENT_STARTING -> ORPHANED should be valid" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_STARTING can transition to PR_READY" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_STARTING" -ToState "PR_READY"
+    if (-not $result) { throw "SUBAGENT_STARTING -> PR_READY should be valid (idempotency)" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_RETRYING can transition to ORPHANED" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_RETRYING" -ToState "ORPHANED"
+    if (-not $result) { throw "SUBAGENT_RETRYING -> ORPHANED should be valid" }
+}
+
+Invoke-BatchTest -Name "ORPHANED can transition to WAITING_FOR_SUBAGENT" -Test {
+    $result = Test-ValidIssueTransition -FromState "ORPHANED" -ToState "WAITING_FOR_SUBAGENT"
+    if (-not $result) { throw "ORPHANED -> WAITING_FOR_SUBAGENT should be valid" }
+}
+
+Invoke-BatchTest -Name "Test-IssueStateRecoverable identifies ORPHANED" -Test {
+    if (-not (Test-IssueStateRecoverable -State "ORPHANED")) { throw "ORPHANED should be recoverable" }
+}
+
+Invoke-BatchTest -Name "Test-IssueStateRecoverable does not identify SUBAGENT_FAILED" -Test {
+    if (Test-IssueStateRecoverable -State "SUBAGENT_FAILED") { throw "SUBAGENT_FAILED should not be recoverable (terminal state)" }
+}
+
+Invoke-BatchTest -Name "Test-IssueStateRecoverable identifies BLOCKED" -Test {
+    if (-not (Test-IssueStateRecoverable -State "BLOCKED")) { throw "BLOCKED should be recoverable" }
+}
+
+Invoke-BatchTest -Name "Test-IssueStateRecoverable rejects COMPLETED" -Test {
+    if (Test-IssueStateRecoverable -State "COMPLETED") { throw "COMPLETED should not be recoverable" }
+}
+
+# ============================================================
+# BatchCheckpoint Tests
+# ============================================================
+Write-Host "`n=== BatchCheckpoint Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "New-BatchCheckpoint creates checkpoint with schema version" -Test {
+    $cp = New-BatchCheckpoint -BatchId "test-batch" -IssueCount 3
+    if ($cp.schemaVersion -ne 1) { throw "SchemaVersion should be 1" }
+    if ($cp.batchId -ne "test-batch") { throw "BatchId mismatch" }
+    if ($cp.issueCount -ne 3) { throw "IssueCount mismatch" }
+    if ($cp.workers.Count -ne 0) { throw "Workers should be empty" }
+}
+
+Invoke-BatchTest -Name "New-WorkerCheckpoint creates checkpoint with provider-neutral fields" -Test {
+    $cp = New-WorkerCheckpoint -IssueId "issue-1" -IssueNumber 42 -Description "test" -Provider "claude-code"
+    if ($cp.schemaVersion -ne 1) { throw "SchemaVersion should be 1" }
+    if ($cp.issueId -ne "issue-1") { throw "IssueId mismatch" }
+    if ($cp.issueNumber -ne 42) { throw "IssueNumber mismatch" }
+    if ($cp.provider -ne "claude-code") { throw "Provider mismatch" }
+    if ($cp.lifecycleState -ne "PENDING") { throw "Initial lifecycleState should be PENDING" }
+    if ($cp.completedPhases.Count -ne 0) { throw "completedPhases should be empty" }
+    if ($cp.ContainsKey("providerMetadata") -eq $false) { throw "Should have providerMetadata field" }
+}
+
+Invoke-BatchTest -Name "Save and load batch checkpoint" -Test {
+    $tempDir = Join-Path $env:TEMP "test-cp-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $cp = New-BatchCheckpoint -BatchId "test-cp" -IssueCount 2
+        $cp.batchState = "RUNNING"
+        $cp.workers["issue-1"] = @{ state = "RUNNING"; updatedAt = "2025-01-01T00:00:00Z" }
+        Save-BatchCheckpoint -Checkpoint $cp -StateDir $tempDir
+        $loaded = Get-BatchCheckpoint -BatchId "test-cp" -StateDir $tempDir
+        if ($null -eq $loaded) { throw "Should load checkpoint" }
+        if ($loaded.batchState -ne "RUNNING") { throw "batchState mismatch" }
+        if ($loaded.workers.Count -ne 1) { throw "Should have 1 worker" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Save and load worker checkpoint" -Test {
+    $tempDir = Join-Path $env:TEMP "test-wc-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $cp = New-WorkerCheckpoint -IssueId "issue-1" -IssueNumber 42 -Description "test"
+        $cp.batchId = "test-batch"
+        $cp.lifecycleState = "RUNNING"
+        $cp.branch = "issue/42-test"
+        $cp.currentCommit = "abc123"
+        $cp.completedPhases = @("agent_completed")
+        Save-WorkerCheckpoint -Checkpoint $cp -StateDir $tempDir
+        $loaded = Get-WorkerCheckpoint -BatchId "test-batch" -IssueId "issue-1" -StateDir $tempDir
+        if ($null -eq $loaded) { throw "Should load worker checkpoint" }
+        if ($loaded.lifecycleState -ne "RUNNING") { throw "lifecycleState mismatch" }
+        if ($loaded.branch -ne "issue/42-test") { throw "branch mismatch" }
+        if ($loaded.currentCommit -ne "abc123") { throw "currentCommit mismatch" }
+        if ($loaded.completedPhases.Count -ne 1) { throw "completedPhases should have 1 entry" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-AllWorkerCheckpoints returns all workers" -Test {
+    $tempDir = Join-Path $env:TEMP "test-wc-all-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $cp1 = New-WorkerCheckpoint -IssueId "issue-1" -IssueNumber 1
+        $cp1.batchId = "test-batch"
+        Save-WorkerCheckpoint -Checkpoint $cp1 -StateDir $tempDir
+        $cp2 = New-WorkerCheckpoint -IssueId "issue-2" -IssueNumber 2
+        $cp2.batchId = "test-batch"
+        Save-WorkerCheckpoint -Checkpoint $cp2 -StateDir $tempDir
+        $all = Get-AllWorkerCheckpoints -BatchId "test-batch" -StateDir $tempDir
+        if ($all.Count -ne 2) { throw "Should have 2 checkpoints, got $($all.Count)" }
+        if (-not $all.ContainsKey("issue-1")) { throw "Should contain issue-1" }
+        if (-not $all.ContainsKey("issue-2")) { throw "Should contain issue-2" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Test-BatchCheckpointExists returns correct values" -Test {
+    $tempDir = Join-Path $env:TEMP "test-cp-exists-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        if (Test-BatchCheckpointExists -BatchId "test-exists" -StateDir $tempDir) { throw "Should not exist yet" }
+        $cp = New-BatchCheckpoint -BatchId "test-exists"
+        Save-BatchCheckpoint -Checkpoint $cp -StateDir $tempDir
+        if (-not (Test-BatchCheckpointExists -BatchId "test-exists" -StateDir $tempDir)) { throw "Should exist now" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-BatchCheckpoint returns null for missing" -Test {
+    $result = Get-BatchCheckpoint -BatchId "nonexistent" -StateDir "/tmp"
+    if ($null -ne $result) { throw "Should return null for missing" }
+}
+
+Invoke-BatchTest -Name "Remove-WorkerCheckpoint deletes file" -Test {
+    $tempDir = Join-Path $env:TEMP "test-wc-remove-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $cp = New-WorkerCheckpoint -IssueId "issue-rm" -IssueNumber 1
+        $cp.batchId = "test-batch"
+        Save-WorkerCheckpoint -Checkpoint $cp -StateDir $tempDir
+        Remove-WorkerCheckpoint -BatchId "test-batch" -IssueId "issue-rm" -StateDir $tempDir
+        $loaded = Get-WorkerCheckpoint -BatchId "test-batch" -IssueId "issue-rm" -StateDir $tempDir
+        if ($null -ne $loaded) { throw "Should be null after removal" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Remove-BatchCheckpoint removes entire directory" -Test {
+    $tempDir = Join-Path $env:TEMP "test-cp-remove-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $cp = New-BatchCheckpoint -BatchId "test-rm-batch"
+        Save-BatchCheckpoint -Checkpoint $cp -StateDir $tempDir
+        $wcp = New-WorkerCheckpoint -IssueId "issue-1" -IssueNumber 1
+        $wcp.batchId = "test-rm-batch"
+        Save-WorkerCheckpoint -Checkpoint $wcp -StateDir $tempDir
+        Remove-BatchCheckpoint -BatchId "test-rm-batch" -StateDir $tempDir
+        $loaded = Get-BatchCheckpoint -BatchId "test-rm-batch" -StateDir $tempDir
+        if ($null -ne $loaded) { throw "Should be null after removal" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Save-AtomicJson writes atomically" -Test {
+    $tempDir = Join-Path $env:TEMP "test-atomic-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $filePath = Join-Path $tempDir "test.json"
+        $data = @{ Hello = "world"; Number = 42 }
+        Save-AtomicJson -FilePath $filePath -Data $data
+        if (-not (Test-Path $filePath)) { throw "File should exist" }
+        $loaded = Get-Content $filePath -Raw | ConvertFrom-Json
+        if ($loaded.Hello -ne "world") { throw "Data mismatch" }
+        if ($loaded.Number -ne 42) { throw "Number mismatch" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-WorkerCheckpointSummary returns string" -Test {
+    $cp = New-WorkerCheckpoint -IssueId "issue-1" -IssueNumber 42 -Description "test feature"
+    $cp.lifecycleState = "RUNNING"
+    $cp.branch = "issue/42-test"
+    $cp.currentCommit = "abc123"
+    $cp.providerMetadata = @{ sessionId = "test-session" }
+    $summary = Get-WorkerCheckpointSummary -Checkpoint $cp
+    if (-not $summary) { throw "Summary should not be empty" }
+    if (-not $summary.Contains("issue-1")) { throw "Summary should contain issue-1" }
+    if (-not $summary.Contains("RUNNING")) { throw "Summary should contain RUNNING" }
+    if (-not $summary.Contains("sessionId")) { throw "Summary should contain providerMetadata keys" }
+}
+
+Invoke-BatchTest -Name "New-RecoveryContext creates recovery context" -Test {
+    $batchCp = New-BatchCheckpoint -BatchId "test-batch" -IssueCount 1
+    $batchCp.batchState = "RUNNING"
+    $workerCp = New-WorkerCheckpoint -IssueId "issue-1" -IssueNumber 42 -Description "test"
+    $workerCp.branch = "issue/42-test"
+    $workerCp.lifecycleState = "ORPHANED"
+    $workerCp.failureReason = "Process crashed"
+    $ctx = New-RecoveryContext -BatchCheckpoint $batchCp -WorkerCheckpoint $workerCp
+    if ($ctx.batchId -ne "test-batch") { throw "batchId mismatch" }
+    if ($ctx.batchState -ne "RUNNING") { throw "batchState mismatch" }
+    if ($ctx.issueId -ne "issue-1") { throw "issueId mismatch" }
+    if ($ctx.branch -ne "issue/42-test") { throw "branch mismatch" }
+    if ($ctx.failureReason -ne "Process crashed") { throw "failureReason mismatch" }
+    if (-not $ctx.workerSummary) { throw "workerSummary should not be empty" }
+}
+
+# ============================================================
+# PR_READY Terminal State Tests
+# ============================================================
+Write-Host "`n=== PR_READY Terminal State Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "PR_READY is not terminal" -Test {
+    if (Test-IssueStateTerminal -State "PR_READY") { throw "PR_READY should not be terminal (has transition to WAITING_FOR_APPROVAL)" }
+}
+
+Invoke-BatchTest -Name "PR_READY is considered active" -Test {
+    if (-not (Test-IssueStateActive -State "PR_READY")) { throw "PR_READY should be active per state machine" }
+}
+
+Invoke-BatchTest -Name "PR_READY can transition to WAITING_FOR_APPROVAL" -Test {
+    $result = Test-ValidIssueTransition -FromState "PR_READY" -ToState "WAITING_FOR_APPROVAL"
+    if (-not $result) { throw "PR_READY -> WAITING_FOR_APPROVAL should be valid" }
+}
+
+# ============================================================
+# Checkpoint Filename Collision Tests
+# ============================================================
+Write-Host "`n=== Checkpoint Filename Collision Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Different IssueIds produce different checkpoint filenames" -Test {
+    $tempDir = Join-Path $env:TEMP "test-collision-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $path1 = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue/1" -StateDir $tempDir
+        $path2 = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue?1" -StateDir $tempDir
+        $path3 = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue_1" -StateDir $tempDir
+        if ($path1 -eq $path2) { throw "issue/1 and issue?1 should produce different paths" }
+        if ($path1 -eq $path3) { throw "issue/1 and issue_1 should produce different paths" }
+        if ($path2 -eq $path3) { throw "issue?1 and issue_1 should produce different paths" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Safe IssueIds still produce expected filenames" -Test {
+    $tempDir = Join-Path $env:TEMP "test-safe-id-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $path = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue-1" -StateDir $tempDir
+        if (-not $path.EndsWith("worker-issue-1.json")) { throw "Expected worker-issue-1.json, got $path" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Checkpoint filenames are injective between unsafe and safe IssueIds" -Test {
+    $tempDir = Join-Path $env:TEMP "test-injective-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $unsafe = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue/1" -StateDir $tempDir
+        $safe = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue_2F1" -StateDir $tempDir
+        if ($unsafe -eq $safe) { throw "Unsafe issue/1 and safe issue_2F1 must not collide" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-WorkerCheckpointPath rejects empty IssueId" -Test {
+    try {
+        Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "" -StateDir "/tmp"
+        throw "Should have thrown for empty IssueId"
+    } catch {
+        if (-not $_.Exception.Message -match "empty") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+Invoke-BatchTest -Name "Get-WorkerCheckpointPath rejects whitespace-only IssueId" -Test {
+    try {
+        Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "   " -StateDir "/tmp"
+        throw "Should have thrown for whitespace-only IssueId"
+    } catch {
+        if (-not $_.Exception.Message -match "empty") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+# ============================================================
+# Transition Log BatchId Validation Tests
+# ============================================================
+Write-Host "`n=== Transition Log BatchId Validation Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Get-TransitionLogPath rejects empty BatchId" -Test {
+    try {
+        Get-TransitionLogPath -BatchId "" -StateDir "/tmp"
+        throw "Should have thrown for empty BatchId"
+    } catch {
+        if (-not $_.Exception.Message -match "empty") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLogPath rejects path traversal" -Test {
+    try {
+        Get-TransitionLogPath -BatchId "../etc/passwd" -StateDir "/tmp"
+        throw "Should have thrown for path traversal"
+    } catch {
+        if (-not $_.Exception.Message -match "invalid path") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLogPath rejects backslash" -Test {
+    try {
+        Get-TransitionLogPath -BatchId 'batch\test' -StateDir "/tmp"
+        throw "Should have thrown for backslash"
+    } catch {
+        if (-not $_.Exception.Message -match "invalid path") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+# ============================================================
+# Orphan Detection Result Validation Tests
+# ============================================================
+Write-Host "`n=== Orphan Detection Result Validation Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Test-OrphanedProcess detects orphan with corrupt result file" -Test {
+    $tempDir = Join-Path $env:TEMP "test-corrupt-result-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $resultFile = Join-Path $tempDir "result.json"
+        "not valid json" | Set-Content $resultFile
+        $result = Test-OrphanedProcess -ProcessId 99999999 -ResultFile $resultFile
+        if (-not $result.IsOrphaned) { throw "Should detect orphan with corrupt result" }
+        if (-not $result.Reason.Contains("unreadable") -and -not $result.Reason.Contains("corrupt")) { throw "Reason should mention corrupt/unreadable" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Test-OrphanedProcess does not orphan when result is valid" -Test {
+    $tempDir = Join-Path $env:TEMP "test-valid-result-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $resultFile = Join-Path $tempDir "result.json"
+        @{ Success = $false; Error = "test error" } | ConvertTo-Json | Set-Content $resultFile
+        $result = Test-OrphanedProcess -ProcessId 99999999 -ResultFile $resultFile
+        if ($result.IsOrphaned) { throw "Should not orphan when result is parseable" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Transition Log Error Handling Tests
+# ============================================================
+Write-Host "`n=== Transition Log Error Handling Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Write-TransitionLog creates parent directory if needed" -Test {
+    $tempDir = Join-Path $env:TEMP "test-log-parent-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $nestedStateDir = Join-Path $tempDir "nested" "subdir"
+        Write-TransitionLog -BatchId "test-log" -EntityType "worker" -EntityId "issue-1" -FromState "WAITING" -ToState "RUNNING" -StateDir $nestedStateDir
+        $entries = Get-TransitionLog -BatchId "test-log" -StateDir $nestedStateDir
+        if ($entries.Count -ne 1) { throw "Expected 1 entry" }
+        $logPath = Join-Path $nestedStateDir ".batch-log-test-log.jsonl"
+        if (-not (Test-Path $logPath)) { throw "Log file should exist at nested path" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Transition Log Tests
+# ============================================================
+Write-Host "`n=== Transition Log Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Write-TransitionLog creates log entries" -Test {
+    $tempDir = Join-Path $env:TEMP "test-log-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        Write-TransitionLog -BatchId "test-log" -EntityType "worker" -EntityId "issue-1" -FromState "SUBAGENT_RUNNING" -ToState "ORPHANED" -Reason "Process dead" -StateDir $tempDir
+        Write-TransitionLog -BatchId "test-log" -EntityType "worker" -EntityId "issue-1" -FromState "ORPHANED" -ToState "SUBAGENT_STARTING" -Reason "Recovery" -StateDir $tempDir
+        $entries = Get-TransitionLog -BatchId "test-log" -StateDir $tempDir
+        if ($entries.Count -ne 2) { throw "Expected 2 entries, got $($entries.Count)" }
+        if ($entries[0].fromState -ne "SUBAGENT_RUNNING") { throw "First entry fromState mismatch" }
+        if ($entries[0].toState -ne "ORPHANED") { throw "First entry toState mismatch" }
+        if ($entries[1].toState -ne "SUBAGENT_STARTING") { throw "Second entry toState mismatch" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLog returns empty for missing" -Test {
+    $entries = Get-TransitionLog -BatchId "nonexistent" -StateDir "/tmp"
+    if ($entries.Count -ne 0) { throw "Should return empty for missing" }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLog returns indexable array for single entry" -Test {
+    $tempDir = Join-Path $env:TEMP "test-log-single-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        Write-TransitionLog -BatchId "test-log-single" -EntityType "worker" -EntityId "issue-1" -FromState "SUBAGENT_RUNNING" -ToState "ORPHANED" -Reason "Process dead" -StateDir $tempDir
+        $entries = Get-TransitionLog -BatchId "test-log-single" -StateDir $tempDir
+        if ($entries.Count -ne 1) { throw "Expected 1 entry, got $($entries.Count)" }
+        if ($entries[0].toState -ne "ORPHANED") { throw "Single entry should be indexable as array" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Worker Checkpoint from IssueState Tests
+# ============================================================
+Write-Host "`n=== Worker Checkpoint from IssueState Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "New-WorkerCheckpointFromIssueState maps SUBAGENT_RUNNING to RUNNING" -Test {
+    $issueState = New-IssueState -IssueId "issue-1" -IssueNumber 42 -Description "test"
+    $issueState.State = "SUBAGENT_RUNNING"
+    $issueState.BranchName = "issue/42-test"
+    $issueState.CommitSha = "abc123"
+    $issueState.WorktreePath = "/tmp/test"
+    $cp = New-WorkerCheckpointFromIssueState -IssueState $issueState -Provider "claude-code"
+    if ($cp.lifecycleState -ne "RUNNING") { throw "Should map to RUNNING, got $($cp.lifecycleState)" }
+    if ($cp.branch -ne "issue/42-test") { throw "branch mismatch" }
+    if ($cp.currentCommit -ne "abc123") { throw "currentCommit mismatch" }
+    if ($cp.provider -ne "claude-code") { throw "provider mismatch" }
+}
+
+Invoke-BatchTest -Name "New-WorkerCheckpointFromIssueState maps ORPHANED correctly" -Test {
+    $issueState = New-IssueState -IssueId "issue-1" -IssueNumber 42 -Description "test"
+    $issueState.State = "ORPHANED"
+    $cp = New-WorkerCheckpointFromIssueState -IssueState $issueState
+    if ($cp.lifecycleState -ne "ORPHANED") { throw "Should map to ORPHANED, got $($cp.lifecycleState)" }
+}
+
+Invoke-BatchTest -Name "New-WorkerCheckpointFromIssueState maps COMPLETED to SUCCESS" -Test {
+    $issueState = New-IssueState -IssueId "issue-1" -IssueNumber 42 -Description "test"
+    $issueState.State = "COMPLETED"
+    $issueState.CommitSha = "abc123"
+    $issueState.PrNumber = 99
+    $cp = New-WorkerCheckpointFromIssueState -IssueState $issueState
+    if ($cp.lifecycleState -ne "SUCCESS") { throw "Should map to SUCCESS, got $($cp.lifecycleState)" }
+    if ($cp.completedPhases -notcontains "commit") { throw "Should have commit in completedPhases" }
+    if ($cp.completedPhases -notcontains "push") { throw "Should have push in completedPhases" }
+}
+
+Invoke-BatchTest -Name "New-WorkerCheckpointFromIssueState maps PR_READY to RUNNING" -Test {
+    $issueState = New-IssueState -IssueId "issue-1" -IssueNumber 42 -Description "test"
+    $issueState.State = "PR_READY"
+    $issueState.CommitSha = "abc123"
+    $issueState.PrNumber = 99
+    $cp = New-WorkerCheckpointFromIssueState -IssueState $issueState
+    if ($cp.lifecycleState -ne "RUNNING") { throw "Should map to RUNNING, got $($cp.lifecycleState)" }
+    if ($cp.completedPhases -notcontains "pr_created") { throw "Should have pr_created in completedPhases" }
+}
+
+# ============================================================
+# Orphan Detection Tests
+# ============================================================
+Write-Host "`n=== Orphan Detection Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Test-OrphanedProcess detects orphan with dead process and no result" -Test {
+    $tempDir = Join-Path $env:TEMP "test-orphan-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $resultFile = Join-Path $tempDir "result.json"
+        $result = Test-OrphanedProcess -ProcessId 99999999 -ResultFile $resultFile
+        if (-not $result.IsOrphaned) { throw "Should detect orphan" }
+        if (-not $result.Reason.Contains("exited")) { throw "Reason should mention exit" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Test-OrphanedProcess does not detect orphan when result exists" -Test {
+    $tempDir = Join-Path $env:TEMP "test-orphan-res-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $resultFile = Join-Path $tempDir "result.json"
+        @{ Success = $true } | ConvertTo-Json | Set-Content $resultFile
+        $result = Test-OrphanedProcess -ProcessId 99999999 -ResultFile $resultFile
+        if ($result.IsOrphaned) { throw "Should not detect orphan when result exists" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Atomic Write Tests
+# ============================================================
+Write-Host "`n=== Atomic Write Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Atomic write does not leave temp files on success" -Test {
+    $tempDir = Join-Path $env:TEMP "test-atomic-clean-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $filePath = Join-Path $tempDir "data.json"
+        $data = @{ Key = "Value" }
+        Save-AtomicJson -FilePath $filePath -Data $data
+        $tmpFiles = Get-ChildItem -Path $tempDir -Filter "*.tmp.*" -ErrorAction SilentlyContinue
+        if ($tmpFiles.Count -gt 0) { throw "Temp files should be cleaned up" }
+        if (-not (Test-Path $filePath)) { throw "Target file should exist" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Atomic write overwrites existing file" -Test {
+    $tempDir = Join-Path $env:TEMP "test-atomic-overwrite-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $filePath = Join-Path $tempDir "data.json"
+        @{ Old = $true } | ConvertTo-Json | Set-Content $filePath
+        $data = @{ New = $true }
+        Save-AtomicJson -FilePath $filePath -Data $data
+        $loaded = Get-Content $filePath -Raw | ConvertFrom-Json -AsHashtable
+        if ($loaded.New -ne $true) { throw "Should have new data" }
+        if ($loaded.ContainsKey("Old")) { throw "Should not have old data" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Schema Version Tests
+# ============================================================
+Write-Host "`n=== Schema Version Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Batch state includes SchemaVersion" -Test {
+    $state = New-BatchState -BatchId "test-sv" -IssueCount 1
+    if ($state.SchemaVersion -ne 1) { throw "SchemaVersion should be 1, got $($state.SchemaVersion)" }
+}
+
+Invoke-BatchTest -Name "Issue states wrapper includes SchemaVersion" -Test {
+    $tempFile = Join-Path $env:TEMP "test-sv-issues-$(Get-Random).json"
+    try {
+        $issues = @{ "A" = New-IssueState -IssueId "A" -IssueNumber 1 }
+        Save-IssueStates -Issues $issues -FilePath $tempFile
+        $raw = Get-Content $tempFile -Raw | ConvertFrom-Json
+        if ($raw.SchemaVersion -ne 1) { throw "SchemaVersion should be 1 in wrapper" }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+    }
+}
+
+# ============================================================
+# BatchCheckpoint Config Tests
+# ============================================================
+Write-Host "`n=== BatchCheckpoint Config Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Config has checkpoint section" -Test {
+    $configPath = Join-Path $scriptPath ".." ".." ".." "config" "batch-config.json"
+    $config = Get-Content $configPath | ConvertFrom-Json
+    if (-not $config.checkpoint) { throw "Config should have checkpoint section" }
+    if (-not $config.checkpoint.enabled) { throw "Checkpoint should be enabled" }
+    if (-not $config.checkpoint.provider_neutral) { throw "Checkpoint should be provider-neutral" }
+    if (-not $config.checkpoint.recovery.orphan_detection) { throw "Orphan detection should be enabled" }
+    if (-not $config.checkpoint.recovery.idempotency_protection) { throw "Idempotency protection should be enabled" }
 }
 
 # ============================================================
