@@ -60,6 +60,29 @@ function Write-Result {
     $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultFile -Force
 }
 
+function Write-ProgressCheckpoint {
+    param(
+        [string]$Phase,
+        [hashtable]$Progress = @{}
+    )
+    $checkpointDir = Join-Path $WorktreePath ".subagent"
+    if (-not (Test-Path $checkpointDir)) {
+        New-Item -ItemType Directory -Path $checkpointDir -Force | Out-Null
+    }
+    $checkpointFile = Join-Path $checkpointDir "progress-checkpoint.json"
+    $checkpoint = @{
+        issueId = $IssueId
+        issueNumber = $IssueNumber
+        phase = $Phase
+        timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        elapsedSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
+    }
+    foreach ($key in $Progress.Keys) {
+        $checkpoint[$key] = $Progress[$key]
+    }
+    $checkpoint | ConvertTo-Json -Depth 10 | Set-Content -Path $checkpointFile -Force
+}
+
 function Get-GitChangedFiles {
     & git diff --name-only 2>$null
     $staged = & git diff --cached --name-only 2>$null
@@ -75,6 +98,11 @@ try {
     Write-AgentLog "Worktree: $WorktreePath"
     Write-AgentLog "Branch: $BranchName"
     Write-AgentLog "Timeout: $TimeoutMinutes minutes"
+
+    Write-ProgressCheckpoint -Phase "starting" -Progress @{
+        branch = $BranchName
+        worktreePath = $WorktreePath
+    }
 
     if (-not (Test-Path $WorktreePath)) {
         throw "Worktree path does not exist: $WorktreePath"
@@ -158,6 +186,13 @@ IMPORTANT RULES:
         Write-AgentLog ("AI Agent completed (exit code: {0})" -f $agentExitCode)
         Write-AgentLog ("Output: stdout={0} bytes, stderr={1} bytes" -f $agentOutput.Length, $agentError.Length)
 
+        Write-ProgressCheckpoint -Phase "agent_completed" -Progress @{
+            exitCode = $agentExitCode
+            stdoutLength = $agentOutput.Length
+            stderrLength = $agentError.Length
+            providerSuccess = $provider_result.Success
+        }
+
         # Guard: provider failure must NOT proceed to git/PR operations
         if (-not $provider_result.Success) {
             Write-AgentLog ("Provider failed: {0}" -f $provider_result.Error) "ERROR"
@@ -216,6 +251,11 @@ IMPORTANT RULES:
         $commitSha = & git rev-parse HEAD 2>$null
         Write-AgentLog "Committed: $commitSha"
 
+        Write-ProgressCheckpoint -Phase "committed" -Progress @{
+            commitSha = $commitSha
+            changedFiles = $changedFiles
+        }
+
         Write-AgentLog "Phase 6: Push to origin"
         & git push -u origin $BranchName 2>&1 | Out-Null
         Write-AgentLog "Pushed to origin/$BranchName"
@@ -244,6 +284,11 @@ $($changedFiles -join "`n")
             $prNumber = [int]$Matches[1]
         }
         Write-AgentLog "PR created: #$prNumber"
+
+        Write-ProgressCheckpoint -Phase "pr_created" -Progress @{
+            prNumber = $prNumber
+            commitSha = $commitSha
+        }
 
         $endTime = Get-Date
         $duration = ($endTime - $startTime).TotalSeconds

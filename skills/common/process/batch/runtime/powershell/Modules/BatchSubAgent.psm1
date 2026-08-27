@@ -584,6 +584,125 @@ function Stop-SubAgentProcess {
     }
 }
 
+function New-WorkerCheckpointFromIssueState {
+    <#
+    .SYNOPSIS
+        Creates a worker checkpoint from an issue state hashtable.
+    .PARAMETER IssueState
+        The issue state hashtable.
+    .PARAMETER Provider
+        Agent provider name.
+    .OUTPUTS
+        Hashtable suitable for Save-WorkerCheckpoint.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$IssueState,
+        [Parameter(Mandatory = $false)]
+        [string]$Provider = ""
+    )
+
+    $lifecycleMap = @{
+        "WAITING_DEPENDENCY" = "PENDING"
+        "WAITING_FOR_SUBAGENT" = "PENDING"
+        "SUBAGENT_STARTING" = "STARTING"
+        "SUBAGENT_RUNNING" = "RUNNING"
+        "SUBAGENT_RETRYING" = "RETRY_PENDING"
+        "ORPHANED" = "ORPHANED"
+        "PR_READY" = "RUNNING"
+        "WAITING_FOR_APPROVAL" = "RUNNING"
+        "READY_FOR_MERGE" = "RUNNING"
+        "MERGING" = "RUNNING"
+        "COMPLETED" = "SUCCESS"
+        "SUBAGENT_FAILED" = "FAILED"
+        "FAILED" = "FAILED"
+        "BLOCKED" = "FAILED"
+    }
+
+    $lifecycle = $lifecycleMap[$IssueState.State]
+    if (-not $lifecycle) { $lifecycle = "PENDING" }
+
+    $completedPhases = @()
+    if ($IssueState.CommitSha) { $completedPhases += "commit" }
+    if ($IssueState.PrNumber) { $completedPhases += "push" }
+    if ($IssueState.State -eq "PR_READY" -or $IssueState.State -eq "WAITING_FOR_APPROVAL") { $completedPhases += "pr_created" }
+
+    return @{
+        schemaVersion = 1
+        issueId = $IssueState.IssueId
+        issueNumber = $IssueState.IssueNumber
+        description = $IssueState.Description
+        createdAt = if ($IssueState.CreatedAt) { $IssueState.CreatedAt } else { (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ") }
+        updatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        provider = $Provider
+        lifecycleState = $lifecycle
+        completedPhases = $completedPhases
+        branch = $IssueState.BranchName
+        baseCommit = $null
+        currentCommit = $IssueState.CommitSha
+        resultCommit = $IssueState.CommitSha
+        prNumber = $IssueState.PrNumber
+        prState = $null
+        worktreePath = $IssueState.WorktreePath
+        testResult = $null
+        testPassed = $false
+        remainingWork = $null
+        failureReason = $IssueState.LastError
+        failureCategory = $null
+        retryCount = $IssueState.RetryCount
+        maxRetries = 3
+        lastRetryAt = $null
+        processId = $IssueState.SubAgentProcessId
+        startedAt = $IssueState.StartedAt
+        completedAt = $IssueState.CompletedAt
+        providerMetadata = @{}
+    }
+}
+
+function Test-OrphanedProcess {
+    <#
+    .SYNOPSIS
+        Detects if a sub-agent process is orphaned.
+        An orphan is a process that is no longer running and has no result file.
+    .PARAMETER ProcessId
+        The process ID to check.
+    .PARAMETER ResultFile
+        Path to the expected result file.
+    .OUTPUTS
+        Hashtable with IsOrphaned (bool) and Reason.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId,
+        [Parameter(Mandatory = $true)]
+        [string]$ResultFile
+    )
+
+    $processAlive = Test-SubAgentProcessRunning -ProcessId $ProcessId
+    $resultExists = Test-Path $ResultFile
+
+    if ($resultExists) {
+        return @{
+            IsOrphaned = $false
+            Reason = "Result file exists"
+        }
+    }
+
+    if ($processAlive) {
+        return @{
+            IsOrphaned = $false
+            Reason = "Process still running"
+        }
+    }
+
+    return @{
+        IsOrphaned = $true
+        Reason = "Process exited without result file (crash/timeout/token-limit)"
+    }
+}
+
 Export-ModuleMember -Function @(
     'New-SubAgentConfig',
     'New-SubAgentState',
@@ -597,5 +716,7 @@ Export-ModuleMember -Function @(
     'Update-SubAgentLaunchLog',
     'Get-SubAgentResult',
     'Test-SubAgentProcessRunning',
-    'Stop-SubAgentProcess'
+    'Stop-SubAgentProcess',
+    'New-WorkerCheckpointFromIssueState',
+    'Test-OrphanedProcess'
 )

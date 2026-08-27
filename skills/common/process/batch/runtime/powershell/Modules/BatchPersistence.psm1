@@ -5,11 +5,16 @@
     State persistence for Batch Orchestrator.
 .DESCRIPTION
     Handles saving and loading batch and issue state to/from JSON files
-    for crash recovery and resume capability.
+    for crash recovery and resume capability. Includes atomic writes,
+    schema versioning, and transition audit logging.
 .NOTES
-    Version: 1.0.0
-    Issue: #155
+    Version: 1.1.0
+    Issue: #155, #170
+    Runtime: PowerShell Core 7.x
+    Platform: Cross-platform (Windows, Linux, macOS)
 #>
+
+$Script:PersistenceSchemaVersion = 1
 
 function Get-BatchStateFilePath {
     [CmdletBinding()]
@@ -31,7 +36,26 @@ function Save-BatchState {
         [string]$FilePath
     )
     $State.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $State | ConvertTo-Json -Depth 20 | Set-Content -Path $FilePath
+    if (-not $State.ContainsKey("SchemaVersion")) {
+        $State.SchemaVersion = $Script:PersistenceSchemaVersion
+    }
+    $dir = Split-Path -Parent $FilePath
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
+    try {
+        $State | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
+        if (Test-Path $FilePath) {
+            Remove-Item $FilePath -Force
+        }
+        Move-Item -Path $tmpFile -Destination $FilePath -Force
+    } catch {
+        if (Test-Path $tmpFile) {
+            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 }
 
 function Get-BatchState {
@@ -43,7 +67,12 @@ function Get-BatchState {
     if (-not (Test-Path $FilePath)) {
         return $null
     }
-    return Get-Content $FilePath | ConvertFrom-Json -AsHashtable
+    try {
+        return Get-Content $FilePath -Raw | ConvertFrom-Json -AsHashtable
+    } catch {
+        Write-Warning "Failed to read batch state from $FilePath`: $_"
+        return $null
+    }
 }
 
 function Save-IssueStates {
@@ -55,10 +84,27 @@ function Save-IssueStates {
         [string]$FilePath
     )
     $data = @{
+        SchemaVersion = $Script:PersistenceSchemaVersion
         UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
         Issues = $Issues
     }
-    $data | ConvertTo-Json -Depth 20 | Set-Content -Path $FilePath
+    $dir = Split-Path -Parent $FilePath
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
+    try {
+        $data | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
+        if (Test-Path $FilePath) {
+            Remove-Item $FilePath -Force
+        }
+        Move-Item -Path $tmpFile -Destination $FilePath -Force
+    } catch {
+        if (Test-Path $tmpFile) {
+            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 }
 
 function Get-IssueStates {
@@ -70,8 +116,13 @@ function Get-IssueStates {
     if (-not (Test-Path $FilePath)) {
         return $null
     }
-    $data = Get-Content $FilePath | ConvertFrom-Json -AsHashtable
-    return $data.Issues
+    try {
+        $data = Get-Content $FilePath -Raw | ConvertFrom-Json -AsHashtable
+        return $data.Issues
+    } catch {
+        Write-Warning "Failed to read issue states from $FilePath`: $_"
+        return $null
+    }
 }
 
 function New-BatchState {
@@ -83,6 +134,7 @@ function New-BatchState {
         [int]$IssueCount = 0
     )
     return @{
+        SchemaVersion = $Script:PersistenceSchemaVersion
         BatchId = $BatchId
         State = "BATCH_INITIALIZING"
         IssueCount = $IssueCount
@@ -173,6 +225,72 @@ function Sync-StateWithGitHub {
     }
 }
 
+function Get-TransitionLogPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BatchId,
+        [Parameter(Mandatory = $false)]
+        [string]$StateDir = "."
+    )
+    return Join-Path $StateDir ".batch-log-$BatchId.jsonl"
+}
+
+function Write-TransitionLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BatchId,
+        [Parameter(Mandatory = $true)]
+        [string]$EntityType,
+        [Parameter(Mandatory = $true)]
+        [string]$EntityId,
+        [Parameter(Mandatory = $true)]
+        [string]$FromState,
+        [Parameter(Mandatory = $true)]
+        [string]$ToState,
+        [Parameter(Mandatory = $false)]
+        [string]$Reason = "",
+        [Parameter(Mandatory = $false)]
+        [string]$StateDir = "."
+    )
+    $logPath = Get-TransitionLogPath -BatchId $BatchId -StateDir $StateDir
+    $entry = @{
+        timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        entityType = $EntityType
+        entityId = $EntityId
+        fromState = $FromState
+        toState = $ToState
+        reason = $Reason
+    }
+    $line = $entry | ConvertTo-Json -Depth 5 -Compress
+    Add-Content -Path $logPath -Value $line -Force
+}
+
+function Get-TransitionLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BatchId,
+        [Parameter(Mandatory = $false)]
+        [string]$StateDir = "."
+    )
+    $logPath = Get-TransitionLogPath -BatchId $BatchId -StateDir $StateDir
+    if (-not (Test-Path $logPath)) {
+        return @()
+    }
+    $entries = @()
+    $lines = Get-Content $logPath -ErrorAction SilentlyContinue
+    foreach ($line in $lines) {
+        if ($line.Trim()) {
+            try {
+                $entries += $line | ConvertFrom-Json -AsHashtable
+            } catch { }
+        }
+    }
+    return $entries
+}
+
 Export-ModuleMember -Function @(
     'Get-BatchStateFilePath',
     'Save-BatchState',
@@ -181,5 +299,8 @@ Export-ModuleMember -Function @(
     'Get-IssueStates',
     'New-BatchState',
     'New-IssueState',
-    'Sync-StateWithGitHub'
+    'Sync-StateWithGitHub',
+    'Get-TransitionLogPath',
+    'Write-TransitionLog',
+    'Get-TransitionLog'
 )
