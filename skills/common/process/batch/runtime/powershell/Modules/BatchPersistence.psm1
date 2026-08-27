@@ -73,8 +73,7 @@ function Get-BatchState {
     try {
         return Get-Content $FilePath -Raw | ConvertFrom-Json -AsHashtable
     } catch {
-        Write-Error "Failed to parse batch state from ${FilePath}: $_"
-        return $null
+        throw "Failed to parse batch state from ${FilePath} (corrupt or invalid JSON): $($_.Exception.Message)"
     }
 }
 
@@ -120,8 +119,7 @@ function Get-IssueStates {
         $data = Get-Content $FilePath -Raw | ConvertFrom-Json -AsHashtable
         return $data.Issues
     } catch {
-        Write-Error "Failed to parse issue states from ${FilePath}: $_"
-        return $null
+        throw "Failed to parse issue states from ${FilePath} (corrupt or invalid JSON): $($_.Exception.Message)"
     }
 }
 
@@ -289,16 +287,19 @@ function Get-TransitionLog {
     if (-not (Test-Path $logPath)) {
         return @()
     }
-    $entries = @()
+    $entries = [System.Collections.ArrayList]::new()
     $lines = Get-Content $logPath -ErrorAction SilentlyContinue
     foreach ($line in $lines) {
         if ($line.Trim()) {
             try {
-                $entries += $line | ConvertFrom-Json -AsHashtable
+                $entry = $line | ConvertFrom-Json -AsHashtable
+                if ($null -ne $entry) {
+                    [void]$entries.Add($entry)
+                }
             } catch { }
         }
     }
-    return $entries
+    return ,($entries.ToArray())
 }
 
 Export-ModuleMember -Function @(

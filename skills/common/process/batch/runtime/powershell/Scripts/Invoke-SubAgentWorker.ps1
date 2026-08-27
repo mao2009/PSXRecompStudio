@@ -236,6 +236,9 @@ IMPORTANT RULES:
 
         $changedFiles = Get-GitChangedFiles
         & git add -A 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "git add failed (exit code: $LASTEXITCODE)"
+        }
         $stagedChanges = & git diff --cached --stat 2>$null
 
         $hasChanges = $false
@@ -267,7 +270,13 @@ IMPORTANT RULES:
 
         $commitMessage = "feat: implement Issue #$IssueNumber - $Description`n`nAutomated by Batch Orchestrator Sub-agent.`nIssue: #$IssueNumber"
         & git commit -m $commitMessage 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "git commit failed (exit code: $LASTEXITCODE)"
+        }
         $commitSha = & git rev-parse HEAD 2>$null
+        if (-not $commitSha) {
+            throw "Failed to resolve commit SHA after git commit"
+        }
         Write-AgentLog "Committed: $commitSha"
 
         Write-ProgressCheckpoint -Phase "committed" -Progress @{
@@ -277,6 +286,9 @@ IMPORTANT RULES:
 
         Write-AgentLog "Phase 6: Push to origin"
         & git push -u origin $BranchName 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "git push failed (exit code: $LASTEXITCODE)"
+        }
         Write-AgentLog "Pushed to origin/$BranchName"
 
         Write-AgentLog "Phase 7: Create Pull Request"

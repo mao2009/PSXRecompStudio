@@ -613,6 +613,38 @@ Invoke-BatchTest -Name "Get-BatchState returns null for missing file" -Test {
     if ($null -ne $result) { throw "Should return null for missing file" }
 }
 
+Invoke-BatchTest -Name "Get-BatchState throws for corrupt file" -Test {
+    $tempFile = Join-Path $env:TEMP "test-corrupt-state-$(Get-Random).json"
+    try {
+        Set-Content -Path $tempFile -Value "not valid JSON"
+        $threw = $false
+        try {
+            Get-BatchState -FilePath $tempFile | Out-Null
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "Should throw for corrupt batch state file" }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Get-IssueStates throws for corrupt file" -Test {
+    $tempFile = Join-Path $env:TEMP "test-corrupt-issues-$(Get-Random).json"
+    try {
+        Set-Content -Path $tempFile -Value "not valid JSON"
+        $threw = $false
+        try {
+            Get-IssueStates -FilePath $tempFile | Out-Null
+        } catch {
+            $threw = $true
+        }
+        if (-not $threw) { throw "Should throw for corrupt issue states file" }
+    } finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
+    }
+}
+
 # ============================================================
 # Worktree Tests
 # ============================================================
@@ -1076,6 +1108,18 @@ Invoke-BatchTest -Name "Safe IssueIds still produce expected filenames" -Test {
     }
 }
 
+Invoke-BatchTest -Name "Checkpoint filenames are injective between unsafe and safe IssueIds" -Test {
+    $tempDir = Join-Path $env:TEMP "test-injective-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $unsafe = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue/1" -StateDir $tempDir
+        $safe = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue_2F1" -StateDir $tempDir
+        if ($unsafe -eq $safe) { throw "Unsafe issue/1 and safe issue_2F1 must not collide" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
 # ============================================================
 # Transition Log BatchId Validation Tests
 # ============================================================
@@ -1181,6 +1225,19 @@ Invoke-BatchTest -Name "Write-TransitionLog creates log entries" -Test {
 Invoke-BatchTest -Name "Get-TransitionLog returns empty for missing" -Test {
     $entries = Get-TransitionLog -BatchId "nonexistent" -StateDir "/tmp"
     if ($entries.Count -ne 0) { throw "Should return empty for missing" }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLog returns indexable array for single entry" -Test {
+    $tempDir = Join-Path $env:TEMP "test-log-single-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        Write-TransitionLog -BatchId "test-log-single" -EntityType "worker" -EntityId "issue-1" -FromState "SUBAGENT_RUNNING" -ToState "ORPHANED" -Reason "Process dead" -StateDir $tempDir
+        $entries = Get-TransitionLog -BatchId "test-log-single" -StateDir $tempDir
+        if ($entries.Count -ne 1) { throw "Expected 1 entry, got $($entries.Count)" }
+        if ($entries[0].toState -ne "ORPHANED") { throw "Single entry should be indexable as array" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
 }
 
 # ============================================================
