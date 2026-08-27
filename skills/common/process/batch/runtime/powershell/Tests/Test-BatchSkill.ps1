@@ -838,8 +838,8 @@ Invoke-BatchTest -Name "Test-IssueStateRecoverable identifies ORPHANED" -Test {
     if (-not (Test-IssueStateRecoverable -State "ORPHANED")) { throw "ORPHANED should be recoverable" }
 }
 
-Invoke-BatchTest -Name "Test-IssueStateRecoverable identifies SUBAGENT_FAILED" -Test {
-    if (-not (Test-IssueStateRecoverable -State "SUBAGENT_FAILED")) { throw "SUBAGENT_FAILED should be recoverable" }
+Invoke-BatchTest -Name "Test-IssueStateRecoverable does not identify SUBAGENT_FAILED" -Test {
+    if (Test-IssueStateRecoverable -State "SUBAGENT_FAILED") { throw "SUBAGENT_FAILED should not be recoverable (terminal state)" }
 }
 
 Invoke-BatchTest -Name "Test-IssueStateRecoverable identifies BLOCKED" -Test {
@@ -1025,6 +1025,136 @@ Invoke-BatchTest -Name "New-RecoveryContext creates recovery context" -Test {
     if ($ctx.branch -ne "issue/42-test") { throw "branch mismatch" }
     if ($ctx.failureReason -ne "Process crashed") { throw "failureReason mismatch" }
     if (-not $ctx.workerSummary) { throw "workerSummary should not be empty" }
+}
+
+# ============================================================
+# PR_READY Terminal State Tests
+# ============================================================
+Write-Host "`n=== PR_READY Terminal State Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "PR_READY is not terminal" -Test {
+    if (Test-IssueStateTerminal -State "PR_READY") { throw "PR_READY should not be terminal (has transition to WAITING_FOR_APPROVAL)" }
+}
+
+Invoke-BatchTest -Name "PR_READY is considered active" -Test {
+    if (-not (Test-IssueStateActive -State "PR_READY")) { throw "PR_READY should be active per state machine" }
+}
+
+Invoke-BatchTest -Name "PR_READY can transition to WAITING_FOR_APPROVAL" -Test {
+    $result = Test-ValidIssueTransition -FromState "PR_READY" -ToState "WAITING_FOR_APPROVAL"
+    if (-not $result) { throw "PR_READY -> WAITING_FOR_APPROVAL should be valid" }
+}
+
+# ============================================================
+# Checkpoint Filename Collision Tests
+# ============================================================
+Write-Host "`n=== Checkpoint Filename Collision Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Different IssueIds produce different checkpoint filenames" -Test {
+    $tempDir = Join-Path $env:TEMP "test-collision-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $path1 = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue/1" -StateDir $tempDir
+        $path2 = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue?1" -StateDir $tempDir
+        $path3 = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue_1" -StateDir $tempDir
+        if ($path1 -eq $path2) { throw "issue/1 and issue?1 should produce different paths" }
+        if ($path1 -eq $path3) { throw "issue/1 and issue_1 should produce different paths" }
+        if ($path2 -eq $path3) { throw "issue?1 and issue_1 should produce different paths" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Safe IssueIds still produce expected filenames" -Test {
+    $tempDir = Join-Path $env:TEMP "test-safe-id-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $path = Get-WorkerCheckpointPath -BatchId "test-batch" -IssueId "issue-1" -StateDir $tempDir
+        if (-not $path.EndsWith("worker-issue-1.json")) { throw "Expected worker-issue-1.json, got $path" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Transition Log BatchId Validation Tests
+# ============================================================
+Write-Host "`n=== Transition Log BatchId Validation Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Get-TransitionLogPath rejects empty BatchId" -Test {
+    try {
+        Get-TransitionLogPath -BatchId "" -StateDir "/tmp"
+        throw "Should have thrown for empty BatchId"
+    } catch {
+        if (-not $_.Exception.Message -match "empty") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLogPath rejects path traversal" -Test {
+    try {
+        Get-TransitionLogPath -BatchId "../etc/passwd" -StateDir "/tmp"
+        throw "Should have thrown for path traversal"
+    } catch {
+        if (-not $_.Exception.Message -match "invalid path") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+Invoke-BatchTest -Name "Get-TransitionLogPath rejects backslash" -Test {
+    try {
+        Get-TransitionLogPath -BatchId 'batch\test' -StateDir "/tmp"
+        throw "Should have thrown for backslash"
+    } catch {
+        if (-not $_.Exception.Message -match "invalid path") { throw "Wrong error: $($_.Exception.Message)" }
+    }
+}
+
+# ============================================================
+# Orphan Detection Result Validation Tests
+# ============================================================
+Write-Host "`n=== Orphan Detection Result Validation Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Test-OrphanedProcess detects orphan with corrupt result file" -Test {
+    $tempDir = Join-Path $env:TEMP "test-corrupt-result-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $resultFile = Join-Path $tempDir "result.json"
+        "not valid json" | Set-Content $resultFile
+        $result = Test-OrphanedProcess -ProcessId 99999999 -ResultFile $resultFile
+        if (-not $result.IsOrphaned) { throw "Should detect orphan with corrupt result" }
+        if (-not $result.Reason.Contains("unreadable") -and -not $result.Reason.Contains("corrupt")) { throw "Reason should mention corrupt/unreadable" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Test-OrphanedProcess does not orphan when result is valid" -Test {
+    $tempDir = Join-Path $env:TEMP "test-valid-result-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $resultFile = Join-Path $tempDir "result.json"
+        @{ Success = $false; Error = "test error" } | ConvertTo-Json | Set-Content $resultFile
+        $result = Test-OrphanedProcess -ProcessId 99999999 -ResultFile $resultFile
+        if ($result.IsOrphaned) { throw "Should not orphan when result is parseable" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+# ============================================================
+# Transition Log Error Handling Tests
+# ============================================================
+Write-Host "`n=== Transition Log Error Handling Tests ===" -ForegroundColor Green
+
+Invoke-BatchTest -Name "Write-TransitionLog creates parent directory if needed" -Test {
+    $tempDir = Join-Path $env:TEMP "test-log-parent-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        Write-TransitionLog -BatchId "test-log" -EntityType "worker" -EntityId "issue-1" -FromState "WAITING" -ToState "RUNNING" -StateDir $tempDir
+        $entries = Get-TransitionLog -BatchId "test-log" -StateDir $tempDir
+        if ($entries.Count -ne 1) { throw "Expected 1 entry" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
 }
 
 # ============================================================

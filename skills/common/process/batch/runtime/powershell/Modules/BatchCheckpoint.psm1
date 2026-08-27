@@ -69,7 +69,7 @@ function Get-WorkerCheckpointPath {
         [switch]$Create
     )
     $dir = Get-CheckpointDirectory -BatchId $BatchId -StateDir $StateDir -Create:$Create
-    $safeId = $IssueId -replace '[^a-zA-Z0-9_-]', '_'
+    $safeId = [regex]::Replace($IssueId, '[^a-zA-Z0-9_-]', { param($m) '_{0:X2}' -f [byte][char]$m.Value })
     return Join-Path $dir "worker-$safeId.json"
 }
 

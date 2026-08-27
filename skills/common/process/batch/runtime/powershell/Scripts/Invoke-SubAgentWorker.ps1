@@ -89,7 +89,16 @@ function Write-ProgressCheckpoint {
     foreach ($key in $Progress.Keys) {
         $checkpoint[$key] = $Progress[$key]
     }
-    $checkpoint | ConvertTo-Json -Depth 10 | Set-Content -Path $checkpointFile -Force
+    $tmpFile = "$checkpointFile.tmp.$pid.$(Get-Random)"
+    try {
+        $checkpoint | ConvertTo-Json -Depth 10 | Set-Content -Path $tmpFile -Force
+        Move-Item -Path $tmpFile -Destination $checkpointFile -Force
+    } catch {
+        if (Test-Path $tmpFile) {
+            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 }
 
 function Get-GitChangedFiles {

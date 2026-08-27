@@ -171,7 +171,7 @@ function Test-IssueStateRecoverable {
         [string]$State
     )
 
-    $recoverableStates = @("ORPHANED", "SUBAGENT_FAILED", "BLOCKED")
+    $recoverableStates = @("ORPHANED", "BLOCKED")
     return $State -in $recoverableStates
 }
 

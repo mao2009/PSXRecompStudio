@@ -73,7 +73,7 @@ function Get-BatchState {
     try {
         return Get-Content $FilePath -Raw | ConvertFrom-Json -AsHashtable
     } catch {
-        Write-Warning "Failed to read batch state from $FilePath`: $_"
+        Write-Error "Failed to parse batch state from ${FilePath}: $_"
         return $null
     }
 }
@@ -120,7 +120,7 @@ function Get-IssueStates {
         $data = Get-Content $FilePath -Raw | ConvertFrom-Json -AsHashtable
         return $data.Issues
     } catch {
-        Write-Warning "Failed to read issue states from $FilePath`: $_"
+        Write-Error "Failed to parse issue states from ${FilePath}: $_"
         return $null
     }
 }
@@ -233,6 +233,12 @@ function Get-TransitionLogPath {
         [Parameter(Mandatory = $false)]
         [string]$StateDir = "."
     )
+    if ([string]::IsNullOrWhiteSpace($BatchId)) {
+        throw "BatchId must not be empty or whitespace-only"
+    }
+    if ($BatchId -match '[/\\]|(\.\.)') {
+        throw "BatchId contains invalid path characters: $BatchId"
+    }
     return Join-Path $StateDir ".batch-log-$BatchId.jsonl"
 }
 
@@ -264,7 +270,11 @@ function Write-TransitionLog {
         reason = $Reason
     }
     $line = $entry | ConvertTo-Json -Depth 5 -Compress
-    Add-Content -Path $logPath -Value $line -Force
+    $logDir = Split-Path -Parent $logPath
+    if ($logDir -and -not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    Add-Content -Path $logPath -Value $line -Force -ErrorAction Stop
 }
 
 function Get-TransitionLog {

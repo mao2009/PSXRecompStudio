@@ -690,6 +690,14 @@ function Test-OrphanedProcess {
     $resultExists = Test-Path $ResultFile
 
     if ($resultExists) {
+        try {
+            $null = Get-Content $ResultFile -Raw | ConvertFrom-Json -AsHashtable
+        } catch {
+            return @{
+                IsOrphaned = $true
+                Reason = "Result file exists but is unreadable or corrupt"
+            }
+        }
         return @{
             IsOrphaned = $false
             Reason = "Result file exists"

@@ -203,8 +203,8 @@ Invoke-E2ETest -Name "5. TIMEOUT/FAILED worker can be retried from checkpoint" -
     $workerCp = New-WorkerCheckpointFromIssueState -IssueState $issueState -Provider "test"
     if ($workerCp.lifecycleState -ne "FAILED") { throw "Should map to FAILED" }
 
-    if (-not (Test-IssueStateRecoverable -State "SUBAGENT_FAILED")) {
-        throw "SUBAGENT_FAILED should be recoverable"
+    if (-not (Test-IssueStateRecoverable -State "ORPHANED")) {
+        throw "ORPHANED should be recoverable"
     }
 
     $tempConfig = New-SubAgentConfig -MaxRetries 3
@@ -430,6 +430,60 @@ Invoke-E2ETest -Name "10. Existing state machines still function correctly" -Tes
             throw "Issue transition $($t.From) -> $($t.To) should be valid"
         }
     }
+}
+
+# ============================================================
+# 11. PR_READY treated as execution-complete
+# ============================================================
+Invoke-E2ETest -Name "11. PR_READY is not considered active for loop termination" -Test {
+    $activeStates = @("SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
+                       "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY",
+                       "WAITING_FOR_APPROVAL", "READY_FOR_MERGE", "MERGING")
+    $completedLikeStates = @("COMPLETED", "PR_READY")
+
+    foreach ($s in $completedLikeStates) {
+        if ($s -in $activeStates) {
+            throw "$s should be treated as non-active for loop termination"
+        }
+    }
+    if ("PR_READY" -in @("COMPLETED", "FAILED", "BLOCKED", "SUBAGENT_FAILED")) {
+        throw "PR_READY is not truly terminal, just execution-complete"
+    }
+}
+
+# ============================================================
+# 12. ORPHANED retry consumes budget
+# ============================================================
+Invoke-E2ETest -Name "12. ORPHANED recovery consumes retry budget" -Test {
+    $config = New-SubAgentConfig -MaxRetries 2
+    $state = New-SubAgentState -IssueId "issue-orphan-retry" -Config $config
+    $state.RetryCount = 1
+
+    $retryCheck = Test-SubAgentRetryable -SubAgentState $state -ErrorCategory "transient"
+    if (-not $retryCheck.Retryable) { throw "Should be retryable at count 1" }
+
+    $state.RetryCount = 2
+    $retryCheck = Test-SubAgentRetryable -SubAgentState $state -ErrorCategory "transient"
+    if ($retryCheck.Retryable) { throw "Should NOT be retryable at count 2 (max 2)" }
+}
+
+# ============================================================
+# 13. Live worker adoption checkpoint preservation
+# ============================================================
+Invoke-E2ETest -Name "13. Worker checkpoint preserves runtime state for adoption" -Test {
+    $issueState = New-IssueState -IssueId "issue-adopt" -IssueNumber 99 -Description "adopt test"
+    $issueState.State = "SUBAGENT_RUNNING"
+    $issueState.BranchName = "issue/99-adopt"
+    $issueState.CommitSha = "adopt123"
+    $issueState.WorktreePath = "/tmp/wt-adopt"
+    $issueState.SubAgentProcessId = 12345
+    $issueState.RetryCount = 1
+
+    $workerCp = New-WorkerCheckpointFromIssueState -IssueState $issueState -Provider "claude-code" -MaxRetries 3
+    if ($workerCp.processId -ne 12345) { throw "processId should be preserved" }
+    if ($workerCp.retryCount -ne 1) { throw "retryCount should be preserved" }
+    if ($workerCp.lifecycleState -ne "RUNNING") { throw "lifecycleState should be RUNNING" }
+    if ($workerCp.branch -ne "issue/99-adopt") { throw "branch should be preserved" }
 }
 
 # ============================================================

@@ -176,6 +176,8 @@ function Invoke-BatchOrchestration {
     Write-Host "Batch ID: $BatchId" -ForegroundColor Cyan
     Write-Host ""
 
+    $resolvedProvider = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "claude-code" }
+
     $existingState = Get-BatchState -FilePath $batchStateFile
     if ($null -ne $existingState) {
         Write-BatchLog "Resuming from persisted state: $($existingState.State)" "INFO"
@@ -194,6 +196,7 @@ function Invoke-BatchOrchestration {
         if ($batchState.State -eq "RUNNING") {
             Write-BatchLog "Detecting orphaned processes from previous run..." "INFO"
             $orphanCount = 0
+            $adoptedWorkers = @()
             foreach ($issueId in $issueStates.Keys) {
                 $issue = $issueStates[$issueId]
                 if ($issue.State -in @("SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING")) {
@@ -201,8 +204,12 @@ function Invoke-BatchOrchestration {
                     $resultFile = if ($worktreePath) { Join-Path $worktreePath ".subagent" "result.json" } else { $null }
 
                     if ($resultFile -and (Test-Path $resultFile)) {
-                        Write-BatchLog "Issue ${issueId}: Result file found from previous run, will process" "INFO"
-                        continue
+                        $resumeResult = Get-SubAgentResult -ResultFile $resultFile
+                        if ($null -ne $resumeResult -and $resumeResult.ContainsKey("Success")) {
+                            Write-BatchLog "Issue ${issueId}: Valid result file found from previous run, will process" "INFO"
+                            continue
+                        }
+                        Write-BatchLog "Issue ${issueId}: Result file exists but is invalid, treating as orphaned" "WARN"
                     }
 
                     $processAlive = $false
@@ -219,6 +226,11 @@ function Invoke-BatchOrchestration {
                         Write-BatchLog "Issue ${issueId}: ORPHANED ($fromState -> ORPHANED)" "WARN"
                     } else {
                         Write-BatchLog "Issue ${issueId}: Process PID $($issue.SubAgentProcessId) still alive, adopting" "INFO"
+                        $adoptedWorkers += @{
+                            IssueId = $issueId
+                            ProcessId = $issue.SubAgentProcessId
+                            RetryCount = $issue.RetryCount
+                        }
                     }
                 }
             }
@@ -270,7 +282,7 @@ function Invoke-BatchOrchestration {
                 Set-BatchStateTransition -BatchState $batchState -ToState "PLANNING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
-                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "PLANNING" {
@@ -325,7 +337,7 @@ function Invoke-BatchOrchestration {
                 Set-BatchStateTransition -BatchState $batchState -ToState "SCHEDULING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
-                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "SCHEDULING" {
@@ -352,7 +364,7 @@ function Invoke-BatchOrchestration {
                 Set-BatchStateTransition -BatchState $batchState -ToState "RUNNING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
-                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "RUNNING" {
@@ -365,13 +377,23 @@ function Invoke-BatchOrchestration {
 
                 $completedIssues = @()
                 foreach ($issueId in $issueStates.Keys) {
-                    if ($issueStates[$issueId].State -eq "COMPLETED") {
+                    if ($issueStates[$issueId].State -in @("COMPLETED", "PR_READY")) {
                         $completedIssues += $issueId
                     }
                 }
 
                 $subAgentWorkerScript = Join-Path $scriptPath "Invoke-SubAgentWorker.ps1"
                 $activeProcesses = @{}
+
+                foreach ($adopted in $adoptedWorkers) {
+                    $adoptedConfig = New-SubAgentConfig -MaxRetries $MaxRetries
+                    $adoptedState = New-SubAgentState -IssueId $adopted.IssueId -Config $adoptedConfig
+                    $adoptedState.ProcessId = $adopted.ProcessId
+                    $adoptedState.RetryCount = $adopted.RetryCount
+                    $adoptedState.State = "SUBAGENT_RUNNING"
+                    $activeProcesses[$adopted.IssueId] = $adoptedState
+                    Write-BatchLog "Restored tracking for adopted worker $($adopted.IssueId) (PID: $($adopted.ProcessId))" "INFO"
+                }
 
                 $allDone = $false
                 while (-not $allDone) {
@@ -383,7 +405,8 @@ function Invoke-BatchOrchestration {
                             $tempState.RetryCount = $issue.RetryCount
                             $retryCheck = Test-SubAgentRetryable -SubAgentState $tempState -ErrorCategory "transient"
                             if ($retryCheck.Retryable) {
-                                Write-BatchLog "Issue ${issueId}: Recovering from ORPHANED (attempt $($issue.RetryCount + 1)/$($MaxRetries))" "WARN"
+                                $issue.RetryCount++
+                                Write-BatchLog "Issue ${issueId}: Recovering from ORPHANED (attempt $($issue.RetryCount)/$($MaxRetries))" "WARN"
                                 $issue.LastError = "Recovering from orphaned state"
                                 $issue.SubAgentProcessId = $null
                                 Set-IssueStateTransition -IssueState $issue -ToState "WAITING_FOR_SUBAGENT" -BatchId $BatchId -Reason "Recovery: retry eligible"
@@ -566,7 +589,7 @@ function Invoke-BatchOrchestration {
                     $allActive = @()
                     foreach ($issueId in $issueStates.Keys) {
                         $state = $issueStates[$issueId].State
-                        if ($state -notin @("COMPLETED", "FAILED", "BLOCKED", "SUBAGENT_FAILED")) {
+                        if ($state -notin @("COMPLETED", "FAILED", "BLOCKED", "SUBAGENT_FAILED", "PR_READY")) {
                             $allActive += $issueId
                         }
                     }
@@ -581,8 +604,8 @@ function Invoke-BatchOrchestration {
                     Save-BatchState -State $batchState -FilePath $batchStateFile
                     Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
                     try {
-                        Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries
-                    } catch { }
+                        Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries
+                    } catch { Write-Warning "Checkpoint save failed: $_" }
                 }
 
                 $batchState.CompletedCount = ($issueStates.Values | Where-Object { $_.State -eq "COMPLETED" }).Count
@@ -608,8 +631,8 @@ function Invoke-BatchOrchestration {
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
                 try {
-                    Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries
-                } catch { }
+                    Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries
+                } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "WAITING_FOR_MERGE" {
@@ -704,7 +727,7 @@ function Invoke-BatchOrchestration {
 
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
-                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "MERGING" {
@@ -747,7 +770,7 @@ function Invoke-BatchOrchestration {
                 Set-BatchStateTransition -BatchState $batchState -ToState "CLEANUP"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
-                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "CLEANUP" {
@@ -767,7 +790,7 @@ function Invoke-BatchOrchestration {
                 $batchState.CompletedCount = ($issueStates.Values | Where-Object { $_.State -eq "COMPLETED" }).Count
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
-                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+                try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed: $_" }
             }
 
             "COMPLETED" {
@@ -799,7 +822,7 @@ function Invoke-BatchOrchestration {
         try { Set-BatchStateTransition -BatchState $batchState -ToState "FAILED" } catch { $batchState.State = "FAILED" }
         $batchState.FailureReason = "Exception: $($_.Exception.Message)"
         Save-BatchState -State $batchState -FilePath $batchStateFile
-        try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -MaxRetries $MaxRetries } catch { }
+        try { Save-AllCheckpoints -BatchState $batchState -IssueStates $issueStates -Provider $resolvedProvider -MaxRetries $MaxRetries } catch { Write-Warning "Checkpoint save failed during error recovery: $_" }
     }
 }
 
