@@ -370,6 +370,10 @@ function Invoke-SubAgentLaunch {
         "-TimeoutMinutes", $TimeoutMinutes.ToString()
     )
 
+    $logFile = Join-Path $resultDir "launch.log"
+    $stdoutLogFile = Join-Path $resultDir "launch-stdout.log"
+    $stderrLogFile = Join-Path $resultDir "launch-stderr.log"
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "pwsh"
     $psi.Arguments = "-File `"$SubAgentScript`" $($scriptArgs -join ' ')"
@@ -378,15 +382,121 @@ function Invoke-SubAgentLaunch {
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
 
-    $process = [System.Diagnostics.Process]::Start($psi)
-    if ($null -eq $process) {
+    $subagent_process = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $subagent_process) {
         throw "Failed to start Sub-agent process for $IssueId"
     }
 
+    $subagent_pid = $subagent_process.Id
+
+    # Drain child pipes asynchronously to prevent buffer deadlocks.
+    $stdout_task = $subagent_process.StandardOutput.ReadToEndAsync()
+    $stderr_task = $subagent_process.StandardError.ReadToEndAsync()
+
+    # Write launch info to log
+    $started_at_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
+    @"
+=== Sub-agent Process Launch Log ===
+IssueId: $IssueId
+ProcessId: $subagent_pid
+StartedAt: $started_at_utc
+Script: $SubAgentScript
+WorktreePath: $WorktreePath
+BranchName: $BranchName
+ResultFile: $resultFile
+
+=== Process Running ===
+"@ | Set-Content -Path $logFile -Force
+
     return @{
-        ProcessId = $process.Id
-        StartedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        ProcessId       = $subagent_pid
+        StartedAt       = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        LogFile         = $logFile
+        Process         = $subagent_process
+        StdoutTask      = $stdout_task
+        StderrTask      = $stderr_task
+        StdoutPath      = $stdoutLogFile
+        StderrPath      = $stderrLogFile
     }
+}
+
+function Update-SubAgentLaunchLog {
+    <#
+    .SYNOPSIS
+        Updates the launch log with process completion status and writes stream output to files.
+    .PARAMETER LogFile
+        Path to the launch log file.
+    .PARAMETER ProcessId
+        The process ID.
+    .PARAMETER ExitCode
+        The process exit code.
+    .PARAMETER StdoutTask
+        Async task draining stdout from the child process.
+    .PARAMETER StderrTask
+        Async task draining stderr from the child process.
+    .PARAMETER StdoutPath
+        Path to write stdout log.
+    .PARAMETER StderrPath
+        Path to write stderr log.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LogFile,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId,
+
+        [Parameter(Mandatory = $false)]
+        [int]$ExitCode = -1,
+
+        [Parameter(Mandatory = $false)]
+        [System.Threading.Tasks.Task]$StdoutTask,
+
+        [Parameter(Mandatory = $false)]
+        [System.Threading.Tasks.Task]$StderrTask,
+
+        [Parameter(Mandatory = $false)]
+        [string]$StdoutPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$StderrPath
+    )
+
+    # Collect and write stream output
+    $stdout = ""
+    $stderr = ""
+    try {
+        if ($null -ne $StdoutTask -and $StdoutTask.Wait(10000)) {
+            $stdout = $StdoutTask.Result
+        }
+    } catch { }
+    try {
+        if ($null -ne $StderrTask -and $StderrTask.Wait(10000)) {
+            $stderr = $StderrTask.Result
+        }
+    } catch { }
+
+    if ($StdoutPath -and $stdout) {
+        $stdout | Set-Content -Path $StdoutPath -Force
+    }
+    if ($StderrPath -and $stderr) {
+        $stderr | Set-Content -Path $StderrPath -Force
+    }
+
+    if (-not (Test-Path $LogFile)) { return }
+
+    $completedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
+    $status = if ($ExitCode -eq 0) { "COMPLETED" } else { "FAILED (exit code: $ExitCode)" }
+
+    $update = @"
+
+=== Process $status ===
+CompletedAt: $completedAt
+ExitCode: $ExitCode
+"@
+
+    Add-Content -Path $LogFile -Value $update -Force
 }
 
 function Get-SubAgentResult {
@@ -484,6 +594,7 @@ Export-ModuleMember -Function @(
     'Test-SubAgentReportComplete',
     'Get-SubAgentFailureCategory',
     'Invoke-SubAgentLaunch',
+    'Update-SubAgentLaunchLog',
     'Get-SubAgentResult',
     'Test-SubAgentProcessRunning',
     'Stop-SubAgentProcess'
