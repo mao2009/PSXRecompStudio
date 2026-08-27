@@ -74,7 +74,7 @@ function Write-ProgressCheckpoint {
         issueId = $IssueId
         issueNumber = $IssueNumber
         phase = $Phase
-        timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         elapsedSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
     }
     foreach ($key in $Progress.Keys) {
@@ -99,13 +99,13 @@ try {
     Write-AgentLog "Branch: $BranchName"
     Write-AgentLog "Timeout: $TimeoutMinutes minutes"
 
+    if (-not (Test-Path $WorktreePath)) {
+        throw "Worktree path does not exist: $WorktreePath"
+    }
+
     Write-ProgressCheckpoint -Phase "starting" -Progress @{
         branch = $BranchName
         worktreePath = $WorktreePath
-    }
-
-    if (-not (Test-Path $WorktreePath)) {
-        throw "Worktree path does not exist: $WorktreePath"
     }
 
     Push-Location $WorktreePath
@@ -238,7 +238,7 @@ IMPORTANT RULES:
                 IssueId = $IssueId
                 PrNumber = $null
                 CommitSha = $null
-                CompletedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                CompletedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                 DurationSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
                 Error = "No changes produced by AI agent"
                 AgentOutput = $agentOutput
@@ -251,6 +251,7 @@ IMPORTANT RULES:
         $commitSha = & git rev-parse HEAD 2>$null
         Write-AgentLog "Committed: $commitSha"
 
+        $changedFiles = Get-GitChangedFiles
         Write-ProgressCheckpoint -Phase "committed" -Progress @{
             commitSha = $commitSha
             changedFiles = $changedFiles
@@ -262,7 +263,6 @@ IMPORTANT RULES:
 
         Write-AgentLog "Phase 7: Create Pull Request"
         $prTitle = "feat: Issue #$IssueNumber - $Description"
-        $changedFiles = Get-GitChangedFiles
         $prBody = @"
 ## Automated PR by Batch Orchestrator
 

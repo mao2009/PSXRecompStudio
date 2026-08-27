@@ -592,6 +592,8 @@ function New-WorkerCheckpointFromIssueState {
         The issue state hashtable.
     .PARAMETER Provider
         Agent provider name.
+    .PARAMETER MaxRetries
+        Maximum retry budget for this worker.
     .OUTPUTS
         Hashtable suitable for Save-WorkerCheckpoint.
     #>
@@ -600,7 +602,9 @@ function New-WorkerCheckpointFromIssueState {
         [Parameter(Mandatory = $true)]
         [hashtable]$IssueState,
         [Parameter(Mandatory = $false)]
-        [string]$Provider = ""
+        [string]$Provider = "",
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRetries = 3
     )
 
     $lifecycleMap = @{
@@ -625,16 +629,18 @@ function New-WorkerCheckpointFromIssueState {
 
     $completedPhases = @()
     if ($IssueState.CommitSha) { $completedPhases += "commit" }
-    if ($IssueState.PrNumber) { $completedPhases += "push" }
-    if ($IssueState.State -eq "PR_READY" -or $IssueState.State -eq "WAITING_FOR_APPROVAL") { $completedPhases += "pr_created" }
+    if ($IssueState.PrNumber) {
+        $completedPhases += "push"
+        $completedPhases += "pr_created"
+    }
 
     return @{
         schemaVersion = 1
         issueId = $IssueState.IssueId
         issueNumber = $IssueState.IssueNumber
         description = $IssueState.Description
-        createdAt = if ($IssueState.CreatedAt) { $IssueState.CreatedAt } else { (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ") }
-        updatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        createdAt = if ($IssueState.CreatedAt) { $IssueState.CreatedAt } else { (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
+        updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         provider = $Provider
         lifecycleState = $lifecycle
         completedPhases = $completedPhases
@@ -651,7 +657,7 @@ function New-WorkerCheckpointFromIssueState {
         failureReason = $IssueState.LastError
         failureCategory = $null
         retryCount = $IssueState.RetryCount
-        maxRetries = 3
+        maxRetries = $MaxRetries
         lastRetryAt = $null
         processId = $IssueState.SubAgentProcessId
         startedAt = $IssueState.StartedAt

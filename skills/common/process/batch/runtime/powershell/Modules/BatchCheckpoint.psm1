@@ -25,10 +25,12 @@ function Get-CheckpointDirectory {
         [Parameter(Mandatory = $true)]
         [string]$BatchId,
         [Parameter(Mandatory = $false)]
-        [string]$StateDir = "."
+        [string]$StateDir = ".",
+        [Parameter(Mandatory = $false)]
+        [switch]$Create
     )
     $dir = Join-Path $StateDir ".batch-checkpoints-$BatchId"
-    if (-not (Test-Path $dir)) {
+    if ($Create -and -not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     return $dir
@@ -40,9 +42,11 @@ function Get-BatchCheckpointPath {
         [Parameter(Mandatory = $true)]
         [string]$BatchId,
         [Parameter(Mandatory = $false)]
-        [string]$StateDir = "."
+        [string]$StateDir = ".",
+        [Parameter(Mandatory = $false)]
+        [switch]$Create
     )
-    $dir = Get-CheckpointDirectory -BatchId $BatchId -StateDir $StateDir
+    $dir = Get-CheckpointDirectory -BatchId $BatchId -StateDir $StateDir -Create:$Create
     return Join-Path $dir "batch-checkpoint.json"
 }
 
@@ -54,9 +58,11 @@ function Get-WorkerCheckpointPath {
         [Parameter(Mandatory = $true)]
         [string]$IssueId,
         [Parameter(Mandatory = $false)]
-        [string]$StateDir = "."
+        [string]$StateDir = ".",
+        [Parameter(Mandatory = $false)]
+        [switch]$Create
     )
-    $dir = Get-CheckpointDirectory -BatchId $BatchId -StateDir $StateDir
+    $dir = Get-CheckpointDirectory -BatchId $BatchId -StateDir $StateDir -Create:$Create
     $safeId = $IssueId -replace '[^a-zA-Z0-9_-]', '_'
     return Join-Path $dir "worker-$safeId.json"
 }
@@ -72,8 +78,8 @@ function New-BatchCheckpoint {
     return @{
         schemaVersion = $Script:CheckpointSchemaVersion
         batchId = $BatchId
-        createdAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-        updatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        createdAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         batchState = "BATCH_INITIALIZING"
         issueCount = $IssueCount
         completedCount = 0
@@ -94,15 +100,17 @@ function New-WorkerCheckpoint {
         [Parameter(Mandatory = $false)]
         [string]$Description = "",
         [Parameter(Mandatory = $false)]
-        [string]$Provider = ""
+        [string]$Provider = "",
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRetries = 3
     )
     return @{
         schemaVersion = $Script:CheckpointSchemaVersion
         issueId = $IssueId
         issueNumber = $IssueNumber
         description = $Description
-        createdAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-        updatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        createdAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         provider = $Provider
         lifecycleState = "PENDING"
         completedPhases = @()
@@ -119,7 +127,7 @@ function New-WorkerCheckpoint {
         failureReason = $null
         failureCategory = $null
         retryCount = 0
-        maxRetries = 3
+        maxRetries = $MaxRetries
         lastRetryAt = $null
         processId = $null
         startedAt = $null
@@ -136,8 +144,8 @@ function Save-BatchCheckpoint {
         [Parameter(Mandatory = $false)]
         [string]$StateDir = "."
     )
-    $Checkpoint.updatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $filePath = Get-BatchCheckpointPath -BatchId $Checkpoint.batchId -StateDir $StateDir
+    $Checkpoint.updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $filePath = Get-BatchCheckpointPath -BatchId $Checkpoint.batchId -StateDir $StateDir -Create
     Save-AtomicJson -FilePath $filePath -Data $Checkpoint
 }
 
@@ -170,9 +178,12 @@ function Save-WorkerCheckpoint {
         [Parameter(Mandatory = $false)]
         [string]$StateDir = "."
     )
-    $Checkpoint.updatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $batchId = if ($Checkpoint.ContainsKey("batchId")) { $Checkpoint.batchId } else { "" }
-    $filePath = Get-WorkerCheckpointPath -BatchId $batchId -IssueId $Checkpoint.issueId -StateDir $StateDir
+    $Checkpoint.updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    if (-not $Checkpoint.ContainsKey("batchId") -or [string]::IsNullOrWhiteSpace($Checkpoint.batchId)) {
+        throw "Worker checkpoint for '$($Checkpoint.issueId)' has no batchId"
+    }
+    $batchId = $Checkpoint.batchId
+    $filePath = Get-WorkerCheckpointPath -BatchId $batchId -IssueId $Checkpoint.issueId -StateDir $StateDir -Create
     Save-AtomicJson -FilePath $filePath -Data $Checkpoint
 }
 
@@ -274,15 +285,12 @@ function Save-AtomicJson {
         [hashtable]$Data
     )
     $dir = Split-Path -Parent $FilePath
-    if (-not (Test-Path $dir)) {
+    if ($dir -and -not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     $tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
     try {
         $Data | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
-        if (Test-Path $FilePath) {
-            Remove-Item $FilePath -Force
-        }
         Move-Item -Path $tmpFile -Destination $FilePath -Force
     } catch {
         if (Test-Path $tmpFile) {

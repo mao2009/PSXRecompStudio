@@ -35,20 +35,17 @@ function Save-BatchState {
         [Parameter(Mandatory = $true)]
         [string]$FilePath
     )
-    $State.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $State.UpdatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     if (-not $State.ContainsKey("SchemaVersion")) {
         $State.SchemaVersion = $Script:PersistenceSchemaVersion
     }
     $dir = Split-Path -Parent $FilePath
-    if (-not (Test-Path $dir)) {
+    if ($dir -and -not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     $tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
     try {
         $State | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
-        if (Test-Path $FilePath) {
-            Remove-Item $FilePath -Force
-        }
         Move-Item -Path $tmpFile -Destination $FilePath -Force
     } catch {
         if (Test-Path $tmpFile) {
@@ -85,19 +82,16 @@ function Save-IssueStates {
     )
     $data = @{
         SchemaVersion = $Script:PersistenceSchemaVersion
-        UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        UpdatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         Issues = $Issues
     }
     $dir = Split-Path -Parent $FilePath
-    if (-not (Test-Path $dir)) {
+    if ($dir -and -not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     $tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
     try {
         $data | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
-        if (Test-Path $FilePath) {
-            Remove-Item $FilePath -Force
-        }
         Move-Item -Path $tmpFile -Destination $FilePath -Force
     } catch {
         if (Test-Path $tmpFile) {
@@ -141,8 +135,8 @@ function New-BatchState {
         CompletedCount = 0
         FailedCount = 0
         BlockedCount = 0
-        CreatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-        UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        CreatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        UpdatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         FailureReason = $null
         DependencyGraph = $null
         ConcurrencyGroups = $null
@@ -178,8 +172,8 @@ function New-IssueState {
         SubAgentProcessId = $null
         StartedAt = $null
         CompletedAt = $null
-        CreatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-        UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        CreatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        UpdatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
 }
 
@@ -201,7 +195,7 @@ function Sync-StateWithGitHub {
                 $pr = $prResult | ConvertFrom-Json
                 if ($pr.state -eq "MERGED" -and $issue.State -ne "COMPLETED") {
                     $issue.State = "COMPLETED"
-                    $issue.CompletedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    $issue.CompletedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                     $changes += "Issue $issueId already merged on GitHub"
                 }
                 if ($pr.state -eq "CLOSED" -and $issue.State -notin @("COMPLETED", "FAILED")) {
@@ -216,7 +210,7 @@ function Sync-StateWithGitHub {
                 $changes += "Issue $issueId worktree no longer exists"
             }
         }
-        $issue.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $issue.UpdatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
     return @{
         Changes = $changes
@@ -256,7 +250,7 @@ function Write-TransitionLog {
     )
     $logPath = Get-TransitionLogPath -BatchId $BatchId -StateDir $StateDir
     $entry = @{
-        timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         entityType = $EntityType
         entityId = $EntityId
         fromState = $FromState

@@ -183,16 +183,12 @@ Invoke-E2ETest -Name "4. SUCCESS worker is not re-executed during recovery" -Tes
     $wcpPending.batchId = "e2e-no-redo"
     $wcpPending.lifecycleState = "RUNNING"
 
-    if ($wcpDone.lifecycleState -eq "SUCCESS") {
-        if (Test-IssueStateTerminal -State "COMPLETED") {
-            $transition = Test-ValidIssueTransition -FromState "COMPLETED" -ToState "SUBAGENT_STARTING"
-            if ($transition) { throw "COMPLETED should not allow re-execution" }
-        }
+    if ($wcpDone.lifecycleState -ne "SUCCESS") { throw "issue-done should be SUCCESS" }
+    if (-not (Test-IssueStateTerminal -State "COMPLETED")) { throw "COMPLETED should be terminal" }
+    if (Test-ValidIssueTransition -FromState "COMPLETED" -ToState "SUBAGENT_STARTING") {
+        throw "COMPLETED should not allow re-execution"
     }
-
-    if ($wcpPending.lifecycleState -ne "SUCCESS") {
-        Write-Host "    (issue-pending would be re-dispatched)" -ForegroundColor Gray
-    }
+    if ($wcpPending.lifecycleState -eq "SUCCESS") { throw "issue-pending should not be SUCCESS" }
 }
 
 # ============================================================
@@ -207,19 +203,22 @@ Invoke-E2ETest -Name "5. TIMEOUT/FAILED worker can be retried from checkpoint" -
     $workerCp = New-WorkerCheckpointFromIssueState -IssueState $issueState -Provider "test"
     if ($workerCp.lifecycleState -ne "FAILED") { throw "Should map to FAILED" }
 
-    if (Test-IssueStateRecoverable -State "SUBAGENT_FAILED") {
-        $tempConfig = New-SubAgentConfig -MaxRetries 3
-        $tempState = New-SubAgentState -IssueId "issue-timeout" -Config $tempConfig
-        $tempState.RetryCount = 1
-        $retryCheck = Test-SubAgentRetryable -SubAgentState $tempState -ErrorCategory "timeout"
-        if (-not $retryCheck.Retryable) { throw "Should be retryable" }
+    if (-not (Test-IssueStateRecoverable -State "SUBAGENT_FAILED")) {
+        throw "SUBAGENT_FAILED should be recoverable"
+    }
 
-        $valid = Test-ValidIssueTransition -FromState "SUBAGENT_FAILED" -ToState "SUBAGENT_STARTING"
-        if ($valid) { throw "SUBAGENT_FAILED -> SUBAGENT_STARTING should be invalid (terminal)" }
+    $tempConfig = New-SubAgentConfig -MaxRetries 3
+    $tempState = New-SubAgentState -IssueId "issue-timeout" -Config $tempConfig
+    $tempState.RetryCount = 1
+    $retryCheck = Test-SubAgentRetryable -SubAgentState $tempState -ErrorCategory "timeout"
+    if (-not $retryCheck.Retryable) { throw "Should be retryable" }
 
-        if (Test-ValidIssueTransition -FromState "BLOCKED" -ToState "WAITING_FOR_SUBAGENT") {
-            Write-Host "    (BLOCKED -> WAITING_FOR_SUBAGENT: recovery path available)" -ForegroundColor Gray
-        }
+    if (Test-ValidIssueTransition -FromState "SUBAGENT_FAILED" -ToState "SUBAGENT_STARTING") {
+        throw "SUBAGENT_FAILED -> SUBAGENT_STARTING should be invalid (terminal)"
+    }
+
+    if (-not (Test-ValidIssueTransition -FromState "BLOCKED" -ToState "WAITING_FOR_SUBAGENT")) {
+        throw "BLOCKED -> WAITING_FOR_SUBAGENT should be valid (recovery path)"
     }
 }
 
@@ -338,9 +337,16 @@ Invoke-E2ETest -Name "8. Idempotency check: existing PR detected before creating
         if ($loaded.branch -ne $existingBranch) { throw "Should preserve existing branch" }
 
         $existingPr = $loaded.prNumber
-        if ($existingPr -and $existingPr -gt 0) {
-            Write-Host "    (Would skip PR creation: PR #$existingPr already exists)" -ForegroundColor Gray
-        }
+        if (-not $existingPr -or $existingPr -le 0) { throw "Should have existing PR for idempotency check" }
+
+        $issueState = New-IssueState -IssueId "issue-idempotent" -IssueNumber 8 -Description "idempotent test"
+        $issueState.State = "SUBAGENT_STARTING"
+        $issueState.BranchName = $existingBranch
+        $issueState.PrNumber = $existingPr
+
+        $restored = New-WorkerCheckpointFromIssueState -IssueState $issueState
+        if ($restored.prNumber -ne $existingPrNumber) { throw "Restored checkpoint should carry existing PR number" }
+        if ($restored.completedPhases -notcontains "pr_created") { throw "Should have pr_created in completedPhases" }
     } finally {
         if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
     }
@@ -412,8 +418,12 @@ Invoke-E2ETest -Name "10. Existing state machines still function correctly" -Tes
 
     $issueTransitions = @(
         @{ From = "SUBAGENT_RUNNING"; To = "ORPHANED" },
+        @{ From = "SUBAGENT_STARTING"; To = "ORPHANED" },
+        @{ From = "SUBAGENT_STARTING"; To = "PR_READY" },
+        @{ From = "SUBAGENT_RETRYING"; To = "ORPHANED" },
         @{ From = "ORPHANED"; To = "SUBAGENT_STARTING" },
-        @{ From = "ORPHANED"; To = "SUBAGENT_FAILED" }
+        @{ From = "ORPHANED"; To = "SUBAGENT_FAILED" },
+        @{ From = "ORPHANED"; To = "WAITING_FOR_SUBAGENT" }
     )
     foreach ($t in $issueTransitions) {
         if (-not (Test-ValidIssueTransition -FromState $t.From -ToState $t.To)) {

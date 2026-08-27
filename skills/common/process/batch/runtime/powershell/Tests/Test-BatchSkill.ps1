@@ -185,7 +185,7 @@ Invoke-BatchTest -Name "Test-IssueStateActive correctly identifies active states
     $active = @("SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
                  "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY", "PR_READY",
                  "WAITING_FOR_APPROVAL", "READY_FOR_MERGE", "MERGING")
-    $inactive = @("SUBAGENT_FAILED", "COMPLETED", "BLOCKED", "FAILED")
+    $inactive = @("SUBAGENT_FAILED", "COMPLETED", "BLOCKED", "FAILED", "ORPHANED")
 
     foreach ($s in $active) {
         if (-not (Test-IssueStateActive -State $s)) { throw "$s should be active" }
@@ -812,6 +812,26 @@ Invoke-BatchTest -Name "ORPHANED cannot transition to COMPLETED" -Test {
 Invoke-BatchTest -Name "SUBAGENT_RUNNING can transition to ORPHANED" -Test {
     $result = Test-ValidIssueTransition -FromState "SUBAGENT_RUNNING" -ToState "ORPHANED"
     if (-not $result) { throw "SUBAGENT_RUNNING -> ORPHANED should be valid" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_STARTING can transition to ORPHANED" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_STARTING" -ToState "ORPHANED"
+    if (-not $result) { throw "SUBAGENT_STARTING -> ORPHANED should be valid" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_STARTING can transition to PR_READY" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_STARTING" -ToState "PR_READY"
+    if (-not $result) { throw "SUBAGENT_STARTING -> PR_READY should be valid (idempotency)" }
+}
+
+Invoke-BatchTest -Name "SUBAGENT_RETRYING can transition to ORPHANED" -Test {
+    $result = Test-ValidIssueTransition -FromState "SUBAGENT_RETRYING" -ToState "ORPHANED"
+    if (-not $result) { throw "SUBAGENT_RETRYING -> ORPHANED should be valid" }
+}
+
+Invoke-BatchTest -Name "ORPHANED can transition to WAITING_FOR_SUBAGENT" -Test {
+    $result = Test-ValidIssueTransition -FromState "ORPHANED" -ToState "WAITING_FOR_SUBAGENT"
+    if (-not $result) { throw "ORPHANED -> WAITING_FOR_SUBAGENT should be valid" }
 }
 
 Invoke-BatchTest -Name "Test-IssueStateRecoverable identifies ORPHANED" -Test {
