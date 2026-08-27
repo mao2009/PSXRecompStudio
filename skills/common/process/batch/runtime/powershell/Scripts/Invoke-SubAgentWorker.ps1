@@ -119,7 +119,7 @@ IMPORTANT RULES:
         Write-AgentLog "Phase 1-4: Invoking configured AI Agent Provider..."
 
         # Import AgentProvider module
-        $agent_provider_module = Join-Path (Split-Path $PSScriptRoot) "Modules\AgentProvider.psm1"
+        $agent_provider_module = Join-Path (Split-Path $PSScriptRoot) "Modules" "AgentProvider.psm1"
         if (-not (Test-Path $agent_provider_module)) {
             throw "AgentProvider module not found: $agent_provider_module"
         }
@@ -146,7 +146,8 @@ IMPORTANT RULES:
             -ProviderConfig $provider `
             -Prompt $agentPrompt `
             -WorkingDirectory $WorktreePath `
-            -ResultDirectory $result_dir
+            -ResultDirectory $result_dir `
+            -TimeoutMinutes $TimeoutMinutes
 
         $agentExitCode = $provider_result.ExitCode
         $agentOutput = $provider_result.StdoutContent
@@ -156,6 +157,27 @@ IMPORTANT RULES:
 
         Write-AgentLog ("AI Agent completed (exit code: {0})" -f $agentExitCode)
         Write-AgentLog ("Output: stdout={0} bytes, stderr={1} bytes" -f $agentOutput.Length, $agentError.Length)
+
+        # Guard: provider failure must NOT proceed to git/PR operations
+        if (-not $provider_result.Success) {
+            Write-AgentLog ("Provider failed: {0}" -f $provider_result.Error) "ERROR"
+            if ($stdoutPath) { Write-AgentLog ("stdout: {0}" -f $stdoutPath) }
+            if ($stderrPath) { Write-AgentLog ("stderr: {0}" -f $stderrPath) }
+
+            $endTime = Get-Date
+            Write-Result @{
+                Success = $false
+                IssueId = $IssueId
+                PrNumber = $null
+                CommitSha = $null
+                CompletedAt = $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                DurationSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
+                Error = $provider_result.Error
+                ExitCode = $agentExitCode
+                AgentOutput = $agentOutput
+            }
+            exit 1
+        }
 
         Write-AgentLog "Phase 5: Commit and Push"
 

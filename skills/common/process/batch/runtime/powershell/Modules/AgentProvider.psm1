@@ -81,10 +81,10 @@ function New-AgentProviderResult {
         [string]$StderrPath = "",
 
         [Parameter(Mandatory = $false)]
-        [string]$CommitSha = "",
+        [string]$StdoutContent = "",
 
         [Parameter(Mandatory = $false)]
-        [int]$PullRequestNumber = 0,
+        [string]$StderrContent = "",
 
         [Parameter(Mandatory = $false)]
         [string]$Error = ""
@@ -99,8 +99,8 @@ function New-AgentProviderResult {
         FinishedAt          = $FinishedAt
         StdoutPath          = $StdoutPath
         StderrPath          = $StderrPath
-        CommitSha           = $CommitSha
-        PullRequestNumber   = $PullRequestNumber
+        StdoutContent       = $StdoutContent
+        StderrContent       = $StderrContent
         Error               = $Error
     }
 }
@@ -121,9 +121,12 @@ function New-ClaudeCodeProvider {
     [CmdletBinding()]
     param()
 
-    $claude_exe = "C:\Users\Hobart\.local\bin\claude.exe"
-    if (-not (Test-Path $claude_exe)) {
-        $claude_exe = "claude"
+    $claude_exe = if ($env:BATCH_CLAUDE_EXECUTABLE) {
+        $env:BATCH_CLAUDE_EXECUTABLE
+    } elseif ($cmd = Get-Command "claude" -ErrorAction SilentlyContinue) {
+        $cmd.Source
+    } else {
+        "claude"
     }
 
     return New-AgentProviderConfig `
@@ -145,6 +148,8 @@ function Invoke-ClaudeCodeProvider {
         Working directory for Claude Code
     .PARAMETER ResultDirectory
         Directory to save stdout/stderr logs
+    .PARAMETER TimeoutMinutes
+        Timeout in minutes (default: 30)
     .OUTPUTS
         Hashtable with execution result
     #>
@@ -160,7 +165,10 @@ function Invoke-ClaudeCodeProvider {
         [string]$WorkingDirectory,
 
         [Parameter(Mandatory = $true)]
-        [string]$ResultDirectory
+        [string]$ResultDirectory,
+
+        [Parameter(Mandatory = $false)]
+        [int]$TimeoutMinutes = 30
     )
 
     $start_time = Get-Date
@@ -175,14 +183,15 @@ function Invoke-ClaudeCodeProvider {
 
     try {
         # Build arguments (without prompt - will be passed via stdin)
-        $args = @()
-        $args += $ProviderConfig.Arguments  # -p, --permission-mode, auto, --no-session-persistence
-        $args += "--input-format", "text"   # Explicitly set input format
-        $args += "--tools", "Edit,Bash,Read,Git"  # Explicitly allow tools
+        $provider_args = @()
+        $provider_args += $ProviderConfig.Arguments  # -p, --permission-mode, auto, --no-session-persistence
+        $provider_args += "--input-format", "text"   # Explicitly set input format
+        $provider_args += "--tools", "Edit,Bash,Read"  # Restrict built-in tools (Git uses Bash)
+        $provider_args += "--allowedTools", "Edit,Bash,Read"  # Auto-approve these tools
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $ProviderConfig.Executable
-        $psi.Arguments = $args -join ' '
+        foreach ($a in $provider_args) { $psi.ArgumentList.Add($a) }
         $psi.UseShellExecute = $false
         $psi.RedirectStandardInput = $true   # CRITICAL: Accept stdin
         $psi.RedirectStandardOutput = $true
@@ -207,17 +216,52 @@ function Invoke-ClaudeCodeProvider {
         $process_id = $process.Id
         Write-Host ("  Process ID: {0}" -f $process_id)
 
+        # Start async reads BEFORE sending prompt to prevent pipe buffer deadlock.
+        # Background threads consume stdout/stderr while we write to stdin.
+        $stdout_task = $process.StandardOutput.ReadToEndAsync()
+        $stderr_task = $process.StandardError.ReadToEndAsync()
+
         # Send prompt via stdin
         Write-Host "  Sending prompt to Claude Code..."
         $process.StandardInput.WriteLine($Prompt)
         $process.StandardInput.Close()
 
-        # Capture output
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        # Wait for process to complete with timeout enforcement
+        $timeout_ms = $TimeoutMinutes * 60 * 1000
+        if (-not $process.WaitForExit($timeout_ms)) {
+            Write-Host ("  TIMEOUT: Killing process after {0} minutes" -f $TimeoutMinutes)
+            try { $process.Kill($true) } catch { $process.Kill() }
+            $process.WaitForExit(10000) | Out-Null
 
-        # Wait for process to complete
-        $process.WaitForExit()
+            $end_time = Get-Date
+            $timed_out = $true
+            # Collect whatever output we can
+            $stdout = ""
+            $stderr = ""
+            try { $stdout = $stdout_task.GetAwaiter().GetResult() } catch { $stdout = "" }
+            try { $stderr = $stderr_task.GetAwaiter().GetResult() } catch { $stderr = "" }
+
+            $stdout | Set-Content -Path $stdout_file -Force
+            $stderr | Set-Content -Path $stderr_file -Force
+
+            return @{
+                ProviderName    = $ProviderConfig.Name
+                Success         = $false
+                ExitCode        = -2
+                ProcessId       = $process_id
+                StartedAt       = $start_time.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                FinishedAt      = $end_time.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                StdoutPath      = $stdout_file
+                StderrPath      = $stderr_file
+                StdoutContent   = $stdout
+                StderrContent   = $stderr
+                Error           = "Claude Code timed out after $TimeoutMinutes minutes"
+            }
+        }
+
+        # Process exited - collect async output
+        $stdout = $stdout_task.GetAwaiter().GetResult()
+        $stderr = $stderr_task.GetAwaiter().GetResult()
         $exit_code = $process.ExitCode
 
         $end_time = Get-Date
@@ -296,17 +340,23 @@ function Get-AgentProvider {
             throw "OpenCode provider not yet implemented"
         }
         "test" {
-            return @{
-                Name        = "test"
-                Type        = "test"
-                Executable  = "echo"
-                Arguments   = @()
-                IsTestProvider = $true
-            }
+            return New-TestProvider
+        }
+        "test-provider" {
+            return New-TestProvider
         }
         default {
             throw "Unknown provider: $ProviderName"
         }
+    }
+}
+
+function New-TestProvider {
+    return @{
+        Name        = "test-provider"
+        Type        = "test"
+        Executable  = "echo"
+        Arguments   = @()
     }
 }
 
@@ -334,7 +384,10 @@ function Invoke-AgentProvider {
         [string]$WorkingDirectory,
 
         [Parameter(Mandatory = $true)]
-        [string]$ResultDirectory
+        [string]$ResultDirectory,
+
+        [Parameter(Mandatory = $false)]
+        [int]$TimeoutMinutes = 30
     )
 
     # Dispatch to provider-specific invoker
@@ -344,7 +397,8 @@ function Invoke-AgentProvider {
                 -ProviderConfig $ProviderConfig `
                 -Prompt $Prompt `
                 -WorkingDirectory $WorkingDirectory `
-                -ResultDirectory $ResultDirectory
+                -ResultDirectory $ResultDirectory `
+                -TimeoutMinutes $TimeoutMinutes
         }
         "test" {
             # Test provider: return immediate success

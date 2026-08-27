@@ -371,6 +371,8 @@ function Invoke-SubAgentLaunch {
     )
 
     $logFile = Join-Path $resultDir "launch.log"
+    $stdoutLogFile = Join-Path $resultDir "launch-stdout.log"
+    $stderrLogFile = Join-Path $resultDir "launch-stderr.log"
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "pwsh"
@@ -387,6 +389,35 @@ function Invoke-SubAgentLaunch {
 
     $subagent_pid = $subagent_process.Id
 
+    # Drain child pipes asynchronously to prevent buffer deadlocks.
+    # Use .NET async reads instead of file redirection to avoid quoting issues.
+    $stdoutReader = $subagent_process.StandardOutput
+    $stderrReader = $subagent_process.StandardError
+    $stdoutBuffer = New-Object System.Text.StringBuilder
+    $stderrBuffer = New-Object System.Text.StringBuilder
+
+    $readTask = [System.Threading.Tasks.Task]::Run([Action]{
+        $buf = New-Object char[] 8192
+        while ($true) {
+            $n = $stdoutReader.Read($buf, 0, $buf.Length)
+            if ($n -eq 0) { break }
+            $lock = [System.Object]$stdoutBuffer
+            [System.Threading.Monitor]::Enter($lock)
+            try { [void]$stdoutBuffer.Append($buf, 0, $n) } finally { [System.Threading.Monitor]::Exit($lock) }
+        }
+    })
+
+    $stderrTask = [System.Threading.Tasks.Task]::Run([Action]{
+        $buf = New-Object char[] 8192
+        while ($true) {
+            $n = $stderrReader.Read($buf, 0, $buf.Length)
+            if ($n -eq 0) { break }
+            $lock = [System.Object]$stderrBuffer
+            [System.Threading.Monitor]::Enter($lock)
+            try { [void]$stderrBuffer.Append($buf, 0, $n) } finally { [System.Threading.Monitor]::Exit($lock) }
+        }
+    })
+
     # Write launch info to log
     @"
 === Sub-agent Process Launch Log ===
@@ -402,11 +433,53 @@ ResultFile: $resultFile
 "@ | Set-Content -Path $logFile -Force
 
     return @{
-        ProcessId = $subagent_pid
-        StartedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-        LogFile = $logFile
-        Process = $subagent_process
+        ProcessId       = $subagent_pid
+        StartedAt       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        LogFile         = $logFile
+        Process         = $subagent_process
+        StdoutBuffer    = $stdoutBuffer
+        StderrBuffer    = $stderrBuffer
+        ReadTask        = $readTask
+        StderrTask      = $stderrTask
     }
+}
+
+function Update-SubAgentLaunchLog {
+    <#
+    .SYNOPSIS
+        Updates the launch log with process completion status.
+    .PARAMETER LogFile
+        Path to the launch log file.
+    .PARAMETER ProcessId
+        The process ID.
+    .PARAMETER ExitCode
+        The process exit code.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LogFile,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId,
+
+        [Parameter(Mandatory = $false)]
+        [int]$ExitCode = -1
+    )
+
+    if (-not (Test-Path $LogFile)) { return }
+
+    $completedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $status = if ($ExitCode -eq 0) { "COMPLETED" } else { "FAILED (exit code: $ExitCode)" }
+
+    $update = @"
+
+=== Process $status ===
+CompletedAt: $completedAt
+ExitCode: $ExitCode
+"@
+
+    Add-Content -Path $LogFile -Value $update -Force
 }
 
 function Get-SubAgentResult {
@@ -504,6 +577,7 @@ Export-ModuleMember -Function @(
     'Test-SubAgentReportComplete',
     'Get-SubAgentFailureCategory',
     'Invoke-SubAgentLaunch',
+    'Update-SubAgentLaunchLog',
     'Get-SubAgentResult',
     'Test-SubAgentProcessRunning',
     'Stop-SubAgentProcess'
