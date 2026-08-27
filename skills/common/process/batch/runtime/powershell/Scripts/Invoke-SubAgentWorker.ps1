@@ -57,7 +57,16 @@ function Write-Result {
     param(
         [hashtable]$Result
     )
-    $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $ResultFile -Force
+    $tmpFile = "$ResultFile.tmp.$pid.$(Get-Random)"
+    try {
+        $Result | ConvertTo-Json -Depth 10 | Set-Content -Path $tmpFile -Force
+        Move-Item -Path $tmpFile -Destination $ResultFile -Force
+    } catch {
+        if (Test-Path $tmpFile) {
+            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 }
 
 function Write-ProgressCheckpoint {
@@ -205,7 +214,7 @@ IMPORTANT RULES:
                 IssueId = $IssueId
                 PrNumber = $null
                 CommitSha = $null
-                CompletedAt = $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                CompletedAt = $endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                 DurationSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
                 Error = $provider_result.Error
                 ExitCode = $agentExitCode
@@ -216,6 +225,7 @@ IMPORTANT RULES:
 
         Write-AgentLog "Phase 5: Commit and Push"
 
+        $changedFiles = Get-GitChangedFiles
         & git add -A 2>&1 | Out-Null
         $stagedChanges = & git diff --cached --stat 2>$null
 
@@ -251,7 +261,6 @@ IMPORTANT RULES:
         $commitSha = & git rev-parse HEAD 2>$null
         Write-AgentLog "Committed: $commitSha"
 
-        $changedFiles = Get-GitChangedFiles
         Write-ProgressCheckpoint -Phase "committed" -Progress @{
             commitSha = $commitSha
             changedFiles = $changedFiles
@@ -278,10 +287,14 @@ $($agentOutput.Substring(0, [Math]::Min(2000, $agentOutput.Length)))
 $($changedFiles -join "`n")
 "@
         $prResult = & gh pr create --title $prTitle --body $prBody --base main --head $BranchName 2>&1
+        $prCreated = $LASTEXITCODE -eq 0
         $prNumber = 0
         $prResultText = $prResult -join "`n"
-        if ($prResultText -match '(\d+)') {
+        if ($prCreated -and $prResultText -match '(\d+)') {
             $prNumber = [int]$Matches[1]
+        }
+        if (-not $prCreated -or $prNumber -le 0) {
+            throw "PR creation failed (exit code: $LASTEXITCODE): $prResultText"
         }
         Write-AgentLog "PR created: #$prNumber"
 
@@ -298,7 +311,7 @@ $($changedFiles -join "`n")
             IssueId = $IssueId
             PrNumber = $prNumber
             CommitSha = $commitSha
-            CompletedAt = $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            CompletedAt = $endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             DurationSeconds = [Math]::Round($duration, 2)
             Report = @{
                 IssueId = $IssueId
@@ -328,7 +341,7 @@ $($changedFiles -join "`n")
         IssueId = $IssueId
         PrNumber = $null
         CommitSha = $null
-        CompletedAt = $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        CompletedAt = $endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         DurationSeconds = [Math]::Round($duration, 2)
         Error = $_.Exception.Message
         StackTrace = $_.ScriptStackTrace

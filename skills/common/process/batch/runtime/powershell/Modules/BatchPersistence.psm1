@@ -24,6 +24,9 @@ function Get-BatchStateFilePath {
         [Parameter(Mandatory = $false)]
         [string]$StateDir = "."
     )
+    if ($BatchId -match '[/\\]|(\.\.)') {
+        throw "BatchId contains invalid path characters: $BatchId"
+    }
     return Join-Path $StateDir ".batch-state-$BatchId.json"
 }
 

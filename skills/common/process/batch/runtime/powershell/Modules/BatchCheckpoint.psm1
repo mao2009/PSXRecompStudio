@@ -29,6 +29,9 @@ function Get-CheckpointDirectory {
         [Parameter(Mandatory = $false)]
         [switch]$Create
     )
+    if ($BatchId -match '[/\\]|(\.\.)') {
+        throw "BatchId contains invalid path characters: $BatchId"
+    }
     $dir = Join-Path $StateDir ".batch-checkpoints-$BatchId"
     if ($Create -and -not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
