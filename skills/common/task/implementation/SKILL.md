@@ -40,6 +40,9 @@ review, use the [Review Skill](../review/SKILL.md).
 - A working branch (directly or via a worktree created by the Batch
   orchestrator), based on the current `main`.
 - [Common Skill](../common/SKILL.md) accepted.
+- The **Project Profile** for the repository is available and read — it supplies
+  the authoritative documents, architecture MATRIX, and verification ladder that
+  every project-specific step below relies on.
 
 ## Standard Procedure
 
