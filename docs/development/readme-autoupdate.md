@@ -51,16 +51,17 @@ pull_request (opened/synchronize/reopened) to main
         ├─ Publish (trusted script, GITHUB_TOKEN only here)
         │    → FAIL-CLOSED commit/push of managed files only
         └─ record-sha: publish output "published_sha" = git rev-parse HEAD
-             · README changed   → the pushed README commit (new PR head B)
-             · README unchanged → the PR head at publish time (still A)
-             · bootstrap/skip  → the checked-out PR head (still A)
-             · runs on every path so the output is always set
+             · executed no-op          → published_sha = PR head at publish time (A)
+             · executed publication    → published_sha = pushed README commit (new PR head B)
+             · job-level skip          → record-sha does NOT run; published_sha = EMPTY
+               (fork PR / bootstrap / upstream failure) → review gate fails closed
         │
         ▼
   Job 3: review-trigger (CodeRabbit ordering, Issue #185)
          permissions: pull-requests: write
         │
         ├─ (only if update-readme succeeded + action=proceed + publish succeeded)
+        │     empty published_sha (job-level skip) fails closed → no trigger
         ├─ Verify API-fetched current PR head == publish-readme.outputs.published_sha
         │    (never github.event.pull_request.head.sha - stale before publish)
         └─ Post "@coderabbitai review" comment        ◄── the ONLY review trigger
@@ -179,8 +180,10 @@ SSOT config and the opencode config, invalid/forged version rejection,
 bootstrap-mode publish refusal, bootstrap extraction fallback, artifact
 validation (extra file / symlink rejection), workflow YAML structure (model job
 has no token, no `vars.` override, publish job is feed-isolated), the
-review-trigger job structure and gates, and the `.coderabbit.yaml` auto-review
-disable + bot ignore.
+review-trigger job structure and gates, the `published_sha` contract for
+executed no-op / executed publication / job-level skip (empty output, review
+gate fails closed), and the `.coderabbit.yaml` auto-review disable + bot
+ignore.
 
 ## Operational notes
 
@@ -189,7 +192,10 @@ disable + bot ignore.
   `review-trigger` job fetches the current PR head SHA via the GitHub API and
   compares it against the publish job's `published_sha` output (the exact PR
   head after publish), then posts an `@coderabbitai review` comment, so
-  CodeRabbit always reviews the final PR state (README commit included). This
+  CodeRabbit always reviews the final PR state (README commit included).
+  `published_sha` is set only when the publish job runs (its final
+  `record-sha` step computes it); a job-level publish skip leaves it **empty**,
+  which the review gate treats as fail-closed and suppresses the trigger. This
   deliberately does not compare against `github.event.pull_request.head.sha`
   (stale whenever a README commit is pushed) and does not rely on the
   `GITHUB_TOKEN` push restarting a `pull_request` workflow. A run whose head
@@ -208,9 +214,11 @@ disable + bot ignore.
   `https://x-access-token:…` URL; `contents: write` is granted only to the
   publish job, `pull-requests: write` only to the review-trigger job.
 - Bootstrap runs (the first PR introducing these files) are analyze-only: the
-  model job runs, the publish job skips the token path, the README must be
-  updated manually by the PR author if needed, and no CodeRabbit review is
-  triggered until a real publish succeeds.
+  model job runs, the publish job is skipped at the job level (it requires
+  `bootstrap == '0'`), the README must be updated manually by the PR author if
+  needed, and no CodeRabbit review is triggered until a real publish succeeds.
+  Because the publish job never runs, `published_sha` is empty and the review
+  gate fails closed.
 
 ## Phase 2 (deferred)
 

@@ -41,10 +41,16 @@
 #  27. workflow: review-trigger SHA flow - expected comes from the publish job's
 #      published_sha output (NOT the event head.sha); unset output refuses
 #  28. publish record-sha functional - README change -> new HEAD SHA; no-op ->
-#      HEAD unchanged; bootstrap skip -> HEAD unchanged (all paths set the output)
+#      HEAD unchanged (in-job paths set the output; only executed runs reach it)
 #  29. workflow: README-changed regression (A -> publish -> B -> published_sha=B
 #      -> review-trigger against B) and no reliance on the bot push restarting
 #      the workflow (the push must not be treated as an expected-SHA source)
+#  30. review gate functional: API head vs published_sha - match=1 only when the
+#      publish job ran and the current head equals its output; an EMPTY
+#      published_sha (job-level skip) and mismatches both fail closed to match=0
+#  31. workflow: job-level publish skip (fork / bootstrap / upstream failure)
+#      leaves published_sha EMPTY and the trigger gate closed - the empty
+#      output is the CORRECT contract (record-sha is unreachable), not a bug
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -779,7 +785,8 @@ assert "opencode" not in allruns.lower() and "openmodel" not in allruns.lower(),
 PY
 }
 
-# --- 28. publish record-sha functional (all three paths set the output) --------
+# --- 28. publish record-sha functional (in-job paths set the output) -----------
+#                                               ^ job-level skip never reaches this step (covered in 31)
 test_publish_record_sha() {
   local script
   script="$(wf_step_run publish-readme "Record published PR head SHA")"
@@ -836,8 +843,9 @@ recrun = record.get("run") or ""
 # The recorded SHA must come from the job's own git HEAD (post-publish), so it
 # is the real PR head after the README commit (B), not the event SHA (A).
 assert "git rev-parse HEAD" in recrun, "record-sha must use git rev-parse HEAD (post-publish)"
-# It must run unconditionally so published_sha is set on every path.
-assert "if:" not in record, "record-sha step must run on every publish-job path"
+# It must run unconditionally once the job executes, so published_sha is set
+# on every in-job path; a job-level skip cannot reach it (see test 31).
+assert "if:" not in record, "record-sha step must run on every in-job path"
 # The publish script may END right before record-sha (after pushing B) - ensure
 # ordering: record-sha comes after the push step.
 publish_step = next((s for s in steps if "Publish README updates" in (s.get("name") or "")), None)
@@ -861,6 +869,99 @@ assert "github.event.pull_request.head.sha" not in allruns, \
 PY
 }
 
+# --- 30. review gate functional: API head vs published_sha -----------------------
+# Functional test of the review-trigger "Verify PR head SHA" step (its run
+# block) with a stubbed `gh`. Distinguishes the three contract cases:
+#   - executed no-op:        current == published_sha == A -> match=1
+#   - executed publication:  current == published_sha == B -> match=1
+#   - job-level skip:        published_sha is EMPTY          -> match=0 (fail-closed)
+# plus a post-publish head move -> match=0 (stale-review avoidance).
+test_review_gate_contract() {
+  local script d
+  script="$(wf_step_run review-trigger "Verify PR head SHA")"
+  [[ -n "$script" ]] || { fail "verify step missing from review-trigger"; return 1; }
+  d="$ROOT_DIR/reviewgate"
+  mkdir -p "$d"
+
+  # run_gate <published_sha> <fake_api_head> -> runs the verify step block with
+  # a stub `gh` that reports the fake API head; echoes the produced match line.
+  run_gate() {
+    local out log run
+    out="$d/out.txt"; log="$d/log.txt"
+    rm -f "$out" "$log"
+    run=$'gh() { echo "$FAKE_CURRENT"; }\n'"$script"
+    ( cd "$d" \
+        && GITHUB_OUTPUT="$out" \
+           GITHUB_REPOSITORY=owner/repo \
+           PR_NUMBER=123 \
+           PUBLISHED_SHA="$1" FAKE_CURRENT="$2" \
+           bash -e -c "$run" >"$log" 2>&1 )
+    grep -o '^match=[01]$' "$out" | tail -n1 || echo "no-match-line"
+  }
+
+  local log m
+  # executed no-op: publish ran, current head == published_sha (A) -> success path
+  m="$(run_gate "aaaa" "aaaa" || echo "no-match-line")"
+  assert_eq "$m" "match=1" "executed no-op: matching head must yield match=1"
+  # executed publication: publish ran + pushed B; API head == published_sha (B) -> success path
+  m="$(run_gate "bbbb" "bbbb" || echo "no-match-line")"
+  assert_eq "$m" "match=1" "executed publication: post-publish head must yield match=1"
+  # head moved after publish -> fail-closed (stale-review avoidance)
+  m="$(run_gate "bbbb" "cccc" || echo "no-match-line")"
+  assert_eq "$m" "match=0" "moved head must yield match=0"
+  # job-level skip: published_sha EMPTY -> match=0. The empty output is the
+  # CORRECT contract for a skipped publish job and it must fail closed.
+  m="$(run_gate "" "aaaa" || echo "no-match-line")"
+  assert_eq "$m" "match=0" "job-level skip: empty published_sha must yield match=0"
+  log="$d/log.txt"
+  grep -qi "did not expose a published_sha output" "$log" \
+    || fail "empty published_sha must log the fail-closed error"
+}
+
+# --- 31. workflow: job-level publish skip -> published_sha EMPTY + gate closed --
+# CodeRabbit finding (PR #186): published_sha is NOT set on every path. A
+# job-level skip of the publish JOB (fork PR, bootstrap run, upstream failure)
+# means record-sha never executes, so
+# needs.publish-readme.outputs.published_sha is EMPTY - and that is the CORRECT
+# contract. Assert the workflow keeps it: the empty output is structurally
+# guaranteed (record-sha is unreachable) and the review gate fails closed on it
+# (no trigger without a real publish).
+test_workflow_skip_contract() {
+  python3 - "$WORKFLOW" <<'PY' || fail "job-level skip contract check failed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+jobs = d["jobs"]
+pub = jobs["publish-readme"]
+pub_if = pub.get("if") or ""
+# Fork PRs and bootstrap runs skip the publish JOB (not just its steps).
+assert "github.event.pull_request.head.repo.full_name == github.repository" in pub_if, \
+    "publish job must skip fork PRs at the job level"
+assert "needs.update-readme.outputs.bootstrap == '0'" in pub_if, \
+    "publish job must skip bootstrap runs at the job level"
+# record-sha is inside the job with no step-level if, so a job-level skip makes
+# it unreachable: no step output, hence no published_sha.
+steps = pub["steps"]
+record = next((s for s in steps if s.get("id") == "record-sha"), None)
+assert record is not None, "publish job must end with a record-sha step"
+assert "if" not in record, "record-sha has no step-level if"
+assert pub["outputs"].get("published_sha") == "${{ steps.record-sha.outputs.sha }}", \
+    "published_sha must come from the in-job record-sha step output"
+# Gate semantics: a skipped publish job yields result 'skipped' (not 'success')
+# and its outputs are empty strings, so both fail-closed checks must exist:
+# the verify step maps an empty expected value to match=0, and the trigger
+# additionally requires the publish result to be success.
+verify = next(s for s in jobs["review-trigger"]["steps"] if "Verify PR head SHA" in (s.get("name") or ""))
+vrun = verify.get("run") or ""
+assert '-z "$expected"' in vrun, "verify must turn an empty published_sha into a fail-closed match=0"
+trigger = next(s for s in jobs["review-trigger"]["steps"] if "Trigger CodeRabbit review" in (s.get("name") or ""))
+cond = trigger.get("if") or ""
+assert "steps.verify.outputs.match == '1'" in cond, \
+    "trigger must require match == 1 (empty/mismatch -> match == 0 -> no trigger)"
+assert "needs.publish-readme.result == 'success'" in cond, \
+    "trigger must require publish-readme.result == success (a skipped publish job must never trigger a review)"
+PY
+}
+
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
@@ -874,7 +975,8 @@ main() {
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
          test_opencode_permission_rules test_workflow_review_trigger test_coderabbit_config \
-         test_workflow_sha_flow test_publish_record_sha test_workflow_readme_changed_regression)
+         test_workflow_sha_flow test_publish_record_sha test_workflow_readme_changed_regression \
+         test_review_gate_contract test_workflow_skip_contract)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then

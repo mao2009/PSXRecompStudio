@@ -9,14 +9,18 @@ name: README Auto-Update
 #   2. publish-readme ("publish" job, contents: write): clean workspace, fresh
 #      origin/main extraction, single-file artifact, mechanical validation, then
 #      commits/pushes ONLY the managed README to the PR's own head branch. It
-#      records the resulting PR head SHA (published_sha) as a job output.
+#      records the resulting PR head SHA (published_sha) as a job output WHEN
+#      THE JOB RUNS. A job-level skip (fork PR, bootstrap run, upstream failure)
+#      never reaches record-sha, so on those runs the output stays empty.
 #   3. review-trigger ("review" job, pull-requests: write): runs AFTER the
 #      publish job, fetches the current PR head SHA via the GitHub API and
 #      compares it against the publish job's published_sha output (NOT the
 #      event's head.sha, which is stale before publish), and then explicitly
 #      triggers a CodeRabbit review via an "@coderabbitai review" comment.
 #      CodeRabbit automatic reviews are disabled in .coderabbit.yaml, so this
-#      is the ONLY review trigger.
+#      is the ONLY review trigger. The gate is fail-closed: a non-success
+#      publish result, an empty published_sha (job-level skip), or a SHA
+#      mismatch all suppress the trigger.
 #
 # Trust model (see docs/adr/009-readme-autoupdate.md and docs/adr/010-coderabbit-ordering.md):
 #   Trusted   : origin/main, this workflow, trusted config, trusted publish script
@@ -210,13 +214,20 @@ jobs:
     timeout-minutes: 20
     outputs:
       # The PR head SHA that exists AFTER this job has finished publishing.
-      #   - README changed:   the newly pushed commit's SHA (PR head = B)
-      #   - README unchanged: the PR head SHA at publish time (still A, no push)
-      #   - bootstrap/skip:   the checked-out PR head (A, publish steps skipped)
+      # This output is defined only for runs where the JOB executes; the
+      # record-sha step that produces it is the last step in the job, so any
+      # job-level skip (fork PR, bootstrap run, upstream failure) leaves the
+      # output EMPTY. Per path:
+      #   - executed, README changed:   the newly pushed commit's SHA (B)
+      #   - executed, README unchanged: the PR head SHA at publish time (A)
+      #   - executed, in-job barrier:   publish steps gated off (defensive
+      #     race); HEAD at checkout time (A)
+      #   - job-level skip:             record-sha does not run, output EMPTY
       # review-trigger compares the API-fetched current PR head against this
-      # value. It must never fall back to github.event.pull_request.head.sha,
-      # because that event SHA is captured BEFORE publish and is therefore stale
-      # whenever a README commit is pushed.
+      # value and fails closed (match=0) on an empty value. It must never fall
+      # back to github.event.pull_request.head.sha, because that event SHA is
+      # captured BEFORE publish and is therefore stale whenever a README commit
+      # is pushed.
       published_sha: ${{ steps.record-sha.outputs.sha }}
 
     steps:
@@ -321,11 +332,15 @@ jobs:
           PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
 
       # Record the PR head SHA as it exists after this job finished.
-      # Run unconditionally (after checkout, which is also unconditional) so the
-      # job output is always set on every path:
-      #   - README changed: publish committed+pushes, so HEAD == pushed SHA (B)
+      # This step runs unconditionally (no `if:`) ONCE THE JOB RUNS, so the
+      # output is set on every in-job path:
+      #   - README changed:   publish committed+pushes, so HEAD == pushed SHA (B)
       #   - README unchanged: publish was a no-op, HEAD == PR head at publish (A)
-      #   - bootstrap/skip:   publish steps gated off, HEAD == checked-out head (A)
+      #   - in-job barrier:   publish steps gated off (defensive race), HEAD == A
+      # A JOB-LEVEL skip (fork PR, bootstrap run, upstream failure) never
+      # reaches this step, so published_sha is EMPTY on those runs. That is the
+      # intended contract: review-trigger treats an empty published_sha as
+      # fail-closed and never triggers a review without a real publish.
       # The publish script never pushes to main/forbidden branches, and the only
       # thing it can commit is managed README.md, so whatever SHA is now at HEAD
       # is exactly the PR head the README Auto-Update produced.
@@ -346,8 +361,13 @@ jobs:
     #
     # This job is separate from the model and publish jobs on purpose: the
     # trigger is a distinct concern, owns the ONLY pull-requests permission,
-    # and mechanically gates itself on the upstream job results. It runs only
-    # for same-repo PRs where the model analysis succeeded.
+    # and mechanically gates itself on the upstream job results. The JOB runs
+    # with if: always(), but the trigger STEP fires only when update-readme
+    # succeeded with action=proceed AND publish-readme succeeded AND the
+    # API-fetched head matches published_sha. A job-level publish skip (fork
+    # PR, bootstrap run, upstream failure) means
+    # needs.publish-readme.result == 'skipped' and an EMPTY published_sha; the
+    # gate fails closed and no review comment is ever posted on such a run.
     #
     # Loop prevention: the comment is posted with GITHUB_TOKEN, which GitHub
     # treats as a bot action that does NOT re-trigger pull_request workflows,
@@ -378,6 +398,11 @@ jobs:
       # restart a pull_request workflow (which would then review the new head)
       # is NOT a valid assumption, so we mechanically verify the current head
       # against the exact SHA publish produced.
+      #
+      # The output is EMPTY on job-level publish skips (fork PR, bootstrap,
+      # upstream failure). That is the expected contract: the verify step
+      # turns an empty expected value into match=0, so the trigger below
+      # cannot fire without a real publish.
       - name: Verify PR head SHA matches the README Auto-Update state
         id: verify
         env:
@@ -401,7 +426,9 @@ jobs:
 
       # The only CodeRabbit trigger. The comment is a fixed literal; no PR- or
       # README-controlled content is ever interpolated into it, so it cannot be
-      # rewritten by prompt injection in the PR.
+      # rewritten by prompt injection in the PR. The `if` gate above fails
+      # closed: a skipped publish job (needs.publish-readme.result != success)
+      # or an empty published_sha (match=0) both suppress the trigger.
       - name: Trigger CodeRabbit review
         if: >
           steps.verify.outputs.match == '1' &&

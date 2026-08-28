@@ -88,17 +88,27 @@ Add a third job `review-trigger` to `.github/workflows/readme-autoupdate.yml`:
 - Only runs for same-repo PRs (fork PRs are skipped by the upstream jobs'
   `if: <head.repo == repo>`, so their results are `skipped` and the gate fails).
 - The `publish-readme` job exposes the PR head SHA that exists **after** it
-  finishes as the job output `published_sha`:
-  - README changed: the SHA of the README commit the publish job pushed (the
-    new PR head, `B`).
-  - README unchanged / bootstrap / skipped: the PR head at publish time (no
-    push happened, so it is still `A`).
-  This is computed mechanically with `git rev-parse HEAD` in a final
-  `record-sha` step that runs on every path, so `published_sha` is always set.
+  finishes as the job output `published_sha`. The contract distinguishes three
+  outcomes:
+  - **Executed no-op**: the publish job runs, finds nothing to change, and the
+    final `record-sha` step runs, so `published_sha` is the current PR head
+    (nothing was pushed, so it is still `A`).
+  - **Executed publication**: the publish job runs, commits/pushes the README
+    commit, and `record-sha` runs, so `published_sha` is the new PR head (the
+    pushed README commit, `B`).
+  - **Job-level skip**: the publish job does not run (fork PR, bootstrap run,
+    or upstream failure). `record-sha` lives inside the job, so it does not
+    execute either and `published_sha` is **empty**.
+  The value is computed mechanically with `git rev-parse HEAD` in that final
+  `record-sha` step, so whenever the job runs it reflects the exact
+  post-publish head. The empty case is not a bug: `review-trigger` treats an
+  empty `published_sha` as fail-closed and never triggers a review unless a
+  real publish ran.
 - Before triggering, `review-trigger` fetches the **current** PR head via the
   GitHub API (`gh api repos/{owner}/{repo}/pulls/{n} --jq '.head.sha'`) and
   compares it against `needs.publish-readme.outputs.published_sha`. If they
-  differ (or `published_sha` is empty) it does **not** trigger CodeRabbit.
+  differ, or if `published_sha` is empty (which happens exactly on a job-level
+  publish skip), it does **not** trigger CodeRabbit.
   Because `published_sha` is the real post-publish head, a README commit does
   not disable the trigger: the API returns `B` and `published_sha == B`,
   so the review runs against the final PR state.
@@ -150,10 +160,12 @@ Fork PRs skip the model and publish jobs at the job level and in preflight
 (#180). The review-trigger job's dependence on `update-readme.result` /
 `publish-readme.result` makes it skip for forks as well: on forks the jobs are
 `skipped`, not `success`, so no comment is ever posted with a fork-controlled
-context. The first (bootstrap) run that introduces these files analyzes only
-and never publishes; with `publish-readme` skipped, no CodeRabbit review is
-triggered until the trusted assets are on `origin/main` and a real publish
-runs.
+context. Skipped publish runs also expose an **empty** `published_sha`
+(`record-sha` never executes), which the SHA-verification step treats as
+fail-closed (`match=0`). The first (bootstrap) run that introduces these files
+analyzes only and never publishes; with `publish-readme` skipped, no CodeRabbit
+review is triggered until the trusted assets are on `origin/main` and a real
+publish runs.
 
 ### 6. Human Approval Gate preserved
 
@@ -179,9 +191,9 @@ through the existing Human Approval Gate and `main` ruleset, unchanged.
   `synchronize` run that has the stable head reviews instead. This is
   intentional (stale-review avoidance). The README publish itself cannot cause
   this because `published_sha` reflects the exact head the publish produced.
-- If the publish step is skipped (fork or bootstrap), no CodeRabbit review is
-  triggered by CI until a real publish occurs; a reviewer can always request a
-  manual `@coderabbitai review`.
+- If the publish **job** is skipped at the job level (fork or bootstrap), no
+  CodeRabbit review is triggered by CI until a real publish occurs; a reviewer
+  can always request a manual `@coderabbitai review`.
 - CodeRabbit review allowances are consumed by manual (`@coderabbitai review`)
   reviews, which count against the per-developer review rate limit just like
   automatic ones.
