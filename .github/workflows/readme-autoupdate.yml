@@ -1,6 +1,6 @@
 name: README Auto-Update
 
-# PR-triggered README updater (Issue #180). Two isolated jobs:
+# PR-triggered README updater (Issue #180). Three isolated jobs:
 #
 #   1. update-readme ("model" job, contents: read, NO GITHUB_TOKEN):
 #      runs OpenCode pinned to opencode/big-pickle with assets extracted from
@@ -9,14 +9,19 @@ name: README Auto-Update
 #   2. publish-readme ("publish" job, contents: write): clean workspace, fresh
 #      origin/main extraction, single-file artifact, mechanical validation, then
 #      commits/pushes ONLY the managed README to the PR's own head branch.
+#   3. review-trigger ("review" job, pull-requests: write): runs AFTER the
+#      publish job, verifies the current PR head SHA still matches the state
+#      that was just analyzed, and then explicitly triggers a CodeRabbit review
+#      via an "@coderabbitai review" comment. CodeRabbit automatic reviews are
+#      disabled in .coderabbit.yaml, so this is the ONLY review trigger.
 #
-# Trust model (see docs/adr/009-readme-autoupdate.md):
+# Trust model (see docs/adr/009-readme-autoupdate.md and docs/adr/010-coderabbit-ordering.md):
 #   Trusted   : origin/main, this workflow, trusted config, trusted publish script
 #   Untrusted : PR branch, PR description, comments, source, README content,
 #               issue content, OpenCode output, repository variables (ignored)
 #
 # Permissions default to nothing; each job grants the minimum it needs. The
-# GITHUB_TOKEN is referenced ONLY in the publish job.
+# GITHUB_TOKEN is referenced ONLY in the publish job and the review step.
 
 "on":
   pull_request:
@@ -301,3 +306,76 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+
+  review-trigger:
+    name: CodeRabbit review trigger
+    # Issue #185: CodeRabbit must review the FINAL PR state, i.e. after the
+    # README Auto-Update has finished. The CodeRabbit GitHub App automatic
+    # reviews are disabled (.coderabbit.yaml), so an explicit "@coderabbitai
+    # review" comment is the only way CodeRabbit starts a review.
+    #
+    # This job is separate from the model and publish jobs on purpose: the
+    # trigger is a distinct concern, owns the ONLY pull-requests permission,
+    # and mechanically gates itself on the upstream job results. It runs only
+    # for same-repo PRs where the model analysis succeeded.
+    #
+    # Loop prevention: the comment is posted with GITHUB_TOKEN, which GitHub
+    # treats as a bot action that does NOT re-trigger pull_request workflows,
+    # and .coderabbit.yaml ignores github-actions[bot] for automatic reviews
+    # (a manually-requested review is still allowed). The comment is therefore
+    # a terminal action - it never restarts this workflow.
+    if: always()
+    needs: [update-readme, publish-readme]
+    concurrency:
+      # Serialize triggers per PR even across overlapping workflow runs so
+      # simultaneous synchronize events cannot post duplicate review comments.
+      group: coderabbit-trigger-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # No checkout is needed: both steps talk to the GitHub API (get current
+      # PR head SHA, post the trigger comment) with the job's GITHUB_TOKEN.
+      # Pulling PR-controlled working-tree content into this job would only add
+      # attack surface; the job deliberately has an empty workspace.
+      - name: Verify PR head SHA matches the README Auto-Update state
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          expected="${{ github.event.pull_request.head.sha }}"
+          echo "current=$current expected=$expected"
+          if [[ "$current" != "$expected" ]]; then
+            echo "::notice::PR head moved to $current while README Auto-Update ran; the same-PR synchronize run will review the new state."
+            echo "match=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The only CodeRabbit trigger. The comment is a fixed literal; no PR- or
+      # README-controlled content is ever interpolated into it, so it cannot be
+      # rewritten by prompt injection in the PR.
+      - name: Trigger CodeRabbit review
+        if: >
+          steps.verify.outputs.match == '1' &&
+          needs.update-readme.result == 'success' &&
+          needs.update-readme.outputs.action == 'proceed' &&
+          needs.publish-readme.result == 'success'
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const pr = process.env.PR_NUMBER;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: +pr,
+              body: '## CodeRabbit Review Request\n\nPlease review this pull request per the CI flow (Issue #185).\n\n@coderabbitai review',
+            });
+            console.log(`CodeRabbit review requested on PR #${pr}`);

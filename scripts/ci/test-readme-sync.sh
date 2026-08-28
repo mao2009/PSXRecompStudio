@@ -34,6 +34,10 @@
 #      or a deleted README fail closed
 #  23. artifact validation functional: exactly one root README.md passes; extra
 #      file, symlink, or subdirectory fail closed
+#  24. opencode permission rules: catch-all first, specifics last
+#  25. workflow: review-trigger job - isolated pull-requests:write, needs both
+#      upstream jobs, SHA-verification step, fixed-literal trigger comment
+#  26. .coderabbit.yaml: automatic reviews disabled + github-actions[bot] ignored
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -379,9 +383,9 @@ test_workflow_no_vars() {
   fi
 }
 
-# --- 18. workflow: token/scope separation between the two jobs --------------
+# --- 18. workflow: token/scope separation between the three jobs -------------
 test_workflow_token_boundary() {
-  local model_perm publish_perm
+  local model_perm publish_perm review_perm
   python3 - "$WORKFLOW" <<'PY' || fail "workflow structure check failed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -389,14 +393,22 @@ jobs = d["jobs"]
 assert jobs["update-readme"]["permissions"] == {"contents": "read"}, "model job must have contents: read only"
 assert jobs["publish-readme"]["permissions"] == {"contents": "write"}, "publish job must have contents: write"
 assert jobs["publish-readme"].get("needs") == "update-readme", "publish job must depend on the model job"
+# The review trigger is a separate concern with its own minimal scope.
+assert jobs["review-trigger"]["permissions"] == {"pull-requests": "write"}, "review-trigger must have pull-requests: write only (no contents)"
+assert jobs["review-trigger"].get("needs") == ["update-readme", "publish-readme"], "review-trigger must depend on both upstream jobs"
 for jname, job in jobs.items():
     for s in job["steps"]:
         sname = s.get("name") or ""
         blob = (s.get("run") or "") + " " + " ".join(str(v) for v in (s.get("env") or {}).values())
-        if "github.token" in blob and not (jname == "publish-readme" and sname == "Publish README updates"):
-            sys.exit("GITHUB_TOKEN referenced outside the publish step: %s/%s" % (jname, sname))
+        if "github.token" in blob:
+            allowed = (jname == "publish-readme" and sname == "Publish README updates") or \
+                      (jname == "review-trigger" and sname == "Verify PR head SHA matches the README Auto-Update state")
+            if not allowed:
+                sys.exit("GITHUB_TOKEN referenced outside the publish/review steps: %s/%s" % (jname, sname))
         if jname == "update-readme" and "PUSH_URL" in blob:
             sys.exit("PUSH_URL referenced in the model job")
+        if jname != "update-readme" and "PUSH_URL" in blob:
+            sys.exit("PUSH_URL referenced in a non-publish job: %s/%s" % (jname, sname))
 PY
   model_perm="$(python3 - "$WORKFLOW" <<'PY'
 import sys, yaml
@@ -408,8 +420,14 @@ import sys, yaml
 print(yaml.safe_load(open(sys.argv[1]))["jobs"]["publish-readme"]["permissions"]["contents"])
 PY
 )"
+  review_perm="$(python3 - "$WORKFLOW" <<'PY'
+import sys, yaml
+print(yaml.safe_load(open(sys.argv[1]))["jobs"]["review-trigger"]["permissions"]["pull-requests"])
+PY
+)"
   assert_eq "$model_perm" "read" "model job permission must be contents:read"
   assert_eq "$publish_perm" "write" "publish job permission must be contents:write"
+  assert_eq "$review_perm" "write" "review-trigger permission must be pull-requests:write"
 }
 
 # --- 19. workflow: bootstrap gating on publish steps ------------------------
@@ -658,6 +676,50 @@ assert d["permission"].get("websearch") == "deny", "websearch must be denied"
 PY
 }
 
+# --- 25. workflow: review-trigger job (CodeRabbit ordering, Issue #185) -------
+test_workflow_review_trigger() {
+  python3 - "$WORKFLOW" <<'PY' || fail "review-trigger job structure check failed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+j = d["jobs"]["review-trigger"]
+assert j.get("needs") == ["update-readme", "publish-readme"], "review-trigger must need both upstream jobs"
+assert j.get("if") == "always()", "review-trigger must use if: always() and gate itself inside"
+assert j["permissions"] == {"pull-requests": "write"}, "review-trigger: pull-requests: write only"
+assert "contents" not in j["permissions"], "review-trigger must not touch contents"
+assert j.get("concurrency", {}).get("group"), "review-trigger must serialize triggers per PR with a concurrency group"
+names = [s.get("name") for s in j["steps"]]
+assert any(n and "Verify PR head SHA" in n for n in names), "review-trigger must verify the PR head SHA"
+# The trigger step must be gated on: SHA match AND update-readme success/proceed AND publish success.
+trigger = next(s for s in j["steps"] if "Trigger CodeRabbit review" in (s.get("name") or ""))
+cond = trigger.get("if") or ""
+assert cond.count("&&") >= 3, "trigger step must AND together all the gates: %r" % cond
+for needle in ("steps.verify.outputs.match == '1'",
+               "needs.update-readme.result == 'success'",
+               "needs.update-readme.outputs.action == 'proceed'",
+               "needs.publish-readme.result == 'success'"):
+    assert needle in cond, "trigger step must check %s" % needle
+body = trigger["with"]["script"]
+assert "@coderabbitai review" in body, "trigger comment must contain the @coderabbitai review command"
+assert "github.event" not in body and "PR_BODY" not in body, "trigger comment must be a fixed literal (no PR-controlled interpolation)"
+PY
+}
+
+# --- 26. .coderabbit.yaml: automatic reviews disabled, bot ignored -------------
+test_coderabbit_config() {
+  local cfg
+  cfg="$(cd "$SCRIPT_DIR/../.." && pwd)/.coderabbit.yaml"
+  python3 - "$cfg" <<'PY' || fail "coderabbit config check failed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+ar = d["reviews"]["auto_review"]
+assert ar.get("enabled") is False, "auto_review.enabled must be false"
+users = ar.get("ignore_usernames") or []
+assert "github-actions[bot]" in users, "github-actions[bot] must be ignored for automatic reviews"
+for key in ("labels", "description_keyword", "base_branches", "drafts"):
+    assert key not in ar, "auto_review must not define %s (no accidental opt-in)" % key
+PY
+}
+
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
@@ -670,7 +732,7 @@ main() {
          test_publish_bootstrap_refused test_workflow_no_vars test_workflow_token_boundary \
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
-         test_opencode_permission_rules)
+         test_opencode_permission_rules test_workflow_review_trigger test_coderabbit_config)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then

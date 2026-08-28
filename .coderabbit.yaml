@@ -1,0 +1,21 @@
+# CodeRabbit configuration (Issue #185).
+#
+# Automatic reviews are DISABLED. CodeRabbit must not start a review before the
+# README Auto-Update workflow has finished; otherwise it could review a PR state
+# that does not yet include the README changes. The README Auto-Update workflow
+# explicitly triggers a review with "@coderabbitai review" after the README
+# publish step has completed (see .github/workflows/readme-autoupdate.yml).
+#
+# Manual review commands ("@coderabbitai review" / "@coderabbitai full review")
+# always work regardless of this configuration, per the official docs.
+#
+# github-actions[bot] is ignored for automatic reviews as defense in depth: the
+# README publish job and the review trigger commit/comment under that identity,
+# so even if auto-review is later re-enabled, bot-authored commits never start
+# a review on their own and the explicit-trigger ordering cannot be bypassed.
+# Manual "@coderabbitai review" commands still work for ignored authors.
+reviews:
+  auto_review:
+    enabled: false
+    ignore_usernames:
+      - "github-actions[bot]"
