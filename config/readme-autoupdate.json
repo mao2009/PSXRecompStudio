@@ -1,0 +1,23 @@
+{
+  "$comment": "README auto-update workflow SSOT (Issue #180). Consumed by .github/workflows/readme-autoupdate.yml and scripts/ci/readme-sync.sh. This file is always loaded from the origin/main ref (trusted) by the workflow - never from the PR head - because it defines the security enforcement boundary (managedFiles, push target, commit identity).",
+  "workflow": {
+    "managedFiles": [
+      "README.md"
+    ],
+    "pushRefPrefix": "HEAD:refs/heads/",
+    "forbiddenPushBranches": [
+      "main"
+    ],
+    "bot": {
+      "name": "github-actions[bot]",
+      "email": "41898282+github-actions[bot]@users.noreply.github.com"
+    },
+    "commitMessage": "docs: update README"
+  },
+  "opencode": {
+    "version": "v1.18.25",
+    "model": "big-pickle",
+    "providerName": "opencode",
+    "jobTimeoutMinutes": 30
+  }
+}

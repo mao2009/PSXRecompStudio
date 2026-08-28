@@ -30,6 +30,7 @@ Architecture
 Development
 ├── Agent Guide
 ├── Repository Artifact Policy
+├── README Auto-Update
 └── Terminology
 
 Decisions
@@ -81,6 +82,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [GUI / UX](architecture/gui-ux.md)
 - [Development Agent Guide](development/agent-guide.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
+- [README Auto-Update](development/readme-autoupdate.md)
 - CPU / R3000A — planned
 - Decoder — planned
 - Analyzer — planned

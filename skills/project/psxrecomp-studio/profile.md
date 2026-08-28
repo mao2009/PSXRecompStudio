@@ -38,6 +38,8 @@ Current records:
 | 005 | PC Update Model | Accepted |
 | 006 | Architecture Enforcement via Analyzer | Accepted |
 | 007 | Repository Artifact Policy and CI Contamination Gate | Accepted |
+| 008 | Batch Orchestrator Checkpoint and Resume Design | Accepted |
+| 009 | PR-Triggered README Auto-Update via OpenCode | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).

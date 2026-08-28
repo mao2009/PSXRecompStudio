@@ -1,0 +1,115 @@
+name: README Auto-Update
+
+"on":
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: readme-autoupdate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  OPENCODE_VERSION_PIN: ${{ vars.README_AUTOUPDATE_OPENCODE_VERSION || 'v1.18.25' }}
+  OPENCODE_MODEL_PIN: ${{ vars.README_AUTOUPDATE_MODEL || 'opencode/big-pickle' }}
+
+jobs:
+  analyze-and-update:
+    # Fork PRs are skipped entirely: their event payload is empty, their
+    # GITHUB_TOKEN is read-only, and running untrusted fork code with write
+    # permissions is never acceptable. See docs/development/readme-autoupdate.md.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Security boundary: the script, SSOT config, opencode config, and prompt
+      # come from origin/main (the trusted ref), never from the PR head. A PR
+      # therefore cannot relax its own enforcement.
+      - name: Extract trusted assets from origin/main
+        run: |
+          mkdir -p "$RUNNER_TEMP/readme-sync/trusted"
+          git archive origin/main \
+            scripts/ci/readme-sync.sh \
+            config/readme-autoupdate.json \
+            config/readme-autoupdate/opencode.json \
+            config/readme-autoupdate/prompt.md \
+            | tar -x -C "$RUNNER_TEMP/readme-sync/trusted"
+          chmod +x "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh"
+
+      - name: Preflight
+        id: preflight
+        run: |
+          bash "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" preflight
+        env:
+          README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Install OpenCode (pin ${{ env.OPENCODE_VERSION_PIN }})
+        if: steps.preflight.outputs.action == 'proceed'
+        run: |
+          curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE_VERSION_PIN" --no-modify-path
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Run OpenCode on the PR changes
+        if: steps.preflight.outputs.action == 'proceed'
+        timeout-minutes: 10
+        run: |
+          echo "PR: #$PR_NUMBER $PR_TITLE" > "$RUNNER_TEMP/readme-sync-prompt.md"
+          {
+            printf 'PR_BASE_SHA=%s\nPR_HEAD_SHA=%s\nPR_BASE_BRANCH=%s\nPR_HEAD_BRANCH=%s\n' \
+              "$PR_BASE_SHA" "$PR_HEAD_SHA" "$PR_BASE_BRANCH" "$PR_HEAD_BRANCH"
+            printf 'REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'PR_DESCRIPTION:\n'
+            printf '%s\n' "$PR_BODY" | sed 's/^/  /' | head -200
+          } >> "$RUNNER_TEMP/readme-sync-prompt.md"
+          cat "$RUNNER_TEMP/readme-sync/trusted/config/readme-autoupdate/prompt.md" >> "$RUNNER_TEMP/readme-sync-prompt.md"
+          opencode run \
+            --print-logs \
+            --pure \
+            --auto \
+            --model "$OPENCODE_MODEL_PIN" \
+            "$(cat "$RUNNER_TEMP/readme-sync-prompt.md")"
+        # Big Pickle (opencode/big-pickle) is used for free via OpenCode Zen
+        # with NO API key and NO GITHUB_TOKEN. It is intentionally not passed
+        # a token so the model cannot access GitHub credentials. If the model
+        # is unavailable the step fails explicitly; there is no fallback model.
+        env:
+          OPENCODE_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate/opencode.json
+          OPENCODE_DISABLE_AUTOUPDATE: "true"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+
+      # publish re-runs the fail-closed boundary script (trusted copy). It
+      # commits ONLY managed files as github-actions[bot] and pushes to the PR's
+      # own head branch. It cannot touch .github/, workflows, scripts, config,
+      # docs, or main.
+      - name: Publish README updates
+        if: steps.preflight.outputs.action == 'proceed'
+        run: |
+          bash "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" publish
+        env:
+          README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
