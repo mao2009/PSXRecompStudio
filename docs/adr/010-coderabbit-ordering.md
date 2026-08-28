@@ -16,7 +16,7 @@ duplicating comments once the README lands.
 
 The goal is a strict execution order:
 
-```
+```text
 PR
  ↓
 README Auto-Update            (publish README commit if any)
@@ -87,11 +87,27 @@ Add a third job `review-trigger` to `.github/workflows/readme-autoupdate.yml`:
   - `needs.publish-readme.result == 'success'`
 - Only runs for same-repo PRs (fork PRs are skipped by the upstream jobs'
   `if: <head.repo == repo>`, so their results are `skipped` and the gate fails).
-- Before triggering, it mechanically verifies that the current PR head SHA
-  still equals the SHA the README Auto-Update analyzed
-  (`gh api repos/{owner}/{repo}/pulls/{n} --jq '.head.sha'`). If the PR head
-  moved, it does **not** trigger CodeRabbit from the stale run; the newer
-  `synchronize` run (which analyzes the new head) triggers the review instead.
+- The `publish-readme` job exposes the PR head SHA that exists **after** it
+  finishes as the job output `published_sha`:
+  - README changed: the SHA of the README commit the publish job pushed (the
+    new PR head, `B`).
+  - README unchanged / bootstrap / skipped: the PR head at publish time (no
+    push happened, so it is still `A`).
+  This is computed mechanically with `git rev-parse HEAD` in a final
+  `record-sha` step that runs on every path, so `published_sha` is always set.
+- Before triggering, `review-trigger` fetches the **current** PR head via the
+  GitHub API (`gh api repos/{owner}/{repo}/pulls/{n} --jq '.head.sha'`) and
+  compares it against `needs.publish-readme.outputs.published_sha`. If they
+  differ (or `published_sha` is empty) it does **not** trigger CodeRabbit.
+  Because `published_sha` is the real post-publish head, a README commit does
+  not disable the trigger: the API returns `B` and `published_sha == B`,
+  so the review runs against the final PR state.
+  It never compares against `github.event.pull_request.head.sha`, which is
+  captured **before** publish and is therefore stale whenever a README commit
+  is pushed. We also do not rely on the `GITHUB_TOKEN` push restarting a
+  `pull_request` workflow (per the Actions event spec, those runs require
+  approval and other token-triggered events create no runs) to "auto-fix" a
+  stale comparison; the correct SHA is deliberately propagated instead.
 - Triggers the review by posting the fixed comment body
   `## CodeRabbit Review Request` + `@coderabbitai review` via
   `actions/github-script`.
@@ -158,9 +174,11 @@ through the existing Human Approval Gate and `main` ruleset, unchanged.
 
 ### Negative
 
-- A PR whose head moves while README Auto-Update is running does not get a
-  review from that stale run; the review is deferred to the next `synchronize`
-  run that has the stable head. This is intentional (stale-review avoidance).
+- A PR whose head moves *after* publish (a commit pushed while
+  `review-trigger` runs) does not get a review from that stale run; the next
+  `synchronize` run that has the stable head reviews instead. This is
+  intentional (stale-review avoidance). The README publish itself cannot cause
+  this because `published_sha` reflects the exact head the publish produced.
 - If the publish step is skipped (fork or bootstrap), no CodeRabbit review is
   triggered by CI until a real publish occurs; a reviewer can always request a
   manual `@coderabbitai review`.

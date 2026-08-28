@@ -48,15 +48,21 @@ pull_request (opened/synchronize/reopened) to main
         ├─ Download artifact + validate: exactly one root-level README.md,
         │    no symlinks, no extra paths
         ├─ Apply candidate README to the working tree
-        └─ Publish (trusted script, GITHUB_TOKEN only here)
-             → FAIL-CLOSED commit/push of managed files only
+        ├─ Publish (trusted script, GITHUB_TOKEN only here)
+        │    → FAIL-CLOSED commit/push of managed files only
+        └─ record-sha: publish output "published_sha" = git rev-parse HEAD
+             · README changed   → the pushed README commit (new PR head B)
+             · README unchanged → the PR head at publish time (still A)
+             · bootstrap/skip  → the checked-out PR head (still A)
+             · runs on every path so the output is always set
         │
         ▼
   Job 3: review-trigger (CodeRabbit ordering, Issue #185)
          permissions: pull-requests: write
         │
         ├─ (only if update-readme succeeded + action=proceed + publish succeeded)
-        ├─ Verify current PR head SHA == the analyzed SHA (stale-run guard)
+        ├─ Verify API-fetched current PR head == publish-readme.outputs.published_sha
+        │    (never github.event.pull_request.head.sha - stale before publish)
         └─ Post "@coderabbitai review" comment        ◄── the ONLY review trigger
              → CodeRabbit reviews the FINAL PR state (auto_review disabled)
 ```
@@ -180,11 +186,15 @@ disable + bot ignore.
 
 - **CodeRabbit ordering (Issue #185).** CodeRabbit automatic reviews are
   disabled in `.coderabbit.yaml`. After the publish job completes, the
-  `review-trigger` job verifies the PR head SHA is still the analyzed SHA and
-  posts an `@coderabbitai review` comment, so CodeRabbit always reviews the
-  final PR state (README commit included). A stale run whose head moved skips
-  the trigger; the newer synchronize run reviews instead. Fork and bootstrap
-  runs never trigger a review.
+  `review-trigger` job fetches the current PR head SHA via the GitHub API and
+  compares it against the publish job's `published_sha` output (the exact PR
+  head after publish), then posts an `@coderabbitai review` comment, so
+  CodeRabbit always reviews the final PR state (README commit included). This
+  deliberately does not compare against `github.event.pull_request.head.sha`
+  (stale whenever a README commit is pushed) and does not rely on the
+  `GITHUB_TOKEN` push restarting a `pull_request` workflow. A run whose head
+  moved *after* publish skips the trigger; the newer synchronize run reviews
+  instead. Fork and bootstrap runs never trigger a review.
 - A bot push triggers a new `pull_request.synchronize` event; because the push
   is made with `GITHUB_TOKEN`, that workflow run requires approval. Preflight
   then skips it (bot commit). This is an intentional extra human approval gate;

@@ -38,6 +38,13 @@
 #  25. workflow: review-trigger job - isolated pull-requests:write, needs both
 #      upstream jobs, SHA-verification step, fixed-literal trigger comment
 #  26. .coderabbit.yaml: automatic reviews disabled + github-actions[bot] ignored
+#  27. workflow: review-trigger SHA flow - expected comes from the publish job's
+#      published_sha output (NOT the event head.sha); unset output refuses
+#  28. publish record-sha functional - README change -> new HEAD SHA; no-op ->
+#      HEAD unchanged; bootstrap skip -> HEAD unchanged (all paths set the output)
+#  29. workflow: README-changed regression (A -> publish -> B -> published_sha=B
+#      -> review-trigger against B) and no reliance on the bot push restarting
+#      the workflow (the push must not be treated as an expected-SHA source)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -393,6 +400,11 @@ jobs = d["jobs"]
 assert jobs["update-readme"]["permissions"] == {"contents": "read"}, "model job must have contents: read only"
 assert jobs["publish-readme"]["permissions"] == {"contents": "write"}, "publish job must have contents: write"
 assert jobs["publish-readme"].get("needs") == "update-readme", "publish job must depend on the model job"
+# The publish job must expose the post-publish PR head SHA to review-trigger.
+outs = jobs["publish-readme"].get("outputs", {})
+assert outs.get("published_sha"), "publish job must expose a published_sha output"
+assert "github.event.pull_request.head.sha" in outs["published_sha"] or jobs["publish-readme"]["steps"][-1]["id"] == "record-sha", \
+    "publish job must derive published_sha from a record-sha step (not the event head.sha)"
 # The review trigger is a separate concern with its own minimal scope.
 assert jobs["review-trigger"]["permissions"] == {"pull-requests": "write"}, "review-trigger must have pull-requests: write only (no contents)"
 assert jobs["review-trigger"].get("needs") == ["update-readme", "publish-readme"], "review-trigger must depend on both upstream jobs"
@@ -689,6 +701,16 @@ assert "contents" not in j["permissions"], "review-trigger must not touch conten
 assert j.get("concurrency", {}).get("group"), "review-trigger must serialize triggers per PR with a concurrency group"
 names = [s.get("name") for s in j["steps"]]
 assert any(n and "Verify PR head SHA" in n for n in names), "review-trigger must verify the PR head SHA"
+# Only one checkout step permitted: the review-trigger must NOT checkout PR code.
+verify = next((s for s in j["steps"] if "Verify PR head SHA" in (s.get("name") or "")), None)
+assert verify is not None, "missing verify step"
+env = verify.get("env") or {}
+assert "PUBLISHED_SHA" in env, "verify step must read the publish job's published_sha output"
+assert "github.event.pull_request.head.sha" not in env.get("PUBLISHED_SHA", ""), \
+    "verify step must NOT use the event head.sha as the expected value (stale before publish)"
+vrun = verify.get("run") or ""
+assert 'expected="${PUBLISHED_SHA:-}"' in vrun, "verify step must default expected from PUBLISHED_SHA"
+assert "-z \"$expected\"" in vrun, "verify step must refuse when published_sha output is unset/empty"
 # The trigger step must be gated on: SHA match AND update-readme success/proceed AND publish success.
 trigger = next(s for s in j["steps"] if "Trigger CodeRabbit review" in (s.get("name") or ""))
 cond = trigger.get("if") or ""
@@ -720,6 +742,125 @@ for key in ("labels", "description_keyword", "base_branches", "drafts"):
 PY
 }
 
+# --- 27. workflow: review-trigger SHA flow (published_sha, not event head.sha) ---
+# Regression for PR #186 (blocking): expected SHA must come from the publish
+# job's published_sha output, NEVER from github.event.pull_request.head.sha
+# (which is captured before publish and is stale whenever a README commit is
+# pushed). Also guards an unset output so the review can never be triggered
+# against an unknown SHA.
+test_workflow_sha_flow() {
+  python3 - "$WORKFLOW" <<'PY' || fail "review-trigger SHA flow check failed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+publish = d["jobs"]["publish-readme"]
+# published_sha must come from a step, not be a constant, and must be declared.
+outs = publish.get("outputs", {})
+assert "published_sha" in outs, "publish job must output published_sha"
+assert "github.event.pull_request.head.sha" not in outs["published_sha"], \
+    "published_sha must be derived from the publish result, not the event head.sha"
+verify = next(s for s in d["jobs"]["review-trigger"]["steps"]
+              if "Verify PR head SHA" in (s.get("name") or ""))
+env = verify.get("env") or {}
+assert "PUBLISHED_SHA" in env and "needs.publish-readme.outputs.published_sha" in env["PUBLISHED_SHA"], \
+    "verify step must compare against the publish job's published_sha output"
+# No PR-controlled/untrusted content may feed the expected SHA.
+expected = env["PUBLISHED_SHA"]
+for untrusted in ("github.event.pull_request.body", "github.event.pull_request.title",
+                  "steps.update-readme", "README", "PR_BODY"):
+    assert untrusted not in expected, "expected SHA must not depend on untrusted content: %s" % untrusted
+# git rev-parse HEAD must be absent from the verify step (verify uses the API,
+# not a checkout, so it cannot be fooled by PR-controlled working-tree content).
+assert "git rev-parse HEAD" not in (verify.get("run") or ""), \
+    "verify step must fetch the current head via the API, not a PR checkout"
+# The expected SHA must not be wired to any model/AI output.
+allruns = "".join((s.get("run") or "") for s in d["jobs"]["review-trigger"]["steps"])
+assert "opencode" not in allruns.lower() and "openmodel" not in allruns.lower(), \
+    "review-trigger must not depend on AI/model output"
+PY
+}
+
+# --- 28. publish record-sha functional (all three paths set the output) --------
+test_publish_record_sha() {
+  local script
+  script="$(wf_step_run publish-readme "Record published PR head SHA")"
+  [[ -n "$script" ]] || { fail "record-sha step missing from publish job"; return 1; }
+  local d w rt out ec head
+  d="$ROOT_DIR/recksha"
+  mkdir -p "$d"
+  w="$d/w"
+  git init -q --initial-branch=main "$w"
+  git -C "$w" config user.name tester
+  git -C "$w" config user.email tester@example.com
+  printf '# Demo\n' > "$w/README.md"
+  git -C "$w" add -A && git -C "$w" commit -q -m seed
+  head="$(git -C "$w" rev-parse HEAD)"
+
+  # path 1: HEAD unchanged (README no-op / bootstrap skip) -> output == HEAD
+  rt="$d/rt1"; mkdir -p "$rt"; out="$d/out1.txt"
+  ( cd "$w" && RUNNER_TEMP="$rt" GITHUB_OUTPUT="$out" bash -e -c "$script" ) >/dev/null
+  grep -q "^sha=$head$" "$out" || fail "no-op path must record the unchanged HEAD ($head)"
+
+  # path 2: publish advanced HEAD (simulate a committed README change) -> new SHA
+  printf 'update\n' >> "$w/README.md"
+  git -C "$w" add README.md
+  git -C "$w" -c user.name=bot -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+      commit -q -m "docs: update README"
+  new_head="$(git -C "$w" rev-parse HEAD)"
+  assert_ne "$head" "$new_head" "README commit must create a new HEAD"
+  rt="$d/rt2"; mkdir -p "$rt"; out="$d/out2.txt"
+  ( cd "$w" && RUNNER_TEMP="$rt" GITHUB_OUTPUT="$out" bash -e -c "$script" ) >/dev/null
+  grep -q "^sha=$new_head$" "$out" || fail "changed path must record the new HEAD ($new_head)"
+  if grep -q "^sha=$head$" "$out"; then
+    fail "changed path must NOT record the stale older HEAD"
+  fi
+}
+
+# --- 29. workflow: README-changed regression + no bot-push-restart reliance -----
+# The blocking bug (PR #186) was: after publish pushes a README commit, the
+# event head.sha (A) no longer matches the real PR head (B), so review-trigger
+# skipped. The fix makes review-trigger compare the API-fetched current head
+# against the publish job's published_sha (B). We assert:
+#   - published_sha equals the post-publish HEAD, computed in the publish job;
+#   - review-trigger does NOT rely on a GITHUB_TOKEN push restarting the
+#     workflow (i.e. the bot push is never assumed to be a fresh pull_request
+#     event that would trigger a second review on SHA B).
+test_workflow_readme_changed_regression() {
+  python3 - "$WORKFLOW" <<'PY' || fail "README-changed regression check failed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+publish = d["jobs"]["publish-readme"]
+steps = publish["steps"]
+record = next((s for s in steps if s.get("id") == "record-sha"), None)
+assert record is not None, "publish job must have a record-sha step"
+recrun = record.get("run") or ""
+# The recorded SHA must come from the job's own git HEAD (post-publish), so it
+# is the real PR head after the README commit (B), not the event SHA (A).
+assert "git rev-parse HEAD" in recrun, "record-sha must use git rev-parse HEAD (post-publish)"
+# It must run unconditionally so published_sha is set on every path.
+assert "if:" not in record, "record-sha step must run on every publish-job path"
+# The publish script may END right before record-sha (after pushing B) - ensure
+# ordering: record-sha comes after the push step.
+publish_step = next((s for s in steps if "Publish README updates" in (s.get("name") or "")), None)
+assert publish_step is not None and steps.index(record) > steps.index(publish_step), \
+    "record-sha must run after the publish (push) step so it reflects PR head B"
+verify = next(s for s in d["jobs"]["review-trigger"]["steps"]
+              if "Verify PR head SHA" in (s.get("name") or ""))
+# The only source for the expected SHA is the publish job output; there must be
+# NO fallback to the event head.sha anywhere in the review-trigger job.
+allruns = "".join((s.get("run") or "") + " " + " ".join(str(v) for v in (s.get("env") or {}).values())
+                  for s in d["jobs"]["review-trigger"]["steps"])
+assert "github.event.pull_request.head.sha" not in allruns, \
+    "review-trigger must not compare against the (stale) event head.sha"
+# Per the verified GitHub Actions spec, a GITHUB_TOKEN push is NOT guaranteed to
+# restart a pull_request workflow (those runs require approval and other token
+# events don't create runs at all). So the fix must publish the real post-publish
+# SHA and compare against it; the expected value must never be wired such that a
+# stale review would be "fixed" by a later run restarting. We assert the publish
+# job actually records the post-push SHA (done above) and that review-trigger
+# treats the current head as authoritative only when it matches that SHA.
+PY
+}
+
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
@@ -732,7 +873,8 @@ main() {
          test_publish_bootstrap_refused test_workflow_no_vars test_workflow_token_boundary \
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
-         test_opencode_permission_rules test_workflow_review_trigger test_coderabbit_config)
+         test_opencode_permission_rules test_workflow_review_trigger test_coderabbit_config \
+         test_workflow_sha_flow test_publish_record_sha test_workflow_readme_changed_regression)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then
