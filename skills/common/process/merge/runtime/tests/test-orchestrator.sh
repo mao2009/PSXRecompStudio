@@ -395,6 +395,35 @@ if command -v git >/dev/null 2>&1; then
     fi
     # ...while the persisted directory was left untouched (override won).
     assert_true "persisted path not removed (override wins)" test -d "$PERSISTED_DIR"
+
+    # ------------------------------------------------------------
+    # Test 9: Explicit --branch overrides the persisted BranchName during
+    # resumed CLEANUP (must delete the CLI-selected branch, not the persisted).
+    # ------------------------------------------------------------
+    echo ""
+    echo "--- Explicit --branch Overrides Persisted BranchName ---"
+    git -C "$R6" worktree add -q -b issue/159-cli "$WORK/wt9" 2>/dev/null
+    git -C "$R6" push -q -u origin issue/159-cli 2>/dev/null
+    # A separate local-only branch that must survive if CLI --branch wins.
+    git -C "$R6" branch issue/159-persist 2>/dev/null
+
+    STATE9="$WORK/.merge-state-159.json"
+    # Persisted BranchName intentionally points at the branch that must NOT be
+    # deleted; the CLI --branch must take precedence during cleanup.
+    merge_new_state 159 148 "$WORK/wt9" "issue/159-persist" > "$STATE9"
+    merge_state_set_string "$STATE9" "State" "CLEANUP"
+    "$MERGE_SH" merge --pr 159 --state-file "$STATE9" \
+        --worktree "$WORK/wt9" --branch "issue/159-cli" --main-dir "$R6" > "$WORK/out15.log" 2>&1
+    _rc=$?
+    assert_true "explicit --branch cleanup returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE9" "State")
+    assert_true "explicit --branch cleanup -> COMPLETED" test "$_state" = "COMPLETED"
+    # The CLI-selected branch was deleted...
+    _del=$(git -C "$R6" branch --list issue/159-cli 2>/dev/null)
+    assert_true "CLI --branch was deleted (precedence)" test -z "$_del"
+    # ...while the persisted branch was left intact.
+    _kept=$(git -C "$R6" branch --list issue/159-persist 2>/dev/null)
+    assert_true "persisted branch not deleted (override wins)" test -n "$_kept"
 fi
 
 echo ""

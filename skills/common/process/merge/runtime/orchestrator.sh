@@ -330,10 +330,11 @@ _merge_handle_merged() {
 _merge_handle_cleanup() {
     echo "=== Cleanup ==="
 
-    # MERGE_WORKTREE is restored from the persisted WorktreePath when the CLI
-    # did not supply it, so a resumed run still knows which worktree to remove.
+    # MERGE_WORKTREE/MERGE_BRANCH are restored from the persisted state when
+    # the CLI did not supply them, so a resumed run still knows which worktree
+    # and branch to remove; explicit CLI values take priority.
     _worktree="$MERGE_WORKTREE"
-    _branch=$(merge_state_get "$MERGE_STATE_FILE" BranchName)
+    _branch="$MERGE_BRANCH"
 
     if [ -n "$_worktree" ] || [ -n "$_branch" ]; then
         echo "Cleaning up Worktree and Branch..."
