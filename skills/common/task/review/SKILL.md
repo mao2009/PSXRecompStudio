@@ -55,7 +55,8 @@ Apply this skill to review a change:
 
 ## Preconditions
 
-- The change to review (a diff, or a PR) and its driving Issue / requirements.
+- The change to review (a diff, or a PR) and its driving task (Issue, or
+  explicit request) / requirements.
 - Access to the actual repository state the change applies to.
 - [Common Skill](common/SKILL.md) accepted (especially the ground-truth and
   honesty rules).
@@ -67,7 +68,8 @@ Apply this skill to review a change:
 1. The full diff against the base branch, **including working-tree changes**
    (`git status --short` + modified/untracked files — a committed-only diff is
    not complete).
-2. The driving Issue: requirements, acceptance criteria, explicit non-goals.
+2. The driving task (Issue, or explicit request when no Issue backs the work):
+   requirements, acceptance criteria, explicit non-goals.
 3. The Project Profile: authoritative docs, ADR index, MATRIX, verification
    commands, SSOT precedence, review-history sources.
 4. Related SSOT / ADR docs referenced by the change.

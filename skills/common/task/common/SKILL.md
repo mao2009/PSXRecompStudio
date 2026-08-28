@@ -30,10 +30,13 @@ These are hard rules. A task is not complete until every applicable rule holds.
    the authoritative documents (top-level and subsystem SSOT). Code, docs, and
    artifacts must conform. See the Project Profile for the authoritative paths
    and the authority / SSOT precedence order.
-2. **Treat the Issue as the SSOT of the work unit.** Requirements, acceptance
-   criteria, and explicit non-goals come from the driving Issue. Do not add
-   scope the Issue does not request, and do not silently drop a requirement it
-   does.
+2. **Treat the driving task as the SSOT of the work unit.** Requirements,
+   acceptance criteria, and explicit non-goals come from the driving task — a
+   GitHub Issue, or (when no Issue backs the work) an explicit request. Never
+   invent Issue data for a task that has no Issue: if the driving task is an
+   explicit request, treat the request as the source of requirements and
+   acceptance criteria. Do not add scope the driving task does not request, and
+   do not silently drop a requirement it does.
 3. **Verify the actual repository / git state.** Before acting, inspect the
    real state (`git status`, `git log`, `git diff`, worktrees, branches). Do
    not assume a state from memory, a stale report, or an earlier session.
@@ -86,7 +89,7 @@ not repeated in every skill:
 | Implementation task procedure | `implementation/SKILL.md` |
 | Review task procedure / review viewpoints | `review/SKILL.md` |
 | Issue creation/update procedure | `issue/SKILL.md` |
-| Release task procedure | `release/SKILL.md` |
+| Release task procedure | not created yet (see `skills/README.md`) |
 | Pre-PR self-review gate | `skills/common/process/self-review/SKILL.md` |
 | Documentation synchronization gate | `skills/common/process/doc-sync/SKILL.md` |
 | Parallel issue execution orchestration | `skills/common/process/batch/SKILL.md` |
@@ -106,7 +109,10 @@ These are deliberately not merged into one "super" skill.
 ## Preconditions
 
 None beyond having a driving task (an Issue, or an explicit request) and access
-to the repository. When operating in a worktree created by the Batch
+to the repository. The "driving task" is either a GitHub Issue or an explicit
+request; throughout these skills, "Issue" refers to the driving task, and an
+explicit request provides the requirements / acceptance criteria in place of an
+Issue when no Issue exists. When operating in a worktree created by the Batch
 orchestrator, the driving Issue and branch/worktree context are provided by the
 orchestrator.
 
@@ -121,7 +127,7 @@ throughout every other skill's procedure. Before finishing any task, run the
 Before reporting completion, confirm:
 
 - [ ] The relevant Architecture SSOT was read and is respected (Rule 1).
-- [ ] The driving Issue's requirements / acceptance criteria are met (Rule 2).
+- [ ] The driving task's requirements / acceptance criteria are met (Rule 2).
 - [ ] The actual git/repository state was inspected, not assumed (Rules 3–4).
 - [ ] Every test / build / gate result reported is real and green (Rules 5–6).
 - [ ] The diff contains only intentional, requested changes (Rule 7).
@@ -152,7 +158,8 @@ Regardless of task type, the final report must:
 - List the real verification results actually executed.
 - Distinguish fact vs. inference vs. proposal.
 - Declare the Definition of Done met or unmet, with evidence.
-- Reference the driving Issue and any related PRs/ADRs.
+- Reference the driving task (Issue, or explicit request) and any related
+  PRs/ADRs.
 
 ## Porting to another project
 

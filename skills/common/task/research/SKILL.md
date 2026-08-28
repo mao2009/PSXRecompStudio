@@ -146,12 +146,18 @@ conditions).
 
 ### 10. Test Strategy
 
-Describe how the proposal would be verified:
+Describe how the proposal would be verified, scoped to what is **applicable** to
+the proposal and the Project Profile's verification ladder:
 
-- Unit tests for the touched area (targeted filter).
-- Full .NET test suites and native tests.
+- Unit tests for the touched area (targeted filter), when the proposal touches
+  code.
+- Full .NET test suites and native tests, when applicable to the change.
 - Analyzer / build gates and any E2E relevant to the change.
 - Where the Project Profile's verification ladder applies.
+
+For changes where a verification item does not apply (e.g. documentation-only
+proposals with no .NET/native surface), state it as not applicable rather than
+requiring it.
 
 ### 11. Risks
 

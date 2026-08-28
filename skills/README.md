@@ -43,7 +43,7 @@ skills/
 The skills under `common/` serve two deliberately distinct roles:
 
 - **Task skills** (`common/task/`) prescribe *how an agent carries out a unit
-  of work*: research, implementation, review, issue authoring, release. They are
+  of work*: research, implementation, review, and issue authoring. They are
   the reusable work templates that standardize the agent's procedure and
   Definition of Done.
 - **Gate and execution skills** (`common/process/`) prescribe *what must hold

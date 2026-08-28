@@ -32,8 +32,10 @@ review, use the [Review Skill](review/SKILL.md).
 
 ## Preconditions
 
-- A driving Issue (or explicit request) with concrete requirements and
-  acceptance criteria / Definition of Done.
+- A driving task (an Issue, or an explicit request) with concrete requirements
+  and acceptance criteria / Definition of Done. When the task is an explicit
+  request with no Issue, the request itself supplies the requirements and
+  acceptance criteria (see the Common Skill) — do not invent Issue data.
 - A working branch (directly or via a worktree created by the Batch
   orchestrator), based on the current `main`.
 - [Common Skill](common/SKILL.md) accepted.
@@ -44,7 +46,7 @@ Execute the ten standard steps below in order. Do not skip to implementation
 before the earlier steps are grounded; each step gates the next.
 
 ```text
-1. Issue confirmation
+1. Task / Issue confirmation
 2. Repository state confirmation
 3. Related implementation survey
 4. Architecture SSOT check
@@ -56,17 +58,19 @@ before the earlier steps are grounded; each step gates the next.
 10. Definition of Done confirmation
 ```
 
-### 1. Issue confirmation
+### 1. Task / Issue confirmation
 
-Read the driving Issue and restate:
+Read the driving task (the Issue, or the explicit request when no Issue backs
+the work) and restate:
 
 - The concrete requirement(s).
 - The acceptance criteria.
 - Explicit non-goals / out-of-scope.
 
-If anything is ambiguous or the issue's intent is unclear, list it and resolve
-before implementing (do not silently pick a convenient reading, Common rule 2
-and 4).
+If the driving task has no GitHub Issue, regard the request as the source of
+requirements / acceptance criteria; never invent an Issue for it. If anything is
+ambiguous or the task's intent is unclear, list it and resolve before
+implementing (do not silently pick a convenient reading, Common rule 2 and 4).
 
 ### 2. Repository state confirmation
 
@@ -122,21 +126,28 @@ Write the minimal change that satisfies the requirements (Common rule 7):
 
 ### 7. Tests
 
-- Add or update tests for the new/changed behavior.
+- Add or update tests for the new/changed behavior **when the change involves
+  code/behavior**. For documentation-only or process-only changes, tests may be
+  not applicable — record that explicitly rather than fabricating coverage
+  (Common rule 5–6).
 - Cover the negative space the code must *not* act on, and boundary conditions.
-- Run the targeted tests for the touched area first (Project Profile filter).
+- Run the targeted tests for the touched area first (Project Profile filter),
+  when applicable.
 
 ### 8. Build / Analyzer / E2E
 
-Run the full verification ladder for the change, per the Project Profile:
+Run the verification gates that are **applicable to the changed artifact**, per
+the Project Profile:
 
-- Build (the change must compile cleanly).
+- Build (the change must compile cleanly) — applicable when code/build inputs change.
 - Analyzer rules (build-breaking, e.g. PSXR001–PSXR006 where applicable).
-- Full .NET test suites, native tests, and any E2E relevant to the change.
+- Full .NET test suites, native tests, and any E2E **relevant to the change**.
 - Any policy / contamination gate relevant to the artifacts touched.
 
-Report the actual commands run and their real results. Analyze as one of the
-rules 5–6: a failure is a failure; do not report it as green (Common rule 5–6).
+Only require a gate when it applies to the change; for changes where a gate is
+not applicable (e.g. documentation-only edits with no .NET/native/E2E surface),
+state that it is not applicable instead of treating it as a required, failing
+gate. Never report a gate as passed that was not run or failed (Common rule 5–6).
 
 ### 9. git diff / status review
 
@@ -154,7 +165,7 @@ evidence. Only then report completion.
 
 ## Verification
 
-- [ ] The driving Issue's acceptance criteria map to concrete, implemented
+- [ ] The driving task's acceptance criteria map to concrete, implemented
       changes (Step 1).
 - [ ] Repository state was inspected, not assumed (Step 2).
 - [ ] Related implementation and external-review history were surveyed (Step 3).
@@ -162,9 +173,11 @@ evidence. Only then report completion.
 - [ ] The implementation approach was stated and confirmed (Step 5); it relies
       only on the actual repository state (Common rule 3–4).
 - [ ] Change is minimal and in-scope; no unrelated edits (Step 6, Common rule 7).
-- [ ] Tests added/updated and green (Step 7).
-- [ ] Build, analyzer, and E2E all green with real results reported (Step 8,
-      Common rule 5–6).
+- [ ] Applicable tests added/updated and green; non-applicable tests recorded as
+      not applicable (Step 7).
+- [ ] Applicable build, analyzer, and E2E gates green with real results
+      reported; non-applicable gates recorded as not applicable (Step 8, Common
+      rule 5–6).
 - [ ] `git status` / `git diff` reviewed; only intentional changes (Step 9).
 - [ ] Definition of Done satisfied before reporting completion (Step 10).
 
@@ -172,14 +185,18 @@ evidence. Only then report completion.
 
 Completion may be reported **only** when all of the following hold:
 
-- [ ] Issue accepted criteria / requirements are implemented.
+- [ ] The driving task's accepted criteria / requirements are implemented.
 - [ ] Change conforms to the Architecture SSOT / MATRIX / ADRs.
-- [ ] Tests exist and pass; build/analyzer/E2E are green (actually run).
+- [ ] Applicable tests exist and pass and applicable build/analyzer/E2E gates are
+      green (actually run); non-applicable gates are recorded as not applicable,
+      never left unaddressed or reported as green without running.
 - [ ] `git status` / `git diff` are clean of unintentional changes.
 - [ ] Documentation / process artifacts updated (via the documentation sync
       gate) where required.
-- [ ] The pre-PR self review gate has been run (or is scheduled) — see the
-      governing gates in [Common Skill](common/SKILL.md).
+- [ ] The pre-PR self review gate has been **completed** (not merely scheduled)
+      before reporting completion — see the governing gates in
+      [Common Skill](common/SKILL.md). A scheduled-but-unrun review means the
+      Definition of Done is not met.
 - [ ] The Common Skill's rules are satisfied.
 
 Note: meeting this Definition of Done is about the *state* of the work and its
@@ -202,11 +219,13 @@ claim completion.
 
 Before reporting completion, produce a report covering:
 
-- The driving Issue and its acceptance criteria.
+- The driving task (Issue, or explicit request) and its acceptance criteria.
 - The repository state (branch, base, HEAD).
 - The implemented scope (files changed) and the design decision / approach.
-- The real verification results (tests, build, analyzer, E2E) actually run.
-- Any findings / deviations from the Issue or SSOT and how they were resolved.
+- The real verification results (tests, build, analyzer, E2E) actually run, and
+  which gates were not applicable.
+- Any findings / deviations from the driving task or SSOT and how they were
+  resolved.
 - The Documentation sync decisions (which docs updated / intentionally unchanged).
 - An explicit statement that the Definition of Done is met, with evidence.
 
