@@ -298,17 +298,17 @@ static void test_step_branch() {
     PSXCore_SetGPR(core, 1, 10);
     PSXCore_SetGPR(core, 2, 10);
 
-    // BEQ $1, $2, offset=1 (branch taken) with NOP delay slot
-    // Delay slot at PC=4 executes first, then PC = 0 + 4 + 1*4 = 8
-    PSXCore_WriteMemory32(core, 0, 0x10220001u);
+    // BEQ $1, $2, offset=2 (branch taken) with NOP delay slot
+    // Delay slot at PC=4 executes first, then PC = 0 + 4 + 2*4 = 12
+    PSXCore_WriteMemory32(core, 0, 0x10220002u);
     PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP delay slot
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetPC(core), 4u); // in delay slot
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetPC(core), 8u); // branch taken
+    ASSERT_EQ(PSXCore_GetPC(core), 12u); // branch taken (distinct from 8)
 
-    // BEQ $1, $2, offset=1 (not taken, different values)
+    // BEQ $1, $2, offset=2 (not taken, different values)
     // Delay slot executes, then falls through past the slot: 4 + 4 = 8
     PSXCore_SetGPR(core, 2, 20);
     PSXCore_SetPC(core, 0);
@@ -325,23 +325,23 @@ static void test_step_jump() {
     TEST("J/JAL/JR/JALR instructions");
     PSXCore* core = PSXCore_Create();
 
-    // J target=1 -> PC = ((0+4) & 0xF0000000) | (1 << 2) = 4, after the delay slot
-    PSXCore_WriteMemory32(core, 0, 0x08000001u);
+    // J target=3 -> PC = ((0+4) & 0xF0000000) | (3 << 2) = 12, after the delay slot
+    PSXCore_WriteMemory32(core, 0, 0x08000003u);
     PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP delay slot
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetPC(core), 4u); // delay slot
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetPC(core), 4u); // jumped to target
+    ASSERT_EQ(PSXCore_GetPC(core), 12u); // jumped to target (distinct from 8)
 
-    // JAL target=1 -> $ra = PC+8 = 8
-    PSXCore_WriteMemory32(core, 0, 0x0C000001u);
+    // JAL target=3 -> $ra = PC+8 = 8, lands on the same target 12
+    PSXCore_WriteMemory32(core, 0, 0x0C000003u);
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 31), 8u);
     ASSERT_EQ(PSXCore_GetPC(core), 4u); // delay slot
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetPC(core), 4u); // jumped to target
+    ASSERT_EQ(PSXCore_GetPC(core), 12u); // jumped to target (distinct from 8)
 
     PSXCore_Destroy(core);
     PASS();
@@ -367,9 +367,11 @@ static void test_step_branch_delay_slot() {
 
     // Not taken: delay slot still executes, then falls through.
     PSXCore_SetGPR(core, 2, 20);
+    PSXCore_SetGPR(core, 5, 0); // stale value from the taken phase; proves re-execution
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetGPR(core, 5), 7u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0u); // delay slot not yet (re)executed
+    ASSERT_EQ(PSXCore_GetPC(core), 4u);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 5), 7u); // delay slot (re)executed
     ASSERT_EQ(PSXCore_GetPC(core), 8u); // fall-through (4 + 4)
