@@ -162,13 +162,14 @@ _parse_merge_options() {
 # Command Implementations
 # ============================================================
 
-# Validate that a value is a positive integer (a valid GitHub PR number).
+# Validate that a value is a canonical positive integer (no leading zeros, so
+# values such as "0001" cannot produce invalid JSON like "PrNumber": 0001).
 # Prints an error to stderr and returns 1 when invalid.
-_merge_validate_pr_number() {
+_merge_validate_positive_integer() {
     _value="$1"
     case "$_value" in
-        ''|*[!0-9]*|0)
-            printf 'Error: invalid PR number: %s (expected a positive integer)\n' "$_value" >&2
+        ''|0|0[0-9]*|*[!0-9]*)
+            printf 'Error: invalid integer: %s (expected a positive integer with no leading zeros)\n' "$_value" >&2
             return 1
             ;;
     esac
@@ -187,7 +188,11 @@ _cmd_merge() {
         return 1
     fi
 
-    if ! _merge_validate_pr_number "$_OPT_PR"; then
+    if ! _merge_validate_positive_integer "$_OPT_PR"; then
+        return 1
+    fi
+
+    if [ -n "$_OPT_ISSUE" ] && ! _merge_validate_positive_integer "$_OPT_ISSUE"; then
         return 1
     fi
 
@@ -216,7 +221,7 @@ _cmd_status() {
         return 1
     fi
 
-    if ! _merge_validate_pr_number "$_OPT_PR"; then
+    if ! _merge_validate_positive_integer "$_OPT_PR"; then
         return 1
     fi
 

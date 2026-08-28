@@ -148,11 +148,12 @@ _merge_json_escape() {
 }
 
 # Escape an already JSON-escaped value so it can be embedded verbatim in a sed
-# replacement string (using `|` as the substitution delimiter). Backslashes
-# and `&` must be doubled/escaped so sed emits them literally.
+# replacement string (using `|` as the substitution delimiter). Backslashes,
+# `&` and `|` must be escaped so sed emits them literally without treating them
+# as replacement metacharacters or terminating the `|`-delimited expression.
 _merge_sed_escape() {
     _json_value="$1"
-    printf '%s' "$_json_value" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g'
+    printf '%s' "$_json_value" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'
 }
 
 # Update string/null fields in a state JSON payload.

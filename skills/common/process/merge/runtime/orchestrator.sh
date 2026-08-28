@@ -333,7 +333,12 @@ _merge_handle_cleanup() {
     _branch=$(merge_state_get "$MERGE_STATE_FILE" BranchName)
     if [ -n "$MERGE_WORKTREE" ] && [ -n "$_branch" ]; then
         echo "Cleaning up Worktree and Branch..."
-        merge_remove_worktree "$MERGE_WORKTREE" "$_branch" "false" "$MERGE_MAIN_DIR"
+        if ! merge_remove_worktree "$MERGE_WORKTREE" "$_branch" "false" "$MERGE_MAIN_DIR"; then
+            # Do not persist COMPLETED when cleanup fails: the worktree/branch
+            # may still exist, so fail closed so cleanup can be retried.
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Failed to remove worktree during cleanup"
+            return 0
+        fi
     else
         echo "No Worktree or Branch to clean up"
     fi

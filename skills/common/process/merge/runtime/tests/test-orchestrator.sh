@@ -19,6 +19,16 @@ assert_true() {
     fi
 }
 
+assert_false() {
+    _desc="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        _fail "$_desc (expected false, got true)"
+    else
+        _pass
+    fi
+}
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ORCH="$SCRIPT_DIR/../orchestrator.sh"
 MERGE_SH="$SCRIPT_DIR/../merge.sh"
@@ -121,6 +131,31 @@ _rc=$?
 assert_true "REBASE non-conflict failure returns non-zero" test "$_rc" -ne 0
 _state=$(merge_state_get "$_NONCONF_STATE" "State")
 assert_true "REBASE non-conflict failure transitions to FAILED" test "$_state" = "FAILED"
+
+# ------------------------------------------------------------
+# Test 3c: CLEANUP failure -> FAILED (must NOT persist COMPLETED while the
+# worktree may still exist)
+# ------------------------------------------------------------
+echo ""
+echo "--- Cleanup Failure -> FAILED (not COMPLETED) ---"
+_CLEANUP_STATE="$WORK/.merge-state-153.json"
+mkdir -p "$WORK/cleanup-wt"
+merge_new_state 153 148 "$WORK/cleanup-wt" "issue/153-test" > "$_CLEANUP_STATE"
+merge_state_set_string "$_CLEANUP_STATE" "State" "CLEANUP"
+# A non-git MERGE_MAIN_DIR makes `git -C <repo> worktree remove` fail hard,
+# forcing merge_remove_worktree to return non-zero.
+MERGE_PR_NUMBER="153"
+MERGE_STATE_FILE="$_CLEANUP_STATE"
+MERGE_WORKTREE="$WORK/cleanup-wt"
+MERGE_MAIN_DIR="$WORK/non-git-dir-cleanup"
+MERGE_BRANCH="issue/153-test"
+MERGE_REPOSITORY=""
+merge_orchestrate_one > "$WORK/out3c.log" 2>&1
+_rc=$?
+assert_true "cleanup failure returns non-zero" test "$_rc" -ne 0
+_state=$(merge_state_get "$_CLEANUP_STATE" "State")
+assert_true "cleanup failure transitions to FAILED" test "$_state" = "FAILED"
+assert_false "cleanup failure does NOT persist COMPLETED" test "$_state" = "COMPLETED"
 
 # ------------------------------------------------------------
 # Test 4: New-state creation with a valid worktree advances further

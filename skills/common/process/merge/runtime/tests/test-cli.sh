@@ -59,16 +59,16 @@ _rc=$?
 # --- PR number validation (merge and status) ---
 echo ""
 echo "--- PR Number Validation (merge) ---"
-for bad in abc 149x 1/2 0; do
+for bad in abc 149x 1/2 0 0001; do
     run_cli merge --pr "$bad"
     _rc=$?
     [ "$_rc" -ne 0 ] && _pass || _fail "merge --pr '$bad' rejected"
-    grep -q "invalid PR number" "$ERR" && _pass || _fail "merge --pr '$bad' reports invalid on stderr"
+    grep -q "invalid integer" "$ERR" && _pass || _fail "merge --pr '$bad' reports invalid on stderr"
 done
 
 echo ""
 echo "--- PR Number Validation (status) ---"
-for bad in abc 149x 1/2 0; do
+for bad in abc 149x 1/2 0 0001; do
     run_cli status --pr "$bad"
     _rc=$?
     [ "$_rc" -ne 0 ] && _pass || _fail "status --pr '$bad' rejected"
@@ -81,6 +81,16 @@ _rc=$?
 grep -q "No state found" "$OUT"; _has_no_state=$?
 [ "$_has_no_state" -eq 0 ] && _pass || _fail "valid PR 149 passes validation to state lookup"
 [ "$_rc" -ne 0 ] && _pass || _fail "status for absent state exits non-zero"
+
+# --- --issue is validated as a positive integer before orchestrating ---
+echo ""
+echo "--- Issue Number Validation ---"
+for bad_issue in abc 0 0001; do
+    run_cli merge --pr 149 --issue "$bad_issue"
+    _rc=$?
+    [ "$_rc" -ne 0 ] && _pass || _fail "merge --issue '$bad_issue' rejected"
+    grep -q "invalid integer" "$ERR" && _pass || _fail "merge --issue '$bad_issue' reports invalid on stderr"
+done
 
 # --- Terminal FAILED is surfaced with non-zero exit via the CLI ---
 echo ""

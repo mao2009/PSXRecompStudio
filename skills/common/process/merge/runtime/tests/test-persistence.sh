@@ -94,6 +94,14 @@ assert_true "field update still works after newline value" test "$_branch" = "is
 _line_count=$(wc -l < "$STATE4")
 assert_true "newline value flattened to one line" test "$_line_count" -ge 1
 grep -q 'first\\nsecond' "$STATE4" && _pass || _fail "newline stored as \\n escape"
+# A value containing the sed substitution delimiter `|` must not corrupt the
+# field (the pipe-delimited sed expression must not terminate early), and the
+# stored JSON must retain the literal `|`.
+merge_state_set_string "$STATE4" "FailureReason" 'merge failed | retry'
+grep -q '"FailureReason": "merge failed | retry"' "$STATE4" && _pass || _fail "pipe delimiter stored safely"
+# The field value can still be read back unchanged.
+_pipe_read=$(merge_state_get "$STATE4" "FailureReason")
+assert_true "pipe value read back intact" test "$_pipe_read" = "merge failed | retry"
 
 # --- Null handling preserved ---
 echo ""
