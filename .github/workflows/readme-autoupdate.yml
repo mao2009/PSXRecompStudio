@@ -1,0 +1,303 @@
+name: README Auto-Update
+
+# PR-triggered README updater (Issue #180). Two isolated jobs:
+#
+#   1. update-readme ("model" job, contents: read, NO GITHUB_TOKEN):
+#      runs OpenCode pinned to opencode/big-pickle with assets extracted from
+#      origin/main and emits ONLY a candidate README.md artifact. OpenCode can
+#      never publish anything and has no repository credentials.
+#   2. publish-readme ("publish" job, contents: write): clean workspace, fresh
+#      origin/main extraction, single-file artifact, mechanical validation, then
+#      commits/pushes ONLY the managed README to the PR's own head branch.
+#
+# Trust model (see docs/adr/009-readme-autoupdate.md):
+#   Trusted   : origin/main, this workflow, trusted config, trusted publish script
+#   Untrusted : PR branch, PR description, comments, source, README content,
+#               issue content, OpenCode output, repository variables (ignored)
+#
+# Permissions default to nothing; each job grants the minimum it needs. The
+# GITHUB_TOKEN is referenced ONLY in the publish job.
+
+"on":
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: readme-autoupdate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  update-readme:
+    name: Model (Big Pickle) analysis
+    # Fork PRs are skipped entirely: their GITHUB_TOKEN is read-only and
+    # running untrusted fork code with any write path is never acceptable.
+    # See docs/development/readme-autoupdate.md.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      action: ${{ steps.preflight.outputs.action }}
+      bootstrap: ${{ steps.extract.outputs.bootstrap }}
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Security boundary: the script, SSOT config, opencode config, and prompt
+      # come from origin/main (the trusted ref), never from the PR head. A PR
+      # therefore cannot relax its own enforcement.
+      #
+      # Bootstrap exception (analyze-only): the FIRST PR that introduces these
+      # files has no trusted copy on origin/main yet, so it sources them from
+      # the PR head (emits ::warning::BOOTSTRAP). Normal PR review gates that
+      # single bootstrap, and the publish job refuses to run in bootstrap
+      # mode - no GITHUB_TOKEN-backed change is ever produced by it.
+      - name: Extract trusted assets from origin/main
+        id: extract
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/readme-sync"
+          TRUSTED="$ROOT/trusted"
+          mkdir -p "$TRUSTED"
+          ASSETS=(
+            scripts/ci/readme-sync.sh
+            config/readme-autoupdate.json
+            config/readme-autoupdate/opencode.json
+            config/readme-autoupdate/prompt.md
+          )
+          if git cat-file -e origin/main:scripts/ci/readme-sync.sh 2>/dev/null; then
+            git archive origin/main "${ASSETS[@]}" | tar -x -C "$TRUSTED"
+            echo "bootstrap=0" >> "$GITHUB_OUTPUT"
+            echo "trusted assets extracted from origin/main"
+          else
+            echo "::warning::BOOTSTRAP ANALYZE-ONLY: trusted assets not yet on origin/main; model runs from the PR-head copy, publish is skipped this run."
+            tar -C . -cf - "${ASSETS[@]}" | tar -x -C "$TRUSTED"
+            echo "bootstrap=1" >> "$GITHUB_OUTPUT"
+          fi
+          chmod +x "$TRUSTED/scripts/ci/readme-sync.sh"
+
+      # Mechanical model/version pin (fail-closed). Reads the SSOT config that
+      # was just extracted from origin/main (or PR head in the single, gated
+      # bootstrap run) and fails unless the model is exactly opencode/big-pickle
+      # and the version is a well-formed pinned value. No repository variable is
+      # consulted and there is no fallback default.
+      - name: Verify Big Pickle pin and pinned OpenCode version
+        id: verify
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" verify-config
+        env:
+          README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
+          OPENCODE_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate/opencode.json
+
+      - name: Preflight
+        id: preflight
+        run: |
+          "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" preflight
+        env:
+          README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Install OpenCode (${{ steps.verify.outputs.version }} from trusted SSOT config)
+        if: steps.preflight.outputs.action == 'proceed'
+        run: |
+          curl -fsSL https://opencode.ai/install | bash -s -- --version "${{ steps.verify.outputs.version }}" --no-modify-path
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      # The model is passed as a literal constant, never read from a variable or
+      # repository variable; the verify-config gate above already failed the job
+      # unless the trusted config also pins opencode/big-pickle. No fallback: an
+      # unavailable model fails this step explicitly.
+      - name: Run OpenCode on the PR changes
+        if: steps.preflight.outputs.action == 'proceed'
+        timeout-minutes: 10
+        run: |
+          echo "PR: #$PR_NUMBER $PR_TITLE" > "$RUNNER_TEMP/readme-sync-prompt.md"
+          {
+            printf 'PR_BASE_SHA=%s\nPR_HEAD_SHA=%s\nPR_BASE_BRANCH=%s\nPR_HEAD_BRANCH=%s\n' \
+              "$PR_BASE_SHA" "$PR_HEAD_SHA" "$PR_BASE_BRANCH" "$PR_HEAD_BRANCH"
+            printf 'REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'PR_DESCRIPTION:\n'
+            printf '%s\n' "$PR_BODY" | sed 's/^/  /' | head -200
+          } >> "$RUNNER_TEMP/readme-sync-prompt.md"
+          cat "$RUNNER_TEMP/readme-sync/trusted/config/readme-autoupdate/prompt.md" >> "$RUNNER_TEMP/readme-sync-prompt.md"
+          opencode run \
+            --print-logs \
+            --pure \
+            --auto \
+            --model opencode/big-pickle \
+            "$(cat "$RUNNER_TEMP/readme-sync-prompt.md")"
+        # No GITHUB_TOKEN here. The model never receives repository credentials;
+        # the only credentialed step is the separate publish job. Big Pickle is
+        # used for free via OpenCode Zen with no API key.
+        env:
+          OPENCODE_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate/opencode.json
+          OPENCODE_DISABLE_AUTOUPDATE: "true"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+
+      # Mechanical output gate: after the model runs, this job asserts that the
+      # working tree contains ONLY a (possibly unchanged) README.md modification
+      # and exports exactly that file. Anything else makes the job fail, so the
+      # publish job never even sees a candidate. The trusted publish script and
+      # config used by the publish job are re-extracted from origin/main there.
+      - name: Validate model output and export candidate README
+        if: steps.preflight.outputs.action == 'proceed'
+        run: |
+          set -euo pipefail
+          [[ -f README.md ]] || { echo "::error::candidate README.md is missing (model deleted it); not publishing anything."; exit 1; }
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            path="${line:3}"
+            if [[ "$path" == *" -> "* ]]; then
+              path="${path##* -> }"
+            fi
+            [[ "$path" == "README.md" ]] || { echo "::error::model modified unexpected path '$path'; not publishing anything."; exit 1; }
+          done < <(git status --porcelain=v1 --untracked-files=all)
+          mkdir -p "$RUNNER_TEMP/readme-candidate"
+          cp README.md "$RUNNER_TEMP/readme-candidate/README.md"
+          echo "candidate README exported (unchanged or updated)"
+
+      - name: Upload candidate README artifact
+        if: steps.preflight.outputs.action == 'proceed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/readme-candidate/README.md
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-readme:
+    name: Publish (clean job, origin/main assets, token-backed)
+    needs: update-readme
+    # Fork PRs never publish; this job also never runs in bootstrap mode below.
+    # The bootstrap check references the MODEL job's output, so a race where
+    # origin/main gains the trusted assets between the two jobs cannot turn an
+    # analyze-only bootstrap run into a token-backed publish.
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.update-readme.outputs.action == 'proceed' &&
+      needs.update-readme.outputs.bootstrap == '0'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # A clean checkout on this runner. This workspace is NEVER shared with the
+      # model job; the only cross-job input is the README-only artifact.
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Fresh extraction in THIS job from origin/main ONLY - never the PR head.
+      # Even if OpenCode modified the model job's trusted directory, it cannot
+      # influence this job. If origin/main lacks the assets (bootstrap), the
+      # token-backed publish path is skipped entirely (analyze-only) instead of
+      # executing PR-controlled code with GITHUB_TOKEN.
+      - name: Extract trusted assets from origin/main
+        id: extract
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/readme-sync"
+          TRUSTED="$ROOT/trusted"
+          mkdir -p "$TRUSTED"
+          ASSETS=(
+            scripts/ci/readme-sync.sh
+            config/readme-autoupdate.json
+            config/readme-autoupdate/opencode.json
+            config/readme-autoupdate/prompt.md
+          )
+          if git cat-file -e origin/main:scripts/ci/readme-sync.sh 2>/dev/null; then
+            git archive origin/main "${ASSETS[@]}" | tar -x -C "$TRUSTED"
+            echo "bootstrap=0" >> "$GITHUB_OUTPUT"
+            echo "trusted assets extracted from origin/main"
+          else
+            echo "::warning::BOOTSTRAP ANALYZE-ONLY: no trusted assets on origin/main; refusing to run PR-controlled code with the publish token. Publish steps skipped."
+            echo "bootstrap=1" >> "$GITHUB_OUTPUT"
+          fi
+          chmod +x "$TRUSTED/scripts/ci/readme-sync.sh" 2>/dev/null || true
+
+      - name: Download candidate README artifact
+        if: steps.extract.outputs.bootstrap == '0'
+        uses: actions/download-artifact@v4
+        with:
+          name: readme-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/readme-artifact
+
+      # Mechanical artifact inspection: exactly one root-level README.md file is
+      # allowed. Extra paths, subdirectories, and symlinks fail closed.
+      - name: Validate artifact (README.md only)
+        if: steps.extract.outputs.bootstrap == '0'
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/readme-artifact" <<'PY'
+          import os
+          import sys
+          root = sys.argv[1]
+          if not os.path.isdir(root):
+              sys.exit("artifact directory missing: " + root)
+          readmes = 0
+          for dirpath, dirnames, filenames in os.walk(root):
+              for d in dirnames:
+                  full = os.path.join(dirpath, d)
+                  if os.path.islink(full):
+                      sys.exit("symlinked directory in artifact: " + d)
+                  sys.exit("unexpected directory in artifact: " + os.path.relpath(full, root))
+              for f in filenames:
+                  full = os.path.join(dirpath, f)
+                  if os.path.islink(full):
+                      sys.exit("symlink in artifact: " + f)
+                  rel = os.path.relpath(full, root)
+                  if rel != "README.md":
+                      sys.exit("unexpected artifact entry: " + rel)
+                  readmes += 1
+          if readmes == 0:
+              sys.exit("artifact contains no README.md")
+          print("artifact OK: exactly one README.md")
+          PY
+
+      - name: Apply candidate README to working tree
+        if: steps.extract.outputs.bootstrap == '0'
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/readme-artifact/README.md" README.md
+
+      # Runs the trusted origin/main publish script (freshly extracted in this
+      # job). It inspects the real working tree: only README.md may differ from
+      # the PR head, deletions are rejected, and the push target is exactly
+      # HEAD:refs/heads/<PR head branch> (main and other forbidden branches are
+      # refused). The bot commit re-triggers a synchronize run that preflight
+      # skips as a bot commit (loop prevention).
+      - name: Publish README updates
+        if: steps.extract.outputs.bootstrap == '0'
+        run: |
+          "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" publish
+        env:
+          README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
+          README_SYNC_BOOTSTRAP: "0"
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
