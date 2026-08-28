@@ -421,7 +421,7 @@ d = yaml.safe_load(open(sys.argv[1]))
 print(d["jobs"]["publish-readme"].get("if") or "")
 PY
 )"
-  if [[ "$job_if" != *"actions.bootstrap == '0'"* && "$job_if" != *"outputs.bootstrap == '0'"* ]]; then
+  if [[ "$job_if" != *"needs.update-readme.outputs.bootstrap == '0'"* ]]; then
     fail "publish job must be gated on the model job's bootstrap output (bootstrap runs stay analyze-only)"
   fi
   cond="$(wf_step_if publish-readme "Publish README updates")"
@@ -653,7 +653,8 @@ for k, v in expected.items():
 edit = d["permission"]["edit"]
 assert list(edit.items())[0] == ("*", "deny"), "edit: catch-all '*': 'deny' must be the FIRST rule"
 assert edit.get("README.md") == "allow" and edit.get("**/README.md") == "allow", "edit: README.md allows required"
-assert "webfetch" in d["permission"] and "websearch" in d["permission"], "webfetch/websearch deny required"
+assert d["permission"].get("webfetch") == "deny", "webfetch must be denied"
+assert d["permission"].get("websearch") == "deny", "websearch must be denied"
 PY
 }
 
