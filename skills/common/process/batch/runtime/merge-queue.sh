@@ -136,6 +136,7 @@ _merge_queue_has_explicit_human_approval() {
     # Month-specific day limits, including February and leap years, so
     # impossible dates (e.g. 2026-02-31, non-leap 2026-02-29) fail closed.
     _by=$(printf '%s' "$_approved_at" | cut -c1-4)
+    [ "$_by" -ge 2000 ] 2>/dev/null || return 1
     _bmn=$(printf '%s' "$_bm" | sed 's/^0//')
     _bdn=$(printf '%s' "$_bd" | sed 's/^0//')
     _bmax=31

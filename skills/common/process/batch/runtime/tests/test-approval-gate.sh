@@ -224,6 +224,17 @@ else
     _pass "explicit approval non-leap Feb 29 rejected"
 fi
 
+# Pre-2000 year -> rejected (matches merge runtime year bound).
+_state_pre2000="$_REPO_DIR/.merge-state-184.json"
+cat > "$_state_pre2000" <<EOF
+{"PrNumber":184,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":184,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"x","ApprovedAt":"1999-12-31T23:59:59Z","ApprovalSource":"explicit_human","IsValid":true}}
+EOF
+if _merge_queue_has_explicit_human_approval "184" "$_wt" "$_REPO_DIR"; then
+    _fail "explicit approval pre-2000 year rejected"
+else
+    _pass "explicit approval pre-2000 year rejected"
+fi
+
 # Main HEAD mismatch -> rejected (approval taken against older main).
 _state_mainmismatch="$_REPO_DIR/.merge-state-181.json"
 cat > "$_state_mainmismatch" <<EOF
