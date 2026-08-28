@@ -579,6 +579,240 @@ static void test_div_normal() {
     PASS();
 }
 
+// Timer tests
+static uint32_t TMR(int t, uint32_t off) {
+    return 0x1F801100u + (uint32_t)t * 0x10u + off;
+}
+
+static void test_timer_registers() {
+    TEST("Timer COUNT/MODE/TARGET register read/write");
+    PSXCore* core = PSXCore_Create();
+
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 0u);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x04)), 0u);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x08)), 0u);
+
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x00), 0x1234);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 0x1234u);
+
+    PSXCore_WriteTimerRegister(core, TMR(1, 0x08), 0x8000);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(1, 0x08)), 0x8000u);
+
+    // Mode write masks to 0x3FF and forces bit10 (IRQ_REQUEST) + resets counter.
+    PSXCore_WriteTimerRegister(core, TMR(2, 0x00), 0xABCD);
+    PSXCore_WriteTimerRegister(core, TMR(2, 0x04), 0xFFFF);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x04)), 0x03FFu | 0x0400u);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x00)), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_free_run_target_irq() {
+    TEST("Timer free-run target reached generates IRQ (repeat)");
+    PSXCore* core = PSXCore_Create();
+    // MODE_IRQ_TARGET(0x10) | MODE_IRQ_REPEAT(0x40)
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x50);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x08), 5);
+    for (int i = 0; i < 5; i++)
+        PSXCore_TickTimers(core, 1);
+
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 5u);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+    // Target flag (bit11) set in mode.
+    uint32_t mode = PSXCore_ReadTimerRegister(core, TMR(0, 0x04));
+    ASSERT_EQ(mode & 0x0800u, 0x0800u);
+    // Reading mode clears the target flag.
+    mode = PSXCore_ReadTimerRegister(core, TMR(0, 0x04));
+    ASSERT_EQ(mode & 0x0800u, 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_target_reset() {
+    TEST("Timer target reset (bit3) resets counter to 0 at target");
+    PSXCore* core = PSXCore_Create();
+    // MODE_IRQ_TARGET(0x10) | MODE_RESET_TARGET(0x08)
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x18);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x08), 5);
+    for (int i = 0; i < 5; i++)
+        PSXCore_TickTimers(core, 1);
+
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 0u);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_overflow_irq() {
+    TEST("Timer overflow at FFFFh generates IRQ");
+    PSXCore* core = PSXCore_Create();
+    // MODE_IRQ_OVERFLOW(0x20) | MODE_IRQ_REPEAT(0x40)
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x60);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x00), 0xFFFE);
+    PSXCore_TickTimers(core, 1); // -> FFFF
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 0);
+    PSXCore_TickTimers(core, 1); // -> 0000 (overflow)
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 0u);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x04)) & 0x1000u, 0x1000u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_oneshot() {
+    TEST("Timer one-shot suppresses further IRQs until mode rewrite");
+    PSXCore* core = PSXCore_Create();
+    // MODE_IRQ_TARGET(0x10), no repeat -> one-shot
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x10);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x08), 3);
+    for (int i = 0; i < 3; i++)
+        PSXCore_TickTimers(core, 1);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+
+    PSXCore_ClearTimerInterrupt(core, 0);
+    for (int i = 0; i < 3; i++)
+        PSXCore_TickTimers(core, 1);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 0);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_toggle() {
+    TEST("Timer toggle mode raises IRQ on alternating reaches");
+    PSXCore* core = PSXCore_Create();
+    // MODE_IRQ_TARGET(0x10) | MODE_IRQ_REPEAT(0x40) | MODE_IRQ_TOGGLE(0x80) | MODE_RESET_TARGET(0x08)
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0xD8);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x08), 2);
+
+    auto advance = [&]() { for (int i = 0; i < 2; i++) PSXCore_TickTimers(core, 1); };
+
+    advance(); // fire 1: toggle line -> high, pending
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+    PSXCore_ClearTimerInterrupt(core, 0);
+
+    advance(); // fire 2: toggle line -> low, no IRQ
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 0);
+    PSXCore_ClearTimerInterrupt(core, 0);
+
+    advance(); // fire 3: toggle line -> high, pending
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_sysclk8() {
+    TEST("Timer 2 System Clock/8 counts one per 8 cycles");
+    PSXCore* core = PSXCore_Create();
+    // Timer 2: MODE_CLK_SRC1(0x200) -> src=2 -> /8
+    PSXCore_WriteTimerRegister(core, TMR(2, 0x04), 0x200);
+    PSXCore_TickTimers(core, 7);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x00)), 0u);
+    PSXCore_TickTimers(core, 1);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x00)), 1u);
+
+    // Free run sysclk (div 1): mode write resets counter.
+    PSXCore_WriteTimerRegister(core, TMR(2, 0x04), 0);
+    PSXCore_TickTimers(core, 8);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x00)), 8u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_sync_stop_timer2() {
+    TEST("Timer 2 sync mode 0 stops counter, mode 1 free runs");
+    PSXCore* core = PSXCore_Create();
+    // MODE_SYNC_EN(0x01) with sync mode 0 -> stop forever
+    PSXCore_WriteTimerRegister(core, TMR(2, 0x04), 0x01);
+    PSXCore_TickTimers(core, 10);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x00)), 0u);
+
+    // MODE_SYNC_EN(0x01) | sync mode 1 (0x02) -> free run
+    PSXCore_WriteTimerRegister(core, TMR(2, 0x04), 0x03);
+    PSXCore_TickTimers(core, 5);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(2, 0x00)), 5u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_sync_pause_timer0() {
+    TEST("Timer 0 sync mode 0 pauses during blank line");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x01); // sync enable, mode 0
+    PSXCore_TickTimers(core, 5);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 5u);
+
+    PSXCore_SetTimerSync(core, 0, 1); // blank active -> paused
+    PSXCore_TickTimers(core, 5);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 5u);
+
+    PSXCore_SetTimerSync(core, 0, 0); // blank inactive -> resume
+    PSXCore_TickTimers(core, 3);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 8u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_sync_reset_timer0() {
+    TEST("Timer 0 sync mode 1 resets counter on blank edge");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x03); // sync enable, mode 1
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x00), 10);
+    PSXCore_SetTimerSync(core, 0, 1); // rising edge
+    PSXCore_TickTimers(core, 1);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 1u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_sync_arm_timer0() {
+    TEST("Timer 0 sync mode 3 pauses until first blank then free runs");
+    PSXCore* core = PSXCore_Create();
+    // sync enable (0x01) | sync mode 3 (0x06) = 0x07
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x07);
+    PSXCore_TickTimers(core, 5);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 0u); // paused
+
+    PSXCore_SetTimerSync(core, 0, 1); // first blank -> arm free run
+    PSXCore_SetTimerSync(core, 0, 0);
+    PSXCore_TickTimers(core, 5);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 5u); // free run
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_reset_timers() {
+    TEST("Timer reset clears counters and interrupts");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x00), 0x1234);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x04), 0x50);
+    PSXCore_WriteTimerRegister(core, TMR(0, 0x08), 2);
+    for (int i = 0; i < 2; i++)
+        PSXCore_TickTimers(core, 1);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 1);
+
+    PSXCore_ResetTimers(core);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x00)), 0u);
+    ASSERT_EQ(PSXCore_ReadTimerRegister(core, TMR(0, 0x04)), 0u);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(core, 0), 0);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_timer_null_safety() {
+    TEST("Timer null pointer safety");
+    ASSERT_EQ(PSXCore_ReadTimerRegister(nullptr, 0x1F801100u), 0u);
+    PSXCore_WriteTimerRegister(nullptr, 0x1F801100u, 1);
+    PSXCore_TickTimers(nullptr, 10);
+    ASSERT_EQ(PSXCore_GetTimerInterruptPending(nullptr, 0), 0);
+    PSXCore_ClearTimerInterrupt(nullptr, 0);
+    PSXCore_SetTimerSync(nullptr, 0, 1);
+    PSXCore_ResetTimers(nullptr);
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -614,6 +848,20 @@ int main() {
     test_div_overflow();
     test_divu_by_zero();
     test_div_normal();
+
+    test_timer_registers();
+    test_timer_free_run_target_irq();
+    test_timer_target_reset();
+    test_timer_overflow_irq();
+    test_timer_oneshot();
+    test_timer_toggle();
+    test_timer_sysclk8();
+    test_timer_sync_stop_timer2();
+    test_timer_sync_pause_timer0();
+    test_timer_sync_reset_timer0();
+    test_timer_sync_arm_timer0();
+    test_timer_reset_timers();
+    test_timer_null_safety();
 
     printf("\n======================\n");
     printf("Results: %d/%d passed\n", tests_passed, tests_run);

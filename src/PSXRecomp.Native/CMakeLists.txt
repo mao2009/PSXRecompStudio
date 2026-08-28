@@ -14,6 +14,7 @@ add_library(PSXRecomp.Native SHARED
     src/psx_cpu.cpp
     src/psx_memory.cpp
     src/psx_dma.cpp
+    src/psx_timer.cpp
 )
 
 target_include_directories(PSXRecomp.Native
@@ -35,6 +36,7 @@ add_executable(psx_native_tests
     src/psx_cpu.cpp
     src/psx_memory.cpp
     src/psx_dma.cpp
+    src/psx_timer.cpp
     tests/test_psx_core.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)

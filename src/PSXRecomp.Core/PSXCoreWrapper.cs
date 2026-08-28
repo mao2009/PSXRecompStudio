@@ -111,6 +111,48 @@ public sealed class PSXCoreWrapper : IDisposable
         return NativeInterop.PSXCore_GetDmaInterruptPending(_handle) != 0;
     }
 
+    public uint ReadTimerRegister(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_ReadTimerRegister(_handle, address);
+    }
+
+    public void WriteTimerRegister(uint address, uint value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_WriteTimerRegister(_handle, address, value);
+    }
+
+    public void TickTimers(uint cycles)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_TickTimers(_handle, cycles);
+    }
+
+    public bool GetTimerInterruptPending(int timer)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetTimerInterruptPending(_handle, timer) != 0;
+    }
+
+    public void ClearTimerInterrupt(int timer)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_ClearTimerInterrupt(_handle, timer);
+    }
+
+    public void SetTimerSync(int timer, bool active)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_SetTimerSync(_handle, timer, active ? 1 : 0);
+    }
+
+    public void ResetTimers()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_ResetTimers(_handle);
+    }
+
     // Instruction execution
     public int Step()
     {

@@ -13,6 +13,8 @@ public readonly struct MmioRoute
     public uint Offset { get; init; }
     public int ChannelIndex { get; init; }
     public DmaRegisterType RegisterType { get; init; }
+    public int TimerIndex { get; init; }
+    public TimerRegisterType TimerRegisterType { get; init; }
 
     public static MmioRoute Unmapped => new() { Target = MmioTarget.None };
 
@@ -43,8 +45,23 @@ public readonly struct MmioRoute
             Offset = offset,
         };
 
+    public static MmioRoute ForTimer(int timer, TimerRegisterType registerType, uint offset) =>
+        new()
+        {
+            Target = MmioTarget.Timer,
+            TimerIndex = timer,
+            TimerRegisterType = registerType,
+            Offset = offset,
+        };
+
     public static MmioRoute Resolve(uint address)
     {
+        if (Ps1MemoryMap.IsTimerRegister(address))
+            return ForTimer(
+                Ps1MemoryMap.GetTimerIndex(address),
+                Ps1MemoryMap.GetTimerRegisterType(address),
+                address - Ps1MemoryMap.GetTimerBase(Ps1MemoryMap.GetTimerIndex(address)));
+
         if (!Ps1MemoryMap.IsDmaRegister(address))
             return Unmapped;
 
@@ -71,4 +88,5 @@ public enum MmioTarget
 {
     None = 0,
     DmaController,
+    Timer,
 }

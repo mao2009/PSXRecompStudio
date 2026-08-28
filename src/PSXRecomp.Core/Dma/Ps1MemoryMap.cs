@@ -26,6 +26,40 @@ public static class Ps1MemoryMap
     public const int ChannelCount = 7;
     public const uint ChannelStride = 0x10;
 
+    public const uint TimerBase = 0x1F801100;
+    public const uint TimerStride = 0x10;
+    public const int TimerCount = 3;
+    public const uint TimerCountOffset = 0x00;
+    public const uint TimerModeOffset = 0x04;
+    public const uint TimerTargetOffset = 0x08;
+
+    public static uint GetTimerBase(int timer) =>
+        TimerBase + (uint)(timer * (int)TimerStride);
+
+    public static bool IsTimerRegister(uint address) =>
+        address >= TimerBase && address <= TimerBase + (uint)(TimerCount * (int)TimerStride) - 1;
+
+    public static int GetTimerIndex(uint address)
+    {
+        if (!IsTimerRegister(address))
+            return -1;
+        return (int)((address - TimerBase) / TimerStride);
+    }
+
+    public static TimerRegisterType GetTimerRegisterType(uint address)
+    {
+        if (!IsTimerRegister(address))
+            return TimerRegisterType.None;
+
+        return ((address - TimerBase) % TimerStride) switch
+        {
+            0x00 => TimerRegisterType.Count,
+            0x04 => TimerRegisterType.Mode,
+            0x08 => TimerRegisterType.Target,
+            _ => TimerRegisterType.None,
+        };
+    }
+
     public static uint GetChannelMadr(int channel) =>
         DmaBase + (uint)(channel * (int)ChannelStride);
 
@@ -89,6 +123,18 @@ public enum DmaRegisterType
     Chcr,
     Dpcr,
     Dicr,
+}
+
+/// <summary>
+/// Timer register types for a single root counter.
+/// </summary>
+[Domain]
+public enum TimerRegisterType
+{
+    None = 0,
+    Count,
+    Mode,
+    Target,
 }
 
 /// <summary>

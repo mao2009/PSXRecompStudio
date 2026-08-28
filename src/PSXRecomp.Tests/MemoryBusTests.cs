@@ -8,18 +8,22 @@ public class MemoryBusTests : IDisposable
 {
     private readonly PSXCoreWrapper _core = new();
     private readonly DmaMmioAdapter _dmaAdapter;
+    private readonly TimerMmioAdapter _timerAdapter;
     private readonly MemoryBus _memoryBus;
 
     public MemoryBusTests()
     {
         _dmaAdapter = new DmaMmioAdapter(_core);
+        _timerAdapter = new TimerMmioAdapter(_core);
         _memoryBus = new MemoryBus(_core);
         _memoryBus.AttachDmaAdapter(_dmaAdapter);
+        _memoryBus.AttachTimerAdapter(_timerAdapter);
     }
 
     public void Dispose()
     {
         _memoryBus.Dispose();
+        _timerAdapter.Dispose();
         _dmaAdapter.Dispose();
         _core.Dispose();
         GC.SuppressFinalize(this);
@@ -145,5 +149,38 @@ public class MemoryBusTests : IDisposable
         bus.Dispose();
         var act = () => bus.Read(0x00000000);
         act.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public void Read_TimerCount_RoutesToAdapter()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(0) + Ps1MemoryMap.TimerCountOffset;
+        _timerAdapter.WriteRegister(addr, 0x1234);
+        _memoryBus.Read(addr).Should().Be(0x1234u);
+    }
+
+    [Fact]
+    public void Write_TimerMode_RoutesToAdapter_AndSetsIrqRequestBit()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(1) + Ps1MemoryMap.TimerModeOffset;
+        _memoryBus.Write(addr, 0x0030);
+        _timerAdapter.GetMode((Core.Runtime.ITimer.TimerId)1).Should().Be(0x0030 | 0x0400);
+    }
+
+    [Fact]
+    public void Write_TimerTarget_RoutesToAdapter()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
+        _memoryBus.Write(addr, 0x7FFF);
+        _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0x7FFFu);
+    }
+
+    [Fact]
+    public void Timer_TickThroughAdapter_ReflectedInCountRead()
+    {
+        uint countAddr = Ps1MemoryMap.GetTimerBase(0) + Ps1MemoryMap.TimerCountOffset;
+        _memoryBus.Write(countAddr, 0);
+        _timerAdapter.Tick(3);
+        _memoryBus.Read(countAddr).Should().Be(3u);
     }
 }
