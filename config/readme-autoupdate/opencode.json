@@ -2,5 +2,22 @@
   "$schema": "https://opencode.ai/config.json",
   "share": "disabled",
   "model": "opencode/big-pickle",
-  "small_model": "opencode/big-pickle"
+  "small_model": "opencode/big-pickle",
+  "permission": {
+    "edit": {
+      "*": "deny",
+      "README.md": "allow",
+      "**/README.md": "allow"
+    },
+    "bash": {
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git blame*": "allow",
+      "*": "deny"
+    },
+    "webfetch": "deny",
+    "websearch": "deny"
+  }
 }

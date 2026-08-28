@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# readme-sync.sh - preflight + publish helper for the README auto-update
-# workflow (.github/workflows/readme-autoupdate.yml, Issue #180).
+# readme-sync.sh - preflight / verify-config / publish helper for the README
+# auto-update workflow (.github/workflows/readme-autoupdate.yml, Issue #180).
 #
 # This script is the security enforcement boundary for the workflow. It is
 # executed from the trusted origin/main ref (extracted by the workflow from the
@@ -10,25 +10,35 @@
 #
 # Usage:
 #   readme-sync.sh preflight [<output-file>]
+#   readme-sync.sh verify-config [<output-file>]
 #   readme-sync.sh publish
 #
 # Environment:
 #   README_SYNC_CONFIG     path to the SSOT config (default: config/readme-autoupdate.json)
+#   OPENCODE_CONFIG        path to the opencode config (verify-config; default: <config dir>/opencode.json)
 #   PR_HEAD_SHA            pull request head commit SHA (preflight/publish)
 #   PR_HEAD_BRANCH         pull request head branch name (preflight/publish)
 #   PR_HEAD_REPO           pull request head repo "owner/name" (preflight)
 #   GITHUB_REPOSITORY      current repository "owner/name" (preflight/publish)
 #   GITHUB_TOKEN           required for publish when PUSH_URL is not set
 #   PUSH_URL               explicit git push URL (CI sets this; tests use a file URL)
+#   README_SYNC_BOOTSTRAP  when "1", publish is refused: the trusted origin/main
+#                          assets do not exist yet, so the token-backed publish
+#                          path must never run PR-controlled code.
 #
 # Guarantees (fail-closed):
+#   * Big Pickle (opencode/big-pickle) is intentionally pinned; verify-config
+#     rejects any other model in the trusted configuration and there is no
+#     fallback model or repository-variable override.
 #   * No change outside the configured managedFiles is ever committed or pushed.
 #   * Deletions are never committed.
 #   * main (and other configured branches) are never pushed to.
 #   * Fork PRs and PRs whose head commit is authored by the bot are skipped.
+#   * Bootstrap mode never publishes with GITHUB_TOKEN.
 set -euo pipefail
 
 CONFIG="${README_SYNC_CONFIG:-config/readme-autoupdate.json}"
+PINNED_MODEL="opencode/big-pickle"
 
 die() {
   echo "ERROR: $*" >&2
@@ -56,6 +66,35 @@ PY
 
 require_config() {
   [[ -f "$CONFIG" ]] || die "config not found: $CONFIG (expected at $(realpath "$CONFIG" 2>/dev/null || echo unknown))"
+}
+
+# cmd_verify_config - mechanical Big Pickle pin + pinned version gate.
+# Reads the trusted SSOT config and the opencode config and fails (exit 1)
+# unless the model is exactly opencode/big-pickle everywhere and the OpenCode
+# version is a well-formed pinned semver. No repository variable is read and no
+# fallback default is applied. Writes `model=` and `version=` to the output.
+cmd_verify_config() {
+  require_config
+  local output="${1:-${GITHUB_OUTPUT:-/dev/stdout}}"
+  local model version opencode_cfg opencode_model opencode_small
+  model="$(json_get opencode.model)"
+  version="$(json_get opencode.version)"
+
+  [[ "$model" == "$PINNED_MODEL" ]] || die "model pin violation: SSOT config opencode.model is '$model', but only '$PINNED_MODEL' is allowed. Big Pickle is intentionally pinned and cannot be overridden by repository variables or PR-controlled configuration."
+
+  [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid pinned OpenCode version '$version' in SSOT config (expected semver like v1.18.25). No fallback version is applied."
+
+  # The OpenCode runtime config must pin the same model for both the primary
+  # and small-model slots; otherwise a PR could route calls elsewhere.
+  opencode_cfg="${OPENCODE_CONFIG:-$(dirname "$CONFIG")/opencode.json}"
+  [[ -f "$opencode_cfg" ]] || die "opencode config not found: $opencode_cfg"
+  opencode_model="$(OPENCODE_CONFIG="$opencode_cfg" python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("model",""))' "$opencode_cfg")"
+  opencode_small="$(OPENCODE_CONFIG="$opencode_cfg" python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("small_model",""))' "$opencode_cfg")"
+  [[ "$opencode_model" == "$PINNED_MODEL" ]] || die "model pin violation: opencode config model is '$opencode_model'; only '$PINNED_MODEL' is allowed."
+  [[ "$opencode_small" == "$PINNED_MODEL" ]] || die "model pin violation: opencode config small_model is '$opencode_small'; only '$PINNED_MODEL' is allowed."
+
+  printf 'model=%s\nversion=%s\n' "$PINNED_MODEL" "$version" > "$output"
+  echo "verify-config: OK model=$PINNED_MODEL version=$version"
 }
 
 cmd_preflight() {
@@ -95,6 +134,9 @@ cmd_preflight() {
 
 cmd_publish() {
   require_config
+  # Bootstrap mode: trusted origin/main assets are absent, so publishing
+  # PR-controlled enforcement code with GITHUB_TOKEN is never acceptable.
+  [[ "${README_SYNC_BOOTSTRAP:-0}" == "0" ]] || die "publish refused: bootstrap mode (README_SYNC_BOOTSTRAP=1) never uses the publish token. Trusted assets are missing on origin/main."
   local -a managed=()
   local -a forbidden=()
   mapfile -t managed < <(json_get workflow.managedFiles)
@@ -191,8 +233,9 @@ main() {
   shift || true
   case "$command" in
     preflight) cmd_preflight "$@" ;;
+    verify-config) cmd_verify_config "$@" ;;
     publish) cmd_publish ;;
-    "") die "usage: readme-sync.sh <preflight [<output-file>]|publish>" ;;
+    "") die "usage: readme-sync.sh <preflight [<output-file>]|verify-config [<output-file>]|publish>" ;;
     *) die "unknown command: $command" ;;
   esac
 }

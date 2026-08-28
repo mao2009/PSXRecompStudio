@@ -1,5 +1,5 @@
 {
-  "$comment": "README auto-update workflow SSOT (Issue #180). Consumed by .github/workflows/readme-autoupdate.yml and scripts/ci/readme-sync.sh. This file is always loaded from the origin/main ref (trusted) by the workflow - never from the PR head - because it defines the security enforcement boundary (managedFiles, push target, commit identity).",
+  "$comment": "README auto-update workflow SSOT (Issue #180). Consumed by .github/workflows/readme-autoupdate.yml and scripts/ci/readme-sync.sh. This file is always loaded from the origin/main ref (trusted) by the workflow - never from the PR head - because it defines the security enforcement boundary (managedFiles, push target, commit identity) and the pinned model/version. The model is intentionally fixed to opencode/big-pickle and cannot be overridden by repository variables or PR-controlled configuration; verify-config fails closed on any other value.",
   "workflow": {
     "managedFiles": [
       "README.md"
@@ -16,7 +16,7 @@
   },
   "opencode": {
     "version": "v1.18.25",
-    "model": "big-pickle",
+    "model": "opencode/big-pickle",
     "providerName": "opencode",
     "jobTimeoutMinutes": 30
   }
