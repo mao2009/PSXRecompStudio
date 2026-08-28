@@ -22,7 +22,7 @@ before code is written.
 
 This skill is project-agnostic. Project-specific inputs (authoritative
 documents, architecture MATRIX, verification commands, authority ordering) come
-from the **Project Profile**. The [Common Skill](common/SKILL.md) rules apply
+from the **Project Profile**. The [Common Skill](../common/SKILL.md) rules apply
 throughout, especially: read the actual repository state, do not fabricate
 results, and separate fact from inference from proposal.
 
@@ -42,7 +42,7 @@ implementation should incorporate the research output produced here.
 
 - A driving request or Issue defining what must be investigated.
 - Repository and agent access (read access is sufficient for pure research).
-- [Common Skill](common/SKILL.md) accepted, including its ground-truth rules.
+- [Common Skill](../common/SKILL.md) accepted, including its ground-truth rules.
 
 ## Inputs
 
@@ -115,8 +115,8 @@ Concrete, sourced observations. One finding per bullet, each with a reference
 
 Record binding constraints:
 
-- Architecture MATRIX / layering / dependency-direction rules (incl. analyzer
-  rules, e.g. PSXR001–PSXR006 where applicable).
+- Architecture MATRIX / layering / dependency-direction rules (incl. analyzer /
+  build-breaking rules per the Project Profile, where applicable).
 - Accepted ADRs and the SSOT precedence order.
 - Environment constraints (platforms, tooling, CI behavior).
 - Repository / artifact policy constraints.
@@ -151,12 +151,14 @@ the proposal and the Project Profile's verification ladder:
 
 - Unit tests for the touched area (targeted filter), when the proposal touches
   code.
-- Full .NET test suites and native tests, when applicable to the change.
-- Analyzer / build gates and any E2E relevant to the change.
+- The test suites and native checks the Project Profile's verification ladder
+  defines, when applicable to the change.
+- Analyzer / build gates and any E2E defined in the ladder, relevant to the
+  change.
 - Where the Project Profile's verification ladder applies.
 
 For changes where a verification item does not apply (e.g. documentation-only
-proposals with no .NET/native surface), state it as not applicable rather than
+proposals with no code / test surface), state it as not applicable rather than
 requiring it.
 
 ### 11. Risks

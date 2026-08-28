@@ -35,9 +35,9 @@ Before working on a task, an AI agent should load the applicable task template
 and the Common Skill in addition to the project knowledge:
 
 - `skills/common/task/common/SKILL.md` — project-wide universal rules (respect
-  the Architecture SSOT, treat the Issue as the SSOT of the work unit, verify
-  actual repository state, do not fabricate test results, never treat failure as
-  success, minimize change scope, meet the Definition of Done).
+  the Architecture SSOT, treat the driving task as the SSOT of the work unit,
+  verify actual repository state, do not fabricate test results, never treat
+  failure as success, minimize change scope, meet the Definition of Done).
 - The task-specific template matching the work type:
   `skills/common/task/research/SKILL.md`,
   `skills/common/task/implementation/SKILL.md`,

@@ -20,7 +20,7 @@ is to find the change's bugs, scope problems, and omissions, not to defend it.
 
 This skill is project-agnostic; project-specific inputs (authoritative
 documents, architecture MATRIX, verification commands) come from the **Project
-Profile**. The [Common Skill](common/SKILL.md) rules apply throughout.
+Profile**. The [Common Skill](../common/SKILL.md) rules apply throughout.
 
 ## Relationship to the pre-PR self review (important)
 
@@ -58,7 +58,7 @@ Apply this skill to review a change:
 - The change to review (a diff, or a PR) and its driving task (Issue, or
   explicit request) / requirements.
 - Access to the actual repository state the change applies to.
-- [Common Skill](common/SKILL.md) accepted (especially the ground-truth and
+- [Common Skill](../common/SKILL.md) accepted (especially the ground-truth and
   honesty rules).
 - The Project Profile (authoritative docs, MATRIX, verification commands,
   SSOT precedence, review-history sources).
@@ -83,8 +83,9 @@ doc-drift / improvement / not-an-issue).
 
 ### 1. Requirements fit
 
-- Does each Issue acceptance criterion map to a concrete implemented change?
-- Is there any change, or missing change, that the Issue did not intend?
+- Does each acceptance criterion of the driving task map to a concrete
+  implemented change?
+- Is there any change, or missing change, that the driving task did not intend?
 - Are explicit non-goals respected?
 
 ### 2. Architecture SSOT

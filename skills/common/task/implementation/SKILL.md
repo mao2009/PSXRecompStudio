@@ -1,7 +1,8 @@
 ---
 name: implementation
 description: >
-  Standard procedure for an implementation task: confirm the Issue, verify
+  Standard procedure for an implementation task: confirm the driving task,
+  verify
   repository state, survey related implementation, check the Architecture SSOT,
   pin the implementation approach, implement, test, build/analyzer/E2E, review
   the diff, and confirm the Definition of Done before reporting completion.
@@ -14,21 +15,21 @@ related-issues: "#174"
 # Implementation Skill
 
 A task template for **changing code (or close artifacts)** to satisfy a driving
-Issue. It enforces the discipline that prevents the most common failure modes of
+task. It enforces the discipline that prevents the most common failure modes of
 AI-driven implementation: implementing without confirming the requirement,
 building on guessed repository state, skipping verification, and reporting
 completion without meeting the Definition of Done.
 
 This skill is project-agnostic; project-specific inputs (authoritative
 documents, architecture MATRIX, verification commands) come from the **Project
-Profile**. The [Common Skill](common/SKILL.md) rules apply throughout.
+Profile**. The [Common Skill](../common/SKILL.md) rules apply throughout.
 
 ## When to apply
 
 Apply this skill when the task is an implementation of a concrete Issue /
 requirement and the deliverable is a change to the repository. If the task is
-investigation-only, use the [Research Skill](research/SKILL.md); if it is a
-review, use the [Review Skill](review/SKILL.md).
+investigation-only, use the [Research Skill](../research/SKILL.md); if it is a
+review, use the [Review Skill](../review/SKILL.md).
 
 ## Preconditions
 
@@ -38,7 +39,7 @@ review, use the [Review Skill](review/SKILL.md).
   acceptance criteria (see the Common Skill) — do not invent Issue data.
 - A working branch (directly or via a worktree created by the Batch
   orchestrator), based on the current `main`.
-- [Common Skill](common/SKILL.md) accepted.
+- [Common Skill](../common/SKILL.md) accepted.
 
 ## Standard Procedure
 
@@ -119,7 +120,7 @@ has multiple viable designs.
 
 Write the minimal change that satisfies the requirements (Common rule 7):
 
-- Touch only what the Issue requires.
+- Touch only what the driving task requires.
 - Reuse existing models/contracts and follow neighboring patterns.
 - Stay within the correct layer per the architecture MATRIX.
 - Do not introduce unrelated edits, artifacts, or reformatting.
@@ -140,12 +141,14 @@ Run the verification gates that are **applicable to the changed artifact**, per
 the Project Profile:
 
 - Build (the change must compile cleanly) — applicable when code/build inputs change.
-- Analyzer rules (build-breaking, e.g. PSXR001–PSXR006 where applicable).
-- Full .NET test suites, native tests, and any E2E **relevant to the change**.
+- Analyzer rules (build-breaking) — applicable when the change touches
+  analyzer-covered code.
+- The test suites, native checks, and any E2E the Project Profile's verification
+  ladder defines, **relevant to the change**.
 - Any policy / contamination gate relevant to the artifacts touched.
 
 Only require a gate when it applies to the change; for changes where a gate is
-not applicable (e.g. documentation-only edits with no .NET/native/E2E surface),
+not applicable (e.g. documentation-only edits with no code / test surface),
 state that it is not applicable instead of treating it as a required, failing
 gate. Never report a gate as passed that was not run or failed (Common rule 5–6).
 
@@ -159,9 +162,9 @@ Before wrapping up:
 
 ### 10. Definition of Done confirmation
 
-Against the Issue's Definition of Done / acceptance criteria (and this skill's
-Definition of Done below), verify each item is actually satisfied with real
-evidence. Only then report completion.
+Against the driving task's Definition of Done / acceptance criteria (and this
+skill's Definition of Done below), verify each item is actually satisfied with
+real evidence. Only then report completion.
 
 ## Verification
 
@@ -195,7 +198,7 @@ Completion may be reported **only** when all of the following hold:
       gate) where required.
 - [ ] The pre-PR self review gate has been **completed** (not merely scheduled)
       before reporting completion — see the governing gates in
-      [Common Skill](common/SKILL.md). A scheduled-but-unrun review means the
+      [Common Skill](../common/SKILL.md). A scheduled-but-unrun review means the
       Definition of Done is not met.
 - [ ] The Common Skill's rules are satisfied.
 
@@ -208,8 +211,8 @@ claim completion.
 - If the build / tests / analyzer fail, treat them as blockers: fix the root
   cause (in scope) or report the failure honestly. Never report a failed gate as
   passing (Common rule 5–6).
-- If the change starts to grow beyond the Issue's scope, stop and reconcile with
-  the requester rather than expanding silently (Common rule 7).
+- If the change starts to grow beyond the driving task's scope, stop and
+  reconcile with the requester rather than expanding silently (Common rule 7).
 - If a requirement is ambiguous or conflicts with the SSOT/ADR, list it as an
   open question / design-gap and resolve before proceeding, rather than guessing.
 - If operating in a Batch orchestrator worktree, follow the orchestrator's

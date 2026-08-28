@@ -20,7 +20,7 @@ it without guesswork, and a reviewer can verify against it.
 
 This skill is project-agnostic; repository-specific Issue / PR conventions
 (closing keywords, PR body requirements, authority ordering) come from the
-**Project Profile**. The [Common Skill](common/SKILL.md) rules apply.
+**Project Profile**. The [Common Skill](../common/SKILL.md) rules apply.
 
 ## When to apply
 
@@ -30,7 +30,7 @@ Use this skill when:
 - Updating an existing Issue that will be the basis for implementation.
 
 If the task is implementation (not issue authoring), use the
-[Implementation Skill](implementation/SKILL.md), whose Step 1 consumes the
+[Implementation Skill](../implementation/SKILL.md), whose Step 1 consumes the
 Issue this skill produces.
 
 ## Preconditions
@@ -38,7 +38,7 @@ Issue this skill produces.
 - A clear intent for what the issue should accomplish (or the issue to update).
 - Access to the repository so existing conventions and open issues can be
   checked (do not duplicate or contradict existing Issues).
-- [Common Skill](common/SKILL.md) accepted (an Issue must respect the SSOT and
+- [Common Skill](../common/SKILL.md) accepted (an Issue must respect the SSOT and
   must not state guessed requirements as fact).
 
 ## Inputs

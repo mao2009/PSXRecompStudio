@@ -49,7 +49,8 @@ These are hard rules. A task is not complete until every applicable rule holds.
 6. **Never treat failure as success.** A failed build, test, analyzer, or gate
    is a failure. Do not soften, hide, or bypass it to finish. Report it and, if
    in scope, fix it.
-7. **Minimize the change scope.** Change only what the Issue requires. Leave no
+7. **Minimize the change scope.** Change only what the driving task requires.
+   Leave no
    unrelated edits (formatting, renames, refactors, build artifacts, temp files)
    not requested by the task.
 8. **Preserve compatibility with existing specifications.** New or changed
