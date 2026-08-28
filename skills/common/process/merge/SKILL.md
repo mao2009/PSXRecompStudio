@@ -4,7 +4,8 @@ description: >
   Safe PR Merge Skill for Batch and Standalone use.
   Enforces mandatory approval → rebase → validation → normal merge flow.
   Prevents admin bypass and protection rule circumvention.
-version: 1.0.0
+  Cross-platform: POSIX shell (default) and PowerShell implementations.
+version: 1.1.0
 scope: process
 platform: agent-agnostic
 related-issues: "#146"
@@ -442,7 +443,42 @@ runtime/
 
 | Runtime | Status | Platform |
 |---------|--------|----------|
-| PowerShell Core 7.x | Implemented | Windows, Linux, macOS |
+| Shell (POSIX sh) — Default | Implemented | Linux, macOS, Windows (POSIX) |
+| PowerShell Core 7.x | Legacy | Windows, Linux, macOS |
+
+The **Shell (POSIX sh) runtime** is the default for Linux/POSIX environments
+and is fully self-contained on standard POSIX tooling (`sh`, `git`, and
+optionally `gh`). It does **not** require `pwsh`/PowerShell.
+
+The PowerShell runtime is retained as a legacy/Windows option and is only
+needed if an agent explicitly invokes the `wrapper/merge.ps1` entry point.
+
+### Shell Runtime Usage
+
+The Shell runtime is a resumable state machine: each invocation processes
+exactly one step (`TRIGGER_CHECK → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH →
+REBASE → CONFLICT/VALIDATING → MERGING → MERGED → CLEANUP → COMPLETED`) and
+persists its state, so it is safe to re-run and can be resumed after an
+interruption.
+
+```sh
+# Advance the merge for PR 149 (resumes from the current persisted state)
+runtime/merge.sh merge --pr 149
+
+# Full context for a batch-driven merge
+runtime/merge.sh merge --pr 149 --issue 148 \
+    --worktree ../worktrees/148-e2e-test --branch issue/148-e2e-test \
+    --repo owner/repo
+
+# Show current state only
+runtime/merge.sh status --pr 149
+
+# Run the runtime test suite
+runtime/merge.sh test
+```
+
+Requirements: POSIX `sh`, `git`, and (for GitHub PR operations) `gh`.
+`pwsh`/PowerShell is **not** required.
 
 ## Porting to Another Project
 

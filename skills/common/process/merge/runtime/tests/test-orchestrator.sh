@@ -1,0 +1,252 @@
+#!/bin/sh
+# Test Suite: Merge Orchestrator
+# Drives the state machine through transitions using a fake `gh` CLI,
+# verifying persistence, transition advancement, and resumability.
+
+PASS=0
+FAIL=0
+
+_pass() { PASS=$((PASS + 1)); }
+_fail() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
+
+assert_true() {
+    _desc="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        _pass
+    else
+        _fail "$_desc"
+    fi
+}
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ORCH="$SCRIPT_DIR/../orchestrator.sh"
+MERGE_SH="$SCRIPT_DIR/../merge.sh"
+
+WORK=$(mktemp -d 2>/dev/null || echo "/tmp/merge-orch-test.$$")
+trap 'rm -rf "$WORK" >/dev/null 2>&1' EXIT
+
+# ---- Fake gh CLI ----
+# Returns a fake PR view payload for an OPEN, non-draft PR targeting main.
+_FAKE_GH="$WORK/fakebin"
+mkdir -p "$_FAKE_GH"
+cat > "$_FAKE_GH/gh" <<'FAKEGH'
+#!/bin/sh
+# Fake gh: only supports `pr view` returning a static OPEN/main PR.
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+    cat <<'EOF'
+{"number":149,"title":"Test PR","body":"","headRefName":"issue/148-test","baseRefName":"main","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","commits":[]}
+EOF
+    exit 0
+fi
+exit 1
+FAKEGH
+chmod +x "$_FAKE_GH/gh"
+
+export PATH="$_FAKE_GH:$PATH"
+
+echo "=== Merge Orchestrator Tests ==="
+echo ""
+
+# Source with the fake gh in place (so merge_gh_available succeeds)
+MERGE_RUNTIME_DIR="$SCRIPT_DIR/.."
+. "$ORCH"
+
+STATE_FILE="$WORK/.merge-state-149.json"
+
+# ------------------------------------------------------------
+# Test 1: TRIGGER_CHECK -> APPROVAL_VALIDATION via merge.sh
+# ------------------------------------------------------------
+echo "--- Trigger Check Advancement ---"
+MERGE_PR_NUMBER="149"
+MERGE_STATE_FILE="$STATE_FILE"
+MERGE_WORKTREE="$WORK/wt"
+MERGE_BRANCH=""
+MERGE_REPOSITORY=""
+MERGE_MAIN_DIR="$WORK"
+merge_orchestrate_one > "$WORK/out1.log" 2>&1
+_rc=$?
+
+assert_true "orchestrator returns success" test "$_rc" -eq 0
+assert_true "state file created" test -f "$STATE_FILE"
+_state=$(merge_state_get "$STATE_FILE" "State")
+assert_true "state transitioned to APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
+_branch=$(merge_state_get "$STATE_FILE" "BranchName")
+assert_true "BranchName recorded from PR" test "$_branch" = "issue/148-test"
+_issue=$(merge_state_get "$STATE_FILE" "IssueNumber")
+assert_true "IssueNumber extracted from branch" test "$_issue" = "148"
+
+# ------------------------------------------------------------
+# Test 2: Resumability - second invocation continues without crashing
+# ------------------------------------------------------------
+echo ""
+echo "--- Resumability / Fail-Closed ---"
+merge_orchestrate_one > "$WORK/out2.log" 2>&1
+_rc=$?
+assert_true "resume returns success" test "$_rc" -eq 0
+_state=$(merge_state_get "$STATE_FILE" "State")
+# APPROVAL_VALIDATION requires a worktree; none was provided, so it fails
+# closed to FAILED (safe) rather than advancing to a merge.
+assert_true "no worktree -> fails closed to FAILED" test "$_state" = "FAILED"
+
+# ------------------------------------------------------------
+# Test 3: FAILED is terminal (no further advancement)
+# ------------------------------------------------------------
+echo ""
+echo "--- Terminal FAILED ---"
+_pre_state=$(merge_state_get "$STATE_FILE" "State")
+merge_orchestrate_one > "$WORK/out3.log" 2>&1
+_state=$(merge_state_get "$STATE_FILE" "State")
+assert_true "FAILED remains terminal" test "$_state" = "FAILED"
+
+# ------------------------------------------------------------
+# Test 4: New-state creation with a valid worktree advances further
+# ------------------------------------------------------------
+echo ""
+echo "--- Approval Validation With Worktree ---"
+# Create a real git worktree so APPROVAL_VALIDATION can read a commit
+if command -v git >/dev/null 2>&1; then
+    # Create a real bare remote + working repo so `git fetch origin main`
+    # and origin/main both work deterministically.
+    REMOTE="$WORK/remote.git"
+    mkdir -p "$REMOTE"
+    git init -q --bare "$REMOTE" 2>/dev/null
+
+    REPO="$WORK/repo2"
+    mkdir -p "$REPO"
+    git init -q -b main "$REPO" 2>/dev/null
+    git -C "$REPO" config user.email "test@example.com"
+    git -C "$REPO" config user.name "Test"
+    git -C "$REPO" remote add origin "$REMOTE"
+    echo x > "$REPO/f.txt"
+    git -C "$REPO" add f.txt
+    git -C "$REPO" commit -q -m init
+    git -C "$REPO" push -q -u origin main
+    git -C "$REPO" worktree add -q -b issue/148-wt "$WORK/wt2" 2>/dev/null
+    git -C "$REPO" push -q -u origin issue/148-wt 2>/dev/null
+
+    STATE2="$WORK/.merge-state-150.json"
+    MERGE_PR_NUMBER="150"
+    MERGE_STATE_FILE="$STATE2"
+    MERGE_WORKTREE="$WORK/wt2"
+    MERGE_MAIN_DIR="$REPO"
+    merge_orchestrate_one > "$WORK/out4.log" 2>&1
+    _rc=$?
+    assert_true "step 1 (trigger) returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "step 1 transitions to APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
+
+    # No approval record yet -> holds (does not advance), returns success
+    merge_orchestrate_one > "$WORK/out5.log" 2>&1
+    _rc=$?
+    assert_true "approval hold returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "no approval -> stays APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
+
+    # Inject an approval record matching the current commit and main head.
+    # Replace the existing `"Approval": null` value in the state file.
+    _commit=$(git -C "$WORK/wt2" rev-parse HEAD 2>/dev/null)
+    _main=$(git -C "$REPO" rev-parse main 2>/dev/null)
+    _approval_json='{"PrNumber":150,"IssueNumber":148,"CommitSha":"'$_commit'","MainHeadSha":"'$_main'","ApprovedBy":"user","ApprovedAt":"2026-01-01T00:00:00Z","IsValid":true}'
+    _tmp="$STATE2.tmp"
+    sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_approval_json}/" "$STATE2" > "$_tmp" 2>/dev/null
+    mv "$_tmp" "$STATE2" 2>/dev/null
+
+    merge_orchestrate_one > "$WORK/out6.log" 2>&1
+    _rc=$?
+    assert_true "valid approval advances returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "valid approval -> MAIN_HEAD_REFRESH" test "$_state" = "MAIN_HEAD_REFRESH"
+
+    # MAIN_HEAD_REFRESH (fetch origin main) -> REBASE
+    merge_orchestrate_one > "$WORK/out7.log" 2>&1
+    _rc=$?
+    assert_true "main head refresh returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "MAIN_HEAD_REFRESH -> REBASE" test "$_state" = "REBASE"
+
+    # REBASE in a clean worktree (no commits on main since branch creation)
+    # -> VALIDATING
+    merge_orchestrate_one > "$WORK/out8.log" 2>&1
+    _rc=$?
+    assert_true "rebase step returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "clean REBASE -> VALIDATING" test "$_state" = "VALIDATING"
+
+    # VALIDATING uses fake gh mergeable -> MERGING
+    merge_orchestrate_one > "$WORK/out9.log" 2>&1
+    _rc=$?
+    assert_true "validating returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "VALIDATING -> MERGING" test "$_state" = "MERGING"
+
+    # MERGING via standard merge; fake gh does not actually merge so it fails
+    # closed to FAILED rather than pretending success.
+    merge_orchestrate_one > "$WORK/out10.log" 2>&1
+    _rc=$?
+    assert_true "merging step returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "MERGING without real gh merge -> FAILED (fail-closed)" test "$_state" = "FAILED"
+
+    # ------------------------------------------------------------
+    # Test 5: REBASE -> CONFLICT with ConflictFiles persisted as JSON
+    # ------------------------------------------------------------
+    echo "--- Rebase Conflict Detection ---"
+    C2="$WORK/c2"
+    REMOTE5="$WORK/remote5.git"
+    mkdir -p "$REMOTE5"
+    git init -q --bare "$REMOTE5" 2>/dev/null
+    mkdir -p "$C2"
+    git init -q -b main "$C2" 2>/dev/null
+    git -C "$C2" config user.email "test@example.com"
+    git -C "$C2" config user.name "Test"
+    git -C "$C2" remote add origin "$REMOTE5"
+    echo "base" > "$C2/cf.txt"
+    git -C "$C2" add cf.txt
+    git -C "$C2" commit -q -m "conflict base"
+    git -C "$C2" push -q -u origin main
+    # Feature branch edits cf.txt (will conflict with main below). Commit in the
+    # worktree so the change actually lands on branch issue/cf.
+    git -C "$C2" worktree add -q -b issue/cf "$WORK/wc" 2>/dev/null
+    echo "feature" > "$WORK/wc/cf.txt"
+    git -C "$WORK/wc" add cf.txt
+    git -C "$WORK/wc" commit -q -m "feature changes cf"
+    # Main edits the same file differently and advances origin/main
+    git -C "$C2" checkout -q main
+    echo "main" > "$C2/cf.txt"
+    git -C "$C2" add cf.txt
+    git -C "$C2" commit -q -m "main changes cf"
+    git -C "$C2" push -q origin main
+
+    STATE3="$WORK/.merge-state-151.json"
+    MERGE_PR_NUMBER="151"
+    MERGE_STATE_FILE="$STATE3"
+    MERGE_WORKTREE="$WORK/wc"
+    MERGE_MAIN_DIR="$C2"
+    # Drive straight to REBASE; we exercise the conflict-detection path only.
+    merge_new_state 151 148 "$WORK/wc" "issue/cf" > "$STATE3"
+    merge_state_set_string "$STATE3" "State" "REBASE" "BranchName" "issue/cf" "WorktreePath" "$WORK/wc"
+
+    # REBASE against updated origin/main -> conflict
+    merge_orchestrate_one > "$WORK/out11.log" 2>&1
+    _rc=$?
+    assert_true "conflict rebase returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE3" "State")
+    assert_true "conflicting REBASE -> CONFLICT" test "$_state" = "CONFLICT"
+    # ConflictFiles is a JSON array value (not a quoted string), so read it raw.
+    _cf=$(sed -n 's/.*"ConflictFiles"[[:space:]]*:[[:space:]]*\(\[[^]]*\]\|null\),.*/\1/p' "$STATE3" | head -1)
+    assert_true "ConflictFiles recorded" test -n "$_cf"
+    if command -v python3 >/dev/null 2>&1; then
+        # ConflictFiles must be a valid JSON document
+        printf '%s' "$_cf" | python3 -c 'import json,sys;json.load(sys.stdin)' 2>/dev/null \
+            && assert_true "ConflictFiles is valid JSON" true || _fail "ConflictFiles is valid JSON"
+    else
+        # Fallback: encoded array begins with '[' and contains the filename
+        _cf_contains=$(printf '%s' "$_cf" | grep -q "cf.txt" && echo yes || echo no)
+        assert_true "ConflictFiles mentions cf.txt" test "$_cf_contains" = "yes"
+    fi
+fi
+
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ] && exit 0 || exit 1
