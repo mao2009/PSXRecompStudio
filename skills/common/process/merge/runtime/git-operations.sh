@@ -253,6 +253,56 @@ merge_normal_merge() {
     return 1
 }
 
+# ============================================================
+# Authenticated Identity (Explicit Human Approval)
+# ============================================================
+
+# Resolve the authenticated operator identity for an explicit approval.
+# Only a verifiable GitHub identity is accepted: `gh api user` login. Local
+# git configuration is operator-controlled and is never treated as an
+# authenticated identity, so an operator cannot impersonate another approver
+# by editing git config. When no authenticated identity is available the
+# operation fails closed.
+# Emits three lines on stdout: login, name, email (name/email may be empty).
+# Usage: merge_authenticated_identity
+# Returns: 0 if an authenticated identity was resolved, 1 (with ERROR on
+# stderr) if not.
+merge_authenticated_identity() {
+    _login=""
+    _name=""
+    _email=""
+
+    if command -v gh >/dev/null 2>&1; then
+        _api_user=$(gh api user --jq '{login, name, email, login}' 2>/dev/null)
+        if [ -n "$_api_user" ]; then
+            _login=$(printf '%s\n' "$_api_user" | sed -n 's/.*"login"[[:space:]]*:[[:space:]]*"\([^\"]*\)".*/\1/p' | head -1)
+            _name=$(printf '%s\n' "$_api_user" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^\"]*\)".*/\1/p' | head -1)
+            _email=$(printf '%s\n' "$_api_user" | sed -n 's/.*"email"[[:space:]]*:[[:space:]]*"\([^\"]*\)".*/\1/p' | head -1)
+        fi
+    fi
+
+    # Fail closed unless an authenticated GitHub login was obtained. Local git
+    # config is operator-controlled and is deliberately NOT used as identity.
+    if [ -z "$_login" ]; then
+        echo "ERROR: Unable to resolve authenticated identity (gh api user) for explicit approval" >&2
+        return 1
+    fi
+
+    printf '%s\n%s\n%s\n' "$_login" "$_name" "$_email"
+    return 0
+}
+
+# Build the ApprovalSource string for a record.
+# Usage: merge_approval_source_normalize <source>
+# Maps an absent source to the github_review (legacy) default.
+merge_approval_source_normalize() {
+    if [ -z "$1" ]; then
+        echo "github_review"
+    else
+        echo "$1"
+    fi
+}
+
 # Test whether a PR has been merged (mirrors Test-MergePrMerged)
 # Emits KEY=VALUE lines (is_merged=<bool>, merge_commit=<sha>, state=<state>)
 # Usage: merge_pr_merged_status <pr_number> <repository>

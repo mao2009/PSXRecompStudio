@@ -32,6 +32,9 @@ runtime/
 # Advance the merge for PR 149 (resumable, one step per invocation)
 sh ./merge.sh merge --pr 149
 
+# Record an explicit human approval (solo-dev approval source)
+sh ./merge.sh approve --pr 149 --worktree ../worktrees/149-merge
+
 # Full context for a batch-driven merge
 sh ./merge.sh merge --pr 149 --issue 148 \
     --worktree ../worktrees/148-e2e-test --branch issue/148-e2e-test \
@@ -43,6 +46,26 @@ sh ./merge.sh status --pr 149
 
 The state machine is persisted to `.merge-state-<pr>.json` on every step, so
 re-running `merge` resumes from the last recorded state.
+
+### Explicit Human Approval
+
+`approve` records an `explicit_human` approval as a first-class approval source
+separate from the GitHub third-party review gate. It:
+
+- attributes `approved_by` to the operator's authenticated GitHub identity
+  (`gh api user` login) — never to an arbitrary command-line string and never
+  to operator-controlled local git config; if no authenticated identity is
+  available the operation fails closed;
+- binds the approval to the current PR HEAD SHA **and** the current main HEAD
+  SHA, so any change invalidates it;
+- is created only by this explicit operation — hand-editing the state file is
+  not accepted; a record missing the required identity/timestamp/binding fields
+  is rejected (fail closed);
+- is resumable: `approve -> (interruption) -> merge` re-validates the persisted
+  approval before proceeding.
+
+It never fakes a GitHub APPROVED review and never uses `--admin`, force push,
+or protection bypass.
 
 ## State Machine
 
