@@ -57,10 +57,15 @@ public readonly struct MmioRoute
     public static MmioRoute Resolve(uint address)
     {
         if (Ps1MemoryMap.IsTimerRegister(address))
+        {
+            var timerType = Ps1MemoryMap.GetTimerRegisterType(address);
+            if (timerType == TimerRegisterType.None)
+                return Unmapped;
             return ForTimer(
                 Ps1MemoryMap.GetTimerIndex(address),
-                Ps1MemoryMap.GetTimerRegisterType(address),
+                timerType,
                 address - Ps1MemoryMap.GetTimerBase(Ps1MemoryMap.GetTimerIndex(address)));
+        }
 
         if (!Ps1MemoryMap.IsDmaRegister(address))
             return Unmapped;

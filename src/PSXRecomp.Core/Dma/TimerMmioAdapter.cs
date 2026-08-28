@@ -126,10 +126,21 @@ public sealed class TimerMmioAdapter : global::PSXRecomp.Core.Runtime.ITimer, IM
 
         for (int i = 0; i < Ps1MemoryMap.TimerCount; i++)
         {
-            if (_core.GetTimerInterruptPending(i) && !_reported[i])
+            if (_core.GetTimerInterruptPending(i))
             {
-                _reported[i] = true;
-                _interruptCallback.Invoke(Ps1MemoryMap.GetTimerBase(i));
+                // Report each newly-pending interrupt once (one-shot), until it
+                // is cleared (acknowledged, mode rewrite, or reset).
+                if (!_reported[i])
+                {
+                    _reported[i] = true;
+                    _interruptCallback.Invoke(Ps1MemoryMap.GetTimerBase(i));
+                }
+            }
+            else
+            {
+                // Interrupt is no longer pending: allow the next pending edge
+                // to be reported again (e.g. after a mode rewrite).
+                _reported[i] = false;
             }
         }
     }

@@ -139,6 +139,22 @@ public class TimerMmioAdapterTests : IDisposable
     }
 
     [Fact]
+    public void OneShot_PreservesInterruptEnableBits_AfterFire()
+    {
+        _adapter.SetMode(TimerId.Timer0, ModeIrqTarget); // no repeat -> one-shot
+        _adapter.SetTarget(TimerId.Timer0, 3);
+        _adapter.Tick(3);
+        _adapter.HasInterrupt(TimerId.Timer0).Should().BeTrue();
+
+        // One-shot firing must not clear the IRQ enable bit from the mode
+        // register, so read-modify-write keeps interrupt config intact
+        // (bit 11 is the reached-target flag, reported on read and then cleared).
+        var mode = _adapter.GetMode(TimerId.Timer0);
+        (mode & ModeIrqTarget).Should().Be(ModeIrqTarget);
+        (mode & ModeIrqRepeat).Should().Be(0);
+    }
+
+    [Fact]
     public void Toggle_RaisesInterrupt_OnAlternatingReaches()
     {
         _adapter.SetMode(TimerId.Timer0, ModeIrqTarget | ModeIrqRepeat | ModeIrqToggle | ModeResetTarget);

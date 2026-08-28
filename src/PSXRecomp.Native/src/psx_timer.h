@@ -22,26 +22,30 @@ static constexpr uint32_t PSX_TIMER_MODE_OFF   = 0x04;
 static constexpr uint32_t PSX_TIMER_TARGET_OFF = 0x08;
 static constexpr int      PSX_TIMER_COUNT      = 3;
 
-// Mode register bit definitions (psx-spx).
-static constexpr uint16_t MODE_SYNC_EN         = 1u << 0;
-static constexpr uint16_t MODE_SYNC_MASK       = 3u << 1;
-static constexpr uint16_t MODE_RESET_TARGET    = 1u << 3;
-static constexpr uint16_t MODE_IRQ_TARGET      = 1u << 4;
-static constexpr uint16_t MODE_IRQ_OVERFLOW    = 1u << 5;
-static constexpr uint16_t MODE_IRQ_REPEAT      = 1u << 6;
-static constexpr uint16_t MODE_IRQ_TOGGLE      = 1u << 7;
-static constexpr uint16_t MODE_CLK_SRC0        = 1u << 8;
-static constexpr uint16_t MODE_CLK_SRC1        = 1u << 9;
-static constexpr uint16_t MODE_IRQ_REQUEST     = 1u << 10;
-static constexpr uint16_t MODE_TARGET_FLAG     = 1u << 11;
-static constexpr uint16_t MODE_OVERFLOW_FLAG   = 1u << 12;
-static constexpr uint16_t MODE_WRITE_MASK      = 0x03FFU; // bits 0-9 writable
+// Mode register bit definitions (psx-spx). Scoped names avoid collisions with
+// other subsystems (CodeRabbit finding).
+namespace PSXTimerMode {
+constexpr uint16_t SyncEnable       = 1u << 0;
+constexpr uint16_t SyncMask         = 3u << 1;
+constexpr uint16_t ResetTarget      = 1u << 3;
+constexpr uint16_t IrqTarget        = 1u << 4;
+constexpr uint16_t IrqOverflow      = 1u << 5;
+constexpr uint16_t IrqRepeat        = 1u << 6;
+constexpr uint16_t IrqToggle        = 1u << 7;
+constexpr uint16_t ClkSrc0          = 1u << 8;
+constexpr uint16_t ClkSrc1          = 1u << 9;
+constexpr uint16_t IrqRequest       = 1u << 10;
+constexpr uint16_t TargetFlag       = 1u << 11;
+constexpr uint16_t OverflowFlag     = 1u << 12;
+constexpr uint16_t WriteMask        = 0x03FFU; // bits 0-9 writable
+}
 
 struct PSXTimerChannel {
     uint16_t counter = 0;
     uint16_t target = 0;
     uint16_t mode = 0;          // bits 0-12
     uint8_t  irq_flag = 0;      // unacknowledged external IRQ latch (edge to interrupt controller)
+    uint8_t  irq_armed = 1;     // one-shot: suppress IRQs after first fire until mode rewrite
     uint8_t  toggle_line = 0;   // toggle output line state
     uint8_t  sync_active = 0;   // current HBlank/VBlank line state
     uint8_t  sync_prev = 0;     // previous line state (for edge detect)
@@ -113,10 +117,10 @@ inline uint32_t PSXTimerController::ClockDivisor(int timer) const {
 // Whether the current sync state permits the counter to increment this cycle.
 inline bool PSXTimerController::SyncAllowsCount(int timer) const {
     const PSXTimerChannel& tm = timers_[timer];
-    if ((tm.mode & MODE_SYNC_EN) == 0)
+    if ((tm.mode & PSXTimerMode::SyncEnable) == 0)
         return true; // free run
 
-    int sm = (tm.mode & MODE_SYNC_MASK) >> 1;
+    int sm = (tm.mode & PSXTimerMode::SyncMask) >> 1;
     if (timer == 2) {
         // Modes 0 or 3 = stop counter forever; 1 or 2 = free run (no h/v-blank).
         return (sm == 1 || sm == 2);
@@ -145,17 +149,17 @@ inline void PSXTimerController::AdvanceOne(int timer) {
 
     // Target reached (equality on the 16-bit counter, per psx-spx).
     if (tm.counter == tm.target) {
-        tm.mode |= MODE_TARGET_FLAG;
-        if (tm.mode & MODE_IRQ_TARGET)
+        tm.mode |= PSXTimerMode::TargetFlag;
+        if ((tm.mode & PSXTimerMode::IrqTarget) && tm.irq_armed)
             FireIRQ(timer);
-        if (tm.mode & MODE_RESET_TARGET)
+        if (tm.mode & PSXTimerMode::ResetTarget)
             tm.counter = 0;
     }
 
     // Overflow (wrapped from FFFFh to 0000h).
     if (old == 0xFFFF) {
-        tm.mode |= MODE_OVERFLOW_FLAG;
-        if (tm.mode & MODE_IRQ_OVERFLOW)
+        tm.mode |= PSXTimerMode::OverflowFlag;
+        if ((tm.mode & PSXTimerMode::IrqOverflow) && tm.irq_armed)
             FireIRQ(timer);
     }
 }
@@ -163,24 +167,25 @@ inline void PSXTimerController::AdvanceOne(int timer) {
 inline void PSXTimerController::FireIRQ(int timer) {
     PSXTimerChannel& tm = timers_[timer];
 
-    if (tm.mode & MODE_IRQ_TOGGLE) {
+    if (tm.mode & PSXTimerMode::IrqToggle) {
         tm.toggle_line ^= 1;
         if (tm.toggle_line) {
-            tm.mode &= ~MODE_IRQ_REQUEST; // bit10 = 0 => IRQ pending
+            tm.mode &= ~PSXTimerMode::IrqRequest; // bit10 = 0 => IRQ pending
             tm.irq_flag = 1;
         } else {
-            tm.mode |= MODE_IRQ_REQUEST;
+            tm.mode |= PSXTimerMode::IrqRequest;
         }
     } else {
         // Pulse mode: brief low pulse on bit10, raise external IRQ.
-        tm.mode &= ~MODE_IRQ_REQUEST;
+        tm.mode &= ~PSXTimerMode::IrqRequest;
         tm.irq_flag = 1;
-        tm.mode |= MODE_IRQ_REQUEST;
+        tm.mode |= PSXTimerMode::IrqRequest;
     }
 
-    // One-shot suppresses further IRQs until a new Mode write re-arms them.
-    if (!(tm.mode & MODE_IRQ_REPEAT))
-        tm.mode &= ~(MODE_IRQ_TARGET | MODE_IRQ_OVERFLOW);
+    // One-shot: suppress further IRQs until the next mode write re-arms.
+    // Interrupt-enable bits are preserved for ReadRegister and read-modify-write.
+    if (!(tm.mode & PSXTimerMode::IrqRepeat))
+        tm.irq_armed = 0;
 }
 
 inline void PSXTimerController::Tick(uint32_t cycles) {
@@ -206,8 +211,8 @@ inline void PSXTimerController::SetSyncLine(int timer, bool active) {
 
     // Edge side effects on a rising sync line (Hblank/Vblank) for Timer 0/1.
     bool rose = active && (tm.sync_prev == 0);
-    if ((tm.mode & MODE_SYNC_EN) != 0 && timer != 2 && rose) {
-        int sm = (tm.mode & MODE_SYNC_MASK) >> 1;
+    if ((tm.mode & PSXTimerMode::SyncEnable) != 0 && timer != 2 && rose) {
+        int sm = (tm.mode & PSXTimerMode::SyncMask) >> 1;
         if (sm == 1 || sm == 2)
             tm.counter = 0;      // reset counter at blank edge
         if (sm == 3)
@@ -239,7 +244,7 @@ inline uint32_t PSXTimerController::ReadRegister(uint32_t address) {
         case PSX_TIMER_MODE_OFF: {
             uint32_t v = timers_[t].mode;
             // Reading MODE clears the reached-target and reached-FFFF flags.
-            timers_[t].mode &= ~(MODE_TARGET_FLAG | MODE_OVERFLOW_FLAG);
+            timers_[t].mode &= ~(PSXTimerMode::TargetFlag | PSXTimerMode::OverflowFlag);
             return v;
         }
         case PSX_TIMER_TARGET_OFF:
@@ -261,12 +266,13 @@ inline void PSXTimerController::WriteRegister(uint32_t address, uint32_t value) 
             break;
         case PSX_TIMER_MODE_OFF:
             // Writing MODE forces counter reset and re-arms IRQ request.
-            timers_[t].mode = static_cast<uint16_t>((value & MODE_WRITE_MASK) | MODE_IRQ_REQUEST);
+            timers_[t].mode = static_cast<uint16_t>((value & PSXTimerMode::WriteMask) | PSXTimerMode::IrqRequest);
             timers_[t].counter = 0;
             timers_[t].toggle_line = 0;
             timers_[t].frac = 0;
             timers_[t].sync_armed = 0;
             timers_[t].irq_flag = 0;
+            timers_[t].irq_armed = 1; // re-arm one-shot / repeat IRQs
             break;
         case PSX_TIMER_TARGET_OFF:
             timers_[t].target = static_cast<uint16_t>(value & 0xFFFF);

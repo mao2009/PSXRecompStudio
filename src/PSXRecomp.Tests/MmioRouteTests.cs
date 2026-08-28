@@ -142,4 +142,14 @@ public class MmioRouteTests
         route.TimerRegisterType.Should().Be(TimerRegisterType.Mode);
         route.Offset.Should().Be(4u);
     }
+
+    [Theory]
+    [InlineData(0x1F80110Cu)] // Timer 0 gap (offset 0x0C)
+    [InlineData(0x1F80111Cu)] // Timer 1 gap
+    [InlineData(0x1F80112Cu)] // Timer 2 gap
+    public void Resolve_TimerGapRegister_ReturnsUnmapped(uint address)
+    {
+        var route = MmioRoute.Resolve(address);
+        route.Target.Should().Be(MmioTarget.None);
+    }
 }
