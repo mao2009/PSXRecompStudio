@@ -29,6 +29,24 @@ main ブランチは GitHub Repository Rules により保護されています�
 
 main への変更は Pull Request 経由でのみ可能です。
 
+## AI bootstrap path
+
+Before working on a task, an AI agent should load the applicable task template
+and the Common Skill in addition to the project knowledge:
+
+- `skills/common/task/common/SKILL.md` — project-wide universal rules (respect
+  the Architecture SSOT, treat the Issue as the SSOT of the work unit, verify
+  actual repository state, do not fabricate test results, never treat failure as
+  success, minimize change scope, meet the Definition of Done).
+- The task-specific template matching the work type:
+  `skills/common/task/research/SKILL.md`,
+  `skills/common/task/implementation/SKILL.md`,
+  `skills/common/task/review/SKILL.md`, or `skills/common/task/issue/SKILL.md`.
+  (A Release task template does not exist yet — see `skills/README.md`.)
+
+These are the reusable work templates (see `skills/README.md`); they complement,
+not replace, the gates below and the Batch/Merge execution skills.
+
 ## Before creating a pull request
 
 When the change touched implementation, architecture, CI/build/test
