@@ -141,6 +141,26 @@ merge_approval_timestamp_valid() {
     _sec=$(printf '%s' "$_ts" | cut -c18-19)
     case "$_month" in 0[1-9]|1[0-2]) ;; *) return 1 ;; esac
     case "$_day" in 0[1-9]|[12][0-9]|3[01]) ;; *) return 1 ;; esac
+
+    # Month-specific day limits, including February and leap years, so
+    # impossible dates (e.g. 2026-02-31, non-leap 2026-02-29) fail closed.
+    _month_num=$(printf '%s' "$_month" | sed 's/^0//')
+    _day_num=$(printf '%s' "$_day" | sed 's/^0//')
+    _max_day=31
+    case "$_month_num" in
+        4|6|9|11) _max_day=30 ;;
+        2)
+            _leap=0
+            if [ $((_year % 4)) -eq 0 ] && { [ $((_year % 100)) -ne 0 ] || [ $((_year % 400)) -eq 0 ]; }; then
+                _leap=1
+            fi
+            if [ "$_leap" -eq 1 ]; then _max_day=29; else _max_day=28; fi
+            ;;
+    esac
+    if [ "$_day_num" -gt "$_max_day" ]; then
+        return 1
+    fi
+
     case "$_hour" in 0[0-9]|1[0-9]|2[0-3]) ;; *) return 1 ;; esac
     case "$_min" in 0[0-9]|[1-5][0-9]) ;; *) return 1 ;; esac
     case "$_sec" in 0[0-9]|[1-5][0-9]) ;; *) return 1 ;; esac

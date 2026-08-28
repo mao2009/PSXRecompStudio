@@ -132,6 +132,27 @@ _merge_queue_has_explicit_human_approval() {
     _bs=$(printf '%s' "$_approved_at" | cut -c18-19)
     case "$_bm" in 0[1-9]|1[0-2]) ;; *) return 1 ;; esac
     case "$_bd" in 0[1-9]|[12][0-9]|3[01]) ;; *) return 1 ;; esac
+
+    # Month-specific day limits, including February and leap years, so
+    # impossible dates (e.g. 2026-02-31, non-leap 2026-02-29) fail closed.
+    _by=$(printf '%s' "$_approved_at" | cut -c1-4)
+    _bmn=$(printf '%s' "$_bm" | sed 's/^0//')
+    _bdn=$(printf '%s' "$_bd" | sed 's/^0//')
+    _bmax=31
+    case "$_bmn" in
+        4|6|9|11) _bmax=30 ;;
+        2)
+            if { [ $((_by % 4)) -eq 0 ] && { [ $((_by % 100)) -ne 0 ] || [ $((_by % 400)) -eq 0 ]; }; }; then
+                _bmax=29
+            else
+                _bmax=28
+            fi
+            ;;
+    esac
+    if [ "$_bdn" -gt "$_bmax" ]; then
+        return 1
+    fi
+
     case "$_bh" in 0[0-9]|1[0-9]|2[0-3]) ;; *) return 1 ;; esac
     case "$_bmi" in 0[0-9]|[1-5][0-9]) ;; *) return 1 ;; esac
     case "$_bs" in 0[0-9]|[1-5][0-9]) ;; *) return 1 ;; esac

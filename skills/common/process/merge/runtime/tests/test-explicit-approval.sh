@@ -141,6 +141,19 @@ assert_false "missing seconds rejected" \
     merge_approval_timestamp_valid "2026-01-01T00:00Z"
 assert_false "garbage timestamp rejected" \
     merge_approval_timestamp_valid "garbage"
+# month-specific day limits and leap years
+assert_false "Feb 31 rejected" \
+    merge_approval_timestamp_valid "2026-02-31T00:00:00Z"
+assert_false "non-leap Feb 29 rejected" \
+    merge_approval_timestamp_valid "2026-02-29T00:00:00Z"
+assert_true "leap Feb 29 accepted" \
+    merge_approval_timestamp_valid "2024-02-29T00:00:00Z"
+assert_false "day 31 in 30-day month rejected" \
+    merge_approval_timestamp_valid "2026-04-31T00:00:00Z"
+assert_true "day 30 in 30-day month accepted" \
+    merge_approval_timestamp_valid "2026-04-30T00:00:00Z"
+assert_true "day 31 in 31-day month accepted" \
+    merge_approval_timestamp_valid "2026-01-31T00:00:00Z"
 assert_false "malformed explicit_human record with bad timestamp fails closed" \
     merge_approval_is_valid_sourced "explicit_human" "true" "c1" "m1" "c1" "m1" "alice" "2026-99-99T99:99:99Z"
 

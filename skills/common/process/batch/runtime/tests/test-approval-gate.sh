@@ -204,6 +204,26 @@ else
     _pass "explicit approval malformed timestamp rejected"
 fi
 
+# Impossible calendar dates -> rejected (month-length / leap-year aware).
+_state_badfeb="$_REPO_DIR/.merge-state-182.json"
+cat > "$_state_badfeb" <<EOF
+{"PrNumber":182,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":182,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"x","ApprovedAt":"2026-02-31T00:00:00Z","ApprovalSource":"explicit_human","IsValid":true}}
+EOF
+if _merge_queue_has_explicit_human_approval "182" "$_wt" "$_REPO_DIR"; then
+    _fail "explicit approval Feb 31 rejected"
+else
+    _pass "explicit approval Feb 31 rejected"
+fi
+_state_nonleap="$_REPO_DIR/.merge-state-183.json"
+cat > "$_state_nonleap" <<EOF
+{"PrNumber":183,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":183,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"x","ApprovedAt":"2026-02-29T00:00:00Z","ApprovalSource":"explicit_human","IsValid":true}}
+EOF
+if _merge_queue_has_explicit_human_approval "183" "$_wt" "$_REPO_DIR"; then
+    _fail "explicit approval non-leap Feb 29 rejected"
+else
+    _pass "explicit approval non-leap Feb 29 rejected"
+fi
+
 # Main HEAD mismatch -> rejected (approval taken against older main).
 _state_mainmismatch="$_REPO_DIR/.merge-state-181.json"
 cat > "$_state_mainmismatch" <<EOF
