@@ -11,8 +11,18 @@ void PSXCpu::Reset() {
         gpr_[i] = 0;
     }
     pc_ = 0;
+    next_pc_ = 4;
+    delay_slot_pc_ = 0;
     hi_ = 0;
     lo_ = 0;
+    branch_pending_ = false;
+    branch_issued_ = false;
+    pending_branch_target_ = 0;
+    pending_branch_taken_ = false;
+    load_delay_reg_ = -1;
+    load_delay_value_ = 0;
+    next_load_delay_reg_ = -1;
+    next_load_delay_value_ = 0;
 }
 
 uint32_t PSXCpu::GetGPR(int index) const {
@@ -25,10 +35,21 @@ void PSXCpu::SetGPR(int index, uint32_t value) {
     if (index < 0 || index >= PSX_GPR_COUNT) return;
     if (index == 0) return;
     gpr_[index] = value;
+    // An immediate write beats a pending load-delay write to the same register.
+    // The R3000A writes the register in-order, so the later (immediate) write wins.
+    if (index == load_delay_reg_) {
+        load_delay_reg_ = -1;
+    }
+    if (index == next_load_delay_reg_) {
+        next_load_delay_reg_ = -1;
+    }
 }
 
 uint32_t PSXCpu::GetPC() const { return pc_; }
-void PSXCpu::SetPC(uint32_t value) { pc_ = value; }
+void PSXCpu::SetPC(uint32_t value) {
+    pc_ = value;
+    FlushPipeline();
+}
 
 uint32_t PSXCpu::GetHI() const { return hi_; }
 void PSXCpu::SetHI(uint32_t value) { hi_ = value; }
@@ -47,10 +68,93 @@ uint32_t PSXCpu::FetchInstruction(PSXMemory& memory) {
     return instruction;
 }
 
+void PSXCpu::FlushPipeline() {
+    // Commit any pending load result immediately and clear all pending state.
+    if (load_delay_reg_ >= 0) {
+        gpr_[load_delay_reg_] = load_delay_value_;
+    }
+    load_delay_reg_ = -1;
+    next_load_delay_reg_ = -1;
+
+    branch_pending_ = false;
+    branch_issued_ = false;
+    next_pc_ = pc_ + 4;
+}
+
+void PSXCpu::UpdateLoadDelay() {
+    // Commit the value loaded one instruction ago (the delay-slot instruction has
+    // already read the old value), then shift the queued load into place. Writing
+    // the register in-order ensures an immediate write in the delay slot wins.
+    if (load_delay_reg_ >= 0) {
+        gpr_[load_delay_reg_] = load_delay_value_;
+    }
+    load_delay_reg_ = next_load_delay_reg_;
+    load_delay_value_ = next_load_delay_value_;
+    next_load_delay_reg_ = -1;
+    next_load_delay_value_ = 0;
+}
+
+void PSXCpu::WriteRegDelayed(int index, uint32_t value) {
+    if (index < 0 || index >= PSX_GPR_COUNT) return;
+    if (index == 0) return;
+    // Double load delays to the same register: the last load wins.
+    if (index == load_delay_reg_) {
+        load_delay_reg_ = -1;
+    }
+    next_load_delay_reg_ = index;
+    next_load_delay_value_ = value;
+}
+
+void PSXCpu::SetPendingBranch(uint32_t target, bool taken) {
+    if (!branch_pending_) {
+        // Primary branch: record the pending control transfer. The delay slot is
+        // executed before this target is applied (ADR-005).
+        pending_branch_target_ = target;
+        pending_branch_taken_ = taken;
+    }
+    // Branch in a delay slot: the inner branch executes (and consumes its own
+    // delay slot) but its target is ignored; the outer branch is applied instead
+    // (docs/cpu/pipeline.md, branch-in-delay-slot).
+    branch_issued_ = true;
+}
+
 int PSXCpu::Step(PSXMemory& memory) {
+    uint32_t instr_addr = pc_;
     uint32_t instruction = FetchInstruction(memory);
-    pc_ += 4;
+
+    bool in_delay_slot = branch_pending_;
+    branch_issued_ = false;
+
     ExecuteInstruction(instruction, memory);
+
+    if (in_delay_slot) {
+        // This instruction is the delay slot of a pending branch.
+        if (branch_issued_) {
+            // Branch in a delay slot: the inner branch executes (and consumes its
+            // own delay slot) but its target is ignored; the outer branch applies
+            // afterwards (docs/cpu/pipeline.md). Track the shared delay slot.
+            delay_slot_pc_ = instr_addr + 4;
+            pc_ = instr_addr + 4;
+        } else {
+            // Apply the completed (outermost) branch (ADR-005).
+            if (pending_branch_taken_) {
+                pc_ = pending_branch_target_;
+            } else {
+                pc_ = delay_slot_pc_ + 4;
+            }
+            branch_pending_ = false;
+        }
+    } else if (branch_issued_) {
+        // A branch/jump just executed: the next instruction is its delay slot.
+        delay_slot_pc_ = instr_addr + 4;
+        branch_pending_ = true;
+        pc_ = instr_addr + 4;
+    } else {
+        pc_ = instr_addr + 4;
+    }
+
+    next_pc_ = pc_ + 4;
+    UpdateLoadDelay();
     return 0;
 }
 
@@ -487,34 +591,34 @@ void PSXCpu::ExecLb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint8_t* ram = memory.GetRAM();
     int8_t value = static_cast<int8_t>(ram[addr]);
-    SetGPR(rt, SignExtend16(value));
+    WriteRegDelayed(rt, SignExtend16(value));
 }
 
 void PSXCpu::ExecLbu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint8_t* ram = memory.GetRAM();
-    SetGPR(rt, ram[addr]);
+    WriteRegDelayed(rt, ram[addr]);
 }
 
 void PSXCpu::ExecLh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint8_t* ram = memory.GetRAM();
     int16_t value = static_cast<int16_t>((ram[addr] << 8) | ram[addr + 1]);
-    SetGPR(rt, SignExtend16(value));
+    WriteRegDelayed(rt, SignExtend16(value));
 }
 
 void PSXCpu::ExecLhu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint8_t* ram = memory.GetRAM();
     uint16_t value = (ram[addr] << 8) | ram[addr + 1];
-    SetGPR(rt, value);
+    WriteRegDelayed(rt, value);
 }
 
 void PSXCpu::ExecLw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint8_t* ram = memory.GetRAM();
     uint32_t value = (ram[addr] << 24) | (ram[addr + 1] << 16) | (ram[addr + 2] << 8) | ram[addr + 3];
-    SetGPR(rt, value);
+    WriteRegDelayed(rt, value);
 }
 
 void PSXCpu::ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
@@ -550,7 +654,7 @@ void PSXCpu::ExecLwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
                        (ram[addr - (addr & 3) + 2] << 8) |
                        ram[addr - (addr & 3) + 3];
     uint32_t mask = 0xFFFFFFFF << shift;
-    SetGPR(rt, (mem_val << shift) | (reg & ~mask));
+    WriteRegDelayed(rt, (mem_val << shift) | (reg & ~mask));
 }
 
 // Load Word Right - unaligned load, right bytes
@@ -564,7 +668,7 @@ void PSXCpu::ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
                        (ram[addr - (addr & 3) + 2] << 8) |
                        ram[addr - (addr & 3) + 3];
     uint32_t mask = 0xFFFFFFFF >> shift;
-    SetGPR(rt, (reg & ~mask) | (mem_val >> shift));
+    WriteRegDelayed(rt, (reg & ~mask) | (mem_val >> shift));
 }
 
 // Store Word Left - unaligned store, left bytes
@@ -603,77 +707,73 @@ void PSXCpu::ExecSwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
     ram[addr - (addr & 3) + 3] = static_cast<uint8_t>(result & 0xFF);
 }
 
-// Branch
+// Branch (branch delay slot per ADR-004/005)
 void PSXCpu::ExecBeq(uint32_t rs, uint32_t rt, int16_t offset) {
-    if (gpr_[rs] == gpr_[rt]) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, gpr_[rs] == gpr_[rt]);
 }
 
 void PSXCpu::ExecBne(uint32_t rs, uint32_t rt, int16_t offset) {
-    if (gpr_[rs] != gpr_[rt]) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, gpr_[rs] != gpr_[rt]);
 }
 
 void PSXCpu::ExecBlez(uint32_t rs, int16_t offset) {
-    if (ToSigned(gpr_[rs]) <= 0) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, ToSigned(gpr_[rs]) <= 0);
 }
 
 void PSXCpu::ExecBgtz(uint32_t rs, int16_t offset) {
-    if (ToSigned(gpr_[rs]) > 0) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, ToSigned(gpr_[rs]) > 0);
 }
 
 void PSXCpu::ExecBltz(uint32_t rs, int16_t offset) {
-    if (ToSigned(gpr_[rs]) < 0) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, ToSigned(gpr_[rs]) < 0);
 }
 
 void PSXCpu::ExecBgez(uint32_t rs, int16_t offset) {
-    if (ToSigned(gpr_[rs]) >= 0) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, ToSigned(gpr_[rs]) >= 0);
 }
 
 void PSXCpu::ExecBltzal(uint32_t rs, int16_t offset) {
-    SetGPR(31, pc_);
-    if (ToSigned(gpr_[rs]) < 0) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    // Return address is always linked, using the value of rs before linking.
+    bool taken = ToSigned(gpr_[rs]) < 0;
+    SetGPR(31, pc_ + 8);
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, taken);
 }
 
 void PSXCpu::ExecBgezal(uint32_t rs, int16_t offset) {
-    SetGPR(31, pc_);
-    if (ToSigned(gpr_[rs]) >= 0) {
-        pc_ = pc_ + (static_cast<int32_t>(offset) << 2);
-    }
+    bool taken = ToSigned(gpr_[rs]) >= 0;
+    SetGPR(31, pc_ + 8);
+    uint32_t target = pc_ + 4 + (static_cast<int32_t>(offset) << 2);
+    SetPendingBranch(target, taken);
 }
 
 // Jump
 void PSXCpu::ExecJ(uint32_t target) {
-    pc_ = (pc_ & 0xF0000000) | (target << 2);
+    uint32_t addr = (pc_ + 4) & 0xF0000000;
+    SetPendingBranch(addr | (target << 2), true);
 }
 
 void PSXCpu::ExecJal(uint32_t target) {
-    SetGPR(31, pc_);
-    pc_ = (pc_ & 0xF0000000) | (target << 2);
+    SetGPR(31, pc_ + 8);
+    uint32_t addr = (pc_ + 4) & 0xF0000000;
+    SetPendingBranch(addr | (target << 2), true);
 }
 
 void PSXCpu::ExecJr(uint32_t rs) {
-    pc_ = gpr_[rs] - 4;
+    SetPendingBranch(gpr_[rs], true);
 }
 
 void PSXCpu::ExecJalr(uint32_t rd, uint32_t rs) {
-    uint32_t link = pc_;
-    pc_ = gpr_[rs] - 4;
-    if (rd != 0) {
-        SetGPR(rd, link);
-    }
+    // Capture the target before linking so that jalr rd, rd uses the old value.
+    uint32_t target = gpr_[rs];
+    SetGPR(rd, pc_ + 8);
+    SetPendingBranch(target, true);
 }
 
 // System
