@@ -29,16 +29,16 @@ runtime/
 ### Merge a PR (resumable, one step per invocation)
 
 ```sh
-# Advance the merge for PR 149
-merge.sh merge --pr 149
+# Advance the merge for PR 149 (resumable, one step per invocation)
+sh ./merge.sh merge --pr 149
 
 # Full context for a batch-driven merge
-merge.sh merge --pr 149 --issue 148 \
+sh ./merge.sh merge --pr 149 --issue 148 \
     --worktree ../worktrees/148-e2e-test --branch issue/148-e2e-test \
     --repo owner/repo
 
 # Show current state
-merge.sh status --pr 149
+sh ./merge.sh status --pr 149
 ```
 
 The state machine is persisted to `.merge-state-<pr>.json` on every step, so
@@ -60,7 +60,7 @@ Safety guarantees (unchanged from the previous runtime):
 ## Testing
 
 ```sh
-merge.sh test
+sh ./merge.sh test
 ```
 
 Or run a single suite:

@@ -74,7 +74,13 @@ merge_approval_validation_reasons() {
     if [ "$_is_valid_flag" != "true" ] && [ "$_is_valid_flag" != "1" ]; then
         echo "Approval has been invalidated"
     fi
-    if [ "$_approved_commit" != "$_current_commit" ]; then
+    # Fail closed: a genuine commit comparison requires both SHAs to be present.
+    # If either is missing we cannot prove the current commit is the approved
+    # one, so the approval must NOT be treated as valid.
+    if [ -z "$_approved_commit" ] || [ -z "$_current_commit" ]; then
+        [ -z "$_approved_commit" ] && echo "Approved commit SHA is missing"
+        [ -z "$_current_commit" ] && echo "Current commit SHA is missing"
+    elif [ "$_approved_commit" != "$_current_commit" ]; then
         echo "Commit SHA mismatch: approved=${_approved_commit}, current=${_current_commit}"
     fi
     if [ -n "$_approved_main_head" ] && [ -n "$_current_main_head" ] && \

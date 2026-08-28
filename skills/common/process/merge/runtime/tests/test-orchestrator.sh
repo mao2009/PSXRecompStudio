@@ -83,10 +83,11 @@ echo ""
 echo "--- Resumability / Fail-Closed ---"
 merge_orchestrate_one > "$WORK/out2.log" 2>&1
 _rc=$?
-assert_true "resume returns success" test "$_rc" -eq 0
-_state=$(merge_state_get "$STATE_FILE" "State")
 # APPROVAL_VALIDATION requires a worktree; none was provided, so it fails
-# closed to FAILED (safe) rather than advancing to a merge.
+# closed to FAILED (safe) rather than advancing to a merge. The FAILED
+# terminal state is now signaled with a non-zero exit.
+assert_true "FAILED fail-closed returns non-zero" test "$_rc" -ne 0
+_state=$(merge_state_get "$STATE_FILE" "State")
 assert_true "no worktree -> fails closed to FAILED" test "$_state" = "FAILED"
 
 # ------------------------------------------------------------
@@ -98,6 +99,28 @@ _pre_state=$(merge_state_get "$STATE_FILE" "State")
 merge_orchestrate_one > "$WORK/out3.log" 2>&1
 _state=$(merge_state_get "$STATE_FILE" "State")
 assert_true "FAILED remains terminal" test "$_state" = "FAILED"
+
+# ------------------------------------------------------------
+# Test 3b: REBASE -> FAILED (non-conflict rebase failure is a valid
+# transition and is persisted as FAILED with a non-zero exit)
+# ------------------------------------------------------------
+echo ""
+echo "--- Rebase Non-Conflict Failure -> FAILED ---"
+_NONCONF_STATE="$WORK/.merge-state-152.json"
+mkdir -p "$WORK/non-git-dir"
+merge_new_state 152 148 "$WORK/non-git-dir" "issue/152-test" > "$_NONCONF_STATE"
+merge_state_set_string "$_NONCONF_STATE" "State" "REBASE"
+MERGE_PR_NUMBER="152"
+MERGE_STATE_FILE="$_NONCONF_STATE"
+MERGE_WORKTREE="$WORK/non-git-dir"
+MERGE_MAIN_DIR="$WORK"
+MERGE_REPOSITORY=""
+MERGE_BRANCH=""
+merge_orchestrate_one > "$WORK/out3b.log" 2>&1
+_rc=$?
+assert_true "REBASE non-conflict failure returns non-zero" test "$_rc" -ne 0
+_state=$(merge_state_get "$_NONCONF_STATE" "State")
+assert_true "REBASE non-conflict failure transitions to FAILED" test "$_state" = "FAILED"
 
 # ------------------------------------------------------------
 # Test 4: New-state creation with a valid worktree advances further
@@ -181,10 +204,11 @@ if command -v git >/dev/null 2>&1; then
     assert_true "VALIDATING -> MERGING" test "$_state" = "MERGING"
 
     # MERGING via standard merge; fake gh does not actually merge so it fails
-    # closed to FAILED rather than pretending success.
+    # closed to FAILED rather than pretending success. Non-zero exit signals
+    # the terminal FAILED state.
     merge_orchestrate_one > "$WORK/out10.log" 2>&1
     _rc=$?
-    assert_true "merging step returns success" test "$_rc" -eq 0
+    assert_true "MERGING fail-closed returns non-zero" test "$_rc" -ne 0
     _state=$(merge_state_get "$STATE2" "State")
     assert_true "MERGING without real gh merge -> FAILED (fail-closed)" test "$_state" = "FAILED"
 

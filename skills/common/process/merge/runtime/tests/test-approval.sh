@@ -83,6 +83,36 @@ assert_false "Approval invalid after rebase changes commit" \
 assert_false "Approval invalid when main HEAD changes" \
     merge_approval_is_valid true "abc123" "def456" "abc123" "new_main_head"
 
+# --- Invalid: missing commit SHA fails closed ---
+echo ""
+echo "--- Missing Commit SHA Fail-Closed ---"
+assert_false "Approval invalid when approved commit SHA is missing" \
+    merge_approval_is_valid true "" "def456" "abc123" "def456"
+assert_false "Approval invalid when current commit SHA is missing" \
+    merge_approval_is_valid true "abc123" "def456" "" "def456"
+assert_false "Approval invalid when both commit SHAs are missing" \
+    merge_approval_is_valid true "" "def456" "" "def456"
+
+reasons=$(merge_approval_validation_reasons true "" "def456" "abc123" "def456")
+case "$reasons" in
+    *"Approved commit SHA is missing"*) _pass ;;
+    *) _fail "Missing approved commit SHA reason not reported";;
+esac
+reasons=$(merge_approval_validation_reasons true "abc123" "def456" "" "def456")
+case "$reasons" in
+    *"Current commit SHA is missing"*) _pass ;;
+    *) _fail "Missing current commit SHA reason not reported";;
+esac
+
+# Non-empty matching SHAs remain valid; non-empty mismatching SHAs remain the
+# dedicated mismatch case (not reported as missing).
+reasons=$(merge_approval_validation_reasons true "abc123" "def456" "xyz789" "def456")
+case "$reasons" in
+    *"Approved commit SHA is missing"*|*"Current commit SHA is missing"*) _fail "non-empty mismatch misreported as missing" ;;
+    *"Commit SHA mismatch"*) _pass ;;
+    *) _fail "non-empty mismatch reason not preserved";;
+esac
+
 # --- Approval summary ---
 echo ""
 echo "--- Approval Summary ---"

@@ -76,11 +76,17 @@ merge_rebase() {
     # Check for conflicts
     _conflicts=$(git -C "$_worktree" diff --name-only --diff-filter=U 2>/dev/null)
     if [ -n "$_conflicts" ]; then
+        # Flatten the (possibly multi-line) conflict list onto a single line so
+        # the KEY=VALUE result format stays parseable while every conflicted
+        # path is preserved. The orchestrator splits on whitespace, so paths
+        # are separated by spaces.
+        _conflicts_single=$(printf '%s' "$_conflicts" | tr '\n' ' ')
+        _conflicts_single=${_conflicts_single% }
         # Abort rebase to leave a clean state
         git -C "$_worktree" rebase --abort 2>/dev/null
         echo "success=false"
         echo "has_conflicts=true"
-        echo "conflict_files=${_conflicts}"
+        echo "conflict_files=${_conflicts_single}"
         echo "message=Rebase failed with conflicts"
         return 1
     fi
@@ -285,13 +291,16 @@ merge_pr_merged_status() {
 
 # ============================================================
 # Worktree / Branch Cleanup (mirrors Remove-MergeWorktree)
-# Usage: merge_remove_worktree <worktree_path> <branch_name> [force]
+# Runs all Git operations against the repository directory so the caller's
+# working directory does not matter.
+# Usage: merge_remove_worktree <worktree_path> <branch_name> [force] [repo_dir]
 # Returns: 0 on success, 1 on hard failure
 # ============================================================
 merge_remove_worktree() {
     _worktree="$1"
     _branch="$2"
     _force="${3:-false}"
+    _repo_dir="${4:-.}"
     _rc=0
 
     echo "Removing Worktree: $_worktree"
@@ -300,9 +309,9 @@ merge_remove_worktree() {
         echo "WARNING: Worktree does not exist: $_worktree" >&2
     else
         if [ "$_force" = "true" ]; then
-            git worktree remove --force "$_worktree" 2>/dev/null
+            git -C "$_repo_dir" worktree remove --force "$_worktree" 2>/dev/null
         else
-            git worktree remove "$_worktree" 2>/dev/null
+            git -C "$_repo_dir" worktree remove "$_worktree" 2>/dev/null
         fi
         if [ $? -ne 0 ]; then
             echo "ERROR: Failed to remove Worktree: $_worktree" >&2
@@ -312,20 +321,20 @@ merge_remove_worktree() {
 
     # Delete local branch
     echo "Deleting local Branch: $_branch"
-    git branch -D "$_branch" 2>/dev/null
+    git -C "$_repo_dir" branch -D "$_branch" 2>/dev/null
     if [ $? -ne 0 ]; then
         echo "WARNING: Failed to delete local Branch: $_branch" >&2
     fi
 
     # Delete remote branch
     echo "Deleting remote Branch: $_branch"
-    git push origin --delete "$_branch" 2>/dev/null
+    git -C "$_repo_dir" push origin --delete "$_branch" 2>/dev/null
     if [ $? -ne 0 ]; then
         echo "WARNING: Failed to delete remote Branch: $_branch (may not exist)" >&2
     fi
 
     # Prune stale worktree references
-    git worktree prune 2>/dev/null
+    git -C "$_repo_dir" worktree prune 2>/dev/null
 
     return $_rc
 }

@@ -131,9 +131,28 @@ merge_load_state_file() {
 # State Field Updates
 # ============================================================
 
-# Escape a value for safe inclusion in a sed replacement string (slash + amp)
+# Escape a string for safe inclusion as a JSON string value.
+# JSON-escapes `"`, `\`, tab and CR, and converts embedded newlines to the
+# literal \n escape so the result is a single line that is both valid JSON and
+# safe for line-based sed replacement. `/` and `&` are left as-is for JSON
+# (both are legal inside a JSON string) and handled separately for sed.
+_merge_json_escape() {
+    printf '%s' "$1" | awk '{
+        gsub(/\\/, "\\\\");
+        gsub(/"/, "\\\"");
+        gsub(/\t/, "\\t");
+        gsub(/\r/, "\\r");
+        if (NR > 1) printf "\\n";
+        printf "%s", $0
+    }'
+}
+
+# Escape an already JSON-escaped value so it can be embedded verbatim in a sed
+# replacement string (using `|` as the substitution delimiter). Backslashes
+# and `&` must be doubled/escaped so sed emits them literally.
 _merge_sed_escape() {
-    printf '%s' "$1" | sed 's#/#\\/#g; s#&#\\&#g'
+    _json_value="$1"
+    printf '%s' "$_json_value" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g'
 }
 
 # Update string/null fields in a state JSON payload.
@@ -150,9 +169,10 @@ _merge_update_string_fields() {
             _content=$(printf '%s' "$_content" | sed "s/\"${_field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"${_field}\": null/")
             _content=$(printf '%s' "$_content" | sed "s/\"${_field}\"[[:space:]]*:[[:space:]]*null/\"${_field}\": null/")
         else
-            _escaped=$(_merge_sed_escape "$_value")
-            _content=$(printf '%s' "$_content" | sed "s/\"${_field}\"[[:space:]]*:[[:space:]]*null/\"${_field}\": \"${_escaped}\"/")
-            _content=$(printf '%s' "$_content" | sed "s/\"${_field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"${_field}\": \"${_escaped}\"/")
+            _json=$(_merge_json_escape "$_value")
+            _escaped=$(_merge_sed_escape "$_json")
+            _content=$(printf '%s' "$_content" | sed "s|\"${_field}\"[[:space:]]*:[[:space:]]*null|\"${_field}\": \"${_escaped}\"|")
+            _content=$(printf '%s' "$_content" | sed "s|\"${_field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"${_field}\": \"${_escaped}\"|")
         fi
     done
     printf '%s' "$_content"
@@ -220,9 +240,9 @@ merge_new_state() {
     _issue_json="null"
     [ -n "$_issue" ] && _issue_json="$_issue"
     _worktree_json="null"
-    [ -n "$_worktree" ] && _worktree_json="\"$_worktree\""
+    [ -n "$_worktree" ] && _worktree_json="\"$(_merge_json_escape "$_worktree")\""
     _branch_json="null"
-    [ -n "$_branch" ] && _branch_json="\"$_branch\""
+    [ -n "$_branch" ] && _branch_json="\"$(_merge_json_escape "$_branch")\""
 
     cat <<EOF
 {

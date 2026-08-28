@@ -333,7 +333,7 @@ _merge_handle_cleanup() {
     _branch=$(merge_state_get "$MERGE_STATE_FILE" BranchName)
     if [ -n "$MERGE_WORKTREE" ] && [ -n "$_branch" ]; then
         echo "Cleaning up Worktree and Branch..."
-        merge_remove_worktree "$MERGE_WORKTREE" "$_branch"
+        merge_remove_worktree "$MERGE_WORKTREE" "$_branch" "false" "$MERGE_MAIN_DIR"
     else
         echo "No Worktree or Branch to clean up"
     fi
@@ -405,5 +405,13 @@ merge_orchestrate_one() {
             ;;
     esac
 
+    # A single invocation always ends having transitioned into (or remained in)
+    # some state. If that resulting state is the terminal FAILED, signal it with
+    # a non-zero exit so callers can react, while leaving the persisted state
+    # and retry guidance intact. COMPLETED (and all non-FAILED states) succeed.
+    _final_state=$(merge_state_get "$MERGE_STATE_FILE" "State")
+    if [ "$_final_state" = "FAILED" ]; then
+        return 1
+    fi
     return 0
 }

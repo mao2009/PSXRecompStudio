@@ -25,7 +25,7 @@ merge_valid_transition() {
         MAIN_HEAD_REFRESH)
             case "$_to" in REBASE) return 0 ;; esac ;;
         REBASE)
-            case "$_to" in VALIDATING|CONFLICT) return 0 ;; esac ;;
+            case "$_to" in VALIDATING|CONFLICT|FAILED) return 0 ;; esac ;;
         CONFLICT)
             return 1 ;;
         VALIDATING)
@@ -60,7 +60,7 @@ merge_get_valid_transitions() {
         TRIGGER_CHECK) echo "APPROVAL_VALIDATION FAILED" ;;
         APPROVAL_VALIDATION) echo "MAIN_HEAD_REFRESH FAILED" ;;
         MAIN_HEAD_REFRESH) echo "REBASE" ;;
-        REBASE) echo "VALIDATING CONFLICT" ;;
+        REBASE) echo "VALIDATING CONFLICT FAILED" ;;
         CONFLICT) echo "" ;;
         VALIDATING) echo "MERGING FAILED" ;;
         MERGING) echo "MERGED FAILED" ;;

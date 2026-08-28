@@ -114,7 +114,68 @@ case "$_conflicts" in
 esac
 # Rebase must be aborted, leaving a clean state
 assert_false "rebase is aborted (no rebase in progress)" \
-    bash -c "cd '$WT' && git rev-parse -q --verify REBASE_HEAD"
+    git -C "$WT" rev-parse -q --verify REBASE_HEAD
+
+# ------------------------------------------------------------
+# Multi-file conflict detection (blocking regression test for the
+# multi-line conflict_files value that used to break the KEY=VALUE format)
+# ------------------------------------------------------------
+echo ""
+echo "--- Multi-File Conflict Detection ---"
+REPO3="$WORK/repo3"
+REMOTE3="$WORK/remote3.git"
+WT3="$WORK/wt3"
+mkdir -p "$REMOTE3"
+git init -q --bare "$REMOTE3" 2>/dev/null
+mkdir -p "$REPO3"
+git init -q -b main "$REPO3" 2>/dev/null
+git -C "$REPO3" config user.email "test@example.com"
+git -C "$REPO3" config user.name "Test"
+git -C "$REPO3" remote add origin "$REMOTE3"
+echo "a1" > "$REPO3/a.txt"
+echo "b1" > "$REPO3/b.txt"
+echo "c1" > "$REPO3/c.txt"
+git -C "$REPO3" add a.txt b.txt c.txt
+git -C "$REPO3" commit -q -m "base"
+git -C "$REPO3" push -q -u origin main
+# Feature branch edits a.txt and b.txt (both will conflict with main below)
+git -C "$REPO3" worktree add -q -b feature/multi "$WT3" main 2>/dev/null
+echo "feature-a" > "$WT3/a.txt"
+echo "feature-b" > "$WT3/b.txt"
+git -C "$WT3" add a.txt b.txt
+git -C "$WT3" commit -q -m "feature edits a and b"
+# Main edits a.txt and b.txt differently, then advances origin/main
+git -C "$REPO3" checkout -q main
+echo "main-a" > "$REPO3/a.txt"
+echo "main-b" > "$REPO3/b.txt"
+git -C "$REPO3" commit -q -am "main edits a and b"
+git -C "$REPO3" push -q origin main
+
+_result3=$(merge_rebase "$WT3")
+_success3=$(printf '%s' "$_result3" | sed -n 's/^success=\(.*\)$/\1/p')
+_has_conflicts3=$(printf '%s' "$_result3" | sed -n 's/^has_conflicts=\(.*\)$/\1/p')
+_conflicts3=$(printf '%s' "$_result3" | sed -n 's/^conflict_files=\(.*\)$/\1/p')
+
+assert_true "multi-file rebase reports conflicts" test "$_success3" = "false" -a "$_has_conflicts3" = "true"
+# Both conflicting files must be preserved in a single-line value
+case "$_conflicts3" in
+    *a.txt*) _pass ;;
+    *) _fail "multi-file conflict_files should include a.txt (got: '$_conflicts3')";;
+esac
+case "$_conflicts3" in
+    *b.txt*) _pass ;;
+    *) _fail "multi-file conflict_files should include b.txt (got: '$_conflicts3')";;
+esac
+# Non-conflicting c.txt must NOT be reported
+case "$_conflicts3" in
+    *c.txt*) _fail "conflict_files should not include c.txt (got: '$_conflicts3')" ;;
+    *) _pass ;;
+esac
+# The value must be a single line (KEY=VALUE format must not split)
+_line_count=$(printf '%s\n' "$_conflicts3" | wc -l)
+assert_true "conflict_files is a single line" test "$_line_count" -eq 1
+assert_false "multi-file rebase aborted (no rebase in progress)" \
+    git -C "$WT3" rev-parse -q --verify REBASE_HEAD
 
 # ------------------------------------------------------------
 # Clean rebase success
@@ -196,6 +257,54 @@ echo ""
 echo "--- Issue Extraction From Branch ---"
 assert_output "extract issue from issue/148-test" "148" merge_issue_from_branch "issue/148-test"
 assert_output "no issue from plain branch" "" merge_issue_from_branch "feature/x"
+
+# ------------------------------------------------------------
+# Cleanup is cwd-independent: run from a different working directory
+# and verify worktree, local branch, and remote branch are all removed.
+# ------------------------------------------------------------
+echo ""
+echo "--- Cwd-Independent Cleanup ---"
+REMOTE4="$WORK/remote4.git"
+REPO4="$WORK/repo4"
+WT4="$WORK/wt4"
+mkdir -p "$REMOTE4"
+git init -q --bare "$REMOTE4" 2>/dev/null
+mkdir -p "$REPO4"
+git init -q -b main "$REPO4" 2>/dev/null
+git -C "$REPO4" config user.email "test@example.com"
+git -C "$REPO4" config user.name "Test"
+git -C "$REPO4" remote add origin "$REMOTE4"
+echo "x" > "$REPO4/x.txt"
+git -C "$REPO4" add x.txt
+git -C "$REPO4" commit -q -m "init"
+git -C "$REPO4" push -q -u origin main
+# Create a feature branch in a worktree and push it to the remote
+git -C "$REPO4" worktree add -q -b issue/200-cleanup "$WT4" main 2>/dev/null
+echo "y" > "$WT4/y.txt"
+git -C "$WT4" add y.txt
+git -C "$WT4" commit -q -m "feature"
+git -C "$WT4" push -q -u origin issue/200-cleanup
+
+# Run cleanup from an unrelated directory (NOT the repo dir)
+_other_dir="$WORK/other"
+mkdir -p "$_other_dir"
+_cleanup_out=$(cd "$_other_dir" && merge_remove_worktree "$WT4" "issue/200-cleanup" "true" "$REPO4")
+_cleanup_rc=$?
+assert_true "cleanup from other cwd returns success" test "$_cleanup_rc" -eq 0
+# Worktree removed from the repo registry
+_wt_list=$(git -C "$REPO4" worktree list 2>/dev/null)
+case "$_wt_list" in
+    *"$_other_dir"*|*"$WT4"*) _fail "worktree still listed after cleanup" ;;
+    *) _pass ;;
+esac
+# Local branch removed
+assert_false "local branch removed from other cwd" \
+    git -C "$REPO4" show-ref -q --verify refs/heads/issue/200-cleanup
+# Remote branch removed
+_remote_refs=$(git -C "$REPO4" ls-remote --heads origin issue/200-cleanup 2>/dev/null)
+assert_true "remote branch removed from other cwd" test -z "$_remote_refs"
+# Worktree directory no longer exists
+assert_false "worktree directory removed" test -d "$WT4"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

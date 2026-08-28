@@ -85,30 +85,58 @@ _parse_merge_options() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --pr)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_PR="$2"
                 shift 2
                 ;;
             --issue)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_ISSUE="$2"
                 shift 2
                 ;;
             --worktree)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_WORKTREE="$2"
                 shift 2
                 ;;
             --branch)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_BRANCH="$2"
                 shift 2
                 ;;
             --repo)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_REPO="$2"
                 shift 2
                 ;;
             --state-file)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_STATE_FILE="$2"
                 shift 2
                 ;;
             --main-dir)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
                 _OPT_MAIN_DIR="$2"
                 shift 2
                 ;;
@@ -134,6 +162,19 @@ _parse_merge_options() {
 # Command Implementations
 # ============================================================
 
+# Validate that a value is a positive integer (a valid GitHub PR number).
+# Prints an error to stderr and returns 1 when invalid.
+_merge_validate_pr_number() {
+    _value="$1"
+    case "$_value" in
+        ''|*[!0-9]*|0)
+            printf 'Error: invalid PR number: %s (expected a positive integer)\n' "$_value" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 _cmd_merge() {
     _parse_merge_options "$@"
     if [ $? -ne 0 ]; then
@@ -143,6 +184,10 @@ _cmd_merge() {
     if [ -z "$_OPT_PR" ]; then
         printf 'Error: PR number required\n' >&2
         printf 'Usage: merge.sh merge --pr <number> [options]\n' >&2
+        return 1
+    fi
+
+    if ! _merge_validate_pr_number "$_OPT_PR"; then
         return 1
     fi
 
@@ -168,6 +213,10 @@ _cmd_status() {
     if [ -z "$_OPT_PR" ]; then
         printf 'Error: PR number required\n' >&2
         printf 'Usage: merge.sh status --pr <number> [--state-file <path>]\n' >&2
+        return 1
+    fi
+
+    if ! _merge_validate_pr_number "$_OPT_PR"; then
         return 1
     fi
 
@@ -231,7 +280,12 @@ _cmd_test() {
 
 _main() {
     _cmd="${1:-help}"
-    shift 2>/dev/null || true
+    # Only shift when there are positionals to consume. An unconditional shift
+    # on an empty argument list is a fatal error in some shells (e.g. dash),
+    # which would abort a bare `merge.sh` invocation with no usable output.
+    if [ $# -gt 0 ]; then
+        shift
+    fi
 
     case "$_cmd" in
         merge)
