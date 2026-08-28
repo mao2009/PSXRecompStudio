@@ -155,12 +155,19 @@ _merge_handle_approval_validation() {
     fi
 
     # Extract the approved commit and main HEAD from the stored approval record.
-    # The approval is an inline JSON object: {..., "CommitSha": "...", "MainHeadSha": "...", "IsValid": true, ...}
+    # The approval is an inline JSON object: {..., "CommitSha": "...",
+    # "MainHeadSha": "...", "IsValid": true,
+    # "ApprovalSource": "explicit_human"|"github_review",
+    # "ApprovedBy": "...", "ApprovedAt": "...", ...}
     _approved_settings=$(printf '%s' "$_content" | sed -n '/"Approval"[[:space:]]*:[[:space:]]*{/,/}/p' | head -5)
     _approved_commit=$(printf '%s' "$_approved_settings" | sed -n 's/.*"CommitSha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
     _approved_main_head=$(printf '%s' "$_approved_settings" | sed -n 's/.*"MainHeadSha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
     _approved_is_valid=$(printf '%s' "$_approved_settings" | sed -n 's/.*"IsValid"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' | head -1)
     [ -z "$_approved_is_valid" ] && _approved_is_valid="true"
+    # Approval source and identity fields (source-aware validation).
+    _approval_source=$(printf '%s' "$_approved_settings" | sed -n 's/.*"ApprovalSource"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    _approved_by=$(printf '%s' "$_approved_settings" | sed -n 's/.*"ApprovedBy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    _approved_at=$(printf '%s' "$_approved_settings" | sed -n 's/.*"ApprovedAt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 
     _main_head=$(merge_get_main_head "$MERGE_MAIN_DIR")
     if [ -z "$_main_head" ]; then
@@ -171,17 +178,28 @@ _merge_handle_approval_validation() {
     echo "Main HEAD: $_main_head"
     merge_state_set_string "$MERGE_STATE_FILE" "MainHeadSha" "$_main_head"
 
+    # Fail closed on a present-but-unknown approval source before any merge.
+    if [ -n "$_approval_source" ] && ! merge_approval_source_known "$_approval_source"; then
+        echo "Approval is invalid: unknown approval source '${_approval_source}'"
+        echo "User re-approval required."
+        return 0
+    fi
+
     if [ "$_approved_is_valid" = "true" ] && \
-       merge_approval_is_valid "$_approved_is_valid" "$_approved_commit" "$_approved_main_head" "$_current_commit" "$_main_head"; then
-        echo "Approval is valid"
+       merge_approval_is_valid_sourced \
+           "$_approval_source" "$_approved_is_valid" "$_approved_commit" "$_approved_main_head" \
+           "$_current_commit" "$_main_head" "$_approved_by" "$_approved_at"; then
+        echo "Approval is valid (source: $(merge_approval_source_normalize "$_approval_source"))"
         merge_state_set_string "$MERGE_STATE_FILE" \
             "ApprovedCommitSha" "$_current_commit" \
             "State" "MAIN_HEAD_REFRESH"
     else
         echo "Approval is invalid:"
-        merge_approval_validation_reasons "$_approved_is_valid" "$_approved_commit" "$_approved_main_head" "$_current_commit" "$_main_head" | sed 's/^/  - /'
+        _binding_reasons=$(merge_approval_validation_reasons "$_approved_is_valid" "$_approved_commit" "$_approved_main_head" "$_current_commit" "$_main_head")
+        _source_reasons=$(merge_approval_source_reasons "$_approval_source" "$_approved_by" "$_approved_at" "$_approved_commit" "$_approved_main_head")
+        { printf '%s\n' "$_binding_reasons"; printf '%s\n' "$_source_reasons"; } | sed '/^$/d' | sed 's/^/  - /'
         echo "User re-approval required."
-        echo "Note: approval record must be (re)created in the state file before merge."
+        echo "Note: approval record must be created via 'merge.sh approve' before merge."
         return 0
     fi
     return 0

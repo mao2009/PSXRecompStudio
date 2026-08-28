@@ -5,7 +5,7 @@ description: >
   Enforces mandatory approval → rebase → validation → normal merge flow.
   Prevents admin bypass and protection rule circumvention.
   Cross-platform: POSIX shell (default) and PowerShell implementations.
-version: 1.1.0
+version: 1.2.0
 scope: process
 platform: agent-agnostic
 related-issues: "#146"
@@ -70,17 +70,57 @@ If any precondition fails, **stop and report**.
 
 ### 2. Approval Validation
 
-Check for valid user approval:
+Check for a valid approval record:
 
 ```text
 1. Load approval record (if exists)
 2. Verify approval exists
-3. Verify approved_commit_sha matches current_commit_sha
-4. Verify main_head_sha matches current main HEAD
-5. If approval is invalid, require re-approval
+3. Verify the approval source:
+     github_review  -> the GitHub third-party review gate (reviewDecision)
+                       is enforced via the GitHub API when the merge reaches
+                       the VALIDATING state; the state record is validated by
+                       SHA binding.
+     explicit_human -> a formal approval source created by `merge.sh approve`:
+                       attribute to the authenticated operator identity and
+                       bind to both the PR HEAD SHA and the main HEAD SHA.
+4. Verify approved_commit_sha matches current_commit_sha
+5. Verify main_head_sha matches current main HEAD
+6. Reject unknown approval sources, missing identity/timestamp, and stale
+   or malformed records (fail closed)
+7. If approval is invalid, require a fresh explicit approval
 ```
 
-**No approval = No merge.**
+**No valid approval = No merge.**
+
+### 3. Explicit Human Approval (new)
+
+For solo/personal development where a GitHub third-party approval is not
+available, an **Explicit Human Approval** can be recorded as a first-class,
+auditable approval source. It is **not** a fake GitHub APPROVED review and
+never uses `--admin`, force push, or protection bypass.
+
+```sh
+# Record an explicit human approval bound to the current PR HEAD and main HEAD
+merge.sh approve --pr <number> --worktree <path> [--main-dir <path>]
+
+# The normal merge flow then resumes and validates the recorded approval
+merge.sh merge --pr <number> --worktree <path>
+```
+
+Key properties:
+
+- **Authenticated identity**: `approved_by` is taken from the operator's real
+  authenticated identity (`gh api user` login, falling back to the local git
+  identity). It is never an arbitrary `--approved-by` value, so an operator
+  cannot impersonate another approver by editing the command line.
+- **SHA binding**: the approval is bound to the PR HEAD SHA **and** the main
+  HEAD SHA at approval time. Any change to either invalidates the approval.
+- **Explicit operation**: merely editing the state file is not accepted as an
+  approval; only the `merge.sh approve` operation produces a valid record, and
+  a hand-crafted record that omits the required identity/timestamp/SHA fields
+  is rejected.
+- **Resumable**: `approve -> state saved -> (interruption) -> merge resume`
+  re-validates the persisted approval before proceeding.
 
 ### 3. Main Head Refresh
 
@@ -233,16 +273,31 @@ REBASE
 
 ## Approval Model
 
+### Approval Sources
+
+Two approval sources are supported, each validated separately:
+
+| Source | Validation |
+|--------|------------|
+| `github_review` | Existing GitHub third-party approval. Enforced via `gh pr view --json reviewDecision` (must be `APPROVED`) when the merge reaches the VALIDATING state. The state record is additionally validated by SHA binding. |
+| `explicit_human` | Formal solo-dev approval created by `merge.sh approve`. Verified by authenticated operator identity, PR HEAD SHA binding, and main HEAD SHA binding. |
+
+The `Approval` object in state carries `"ApprovalSource"`. An absent source is
+treated as the legacy `github_review` default; any present-but-unknown value
+fails closed. Validation results from one source are never reused for the
+other source.
+
 ### Approval Record
 
 | Field | Description |
 |-------|-------------|
 | `pr_number` | The PR number |
 | `issue_number` | The Issue number |
-| `commit_sha` | The commit SHA being approved |
-| `main_head_sha` | The main HEAD SHA at approval time |
-| `approved_by` | Who approved |
+| `commit_sha` / `approved_commit` | The commit SHA being approved (PR HEAD) |
+| `main_head_sha` / `approved_main_head` | The main HEAD SHA at approval time |
+| `approved_by` | Authenticated identity of the approver |
 | `approved_at` | When approved (ISO 8601) |
+| `approval_source` | `explicit_human` or `github_review` |
 | `is_valid` | Whether approval is still valid |
 | `notes` | Optional notes |
 
@@ -464,6 +519,9 @@ interruption.
 ```sh
 # Advance the merge for PR 149 (resumes from the current persisted state)
 runtime/merge.sh merge --pr 149
+
+# Record an explicit human approval for PR 149
+runtime/merge.sh approve --pr 149 --worktree ../worktrees/149-merge
 
 # Full context for a batch-driven merge
 runtime/merge.sh merge --pr 149 --issue 148 \

@@ -25,9 +25,12 @@
     "invalidate_on_pr_update": true,
     "tracked_fields": [
       "approved_commit_sha",
+      "approved_main_head",
       "current_commit_sha",
       "main_head_sha"
-    ]
+    ],
+    "sources": ["github_review", "explicit_human"],
+    "fail_closed_on_unknown_source": true
   },
   
   "rebase": {

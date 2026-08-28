@@ -307,3 +307,42 @@ merge_state_set_number() {
     _content=$(printf '%s' "$_content" | sed "s/\"UpdatedAt\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"UpdatedAt\": \"${_now}\"/")
     merge_save_state_file "$_content" "$_file_path"
 }
+
+# Build the inline JSON Approval object for an explicit human approval.
+# Usage: merge_approval_object <pr_number> <issue_number> <commit_sha> \
+#        <main_head_sha> <approved_by> <approved_at>
+# Emits a single-line JSON object on stdout. All values are JSON-escaped.
+merge_approval_object() {
+    _pr="$1"
+    _issue="${2:-}"
+    _commit="$3"
+    _main_head="$4"
+    _approved_by="$5"
+    _approved_at="$6"
+
+    _issue_json="null"
+    [ -n "$_issue" ] && _issue_json="$_issue"
+
+    cat <<EOF
+{"PrNumber": ${_pr}, "IssueNumber": ${_issue_json}, "CommitSha": "$(_merge_json_escape "$_commit")", "MainHeadSha": "$(_merge_json_escape "$_main_head")", "ApprovedBy": "$(_merge_json_escape "$_approved_by")", "ApprovedAt": "$(_merge_json_escape "$_approved_at")", "ApprovalSource": "explicit_human", "IsValid": true}
+EOF
+}
+
+# Write an approval object into the state file's "Approval" field atomically.
+# Usage: merge_state_set_approval <file_path> <approval_json>
+# Returns: 0 on success, 1 on failure.
+merge_state_set_approval() {
+    _file_path="$1"
+    _approval_json="$2"
+    if [ ! -f "$_file_path" ]; then
+        return 1
+    fi
+    _content=$(cat "$_file_path")
+    # Escape the JSON-escaped value for sed replacement (| delimiter).
+    _escaped=$(_merge_sed_escape "$_approval_json")
+    _content=$(printf '%s' "$_content" | sed "s|\"Approval\"[[:space:]]*:[[:space:]]*null|\"Approval\": ${_escaped}|")
+    _content=$(printf '%s' "$_content" | sed "s|\"Approval\"[[:space:]]*:[[:space:]]*{[^}]*}|\"Approval\": ${_escaped}|")
+    _now=$(merge_now)
+    _content=$(printf '%s' "$_content" | sed "s/\"UpdatedAt\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"UpdatedAt\": \"${_now}\"/")
+    merge_save_state_file "$_content" "$_file_path"
+}

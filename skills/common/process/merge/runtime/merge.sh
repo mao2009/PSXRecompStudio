@@ -24,6 +24,7 @@ PR Merge Skill — Safe PR Merge Orchestrator (POSIX shell)
 
 Usage:
   merge.sh merge <pr_number> [options]   Process the next merge step for a PR
+  merge.sh approve <pr_number> [options] Record an explicit human approval for a PR
   merge.sh status <pr_number> [options]  Show current merge state for a PR
   merge.sh test                          Run the runtime unit tests
   merge.sh help                          Show this help message
@@ -34,13 +35,19 @@ Commands:
             where it left off (TRIGGER_CHECK -> APPROVAL_VALIDATION ->
             MAIN_HEAD_REFRESH -> REBASE -> VALIDATING -> MERGING -> MERGED ->
             CLEANUP -> COMPLETED).
+  approve   Records an Explicit Human Approval for a PR. The approval is bound
+            to the current PR HEAD SHA and the current main HEAD SHA, and is
+            attributed to the authenticated operator identity (gh API identity,
+            falling back to the local git identity). This is a formal approval
+            source separate from the GitHub third-party review gate: it must be
+            created by this explicit operation, never by hand-editing state.
   status    Displays the persisted state for a PR.
   test      Runs the shell runtime test suite.
 
 Options:
-  --pr <number>            GitHub PR number (required for merge/status)
+  --pr <number>            GitHub PR number (required for merge/approve/status)
   --issue <number>         GitHub Issue number (optional)
-  --worktree <path>        Path to the Worktree (required for rebase/cleanup)
+  --worktree <path>        Path to the Worktree (required for approve/rebase/cleanup)
   --branch <name>          Branch name (used for cleanup)
   --repo <owner/repo>      GitHub repository (auto-detected if omitted)
   --state-file <path>      Path to the state file (default: .merge-state-<pr>.json)
@@ -49,12 +56,17 @@ Options:
 Safety guarantees:
   - Never uses `gh pr merge --admin`, force push, or protection bypass
   - Multi-step flow split into a definitely-rebaseable, resumable state machine
+  - Explicit Human Approval uses a real authenticated identity and is bound to
+    the PR HEAD and main HEAD SHAs; it never fakes a GitHub APPROVED review
   - Confidential, project-neutral: only git + optional gh are required
   - No pwsh / powershell dependency
 
 Examples:
   # Advance the merge for PR 149 (resumes from current persisted state)
   merge.sh merge --pr 149
+
+  # Record an explicit human approval for PR 149
+  merge.sh approve --pr 149 --worktree ../worktrees/149-merge
 
   # Full context for a batch merge
   merge.sh merge --pr 149 --issue 148 --worktree ../worktrees/148-e2e-test \
@@ -209,6 +221,110 @@ _cmd_merge() {
     merge_orchestrate_one
 }
 
+# Resolve the explicit approval context (state file + commit + main head),
+# then persist an approval record. Requires an authenticated identity.
+# Usage: _cmd_approve <pr_number> [options]
+_cmd_approve() {
+    _parse_merge_options "$@"
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+
+    if [ -z "$_OPT_PR" ]; then
+        printf 'Error: PR number required\n' >&2
+        printf 'Usage: merge.sh approve --pr <number> [options]\n' >&2
+        return 1
+    fi
+
+    if ! _merge_validate_positive_integer "$_OPT_PR"; then
+        return 1
+    fi
+
+    if [ -n "$_OPT_ISSUE" ] && ! _merge_validate_positive_integer "$_OPT_ISSUE"; then
+        return 1
+    fi
+
+    MERGE_PR_NUMBER="$_OPT_PR"
+    MERGE_ISSUE_NUMBER="$_OPT_ISSUE"
+    MERGE_WORKTREE="$_OPT_WORKTREE"
+    MERGE_REPOSITORY="$_OPT_REPO"
+    MERGE_STATE_FILE="$_OPT_STATE_FILE"
+    if [ -n "$_OPT_MAIN_DIR" ]; then
+        MERGE_MAIN_DIR="$_OPT_MAIN_DIR"
+    fi
+    merge_resolve_state_file
+
+    # An explicit approval MUST be bound to a concrete PR HEAD; that is the
+    # commit the operator is approving. The commit is read from the worktree
+    # so the binding is grounded in the actual checkout that will be merged.
+    if [ -z "$MERGE_WORKTREE" ] || [ ! -d "$MERGE_WORKTREE" ]; then
+        printf 'Error: --worktree <path> is required for explicit approval (must point at the PR worktree)\n' >&2
+        return 1
+    fi
+
+    if [ ! -f "$MERGE_STATE_FILE" ]; then
+        # Ensure a state file exists so the approval is persisted safely.
+        # Reuse merge_new_state via the orchestrator globals set below.
+        merge_new_state "$MERGE_PR_NUMBER" "$MERGE_ISSUE_NUMBER" "$MERGE_WORKTREE" "" > "$MERGE_STATE_FILE" 2>/dev/null || {
+            printf 'Error: could not initialise state file\n' >&2
+            return 1
+        }
+    fi
+    if ! merge_load_state_file "$MERGE_STATE_FILE" >/dev/null 2>&1; then
+        printf 'Error: corrupt or incomplete state file\n' >&2
+        return 1
+    fi
+
+    _current_commit=$(merge_get_current_commit "$MERGE_WORKTREE")
+    if [ -z "$_current_commit" ]; then
+        printf 'Error: could not determine PR HEAD commit from worktree (%s)\n' "$MERGE_WORKTREE" >&2
+        return 1
+    fi
+
+    _main_head=$(merge_get_main_head "$MERGE_MAIN_DIR")
+    if [ -z "$_main_head" ]; then
+        printf 'Error: failed to resolve main HEAD for approval binding\n' >&2
+        return 1
+    fi
+
+    # Resolve the authenticated identity. This is authoritative and is NOT a
+    # user-supplied string: it comes from gh (GitHub identity) with a local git
+    # fallback. The approve operation cannot fake the approver.
+    _identity=$(merge_authenticated_identity) || return 1
+    _login=$(printf '%s' "$_identity" | sed -n '1p')
+    _name=$(printf '%s' "$_identity" | sed -n '2p')
+    _email=$(printf '%s' "$_identity" | sed -n '3p')
+
+    _approved_by="$_login"
+    if [ -n "$_name" ] && [ -n "$_email" ]; then
+        _approved_by="$_login <$_name <$_email>>"
+    elif [ -n "$_name" ]; then
+        _approved_by="$_login <$_name>"
+    elif [ -n "$_email" ]; then
+        _approved_by="$_login <$_email>"
+    fi
+
+    _approved_at=$(merge_now)
+    _approval=$(merge_approval_object \
+        "$MERGE_PR_NUMBER" "$MERGE_ISSUE_NUMBER" \
+        "$_current_commit" "$_main_head" "$_approved_by" "$_approved_at")
+
+    if ! merge_state_set_approval "$MERGE_STATE_FILE" "$_approval"; then
+        printf 'Error: failed to persist approval record\n' >&2
+        return 1
+    fi
+
+    echo "Explicit Human Approval recorded for PR #$MERGE_PR_NUMBER"
+    echo "Approved By: $_approved_by"
+    echo "Approved At: $_approved_at"
+    echo "Approved Commit: $_current_commit"
+    echo "Main HEAD at Approval: $_main_head"
+    echo "Approval Source: explicit_human"
+    echo ""
+    echo "You can now resume the merge: merge.sh merge --pr $MERGE_PR_NUMBER"
+    return 0
+}
+
 _cmd_status() {
     _parse_merge_options "$@"
     if [ $? -ne 0 ]; then
@@ -295,6 +411,9 @@ _main() {
     case "$_cmd" in
         merge)
             _cmd_merge "$@"
+            ;;
+        approve)
+            _cmd_approve "$@"
             ;;
         status)
             _cmd_status "$@"
