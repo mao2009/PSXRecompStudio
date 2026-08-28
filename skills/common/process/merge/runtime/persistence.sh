@@ -75,7 +75,8 @@ _mjson_get_nullable_number() {
 # Usage: merge_state_file_name <pr_number> [pattern]
 merge_state_file_name() {
     _pr="$1"
-    _pattern="${2:-.merge-state-{pr_number}.json}"
+    _pattern="$2"
+    [ -z "$_pattern" ] && _pattern=".merge-state-{pr_number}.json"
     printf '%s' "$_pattern" | sed "s/{pr_number}/${_pr}/g"
 }
 

@@ -121,6 +121,32 @@ merge_state_set_string "$STATE5" "BranchName" "issue/atomic"
 _tmps=$(find "$WORK" -name '*.tmp.*' 2>/dev/null)
 assert_true "no temp file left behind" test -z "$_tmps"
 
+# --- state-file naming: consistent create/load/resume (regression) ---
+# The state file name must resolve to .merge-state-<pr>.json for every PR.
+# This guards the case where the default pattern embedded in a :- expansion
+# gets corrupted, producing a literal .merge-state-{pr_number.json} name.
+echo ""
+echo "--- State File Naming (create/load/resume consistency) ---"
+_name=$(merge_state_file_name 173)
+assert_true "default name for PR 173" test "$_name" = ".merge-state-173.json"
+# Distinct PRs must map to distinct state files (multi-PR separation).
+_name2=$(merge_state_file_name 42)
+assert_true "default name for PR 42" test "$_name2" = ".merge-state-42.json"
+assert_true "distinct PRs get distinct state files" test "$_name" != "$_name2"
+# An explicit pattern still overrides the default.
+_custom=$(merge_state_file_name 7 ".custom-{pr_number}.state")
+assert_true "custom pattern respected" test "$_custom" = ".custom-7.state"
+# Create -> reload (resume) through the resolved filename: a state written to
+# the name returned by merge_state_file_name must be reloadable from that same
+# name, proving create/load/resume share one naming rule.
+_RSV="$WORK/.merge-state-555.json"
+merge_new_state 555 "" "$WORK/resume-wt" "issue/555-r" > "$_RSV"
+_wt=$(merge_state_get "$_RSV" "WorktreePath")
+_branch=$(merge_state_get "$_RSV" "BranchName")
+assert_true "state created under resolved name" test -f "$WORK/$(merge_state_file_name 555)"
+assert_true "resume round-trips worktree" test "$_wt" = "$WORK/resume-wt"
+assert_true "resume round-trips branch" test "$_branch" = "issue/555-r"
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ] && exit 0 || exit 1
