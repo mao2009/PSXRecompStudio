@@ -33,13 +33,33 @@ public:
 
 private:
     uint32_t gpr_[PSX_GPR_COUNT];
-    uint32_t pc_;
+    uint32_t pc_;          // Address of the instruction currently being executed (ADR-005: pc)
+    uint32_t next_pc_;     // ADR-005: next_pc. Maintained (= pc_ + 4) for model parity;
+                           // the interpreter fetches from pc_ directly.
+    uint32_t delay_slot_pc_; // Delay slot address of a pending branch (ADR-005: delay_slot_pc)
     uint32_t hi_;
     uint32_t lo_;
+
+    // Pending branch state (branch delay slot, ADR-004/005).
+    bool branch_pending_;        // A branch was executed; its delay slot has not completed yet.
+    bool branch_issued_;         // The instruction currently being executed is a branch/jump.
+    uint32_t pending_branch_target_; // Target of the pending (outermost) branch.
+    bool pending_branch_taken_;      // Whether the pending (outermost) branch is taken.
+
+    // Load delay state (ADR-004). Double buffered so that the value loaded by an
+    // instruction is only committed to the register file one instruction later.
+    int load_delay_reg_;         // -1 when no load-delay write is pending for this step.
+    uint32_t load_delay_value_;
+    int next_load_delay_reg_;    // -1 when no load-delay write is queued for the next step.
+    uint32_t next_load_delay_value_;
 
     // Instruction decode helpers
     uint32_t FetchInstruction(PSXMemory& memory);
     void ExecuteInstruction(uint32_t instruction, PSXMemory& memory);
+    void FlushPipeline();
+    void UpdateLoadDelay();
+    void WriteRegDelayed(int index, uint32_t value);
+    void SetPendingBranch(uint32_t target, bool taken);
     
     // Arithmetic/Logical
     void ExecAdd(uint32_t rd, uint32_t rs, uint32_t rt);

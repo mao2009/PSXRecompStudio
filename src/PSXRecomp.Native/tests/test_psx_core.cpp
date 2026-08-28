@@ -297,20 +297,26 @@ static void test_step_branch() {
     PSXCore* core = PSXCore_Create();
     PSXCore_SetGPR(core, 1, 10);
     PSXCore_SetGPR(core, 2, 10);
-    
-    // BEQ $1, $2, offset=1 (branch taken) -> PC = 4 + 1*4 = 8
+
+    // BEQ $1, $2, offset=1 (branch taken) with NOP delay slot
+    // Delay slot at PC=4 executes first, then PC = 0 + 4 + 1*4 = 8
     PSXCore_WriteMemory32(core, 0, 0x10220001u);
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP delay slot
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetPC(core), 8u);
-    
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // in delay slot
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u); // branch taken
+
     // BEQ $1, $2, offset=1 (not taken, different values)
+    // Delay slot executes, then falls through past the slot: 4 + 4 = 8
     PSXCore_SetGPR(core, 2, 20);
-    PSXCore_WriteMemory32(core, 0, 0x10220001u);
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetPC(core), 4u);
-    
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u);
+
     PSXCore_Destroy(core);
     PASS();
 }
@@ -318,20 +324,217 @@ static void test_step_branch() {
 static void test_step_jump() {
     TEST("J/JAL/JR/JALR instructions");
     PSXCore* core = PSXCore_Create();
-    
-    // J target=1 (PC = 4) - from PC=0
+
+    // J target=1 -> PC = ((0+4) & 0xF0000000) | (1 << 2) = 4, after the delay slot
     PSXCore_WriteMemory32(core, 0, 0x08000001u);
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP delay slot
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetPC(core), 4u);
-    
-    // JAL target=1 (PC = 4, $ra = 4)
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // delay slot
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // jumped to target
+
+    // JAL target=1 -> $ra = PC+8 = 8
     PSXCore_WriteMemory32(core, 0, 0x0C000001u);
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 8u);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // delay slot
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // jumped to target
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_branch_delay_slot() {
+    TEST("Branch delay slot executes on taken and not-taken");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 10);
+
+    // addr 0: BEQ $1, $2, offset=1 (taken -> target = 0 + 4 + 4 = 8)
+    // addr 4: ADDI $5, $0, 7       (delay slot; always executes)
+    PSXCore_WriteMemory32(core, 0, 0x10220001u);
+    PSXCore_WriteMemory32(core, 4, 0x20050007u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0u); // delay slot not yet executed
     ASSERT_EQ(PSXCore_GetPC(core), 4u);
-    ASSERT_EQ(PSXCore_GetGPR(core, 31), 4u);
-    
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 7u); // delay slot executed
+    ASSERT_EQ(PSXCore_GetPC(core), 8u); // branch taken
+
+    // Not taken: delay slot still executes, then falls through.
+    PSXCore_SetGPR(core, 2, 20);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 7u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 7u); // delay slot (re)executed
+    ASSERT_EQ(PSXCore_GetPC(core), 8u); // fall-through (4 + 4)
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_load_delay() {
+    TEST("Load delay: next instruction sees old register value");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000);
+    PSXCore_SetGPR(core, 1, 0x11111111);
+    PSXCore_WriteMemory32(core, 0x1000, 0x22222222u);
+
+    // addr 0: LW $1, 0($29)
+    // addr 4: ADDU $5, $1, $0      (load delay slot: $1 is still 0x11111111)
+    PSXCore_WriteMemory32(core, 0, 0x8FA10000u);
+    PSXCore_WriteMemory32(core, 4, 0x00202821u); // ADDU $5, $1, $0
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core); // LW
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x11111111u); // not committed yet
+    PSXCore_Step(core); // ADDU
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x22222222u); // committed by now
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0x11111111u); // used the old value
+
+    // A write in the load delay slot overrides the pending load (writes in-order).
+    PSXCore_SetGPR(core, 1, 0);
+    PSXCore_WriteMemory32(core, 4, 0x34210001u); // ORI $1, $1, 1 (load delay slot)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core); // LW
+    PSXCore_Step(core); // ORI
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 1u);
+
+    // Loads to $zero are suppressed.
+    PSXCore_WriteMemory32(core, 0, 0x8FA00000u); // LW $0, 0($29)
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 0), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_branch_in_delay_slot() {
+    TEST("Branch in delay slot: outer branch applies (docs/cpu/pipeline.md)");
+    PSXCore* core = PSXCore_Create();
+
+    // Taken outer branch with branch in its delay slot:
+    // addr 0:  BEQ $1, $2, 3        (outer, taken -> target = 16)
+    // addr 4:  BNE $3, $4, 1        (inner branch in the delay slot)
+    // addr 8:  ADDI $5, $0, 99      (inner's delay slot; always executes)
+    // addr 12: ADDI $6, $0, 11      (inner target; must NOT be reached)
+    // addr 16: ADDI $7, $0, 22      (outer target)
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 10); // outer BEQ taken
+    PSXCore_SetGPR(core, 3, 5);
+    PSXCore_SetGPR(core, 4, 6); // inner BNE taken in isolation
+    PSXCore_WriteMemory32(core, 0, 0x10220003u);
+    PSXCore_WriteMemory32(core, 4, 0x15240001u);
+    PSXCore_WriteMemory32(core, 8, 0x20050063u);
+    PSXCore_WriteMemory32(core, 12, 0x2006000Bu);
+    PSXCore_WriteMemory32(core, 16, 0x20070016u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core); // outer BEQ
+    ASSERT_EQ(PSXCore_GetPC(core), 4u);
+    PSXCore_Step(core); // inner BNE (in delay slot)
+    ASSERT_EQ(PSXCore_GetPC(core), 8u);
+    PSXCore_Step(core); // ADDI $5 (shared delay slot)
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 99u);
+    ASSERT_EQ(PSXCore_GetPC(core), 16u); // OUTER branch applies
+    PSXCore_Step(core); // ADDI $7 (outer target)
+    ASSERT_EQ(PSXCore_GetGPR(core, 7), 22u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 0u); // inner target never executed
+
+    // Not-taken outer branch with branch in its delay slot: falls through.
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 10); // outer BNE not taken
+    PSXCore_WriteMemory32(core, 0, 0x14220003u); // BNE $1, $2, 3
+    PSXCore_WriteMemory32(core, 4, 0x10640001u); // BEQ $3, $4, 1
+    PSXCore_WriteMemory32(core, 8, 0x2005004Du); // ADDI $5, $0, 77
+    PSXCore_WriteMemory32(core, 12, 0x2006000Bu); // ADDI $6, $0, 11
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 77u);
+    ASSERT_EQ(PSXCore_GetPC(core), 12u); // falls through after shared slot
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 11u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_jr_jalr() {
+    TEST("JR/JALR execute their delay slot before landing");
+    PSXCore* core = PSXCore_Create();
+
+    // JR $5 (target = 0x30), NOP delay slot at addr 4
+    PSXCore_SetGPR(core, 5, 0x30);
+    PSXCore_WriteMemory32(core, 0, 0x00A00008u); // JR $5
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP delay slot
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // delay slot
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x30u); // jumped to GPR[5]
+
+    // JALR $6, $5 (target = 0x30, $6 = PC+8 = 8)
+    PSXCore_WriteMemory32(core, 0, 0x00A03009u); // JALR $6, $5
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 8u);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // delay slot
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x30u); // jumped to GPR[5]
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_branch_load_delay_interaction() {
+    TEST("Link writes and load delay interaction (pipeline.md BIOS pattern)");
+    PSXCore* core = PSXCore_Create();
+
+    // BLTZAL links $31 (PC+8) even when the branch is not taken.
+    PSXCore_SetGPR(core, 1, 10); // >= 0, not taken
+    PSXCore_WriteMemory32(core, 0, 0x04300002u); // BLTZAL $1, 2
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP delay slot
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 8u); // linked
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u); // not taken: delay slot + 4
+
+    // BGEZAL links $31 and is taken.
+    PSXCore_SetGPR(core, 1, 5); // >= 0, taken
+    PSXCore_WriteMemory32(core, 0, 0x04310002u); // BGEZAL $1, 2
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 8u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 12u); // taken: 0 + 4 + 2*4
+
+    // LW $31 followed by JAL in the load delay slot: the JAL link (PC+8) must
+    // win over the pending load value (docs/cpu/pipeline.md, BIOS pattern).
+    PSXCore_SetGPR(core, 31, 0);
+    PSXCore_SetGPR(core, 29, 0x1000);
+    PSXCore_WriteMemory32(core, 0x1000, 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 0, 0x8FBF0000u); // LW $31, 0($29)
+    PSXCore_WriteMemory32(core, 4, 0x0C000005u); // JAL 5 (target = 20)
+    PSXCore_WriteMemory32(core, 8, 0x00000000u); // NOP delay slot
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core); // LW: $31 still old (0)
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 0u);
+    PSXCore_Step(core); // JAL in load delay slot: $31 = PC+8 = 12
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 12u); // link wins over pending load
+    ASSERT_EQ(PSXCore_GetPC(core), 8u);
+    PSXCore_Step(core); // delay slot
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 12u); // loaded value never committed
+    ASSERT_EQ(PSXCore_GetPC(core), 20u); // target
+
     PSXCore_Destroy(core);
     PASS();
 }
@@ -345,40 +548,54 @@ static void test_step_memory() {
     PSXCore_WriteMemory32(core, 0x1000, 0x12345678u);
     PSXCore_WriteMemory16(core, 0x1004, 0xABCDu);
     PSXCore_WriteMemory8(core, 0x1006, 0xEFu);
-    
-    // LW $1, 0($29) = 0x8FA10000
-    PSXCore_WriteMemory32(core, 0, 0x8FA10000u);
+
+    // Program (NOPs give the load delay a cycle to commit the loaded value)
+    PSXCore_WriteMemory32(core, 0, 0x8FA10000u);  // LW $1, 0($29)
+    PSXCore_WriteMemory32(core, 4, 0x00000000u);  // NOP
+    PSXCore_WriteMemory32(core, 8, 0x87A20004u);  // LH $2, 4($29)
+    PSXCore_WriteMemory32(core, 12, 0x00000000u); // NOP
+    PSXCore_WriteMemory32(core, 16, 0x97A30004u); // LHU $3, 4($29)
+    PSXCore_WriteMemory32(core, 20, 0x00000000u); // NOP
+    PSXCore_WriteMemory32(core, 24, 0x83A40006u); // LB $4, 6($29)
+    PSXCore_WriteMemory32(core, 28, 0x00000000u); // NOP
+    PSXCore_WriteMemory32(core, 32, 0x93A50006u); // LBU $5, 6($29)
+    PSXCore_WriteMemory32(core, 36, 0x00000000u); // NOP
+
+    // LW
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u); // load delay: value not yet committed
+    PSXCore_Step(core); // NOP
     ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x12345678u);
-    
-    // LH $2, 4($29) = 0x87A20004
-    PSXCore_WriteMemory32(core, 4, 0x87A20004u);
-    PSXCore_SetPC(core, 4);
-    PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0xFFFFABCDu); // sign extended
-    
-    // LHU $3, 4($29) = 0x97A30004
-    PSXCore_WriteMemory32(core, 8, 0x97A30004u);
+
+    // LH (sign extended)
     PSXCore_SetPC(core, 8);
     PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x0000ABCDu);
-    
-    // LB $4, 6($29) = 0x83A40006
-    PSXCore_WriteMemory32(core, 12, 0x83A40006u);
-    PSXCore_SetPC(core, 12);
-    PSXCore_Step(core);
-    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0xFFFFFFEFu); // sign extended
-    
-    // LBU $5, 6($29) = 0x93A50006
-    PSXCore_WriteMemory32(core, 16, 0x93A50006u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0u); // load delay
+    PSXCore_Step(core); // NOP
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0xFFFFABCDu);
+
+    // LHU
     PSXCore_SetPC(core, 16);
     PSXCore_Step(core);
+    PSXCore_Step(core); // NOP
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x0000ABCDu);
+
+    // LB (sign extended)
+    PSXCore_SetPC(core, 24);
+    PSXCore_Step(core);
+    PSXCore_Step(core); // NOP
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0xFFFFFFEFu);
+
+    // LBU
+    PSXCore_SetPC(core, 32);
+    PSXCore_Step(core);
+    PSXCore_Step(core); // NOP
     ASSERT_EQ(PSXCore_GetGPR(core, 5), 0x000000EFu);
-    
-    // SW $1, 8($29) = 0xAFA10008
-    PSXCore_WriteMemory32(core, 20, 0xAFA10008u);
-    PSXCore_SetPC(core, 20);
+
+    // SW $1, 8($29) = 0xAFA10008 (store, no delay)
+    PSXCore_WriteMemory32(core, 40, 0xAFA10008u);
+    PSXCore_SetPC(core, 40);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1008), 0x12345678u);
     
@@ -456,7 +673,10 @@ static void test_lwl_lwr_aligned() {
     // For aligned full word load, use LW (opcode 0x23)
     // LW $1, 0($29): 0x8FA10000
     PSXCore_WriteMemory32(core, 0, 0x8FA10000u);
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP: load delay cycle
     PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u); // load delay
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x12345678u);
     
@@ -474,7 +694,10 @@ static void test_lwl_lwr_unchanged() {
     // For aligned full word load, use LW (opcode 0x23)
     // LW $1, 0($29): 0x8FA10000
     PSXCore_WriteMemory32(core, 0, 0x8FA10000u);
+    PSXCore_WriteMemory32(core, 4, 0x00000000u); // NOP: load delay cycle
     PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0xAABBCCDDu); // still old value
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x12345678u);
     
@@ -837,6 +1060,11 @@ int main() {
     test_step_shift();
     test_step_branch();
     test_step_jump();
+    test_step_branch_delay_slot();
+    test_load_delay();
+    test_branch_in_delay_slot();
+    test_step_jr_jalr();
+    test_branch_load_delay_interaction();
     test_step_memory();
     test_run_multiple();
     test_run_early_exit();
