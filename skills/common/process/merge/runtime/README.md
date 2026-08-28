@@ -52,9 +52,10 @@ re-running `merge` resumes from the last recorded state.
 `approve` records an `explicit_human` approval as a first-class approval source
 separate from the GitHub third-party review gate. It:
 
-- attributes `approved_by` to the operator's authenticated identity
-  (`gh api user` login, falling back to the local git identity) — never to an
-  arbitrary command-line string;
+- attributes `approved_by` to the operator's authenticated GitHub identity
+  (`gh api user` login) — never to an arbitrary command-line string and never
+  to operator-controlled local git config; if no authenticated identity is
+  available the operation fails closed;
 - binds the approval to the current PR HEAD SHA **and** the current main HEAD
   SHA, so any change invalidates it;
 - is created only by this explicit operation — hand-editing the state file is

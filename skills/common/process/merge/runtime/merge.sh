@@ -37,10 +37,10 @@ Commands:
             CLEANUP -> COMPLETED).
   approve   Records an Explicit Human Approval for a PR. The approval is bound
             to the current PR HEAD SHA and the current main HEAD SHA, and is
-            attributed to the authenticated operator identity (gh API identity,
-            falling back to the local git identity). This is a formal approval
-            source separate from the GitHub third-party review gate: it must be
-            created by this explicit operation, never by hand-editing state.
+            attributed to the operator's authenticated GitHub identity (gh api
+            user login). This is a formal approval source separate from the
+            GitHub third-party review gate: it must be created by this explicit
+            operation, never by hand-editing state.
   status    Displays the persisted state for a PR.
   test      Runs the shell runtime test suite.
 
@@ -288,8 +288,9 @@ _cmd_approve() {
     fi
 
     # Resolve the authenticated identity. This is authoritative and is NOT a
-    # user-supplied string: it comes from gh (GitHub identity) with a local git
-    # fallback. The approve operation cannot fake the approver.
+    # user-supplied string: it comes from `gh api user` and is never taken from
+    # operator-controlled local git config. The approve operation cannot fake
+    # the approver, and fails closed if no authenticated identity is available.
     _identity=$(merge_authenticated_identity) || return 1
     _login=$(printf '%s' "$_identity" | sed -n '1p')
     _name=$(printf '%s' "$_identity" | sed -n '2p')
@@ -297,7 +298,7 @@ _cmd_approve() {
 
     _approved_by="$_login"
     if [ -n "$_name" ] && [ -n "$_email" ]; then
-        _approved_by="$_login <$_name <$_email>>"
+        _approved_by="$_login <$_name> <$_email>"
     elif [ -n "$_name" ]; then
         _approved_by="$_login <$_name>"
     elif [ -n "$_email" ]; then

@@ -82,6 +82,58 @@ _merge_queue_status() {
 EOF
 }
 
+# Check for a valid Explicit Human Approval recorded by the Merge Skill.
+# The batch gate treats an explicit_human approval as a valid approval source
+# in addition to the GitHub third-party review gate. To be accepted the merge
+# state file must contain an "explicit_human" Approval record that is valid and
+# bound to the current worktree commit, with a non-empty approved_by and a
+# well-formed approved_at. Anything else (unknown source, malformed record,
+# missing identity, mismatched commit, invalid flag) fails closed: only an
+# authenticated gh user (who approved via `merge.sh approve`) can have produced
+# such a record.
+# Usage: _merge_queue_has_explicit_human_approval <pr_number> <worktree> [state_dir]
+# Returns: 0 if a valid explicit_human approval exists, 1 otherwise.
+_merge_queue_has_explicit_human_approval() {
+    _pr="$1"
+    _worktree="$2"
+    _state_dir="${3:-.}"
+
+    # The Merge Skill persists per-PR state as .merge-state-<pr>.json (or a
+    # caller-provided --state-file). Only explicit_human records are honoured
+    # here; a github_review record is not verified from a local file.
+    _state_file="$_state_dir/.merge-state-${_pr}.json"
+    if [ ! -f "$_state_file" ]; then
+        return 1
+    fi
+
+    _approval=$(sed -n '/"Approval"[[:space:]]*:[[:space:]]*{/,/}/p' "$_state_file" | head -5)
+    [ -n "$_approval" ] || return 1
+
+    _source=$(printf '%s' "$_approval" | sed -n 's/.*"ApprovalSource"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ "$_source" = "explicit_human" ] || return 1
+
+    _is_valid=$(printf '%s' "$_approval" | sed -n 's/.*"IsValid"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' | head -1)
+    [ "$_is_valid" = "true" ] || return 1
+
+    _approved_by=$(printf '%s' "$_approval" | sed -n 's/.*"ApprovedBy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$_approved_by" ] || return 1
+
+    _approved_at=$(printf '%s' "$_approval" | sed -n 's/.*"ApprovedAt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    case "$_approved_at" in
+        ""|*[!0-9TZ:-]*) return 1 ;;
+    esac
+    printf '%s' "$_approved_at" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' 2>/dev/null || return 1
+
+    # Bind to the current worktree commit (fail closed on mismatch/missing).
+    _approved_commit=$(printf '%s' "$_approval" | sed -n 's/.*"CommitSha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$_approved_commit" ] || return 1
+    _current_commit=$(git -C "$_worktree" rev-parse HEAD 2>/dev/null)
+    [ -n "$_current_commit" ] || return 1
+    [ "$_approved_commit" = "$_current_commit" ] || return 1
+
+    return 0
+}
+
 # Process next item in merge queue
 # Usage: _merge_queue_process_next [repository]
 # Returns: 0 on success, 1 if no items, 2 on failure
@@ -132,20 +184,31 @@ _merge_queue_process_next() {
     fi
 
     # 3. Check PR is approved (mandatory — no merge without approval)
+    #    Accepted approval sources:
+    #      github_review  -> gh reviewDecision == APPROVED
+    #      explicit_human -> valid explicit approval recorded by the Merge Skill
+    _approved=false
     if command -v gh >/dev/null 2>&1; then
         _review=$(gh pr view "$_pr" --json "reviewDecision" 2>/dev/null | sed -n 's/.*"reviewDecision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-        if [ "$_review" != "APPROVED" ]; then
-            # Not approved — put back in queue, do not merge
-            _MQ_PENDING="$_first $_MQ_PENDING"
-            _MQ_CURRENTLY_MERGING=""
-            echo "PR #$_pr not approved (review: ${_review:-unknown}), merge blocked"
-            return 1
+        if [ "$_review" = "APPROVED" ]; then
+            _approved=true
         fi
-    else
-        # gh CLI unavailable — cannot verify approval, block merge for safety
+    fi
+    # Fall back to an explicit_human approval recorded by the Merge Skill only
+    # when the GitHub review gate did not approve, preserving fail-closed
+    # behavior for unknown/absent sources.
+    if [ "$_approved" != "true" ] && _merge_queue_has_explicit_human_approval "$_pr" "$_worktree" "$_repo"; then
+        _approved=true
+    fi
+    if [ "$_approved" != "true" ]; then
+        # Not approved — put back in queue, do not merge
         _MQ_PENDING="$_first $_MQ_PENDING"
         _MQ_CURRENTLY_MERGING=""
+        if command -v gh >/dev/null 2>&1; then
+            echo "PR #$_pr not approved (review: ${_review:-unknown}), merge blocked"
+        else
             echo "ERROR: gh CLI not available, cannot verify PR approval for #$_pr — merge blocked"
+        fi
         return 1
     fi
 

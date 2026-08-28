@@ -5,10 +5,10 @@ description: >
   Enforces mandatory approval → rebase → validation → normal merge flow.
   Prevents admin bypass and protection rule circumvention.
   Cross-platform: POSIX shell (default) and PowerShell implementations.
-version: 1.2.0
+version: 1.3.0
 scope: process
 platform: agent-agnostic
-related-issues: "#146"
+related-issues: "#146, #176"
 ---
 
 # PR Merge Skill
@@ -110,9 +110,10 @@ merge.sh merge --pr <number> --worktree <path>
 Key properties:
 
 - **Authenticated identity**: `approved_by` is taken from the operator's real
-  authenticated identity (`gh api user` login, falling back to the local git
-  identity). It is never an arbitrary `--approved-by` value, so an operator
-  cannot impersonate another approver by editing the command line.
+  authenticated GitHub identity (`gh api user` login). It is never an arbitrary
+  `--approved-by` value, and operator-controlled local git config is never used
+  as identity, so an operator cannot impersonate another approver. If no
+  authenticated identity is available, explicit approval fails closed.
 - **SHA binding**: the approval is bound to the PR HEAD SHA **and** the main
   HEAD SHA at approval time. Any change to either invalidates the approval.
 - **Explicit operation**: merely editing the state file is not accepted as an
@@ -555,3 +556,24 @@ To use this Skill in another project:
 - Skipping rebase for "simple" changes
 - Compromising main branch history
 - Admin bypass or protection circumvention
+
+## Changelog
+
+- **1.3.0** — Explicit Human Approval (Issue #176):
+  - Approval is bound to the worktree PR HEAD SHA and the current main HEAD SHA,
+    and attributed to the operator's authenticated GitHub identity
+    (`gh api user` login). Arbitrary `--approved-by` values and operator-controlled
+    local git config are never accepted as identity; the operation fails closed if
+    no authenticated identity is available.
+  - Added the `approve` subcommand (`merge.sh approve`) which records an
+    `explicit_human` Approval record. This is a distinct approval source from the
+    existing GitHub third-party review gate (`github_review`).
+    Unknown/malformed approval sources fail closed during validation.
+  - `ApprovedAt` is validated as an ISO 8601 UTC timestamp (malformed values are
+    rejected).
+  - Batch `merge-queue.sh` gate now accepts a valid `explicit_human` approval
+    recorded by this Skill, in addition to the GitHub review gate. The batch path
+    stays fail-closed: it only honors an `explicit_human` record that is valid,
+    identity-bearing, and bound to the current commit.
+- **1.2.0** — GitHub third-party review gate enforced before merge; approval source
+  separation (`github_review` vs `explicit_human`) framework introduced.

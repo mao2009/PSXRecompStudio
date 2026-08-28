@@ -258,13 +258,15 @@ merge_normal_merge() {
 # ============================================================
 
 # Resolve the authenticated operator identity for an explicit approval.
-# Uses the authenticated GitHub identity when `gh` is available, falling back
-# to the local git identity only as a final option. Emission is deliberate and
-# never trusted as an arbitrary command-line string: the caller records
-# `approved_by` from this function, not from user-supplied input.
-# Emits three lines on stdout: login, name, email (each may be empty).
+# Only a verifiable GitHub identity is accepted: `gh api user` login. Local
+# git configuration is operator-controlled and is never treated as an
+# authenticated identity, so an operator cannot impersonate another approver
+# by editing git config. When no authenticated identity is available the
+# operation fails closed.
+# Emits three lines on stdout: login, name, email (name/email may be empty).
 # Usage: merge_authenticated_identity
-# Returns: 0 if an identity could be resolved, 1 (with ERROR on stderr) if not.
+# Returns: 0 if an authenticated identity was resolved, 1 (with ERROR on
+# stderr) if not.
 merge_authenticated_identity() {
     _login=""
     _name=""
@@ -279,18 +281,11 @@ merge_authenticated_identity() {
         fi
     fi
 
-    # Fall back to the local git identity only when gh did not yield a login.
+    # Fail closed unless an authenticated GitHub login was obtained. Local git
+    # config is operator-controlled and is deliberately NOT used as identity.
     if [ -z "$_login" ]; then
-        _name=$(git config --get user.name 2>/dev/null)
-        _email=$(git config --get user.email 2>/dev/null)
-    fi
-
-    if [ -z "$_login" ] && [ -z "$_name" ]; then
-        echo "ERROR: Unable to resolve authenticated identity (gh and git both unavailable)" >&2
+        echo "ERROR: Unable to resolve authenticated identity (gh api user) for explicit approval" >&2
         return 1
-    fi
-    if [ -z "$_login" ]; then
-        _login="$_name"
     fi
 
     printf '%s\n%s\n%s\n' "$_login" "$_name" "$_email"

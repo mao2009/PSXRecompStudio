@@ -121,6 +121,17 @@ merge_approval_sources() {
     echo "explicit_human github_review"
 }
 
+# Validate an ISO 8601 UTC timestamp (e.g. 2026-08-28T06:36:59Z).
+# Usage: merge_approval_timestamp_valid <timestamp>
+# Returns: 0 if the timestamp is well-formed, 1 otherwise (missing/malformed).
+merge_approval_timestamp_valid() {
+    _ts="$1"
+    case "$_ts" in
+        ""|*[!0-9TZ:-]*) return 1 ;;
+    esac
+    printf '%s' "$_ts" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' 2>/dev/null
+}
+
 # Check whether an approval source string is a known source.
 # Usage: merge_approval_source_known <source>
 # Returns: 0 if known, 1 if unknown/empty.
@@ -164,6 +175,9 @@ merge_approval_source_reasons() {
             [ -z "$_approved_at" ] && echo "Missing approved_at (timestamp required)"
             [ -z "$_approved_commit" ] && echo "Missing approved_commit (PR HEAD binding required)"
             [ -z "$_approved_main_head" ] && echo "Missing approved_main_head (main HEAD binding required)"
+            if [ -n "$_approved_at" ] && ! merge_approval_timestamp_valid "$_approved_at"; then
+                echo "Malformed approved_at (expected ISO 8601 UTC timestamp)"
+            fi
             ;;
         github_review)
             # The GitHub review gate is enforced separately via reviewDecision
