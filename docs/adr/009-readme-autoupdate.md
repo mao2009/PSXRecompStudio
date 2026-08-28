@@ -48,6 +48,12 @@ config, and `prompt.md` — are extracted from `origin/main` (`git archive
 origin/main`) at runtime, never from the PR head. A PR therefore cannot relax
 its own enforcement.
 
+Bootstrap exception: the first PR that introduces these files (none exist on
+`origin/main` yet) sources them from the PR head, gated only by normal PR
+review, and emits an explicit `::warning::BOOTSTRAP`. After that PR merges,
+every subsequent PR extracts the trusted copy from `origin/main` and the
+fallback no longer triggers.
+
 ### 4. Fail-Closed Mechanical Boundary
 `readme-sync.sh publish` is the enforcement point. It inspects the actual
 working tree after OpenCode runs and:

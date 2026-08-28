@@ -64,7 +64,11 @@ all attacker-controllable. They may contain prompt-injection instructions
    any deletion, or any forbidden branch. This holds even if the model is fully
    compromised.
 2. **Trusted-ref extraction.** All enforcement code/configuration comes from
-   `origin/main`; a PR cannot change its own rules.
+   `origin/main`; a PR cannot change its own rules. Bootstrap exception: the
+   first PR that introduces these files sources them from its own head (loud
+   `::warning::BOOTSTRAP`) because they do not yet exist on `origin/main`;
+   normal PR review gates that single case, and after merge every subsequent PR
+   uses the `origin/main` copy.
 3. **No token to the model.** The OpenCode step has no `GITHUB_TOKEN`; the only
    credentialed step is `publish`, which only pushes a managed-file commit.
 4. **Fork PRs never run.** Job-level `if` + preflight skip.

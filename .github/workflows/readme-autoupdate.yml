@@ -37,16 +37,26 @@ jobs:
       # Security boundary: the script, SSOT config, opencode config, and prompt
       # come from origin/main (the trusted ref), never from the PR head. A PR
       # therefore cannot relax its own enforcement.
+      #
+      # Bootstrap exception (prints a WARNING): the FIRST PR that introduces
+      # this workflow has no copy of these assets on origin/main yet, so it
+      # sources them from the PR head. Normal PR review is the gate for that
+      # single bootstrap. After it merges, every subsequent PR extracts the
+      # trusted copy from origin/main and this fallback no longer triggers.
       - name: Extract trusted assets from origin/main
         run: |
-          mkdir -p "$RUNNER_TEMP/readme-sync/trusted"
-          git archive origin/main \
-            scripts/ci/readme-sync.sh \
-            config/readme-autoupdate.json \
-            config/readme-autoupdate/opencode.json \
-            config/readme-autoupdate/prompt.md \
-            | tar -x -C "$RUNNER_TEMP/readme-sync/trusted"
-          chmod +x "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh"
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/readme-sync"
+          mkdir -p "$ROOT/trusted"
+          ASSETS="scripts/ci/readme-sync.sh config/readme-autoupdate.json config/readme-autoupdate/opencode.json config/readme-autoupdate/prompt.md"
+          if git cat-file -e origin/main:scripts/ci/readme-sync.sh 2>/dev/null; then
+            git archive origin/main $ASSETS | tar -x -C "$ROOT/trusted"
+            echo "trusted assets extracted from origin/main"
+          else
+            echo "::warning::BOOTSTRAP: trusted assets not yet on origin/main; sourcing from PR head. After this PR merges, all subsequent PRs use the origin/main copy."
+            tar -C . -cf - $ASSETS | tar -x -C "$ROOT/trusted"
+          fi
+          chmod +x "$ROOT/trusted/scripts/ci/readme-sync.sh"
 
       - name: Preflight
         id: preflight
