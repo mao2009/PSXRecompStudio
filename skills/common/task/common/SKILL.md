@@ -134,7 +134,10 @@ Before reporting completion, confirm:
 - [ ] The diff contains only intentional, requested changes (Rule 7).
 - [ ] Compatibility with existing specs / ADRs is intact (Rule 8).
 - [ ] The task's Definition of Done is satisfied (Rule 9).
-- [ ] The governing process gates (self-review, doc-sync) were applied (Rule 10).
+- [ ] The governing process gates (self-review, doc-sync) that apply to the work
+      were applied; a gate that does not apply (e.g. self-review / doc-sync for a
+      non-PR task) is recorded as not applicable — never skipped when it applies
+      to a pull request (Rule 10).
 
 ## Definition of Done
 
