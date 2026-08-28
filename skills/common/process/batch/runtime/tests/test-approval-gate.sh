@@ -145,11 +145,12 @@ _wt="$_TEST_DIR/wt"
 git -C "$_REPO_DIR" checkout -q -b main 2>/dev/null || git branch -M main
 git -C "$_REPO_DIR" worktree add -q -b issue/176-explicit "$_wt" 2>/dev/null
 _commit=$(git -C "$_wt" rev-parse HEAD)
+_MAIN_HEAD=$(git -C "$_REPO_DIR" rev-parse HEAD)
 
 mkdir -p "$_REPO_DIR/.merge-state-dir"
 _state_ok="$_REPO_DIR/.merge-state-176.json"
 cat > "$_state_ok" <<EOF
-{"PrNumber":176,"IssueNumber":176,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":176,"IssueNumber":176,"CommitSha":"$_commit","MainHeadSha":"m1","ApprovedBy":"operator-gh","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
+{"PrNumber":176,"IssueNumber":176,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":176,"IssueNumber":176,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"operator-gh","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
 EOF
 
 # Valid explicit_human approval -> helper accepts.
@@ -162,7 +163,7 @@ fi
 # Missing ApprovedBy -> rejected (fail closed).
 _state_missing="$_REPO_DIR/.merge-state-177.json"
 cat > "$_state_missing" <<EOF
-{"PrNumber":177,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":177,"CommitSha":"$_commit","MainHeadSha":"m1","ApprovedBy":"","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
+{"PrNumber":177,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":177,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
 EOF
 if _merge_queue_has_explicit_human_approval "177" "$_wt" "$_REPO_DIR"; then
     _fail "explicit approval missing approved_by rejected"
@@ -173,7 +174,7 @@ fi
 # Unknown source -> rejected.
 _state_unknown="$_REPO_DIR/.merge-state-178.json"
 cat > "$_state_unknown" <<EOF
-{"PrNumber":178,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":178,"CommitSha":"$_commit","MainHeadSha":"m1","ApprovedBy":"x","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"github_review","IsValid":true}}
+{"PrNumber":178,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":178,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"x","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"github_review","IsValid":true}}
 EOF
 if _merge_queue_has_explicit_human_approval "178" "$_wt" "$_REPO_DIR"; then
     _fail "non-explicit_human source rejected by helper"
@@ -184,7 +185,7 @@ fi
 # Commit mismatch -> rejected.
 _state_mismatch="$_REPO_DIR/.merge-state-179.json"
 cat > "$_state_mismatch" <<EOF
-{"PrNumber":179,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":179,"CommitSha":"deadbeef","MainHeadSha":"m1","ApprovedBy":"x","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
+{"PrNumber":179,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":179,"CommitSha":"deadbeef","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"x","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
 EOF
 if _merge_queue_has_explicit_human_approval "179" "$_wt" "$_REPO_DIR"; then
     _fail "explicit approval commit mismatch rejected"
@@ -195,12 +196,23 @@ fi
 # Malformed timestamp -> rejected.
 _state_badts="$_REPO_DIR/.merge-state-180.json"
 cat > "$_state_badts" <<EOF
-{"PrNumber":180,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":180,"CommitSha":"$_commit","MainHeadSha":"m1","ApprovedBy":"x","ApprovedAt":"garbage","ApprovalSource":"explicit_human","IsValid":true}}
+{"PrNumber":180,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":180,"CommitSha":"$_commit","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"x","ApprovedAt":"garbage","ApprovalSource":"explicit_human","IsValid":true}}
 EOF
 if _merge_queue_has_explicit_human_approval "180" "$_wt" "$_REPO_DIR"; then
     _fail "explicit approval malformed timestamp rejected"
 else
     _pass "explicit approval malformed timestamp rejected"
+fi
+
+# Main HEAD mismatch -> rejected (approval taken against older main).
+_state_mainmismatch="$_REPO_DIR/.merge-state-181.json"
+cat > "$_state_mainmismatch" <<EOF
+{"PrNumber":181,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":181,"CommitSha":"$_commit","MainHeadSha":"deadbeef","ApprovedBy":"x","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
+EOF
+if _merge_queue_has_explicit_human_approval "181" "$_wt" "$_REPO_DIR"; then
+    _fail "explicit approval main HEAD mismatch rejected"
+else
+    _pass "explicit approval main HEAD mismatch rejected"
 fi
 
 # No state file at all -> rejected.
@@ -218,7 +230,7 @@ git -C "$_wt" commit -q -m "feature"
 git -C "$_wt" push -q origin issue/176-explicit 2>/dev/null || true
 _commit2=$(git -C "$_wt" rev-parse HEAD)
 cat > "$_state_ok" <<EOF
-{"PrNumber":176,"IssueNumber":176,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":176,"IssueNumber":176,"CommitSha":"$_commit2","MainHeadSha":"m1","ApprovedBy":"operator-gh","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
+{"PrNumber":176,"IssueNumber":176,"State":"APPROVAL_VALIDATION","Approval": {"PrNumber":176,"IssueNumber":176,"CommitSha":"$_commit2","MainHeadSha":"$_MAIN_HEAD","ApprovedBy":"operator-gh","ApprovedAt":"2026-08-28T06:36:59Z","ApprovalSource":"explicit_human","IsValid":true}}
 EOF
 _merge_queue_init
 _merge_queue_add "176" "issue-176" "$_wt" "issue/176-explicit"
@@ -228,6 +240,14 @@ if [ "$_result" -eq 0 ]; then
     _pass "explicit human approval allows batch gate (merge proceeds)"
 else
     _fail "explicit human approval allows batch gate (got exit $_result)"
+fi
+
+# Assert the branch was actually merged into main (not merely unblocked).
+_merged=$(git -C "$_REPO_DIR" merge-base --is-ancestor "$_commit2" refs/heads/main 2>/dev/null && echo yes || echo no)
+if [ "$_merged" = "yes" ]; then
+    _pass "explicit human approval resulted in an actual merge"
+else
+    _fail "explicit human approval resulted in an actual merge"
 fi
 
 # --- Summary ---

@@ -122,7 +122,19 @@ _merge_queue_has_explicit_human_approval() {
     case "$_approved_at" in
         ""|*[!0-9TZ:-]*) return 1 ;;
     esac
-    printf '%s' "$_approved_at" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$' 2>/dev/null || return 1
+    # UTC only (Z suffix). Calendar-invalid dates such as 2026-99-99T99:99:99Z
+    # must not be accepted, so enforce plausible date/time ranges.
+    printf '%s' "$_approved_at" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' 2>/dev/null || return 1
+    _bm=$(printf '%s' "$_approved_at" | cut -c6-7)
+    _bd=$(printf '%s' "$_approved_at" | cut -c9-10)
+    _bh=$(printf '%s' "$_approved_at" | cut -c12-13)
+    _bmi=$(printf '%s' "$_approved_at" | cut -c15-16)
+    _bs=$(printf '%s' "$_approved_at" | cut -c18-19)
+    case "$_bm" in 0[1-9]|1[0-2]) ;; *) return 1 ;; esac
+    case "$_bd" in 0[1-9]|[12][0-9]|3[01]) ;; *) return 1 ;; esac
+    case "$_bh" in 0[0-9]|1[0-9]|2[0-3]) ;; *) return 1 ;; esac
+    case "$_bmi" in 0[0-9]|[1-5][0-9]) ;; *) return 1 ;; esac
+    case "$_bs" in 0[0-9]|[1-5][0-9]) ;; *) return 1 ;; esac
 
     # Bind to the current worktree commit (fail closed on mismatch/missing).
     _approved_commit=$(printf '%s' "$_approval" | sed -n 's/.*"CommitSha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
@@ -130,6 +142,20 @@ _merge_queue_has_explicit_human_approval() {
     _current_commit=$(git -C "$_worktree" rev-parse HEAD 2>/dev/null)
     [ -n "$_current_commit" ] || return 1
     [ "$_approved_commit" = "$_current_commit" ] || return 1
+
+    # Bind to the current main HEAD (fail closed on mismatch/missing): an
+    # approval taken against an older main must not let the queue merge onto a
+    # newer main without re-validation.
+    _approved_main_head=$(printf '%s' "$_approval" | sed -n 's/.*"MainHeadSha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$_approved_main_head" ] || return 1
+    _main_head=""
+    if git -C "$_state_dir" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+        _main_head=$(git -C "$_state_dir" rev-parse refs/remotes/origin/main 2>/dev/null)
+    else
+        _main_head=$(git -C "$_state_dir" rev-parse refs/heads/main 2>/dev/null)
+    fi
+    [ -n "$_main_head" ] || return 1
+    [ "$_approved_main_head" = "$_main_head" ] || return 1
 
     return 0
 }

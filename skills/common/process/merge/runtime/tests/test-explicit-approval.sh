@@ -125,6 +125,26 @@ assert_true "absent source treated as github_review" \
     merge_approval_is_valid_sourced "" "true" "c1" "m1" "c1" "m1" "" ""
 
 # ---------------------------------------------------------------------------
+# ApprovedAt timestamp validation (UTC ISO 8601, calendar-sound)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- ApprovedAt timestamp validation ---"
+assert_true "valid UTC timestamp accepted" \
+    merge_approval_timestamp_valid "2026-01-01T00:00:00Z"
+assert_false "empty timestamp rejected" \
+    merge_approval_timestamp_valid ""
+assert_false "non-UTC offset timestamp rejected" \
+    merge_approval_timestamp_valid "2026-01-01T00:00:00-05:00"
+assert_false "calendar-invalid timestamp rejected" \
+    merge_approval_timestamp_valid "2026-99-99T99:99:99Z"
+assert_false "missing seconds rejected" \
+    merge_approval_timestamp_valid "2026-01-01T00:00Z"
+assert_false "garbage timestamp rejected" \
+    merge_approval_timestamp_valid "garbage"
+assert_false "malformed explicit_human record with bad timestamp fails closed" \
+    merge_approval_is_valid_sourced "explicit_human" "true" "c1" "m1" "c1" "m1" "alice" "2026-99-99T99:99:99Z"
+
+# ---------------------------------------------------------------------------
 # Authenticated identity (pure logic, gh available)
 # ---------------------------------------------------------------------------
 echo ""
