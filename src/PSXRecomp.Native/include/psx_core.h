@@ -42,6 +42,14 @@ PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 PSX_API void     PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value);
 PSX_API int      PSXCore_GetDmaInterruptPending(PSXCore* core);
 
+PSX_API uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address);
+PSX_API void     PSXCore_WriteTimerRegister(PSXCore* core, uint32_t address, uint32_t value);
+PSX_API void     PSXCore_TickTimers(PSXCore* core, uint32_t cycles);
+PSX_API int      PSXCore_GetTimerInterruptPending(PSXCore* core, int timer);
+PSX_API void     PSXCore_ClearTimerInterrupt(PSXCore* core, int timer);
+PSX_API void     PSXCore_SetTimerSync(PSXCore* core, int timer, int active);
+PSX_API void     PSXCore_ResetTimers(PSXCore* core);
+
 PSX_API int PSXCore_Step(PSXCore* core);
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

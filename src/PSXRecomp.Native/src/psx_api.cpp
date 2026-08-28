@@ -21,6 +21,7 @@ void PSXCore_Reset(PSXCore* core) {
     core->cpu.Reset();
     core->memory.Reset();
     core->dma.Reset();
+    core->timers.Reset();
 }
 
 uint32_t PSXCore_GetGPR(PSXCore* core, int index) {
@@ -85,6 +86,41 @@ void PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value) {
 int PSXCore_GetDmaInterruptPending(PSXCore* core) {
     if (!core) return 0;
     return core->dma.GetInterruptPending() ? 1 : 0;
+}
+
+uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {
+    if (!core) return 0;
+    return core->timers.ReadRegister(address);
+}
+
+void PSXCore_WriteTimerRegister(PSXCore* core, uint32_t address, uint32_t value) {
+    if (!core) return;
+    core->timers.WriteRegister(address, value);
+}
+
+void PSXCore_TickTimers(PSXCore* core, uint32_t cycles) {
+    if (!core) return;
+    core->timers.Tick(cycles);
+}
+
+int PSXCore_GetTimerInterruptPending(PSXCore* core, int timer) {
+    if (!core) return 0;
+    return core->timers.GetInterruptPending(timer) ? 1 : 0;
+}
+
+void PSXCore_ClearTimerInterrupt(PSXCore* core, int timer) {
+    if (!core) return;
+    core->timers.ClearInterrupt(timer);
+}
+
+void PSXCore_SetTimerSync(PSXCore* core, int timer, int active) {
+    if (!core) return;
+    core->timers.SetSyncLine(timer, active != 0);
+}
+
+void PSXCore_ResetTimers(PSXCore* core) {
+    if (!core) return;
+    core->timers.Reset();
 }
 
 int PSXCore_Step(PSXCore* core) {
