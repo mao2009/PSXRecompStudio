@@ -304,6 +304,97 @@ if command -v git >/dev/null 2>&1; then
         _cf_contains=$(printf '%s' "$_cf" | grep -q "cf.txt" && echo yes || echo no)
         assert_true "ConflictFiles mentions cf.txt" test "$_cf_contains" = "yes"
     fi
+
+    # ------------------------------------------------------------
+    # Test 6: CLEANUP resume restores the persisted WorktreePath and reaches
+    # COMPLETED (run via the real CLI with no --worktree/--branch, so the
+    # persisted WorktreePath must be restored for cleanup to succeed).
+    # ------------------------------------------------------------
+    echo ""
+    echo "--- Cleanup Resume Restores Persisted WorktreePath ---"
+    R6="$WORK/repo6"
+    REMOTE6="$WORK/remote6.git"
+    mkdir -p "$REMOTE6"
+    git init -q --bare "$REMOTE6" 2>/dev/null
+    mkdir -p "$R6"
+    git init -q -b main "$R6" 2>/dev/null
+    git -C "$R6" config user.email "test@example.com"
+    git -C "$R6" config user.name "Test"
+    git -C "$R6" remote add origin "$REMOTE6"
+    echo y > "$R6/y.txt"
+    git -C "$R6" add y.txt
+    git -C "$R6" commit -q -m "rebase base"
+    git -C "$R6" push -q -u origin main
+    git -C "$R6" worktree add -q -b issue/156-wt "$WORK/wt6" 2>/dev/null
+    git -C "$R6" push -q -u origin issue/156-wt 2>/dev/null
+
+    STATE6="$WORK/.merge-state-156.json"
+    merge_new_state 156 148 "$WORK/wt6" "issue/156-wt" > "$STATE6"
+    merge_state_set_string "$STATE6" "State" "CLEANUP"
+    # Resume with NO --worktree/--branch: the persisted WorktreePath must be
+    # restored so cleanup removes the real worktree and branch.
+    "$MERGE_SH" merge --pr 156 --state-file "$STATE6" --main-dir "$R6" > "$WORK/out12.log" 2>&1
+    _rc=$?
+    assert_true "cleanup resume (no --worktree) returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE6" "State")
+    assert_true "cleanup resume -> COMPLETED" test "$_state" = "COMPLETED"
+    if git -C "$R6" worktree list 2>/dev/null | grep -q "$WORK/wt6"; then
+        _fail "cleanup resume removed the restored worktree"
+    else
+        _pass "cleanup resume removed the restored worktree"
+    fi
+    _wt_branch=$(git -C "$R6" branch --list issue/156-wt 2>/dev/null)
+    assert_true "cleanup resume removed the branch" test -z "$_wt_branch"
+
+    # ------------------------------------------------------------
+    # Test 7: CLEANUP failure via resume (restored persisted WorktreePath,
+    # cleanup fails) -> FAILED, non-zero exit, never COMPLETED.
+    # ------------------------------------------------------------
+    echo ""
+    echo "--- Cleanup Resume Failure -> FAILED ---"
+    STATE7="$WORK/.merge-state-157.json"
+    mkdir -p "$WORK/wt7-fail"
+    merge_new_state 157 148 "$WORK/wt7-fail" "issue/157-fail" > "$STATE7"
+    merge_state_set_string "$STATE7" "State" "CLEANUP"
+    "$MERGE_SH" merge --pr 157 --state-file "$STATE7" --main-dir "$WORK/non-git-dir-cleanup7" > "$WORK/out13.log" 2>&1
+    _rc=$?
+    assert_true "cleanup resume failure returns non-zero" test "$_rc" -ne 0
+    _state=$(merge_state_get "$STATE7" "State")
+    assert_true "cleanup resume failure -> FAILED" test "$_state" = "FAILED"
+    assert_false "cleanup resume failure not COMPLETED" test "$_state" = "COMPLETED"
+    _reason=$(merge_state_get "$STATE7" "FailureReason")
+    printf '%s' "$_reason" | grep -q "cleanup" && _pass || _fail "cleanup failure reason recorded"
+
+    # ------------------------------------------------------------
+    # Test 8: Explicit --worktree overrides the persisted WorktreePath.
+    # ------------------------------------------------------------
+    echo ""
+    echo "--- Explicit --worktree Overrides Persisted WorktreePath ---"
+    PERSISTED_DIR="$WORK/override-persisted"
+    mkdir -p "$PERSISTED_DIR"
+    git -C "$R6" worktree add -q -b issue/158-wt "$WORK/wt8" 2>/dev/null
+    git -C "$R6" push -q -u origin issue/158-wt 2>/dev/null
+
+    STATE8="$WORK/.merge-state-158.json"
+    # Persisted path deliberately points at a plain, non-worktree directory so
+    # that if the CLI path wins it must NOT be removed.
+    merge_new_state 158 148 "$PERSISTED_DIR" "issue/158-wt" > "$STATE8"
+    merge_state_set_string "$STATE8" "State" "CLEANUP"
+    # Provide --worktree explicitly; it must take priority over persisted path.
+    "$MERGE_SH" merge --pr 158 --state-file "$STATE8" \
+        --worktree "$WORK/wt8" --main-dir "$R6" > "$WORK/out14.log" 2>&1
+    _rc=$?
+    assert_true "explicit --worktree cleanup returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE8" "State")
+    assert_true "explicit --worktree cleanup -> COMPLETED" test "$_state" = "COMPLETED"
+    # CLI worktree was removed...
+    if git -C "$R6" worktree list 2>/dev/null | grep -q "$WORK/wt8"; then
+        _fail "explicit --worktree path was removed"
+    else
+        _pass "explicit --worktree path was removed"
+    fi
+    # ...while the persisted directory was left untouched (override won).
+    assert_true "persisted path not removed (override wins)" test -d "$PERSISTED_DIR"
 fi
 
 echo ""

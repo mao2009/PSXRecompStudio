@@ -330,10 +330,14 @@ _merge_handle_merged() {
 _merge_handle_cleanup() {
     echo "=== Cleanup ==="
 
+    # MERGE_WORKTREE is restored from the persisted WorktreePath when the CLI
+    # did not supply it, so a resumed run still knows which worktree to remove.
+    _worktree="$MERGE_WORKTREE"
     _branch=$(merge_state_get "$MERGE_STATE_FILE" BranchName)
-    if [ -n "$MERGE_WORKTREE" ] && [ -n "$_branch" ]; then
+
+    if [ -n "$_worktree" ] || [ -n "$_branch" ]; then
         echo "Cleaning up Worktree and Branch..."
-        if ! merge_remove_worktree "$MERGE_WORKTREE" "$_branch" "false" "$MERGE_MAIN_DIR"; then
+        if ! merge_remove_worktree "$_worktree" "$_branch" "false" "$MERGE_MAIN_DIR"; then
             # Do not persist COMPLETED when cleanup fails: the worktree/branch
             # may still exist, so fail closed so cleanup can be retried.
             merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Failed to remove worktree during cleanup"
@@ -379,6 +383,17 @@ merge_orchestrate_one() {
         echo "Unknown state: $_state"
         merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unknown state: $_state"
         return 0
+    fi
+
+    # Resume support: when the CLI did not supply a worktree/branch (e.g. a
+    # later invocation of `merge.sh merge --pr <n>`), restore them from the
+    # persisted state so every handler (approval, rebase, validation, cleanup)
+    # can act on the correct paths. Explicit CLI values always win.
+    if [ -z "$MERGE_WORKTREE" ]; then
+        MERGE_WORKTREE=$(merge_state_get "$MERGE_STATE_FILE" "WorktreePath")
+    fi
+    if [ -z "$MERGE_BRANCH" ]; then
+        MERGE_BRANCH=$(merge_state_get "$MERGE_STATE_FILE" "BranchName")
     fi
 
     echo "=== PR Merge Orchestrator ==="
