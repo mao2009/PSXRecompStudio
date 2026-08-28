@@ -40,6 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC="$SCRIPT_DIR/readme-sync.sh"
 WORKFLOW="$(cd "$SCRIPT_DIR/../.." && pwd)/.github/workflows/readme-autoupdate.yml"
 CONFIG="$(cd "$SCRIPT_DIR/../.." && pwd)/config/readme-autoupdate.json"
+OPENCODE_CONFIG="$(cd "$SCRIPT_DIR/../.." && pwd)/config/readme-autoupdate/opencode.json"
 
 PASS=0
 FAIL=0
@@ -413,7 +414,16 @@ PY
 
 # --- 19. workflow: bootstrap gating on publish steps ------------------------
 test_workflow_bootstrap_gating() {
-  local cond run
+  local job_if cond run
+  job_if="$(python3 - "$WORKFLOW" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+print(d["jobs"]["publish-readme"].get("if") or "")
+PY
+)"
+  if [[ "$job_if" != *"actions.bootstrap == '0'"* && "$job_if" != *"outputs.bootstrap == '0'"* ]]; then
+    fail "publish job must be gated on the model job's bootstrap output (bootstrap runs stay analyze-only)"
+  fi
   cond="$(wf_step_if publish-readme "Publish README updates")"
   if [[ "$cond" != *"steps.extract.outputs.bootstrap == '0'"* ]]; then
     fail "publish step must be gated on bootstrap=0"
@@ -618,6 +628,35 @@ test_artifact_validation() {
   assert_ne 0 "$?" "artifact containing a symlink must be rejected"
 }
 
+# --- 24. opencode permission rules: catch-all first, specifics last ----------
+# OpenCode evaluates object rules with "last matching rule winning" (see
+# docs/adr/009-readme-autoupdate.md and https://opencode.ai/docs/permissions/).
+# The catch-all "*" deny must therefore come BEFORE the specific allows so the
+# read-only git rules remain effective; a trailing "*": "deny" would override
+# them all and break the model analysis.
+test_opencode_permission_rules() {
+  python3 - "$OPENCODE_CONFIG" <<'PY' || fail "opencode permission rules mis-ordered"
+import json, sys
+d = json.load(open(sys.argv[1]))
+bash = d["permission"]["bash"]
+rules = list(bash.items())
+assert rules and rules[0] == ("*", "deny"), "bash: catch-all '*': 'deny' must be the FIRST rule (last-match-wins)"
+expected = {
+    "git status*": "allow",
+    "git diff*": "allow",
+    "git log*": "allow",
+    "git show*": "allow",
+    "git blame*": "allow",
+}
+for k, v in expected.items():
+    assert bash.get(k) == v, "bash: missing/incorrect allow rule %s" % k
+edit = d["permission"]["edit"]
+assert list(edit.items())[0] == ("*", "deny"), "edit: catch-all '*': 'deny' must be the FIRST rule"
+assert edit.get("README.md") == "allow" and edit.get("**/README.md") == "allow", "edit: README.md allows required"
+assert "webfetch" in d["permission"] and "websearch" in d["permission"], "webfetch/websearch deny required"
+PY
+}
+
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
@@ -629,7 +668,8 @@ main() {
          test_verify_config_rejects_small_model test_verify_config_rejects_bad_version \
          test_publish_bootstrap_refused test_workflow_no_vars test_workflow_token_boundary \
          test_workflow_bootstrap_gating test_workflow_run_scripts \
-         test_workflow_extract_functional test_model_exporter_gate test_artifact_validation)
+         test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
+         test_opencode_permission_rules)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then

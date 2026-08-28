@@ -10,12 +10,12 @@
       "**/README.md": "allow"
     },
     "bash": {
+      "*": "deny",
       "git status*": "allow",
       "git diff*": "allow",
       "git log*": "allow",
       "git show*": "allow",
-      "git blame*": "allow",
-      "*": "deny"
+      "git blame*": "allow"
     },
     "webfetch": "deny",
     "websearch": "deny"

@@ -189,9 +189,13 @@ jobs:
     name: Publish (clean job, origin/main assets, token-backed)
     needs: update-readme
     # Fork PRs never publish; this job also never runs in bootstrap mode below.
+    # The bootstrap check references the MODEL job's output, so a race where
+    # origin/main gains the trusted assets between the two jobs cannot turn an
+    # analyze-only bootstrap run into a token-backed publish.
     if: >
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.update-readme.outputs.action == 'proceed'
+      needs.update-readme.outputs.action == 'proceed' &&
+      needs.update-readme.outputs.bootstrap == '0'
     permissions:
       contents: write
     runs-on: ubuntu-latest
