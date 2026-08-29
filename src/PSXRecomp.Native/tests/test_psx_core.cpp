@@ -666,6 +666,107 @@ static void test_memory_read_write_api() {
 }
 
 // LWL/LWR tests
+static void test_kseg_translation() {
+    TEST("KSEG address translation (0x80000000->0x00000000, 0xA0000000->0x00000000)");
+    PSXCore* core = PSXCore_Create();
+
+    // Data at physical RAM 0x0000.
+    PSXCore_WriteMemory32(core, 0x0000, 0x12345678u);
+
+    // LW $1, 0($29) with $29 = KSEG0 0x80000000 -> physical 0x00000000
+    PSXCore_SetGPR(core, 29, 0x80000000u);
+    PSXCore_WriteMemory32(core, 0x100, 0x8FA10000u); // LW $1, 0($29)
+    PSXCore_WriteMemory32(core, 0x104, 0x00000000u); // NOP (load delay)
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x12345678u);
+
+    // LW $2, 0($29) with $29 = KSEG1 0xA0000000 -> physical 0x00000000
+    PSXCore_SetGPR(core, 29, 0xA0000000u);
+    PSXCore_WriteMemory32(core, 0x108, 0x8FA20000u); // LW $2, 0($29)
+    PSXCore_WriteMemory32(core, 0x10C, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0x108);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0x12345678u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_kseg_ram_end_bios() {
+    TEST("KSEG0 0x801FFFFF->0x001FFFFF, KSEG1 0xBFC00000->0x1FC00000 (BIOS)");
+    PSXCore* core = PSXCore_Create();
+
+    // Physical RAM last byte 0x001FFFFF.
+    PSXCore_WriteMemory8(core, 0x001FFFFF, 0xABu);
+    // BIOS first byte 0x1FC00000.
+    PSXCore_WriteMemory8(core, 0x1FC00000, 0xCDu);
+
+    // LB $1, 0($29) with $29 = KSEG0 0x801FFFFF -> 0x001FFFFF
+    PSXCore_SetGPR(core, 29, 0x801FFFFFu);
+    PSXCore_WriteMemory32(core, 0x100, 0x83A10000u); // LB $1, 0($29)
+    PSXCore_WriteMemory32(core, 0x104, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0xFFFFFFABu); // LB sign-extends
+
+    // LBU $2, 0($29) with $29 = KSEG1 0xBFC00000 -> 0x1FC00000 (BIOS)
+    PSXCore_SetGPR(core, 29, 0xBFC00000u);
+    PSXCore_WriteMemory32(core, 0x108, 0x93A20000u); // LBU $2, 0($29)
+    PSXCore_WriteMemory32(core, 0x10C, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0x108);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0x000000CDu);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_kseg_unmapped() {
+    TEST("Unmapped read=0, write ignored (KSEG2 0xC0000000)");
+    PSXCore* core = PSXCore_Create();
+
+    // LBU $1, 0($29) with $29 unmapped -> returns 0
+    PSXCore_SetGPR(core, 29, 0xC0000000u);
+    PSXCore_WriteMemory32(core, 0x100, 0x93A10000u); // LBU $1, 0($29)
+    PSXCore_WriteMemory32(core, 0x104, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u);
+
+    // SW $2, 0($29) with $29 unmapped -> ignored
+    PSXCore_SetGPR(core, 2, 0xDEADBEEF);
+    PSXCore_WriteMemory32(core, 0x108, 0xAFA20000u); // SW $2, 0($29)
+    PSXCore_SetPC(core, 0x108);
+    int result = PSXCore_Step(core);
+    ASSERT_EQ(result, 0);
+    // No crash and the write did not hit any mapped region.
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_kseg_instruction_fetch() {
+    TEST("Instruction fetch through KSEG0 executes program at 0x80000000");
+    PSXCore* core = PSXCore_Create();
+
+    // ADDIU $1, $0, 42 (0x2401002A) stored at physical RAM 0x0000,
+    // executed via KSEG0 virtual address 0x80000000.
+    PSXCore_WriteMemory32(core, 0x0000, 0x2401002Au);
+    PSXCore_SetPC(core, 0x80000000u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 42u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// LWL/LWR tests
 static void test_lwl_lwr_aligned() {
     TEST("LWL/LWR aligned load (LW equivalent)");
     PSXCore* core = PSXCore_Create();
@@ -1071,6 +1172,10 @@ int main() {
     test_run_multiple();
     test_run_early_exit();
     test_memory_read_write_api();
+    test_kseg_translation();
+    test_kseg_ram_end_bios();
+    test_kseg_unmapped();
+    test_kseg_instruction_fetch();
     test_lwl_lwr_aligned();
     test_lwl_lwr_unchanged();
     test_div_by_zero_positive();

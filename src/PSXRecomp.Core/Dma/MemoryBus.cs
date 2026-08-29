@@ -31,6 +31,50 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
         _timerAdapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
+    public uint Read32(uint address) => Read(address);
+
+    public void Write32(uint address, uint value) => Write(address, value);
+
+    public ushort Read16(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+            return (ushort)(Read(address) & 0xFFFF);
+        uint _word = ReadRam(address & ~3u);
+        return (ushort)((_word >> (8 * (int)(address & 2))) & 0xFFFF);
+    }
+
+    public void Write16(uint address, ushort value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+            return;
+        uint word = ReadRam(address & ~3u);
+        int _shift = 8 * (int)(address & 2);
+        word = (word & ~(0xFFFFu << _shift)) | ((uint)value << _shift);
+        WriteRam(address & ~3u, word);
+    }
+
+    public byte Read8(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+            return (byte)(Read(address) & 0xFF);
+        uint _word = ReadRam(address & ~3u);
+        return (byte)((_word >> (8 * (int)(address & 3))) & 0xFF);
+    }
+
+    public void Write8(uint address, byte value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+            return;
+        uint word = ReadRam(address & ~3u);
+        int _shift = 8 * (int)(address & 3);
+        word = (word & ~(0xFFu << _shift)) | ((uint)value << _shift);
+        WriteRam(address & ~3u, word);
+    }
+
     public uint Read(uint address)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
