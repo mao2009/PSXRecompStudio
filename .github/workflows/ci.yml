@@ -95,15 +95,39 @@ jobs:
           dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
           dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
 
+  gui-tests:
+    name: GUI Headless Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj
+
+      - name: Build GUI test project
+        run: dotnet build src/PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj --configuration Release --no-restore
+
+      - name: Run headless GUI tests (no display server)
+        run: dotnet test src/PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj --configuration Release --no-build --verbosity normal
+
   ci:
     name: CI Gate
     if: always()
-    needs: [artifact-policy, dotnet, native]
+    needs: [artifact-policy, dotnet, native, gui-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Require all checks to pass
         run: |
-          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" ]]; then
+          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" || "${{ needs.gui-tests.result }}" != "success" ]]; then
             echo "Required CI jobs did not all succeed."
             exit 1
           fi

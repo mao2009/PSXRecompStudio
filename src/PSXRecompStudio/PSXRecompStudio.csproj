@@ -12,6 +12,8 @@
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
+    <!-- Issue #178: expose minimal testability seam (App.CreateMainWindow) to the GUI test project. -->
+    <InternalsVisibleTo Include="PSXRecompStudio.Tests" />
   </ItemGroup>
 
   <ItemGroup>
