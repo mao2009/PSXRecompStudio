@@ -99,11 +99,20 @@ Add a third job `review-trigger` to `.github/workflows/readme-autoupdate.yml`:
   - **Job-level skip**: the publish job does not run (fork PR, bootstrap run,
     or upstream failure). `record-sha` lives inside the job, so it does not
     execute either and `published_sha` is **empty**.
+  The `published_sha` contract mirrors the actual GitHub Actions semantics
+  exactly:
+  - if the `publish-readme` **job runs**, `record-sha` runs and
+    `published_sha` is set — to the current PR head (`A`) on an executed
+    no-op, or to the pushed README commit (`B`) on an executed publication;
+  - if the `publish-readme` **job is skipped at the job level**, `record-sha`
+    does not run and `published_sha` is empty.
   The value is computed mechanically with `git rev-parse HEAD` in that final
   `record-sha` step, so whenever the job runs it reflects the exact
-  post-publish head. The empty case is not a bug: `review-trigger` treats an
-  empty `published_sha` as fail-closed and never triggers a review unless a
-  real publish ran.
+  post-publish head. `published_sha` is therefore **not** set on every run: it
+  is only ever set when the publish job actually executed and recorded a SHA.
+  The empty case is not a bug: `review-trigger` treats an empty `published_sha`
+  as fail-closed and never triggers a review unless the publish job ran and
+  recorded a SHA (so an executed no-op still triggers a review).
 - Before triggering, `review-trigger` fetches the **current** PR head via the
   GitHub API (`gh api repos/{owner}/{repo}/pulls/{n} --jq '.head.sha'`) and
   compares it against `needs.publish-readme.outputs.published_sha`. If they
@@ -157,15 +166,27 @@ secret is involved.
 ### 5. Fork PRs / bootstrap runs
 
 Fork PRs skip the model and publish jobs at the job level and in preflight
-(#180). The review-trigger job's dependence on `update-readme.result` /
-`publish-readme.result` makes it skip for forks as well: on forks the jobs are
-`skipped`, not `success`, so no comment is ever posted with a fork-controlled
-context. Skipped publish runs also expose an **empty** `published_sha`
-(`record-sha` never executes), which the SHA-verification step treats as
-fail-closed (`match=0`). The first (bootstrap) run that introduces these files
-analyzes only and never publishes; with `publish-readme` skipped, no CodeRabbit
-review is triggered until the trusted assets are on `origin/main` and a real
-publish runs.
+(#180). It is important to distinguish the `review-trigger` **job** running
+from its **trigger step** running:
+
+- The `review-trigger` job uses `if: always()`, so the **job itself always
+  runs**, including its SHA-verification step, even when the upstream
+  `update-readme` / `publish-readme` jobs are skipped on forks or bootstrap
+  runs.
+- Only the final CodeRabbit **trigger step** is suppressed, and only by the
+  upstream result gates and an empty `published_sha`: on forks the upstream
+  jobs are `skipped`, not `success`, so `match=0` and no `@coderabbitai review`
+  comment is ever posted with a fork-controlled context.
+
+Skipped publish runs also expose an **empty** `published_sha` (`record-sha`
+never executes, because the job is skipped at the job level), which the
+SHA-verification **step** treats as fail-closed (`match=0`). The verification
+step still runs in that case; it is only the trigger step that is gated off.
+The first (bootstrap) run that introduces these files analyzes only and never
+publishes; with `publish-readme` skipped, `review-trigger` still runs its
+verification step but does not post a review, so no CodeRabbit review is
+triggered until the trusted assets are on `origin/main` and a real publish
+runs.
 
 ### 6. Human Approval Gate preserved
 
