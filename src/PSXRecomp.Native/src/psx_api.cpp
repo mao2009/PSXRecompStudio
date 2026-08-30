@@ -64,6 +64,16 @@ void PSXCore_SetLO(PSXCore* core, uint32_t value) {
     core->cpu.SetLO(value);
 }
 
+uint32_t PSXCore_GetCop0(PSXCore* core, int index) {
+    if (!core) return 0;
+    return core->cpu.GetCop0(index);
+}
+
+void PSXCore_SetCop0(PSXCore* core, int index, uint32_t value) {
+    if (!core) return;
+    core->cpu.SetCop0(index, value);
+}
+
 uint8_t* PSXCore_GetRAM(PSXCore* core) {
     if (!core) return nullptr;
     return core->memory.GetRAM();

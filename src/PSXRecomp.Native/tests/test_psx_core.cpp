@@ -941,6 +941,226 @@ static void test_div_normal() {
     PASS();
 }
 
+// COP0 state and exception tests (Issue #141)
+static void test_cop0_mfc0_mtc0_roundtrip() {
+    TEST("MFC0/MTC0 COP0 register roundtrip (SR/EPC/BadVAddr)");
+    PSXCore* core = PSXCore_Create();
+
+    // MTC0 $1, SR(12): COP0[12] = GPR[1]
+    PSXCore_SetGPR(core, 1, 0x80000000u);
+    PSXCore_WriteMemory32(core, 0, 0x40816000u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetCop0(core, 12), 0x80000000u);
+
+    // MFC0 $2, SR(12): GPR[2] = COP0[12]
+    PSXCore_WriteMemory32(core, 8, 0x40026000u);
+    PSXCore_SetPC(core, 8);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0x80000000u);
+
+    // MTC0 $1, EPC(14) then MFC0 $3, EPC
+    PSXCore_SetGPR(core, 1, 0xBFC00000u);
+    PSXCore_WriteMemory32(core, 16, 0x40817000u);
+    PSXCore_SetPC(core, 16);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0xBFC00000u);
+
+    PSXCore_WriteMemory32(core, 24, 0x40037000u);
+    PSXCore_SetPC(core, 24);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xBFC00000u);
+
+    // MTC0 $1, BadVAddr(8) then MFC0 $4, BadVAddr
+    PSXCore_SetGPR(core, 1, 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 32, 0x40814000u);
+    PSXCore_SetPC(core, 32);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0xDEADBEEFu);
+
+    PSXCore_WriteMemory32(core, 40, 0x40044000u);
+    PSXCore_SetPC(core, 40);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0xDEADBEEFu);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_cop0_cause_rw_bits() {
+    TEST("CAUSE: only IP[1:0] (bits 8-9) are R/W via MTC0");
+    PSXCore* core = PSXCore_Create();
+    // MTC0 $1, CAUSE(13) with GPR[1] = IP bits (0x300) | Excode bits (0x7C)
+    PSXCore_SetGPR(core, 1, 0x37Cu);
+    PSXCore_WriteMemory32(core, 0, 0x40816800u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x300u, 0x300u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x7Cu, 0u); // Excode not writable via MTC0
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_syscall_exception() {
+    TEST("SYSCALL raises Sys: EPC, CAUSE.Excode, SR, PC");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x0000000Cu); // SYSCALL
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u); // EPC = instruction addr
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7C) >> 2, 0x08u); // Sys
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x80000000u, 0u); // BD = 0
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u); // BEV=0 general vector
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_break_exception() {
+    TEST("BREAK raises Bp (CAUSE.Excode=0x09)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x0000000Du); // BREAK
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7C) >> 2, 0x09u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ov_add() {
+    TEST("ADD overflow raises Ov and does not write GPR");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x7FFFFFFFu);
+    PSXCore_SetGPR(core, 2, 1);
+    PSXCore_WriteMemory32(core, 0, 0x00221820u); // ADD $3,$1,$2
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7C) >> 2, 0x0Cu); // Ov
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u); // EPC = ADD addr
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u); // result NOT written
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ov_add_nonoverflow() {
+    TEST("ADD no exception on non-overflow");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 20);
+    PSXCore_WriteMemory32(core, 0, 0x00221820u); // ADD $3,$1,$2
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 30u);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u); // no exception, normal step
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ov_addi() {
+    TEST("ADDI overflow raises Ov");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 4, 0x7FFFFFFFu);
+    PSXCore_WriteMemory32(core, 0, 0x20857FFFu); // ADDI $5,$4,0x7FFF
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7C) >> 2, 0x0Cu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0u); // not written
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ov_sub() {
+    TEST("SUB overflow raises Ov");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x80000000u);
+    PSXCore_SetGPR(core, 2, 1);
+    PSXCore_WriteMemory32(core, 0, 0x00221822u); // SUB $3,$1,$2
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7C) >> 2, 0x0Cu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u); // not written
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_exception_vector_bev1() {
+    TEST("Exception vector BEV=1 -> 0xBFC00180");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, (1u << 22)); // BEV = SR bit 22
+    PSXCore_WriteMemory32(core, 0, 0x0000000Cu); // SYSCALL
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 0xBFC00180u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_sr_stack_shift() {
+    TEST("SR 3-level stack shifts on exception");
+    PSXCore* core = PSXCore_Create();
+    // Seed: KUc=1,IEc=1,KUp=0,IEp=1,KUo=1,IEo=1 -> bits0-5 = 0x3B
+    PSXCore_SetCop0(core, 12, 0x3Bu);
+    PSXCore_WriteMemory32(core, 0, 0x0000000Cu); // SYSCALL
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    // KUo<-KUp(0),IEo<-IEp(1),KUp<-KUc(1),IEp<-IEc(1),KUc=0,IEc=0 -> 0x2C
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x2Cu);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_exception_nested_sr() {
+    TEST("Nested exceptions shift SR stack twice");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x3Fu); // all stack bits 1
+    PSXCore_WriteMemory32(core, 0, 0x0000000Cu); // SYSCALL
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    // after 1st: KUc=0,IEc=0,KUp=1,IEp=1,KUo=1,IEo=1 -> 0x3C
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x3Cu);
+    // place SYSCALL at the exception vector (phys 0x80, BEV=0 -> 0x80000080)
+    PSXCore_WriteMemory32(core, 0x80, 0x0000000Cu);
+    PSXCore_Step(core);
+    // after 2nd: KUo<-KUp(1),IEo<-IEp(1),KUp<-KUc(0),IEp<-IEc(0),KUc=0,IEc=0 -> 0x30
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x30u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_rfe_pop() {
+    TEST("RFE pops SR 3-level stack");
+    PSXCore* core = PSXCore_Create();
+    // post-exception state 0x3C: KUc=0,IEc=0,KUp=1,IEp=1,KUo=1,IEo=1
+    PSXCore_SetCop0(core, 12, 0x3Cu);
+    PSXCore_WriteMemory32(core, 0, 0x42000010u); // RFE (opcode 0x10, rs=0x10, funct 0x10)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    // KUc<-KUp(1),IEc<-IEp(1),KUp<-KUo(1),IEp<-IEo(1); oldest level cleared
+    // (ADR-005: SR[5:4]=0) -> 0x0F
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x0Fu);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_exception_in_delay_slot() {
+    TEST("Exception in delay slot sets BD=1, EPC=branch addr");
+    PSXCore* core = PSXCore_Create();
+    // BEQ $0,$0,+1 at PC=0, delay slot = SYSCALL at PC=4
+    PSXCore_WriteMemory32(core, 0, 0x10000001u);
+    PSXCore_WriteMemory32(core, 4, 0x0000000Cu); // SYSCALL in delay slot
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core); // branch issued, PC=4 (delay slot)
+    ASSERT_EQ(PSXCore_GetPC(core), 4u);
+    PSXCore_Step(core); // SYSCALL in delay slot -> exception
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x80000000u, 0x80000000u); // BD = 1
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u); // EPC = branch addr (PC=0)
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 // Timer tests
 static uint32_t TMR(int t, uint32_t off) {
     return 0x1F801100u + (uint32_t)t * 0x10u + off;
@@ -1220,6 +1440,20 @@ int main() {
     test_div_overflow();
     test_divu_by_zero();
     test_div_normal();
+
+    test_cop0_mfc0_mtc0_roundtrip();
+    test_cop0_cause_rw_bits();
+    test_syscall_exception();
+    test_break_exception();
+    test_ov_add();
+    test_ov_add_nonoverflow();
+    test_ov_addi();
+    test_ov_sub();
+    test_exception_vector_bev1();
+    test_sr_stack_shift();
+    test_exception_nested_sr();
+    test_rfe_pop();
+    test_exception_in_delay_slot();
 
     test_timer_registers();
     test_timer_free_run_target_irq();

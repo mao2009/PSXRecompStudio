@@ -35,6 +35,9 @@ PSX_API void     PSXCore_SetHI(PSXCore* core, uint32_t value);
 PSX_API uint32_t PSXCore_GetLO(PSXCore* core);
 PSX_API void     PSXCore_SetLO(PSXCore* core, uint32_t value);
 
+PSX_API uint32_t PSXCore_GetCop0(PSXCore* core, int index);
+PSX_API void     PSXCore_SetCop0(PSXCore* core, int index, uint32_t value);
+
 PSX_API uint8_t* PSXCore_GetRAM(PSXCore* core);
 PSX_API uint32_t PSXCore_GetRAMSize(void);
 
