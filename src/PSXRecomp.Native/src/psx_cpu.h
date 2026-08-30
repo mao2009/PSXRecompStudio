@@ -141,6 +141,8 @@ private:
     void ExecRfe();
     
     // Helpers
+    uint32_t TranslateAddress(uint32_t virt) const;
+    bool IsMapped(uint32_t phys) const;
     uint32_t SignExtend16(int16_t value) const;
     uint32_t ZeroExtend16(uint16_t value) const;
     int32_t ToSigned(uint32_t value) const;

@@ -2,8 +2,29 @@
 #include "psx_memory.h"
 #include <cstdint>
 
+// Sentinel physical address used to represent an unmapped virtual address.
+static constexpr uint32_t kUnmappedPhysical = 0xFFFFFFFFu;
+
 PSXCpu::PSXCpu() {
     Reset();
+}
+
+uint32_t PSXCpu::TranslateAddress(uint32_t virt) const {
+    // KUSEG (0x00000000-0x7FFFFFFF): treat as a direct physical address.
+    if (virt <= 0x7FFFFFFF) {
+        return virt;
+    }
+    // KSEG0 (0x80000000-0x9FFFFFFF) and KSEG1 (0xA0000000-0xBFFFFFFF):
+    // physical = address & 0x1FFFFFFF.
+    if (virt <= 0xBFFFFFFF) {
+        return virt & 0x1FFFFFFF;
+    }
+    // KSEG2 and reserved upper ranges are unmapped in this model.
+    return kUnmappedPhysical;
+}
+
+bool PSXCpu::IsMapped(uint32_t phys) const {
+    return phys != kUnmappedPhysical;
 }
 
 void PSXCpu::Reset() {
@@ -58,14 +79,11 @@ uint32_t PSXCpu::GetLO() const { return lo_; }
 void PSXCpu::SetLO(uint32_t value) { lo_ = value; }
 
 uint32_t PSXCpu::FetchInstruction(PSXMemory& memory) {
-    uint32_t addr = pc_;
-    uint8_t* ram = memory.GetRAM();
-    uint32_t instruction = 
-        (static_cast<uint32_t>(ram[addr]) << 24) |
-        (static_cast<uint32_t>(ram[addr + 1]) << 16) |
-        (static_cast<uint32_t>(ram[addr + 2]) << 8) |
-        static_cast<uint32_t>(ram[addr + 3]);
-    return instruction;
+    uint32_t phys = TranslateAddress(pc_);
+    if (!IsMapped(phys)) {
+        return 0;
+    }
+    return memory.Read32(phys);
 }
 
 void PSXCpu::FlushPipeline() {
@@ -589,70 +607,91 @@ void PSXCpu::ExecMtlo(uint32_t rs) {
 // Memory
 void PSXCpu::ExecLb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    int8_t value = static_cast<int8_t>(ram[addr]);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        WriteRegDelayed(rt, 0);
+        return;
+    }
+    int8_t value = static_cast<int8_t>(memory.Read8(phys));
     WriteRegDelayed(rt, SignExtend16(value));
 }
 
 void PSXCpu::ExecLbu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    WriteRegDelayed(rt, ram[addr]);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        WriteRegDelayed(rt, 0);
+        return;
+    }
+    WriteRegDelayed(rt, memory.Read8(phys));
 }
 
 void PSXCpu::ExecLh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    int16_t value = static_cast<int16_t>((ram[addr] << 8) | ram[addr + 1]);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        WriteRegDelayed(rt, 0);
+        return;
+    }
+    int16_t value = static_cast<int16_t>(memory.Read16(phys));
     WriteRegDelayed(rt, SignExtend16(value));
 }
 
 void PSXCpu::ExecLhu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    uint16_t value = (ram[addr] << 8) | ram[addr + 1];
-    WriteRegDelayed(rt, value);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        WriteRegDelayed(rt, 0);
+        return;
+    }
+    WriteRegDelayed(rt, memory.Read16(phys));
 }
 
 void PSXCpu::ExecLw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    uint32_t value = (ram[addr] << 24) | (ram[addr + 1] << 16) | (ram[addr + 2] << 8) | ram[addr + 3];
-    WriteRegDelayed(rt, value);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        WriteRegDelayed(rt, 0);
+        return;
+    }
+    WriteRegDelayed(rt, memory.Read32(phys));
 }
 
 void PSXCpu::ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    ram[addr] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        return;
+    }
+    memory.Write8(phys, static_cast<uint8_t>(gpr_[rt] & 0xFF));
 }
 
 void PSXCpu::ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    ram[addr] = static_cast<uint8_t>(gpr_[rt] >> 8);
-    ram[addr + 1] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        return;
+    }
+    memory.Write16(phys, static_cast<uint16_t>(gpr_[rt] & 0xFFFF));
 }
 
 void PSXCpu::ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
-    ram[addr] = static_cast<uint8_t>(gpr_[rt] >> 24);
-    ram[addr + 1] = static_cast<uint8_t>(gpr_[rt] >> 16);
-    ram[addr + 2] = static_cast<uint8_t>(gpr_[rt] >> 8);
-    ram[addr + 3] = static_cast<uint8_t>(gpr_[rt] & 0xFF);
+    uint32_t phys = TranslateAddress(addr);
+    if (!IsMapped(phys)) {
+        return;
+    }
+    memory.Write32(phys, gpr_[rt]);
 }
 
 // Load Word Left - unaligned load, left bytes
 void PSXCpu::ExecLwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
+    uint32_t base = addr - (addr & 3);
+    uint32_t phys = TranslateAddress(base);
     uint32_t reg = gpr_[rt];
     uint32_t shift = (addr & 3) * 8;
-    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
-                       (ram[addr - (addr & 3) + 1] << 16) |
-                       (ram[addr - (addr & 3) + 2] << 8) |
-                       ram[addr - (addr & 3) + 3];
+    uint32_t mem_val = IsMapped(phys) ? memory.Read32(phys) : 0;
     uint32_t mask = 0xFFFFFFFF << shift;
     WriteRegDelayed(rt, (mem_val << shift) | (reg & ~mask));
 }
@@ -660,13 +699,11 @@ void PSXCpu::ExecLwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
 // Load Word Right - unaligned load, right bytes
 void PSXCpu::ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
+    uint32_t base = addr - (addr & 3);
+    uint32_t phys = TranslateAddress(base);
     uint32_t reg = gpr_[rt];
     uint32_t shift = (3 - (addr & 3)) * 8;
-    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
-                       (ram[addr - (addr & 3) + 1] << 16) |
-                       (ram[addr - (addr & 3) + 2] << 8) |
-                       ram[addr - (addr & 3) + 3];
+    uint32_t mem_val = IsMapped(phys) ? memory.Read32(phys) : 0;
     uint32_t mask = 0xFFFFFFFF >> shift;
     WriteRegDelayed(rt, (reg & ~mask) | (mem_val >> shift));
 }
@@ -674,37 +711,33 @@ void PSXCpu::ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
 // Store Word Left - unaligned store, left bytes
 void PSXCpu::ExecSwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
+    uint32_t base = addr - (addr & 3);
+    uint32_t phys = TranslateAddress(base);
+    if (!IsMapped(phys)) {
+        return;
+    }
     uint32_t reg = gpr_[rt];
     uint32_t shift = (addr & 3) * 8;
-    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
-                       (ram[addr - (addr & 3) + 1] << 16) |
-                       (ram[addr - (addr & 3) + 2] << 8) |
-                       ram[addr - (addr & 3) + 3];
+    uint32_t mem_val = memory.Read32(phys);
     uint32_t mask = 0xFFFFFFFF >> shift;
     uint32_t result = (reg >> shift) | (mem_val & ~mask);
-    ram[addr - (addr & 3)] = static_cast<uint8_t>(result >> 24);
-    ram[addr - (addr & 3) + 1] = static_cast<uint8_t>(result >> 16);
-    ram[addr - (addr & 3) + 2] = static_cast<uint8_t>(result >> 8);
-    ram[addr - (addr & 3) + 3] = static_cast<uint8_t>(result & 0xFF);
+    memory.Write32(phys, result);
 }
 
 // Store Word Right - unaligned store, right bytes
 void PSXCpu::ExecSwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
-    uint8_t* ram = memory.GetRAM();
+    uint32_t base = addr - (addr & 3);
+    uint32_t phys = TranslateAddress(base);
+    if (!IsMapped(phys)) {
+        return;
+    }
     uint32_t reg = gpr_[rt];
     uint32_t shift = (3 - (addr & 3)) * 8;
-    uint32_t mem_val = (ram[addr - (addr & 3)] << 24) |
-                       (ram[addr - (addr & 3) + 1] << 16) |
-                       (ram[addr - (addr & 3) + 2] << 8) |
-                       ram[addr - (addr & 3) + 3];
+    uint32_t mem_val = memory.Read32(phys);
     uint32_t mask = 0xFFFFFFFF << shift;
     uint32_t result = (mem_val & ~mask) | (reg << shift);
-    ram[addr - (addr & 3)] = static_cast<uint8_t>(result >> 24);
-    ram[addr - (addr & 3) + 1] = static_cast<uint8_t>(result >> 16);
-    ram[addr - (addr & 3) + 2] = static_cast<uint8_t>(result >> 8);
-    ram[addr - (addr & 3) + 3] = static_cast<uint8_t>(result & 0xFF);
+    memory.Write32(phys, result);
 }
 
 // Branch (branch delay slot per ADR-004/005)

@@ -55,6 +55,74 @@ public class MemoryBusTests : IDisposable
     }
 
     [Fact]
+    public void Read8_Write8_Ram_RoundTrips()
+    {
+        _memoryBus.Write8(0x00000000, 0xAB);
+        _memoryBus.Read8(0x00000000).Should().Be(0xAB);
+        _memoryBus.Read8(0x00000001).Should().Be(0x00);
+
+        _memoryBus.Write8(0x00000001, 0xCD);
+        _memoryBus.Read8(0x00000001).Should().Be(0xCD);
+    }
+
+    [Fact]
+    public void Read8_IsConsistentWithRead32()
+    {
+        _memoryBus.Write32(0x00000008, 0x11223344);
+        _memoryBus.Read8(0x00000008).Should().Be(0x44); // little-endian LSB first
+        _memoryBus.Read8(0x00000009).Should().Be(0x33);
+        _memoryBus.Read8(0x0000000A).Should().Be(0x22);
+        _memoryBus.Read8(0x0000000B).Should().Be(0x11);
+    }
+
+    [Fact]
+    public void Read16_Write16_Ram_RoundTrips()
+    {
+        _memoryBus.Write16(0x00000010, 0xCAFE);
+        _memoryBus.Read16(0x00000010).Should().Be(0xCAFE);
+        _memoryBus.Read16(0x00000012).Should().Be(0x0000);
+    }
+
+    [Fact]
+    public void Read16_IsConsistentWithRead32()
+    {
+        _memoryBus.Write32(0x00000018, 0xAABBCCDD);
+        _memoryBus.Read16(0x00000018).Should().Be(0xCCDD); // little-endian low halfword
+        _memoryBus.Read16(0x0000001A).Should().Be(0xAABB);
+    }
+
+    [Fact]
+    public void Read32_Write32_StillWork()
+    {
+        _memoryBus.Write32(0x00000020, 0xDEADBEEF);
+        _memoryBus.Read32(0x00000020).Should().Be(0xDEADBEEFu);
+    }
+
+    [Fact]
+    public void Ram_LittleEndianLayout_IsSharedWithNativeCpu()
+    {
+        _memoryBus.Write32(0x00000100, 0x11223344);
+        _core.ReadMemory32(0x00000100).Should().Be(0x11223344u);
+
+        _memoryBus.Write16(0x00000200, 0xCAFE);
+        _core.ReadMemory16(0x00000200).Should().Be(0xCAFE);
+    }
+
+    [Fact]
+    public void Write8_Unmapped_DoesNotThrow()
+    {
+        var act = () => _memoryBus.Write8(0x20000000, 0xAB);
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Read8_Unmapped_ReturnsZero()
+    {
+        _memoryBus.Write8(0x20000000, 0xAB);
+        _memoryBus.Read8(0x20000000).Should().Be(0);
+    }
+
+    [Fact]
     public void Read_DmaRegister_RoutesToAdapter()
     {
         _dmaAdapter.WriteRegister(Ps1MemoryMap.GetChannelMadr(0), 0xAABBCCDD);
@@ -173,6 +241,40 @@ public class MemoryBusTests : IDisposable
         uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
         _memoryBus.Write(addr, 0x7FFF);
         _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0x7FFFu);
+    }
+
+    [Fact]
+    public void Write16_TimerTarget_RoutesToAdapter()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
+        _memoryBus.Write16(addr, 0x1234);
+        _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0x1234u);
+        _memoryBus.Read16(addr).Should().Be(0x1234);
+    }
+
+    [Fact]
+    public void Write8_TimerTarget_RoutesToAdapter()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
+        _memoryBus.Write8(addr, 0xAB);
+        _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0xABu);
+        _memoryBus.Read8(addr).Should().Be(0xAB);
+    }
+
+    [Fact]
+    public void Write16_BiosRegion_IsIgnored()
+    {
+        var act = () => _memoryBus.Write16(Ps1MemoryMap.BiosBase, 0x1234);
+        act.Should().NotThrow();
+        _memoryBus.Read16(Ps1MemoryMap.BiosBase).Should().Be(0);
+    }
+
+    [Fact]
+    public void Write8_BiosRegion_IsIgnored()
+    {
+        var act = () => _memoryBus.Write8(Ps1MemoryMap.BiosBase, 0xAB);
+        act.Should().NotThrow();
+        _memoryBus.Read8(Ps1MemoryMap.BiosBase).Should().Be(0);
     }
 
     [Fact]
