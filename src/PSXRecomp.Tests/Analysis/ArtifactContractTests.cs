@@ -207,7 +207,7 @@ public class ArtifactContractTests
     {
         var function = new FunctionInfo(
             "Entrypoint",
-            Mnemonics: new MnemonicRef?[] { new(0x80010000, "addiu", "sp, sp, -0x20"), null });
+            Mnemonics: new MnemonicRef[] { new(0x80010000, "addiu", "sp, sp, -0x20"), null! });
 
         // A null element inside a nested collection must yield an invalid contract
         // rather than throwing during validation.
@@ -221,7 +221,7 @@ public class ArtifactContractTests
     {
         var function = new FunctionInfo(
             "Entrypoint",
-            Edges: new CfgEdge?[] { new(0x80010000, 0x80010028, "fallthrough"), null });
+            Edges: new CfgEdge[] { new(0x80010000, 0x80010028, "fallthrough"), null! });
 
         var act = () => function.IsValid();
         act.Should().NotThrow();
