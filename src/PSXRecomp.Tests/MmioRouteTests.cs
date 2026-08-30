@@ -66,7 +66,9 @@ public class MmioRouteTests
 
     [Theory]
     [InlineData(0x00000000u)]
-    [InlineData(0x1F801070u)]
+    [InlineData(0x1F801040u)]
+    [InlineData(0x1F801078u)]
+    [InlineData(0x1F8010FCu)]
     [InlineData(0x1F802000u)]
     public void Resolve_NonDmaAddress_ReturnsUnmapped(uint address)
     {
@@ -151,5 +153,45 @@ public class MmioRouteTests
     {
         var route = MmioRoute.Resolve(address);
         route.Target.Should().Be(MmioTarget.None);
+    }
+
+    [Fact]
+    public void Resolve_IStat_ReturnsInterruptControllerTarget()
+    {
+        var route = MmioRoute.Resolve(0x1F801070u);
+        route.Target.Should().Be(MmioTarget.InterruptController);
+        route.InterruptControllerRegisterType.Should().Be(InterruptControllerRegisterType.Status);
+        route.Offset.Should().Be(0u);
+    }
+
+    [Fact]
+    public void Resolve_IMask_ReturnsInterruptControllerTarget()
+    {
+        var route = MmioRoute.Resolve(0x1F801074u);
+        route.Target.Should().Be(MmioTarget.InterruptController);
+        route.InterruptControllerRegisterType.Should().Be(InterruptControllerRegisterType.Mask);
+        route.Offset.Should().Be(4u);
+    }
+
+    [Theory]
+    [InlineData(0x1F80106Cu)]
+    [InlineData(0x1F801071u)]
+    [InlineData(0x1F801072u)]
+    [InlineData(0x1F801073u)]
+    [InlineData(0x1F801078u)]
+    [InlineData(0x1F80107Cu)]
+    public void Resolve_InterruptControllerNeighbors_ReturnsUnmapped(uint address)
+    {
+        var route = MmioRoute.Resolve(address);
+        route.Target.Should().Be(MmioTarget.None);
+    }
+
+    [Fact]
+    public void ForInterruptController_CreatesCorrectRoute()
+    {
+        var route = MmioRoute.ForInterruptController(InterruptControllerRegisterType.Status, 0);
+        route.Target.Should().Be(MmioTarget.InterruptController);
+        route.InterruptControllerRegisterType.Should().Be(InterruptControllerRegisterType.Status);
+        route.Offset.Should().Be(0u);
     }
 }

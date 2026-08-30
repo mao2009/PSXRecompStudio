@@ -53,6 +53,13 @@ PSX_API void     PSXCore_ClearTimerInterrupt(PSXCore* core, int timer);
 PSX_API void     PSXCore_SetTimerSync(PSXCore* core, int timer, int active);
 PSX_API void     PSXCore_ResetTimers(PSXCore* core);
 
+PSX_API uint32_t PSXCore_ReadInterruptControllerRegister(PSXCore* core, uint32_t address);
+PSX_API void     PSXCore_WriteInterruptControllerRegister(PSXCore* core, uint32_t address, uint32_t value);
+PSX_API int      PSXCore_GetInterruptPending(PSXCore* core);
+PSX_API void     PSXCore_RaiseInterrupt(PSXCore* core, int irq);
+PSX_API void     PSXCore_ClearInterrupt(PSXCore* core, int irq);
+PSX_API void     PSXCore_ResetInterruptController(PSXCore* core);
+
 PSX_API int PSXCore_Step(PSXCore* core);
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

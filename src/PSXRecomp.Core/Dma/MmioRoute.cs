@@ -15,6 +15,7 @@ public readonly struct MmioRoute
     public DmaRegisterType RegisterType { get; init; }
     public int TimerIndex { get; init; }
     public TimerRegisterType TimerRegisterType { get; init; }
+    public InterruptControllerRegisterType InterruptControllerRegisterType { get; init; }
 
     public static MmioRoute Unmapped => new() { Target = MmioTarget.None };
 
@@ -54,8 +55,24 @@ public readonly struct MmioRoute
             Offset = offset,
         };
 
+    public static MmioRoute ForInterruptController(InterruptControllerRegisterType registerType, uint offset) =>
+        new()
+        {
+            Target = MmioTarget.InterruptController,
+            InterruptControllerRegisterType = registerType,
+            Offset = offset,
+        };
+
     public static MmioRoute Resolve(uint address)
     {
+        if (Ps1MemoryMap.IsInterruptControllerRegister(address))
+        {
+            var _interruptType = Ps1MemoryMap.GetInterruptControllerRegisterType(address);
+            if (_interruptType == InterruptControllerRegisterType.None)
+                return Unmapped;
+            return ForInterruptController(_interruptType, address - Ps1MemoryMap.IStat);
+        }
+
         if (Ps1MemoryMap.IsTimerRegister(address))
         {
             var timerType = Ps1MemoryMap.GetTimerRegisterType(address);
@@ -94,4 +111,5 @@ public enum MmioTarget
     None = 0,
     DmaController,
     Timer,
+    InterruptController,
 }

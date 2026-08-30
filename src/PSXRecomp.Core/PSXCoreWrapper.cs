@@ -153,6 +153,43 @@ public sealed class PSXCoreWrapper : IDisposable
         NativeInterop.PSXCore_ResetTimers(_handle);
     }
 
+    // Interrupt controller (Issue #143)
+    public uint ReadInterruptControllerRegister(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_ReadInterruptControllerRegister(_handle, address);
+    }
+
+    public void WriteInterruptControllerRegister(uint address, uint value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_WriteInterruptControllerRegister(_handle, address, value);
+    }
+
+    public bool GetInterruptPending()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetInterruptPending(_handle) != 0;
+    }
+
+    public void RaiseInterrupt(int irq)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_RaiseInterrupt(_handle, irq);
+    }
+
+    public void ClearInterrupt(int irq)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_ClearInterrupt(_handle, irq);
+    }
+
+    public void ResetInterruptController()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_ResetInterruptController(_handle);
+    }
+
     // Instruction execution
     public int Step()
     {

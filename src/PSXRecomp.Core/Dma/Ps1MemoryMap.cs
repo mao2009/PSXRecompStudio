@@ -19,6 +19,9 @@ public static class Ps1MemoryMap
     public const uint HwRegBase = 0x1F801000;
     public const uint HwRegEnd = 0x1F802000;
 
+    public const uint IStat = 0x1F801070;
+    public const uint IMask = 0x1F801074;
+
     public const uint DmaBase = 0x1F801080;
     public const uint Dpcr = 0x1F8010F0;
     public const uint Dicr = 0x1F8010F4;
@@ -71,6 +74,17 @@ public static class Ps1MemoryMap
 
     public static bool IsDmaRegister(uint address) =>
         address >= DmaBase && address <= Dicr;
+
+    public static bool IsInterruptControllerRegister(uint address) =>
+        address == IStat || address == IMask;
+
+    public static InterruptControllerRegisterType GetInterruptControllerRegisterType(uint address) =>
+        address switch
+        {
+            IStat => InterruptControllerRegisterType.Status,
+            IMask => InterruptControllerRegisterType.Mask,
+            _ => InterruptControllerRegisterType.None,
+        };
 
     public static int GetChannelIndex(uint address)
     {
@@ -135,6 +149,17 @@ public enum TimerRegisterType
     Count,
     Mode,
     Target,
+}
+
+/// <summary>
+/// Interrupt controller register types.
+/// </summary>
+[Domain]
+public enum InterruptControllerRegisterType
+{
+    None = 0,
+    Status,
+    Mask,
 }
 
 /// <summary>

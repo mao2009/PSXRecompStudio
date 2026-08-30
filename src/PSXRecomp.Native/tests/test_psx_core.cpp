@@ -1422,6 +1422,107 @@ static void test_timer_null_safety() {
     PASS();
 }
 
+static void test_interrupt_registers() {
+    TEST("Interrupt controller I_STAT/I_MASK register read/write");
+    PSXCore* core = PSXCore_Create();
+
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801074u), 0u);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801078u), 0u);
+
+    // I_MASK is a plain R/W register.
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 0x042F);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801074u), 0x042Fu);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 0);
+
+    // I_STAT write is write-0-to-clear (psx-spx "Interrupt Acknowledge").
+    PSXCore_RaiseInterrupt(core, 0);
+    PSXCore_RaiseInterrupt(core, 2);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0x00000005u);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801070u, 0xFFFFFFFB); // clear bit2 only
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0x00000001u);
+
+    // Writes to unmapped neighbor registers are ignored.
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801078u, 0xDEADBEEF);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0x00000001u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_interrupt_pending() {
+    TEST("PSXCore_GetInterruptPending reflects (I_STAT & I_MASK) != 0");
+    PSXCore* core = PSXCore_Create();
+
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 0);
+
+    // Raise a source; unmasked so not pending yet.
+    PSXCore_RaiseInterrupt(core, 1);
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 0);
+
+    // Enable the mask for that source.
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 1u << 1);
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 1);
+
+    // Acknowledge via write-0-to-clear.
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801070u, ~(1u << 1));
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 0);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_interrupt_raise_clear() {
+    TEST("PSXCore_RaiseInterrupt/ClearInterrupt manage I_STAT bits");
+    PSXCore* core = PSXCore_Create();
+
+    PSXCore_RaiseInterrupt(core, 10);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 1u << 10);
+    PSXCore_ClearInterrupt(core, 10);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u);
+
+    // Out-of-range IRQs are ignored.
+    PSXCore_RaiseInterrupt(core, 11);
+    PSXCore_RaiseInterrupt(core, -1);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_interrupt_reset() {
+    TEST("Interrupt controller reset clears I_STAT/I_MASK");
+    PSXCore* core = PSXCore_Create();
+
+    PSXCore_RaiseInterrupt(core, 3);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 0xFFFF);
+    PSXCore_ResetInterruptController(core);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801074u), 0u);
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 0);
+
+    // PSXCore_Reset clears the interrupt controller too.
+    PSXCore_RaiseInterrupt(core, 0);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 0xFFFF);
+    PSXCore_Reset(core);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u);
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801074u), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_interrupt_null_safety() {
+    TEST("Interrupt controller null pointer safety");
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(nullptr, 0x1F801070u), 0u);
+    PSXCore_WriteInterruptControllerRegister(nullptr, 0x1F801070u, 1);
+    ASSERT_EQ(PSXCore_GetInterruptPending(nullptr), 0);
+    PSXCore_RaiseInterrupt(nullptr, 0);
+    PSXCore_ClearInterrupt(nullptr, 0);
+    PSXCore_ResetInterruptController(nullptr);
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -1496,6 +1597,12 @@ int main() {
     test_timer_sync_arm_timer0();
     test_timer_reset_timers();
     test_timer_null_safety();
+
+    test_interrupt_registers();
+    test_interrupt_pending();
+    test_interrupt_raise_clear();
+    test_interrupt_reset();
+    test_interrupt_null_safety();
 
     printf("\n======================\n");
     printf("Results: %d/%d passed\n", tests_passed, tests_run);

@@ -9,20 +9,24 @@ public class MemoryBusTests : IDisposable
     private readonly PSXCoreWrapper _core = new();
     private readonly DmaMmioAdapter _dmaAdapter;
     private readonly TimerMmioAdapter _timerAdapter;
+    private readonly InterruptControllerMmioAdapter _interruptAdapter;
     private readonly MemoryBus _memoryBus;
 
     public MemoryBusTests()
     {
         _dmaAdapter = new DmaMmioAdapter(_core);
         _timerAdapter = new TimerMmioAdapter(_core);
+        _interruptAdapter = new InterruptControllerMmioAdapter(_core);
         _memoryBus = new MemoryBus(_core);
         _memoryBus.AttachDmaAdapter(_dmaAdapter);
         _memoryBus.AttachTimerAdapter(_timerAdapter);
+        _memoryBus.AttachInterruptControllerAdapter(_interruptAdapter);
     }
 
     public void Dispose()
     {
         _memoryBus.Dispose();
+        _interruptAdapter.Dispose();
         _timerAdapter.Dispose();
         _dmaAdapter.Dispose();
         _core.Dispose();
@@ -284,5 +288,102 @@ public class MemoryBusTests : IDisposable
         _memoryBus.Write(countAddr, 0);
         _timerAdapter.Tick(3);
         _memoryBus.Read(countAddr).Should().Be(3u);
+    }
+
+    [Fact]
+    public void Read_IStat_RoutesToInterruptAdapter()
+    {
+        _interruptAdapter.Raise(1);
+        _memoryBus.Read(Ps1MemoryMap.IStat).Should().Be(2u);
+    }
+
+    [Fact]
+    public void Write_IStat_WriteZeroToClear_RoutesToAdapter()
+    {
+        _interruptAdapter.Raise(0);
+        _interruptAdapter.Raise(1);
+        _memoryBus.Write(Ps1MemoryMap.IStat, 0xFFFFFFFE); // clear bit 0 only
+        _interruptAdapter.Status.Should().Be(2u);
+    }
+
+    [Fact]
+    public void Write_IMask_RoutesToAdapter()
+    {
+        _memoryBus.Write(Ps1MemoryMap.IMask, 0x7FF);
+        _interruptAdapter.Mask.Should().Be(0x7FFu);
+    }
+
+    [Fact]
+    public void Read_IMask_RoutesToAdapter()
+    {
+        _interruptAdapter.SetMask(0xF0F);
+        _memoryBus.Read(Ps1MemoryMap.IMask).Should().Be(0xF0Fu);
+    }
+
+    [Fact]
+    public void Write16_IStat_WriteZeroToClear_RoutesToAdapter()
+    {
+        _interruptAdapter.Raise(1);
+        _memoryBus.Write16(Ps1MemoryMap.IStat, 0xFFFD); // clear bit 1
+        _interruptAdapter.Status.Should().Be(0u);
+    }
+
+    [Fact]
+    public void Write16_IMask_RoutesToAdapter()
+    {
+        _memoryBus.Write16(Ps1MemoryMap.IMask, 0x7FF);
+        _interruptAdapter.Mask.Should().Be(0x7FFu);
+    }
+
+    [Fact]
+    public void Write8_IStat_RoutesToAdapter()
+    {
+        _interruptAdapter.Raise(0);
+        _interruptAdapter.Raise(1);
+        _memoryBus.Write8(Ps1MemoryMap.IStat, 0x01); // 0 clears bit 1, 1 keeps bit 0
+        _interruptAdapter.Status.Should().Be(1u);
+    }
+
+    [Fact]
+    public void Write8_IMask_RoutesToAdapter()
+    {
+        _memoryBus.Write8(Ps1MemoryMap.IMask, 0xFF);
+        _interruptAdapter.Mask.Should().Be(0xFFu);
+    }
+
+    [Fact]
+    public void Read_MaskedPending_ThroughBus()
+    {
+        _interruptAdapter.SetMask(1u << 3);
+        _interruptAdapter.Raise(3);
+        _memoryBus.Read(Ps1MemoryMap.IStat).Should().Be(8u);
+    }
+
+    [Fact]
+    public void Write_IStat_NoPending_DoesNotInvokeCallback()
+    {
+        var calls = 0;
+        _interruptAdapter.SetInterruptCallback(_ => calls++);
+        _interruptAdapter.SetMask(1u << 2);
+
+        _memoryBus.Write(Ps1MemoryMap.IStat, 0);
+        calls.Should().Be(0);
+    }
+
+    [Fact]
+    public void Write_IMask_InterruptCallbackInvoked_WhenPendingRises()
+    {
+        var calls = 0;
+        _interruptAdapter.SetInterruptCallback(_ => calls++);
+        _interruptAdapter.Raise(2);
+
+        _memoryBus.Write(Ps1MemoryMap.IMask, 1u << 2);
+        calls.Should().Be(1);
+    }
+
+    [Fact]
+    public void Read_UnmappedHwRegister_ReturnsZero_WhenNoAdapterAttached()
+    {
+        _memoryBus.Read(Ps1MemoryMap.IStat - 4).Should().Be(0u);
     }
 }
