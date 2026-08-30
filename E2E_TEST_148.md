@@ -9,12 +9,14 @@ This file was created by the Batch Skill E2E test.
 
 ## Purpose
 
-This file verifies the complete Batch Skill lifecycle:
+This file documents verification of the Batch Skill lifecycle through PR creation.
+The complete lifecycle (approval gate, rebase, validation, merge, cleanup) is
+reserved for the final `COMPLETED` state.
 
 1. ✅ Issue → Worktree creation
 2. ✅ Branch creation
 3. ✅ Sub-agent investigation and implementation
-4. 🔄 PR creation with detailed report
+4. ✅ PR creation with detailed report
 5. 🔄 Approval gate verification
 6. 🔄 Mandatory rebase onto latest main HEAD
 7. 🔄 Validation
