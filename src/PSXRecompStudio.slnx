@@ -4,4 +4,5 @@
   <Project Path="PSXRecomp.Analyzer/PSXRecomp.Analyzer.csproj" />
   <Project Path="PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj" />
   <Project Path="PSXRecomp.Tests/PSXRecomp.Tests.csproj" />
+  <Project Path="PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj" />
 </Solution>

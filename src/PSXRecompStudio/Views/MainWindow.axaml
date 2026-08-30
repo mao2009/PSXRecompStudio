@@ -17,12 +17,16 @@
     <DockPanel>
         <!-- Header -->
         <TextBlock DockPanel.Dock="Top"
+                   x:Name="AppNameText"
+                   AutomationProperties.Name="AppName"
                    Text="{Binding AppName}"
                    FontSize="32" FontWeight="Bold"
                    HorizontalAlignment="Center"
                    Margin="0,40,0,8"/>
 
         <TextBlock DockPanel.Dock="Top"
+                   x:Name="VersionText"
+                   AutomationProperties.Name="Version"
                    Text="{Binding Version}"
                    FontSize="14" Foreground="Gray"
                    HorizontalAlignment="Center"
@@ -33,7 +37,9 @@
                 Background="#2D2D30" CornerRadius="8"
                 Padding="16,12" Margin="60,0"
                 HorizontalAlignment="Center">
-            <TextBlock Text="{Binding Status}"
+            <TextBlock x:Name="StatusText"
+                       AutomationProperties.Name="Status"
+                       Text="{Binding Status}"
                        FontSize="14" Foreground="#4EC9B0"/>
         </Border>
 
