@@ -1,5 +1,5 @@
 using System.Globalization;
-using PSXRecomp.Core.Analysis.Artifacts;
+using PSXRecomp.Core.Analysis.Contracts;
 
 namespace PSXRecomp.Tests.Analysis;
 

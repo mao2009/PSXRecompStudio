@@ -1,6 +1,6 @@
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// The kind of evidence backing a finding.

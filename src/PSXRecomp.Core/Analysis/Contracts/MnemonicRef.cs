@@ -1,7 +1,7 @@
 using System.Globalization;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Reference to a disassembled instruction inside a function.
@@ -11,7 +11,7 @@ public record MnemonicRef(uint Address, string Mnemonic, string? Operands = null
 {
     public bool IsValid()
     {
-        return Mnemonic.Length > 0;
+        return !string.IsNullOrEmpty(Mnemonic);
     }
 
     public string ToTokenString()

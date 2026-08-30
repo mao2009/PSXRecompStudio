@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// A dynamic-code capture point or self-modifying region detected during analysis.
@@ -16,7 +16,26 @@ public record DynamicCodeCapture(
 {
     public bool IsValid()
     {
-        return ByteCount is null or > 0;
+        return ByteCount is null or > 0
+            && AllValid(EvidenceReferences, static evidence => evidence.IsValid());
+    }
+
+    private static bool AllValid<T>(IReadOnlyList<T>? items, Func<T, bool> isValid)
+    {
+        if (items is null)
+        {
+            return true;
+        }
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (!isValid(items[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public string ToTokenString()

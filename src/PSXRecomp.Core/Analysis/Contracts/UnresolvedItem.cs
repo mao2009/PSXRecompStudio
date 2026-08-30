@@ -1,7 +1,7 @@
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// An item that remains unresolved in an analysis artifact so it can be revisited or resumed later.
@@ -15,9 +15,28 @@ public record UnresolvedItem(
 {
     public bool IsValid()
     {
-        return Description.Length > 0
+        return !string.IsNullOrEmpty(Description)
             && Enum.IsDefined(Kind)
-            && Enum.IsDefined(Status);
+            && Enum.IsDefined(Status)
+            && AllValid(EvidenceReferences, static evidence => evidence.IsValid());
+    }
+
+    private static bool AllValid<T>(IReadOnlyList<T>? items, Func<T, bool> isValid)
+    {
+        if (items is null)
+        {
+            return true;
+        }
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (!isValid(items[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public string ToTokenString()

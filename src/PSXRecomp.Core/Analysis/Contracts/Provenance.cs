@@ -1,6 +1,6 @@
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Identifies who or what produced an artifact, including the optional human reviewer.
@@ -14,9 +14,9 @@ public record Provenance(
 {
     public bool IsValid()
     {
-        return ToolName.Length > 0
-            && ToolVersion.Length > 0
-            && AgentId.Length > 0;
+        return !string.IsNullOrEmpty(ToolName)
+            && !string.IsNullOrEmpty(ToolVersion)
+            && !string.IsNullOrEmpty(AgentId);
     }
 
     public string ToTokenString()

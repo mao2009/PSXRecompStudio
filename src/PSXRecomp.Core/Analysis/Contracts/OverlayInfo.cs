@@ -1,7 +1,7 @@
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Information about a game overlay segment.
@@ -14,7 +14,26 @@ public record OverlayInfo(
 {
     public bool IsValid()
     {
-        return Name.Length > 0;
+        return !string.IsNullOrEmpty(Name)
+            && AllValid(EvidenceReferences, static evidence => evidence.IsValid());
+    }
+
+    private static bool AllValid<T>(IReadOnlyList<T>? items, Func<T, bool> isValid)
+    {
+        if (items is null)
+        {
+            return true;
+        }
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (!isValid(items[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public string ToTokenString()

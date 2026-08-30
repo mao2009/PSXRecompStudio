@@ -1,7 +1,7 @@
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Versioned container for user-driven analysis results.
@@ -62,8 +62,8 @@ public record AnalysisArtifact
     public bool IsValid()
     {
         return Version > 0
-            && Id.Length > 0
-            && ArtifactKind.Length > 0
+            && !string.IsNullOrEmpty(Id)
+            && !string.IsNullOrEmpty(ArtifactKind)
             && Enum.IsDefined(Status)
             && (Confidence is null || Confidence.IsValid())
             && (Provenance is null || Provenance.IsValid())

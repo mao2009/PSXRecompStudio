@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Deterministic canonicalization helpers for analysis artifact tokens and evidence ids.

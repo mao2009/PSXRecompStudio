@@ -1,7 +1,7 @@
 using System.Globalization;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Confidence attached to a finding: a qualitative level with an optional rationale

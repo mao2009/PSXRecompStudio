@@ -1,7 +1,7 @@
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// A title-specific workaround or quirk note.
@@ -15,8 +15,27 @@ public record WorkaroundNote(
 {
     public bool IsValid()
     {
-        return Title.Length > 0
-            && Description.Length > 0;
+        return !string.IsNullOrEmpty(Title)
+            && !string.IsNullOrEmpty(Description)
+            && AllValid(EvidenceReferences, static evidence => evidence.IsValid());
+    }
+
+    private static bool AllValid<T>(IReadOnlyList<T>? items, Func<T, bool> isValid)
+    {
+        if (items is null)
+        {
+            return true;
+        }
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (!isValid(items[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public string ToTokenString()

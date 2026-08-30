@@ -1,7 +1,7 @@
 using System.Globalization;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// A stable, verifiable reference to evidence attached to a finding.
@@ -33,11 +33,17 @@ public record EvidenceReference(
 
     public bool IsValid()
     {
-        return Id.Length > 0
+        return IsNonEmpty(Id)
+            && IsNonEmpty(Source)
+            && IsNonEmpty(Description)
             && Enum.IsDefined(Type)
-            && Source.Length > 0
-            && Description.Length > 0
-            && (CapturedUnixSeconds is null or >= 0);
+            && (CapturedUnixSeconds is null or >= 0)
+            && Id == StableToken.Hash(ToTokenString());
+    }
+
+    private static bool IsNonEmpty(string? value)
+    {
+        return !string.IsNullOrEmpty(value);
     }
 
     /// <summary>

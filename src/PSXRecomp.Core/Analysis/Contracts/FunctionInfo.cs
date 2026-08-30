@@ -1,7 +1,7 @@
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.Analysis.Artifacts;
+namespace PSXRecomp.Core.Analysis.Contracts;
 
 /// <summary>
 /// Function / symbol / CFG information discovered by an analysis.
@@ -16,8 +16,28 @@ public record FunctionInfo(
 {
     public bool IsValid()
     {
-        return Name.Length > 0
-            && (Boundary is null || Boundary.IsValid());
+        return !string.IsNullOrEmpty(Name)
+            && (Boundary is null || Boundary.IsValid())
+            && AllValid(Mnemonics, static mnemonic => mnemonic.IsValid())
+            && AllValid(Edges, static edge => edge.IsValid());
+    }
+
+    private static bool AllValid<T>(IReadOnlyList<T>? items, Func<T, bool> isValid)
+    {
+        if (items is null)
+        {
+            return true;
+        }
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (!isValid(items[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public string ToTokenString()
