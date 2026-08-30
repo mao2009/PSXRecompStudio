@@ -14,7 +14,7 @@ through an approval gate. See skills/common/process/batch/SKILL.md.
 
 ## Lifecycle
 
-```
+```text
     Submit Batch
          |
          v
