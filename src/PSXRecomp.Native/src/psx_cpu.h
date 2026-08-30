@@ -3,6 +3,7 @@
 #include <cstdint>
 
 static constexpr int PSX_GPR_COUNT = 32;
+static constexpr int PSX_COP0_COUNT = 32;
 static constexpr uint32_t PSX_RAM_SIZE = 2 * 1024 * 1024;
 static constexpr uint32_t PSX_BIOS_SIZE = 512 * 1024;
 static constexpr uint32_t PSX_HW_REG_SIZE = 8 * 1024;
@@ -42,7 +43,7 @@ private:
     uint32_t delay_slot_pc_; // Delay slot address of a pending branch (ADR-005: delay_slot_pc)
     uint32_t hi_;
     uint32_t lo_;
-    uint32_t cop0_[32];      // COP0 registers (docs/cpu/cop0.md).
+    uint32_t cop0_[PSX_COP0_COUNT]; // COP0 registers (docs/cpu/cop0.md).
 
     // Pending branch state (branch delay slot, ADR-004/005).
     bool branch_pending_;        // A branch was executed; its delay slot has not completed yet.

@@ -31,7 +31,7 @@ void PSXCpu::Reset() {
     for (int i = 0; i < PSX_GPR_COUNT; i++) {
         gpr_[i] = 0;
     }
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < PSX_COP0_COUNT; i++) {
         cop0_[i] = 0;
     }
     pc_ = 0;
@@ -85,12 +85,12 @@ uint32_t PSXCpu::GetLO() const { return lo_; }
 void PSXCpu::SetLO(uint32_t value) { lo_ = value; }
 
 uint32_t PSXCpu::GetCop0(int index) const {
-    if (index < 0 || index >= 32) return 0;
+    if (index < 0 || index >= PSX_COP0_COUNT) return 0;
     return cop0_[index];
 }
 
 void PSXCpu::SetCop0(int index, uint32_t value) {
-    if (index < 0 || index >= 32) return;
+    if (index < 0 || index >= PSX_COP0_COUNT) return;
     cop0_[index] = value;
 }
 
@@ -870,12 +870,12 @@ void PSXCpu::ExecBreak() {
 
 // Coprocessor 0
 void PSXCpu::ExecMfc0(uint32_t rt, uint32_t rd) {
-    if (rd >= 32) return;
+    if (rd >= PSX_COP0_COUNT) return;
     SetGPR(rt, cop0_[rd]);
 }
 
 void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {
-    if (rd >= 32) return;
+    if (rd >= PSX_COP0_COUNT) return;
     if (rd == 13) {
         // CAUSE: only IP[1:0] (bits 8-9, software interrupt pending) are R/W.
         uint32_t ip = gpr_[rt] & 0x300;
@@ -886,17 +886,16 @@ void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {
 }
 
 void PSXCpu::ExecRfe() {
-    // RFE pops the SR 3-level stack (docs/cpu/exceptions.md). PC restore is a
-    // software (JR) responsibility and out of scope (ADR-005).
+    // RFE pops the SR 3-level stack (docs/cpu/cop0.md):
+    //   KUc<--KUp, IEc<--IEp; KUp<--KUo, IEp<--IEo
+    // KUo/IEo (bits 4-5) are left unchanged by RFE (PSX hardware: psx-spx).
+    // PC restore is a software (JR) responsibility and out of scope (ADR-005).
     uint32_t sr = cop0_[12];
-    uint32_t kuc = (sr >> 0) & 1;
-    uint32_t iec = (sr >> 1) & 1;
     uint32_t kup = (sr >> 2) & 1;
     uint32_t iep = (sr >> 3) & 1;
     uint32_t kuo = (sr >> 4) & 1;
     uint32_t ieo = (sr >> 5) & 1;
-    // KUc<--KUp, IEc<--IEp; KUp<--KUo, IEp<--IEo
-    sr &= ~0x3Fu;
+    sr &= ~0x0Fu;
     sr |= (kup) | (iep << 1) | (kuo << 2) | (ieo << 3);
     cop0_[12] = sr;
 }

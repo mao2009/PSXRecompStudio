@@ -1137,9 +1137,9 @@ static void test_rfe_pop() {
     PSXCore_WriteMemory32(core, 0, 0x42000010u); // RFE (opcode 0x10, rs=0x10, funct 0x10)
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
-    // KUc<-KUp(1),IEc<-IEp(1),KUp<-KUo(1),IEp<-IEo(1); oldest level cleared
-    // (ADR-005: SR[5:4]=0) -> 0x0F
-    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x0Fu);
+    // KUc<-KUp(1),IEc<-IEp(1),KUp<-KUo(1),IEp<-IEo(1); KUo/IEo (bits 4-5)
+    // left unchanged by RFE (PSX hardware) -> 0x3F
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x3Fu);
     PSXCore_Destroy(core);
     PASS();
 }
