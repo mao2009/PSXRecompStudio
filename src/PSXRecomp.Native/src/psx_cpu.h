@@ -3,6 +3,7 @@
 #include <cstdint>
 
 static constexpr int PSX_GPR_COUNT = 32;
+static constexpr int PSX_COP0_COUNT = 32;
 static constexpr uint32_t PSX_RAM_SIZE = 2 * 1024 * 1024;
 static constexpr uint32_t PSX_BIOS_SIZE = 512 * 1024;
 static constexpr uint32_t PSX_HW_REG_SIZE = 8 * 1024;
@@ -27,6 +28,9 @@ public:
     uint32_t GetLO() const;
     void SetLO(uint32_t value);
 
+    uint32_t GetCop0(int index) const;
+    void SetCop0(int index, uint32_t value);
+
     // Instruction execution
     int Step(PSXMemory& memory);
     int Run(PSXMemory& memory, uint32_t maxInstructions);
@@ -39,12 +43,18 @@ private:
     uint32_t delay_slot_pc_; // Delay slot address of a pending branch (ADR-005: delay_slot_pc)
     uint32_t hi_;
     uint32_t lo_;
+    uint32_t cop0_[PSX_COP0_COUNT]; // COP0 registers (docs/cpu/cop0.md).
 
     // Pending branch state (branch delay slot, ADR-004/005).
     bool branch_pending_;        // A branch was executed; its delay slot has not completed yet.
     bool branch_issued_;         // The instruction currently being executed is a branch/jump.
     uint32_t pending_branch_target_; // Target of the pending (outermost) branch.
     bool pending_branch_taken_;      // Whether the pending (outermost) branch is taken.
+
+    // Exception state (docs/cpu/exceptions.md, ADR-005).
+    bool exception_raised_;          // An exception was raised during the current step.
+    uint32_t executing_instr_addr_;  // Address of the instruction currently executing.
+    bool executing_in_delay_slot_;   // Whether the current instruction is in a branch delay slot.
 
     // Load delay state (ADR-004). Double buffered so that the value loaded by an
     // instruction is only committed to the register file one instruction later.
@@ -139,6 +149,7 @@ private:
     void ExecMfc0(uint32_t rt, uint32_t rd);
     void ExecMtc0(uint32_t rt, uint32_t rd);
     void ExecRfe();
+    void RaiseException(uint32_t excode);
     
     // Helpers
     uint32_t TranslateAddress(uint32_t virt) const;

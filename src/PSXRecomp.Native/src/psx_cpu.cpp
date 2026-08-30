@@ -31,6 +31,9 @@ void PSXCpu::Reset() {
     for (int i = 0; i < PSX_GPR_COUNT; i++) {
         gpr_[i] = 0;
     }
+    for (int i = 0; i < PSX_COP0_COUNT; i++) {
+        cop0_[i] = 0;
+    }
     pc_ = 0;
     next_pc_ = 4;
     delay_slot_pc_ = 0;
@@ -44,6 +47,9 @@ void PSXCpu::Reset() {
     load_delay_value_ = 0;
     next_load_delay_reg_ = -1;
     next_load_delay_value_ = 0;
+    exception_raised_ = false;
+    executing_instr_addr_ = 0;
+    executing_in_delay_slot_ = false;
 }
 
 uint32_t PSXCpu::GetGPR(int index) const {
@@ -77,6 +83,16 @@ void PSXCpu::SetHI(uint32_t value) { hi_ = value; }
 
 uint32_t PSXCpu::GetLO() const { return lo_; }
 void PSXCpu::SetLO(uint32_t value) { lo_ = value; }
+
+uint32_t PSXCpu::GetCop0(int index) const {
+    if (index < 0 || index >= PSX_COP0_COUNT) return 0;
+    return cop0_[index];
+}
+
+void PSXCpu::SetCop0(int index, uint32_t value) {
+    if (index < 0 || index >= PSX_COP0_COUNT) return;
+    cop0_[index] = value;
+}
 
 uint32_t PSXCpu::FetchInstruction(PSXMemory& memory) {
     uint32_t phys = TranslateAddress(pc_);
@@ -143,7 +159,20 @@ int PSXCpu::Step(PSXMemory& memory) {
     bool in_delay_slot = branch_pending_;
     branch_issued_ = false;
 
+    executing_instr_addr_ = instr_addr;
+    executing_in_delay_slot_ = in_delay_slot;
+    exception_raised_ = false;
+
     ExecuteInstruction(instruction, memory);
+
+    if (exception_raised_) {
+        // An exception occurred: pc_ was forced to the exception vector by
+        // RaiseException, bypassing the normal delay-slot/branch PC update
+        // (ADR-005: pc = exception vector; next_pc = pc + 4).
+        next_pc_ = pc_ + 4;
+        UpdateLoadDelay();
+        return 0;
+    }
 
     if (in_delay_slot) {
         // This instruction is the delay slot of a pending branch.
@@ -441,8 +470,15 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
 
 // Arithmetic/Logical
 void PSXCpu::ExecAdd(uint32_t rd, uint32_t rs, uint32_t rt) {
-    int32_t result = ToSigned(gpr_[rs]) + ToSigned(gpr_[rt]);
-    SetGPR(rd, static_cast<uint32_t>(result));
+    uint32_t a = gpr_[rs];
+    uint32_t b = gpr_[rt];
+    uint32_t sum = a + b;
+    // Signed overflow (MIPS I): sign of a and b equal and differ from sign of sum.
+    if (((a ^ sum) & (b ^ sum)) & 0x80000000) {
+        RaiseException(0x0C); // Ov
+        return; // result is NOT written to the GPR
+    }
+    SetGPR(rd, sum);
 }
 
 void PSXCpu::ExecAddu(uint32_t rd, uint32_t rs, uint32_t rt) {
@@ -450,8 +486,15 @@ void PSXCpu::ExecAddu(uint32_t rd, uint32_t rs, uint32_t rt) {
 }
 
 void PSXCpu::ExecSub(uint32_t rd, uint32_t rs, uint32_t rt) {
-    int32_t result = ToSigned(gpr_[rs]) - ToSigned(gpr_[rt]);
-    SetGPR(rd, static_cast<uint32_t>(result));
+    uint32_t a = gpr_[rs];
+    uint32_t b = gpr_[rt];
+    uint32_t diff = a - b;
+    // Signed overflow (MIPS I): signs differ and result sign differs from minuend.
+    if (((a ^ b) & (a ^ diff)) & 0x80000000) {
+        RaiseException(0x0C); // Ov
+        return; // result is NOT written to the GPR
+    }
+    SetGPR(rd, diff);
 }
 
 void PSXCpu::ExecSubu(uint32_t rd, uint32_t rs, uint32_t rt) {
@@ -484,8 +527,15 @@ void PSXCpu::ExecSltu(uint32_t rd, uint32_t rs, uint32_t rt) {
 
 // Immediate arithmetic
 void PSXCpu::ExecAddi(uint32_t rt, uint32_t rs, int16_t imm) {
-    int32_t result = ToSigned(gpr_[rs]) + imm;
-    SetGPR(rt, static_cast<uint32_t>(result));
+    uint32_t a = gpr_[rs];
+    uint32_t s = SignExtend16(imm);
+    uint32_t sum = a + s;
+    // Signed overflow (MIPS I): sign of a and sign-extended imm equal and differ from sum.
+    if (((a ^ sum) & (s ^ sum)) & 0x80000000) {
+        RaiseException(0x0C); // Ov
+        return; // result is NOT written to the GPR
+    }
+    SetGPR(rt, sum);
 }
 
 void PSXCpu::ExecAddiu(uint32_t rt, uint32_t rs, int16_t imm) {
@@ -811,29 +861,84 @@ void PSXCpu::ExecJalr(uint32_t rd, uint32_t rs) {
 
 // System
 void PSXCpu::ExecSyscall() {
-    // For now, just continue execution
+    RaiseException(0x08); // Sys
 }
 
 void PSXCpu::ExecBreak() {
-    // For now, just continue execution
+    RaiseException(0x09); // Bp
 }
 
 // Coprocessor 0
 void PSXCpu::ExecMfc0(uint32_t rt, uint32_t rd) {
-    // Simplified: only implement Status (12) and Cause (13) for now
-    switch (rd) {
-        case 12: SetGPR(rt, 0); break; // Status
-        case 13: SetGPR(rt, 0); break; // Cause
-        default: SetGPR(rt, 0); break;
-    }
+    if (rd >= PSX_COP0_COUNT) return;
+    // MFC0 writes the GPR through the load-delay slot (R3000A: the destination
+    // is not visible to the immediately following instruction).
+    WriteRegDelayed(rt, cop0_[rd]);
 }
 
 void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {
-    // Simplified: ignore for now
+    if (rd >= PSX_COP0_COUNT) return;
+    if (rd == 13) {
+        // CAUSE: only IP[1:0] (bits 8-9, software interrupt pending) are R/W.
+        uint32_t ip = gpr_[rt] & 0x300;
+        cop0_[13] = (cop0_[13] & ~0x300u) | ip;
+    } else {
+        cop0_[rd] = gpr_[rt];
+    }
 }
 
 void PSXCpu::ExecRfe() {
-    // Simplified: ignore for now
+    // RFE pops the SR 3-level stack (docs/cpu/cop0.md):
+    //   KUc<--KUp, IEc<--IEp; KUp<--KUo, IEp<--IEo
+    // KUo/IEo (bits 4-5) are left unchanged by RFE (PSX hardware: psx-spx).
+    // PC restore is a software (JR) responsibility and out of scope (ADR-005).
+    uint32_t sr = cop0_[12];
+    uint32_t kup = (sr >> 2) & 1;
+    uint32_t iep = (sr >> 3) & 1;
+    uint32_t kuo = (sr >> 4) & 1;
+    uint32_t ieo = (sr >> 5) & 1;
+    sr &= ~0x0Fu;
+    sr |= (kup) | (iep << 1) | (kuo << 2) | (ieo << 3);
+    cop0_[12] = sr;
+}
+
+void PSXCpu::RaiseException(uint32_t excode) {
+    // EPC: branch instruction address (delay_slot_pc_ - 4, since delay_slot_pc_
+    // is the delay-slot instruction's address = branch addr + 4) if in a delay
+    // slot, else the current instruction's address (docs/cpu/pipeline.md).
+    uint32_t epc = executing_in_delay_slot_ ? (delay_slot_pc_ - 4u) : executing_instr_addr_;
+    bool bd = executing_in_delay_slot_;
+
+    // CAUSE: set Excode[6:2] and BD (bit 31); preserve IP[1:0] (bits 8-9).
+    uint32_t cause = cop0_[13];
+    cause &= ~(0x7Cu | 0x80000000u);
+    cause |= (excode << 2);
+    if (bd) {
+        cause |= 0x80000000u;
+    }
+    cop0_[13] = cause;
+
+    // EPC = branch instruction addr (delay slot) or current instruction addr.
+    cop0_[14] = epc;
+
+    // SR 3-level stack shift (docs/cpu/cop0.md):
+    //   KUo<--KUp, IEo<--IEp; KUp<--KUc, IEp<--IEc; KUc<--0, IEc<--0
+    uint32_t sr = cop0_[12];
+    uint32_t kuc = (sr >> 0) & 1;
+    uint32_t iec = (sr >> 1) & 1;
+    uint32_t kup = (sr >> 2) & 1;
+    uint32_t iep = (sr >> 3) & 1;
+    sr &= ~0x3Fu;
+    sr |= (kup << 4) | (iep << 5) | (kuc << 2) | (iec << 3);
+    cop0_[12] = sr;
+
+    // PC = exception vector (BEV is SR bit 22).
+    bool bev = (cop0_[12] >> 22) & 1;
+    pc_ = bev ? 0xBFC00180u : 0x80000080u;
+
+    exception_raised_ = true;
+    branch_pending_ = false;
+    branch_issued_ = false;
 }
 
 // Helpers
