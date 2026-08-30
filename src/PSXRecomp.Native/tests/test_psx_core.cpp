@@ -665,6 +665,42 @@ static void test_memory_read_write_api() {
     PASS();
 }
 
+static void test_memory_bounds() {
+    TEST("Memory bounds: final-byte and top-of-address-space sized access");
+    PSXCore* core = PSXCore_Create();
+    uint32_t finalByte = PSX_RAM_SIZE - 1u;
+
+    // 32-bit access at the last full word of RAM is valid.
+    PSXCore_WriteMemory32(core, PSX_RAM_SIZE - 4u, 0xDEADBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, PSX_RAM_SIZE - 4u), 0xDEADBEEFu);
+
+    // 32-bit access starting at the final byte would overflow the region.
+    PSXCore_WriteMemory32(core, finalByte, 0x11223344u); // ignored
+    ASSERT_EQ(PSXCore_ReadMemory32(core, finalByte), 0u);
+
+    // 16-bit access at the last aligned halfword of RAM is valid.
+    PSXCore_WriteMemory16(core, PSX_RAM_SIZE - 2u, 0xBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory16(core, PSX_RAM_SIZE - 2u), 0xBEEFu);
+
+    // 16-bit access starting at the final byte would overflow the region.
+    PSXCore_WriteMemory16(core, finalByte, 0xCAFEu); // ignored
+    ASSERT_EQ(PSXCore_ReadMemory16(core, finalByte), 0u);
+
+    // 8-bit access at the final byte is valid.
+    PSXCore_WriteMemory8(core, finalByte, 0x5Au);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, finalByte), 0x5Au);
+
+    // Top-of-address-space inputs are overflow-safe: reads return 0, writes ignored.
+    PSXCore_WriteMemory32(core, 0xFFFFFFFFu, 0x12345678u); // ignored
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0xFFFFFFFFu), 0u);
+    PSXCore_WriteMemory16(core, 0xFFFFFFFFu, 0x1234u); // ignored
+    ASSERT_EQ(PSXCore_ReadMemory16(core, 0xFFFFFFFFu), 0u);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0xFFFFFFFFu), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 // LWL/LWR tests
 static void test_kseg_translation() {
     TEST("KSEG address translation (0x80000000->0x00000000, 0xA0000000->0x00000000)");
@@ -1172,6 +1208,7 @@ int main() {
     test_run_multiple();
     test_run_early_exit();
     test_memory_read_write_api();
+    test_memory_bounds();
     test_kseg_translation();
     test_kseg_ram_end_bios();
     test_kseg_unmapped();

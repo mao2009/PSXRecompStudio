@@ -47,7 +47,13 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     public void Write16(uint address, ushort value)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+        var _region = Ps1MemoryMap.ClassifyRegion(address);
+        if (_region == MemoryRegionClass.HardwareRegisters)
+        {
+            WriteMmio(address, value);
+            return;
+        }
+        if (_region != MemoryRegionClass.Ram)
             return;
         uint word = ReadRam(address & ~3u);
         int _shift = 8 * (int)(address & 2);
@@ -67,7 +73,13 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     public void Write8(uint address, byte value)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+        var _region = Ps1MemoryMap.ClassifyRegion(address);
+        if (_region == MemoryRegionClass.HardwareRegisters)
+        {
+            WriteMmio(address, value);
+            return;
+        }
+        if (_region != MemoryRegionClass.Ram)
             return;
         uint word = ReadRam(address & ~3u);
         int _shift = 8 * (int)(address & 3);

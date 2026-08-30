@@ -99,6 +99,16 @@ public class MemoryBusTests : IDisposable
     }
 
     [Fact]
+    public void Ram_LittleEndianLayout_IsSharedWithNativeCpu()
+    {
+        _memoryBus.Write32(0x00000100, 0x11223344);
+        _core.ReadMemory32(0x00000100).Should().Be(0x11223344u);
+
+        _memoryBus.Write16(0x00000200, 0xCAFE);
+        _core.ReadMemory16(0x00000200).Should().Be(0xCAFE);
+    }
+
+    [Fact]
     public void Write8_Unmapped_DoesNotThrow()
     {
         var act = () => _memoryBus.Write8(0x20000000, 0xAB);
@@ -231,6 +241,40 @@ public class MemoryBusTests : IDisposable
         uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
         _memoryBus.Write(addr, 0x7FFF);
         _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0x7FFFu);
+    }
+
+    [Fact]
+    public void Write16_TimerTarget_RoutesToAdapter()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
+        _memoryBus.Write16(addr, 0x1234);
+        _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0x1234u);
+        _memoryBus.Read16(addr).Should().Be(0x1234);
+    }
+
+    [Fact]
+    public void Write8_TimerTarget_RoutesToAdapter()
+    {
+        uint addr = Ps1MemoryMap.GetTimerBase(2) + Ps1MemoryMap.TimerTargetOffset;
+        _memoryBus.Write8(addr, 0xAB);
+        _timerAdapter.GetTarget((Core.Runtime.ITimer.TimerId)2).Should().Be(0xABu);
+        _memoryBus.Read8(addr).Should().Be(0xAB);
+    }
+
+    [Fact]
+    public void Write16_BiosRegion_IsIgnored()
+    {
+        var act = () => _memoryBus.Write16(Ps1MemoryMap.BiosBase, 0x1234);
+        act.Should().NotThrow();
+        _memoryBus.Read16(Ps1MemoryMap.BiosBase).Should().Be(0);
+    }
+
+    [Fact]
+    public void Write8_BiosRegion_IsIgnored()
+    {
+        var act = () => _memoryBus.Write8(Ps1MemoryMap.BiosBase, 0xAB);
+        act.Should().NotThrow();
+        _memoryBus.Read8(Ps1MemoryMap.BiosBase).Should().Be(0);
     }
 
     [Fact]

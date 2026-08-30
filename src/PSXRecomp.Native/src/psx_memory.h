@@ -45,86 +45,89 @@ inline uint8_t* PSXMemory::GetRAM() { return ram_; }
 inline uint32_t PSXMemory::GetRAMSize() const { return PSX_RAM_SIZE; }
 
 inline uint32_t PSXMemory::Read32(uint32_t address) const {
-    if (address < PSX_RAM_SIZE) {
-        return (static_cast<uint32_t>(ram_[address]) << 24) |
-               (static_cast<uint32_t>(ram_[address + 1]) << 16) |
-               (static_cast<uint32_t>(ram_[address + 2]) << 8) |
-               static_cast<uint32_t>(ram_[address + 3]);
+    if (address <= PSX_RAM_SIZE - 4u) {
+        return static_cast<uint32_t>(ram_[address]) |
+               (static_cast<uint32_t>(ram_[address + 1]) << 8) |
+               (static_cast<uint32_t>(ram_[address + 2]) << 16) |
+               (static_cast<uint32_t>(ram_[address + 3]) << 24);
     }
-    if (address >= PSX_BIOS_BASE && address + 3u < PSX_BIOS_BASE + PSX_BIOS_SIZE) {
+    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 4u) {
         uint32_t idx = address - PSX_BIOS_BASE;
-        return (static_cast<uint32_t>(bios[idx]) << 24) |
-               (static_cast<uint32_t>(bios[idx + 1]) << 16) |
-               (static_cast<uint32_t>(bios[idx + 2]) << 8) |
-               static_cast<uint32_t>(bios[idx + 3]);
+        return static_cast<uint32_t>(bios[idx]) |
+               (static_cast<uint32_t>(bios[idx + 1]) << 8) |
+               (static_cast<uint32_t>(bios[idx + 2]) << 16) |
+               (static_cast<uint32_t>(bios[idx + 3]) << 24);
     }
-    if (address >= PSX_HW_REG_BASE && address + 3u < PSX_HW_REG_BASE + PSX_HW_REG_SIZE) {
+    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 4u) {
         uint32_t idx = address - PSX_HW_REG_BASE;
-        return (static_cast<uint32_t>(hw_regs[idx]) << 24) |
-               (static_cast<uint32_t>(hw_regs[idx + 1]) << 16) |
-               (static_cast<uint32_t>(hw_regs[idx + 2]) << 8) |
-               static_cast<uint32_t>(hw_regs[idx + 3]);
+        return static_cast<uint32_t>(hw_regs[idx]) |
+               (static_cast<uint32_t>(hw_regs[idx + 1]) << 8) |
+               (static_cast<uint32_t>(hw_regs[idx + 2]) << 16) |
+               (static_cast<uint32_t>(hw_regs[idx + 3]) << 24);
     }
     return 0;
 }
 
 inline void PSXMemory::Write32(uint32_t address, uint32_t value) {
-    if (address < PSX_RAM_SIZE) {
-        ram_[address] = static_cast<uint8_t>(value >> 24);
-        ram_[address + 1] = static_cast<uint8_t>(value >> 16);
-        ram_[address + 2] = static_cast<uint8_t>(value >> 8);
-        ram_[address + 3] = static_cast<uint8_t>(value & 0xFF);
+    if (address <= PSX_RAM_SIZE - 4u) {
+        ram_[address] = static_cast<uint8_t>(value & 0xFF);
+        ram_[address + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        ram_[address + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        ram_[address + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
         return;
     }
-    if (address >= PSX_BIOS_BASE && address + 3u < PSX_BIOS_BASE + PSX_BIOS_SIZE) {
+    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 4u) {
         uint32_t idx = address - PSX_BIOS_BASE;
-        bios[idx] = static_cast<uint8_t>(value >> 24);
-        bios[idx + 1] = static_cast<uint8_t>(value >> 16);
-        bios[idx + 2] = static_cast<uint8_t>(value >> 8);
-        bios[idx + 3] = static_cast<uint8_t>(value & 0xFF);
+        bios[idx] = static_cast<uint8_t>(value & 0xFF);
+        bios[idx + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        bios[idx + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        bios[idx + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
         return;
     }
-    if (address >= PSX_HW_REG_BASE && address + 3u < PSX_HW_REG_BASE + PSX_HW_REG_SIZE) {
+    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 4u) {
         uint32_t idx = address - PSX_HW_REG_BASE;
-        hw_regs[idx] = static_cast<uint8_t>(value >> 24);
-        hw_regs[idx + 1] = static_cast<uint8_t>(value >> 16);
-        hw_regs[idx + 2] = static_cast<uint8_t>(value >> 8);
-        hw_regs[idx + 3] = static_cast<uint8_t>(value & 0xFF);
+        hw_regs[idx] = static_cast<uint8_t>(value & 0xFF);
+        hw_regs[idx + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+        hw_regs[idx + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+        hw_regs[idx + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
         return;
     }
 }
 
 inline uint16_t PSXMemory::Read16(uint32_t address) const {
-    if (address < PSX_RAM_SIZE) {
-        return static_cast<uint16_t>((static_cast<uint16_t>(ram_[address]) << 8) | ram_[address + 1]);
+    if (address <= PSX_RAM_SIZE - 2u) {
+        return static_cast<uint16_t>(ram_[address]) |
+               static_cast<uint16_t>(static_cast<uint16_t>(ram_[address + 1]) << 8);
     }
-    if (address >= PSX_BIOS_BASE && address + 1u < PSX_BIOS_BASE + PSX_BIOS_SIZE) {
+    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 2u) {
         uint32_t idx = address - PSX_BIOS_BASE;
-        return static_cast<uint16_t>((static_cast<uint16_t>(bios[idx]) << 8) | bios[idx + 1]);
+        return static_cast<uint16_t>(bios[idx]) |
+               static_cast<uint16_t>(static_cast<uint16_t>(bios[idx + 1]) << 8);
     }
-    if (address >= PSX_HW_REG_BASE && address + 1u < PSX_HW_REG_BASE + PSX_HW_REG_SIZE) {
+    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 2u) {
         uint32_t idx = address - PSX_HW_REG_BASE;
-        return static_cast<uint16_t>((static_cast<uint16_t>(hw_regs[idx]) << 8) | hw_regs[idx + 1]);
+        return static_cast<uint16_t>(hw_regs[idx]) |
+               static_cast<uint16_t>(static_cast<uint16_t>(hw_regs[idx + 1]) << 8);
     }
     return 0;
 }
 
 inline void PSXMemory::Write16(uint32_t address, uint16_t value) {
-    if (address < PSX_RAM_SIZE) {
-        ram_[address] = static_cast<uint8_t>(value >> 8);
-        ram_[address + 1] = static_cast<uint8_t>(value & 0xFF);
+    if (address <= PSX_RAM_SIZE - 2u) {
+        ram_[address] = static_cast<uint8_t>(value & 0xFF);
+        ram_[address + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
         return;
     }
-    if (address >= PSX_BIOS_BASE && address + 1u < PSX_BIOS_BASE + PSX_BIOS_SIZE) {
+    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 2u) {
         uint32_t idx = address - PSX_BIOS_BASE;
-        bios[idx] = static_cast<uint8_t>(value >> 8);
-        bios[idx + 1] = static_cast<uint8_t>(value & 0xFF);
+        bios[idx] = static_cast<uint8_t>(value & 0xFF);
+        bios[idx + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
         return;
     }
-    if (address >= PSX_HW_REG_BASE && address + 1u < PSX_HW_REG_BASE + PSX_HW_REG_SIZE) {
+    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 2u) {
         uint32_t idx = address - PSX_HW_REG_BASE;
-        hw_regs[idx] = static_cast<uint8_t>(value >> 8);
-        hw_regs[idx + 1] = static_cast<uint8_t>(value & 0xFF);
+        hw_regs[idx] = static_cast<uint8_t>(value & 0xFF);
+        hw_regs[idx + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
         return;
     }
 }
