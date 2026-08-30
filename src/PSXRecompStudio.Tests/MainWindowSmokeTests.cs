@@ -32,4 +32,14 @@ public class MainWindowSmokeTests
 
         window.FindControl<TextBlock>("VersionText")!.Text.Should().Be("0.1.0-dev");
     }
+
+    [AvaloniaFact]
+    public void Status_Binding_Resolves()
+    {
+        var window = App.CreateMainWindow();
+        window.Show();
+
+        window.FindControl<TextBlock>("StatusText")!.Text.Should()
+            .Be("Phase 2: Native Core + C ABI + P/Invoke Established");
+    }
 }
