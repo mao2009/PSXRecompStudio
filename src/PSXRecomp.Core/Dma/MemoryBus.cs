@@ -12,6 +12,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     private readonly PSXCoreWrapper _core;
     private DmaMmioAdapter? _dmaAdapter;
     private TimerMmioAdapter? _timerAdapter;
+    private InterruptControllerMmioAdapter? _interruptControllerAdapter;
     private bool _disposed;
 
     public MemoryBus(PSXCoreWrapper core)
@@ -29,6 +30,12 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _timerAdapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
+    }
+
+    public void AttachInterruptControllerAdapter(InterruptControllerMmioAdapter adapter)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _interruptControllerAdapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
     public uint Read32(uint address) => Read(address);
@@ -122,6 +129,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
         {
             _dmaAdapter = null;
             _timerAdapter = null;
+            _interruptControllerAdapter = null;
             _disposed = true;
         }
         GC.SuppressFinalize(this);
@@ -154,6 +162,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
         {
             MmioTarget.DmaController => _dmaAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.Timer => _timerAdapter?.ReadRegister(address) ?? 0,
+            MmioTarget.InterruptController => _interruptControllerAdapter?.ReadRegister(address) ?? 0,
             _ => 0,
         };
     }
@@ -168,6 +177,9 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
                 break;
             case MmioTarget.Timer:
                 _timerAdapter?.WriteRegister(address, value);
+                break;
+            case MmioTarget.InterruptController:
+                _interruptControllerAdapter?.WriteRegister(address, value);
                 break;
         }
     }

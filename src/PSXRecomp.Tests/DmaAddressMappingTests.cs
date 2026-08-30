@@ -117,6 +117,51 @@ public class DmaAddressMappingTests
         Ps1MemoryMap.GetRegisterType(address).Should().Be(expected);
     }
 
+    [Fact]
+    public void IStat_IsCorrect()
+    {
+        Ps1MemoryMap.IStat.Should().Be(0x1F801070u);
+    }
+
+    [Fact]
+    public void IMask_IsCorrect()
+    {
+        Ps1MemoryMap.IMask.Should().Be(0x1F801074u);
+    }
+
+    [Theory]
+    [InlineData(0x1F801070u)]
+    [InlineData(0x1F801074u)]
+    public void IsInterruptControllerRegister_ReturnsTrue_ForValidAddresses(uint address)
+    {
+        Ps1MemoryMap.IsInterruptControllerRegister(address).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(0x00000000u)]
+    [InlineData(0x1F80106Cu)]
+    [InlineData(0x1F801078u)]
+    [InlineData(0x1F801080u)]
+    [InlineData(0x1F802000u)]
+    public void IsInterruptControllerRegister_ReturnsFalse_ForInvalidAddresses(uint address)
+    {
+        Ps1MemoryMap.IsInterruptControllerRegister(address).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0x1F801070u, InterruptControllerRegisterType.Status)]
+    [InlineData(0x1F801074u, InterruptControllerRegisterType.Mask)]
+    public void GetInterruptControllerRegisterType_ReturnsCorrectType(uint address, InterruptControllerRegisterType expected)
+    {
+        Ps1MemoryMap.GetInterruptControllerRegisterType(address).Should().Be(expected);
+    }
+
+    [Fact]
+    public void GetInterruptControllerRegisterType_Unmapped_ReturnsNone()
+    {
+        Ps1MemoryMap.GetInterruptControllerRegisterType(0x1F801078u).Should().Be(InterruptControllerRegisterType.None);
+    }
+
     [Theory]
     [InlineData(0x00000000u, MemoryRegionClass.Ram)]
     [InlineData(0x001FFFFFu, MemoryRegionClass.Ram)]

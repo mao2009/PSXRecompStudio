@@ -78,6 +78,24 @@ internal static partial class NativeInterop
     internal static partial void PSXCore_ResetTimers(IntPtr core);
 
     [LibraryImport(LibName)]
+    internal static partial uint PSXCore_ReadInterruptControllerRegister(IntPtr core, uint address);
+
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_WriteInterruptControllerRegister(IntPtr core, uint address, uint value);
+
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetInterruptPending(IntPtr core);
+
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_RaiseInterrupt(IntPtr core, int irq);
+
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_ClearInterrupt(IntPtr core, int irq);
+
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_ResetInterruptController(IntPtr core);
+
+    [LibraryImport(LibName)]
     internal static partial int PSXCore_Step(IntPtr core);
 
     [LibraryImport(LibName)]
