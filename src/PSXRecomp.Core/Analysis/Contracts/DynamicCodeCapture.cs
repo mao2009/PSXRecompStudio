@@ -29,7 +29,7 @@ public record DynamicCodeCapture(
 
         for (var index = 0; index < items.Count; index++)
         {
-            if (!isValid(items[index]))
+            if (items[index] is null || !isValid(items[index]))
             {
                 return false;
             }
