@@ -871,7 +871,9 @@ void PSXCpu::ExecBreak() {
 // Coprocessor 0
 void PSXCpu::ExecMfc0(uint32_t rt, uint32_t rd) {
     if (rd >= PSX_COP0_COUNT) return;
-    SetGPR(rt, cop0_[rd]);
+    // MFC0 writes the GPR through the load-delay slot (R3000A: the destination
+    // is not visible to the immediately following instruction).
+    WriteRegDelayed(rt, cop0_[rd]);
 }
 
 void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {

@@ -953,9 +953,11 @@ static void test_cop0_mfc0_mtc0_roundtrip() {
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetCop0(core, 12), 0x80000000u);
 
-    // MFC0 $2, SR(12): GPR[2] = COP0[12]
+    // MFC0 $2, SR(12): GPR[2] = COP0[12] (load delay: visible after next instr)
     PSXCore_WriteMemory32(core, 8, 0x40026000u);
+    PSXCore_WriteMemory32(core, 12, 0x00000000u); // NOP load-delay slot
     PSXCore_SetPC(core, 8);
+    PSXCore_Step(core);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 2), 0x80000000u);
 
@@ -967,7 +969,9 @@ static void test_cop0_mfc0_mtc0_roundtrip() {
     ASSERT_EQ(PSXCore_GetCop0(core, 14), 0xBFC00000u);
 
     PSXCore_WriteMemory32(core, 24, 0x40037000u);
+    PSXCore_WriteMemory32(core, 28, 0x00000000u); // NOP load-delay slot
     PSXCore_SetPC(core, 24);
+    PSXCore_Step(core);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xBFC00000u);
 
@@ -979,13 +983,36 @@ static void test_cop0_mfc0_mtc0_roundtrip() {
     ASSERT_EQ(PSXCore_GetCop0(core, 8), 0xDEADBEEFu);
 
     PSXCore_WriteMemory32(core, 40, 0x40044000u);
+    PSXCore_WriteMemory32(core, 44, 0x00000000u); // NOP load-delay slot
     PSXCore_SetPC(core, 40);
+    PSXCore_Step(core);
     PSXCore_Step(core);
     ASSERT_EQ(PSXCore_GetGPR(core, 4), 0xDEADBEEFu);
 
     PSXCore_Destroy(core);
     PASS();
 }
+
+static void test_mfc0_load_delay() {
+    TEST("MFC0 load delay: destination not visible to following instruction");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x12345678u); // SR
+    PSXCore_SetGPR(core, 2, 0xAAAAAAAAu);   // prior value of destination
+
+    // MFC0 $2, SR at addr 0; ADD $3,$2,$0 at addr 4 (delay slot); NOP at addr 8
+    PSXCore_WriteMemory32(core, 0, 0x40026000u);
+    PSXCore_WriteMemory32(core, 4, 0x00401820u); // ADD $3,$2,$0
+    PSXCore_WriteMemory32(core, 8, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core); // MFC0: $2 write is delayed
+    PSXCore_Step(core); // delay slot reads old $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xAAAAAAAAu); // old value observed
+    PSXCore_Step(core); // NOP: $2 write commits
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0x12345678u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 
 static void test_cop0_cause_rw_bits() {
     TEST("CAUSE: only IP[1:0] (bits 8-9) are R/W via MTC0");
@@ -1442,6 +1469,7 @@ int main() {
     test_div_normal();
 
     test_cop0_mfc0_mtc0_roundtrip();
+    test_mfc0_load_delay();
     test_cop0_cause_rw_bits();
     test_syscall_exception();
     test_break_exception();
