@@ -1,55 +1,45 @@
 # Batch Orchestrator
 
-## Overview
-
-Manages multi-step workflows across independent work items with coordination, failure handling, and safe integration.
+Processes multiple independent issues in one batch: sub-agents run
+concurrently in isolated worktrees, then their PRs are merged serially
+through an approval gate. See skills/common/process/batch/SKILL.md.
 
 ## Capabilities
 
-- **Parallel Execution**: Multiple independent tasks run concurrently.
-- **Dependency Scheduling**: Tasks declare dependencies; scheduler resolves order and parallelizes where possible.
-- **Retry with Backoff**: Failed tasks retry with exponential backoff to prevent cascade failures.
-- **Approval-Gated Merge**: Completed work requires explicit approval before merging to main.
-- **Worktree Isolation**: Each task executes in its own git worktree, preventing conflicts.
+- **Parallel Issue execution**: independent issues run concurrently, bounded by max_parallel_subagents (default 3)
+- **Dependency DAG scheduling**: issues form a DAG; each wave starts once its dependencies complete; cycles block the batch
+- **Retry with exponential backoff**: retryable failures retry with `base * 2^retry + jitter` until max_retries (default 3)
+- **Approval-gated merge**: PRs merge one at a time, rebased onto latest main, after SHA-bound approval (no --admin)
+- **Worktree isolation**: each issue runs in its own git worktree/branch; one failure does not block unrelated issues
 
 ## Lifecycle
 
-```
-  +------------------+
-  |   Submit Batch   |
-  +--------+---------+
-           v
-  +------------------+
-  | Dependency Graph |
-  |    Resolution    |
-  +--------+---------+
-           v
-  +------------------+
-  | Parallel Exec    |
-  | (Worktree Each)  |
-  +--------+---------+
-           v
-     +-----+-----+
-     v     v     v
-  +----+ +----+ +----+
-  | T1 | | T2 | | T3 |
-  +----+ +----+ +----+
-     +-----+-----+
-           v
-  +------------------+
-  | Retry on Fail    |
-  | (Exponential BO) |
-  +--------+---------+
-           v
-  +------------------+
-  | Approval Gate    |
-  +--------+---------+
-           v
-  +------------------+
-  | Merge to Main    |
-  +------------------+
+```text
+    Submit Batch
+         |
+         v
+    DAG Resolution (cycle check)
+         |
+         v
+    Parallel Waves (worktree per issue)
+         |
+         v
+      +---+   +---+   +---+
+      | A |   | B |   | C |     A & C run; B waits on A
+      +---+   +---+   +---+
+         |      |      |
+         +------+------+
+        (retry w/ backoff)
+         |
+         v
+    Serial Merge Queue (approval gate)
+         |
+         v
+    Merge to main -> cleanup
 ```
 
 ## Configuration
 
-Batch jobs are defined declaratively with task definitions, dependency edges, retry policies, and approval requirements.
+Batch behavior is set in `config/batch-config.json` (concurrency,
+retries, checkpoint/resume). Interrupted batches can be resumed from
+persisted batch/worker checkpoints.
