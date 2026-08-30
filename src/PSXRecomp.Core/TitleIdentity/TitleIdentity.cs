@@ -14,10 +14,11 @@ public sealed record TitleIdentity(
     Revision Revision)
 {
     /// <summary>
-    /// Stable, deterministic canonical key combining serial, region and revision.
-    /// Suitable as a dictionary key or persisted identifier for provenance.
+    /// Stable, deterministic canonical key combining serial, region, revision and the
+    /// normalized title name. Consistent with value-based record equality so unequal
+    /// identities never share a key. Suitable as a dictionary key or persisted identifier.
     /// </summary>
-    public string CanonicalKey => $"{Serial}@{Region}:{Revision.CanonicalKey}";
+    public string CanonicalKey => $"{Serial}@{Region}:{Revision.CanonicalKey}:{TitleName.Trim()}";
 
     /// <inheritdoc />
     public override string ToString() => CanonicalKey;

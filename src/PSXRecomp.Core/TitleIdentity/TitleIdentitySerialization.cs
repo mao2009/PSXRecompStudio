@@ -13,7 +13,7 @@ namespace PSXRecomp.Core.TitleIdentity;
 ///   "titleName": "Example",
 ///   "region": "NorthAmerica",
 ///   "revision": "1.1997.09",
-///   "canonicalKey": "SLUS-00594@NorthAmerica:1.1997.09"
+///   "canonicalKey": "SLUS-00594@NorthAmerica:1.1997.09:Example"
 /// }
 /// </code>
 /// The values intentionally repeat the canonical key so a consumer can round-trip a

@@ -40,6 +40,24 @@ public class TitleIdentityTests
         a.CanonicalKey.Should().Be("1.1997.09");
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(13)]
+    public void Revision_InvalidBuildMonth_Throws(int month)
+    {
+        var act = () => new Revision(1, 1997, month);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(12)]
+    public void Revision_ValidBuildMonth_IsAccepted(int month)
+    {
+        var act = () => new Revision(1, 1997, month);
+        act.Should().NotThrow();
+    }
+
     [Fact]
     public void TitleIdentity_CanonicalKey_IsDeterministic()
     {
@@ -48,18 +66,31 @@ public class TitleIdentityTests
         var b = new TitleIdentity("SLUS-00594", "Example", Region.NorthAmerica, revision);
 
         a.CanonicalKey.Should().Be(b.CanonicalKey);
-        a.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09");
+        a.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09:Example");
     }
 
     [Fact]
-    public void TitleIdentity_Equality_IgnoresTitleName()
+    public void TitleIdentity_CanonicalKey_NormalizesTitleName()
+    {
+        var revision = new Revision(1, 1997, 9);
+        var padded = new TitleIdentity("SLUS-00594", "  Example  ", Region.NorthAmerica, revision);
+
+        padded.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09:Example");
+    }
+
+    [Fact]
+    public void TitleIdentity_CanonicalKey_IncludesTitleName()
     {
         var revision = new Revision(1, 1997, 9);
         var a = new TitleIdentity("SLUS-00594", "Example", Region.NorthAmerica, revision);
         var b = new TitleIdentity("SLUS-00594", "Renamed", Region.NorthAmerica, revision);
 
+        // TitleName participates in value-based record equality, so the canonical
+        // key must distinguish identities that differ only by title name.
         a.Should().NotBe(b);
-        a.CanonicalKey.Should().Be(b.CanonicalKey);
+        a.CanonicalKey.Should().NotBe(b.CanonicalKey);
+        a.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09:Example");
+        b.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09:Renamed");
     }
 
     [Fact]
@@ -90,7 +121,21 @@ public class TitleIdentityTests
         disc.Revision.Should().Be(revision);
         disc.DiscIndex.Should().Be(1);
         disc.LayoutHint.Should().Be("mixed-mode");
-        disc.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:disc1");
+        disc.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09:disc1");
+    }
+
+    [Fact]
+    public void DiscIdentity_CanonicalKey_IncludesRevision()
+    {
+        var revA = new Revision(1, 1997, 9);
+        var revB = new Revision(2, 1997, 9);
+        var a = new DiscIdentity("SLUS-00594", Region.NorthAmerica, revA, 1);
+        var b = new DiscIdentity("SLUS-00594", Region.NorthAmerica, revB, 1);
+
+        a.Should().NotBe(b);
+        a.CanonicalKey.Should().NotBe(b.CanonicalKey);
+        a.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:1.1997.09:disc1");
+        b.CanonicalKey.Should().Be("SLUS-00594@NorthAmerica:2.1997.09:disc1");
     }
 
     [Fact]

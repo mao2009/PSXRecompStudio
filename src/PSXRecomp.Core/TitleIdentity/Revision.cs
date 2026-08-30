@@ -7,11 +7,26 @@ namespace PSXRecomp.Core.TitleIdentity;
 /// integers (never <see cref="System.DateTime"/>) to keep the model deterministic.
 /// </summary>
 [Domain]
-public sealed record Revision(
-    int Level,
-    int BuildYear,
-    int BuildMonth)
+public sealed record Revision
 {
+    public Revision(int level, int buildYear, int buildMonth)
+    {
+        if (buildMonth is < 1 or > 12)
+        {
+            throw new ArgumentOutOfRangeException(nameof(buildMonth), "BuildMonth must be between 1 and 12.");
+        }
+
+        Level = level;
+        BuildYear = buildYear;
+        BuildMonth = buildMonth;
+    }
+
+    public int Level { get; init; }
+
+    public int BuildYear { get; init; }
+
+    public int BuildMonth { get; init; }
+
     /// <summary>Free-form release notes for this revision. Empty when not recorded.</summary>
     public string Notes { get; init; } = string.Empty;
 

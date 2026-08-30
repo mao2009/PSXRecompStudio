@@ -20,9 +20,9 @@ public sealed record DiscIdentity(
     public string? LayoutHint { get; init; }
 
     /// <summary>
-    /// Stable, deterministic canonical key combining serial, region and disc index.
+    /// Stable, deterministic canonical key combining serial, region, revision and disc index.
     /// </summary>
-    public string CanonicalKey => $"{Serial}@{Region}:disc{DiscIndex}";
+    public string CanonicalKey => $"{Serial}@{Region}:{Revision.CanonicalKey}:disc{DiscIndex}";
 
     /// <inheritdoc />
     public override string ToString() => CanonicalKey;
