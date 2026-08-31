@@ -22,6 +22,7 @@ common skill is ported to another project.
 | CPU/R3000A subsystem specs | `docs/cpu/instruction-set.md`, `docs/cpu/instruction-format.md`, `docs/cpu/registers.md`, `docs/cpu/r3000a.md`, `docs/cpu/pipeline.md`, `docs/cpu/memory.md`, `docs/cpu/exceptions.md`, `docs/cpu/cop0.md` |
 | Test specification | `docs/cpu/test-specification.md` |
 | Repository artifact policy | `docs/development/artifact-policy.md` (SSOT: `config/artifact-policy.json`) |
+| API documentation & docstring policy | `docs/development/documentation-policy.md` (ADR-011), measured by `scripts/docs/measure-docstring-coverage.ps1` |
 
 ## 2. ADR directory
 
@@ -40,6 +41,8 @@ Current records:
 | 007 | Repository Artifact Policy and CI Contamination Gate | Accepted |
 | 008 | Batch Orchestrator Checkpoint and Resume Design | Accepted |
 | 009 | PR-Triggered README Auto-Update via OpenCode | Accepted |
+| 010 | CodeRabbit Review Runs After README Auto-Update | Accepted |
+| 011 | API Documentation & Docstring Policy | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).

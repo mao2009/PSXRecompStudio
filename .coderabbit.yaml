@@ -1,4 +1,4 @@
-# CodeRabbit configuration (Issue #185).
+# CodeRabbit configuration (Issue #185, Issue #183).
 #
 # Automatic reviews are DISABLED. CodeRabbit must not start a review before the
 # README Auto-Update workflow has finished; otherwise it could review a PR state
@@ -19,3 +19,52 @@ reviews:
     enabled: false
     ignore_usernames:
       - "github-actions[bot]"
+
+  # Docstring Coverage pre-merge check (Issue #183, ADR-011). PRs #181/#182
+  # reported 4.44%/15.22% coverage against the tool default of an unconditional
+  # 80% threshold on every touched function, which does not reflect the
+  # project documentation policy (docs/development/documentation-policy.md):
+  # trivial private implementation and most test code are deliberately
+  # excluded from the "must document" set, so the raw touched-function ratio
+  # is not a meaningful pass/fail signal at 80%.
+  #
+  # mode stays "warning" (the tool default): documentation gaps are surfaced
+  # on every PR but never block merge by themselves, matching the policy's
+  # explicit non-goal "do not block functional PRs on mass documentation
+  # cleanup". threshold is lowered to a realistic incremental target based on
+  # the measured baseline (see docs/development/documentation-policy.md);
+  # raise it as coverage of the in-scope surface (public API, interop
+  # boundary, architecture-significant runtime state) improves.
+  pre_merge_checks:
+    docstrings:
+      mode: warning
+      threshold: 40
+
+  # code_generation.docstrings below only affects content CodeRabbit generates
+  # (the "Generate docstrings" finishing touch / @coderabbitai generate
+  # docstrings); it does not change what the coverage check above measures.
+  # It steers generated docstrings toward the same in-scope/out-of-scope
+  # split as the policy, so automated suggestions do not add boilerplate to
+  # excluded code.
+
+code_generation:
+  docstrings:
+    path_instructions:
+      - path: "src/PSXRecomp.Core/NativeInterop.cs"
+        instructions: >
+          This is the native/managed interop boundary (Issue #183 policy).
+          Document ownership of the native handle, units/semantics of each
+          parameter, and any side effects on native state, even though the
+          class is internal.
+      - path: "src/PSXRecomp.Native/include/**/*.h"
+        instructions: >
+          This is the public C ABI. Document ownership/lifetime of pointers
+          and handles, parameter units/semantics, and side effects. Do not
+          restate the function name in prose.
+      - path: "**/*Tests.cs"
+        instructions: >
+          Tests do not require documentation by policy
+          (docs/development/documentation-policy.md) unless a test encodes a
+          non-obvious architectural invariant (e.g. an ADR-mandated ordering
+          or timing rule) that is not evident from the test name and body.
+          Do not add restating comments/docstrings to ordinary test methods.
