@@ -2,8 +2,6 @@
 
 #include "psx_core.h"
 
-class PSXCpu;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,7 +13,10 @@ extern "C" {
 // (see psx_cpu.h / golden_trace.h); a recompiler backend participating in a
 // golden-trace comparison would surface its per-step write events to the
 // harness through its own channel.
-PSX_API PSXCpu* PSXCoreGetCpuForTrace(PSXCore* core);
+//
+// Returns the core's embedded PSXCpu as an opaque void* so this header remains
+// valid C (the class type is C++-only); C++ callers cast it back.
+PSX_API void* PSXCoreGetCpuForTrace(PSXCore* core);
 
 #ifdef __cplusplus
 }

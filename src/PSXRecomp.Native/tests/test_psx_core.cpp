@@ -862,7 +862,7 @@ static void test_e2e_trace_same_gpr_two_writes() {
     ASSERT_EQ(trace[1].reg_before[0], 0u);
     ASSERT_EQ(trace[1].reg_after[0], 5u);
     ASSERT_EQ((unsigned)trace[1].reg_index[1], 8u);   // $t0: current instruction
-    ASSERT_EQ(trace[1].reg_before[1], 0u);
+    ASSERT_EQ(trace[1].reg_before[1], 5u);            // prior retirement wrote 5
     ASSERT_EQ(trace[1].reg_after[1], 7u);
     ASSERT_EQ(trace[1].next_pc, 8u);
 
@@ -934,7 +934,7 @@ static void test_e2e_trace_same_gpr_old_equals_final() {
     ASSERT_EQ(trace[1].reg_before[0], 0u);
     ASSERT_EQ(trace[1].reg_after[0], 1u);
     ASSERT_EQ((unsigned)trace[1].reg_index[1], 8u);   // $t0: current instruction
-    ASSERT_EQ(trace[1].reg_before[1], 0u);
+    ASSERT_EQ(trace[1].reg_before[1], 1u);            // prior retirement wrote 1
     ASSERT_EQ(trace[1].reg_after[1], 0u);
     ASSERT_EQ(trace[1].next_pc, 8u);
 

@@ -67,7 +67,16 @@ uint32_t PSXCpu::GetGPR(int index) const {
 void PSXCpu::SetGPR(int index, uint32_t value) {
     if (index < 0 || index >= PSX_GPR_COUNT) return;
     if (index == 0) return;
-    RecordGprWrite(index, gpr_[index], value);
+    uint32_t before = gpr_[index];
+    // In retirement order a pending load write retires just before this
+    // instruction-result write to the same register; its value is this write's
+    // immediate prior value, even though the load is net-cancelled from the
+    // register file. Report that value so the trace's before/after chain is
+    // consistent with the retirement stream (CodeRabbit, PR #198).
+    if (gpr_write_trace_ != nullptr && index == load_delay_reg_) {
+        before = load_delay_value_;
+    }
+    RecordGprWrite(index, before, value);
     gpr_[index] = value;
     // An immediate write beats a pending load-delay write to the same register.
     // The R3000A writes the register in-order, so the later (immediate) write wins.

@@ -43,7 +43,7 @@ struct GoldenTraceEntry {
     static constexpr int kMaxGprWritesPerStep = PSXCpu::kMaxGprWritesPerStep;
     int reg_count = 0;                                  // # of GPR retirement writes in this step.
     int reg_index[kMaxGprWritesPerStep] = {-1, -1};     // GPR index written, -1 if unused.
-    uint32_t reg_before[kMaxGprWritesPerStep] = {};     // Register value before this retirement write.
+    uint32_t reg_before[kMaxGprWritesPerStep] = {};     // Value immediately before this write in the retirement stream.
     uint32_t reg_after[kMaxGprWritesPerStep] = {};      // Value written by this retirement write.
 
     uint32_t hi_before = 0;
@@ -91,7 +91,7 @@ inline GoldenTraceEntry CaptureGoldenTraceStep(PSXCore* core) {
     entry.hi_before = PSXCore_GetHI(core);
     entry.lo_before = PSXCore_GetLO(core);
 
-    PSXCpu* cpu = PSXCoreGetCpuForTrace(core);
+    PSXCpu* cpu = static_cast<PSXCpu*>(PSXCoreGetCpuForTrace(core));
     PSXCpu::GprWriteTrace writes;
     cpu->SetGprWriteTrace(&writes);
 
