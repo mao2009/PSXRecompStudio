@@ -72,6 +72,6 @@ public class ChdReaderMalformedHeaderTests
         // map region has no hunks to parse.
         using var stream = new MemoryStream(BuildV5Header(hunkBytes: 2352 * 8, unitBytes: 2352));
         stream.Invoking(s => ChdReader.Open(s))
-            .Should().NotThrow<InvalidDataException>();
+            .Should().NotThrow();
     }
 }
