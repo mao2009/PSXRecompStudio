@@ -920,6 +920,105 @@ static void test_e2e_trace_same_gpr_old_equals_final() {
     PASS();
 }
 
+// Issue #202 (CodeRabbit follow-up to PR #198, psx_cpu.cpp WriteRegDelayed):
+// two CONSECUTIVE loads targeting the SAME GPR, unlike the same-step cases
+// above, retire across TWO DIFFERENT steps -- neither LW writes its GPR
+// immediately (both go through WriteRegDelayed, not SetGPR), so the second
+// load's WriteRegDelayed() call cancels the first load's still-pending
+// load_delay_reg_ ("the last load wins", psx_cpu.cpp) before that first
+// load's commit ever reaches UpdateLoadDelay(). The Golden Trace still
+// records an event for the first load -- Step() reports whatever load-delay
+// write was pending at the TOP of the step, before that step's own
+// instruction can cancel it -- but that event's value is never actually
+// written to the register file: GetGPR($t0) reads 0 (the pre-load value)
+// immediately after this step, not 5. Only the second load's own commit,
+// recorded one step later, actually reaches the register file. Both events
+// report before == 0, because the register file itself never changes
+// between them (golden_trace.h documents this contract in full).
+static void test_e2e_trace_consecutive_loads_same_gpr() {
+    TEST("E2E: Golden Trace for two consecutive loads to the same GPR (Issue #202)");
+    PSXCore* core = PSXCore_Create();
+
+    // lw    $t0, 0x100($zero)   ($t0 = GPR[8]; memory value 5, load-delay queued)
+    // lw    $t0, 0x104($zero)   ($t0 = GPR[8]; memory value 9, cancels the pending load)
+    // addiu $t2, $zero, 99      ($t2 = GPR[10]; unrelated register, closes the window)
+    PSXCore_WriteMemory32(core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(core, 4, 0x8C080104u);
+    PSXCore_WriteMemory32(core, 8, 0x240A0063u);
+    PSXCore_WriteMemory32(core, 0x100, 5u);
+    PSXCore_WriteMemory32(core, 0x104, 9u);
+    PSXCore_SetPC(core, 0);
+
+    GoldenTraceEntry trace[3];
+    trace[0] = CaptureGoldenTraceStep(core);
+
+    // Step 0 (LW #1): the load result is queued, no GPR write retires yet.
+    ASSERT_EQ(trace[0].pc, 0u);
+    ASSERT_EQ(trace[0].instruction, 0x8C080100u);
+    assert(trace[0].mnemonic == "LW");
+    ASSERT_EQ(trace[0].reg_count, 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0u);
+    ASSERT_EQ(trace[0].next_pc, 4u);
+
+    trace[1] = CaptureGoldenTraceStep(core);
+
+    // Step 1 (LW #2): LW #1's pending commit is reported as a retirement event
+    // (Step() samples load_delay_reg_ before this instruction runs), but LW #2
+    // then cancels it in WriteRegDelayed before UpdateLoadDelay() ever writes
+    // it -- so the event's value (5) never reaches the register file. GetGPR
+    // still reads 0. Only LW #2's own load is now pending.
+    ASSERT_EQ(trace[1].pc, 4u);
+    ASSERT_EQ(trace[1].instruction, 0x8C080104u);
+    assert(trace[1].mnemonic == "LW");
+    ASSERT_EQ(trace[1].reg_count, 1);
+    ASSERT_EQ((unsigned)trace[1].reg_index[0], 8u);
+    ASSERT_EQ(trace[1].reg_before[0], 0u);
+    ASSERT_EQ(trace[1].reg_after[0], 5u);   // LW #1's value: recorded, never committed
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0u); // superseded before it ever reached the GPR
+    ASSERT_EQ(trace[1].next_pc, 8u);
+
+    trace[2] = CaptureGoldenTraceStep(core);
+
+    // Step 2 (ADDIU, unrelated register): LW #2's commit finally retires here --
+    // "before" is still 0 (the register file never held LW #1's phantom value),
+    // "after" is 9 (the second, "winning" load -- last load wins). The current
+    // instruction's own write to $t2 retires as the second event in this step.
+    ASSERT_EQ(trace[2].pc, 8u);
+    ASSERT_EQ(trace[2].instruction, 0x240A0063u);
+    assert(trace[2].mnemonic == "ADDIU");
+    ASSERT_EQ(trace[2].reg_count, 2);
+    ASSERT_EQ((unsigned)trace[2].reg_index[0], 8u);   // $t0: LW #2's commit
+    ASSERT_EQ(trace[2].reg_before[0], 0u);
+    ASSERT_EQ(trace[2].reg_after[0], 9u);
+    ASSERT_EQ((unsigned)trace[2].reg_index[1], 10u);  // $t2: current instruction
+    ASSERT_EQ(trace[2].reg_before[1], 0u);
+    ASSERT_EQ(trace[2].reg_after[1], 99u);
+    ASSERT_EQ(trace[2].next_pc, 12u);
+
+    // Final architectural state: the second load wins outright (Issue #202).
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 9u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 10), 99u);
+    ASSERT_EQ(PSXCore_GetPC(core), 12u);
+
+    PSXCore_Destroy(core);
+
+    // Determinism: a fresh core reproduces the identical trace.
+    PSXCore* replay_core = PSXCore_Create();
+    PSXCore_WriteMemory32(replay_core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(replay_core, 4, 0x8C080104u);
+    PSXCore_WriteMemory32(replay_core, 8, 0x240A0063u);
+    PSXCore_WriteMemory32(replay_core, 0x100, 5u);
+    PSXCore_WriteMemory32(replay_core, 0x104, 9u);
+    PSXCore_SetPC(replay_core, 0);
+    for (int i = 0; i < 3; i++) {
+        GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
+        if (!AssertTraceEntriesEqual(replay, trace[i])) { return; }
+    }
+    PSXCore_Destroy(replay_core);
+
+    PASS();
+}
+
 static void test_memory_read_write_api() {
     TEST("PSXCore_Read/WriteMemory API");
     PSXCore* core = PSXCore_Create();
@@ -2063,6 +2162,7 @@ int main() {
     test_e2e_trace_load_delay_two_writes();
     test_e2e_trace_same_gpr_two_writes();
     test_e2e_trace_same_gpr_old_equals_final();
+    test_e2e_trace_consecutive_loads_same_gpr();
     test_memory_read_write_api();
     test_memory_bounds();
     test_kseg_translation();
