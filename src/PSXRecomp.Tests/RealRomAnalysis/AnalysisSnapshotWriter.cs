@@ -28,7 +28,7 @@ public static class AnalysisSnapshotWriter
         int? instructionCount = null)
     {
         var (snapshot, log) = RealRomAnalyzer.Analyze(chdPath, fixtureName, instructionCount);
-        var report = BuildReport(chdPath);
+        var report = BuildReport(chdPath, instructionCount);
 
 #pragma warning disable PSXR005
         var fixtureReportDir = Path.Combine(reportDirectory, fixtureName);
@@ -44,13 +44,13 @@ public static class AnalysisSnapshotWriter
         return snapshot;
     }
 
-    private static DiscImageAnalysisReport BuildReport(string chdPath)
+    private static DiscImageAnalysisReport BuildReport(string chdPath, int? instructionCount)
     {
 #pragma warning disable PSXR005
         var bytes = File.ReadAllBytes(chdPath);
 #pragma warning restore PSXR005
         var sha256 = RealRomAnalyzer.ComputeSha256ForTest(bytes);
-        var report = DiscImageAnalyzer.Analyze(bytes, sha256);
+        var report = DiscImageAnalyzer.Analyze(bytes, sha256, instructionCount);
         return report;
     }
 }

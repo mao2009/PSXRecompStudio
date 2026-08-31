@@ -212,7 +212,7 @@ public static class MipsInstructionFormatter
         var mem = instruction.Operand1;
         var baseReg = RegisterNames[mem.BaseRegister];
         var offset = (short)mem.Value;
-        return $"{rt}, {offset}(0x{baseReg})";
+        return $"{rt}, {offset}({baseReg})";
     }
 
     private static string FormatStore(R3000aInstruction instruction)
@@ -221,7 +221,7 @@ public static class MipsInstructionFormatter
         var mem = instruction.Operand1;
         var baseReg = RegisterNames[mem.BaseRegister];
         var offset = (short)mem.Value;
-        return $"{rt}, {offset}(0x{baseReg})";
+        return $"{rt}, {offset}({baseReg})";
     }
 
     private static string FormatMoveFromHiLo(R3000aInstruction instruction)
