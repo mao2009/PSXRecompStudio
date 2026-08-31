@@ -107,5 +107,7 @@ mtc0 k0, C0_SR     # スタック退避完了
 # ... 処理 ...
 lw   k0, saved_sr
 mtc0 k0, C0_SR     # SR復元
-rfe                # 3-levelスタックから復帰
+mfc0 k1, C0_EPC    # 復帰先アドレスをEPCから読み出す
+jr   k1            # PCへジャンプ
+rfe                # 遅延スロットで実行し、3-levelスタックをポップ
 ```
