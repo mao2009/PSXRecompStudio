@@ -1,8 +1,17 @@
 #include "psx_core.h"
 #include "psx_core.cpp"
+#include "psx_core_test_hooks.h"
 #include <new>
 
 extern "C" {
+
+void* PSXCoreGetCpuForTrace(PSXCore* core) {
+    // See psx_core_test_hooks.h: internal harness accessor, not part of the
+    // stable public ABI contract. Returns the PSXCpu* as an opaque void* so the
+    // header stays valid C; golden_trace.h casts it back in C++.
+    if (!core) return nullptr;
+    return &core->cpu;
+}
 
 PSXCore* PSXCore_Create(void) {
     try {

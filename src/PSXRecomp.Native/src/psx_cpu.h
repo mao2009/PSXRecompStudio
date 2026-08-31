@@ -40,9 +40,38 @@ public:
     // on PSXInterruptController so it stays independently testable.
     void SetHardwareInterruptPending(bool pending);
 
-    // Instruction execution
+    // Instruction execution. There is deliberately no PSXCpu::Run/multi-step
+    // loop here: any caller stepping more than one instruction must re-sample
+    // the Interrupt Controller and call SetHardwareInterruptPending() before
+    // every individual Step() (Issue #144's per-instruction sampling
+    // contract, see above). PSXCore_Run (psx_api.cpp) is that caller for the
+    // C ABI; a class-level Run() here could not honor the contract and would
+    // silently run with stale interrupt state, so it was removed rather than
+    // kept as a foot-gun (CodeRabbit, PR #198).
     int Step(PSXMemory& memory);
-    int Run(PSXMemory& memory, uint32_t maxInstructions);
+
+    // Golden Trace GPR write-event recording (Issue #157). A single MIPS I step
+    // retires at most kMaxGprWritesPerStep writes: one instruction-result write
+    // (SetGPR) plus at most one load-delay commit (ADR-004), so the recorder
+    // and the trace share this upper bound. Any step exceeding it is a model
+    // violation and is reported loudly by RecordGprWrite.
+    static constexpr int kMaxGprWritesPerStep = 2;
+
+    struct GprWriteEvent {
+        int index = -1;         // GPR index written; -1 when unused.
+        uint32_t before = 0;    // Register value immediately before this write.
+        uint32_t value = 0;     // Value written by this retirement.
+    };
+
+    struct GprWriteTrace {
+        int count = 0;
+        GprWriteEvent events[kMaxGprWritesPerStep] = {};
+    };
+
+    // Attaches/detaches the write-event recorder (trace harness only). Null by
+    // default, so the production execution path is unchanged; the harness
+    // passes a stack-allocated recorder around a single Step() call.
+    void SetGprWriteTrace(GprWriteTrace* trace) { gpr_write_trace_ = trace; }
 
 private:
     uint32_t gpr_[PSX_GPR_COUNT];
@@ -76,6 +105,11 @@ private:
     uint32_t load_delay_value_;
     int next_load_delay_reg_;    // -1 when no load-delay write is queued for the next step.
     uint32_t next_load_delay_value_;
+
+    // Optional per-instance recorder for GPR retirement write events (null in
+    // production; attached by the Golden Trace harness around a single step).
+    GprWriteTrace* gpr_write_trace_ = nullptr;
+    void RecordGprWrite(int index, uint32_t before, uint32_t value);
 
     // Instruction decode helpers
     uint32_t FetchInstruction(PSXMemory& memory);
