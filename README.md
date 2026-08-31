@@ -43,6 +43,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Timers / DMA controller | Partially implemented (register-level native models exist; full memory-bus wiring in progress) |
 | Minimal MIPS program execution path | Implemented |
 | Golden Trace (deterministic execution tracing) | Implemented |
+| Disc image analysis (CHD → ISO 9660 → PS-X EXE → MIPS analysis, basic blocks / CFG) | Implemented |
 | GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
 | Runtime (BIOS/EXE loading, I/O loop) | Planned |
 | Recompiler | Planned |
