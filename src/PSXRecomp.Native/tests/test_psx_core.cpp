@@ -3,6 +3,7 @@
 #include "psx_core.h"
 #include "psx_cpu.h"
 #include "psx_memory.h"
+#include "golden_trace.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -645,6 +646,91 @@ static void test_run_early_exit() {
     ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u); // not executed
     
     PSXCore_Destroy(core);
+    PASS();
+}
+
+// Issue #157: minimal MIPS program executed end-to-end through the CPU +
+// memory bus path, verified with a deterministic Golden Trace (see
+// golden_trace.h). This is INT-006 relative to docs/cpu/test-specification.md
+// Layer 4.
+static void test_e2e_minimal_program() {
+    TEST("E2E: minimal MIPS program via CPU + memory bus, verified with Golden Trace");
+    PSXCore* core = PSXCore_Create();
+
+    // addiu $t0, $zero, 10   ($t0 = GPR[8])
+    // addiu $t1, $zero, 20   ($t1 = GPR[9])
+    // addu  $t2, $t0, $t1    ($t2 = GPR[10])
+    PSXCore_WriteMemory32(core, 0, 0x2408000Au);
+    PSXCore_WriteMemory32(core, 4, 0x24090014u);
+    PSXCore_WriteMemory32(core, 8, 0x01095021u);
+    PSXCore_SetPC(core, 0);
+
+    GoldenTraceEntry trace[3];
+    for (int i = 0; i < 3; i++) {
+        trace[i] = CaptureGoldenTraceStep(core);
+    }
+
+    // Golden Trace fixture: the exact, deterministic per-instruction record
+    // expected for this program (instruction fetch is via the memory bus,
+    // since the words above were placed with PSXCore_WriteMemory32).
+    ASSERT_EQ(trace[0].pc, 0u);
+    ASSERT_EQ(trace[0].instruction, 0x2408000Au);
+    assert(trace[0].mnemonic == "ADDIU");
+    ASSERT_EQ((unsigned)trace[0].reg_index, 8u);
+    ASSERT_EQ(trace[0].reg_before, 0u);
+    ASSERT_EQ(trace[0].reg_after, 10u);
+    ASSERT_EQ(trace[0].hi_before, trace[0].hi_after);
+    ASSERT_EQ(trace[0].lo_before, trace[0].lo_after);
+    ASSERT_EQ(trace[0].next_pc, 4u);
+
+    ASSERT_EQ(trace[1].pc, 4u);
+    ASSERT_EQ(trace[1].instruction, 0x24090014u);
+    assert(trace[1].mnemonic == "ADDIU");
+    ASSERT_EQ((unsigned)trace[1].reg_index, 9u);
+    ASSERT_EQ(trace[1].reg_before, 0u);
+    ASSERT_EQ(trace[1].reg_after, 20u);
+    ASSERT_EQ(trace[1].next_pc, 8u);
+
+    ASSERT_EQ(trace[2].pc, 8u);
+    ASSERT_EQ(trace[2].instruction, 0x01095021u);
+    assert(trace[2].mnemonic == "ADDU");
+    ASSERT_EQ((unsigned)trace[2].reg_index, 10u);
+    ASSERT_EQ(trace[2].reg_before, 0u);
+    ASSERT_EQ(trace[2].reg_after, 30u);
+    ASSERT_EQ(trace[2].next_pc, 12u);
+
+    // Final architectural state (Issue #157 acceptance criteria).
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 10u);  // $t0
+    ASSERT_EQ(PSXCore_GetGPR(core, 9), 20u);  // $t1
+    ASSERT_EQ(PSXCore_GetGPR(core, 10), 30u); // $t2
+    ASSERT_EQ(PSXCore_GetGPR(core, 0), 0u);   // $zero always 0
+    ASSERT_EQ(PSXCore_GetPC(core), 12u);      // PC advanced past all 3 instructions
+
+    PSXCore_Destroy(core);
+
+    // Determinism: replaying the identical program on a fresh core reproduces
+    // the exact same trace, with no hidden/non-deterministic state.
+    PSXCore* replay_core = PSXCore_Create();
+    PSXCore_WriteMemory32(replay_core, 0, 0x2408000Au);
+    PSXCore_WriteMemory32(replay_core, 4, 0x24090014u);
+    PSXCore_WriteMemory32(replay_core, 8, 0x01095021u);
+    PSXCore_SetPC(replay_core, 0);
+    for (int i = 0; i < 3; i++) {
+        GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
+        ASSERT_EQ(replay.pc, trace[i].pc);
+        ASSERT_EQ(replay.instruction, trace[i].instruction);
+        assert(replay.mnemonic == trace[i].mnemonic);
+        ASSERT_EQ((unsigned)replay.reg_index, (unsigned)trace[i].reg_index);
+        ASSERT_EQ(replay.reg_before, trace[i].reg_before);
+        ASSERT_EQ(replay.reg_after, trace[i].reg_after);
+        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
+        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
+        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
+        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
+        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+    }
+    PSXCore_Destroy(replay_core);
+
     PASS();
 }
 
@@ -1787,6 +1873,7 @@ int main() {
     test_step_memory();
     test_run_multiple();
     test_run_early_exit();
+    test_e2e_minimal_program();
     test_memory_read_write_api();
     test_memory_bounds();
     test_kseg_translation();
