@@ -95,10 +95,20 @@ BEV=1:
 ```text
 RFEはSRステータススタックをポップするのみ。PC復元は行わない。
 
-1. SR[3:0] = SR[5:2]  (KUc←KUp, IEc←IEp, KUp←KUo, IEp←IEo)
-2. SR[5:4] = 0        (最古のレベルをクリア)
-3. ソフトウェアがJRで復帰（通常: JR $ra）
+1. KUc←KUp, IEc←IEp（SR[1:0] ← SR[3:2]）
+2. KUp←KUo, IEp←IEo（SR[3:2] ← SR[5:4]）
+3. KUo/IEo（SR[5:4]）はRFEでは変更しない（実機は最古レベルを再利用し続ける）
+4. ソフトウェアがJRで復帰（通常: JR $ra）
 ```
+
+以前の版では手順2を「SR[5:4] = 0（最古のレベルをクリア）」としていたが、これは誤りだった。
+実機（psx-spx）およびPR #193（Issue #141）の実装・テストでは、RFEはKUo/IEo
+（SR bit 4-5）を変更せずそのまま保持する。実装は
+`src/PSXRecomp.Native/src/psx_cpu.cpp` の `PSXCpu::ExecRfe()`、根拠となるテストは
+`src/PSXRecomp.Native/tests/test_psx_core.cpp` の `test_rfe_pop`
+（`0x3C -> 0x3F` の境界ケース: KUo/IEo=1 がRFE後も1のまま保持されることを確認）を参照。
+詳細な3-levelスタックの遷移は `docs/cpu/cop0.md`（SRのビット定義）・
+`docs/cpu/exceptions.md`（RFE手順）に準じる。
 
 BD=1時の例外復帰:
 ```text

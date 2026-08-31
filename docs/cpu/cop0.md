@@ -69,6 +69,8 @@ KUc ← KUp, IEc ← IEp
 KUp ← KUo, IEp ← IEo
 ```
 
+KUo/IEo（bit 4-5）はRFEでは変更しない（実機仕様。詳細: ADR-005）。
+
 ### BEV (Bootstrap Exception Vector)
 
 - 0: 例外ベクトル 80000080h
@@ -106,7 +108,8 @@ Bit  Name    Description
 
 - 例外発生時のPCを保存
 - 遅延スロット内なら分岐命令のアドレス
-- RFEでPCに復元
+- PC復元はRFE命令自体では行われない。ソフトウェアがEPCをMFC0でGPRに読み出し、
+  JR等でPCへ復帰させる（詳細: ADR-005, docs/cpu/exceptions.md）
 
 ## BadVaddr (Bad Virtual Address) - cop0r8
 

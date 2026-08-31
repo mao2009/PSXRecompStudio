@@ -47,7 +47,10 @@ PSXでは通常BEV=1（BIOS起動時）からBEV=0（BIOSが変更）に切り�
 1. SRの3レベルスタックをポップ
    - KUc ← KUp, IEc ← IEp
    - KUp ← KUo, IEp ← IEo
-2. PC = EPC（遅延スロット内で例外が発生した場合は分岐命令のアドレスからリターン）
+   - KUo/IEo（SR bit 4-5）はRFEでは変更しない
+2. RFE自体はPCを変更しない。PC復元はソフトウェアの責務であり、通常はEPCを
+   MFC0でGPRに読み出した上でJRにより行う（遅延スロット内で例外が発生した
+   場合は分岐命令のアドレスからリターンする）。詳細: ADR-005。
 
 ## Interrupt Handling
 
