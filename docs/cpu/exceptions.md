@@ -74,9 +74,9 @@ PSXでは通常BEV=1（BIOS起動時）からBEV=0（BIOSが変更）に切り�
 
 ## Interrupt Processing
 
-1. I_STAT & I_MASK が非ゼロなら割り込み発生
-2. COP0 CAUSE.Ipフィールドに割り込みペンディングを設定
-3. IEc=1 の場合、例外として処理（KUc/I stacksに退避）
+1. I_STAT & I_MASK が非ゼロなら割り込み発生（Interrupt Controllerの集約ペンディング状態、`PSXInterruptController::GetInterruptPending()`）
+2. CPUのStep()毎に、その集約ペンディング状態をCOP0 CAUSE.IP2（bit 10, `docs/cpu/cop0.md` IP参照）へ反映
+3. `(CAUSE.IP & SR.IM) != 0 && SR.IEc == 1` の場合、INT例外（Excode 0x00）として処理（SRの3レベルスタックへ退避、EPC/CAUSE.BD設定は他の例外と同じ#141モデルに従う）。分岐の遅延スロット実行中はチェックを行わず、分岐＋遅延スロットのペアが完了してから判定する（Issue #144, ADR-004/ADR-005）。
 
 ## Exception Priority
 

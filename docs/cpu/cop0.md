@@ -93,14 +93,18 @@ Bit  Name    Description
 
 | Bit | Source |
 |-----|--------|
-| IP[0] | Software interrupt 0 |
-| IP[1] | Software interrupt 1 |
-| IP[2] | Hardware: VBlank |
-| IP[3] | Hardware: GPU |
-| IP[4] | Hardware: CD-ROM |
-| IP[5] | Hardware: DMA |
-| IP[6] | Hardware: TMR0 |
-| IP[7] | Hardware: TMR1 |
+| IP[0] | Software interrupt 0 (R/W via MTC0) |
+| IP[1] | Software interrupt 1 (R/W via MTC0) |
+| IP[2] | Hardware: Interrupt Controller aggregate line (R only) |
+| IP[3]-IP[7] | Hardware: unused (未接続, always 0) in this emulator's model |
+
+実機のR3000A/PSXは、VBlank/GPU/CD-ROM/DMA/TMR0-2等の全周辺機器割り込みが
+Interrupt Controller (I_STAT/I_MASK, `docs/cpu/exceptions.md`) で集約され、
+単一のハードウェア割り込み線（CPU IRQ2 = CAUSE.IP2, bit 10）としてCPUへ配信される
+（個別の周辺機器ごとに専用のCAUSE.IPビットは存在しない）。Interrupt Controllerの
+`GetInterruptPending()`（`I_STAT & I_MASK != 0`）がこの集約ペンディング状態であり、
+CPUのStep()毎にCAUSE.IP2へ反映される（Issue #144）。ソフトウェアはSR.IM2
+(bit 10) を有効化することでこの集約割り込み線を許可する。
 
 ## EPC (Exception Program Counter) - cop0r14
 

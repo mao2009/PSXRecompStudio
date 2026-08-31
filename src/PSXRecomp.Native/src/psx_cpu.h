@@ -31,6 +31,15 @@ public:
     uint32_t GetCop0(int index) const;
     void SetCop0(int index, uint32_t value);
 
+    // Interrupt controller integration (docs/cpu/exceptions.md, Issue #144).
+    // Reflects the Interrupt Controller's aggregate pending line (I_STAT &
+    // I_MASK), matching PSX hardware where the controller drives a single
+    // CPU interrupt input (CAUSE.IP2, bit 10). The caller (PSXCore_Step /
+    // PSXCore_Run) is responsible for sampling the controller and calling
+    // this before every individual Step(); PSXCpu itself has no dependency
+    // on PSXInterruptController so it stays independently testable.
+    void SetHardwareInterruptPending(bool pending);
+
     // Instruction execution
     int Step(PSXMemory& memory);
     int Run(PSXMemory& memory, uint32_t maxInstructions);
@@ -55,6 +64,11 @@ private:
     bool exception_raised_;          // An exception was raised during the current step.
     uint32_t executing_instr_addr_;  // Address of the instruction currently executing.
     bool executing_in_delay_slot_;   // Whether the current instruction is in a branch delay slot.
+
+    // Interrupt controller state (Issue #144). Sampled by the caller via
+    // SetHardwareInterruptPending() before each Step() call; mirrored onto
+    // CAUSE.IP2 (bit 10).
+    bool hardware_interrupt_pending_;
 
     // Load delay state (ADR-004). Double buffered so that the value loaded by an
     // instruction is only committed to the register file one instruction later.

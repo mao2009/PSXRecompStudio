@@ -166,12 +166,27 @@ void PSXCore_ResetInterruptController(PSXCore* core) {
 
 int PSXCore_Step(PSXCore* core) {
     if (!core) return -1;
+    // Feed the Interrupt Controller's aggregate pending line into the CPU
+    // before stepping (Issue #144); PSXCpu itself stays decoupled from
+    // PSXInterruptController.
+    core->cpu.SetHardwareInterruptPending(core->interrupts.GetInterruptPending());
     return core->cpu.Step(core->memory);
 }
 
 int PSXCore_Run(PSXCore* core, uint32_t maxInstructions) {
     if (!core) return -1;
-    return core->cpu.Run(core->memory, maxInstructions);
+    // Re-sample the Interrupt Controller before every instruction (not just once
+    // for the whole batch): the Issue requires each Step() to see a current
+    // pending state, and a multi-instruction Run() must behave identically to
+    // that many individual PSXCore_Step() calls (Issue #144).
+    for (uint32_t i = 0; i < maxInstructions; i++) {
+        core->cpu.SetHardwareInterruptPending(core->interrupts.GetInterruptPending());
+        int result = core->cpu.Step(core->memory);
+        if (result != 0) {
+            return result;
+        }
+    }
+    return 0;
 }
 
 uint32_t PSXCore_ReadMemory32(PSXCore* core, uint32_t address) {
