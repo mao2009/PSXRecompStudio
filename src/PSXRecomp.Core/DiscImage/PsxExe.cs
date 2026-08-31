@@ -35,15 +35,13 @@ public sealed record PsxExe
         var header = PsxExeHeader.Parse(fileContent);
 
         var textOffset = PsxExeHeader.HeaderSize;
-        var textLength = (int)header.TextSize;
-        if (textLength == 0)
-        {
-            textLength = fileContent.Length - textOffset;
-        }
+        var available = fileContent.Length - textOffset;
+        var textLength = header.TextSize == 0
+            ? available
+            : (int)Math.Min(header.TextSize, (uint)available);
 
         var textSegment = new byte[textLength];
-        Buffer.BlockCopy(fileContent, textOffset, textSegment, 0,
-            Math.Min(textLength, fileContent.Length - textOffset));
+        Buffer.BlockCopy(fileContent, textOffset, textSegment, 0, textLength);
 
         return new PsxExe
         {

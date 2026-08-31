@@ -43,8 +43,21 @@ public static class DiscImageAnalyzer
         var iso = new Iso9660Reader(sector =>
         {
             var cdSector = chd.ReadSector(sector);
+            int userDataOffset = cdSector[15] switch
+            {
+                1 => 16,
+                2 => 24,
+                var mode => throw new InvalidDataException(
+                    $"Unsupported CD sector mode {mode} at sector {sector}."),
+            };
+            if (cdSector.Length < userDataOffset + IsoSectorSize)
+            {
+                throw new InvalidDataException(
+                    $"CD sector {sector} is too short: {cdSector.Length} bytes.");
+            }
+
             var isoData = new byte[IsoSectorSize];
-            Buffer.BlockCopy(cdSector, 24, isoData, 0, IsoSectorSize);
+            Buffer.BlockCopy(cdSector, userDataOffset, isoData, 0, IsoSectorSize);
             return isoData;
         });
         iso.Initialize();

@@ -191,8 +191,6 @@ public sealed class Iso9660Reader
 
     private void CountEntriesCore(Iso9660DirectoryEntry dirRecord, ref int fileCount, ref int directoryCount)
     {
-        directoryCount++;
-
         // Some disc images contain directory records whose location points outside
         // the disc (e.g. stray XA / overlaid entries). Guard so enumeration never
         // throws; such subtrees are ignored rather than counted.
@@ -205,6 +203,8 @@ public sealed class Iso9660Reader
         {
             return;
         }
+
+        directoryCount++;
 
         foreach (var entry in entries)
         {
@@ -224,7 +224,7 @@ public sealed class Iso9660Reader
     private List<Iso9660DirectoryEntry> ReadDirectory(Iso9660DirectoryEntry dirRecord)
     {
         var entries = new List<Iso9660DirectoryEntry>();
-        var data = ReadRawFile(dirRecord);
+        var data = ReadRawFile(dirRecord, padToSectorSize: true);
         int offset = 0;
 
         while (offset < data.Length)
@@ -279,7 +279,7 @@ public sealed class Iso9660Reader
         return entries;
     }
 
-    private byte[] ReadRawFile(Iso9660DirectoryEntry entry)
+    private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false)
     {
         var totalSectors = (int)((entry.Size + SectorSize - 1) / SectorSize);
         var data = new byte[totalSectors * SectorSize];
@@ -290,6 +290,14 @@ public sealed class Iso9660Reader
             Buffer.BlockCopy(sector, 0, data, i * SectorSize, SectorSize);
         }
 
+        if (padToSectorSize || data.Length == entry.Size)
+        {
+            return data;
+        }
+
+        // File data is exactly entry.Size bytes; trim the sector-rounded padding so
+        // hash/size and parsed content match the bytes stored on the disc.
+        Array.Resize(ref data, (int)entry.Size);
         return data;
     }
 }
