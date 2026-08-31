@@ -57,7 +57,8 @@
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
     <NativeLibName Condition="'$(OS)' == 'Windows_NT'">PSXRecomp.Native.dll</NativeLibName>
-    <NativeLibName Condition="'$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
+    <NativeLibName Condition="'$(NativeLibName)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libPSXRecomp.Native.dylib</NativeLibName>
+    <NativeLibName Condition="'$(NativeLibName)' == '' and '$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
   </PropertyGroup>
 
   <Target Name="IncludeNativeLibraryForTests" BeforeTargets="AssignTargetPaths;CoreCompile">

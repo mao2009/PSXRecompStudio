@@ -58,7 +58,7 @@ internal static class NativeLibraryResolver
         }
 
         string baseDirectory = AppContext.BaseDirectory;
-        foreach (string candidate in CandidateFileNames())
+        foreach (string candidate in CandidateFileNames(CurrentOs()))
         {
             string candidatePath = Path.Combine(baseDirectory, candidate);
             if (NativeLibrary.TryLoad(candidatePath, out IntPtr handle))
@@ -72,22 +72,52 @@ internal static class NativeLibraryResolver
         return IntPtr.Zero;
     }
 
-    private static IEnumerable<string> CandidateFileNames()
+    /// <summary>
+    /// Returns the candidate file names probed for the given OS, in probe
+    /// order. The first entry always matches the staging file name the
+    /// <c>NativeLibName</c> MSBuild property produces on that OS.
+    /// </summary>
+    internal static IEnumerable<string> CandidateFileNames(NativeLibraryOs os)
+    {
+        switch (os)
+        {
+            case NativeLibraryOs.Windows:
+                yield return $"{LibraryName}.dll";
+                yield return $"lib{LibraryName}.dll";
+                break;
+            case NativeLibraryOs.MacOS:
+                yield return $"lib{LibraryName}.dylib";
+                yield return $"{LibraryName}.dylib";
+                break;
+            default:
+                // Linux and other Unix-like platforms.
+                yield return $"lib{LibraryName}.so";
+                yield return $"{LibraryName}.so";
+                break;
+        }
+    }
+
+    private static NativeLibraryOs CurrentOs()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            yield return $"{LibraryName}.dll";
-            yield return $"lib{LibraryName}.dll";
+            return NativeLibraryOs.Windows;
         }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
-            yield return $"lib{LibraryName}.dylib";
-            yield return $"{LibraryName}.dylib";
+            return NativeLibraryOs.MacOS;
         }
-        else
-        {
-            yield return $"lib{LibraryName}.so";
-            yield return $"{LibraryName}.so";
-        }
+        return NativeLibraryOs.Linux;
     }
+}
+
+/// <summary>
+/// Coarse OS classification used by <see cref="NativeLibraryResolver"/> to
+/// pick the native library naming convention to probe for.
+/// </summary>
+internal enum NativeLibraryOs
+{
+    Windows,
+    MacOS,
+    Linux,
 }

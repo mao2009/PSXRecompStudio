@@ -52,6 +52,14 @@ target that builds (Core only) and copies the native library into their own
   Tests project's own output, independent of whatever Core's own output
   directory ends up with.
 
+Both `PSXRecomp.Core.csproj` and `PSXRecomp.Tests.csproj` select the file
+name in a `NativeLibName` property that mirrors the per-OS contract in the
+table above: `PSXRecomp.Native.dll` on Windows, `libPSXRecomp.Native.dylib`
+on macOS, and `libPSXRecomp.Native.so` on other Unix-like platforms. The
+CMake target itself already emits these names (`PREFIX ""` on Windows, and
+the platform default `lib` prefix plus `.so`/`.dylib` suffix on
+Linux/macOS), so the staged file always matches what P/Invoke probes for.
+
 Both targets hook `BeforeTargets="AssignTargetPaths;CoreCompile"`, **not**
 `BeforeTargets="CoreCompile"` alone. This is the load-bearing detail: the
 .NET SDK computes the copy-to-output-directory manifest from
