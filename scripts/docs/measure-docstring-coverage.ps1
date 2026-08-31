@@ -73,7 +73,19 @@ function Test-DocumentedAbove {
         if ($line -eq "") { continue }
         if ($line -match "^\[.*\]$") { continue }
         if ($line -match "^///") { return $true }
-        if ($line -match "\*/$") { return $true }
+        if ($line -match "^//!") { return $true }
+        if ($line -match "^/\*\*.*\*/$") { return $true }
+        if ($line -match "\*/$") {
+            # Multi-line block comment: only a Doxygen block (opening with
+            # `/**`, not a plain `/*`) counts as documentation. Walk back to
+            # the opening line to tell the two apart.
+            for ($j = $i; $j -ge 0; $j--) {
+                $openLine = $Lines[$j].Trim()
+                if ($openLine -match "^/\*\*") { return $true }
+                if ($openLine -match "^/\*") { return $false }
+            }
+            return $false
+        }
         return $false
     }
     return $false

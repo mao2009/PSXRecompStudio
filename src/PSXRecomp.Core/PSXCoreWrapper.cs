@@ -15,10 +15,12 @@ namespace PSXRecomp.Core;
 /// <b>Ownership/lifetime:</b> each instance owns exactly one native core
 /// handle, created in the constructor and released exactly once in
 /// <see cref="Dispose"/> (also reachable via the finalizer as a safety net).
-/// Every member that touches native state calls
+/// Every instance member that accesses the owned handle calls
 /// <see cref="ObjectDisposedException.ThrowIf"/> first, so using the wrapper
 /// after <see cref="Dispose"/> throws deterministically instead of touching a
-/// freed native pointer.
+/// freed native pointer. Static members that need no live instance (e.g.
+/// <see cref="GetRamSize"/>) and lifecycle members (<see cref="Dispose"/>
+/// itself) are exempt: they never touch the handle.
 /// </para>
 /// </remarks>
 [Domain]
