@@ -10,8 +10,9 @@
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
-    <NativeLibName Condition="'$(OS)' == 'Windows_NT'">libPSXRecomp.Native.dll</NativeLibName>
-    <NativeLibName Condition="'$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
+    <NativeLibName Condition="'$(OS)' == 'Windows_NT'">PSXRecomp.Native.dll</NativeLibName>
+    <NativeLibName Condition="'$(NativeLibName)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libPSXRecomp.Native.dylib</NativeLibName>
+    <NativeLibName Condition="'$(NativeLibName)' == '' and '$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,16 +25,33 @@
     <PackageReference Include="loach.PureSharp" Version="0.1.6" PrivateAssets="all" />
   </ItemGroup>
 
-  <Target Name="BuildNative" BeforeTargets="CoreCompile"
+  <ItemGroup>
+    <InternalsVisibleTo Include="PSXRecomp.Tests" />
+  </ItemGroup>
+
+  <!--
+    Build the native library and stage it for copy-to-output as a single
+    target, in this order, rather than as two targets stitched together with
+    BeforeTargets/AfterTargets. Splitting this into a "BuildNative" target and
+    a separate follow-up target was observed to race on a clean multi-project
+    solution build (Issue #100); tasks within a single Target always execute
+    in document order, which removes that ambiguity.
+
+    BeforeTargets="AssignTargetPaths" (not "CoreCompile") is required: the SDK
+    computes the copy-to-output-directory manifest from @(None)/@(Content) in
+    the "AssignTargetPaths" target, which runs *before* "CoreCompile". A None
+    item added only "BeforeTargets=CoreCompile" is added too late for that
+    manifest — the item exists (and CoreCompile itself doesn't need it), but
+    it silently never gets copied to $(OutDir), with no build error. That
+    was the actual root cause of PSXRecomp.Tests' DllNotFoundException on a
+    clean Windows build despite a "successful" `dotnet build`.
+  -->
+  <Target Name="BuildNative" BeforeTargets="AssignTargetPaths;CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
     <Exec Command="cmake -B $(NativeBuildDir) -S $(NativeProjectDir) -G Ninja -DCMAKE_BUILD_TYPE=Release"
           IgnoreExitCode="false" />
     <Exec Command="cmake --build $(NativeBuildDir)"
           IgnoreExitCode="false" />
-  </Target>
-
-  <Target Name="IncludeNativeLibrary" AfterTargets="BuildNative"
-          BeforeTargets="CoreCompile;ResolvePackageAssets">
     <ItemGroup>
       <None Include="$(NativeBuildDir)/$(NativeLibName)"
             Condition="Exists('$(NativeBuildDir)/$(NativeLibName)')"

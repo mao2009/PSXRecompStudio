@@ -29,4 +29,44 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <!--
+    PSXRecomp.Core's own BuildNative target copies the native library into
+    Core's *own* output directory as a build side effect, and .NET SDK's
+    transitive CopyToOutputDirectory propagation is expected to carry it into
+    this project's output too. That propagation was observed to be
+    unreliable on a first, fully clean solution build (Issue #100): the
+    library can be missing from this project's own $(OutDir) even though
+    Core's build already produced it. Make this project self-sufficient by
+    copying directly from the native build directory, independent of that
+    propagation. The ProjectReference above already guarantees
+    PSXRecomp.Core (and therefore its BuildNative target) finishes building
+    before this project builds, so the native library is expected to already
+    exist by the time this target's Exists() check runs; if it does not
+    (e.g. the native build step failed upstream), the copy is skipped rather
+    than failing this project's build, and the resulting DllNotFoundException
+    at test time surfaces the real problem.
+
+    BeforeTargets="AssignTargetPaths" (not "CoreCompile") is required: the
+    SDK computes the copy-to-output-directory manifest from
+    @(None)/@(Content) in the "AssignTargetPaths" target, which runs *before*
+    "CoreCompile". A None item added only "BeforeTargets=CoreCompile" is
+    added too late for that manifest — the item exists, but it silently
+    never gets copied to $(OutDir), with no build error.
+  -->
+  <PropertyGroup>
+    <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
+    <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
+    <NativeLibName Condition="'$(OS)' == 'Windows_NT'">PSXRecomp.Native.dll</NativeLibName>
+    <NativeLibName Condition="'$(NativeLibName)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libPSXRecomp.Native.dylib</NativeLibName>
+    <NativeLibName Condition="'$(NativeLibName)' == '' and '$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
+  </PropertyGroup>
+
+  <Target Name="IncludeNativeLibraryForTests" BeforeTargets="AssignTargetPaths;CoreCompile">
+    <ItemGroup>
+      <None Include="$(NativeBuildDir)/$(NativeLibName)"
+            Condition="Exists('$(NativeBuildDir)/$(NativeLibName)')"
+            CopyToOutputDirectory="PreserveNewest" Link="$(NativeLibName)" />
+    </ItemGroup>
+  </Target>
+
 </Project>

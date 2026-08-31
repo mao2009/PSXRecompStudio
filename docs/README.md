@@ -83,6 +83,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [Development Agent Guide](development/agent-guide.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
 - [README Auto-Update](development/readme-autoupdate.md)
+- [Native Library Build and Test Execution](development/native-library-build.md)
 - CPU / R3000A — planned
 - Decoder — planned
 - Analyzer — planned

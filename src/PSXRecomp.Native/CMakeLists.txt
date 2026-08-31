@@ -32,6 +32,17 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 
+if(WIN32)
+    # .NET's default P/Invoke probing on Windows looks up "PSXRecomp.Native.dll"
+    # (no "lib" prefix) for [LibraryImport("PSXRecomp.Native")]. MinGW/GCC
+    # toolchains default to prefixing shared libraries with "lib" (a Unix
+    # convention some Windows GCC front-ends still apply), which would produce
+    # "libPSXRecomp.Native.dll" and break that lookup. Force an empty prefix so
+    # the artifact name matches the P/Invoke library name on every Windows
+    # toolchain (MSVC already defaults to no prefix).
+    set_target_properties(PSXRecomp.Native PROPERTIES PREFIX "")
+endif()
+
 enable_testing()
 add_executable(psx_native_tests
     src/psx_cpu.cpp
