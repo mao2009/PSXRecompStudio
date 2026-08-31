@@ -62,6 +62,23 @@ public static class DiscImageAnalyzer
 
         var (decodedInstructions, decodeFailures) = DecodeInstructions(psxExe, instructionCount);
 
+        var (basicBlocks, cfgEdges) = BasicBlockBuilder.Build(decodedInstructions, psxExe.Header.EntryPoint, instructionCount);
+
+        int callCandidateCount = 0;
+        int returnCandidateCount = 0;
+        foreach (var inst in decodedInstructions)
+        {
+            var raw = R3000aDecoder.Decode(inst.RawWord);
+            if (raw.LinkInfo.WritesLink)
+            {
+                callCandidateCount++;
+            }
+            if (raw.Opcode == R3000aOpcode.Jr && raw.Operand0.Kind == R3000aOperandKind.Register && raw.Operand0.Register == 31)
+            {
+                returnCandidateCount++;
+            }
+        }
+
         return new DiscImageAnalysisReport
         {
             DiscImageSha256 = sha256,
@@ -78,6 +95,10 @@ public static class DiscImageAnalyzer
             DecodedInstructionCount = decodedInstructions.Count,
             DecodedInstructions = decodedInstructions,
             DecodeFailures = decodeFailures,
+            BasicBlocks = basicBlocks,
+            CfgEdges = cfgEdges,
+            CallCandidateCount = callCandidateCount,
+            ReturnCandidateCount = returnCandidateCount,
         };
     }
 

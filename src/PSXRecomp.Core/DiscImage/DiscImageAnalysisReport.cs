@@ -3,13 +3,15 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Analysis.Contracts;
 using PSXRecomp.Core.Cpu;
 
 namespace PSXRecomp.Core.DiscImage;
 
 /// <summary>
 /// Deterministic analysis report produced by DiscImageAnalyzer.
-/// Contains disc metadata, PS-X EXE details, and decoded instructions.
+/// Contains disc metadata, PS-X EXE details, decoded instructions, and
+/// basic-block / control-flow information.
 /// </summary>
 [Domain]
 public sealed record DiscImageAnalysisReport
@@ -28,6 +30,10 @@ public sealed record DiscImageAnalysisReport
     public required int DecodedInstructionCount { get; init; }
     public required IReadOnlyList<DecodedInstruction> DecodedInstructions { get; init; }
     public required IReadOnlyList<DecodeFailure> DecodeFailures { get; init; }
+    public required IReadOnlyList<BasicBlock> BasicBlocks { get; init; }
+    public required IReadOnlyList<CfgEdge> CfgEdges { get; init; }
+    public required int CallCandidateCount { get; init; }
+    public required int ReturnCandidateCount { get; init; }
 
     public string ToJson()
     {
@@ -67,6 +73,21 @@ public sealed record DiscImageAnalysisReport
             var token = $"address={fail.Address.ToString("X8", CultureInfo.InvariantCulture)};reason={fail.Reason}";
             AppendField(builder, $"failure.{i}", token);
         }
+
+        AppendField(builder, "basicBlockCount", BasicBlocks.Count.ToString(CultureInfo.InvariantCulture));
+        for (int i = 0; i < BasicBlocks.Count; i++)
+        {
+            AppendField(builder, $"block.{i}", BasicBlocks[i].ToTokenString());
+        }
+
+        AppendField(builder, "cfgEdgeCount", CfgEdges.Count.ToString(CultureInfo.InvariantCulture));
+        for (int i = 0; i < CfgEdges.Count; i++)
+        {
+            AppendField(builder, $"edge.{i}", CfgEdges[i].ToTokenString());
+        }
+
+        AppendField(builder, "callCandidateCount", CallCandidateCount.ToString(CultureInfo.InvariantCulture));
+        AppendField(builder, "returnCandidateCount", ReturnCandidateCount.ToString(CultureInfo.InvariantCulture));
 
         return builder.ToString();
     }
