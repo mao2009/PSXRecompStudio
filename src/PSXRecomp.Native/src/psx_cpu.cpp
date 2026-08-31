@@ -50,6 +50,11 @@ void PSXCpu::Reset() {
     exception_raised_ = false;
     executing_instr_addr_ = 0;
     executing_in_delay_slot_ = false;
+    hardware_interrupt_pending_ = false;
+}
+
+void PSXCpu::SetHardwareInterruptPending(bool pending) {
+    hardware_interrupt_pending_ = pending;
 }
 
 uint32_t PSXCpu::GetGPR(int index) const {
@@ -153,6 +158,41 @@ void PSXCpu::SetPendingBranch(uint32_t target, bool taken) {
 }
 
 int PSXCpu::Step(PSXMemory& memory) {
+    // CAUSE.IP2 (bit 10) mirrors the Interrupt Controller's aggregate pending
+    // line every step, independent of delay-slot state, so that CAUSE reads
+    // (MFC0) stay live. Software IP[1:0] (bits 8-9, set via MTC0) are left
+    // untouched (docs/cpu/cop0.md, Issue #144).
+    uint32_t cause = cop0_[13];
+    if (hardware_interrupt_pending_) {
+        cause |= (1u << 10);
+    } else {
+        cause &= ~(1u << 10);
+    }
+    cop0_[13] = cause;
+
+    // Interrupt exception check (Issue #144): only at an instruction-fetch
+    // boundary that is not itself a pending branch's delay slot, so that a
+    // branch + delay-slot pair always completes together before an interrupt
+    // is serviced (ADR-004/ADR-005 delay-slot semantics; also matches
+    // docs/cpu/exceptions.md "IEc=1 の場合、例外として処理").
+    if (!branch_pending_) {
+        uint32_t sr = cop0_[12];
+        bool iec = (sr & 0x2u) != 0;
+        uint32_t im = (sr >> 8) & 0xFFu;
+        uint32_t ip = (cause >> 8) & 0xFFu;
+        if (iec && (ip & im) != 0) {
+            // No instruction is fetched/executed this step: the interrupt
+            // preempts it. EPC/BD follow the same #141 exception model as any
+            // other exception, anchored at the not-yet-executed instruction.
+            executing_instr_addr_ = pc_;
+            executing_in_delay_slot_ = false;
+            RaiseException(0x00); // INT
+            next_pc_ = pc_ + 4;
+            UpdateLoadDelay();
+            return 0;
+        }
+    }
+
     uint32_t instr_addr = pc_;
     uint32_t instruction = FetchInstruction(memory);
 
