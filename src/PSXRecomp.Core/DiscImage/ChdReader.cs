@@ -281,6 +281,63 @@ public sealed class ChdReader : IDisposable
         return DecompressV5Map(stream, header, hunkCount);
     }
 
+    /// <summary>
+    /// Computes deterministic statistics about this CHD's map and compressed data
+    /// region. Does not decompress any hunks; it only inspects the parsed header
+    /// and the decompressed map entries.
+    /// </summary>
+    public ChdMapStatistics ComputeMapStatistics()
+    {
+        int cdlz = 0;
+        int cdzl = 0;
+        long dataRegion = 0;
+
+        for (int i = 0; i < _map.Length; i++)
+        {
+            var entry = _map[i];
+
+            // Compression types 0..3 are the four codec slots; map them to their
+            // compressor tags to identify cdlz / cdzl.
+            if (entry.CompressionType < 4)
+            {
+                uint tag = _header.Compressors[entry.CompressionType];
+                if (tag == ChdCdCodec.CodecLzma) cdlz++;
+                else if (tag == ChdCdCodec.CodecZlib) cdzl++;
+            }
+
+            // Data-bearing entries are types 0..3 (codec-compressed) and type 4
+            // (uncompressed/raw). Their compressed lengths describe the data region.
+            if (entry.CompressionType <= CompressionNone)
+            {
+                dataRegion += entry.CompressedLength;
+            }
+        }
+
+        long mapConsumed = 0;
+        if (_header.IsCompressed)
+        {
+            long original = _stream.Position;
+            _stream.Seek((long)_header.MapOffset, SeekOrigin.Begin);
+            var mapHeader = new byte[16];
+            _stream.ReadExactly(mapHeader, 0, 16);
+            uint mapBytes = ChdHeader.ReadUInt32BE(mapHeader, 0);
+            mapConsumed = mapBytes;
+            _stream.Seek(original, SeekOrigin.Begin);
+        }
+
+        return new ChdMapStatistics
+        {
+            Version = _header.Version,
+            LogicalBytes = _header.LogicalBytes,
+            HunkBytes = _header.HunkBytes,
+            TotalHunks = _header.TotalHunks,
+            CdlzCount = cdlz,
+            CdzlCount = cdzl,
+            MapBytesConsumed = mapConsumed,
+            DataRegionSize = dataRegion,
+        };
+    }
+
     private static ChdMapEntry[] DecompressV5Map(Stream stream, ChdHeader header, int hunkCount)
     {
         var rawMap = new byte[hunkCount * 12];

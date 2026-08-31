@@ -26,6 +26,12 @@ public sealed class Iso9660Reader
     public uint RootDirectoryLocation { get; private set; }
     public uint RootDirectorySize { get; private set; }
 
+    /// <summary>Volume identifier (32-byte ASCII field from the Primary Volume Descriptor).</summary>
+    public string? VolumeIdentifier { get; private set; }
+
+    /// <summary>Volume space size in sectors (from the Primary Volume Descriptor).</summary>
+    public uint VolumeSpaceSize { get; private set; }
+
     public void Initialize()
     {
         int sectorIndex = VolumeDescriptorSector;
@@ -51,6 +57,15 @@ public sealed class Iso9660Reader
 
     private void ParsePrimaryVolumeDescriptor(byte[] sector)
     {
+        // Volume space size (LE uint32) at offset 80
+        VolumeSpaceSize = BitConverter.ToUInt32(sector, 80);
+
+        // Volume identifier (32 ASCII bytes) at offset 40
+        var volIdBytes = sector.AsSpan(40, 32).ToArray();
+        int volLen = 0;
+        while (volLen < volIdBytes.Length && volIdBytes[volLen] != 0 && volIdBytes[volLen] != ' ') volLen++;
+        VolumeIdentifier = Encoding.ASCII.GetString(volIdBytes, 0, volLen);
+
         // Root directory record is at offset 156, 34 bytes long
         int rootOffset = 156;
         RootDirectoryLocation = BitConverter.ToUInt32(sector, rootOffset + 2);
@@ -161,6 +176,49 @@ public sealed class Iso9660Reader
         }
 
         return ReadDirectory(currentDirRecord);
+    }
+
+    /// <summary>
+    /// Recursively counts files and directories beneath a directory record.
+    /// Excludes the implicit "." and ".." entries.
+    /// </summary>
+    public void CountEntries(Iso9660DirectoryEntry root, out int fileCount, out int directoryCount)
+    {
+        fileCount = 0;
+        directoryCount = 0;
+        CountEntriesCore(root, ref fileCount, ref directoryCount);
+    }
+
+    private void CountEntriesCore(Iso9660DirectoryEntry dirRecord, ref int fileCount, ref int directoryCount)
+    {
+        directoryCount++;
+
+        // Some disc images contain directory records whose location points outside
+        // the disc (e.g. stray XA / overlaid entries). Guard so enumeration never
+        // throws; such subtrees are ignored rather than counted.
+        List<Iso9660DirectoryEntry> entries;
+        try
+        {
+            entries = ReadDirectory(dirRecord);
+        }
+        catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidDataException or IndexOutOfRangeException)
+        {
+            return;
+        }
+
+        foreach (var entry in entries)
+        {
+            if (entry.FileName == "\0" || entry.FileName == "..") continue;
+
+            if (entry.IsDirectory)
+            {
+                CountEntriesCore(entry, ref fileCount, ref directoryCount);
+            }
+            else
+            {
+                fileCount++;
+            }
+        }
     }
 
     private List<Iso9660DirectoryEntry> ReadDirectory(Iso9660DirectoryEntry dirRecord)
