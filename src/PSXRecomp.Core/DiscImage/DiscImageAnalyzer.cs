@@ -1,0 +1,154 @@
+using System.Security.Cryptography;
+using PSXRecomp.Architecture;
+using PSXRecomp.Core.Cpu;
+
+namespace PSXRecomp.Core.DiscImage;
+
+/// <summary>
+/// Main analysis pipeline: CHD → ISO 9660 → SYSTEM.CNF → PS-X EXE → MIPS decode.
+/// Produces a deterministic <see cref="DiscImageAnalysisReport"/>.
+/// This is a pure domain method that accepts pre-read bytes.
+/// </summary>
+[Domain]
+public static class DiscImageAnalyzer
+{
+    private const int DefaultInstructionCount = 128;
+    private const int IsoSectorSize = 2048;
+
+    /// <summary>
+    /// Analyzes raw CHD bytes and produces a full analysis report.
+    /// All file I/O is the caller's responsibility.
+    /// </summary>
+    public static DiscImageAnalysisReport Analyze(byte[] chdBytes, string chdSha256, int? instructionCount = null)
+    {
+        var count = instructionCount ?? DefaultInstructionCount;
+
+        using var chdStream = new MemoryStream(chdBytes, writable: false);
+        using var chd = ChdReader.Open(chdStream);
+        return AnalyzeChd(chd, chdSha256, count);
+    }
+
+    /// <summary>
+    /// Analyzes a CHD stream and produces a full analysis report.
+    /// </summary>
+    public static DiscImageAnalysisReport Analyze(Stream chdStream, string chdSha256, int? instructionCount = null)
+    {
+        var count = instructionCount ?? DefaultInstructionCount;
+        using var chd = ChdReader.Open(chdStream);
+        return AnalyzeChd(chd, chdSha256, count);
+    }
+
+    private static DiscImageAnalysisReport AnalyzeChd(ChdReader chd, string sha256, int instructionCount)
+    {
+        var iso = new Iso9660Reader(sector =>
+        {
+            var cdSector = chd.ReadSector(sector);
+            var isoData = new byte[IsoSectorSize];
+            Buffer.BlockCopy(cdSector, 24, isoData, 0, IsoSectorSize);
+            return isoData;
+        });
+        iso.Initialize();
+
+        var systemCnfBytes = iso.ReadFile("SYSTEM.CNF");
+        var systemCnf = SystemCnfParser.Parse(systemCnfBytes);
+
+        var bootPath = NormalizeBootPath(systemCnf.BootPath);
+        var exeBytes = iso.ReadFile(bootPath);
+        var exeFileName = Path.GetFileName(bootPath.Split(';')[0]);
+
+        var psxExe = PsxExe.Load(exeBytes, exeFileName);
+
+        var exeHash = ComputeSha256(exeBytes);
+
+        var (decodedInstructions, decodeFailures) = DecodeInstructions(psxExe, instructionCount);
+
+        return new DiscImageAnalysisReport
+        {
+            DiscImageSha256 = sha256,
+            SystemCnfBootPath = systemCnf.BootPath,
+            ExecutableFileName = psxExe.FileName,
+            EntryPoint = psxExe.Header.EntryPoint,
+            TextStart = psxExe.Header.TextStart,
+            TextSize = psxExe.Header.TextSize,
+            SpInitial = psxExe.Header.SpInitial,
+            GpInitial = psxExe.Header.GpInitial,
+            ExecutableFileSize = psxExe.FileSize,
+            ExecutableFileHash = exeHash,
+            DecodeStartAddress = psxExe.Header.EntryPoint,
+            DecodedInstructionCount = decodedInstructions.Count,
+            DecodedInstructions = decodedInstructions,
+            DecodeFailures = decodeFailures,
+        };
+    }
+
+    private static string NormalizeBootPath(string bootPath)
+    {
+        var path = bootPath;
+        if (path.StartsWith("cdrom:", StringComparison.OrdinalIgnoreCase))
+        {
+            path = path["cdrom:".Length..];
+        }
+        if (path.StartsWith('\\') || path.StartsWith('/'))
+        {
+            path = path[1..];
+        }
+        path = path.Replace('\\', '/');
+        return path;
+    }
+
+    private static (IReadOnlyList<DecodedInstruction> Instructions, IReadOnlyList<DecodeFailure> Failures)
+        DecodeInstructions(PsxExe exe, int count)
+    {
+        var instructions = new List<DecodedInstruction>();
+        var failures = new List<DecodeFailure>();
+
+        var maxAddress = exe.Header.TextEnd;
+        uint currentAddress = exe.Header.EntryPoint;
+        int decoded = 0;
+
+        while (decoded < count && currentAddress + 4 <= maxAddress)
+        {
+            try
+            {
+                var rawWord = exe.GetInstructionWord(currentAddress);
+                var instruction = R3000aDecoder.Decode(rawWord);
+
+                var mnemonic = MipsInstructionFormatter.FormatMnemonic(instruction.Opcode);
+                var operands = MipsInstructionFormatter.FormatOperands(instruction);
+                var format = instruction.Format.ToString();
+                var controlFlow = instruction.ControlFlow.ToString();
+
+                instructions.Add(new DecodedInstruction
+                {
+                    Address = currentAddress,
+                    RawWord = rawWord,
+                    Mnemonic = mnemonic,
+                    Operands = operands,
+                    Format = format,
+                    ControlFlow = controlFlow,
+                });
+
+                decoded++;
+                currentAddress += 4;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                failures.Add(new DecodeFailure
+                {
+                    Address = currentAddress,
+                    Reason = "Address outside text segment bounds",
+                });
+                break;
+            }
+        }
+
+        return (instructions, failures);
+    }
+
+    private static string ComputeSha256(byte[] data)
+    {
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(data);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+}
