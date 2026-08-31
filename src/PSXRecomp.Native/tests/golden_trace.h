@@ -5,39 +5,46 @@
 #include <string>
 
 #include "psx_core.h"
+#include "psx_cpu.h"
+#include "psx_core_test_hooks.h"
 
 // Golden Trace format (Issue #157).
 //
-// Captures per-instruction execution state purely through the public C ABI
-// (PSXCore_*), so the same capture logic can later be pointed at any
-// execution engine that exposes this ABI -- the current native interpreter,
-// and future recompiler backends (ARCHITECTURE.md) -- to compare their
-// instruction-by-instruction traces against the same fixture.
+// Captures per-instruction execution state so two execution engines can be
+// compared instruction-by-instruction against the same fixture -- the current
+// native interpreter and future recompiler backends (ARCHITECTURE.md).
 //
-// Fields intentionally mirror the ADR-005 PC model (pc / next_pc) and the
-// minimal state needed to detect a divergence between two execution engines:
-// the fetched instruction word, every GPR write the step produced, and HI/LO
-// for multiply/divide instructions.
+// GPR writes are captured as retirement WRITE EVENTS, not as net register
+// changes: the CPU reports each register-file write at the moment it retires,
+// in retirement order (pending load-delay commit first, then the current
+// instruction's result write). The harness attaches the CPU's write-event
+// recorder around the single step it executes (see PSXCpu::SetGprWriteTrace);
+// a recompiler backend participating in a comparison would surface the same
+// per-step write stream through its own channel.
 //
-// A single MIPS I step can retire at most two GPR writes: the current
-// instruction's destination plus one load-delay commit (ADR-004). The trace
-// records all of them so a comparison can never silently lose a write; the
-// load-delay slot is where a step most often produces both.
+// Fields mirror the ADR-005 PC model (pc / next_pc) and the minimal state
+// needed to detect a divergence between two execution engines: the fetched
+// instruction word, every GPR retirement write the step produced, and HI/LO.
+//
+// A single MIPS I step retires at most kMaxGprWritesPerStep writes: the current
+// instruction's destination plus one load-delay commit (ADR-004). All of them
+// are recorded so a comparison can never silently lose a write; the load-delay
+// slot is where a step most often produces both.
 struct GoldenTraceEntry {
     uint32_t pc = 0;  // Address of the instruction that was executed.
     uint32_t instruction = 0;  // Raw instruction word, fetched via the memory bus.
     std::string mnemonic;  // Decoded mnemonic (trace readability only).
 
-    // GPR writes produced by this step (up to kMaxGprWritesPerStep). Each
-    // entry records the register's net before/after value observed across the
-    // step, so a register written more than once (e.g. an immediate write that
-    // overrides a pending load to the same register) is collapsed to its final
-    // value, matching the register file's architectural end-of-step state.
-    static constexpr int kMaxGprWritesPerStep = 2;
-    int reg_count = 0;                                  // # of GPR writes in this step.
+    // GPR retirement writes produced by this step (up to kMaxGprWritesPerStep),
+    // recorded in the order the CPU retired them. Multiple writes to the same
+    // register in one step are kept as separate events, and a write whose value
+    // equals the register's prior value is still recorded -- the stream reflects
+    // each retirement, not the step's net register changes.
+    static constexpr int kMaxGprWritesPerStep = PSXCpu::kMaxGprWritesPerStep;
+    int reg_count = 0;                                  // # of GPR retirement writes in this step.
     int reg_index[kMaxGprWritesPerStep] = {-1, -1};     // GPR index written, -1 if unused.
-    uint32_t reg_before[kMaxGprWritesPerStep] = {};
-    uint32_t reg_after[kMaxGprWritesPerStep] = {};
+    uint32_t reg_before[kMaxGprWritesPerStep] = {};     // Register value before this retirement write.
+    uint32_t reg_after[kMaxGprWritesPerStep] = {};      // Value written by this retirement write.
 
     uint32_t hi_before = 0;
     uint32_t hi_after = 0;
@@ -69,40 +76,37 @@ inline std::string DecodeMnemonicForTrace(uint32_t instruction) {
     }
 }
 
-// Executes one PSXCore_Step() and records a Golden Trace entry by diffing
-// GPR/HI/LO state observed strictly via the public C ABI. Because it never
-// touches native-only state, the exact same capture function can drive a
-// future native-vs-recompiler comparison test.
+// Executes one PSXCore_Step() and records a Golden Trace entry. The harness
+// attaches the CPU's GPR write-event recorder for the lifetime of the single
+// step, so each register-file write is captured at the moment the CPU retires
+// it -- instruction-result writes at their write site and the pending load-delay
+// commit at the start of the step (retirement order). External writes performed
+// before/after the capture (e.g. PSXCore_SetGPR seeding) never reach the
+// recorder, keeping the trace a record of the step alone.
 inline GoldenTraceEntry CaptureGoldenTraceStep(PSXCore* core) {
     GoldenTraceEntry entry;
     entry.pc = PSXCore_GetPC(core);
     entry.instruction = PSXCore_ReadMemory32(core, entry.pc);
     entry.mnemonic = DecodeMnemonicForTrace(entry.instruction);
-
-    uint32_t gpr_before[32];
-    for (int i = 0; i < 32; i++) {
-        gpr_before[i] = PSXCore_GetGPR(core, i);
-    }
     entry.hi_before = PSXCore_GetHI(core);
     entry.lo_before = PSXCore_GetLO(core);
 
+    PSXCpu* cpu = PSXCoreGetCpuForTrace(core);
+    PSXCpu::GprWriteTrace writes;
+    cpu->SetGprWriteTrace(&writes);
+
     PSXCore_Step(core);
 
-    // Record every register written during the step, not just the first: the
-    // load-delay slot of a load commits the pending load *and* can write the
-    // current instruction's own destination in the same step. GPR[0] ($zero)
-    // never changes by definition. The MIPS I model retires at most
-    // kMaxGprWritesPerStep writes per step; if that invariant is ever broken,
-    // the assert fails loudly instead of silently dropping a trace entry.
-    for (int i = 1; i < 32; i++) {
-        uint32_t after = PSXCore_GetGPR(core, i);
-        if (after != gpr_before[i]) {
-            assert(entry.reg_count < GoldenTraceEntry::kMaxGprWritesPerStep);
-            entry.reg_index[entry.reg_count] = i;
-            entry.reg_before[entry.reg_count] = gpr_before[i];
-            entry.reg_after[entry.reg_count] = after;
-            entry.reg_count++;
-        }
+    cpu->SetGprWriteTrace(nullptr);
+
+    // Copy the recorded retirement events into the trace entry. reg_count can
+    // never exceed kMaxGprWritesPerStep: the CPU enforces that bound (see
+    // PSXCpu::RecordGprWrite), so the copy below stays within the entry arrays.
+    entry.reg_count = writes.count;
+    for (int w = 0; w < writes.count; w++) {
+        entry.reg_index[w] = writes.events[w].index;
+        entry.reg_before[w] = writes.events[w].before;
+        entry.reg_after[w] = writes.events[w].value;
     }
     entry.hi_after = PSXCore_GetHI(core);
     entry.lo_after = PSXCore_GetLO(core);

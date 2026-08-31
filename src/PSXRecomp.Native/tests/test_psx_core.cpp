@@ -821,6 +821,157 @@ static void test_e2e_trace_load_delay_two_writes() {
     PASS();
 }
 
+// CodeRabbit (PR #198): the Golden Trace must record write EVENTS, not net
+// register changes. Two writes to the SAME GPR in one step -- here the
+// load-delay commit ($t0 = 5) followed by the delay-slot instruction's write
+// ($t0 = 7) -- must appear as two separate retirement events in order:
+// write[0] == 5, write[1] == 7.
+static void test_e2e_trace_same_gpr_two_writes() {
+    TEST("E2E: Golden Trace records two separate writes to the same GPR in one step");
+    PSXCore* core = PSXCore_Create();
+
+    // lw    $t0, 0x100($zero)   ($t0 = GPR[8]; memory value 5, load-delay commit)
+    // addiu $t0, $zero, 7       ($t0 = GPR[8]; immediate write in the delay slot)
+    PSXCore_WriteMemory32(core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(core, 4, 0x24080007u);
+    PSXCore_WriteMemory32(core, 0x100, 5u);
+    PSXCore_SetPC(core, 0);
+
+    GoldenTraceEntry trace[2];
+    trace[0] = CaptureGoldenTraceStep(core);
+
+    // Step 0 (LW): the load result is queued, no GPR write retires yet.
+    ASSERT_EQ(trace[0].pc, 0u);
+    ASSERT_EQ(trace[0].instruction, 0x8C080100u);
+    assert(trace[0].mnemonic == "LW");
+    ASSERT_EQ(trace[0].reg_count, 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0u);
+    ASSERT_EQ(trace[0].next_pc, 4u);
+
+    trace[1] = CaptureGoldenTraceStep(core);
+
+    // Step 1 (ADDIU in the load-delay slot): BOTH writes retire in the same
+    // step and both must be recorded as separate events, in retirement order
+    // (pending load commit first). The final value ($t0 = 7) reflects the
+    // immediate write winning, but the load retirement is still in the trace.
+    ASSERT_EQ(trace[1].pc, 4u);
+    ASSERT_EQ(trace[1].instruction, 0x24080007u);
+    assert(trace[1].mnemonic == "ADDIU");
+    ASSERT_EQ(trace[1].reg_count, 2);
+    ASSERT_EQ((unsigned)trace[1].reg_index[0], 8u);   // $t0: load-delay commit
+    ASSERT_EQ(trace[1].reg_before[0], 0u);
+    ASSERT_EQ(trace[1].reg_after[0], 5u);
+    ASSERT_EQ((unsigned)trace[1].reg_index[1], 8u);   // $t0: current instruction
+    ASSERT_EQ(trace[1].reg_before[1], 0u);
+    ASSERT_EQ(trace[1].reg_after[1], 7u);
+    ASSERT_EQ(trace[1].next_pc, 8u);
+
+    // Final architectural state mirrors the trace: the later (immediate) write wins.
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 7u);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u);
+
+    PSXCore_Destroy(core);
+
+    // Determinism: a fresh core reproduces the identical trace.
+    PSXCore* replay_core = PSXCore_Create();
+    PSXCore_WriteMemory32(replay_core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(replay_core, 4, 0x24080007u);
+    PSXCore_WriteMemory32(replay_core, 0x100, 5u);
+    PSXCore_SetPC(replay_core, 0);
+    for (int i = 0; i < 2; i++) {
+        GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
+        ASSERT_EQ(replay.pc, trace[i].pc);
+        ASSERT_EQ(replay.instruction, trace[i].instruction);
+        assert(replay.mnemonic == trace[i].mnemonic);
+        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
+        for (int w = 0; w < replay.reg_count; w++) {
+            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
+            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
+            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
+        }
+        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
+        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
+        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
+        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
+        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+    }
+    PSXCore_Destroy(replay_core);
+
+    PASS();
+}
+
+// CodeRabbit (PR #198): a write whose value equals the register's previous
+// value (old == final) produces zero net change, but it is still a retirement
+// event and must be recorded. Here $t0 goes 0 -> (load) 1 -> (immediate) 0,
+// so the step's net register change is none, yet both writes must be captured:
+// write[0] == 1, write[1] == 0, count == 2.
+static void test_e2e_trace_same_gpr_old_equals_final() {
+    TEST("E2E: Golden Trace records both writes when old == final (net change is zero)");
+    PSXCore* core = PSXCore_Create();
+
+    // lw    $t0, 0x100($zero)   ($t0 = GPR[8]; memory value 1, load-delay commit)
+    // addiu $t0, $zero, 0       ($t0 = GPR[8]; immediate write back to 0)
+    PSXCore_WriteMemory32(core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(core, 4, 0x24080000u);
+    PSXCore_WriteMemory32(core, 0x100, 1u);
+    PSXCore_SetPC(core, 0);
+
+    GoldenTraceEntry trace[2];
+    trace[0] = CaptureGoldenTraceStep(core);
+    ASSERT_EQ(trace[0].pc, 0u);
+    ASSERT_EQ(trace[0].reg_count, 0);
+    ASSERT_EQ(trace[0].next_pc, 4u);
+
+    trace[1] = CaptureGoldenTraceStep(core);
+
+    // The step's net register change is zero ($t0 stays 0), but both retirement
+    // writes must still appear: the pending load (1) then the immediate write (0).
+    ASSERT_EQ(trace[1].pc, 4u);
+    ASSERT_EQ(trace[1].instruction, 0x24080000u);
+    assert(trace[1].mnemonic == "ADDIU");
+    ASSERT_EQ(trace[1].reg_count, 2);
+    ASSERT_EQ((unsigned)trace[1].reg_index[0], 8u);   // $t0: load-delay commit
+    ASSERT_EQ(trace[1].reg_before[0], 0u);
+    ASSERT_EQ(trace[1].reg_after[0], 1u);
+    ASSERT_EQ((unsigned)trace[1].reg_index[1], 8u);   // $t0: current instruction
+    ASSERT_EQ(trace[1].reg_before[1], 0u);
+    ASSERT_EQ(trace[1].reg_after[1], 0u);
+    ASSERT_EQ(trace[1].next_pc, 8u);
+
+    // Final architectural state: $t0 is back to 0 (old == final).
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0u);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u);
+
+    PSXCore_Destroy(core);
+
+    // Determinism: a fresh core reproduces the identical trace.
+    PSXCore* replay_core = PSXCore_Create();
+    PSXCore_WriteMemory32(replay_core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(replay_core, 4, 0x24080000u);
+    PSXCore_WriteMemory32(replay_core, 0x100, 1u);
+    PSXCore_SetPC(replay_core, 0);
+    for (int i = 0; i < 2; i++) {
+        GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
+        ASSERT_EQ(replay.pc, trace[i].pc);
+        ASSERT_EQ(replay.instruction, trace[i].instruction);
+        assert(replay.mnemonic == trace[i].mnemonic);
+        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
+        for (int w = 0; w < replay.reg_count; w++) {
+            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
+            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
+            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
+        }
+        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
+        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
+        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
+        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
+        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+    }
+    PSXCore_Destroy(replay_core);
+
+    PASS();
+}
+
 static void test_memory_read_write_api() {
     TEST("PSXCore_Read/WriteMemory API");
     PSXCore* core = PSXCore_Create();
@@ -1962,6 +2113,8 @@ int main() {
     test_run_early_exit();
     test_e2e_minimal_program();
     test_e2e_trace_load_delay_two_writes();
+    test_e2e_trace_same_gpr_two_writes();
+    test_e2e_trace_same_gpr_old_equals_final();
     test_memory_read_write_api();
     test_memory_bounds();
     test_kseg_translation();

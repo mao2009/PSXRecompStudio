@@ -1,5 +1,6 @@
 #include "psx_cpu.h"
 #include "psx_memory.h"
+#include <cassert>
 #include <cstdint>
 
 // Sentinel physical address used to represent an unmapped virtual address.
@@ -66,6 +67,7 @@ uint32_t PSXCpu::GetGPR(int index) const {
 void PSXCpu::SetGPR(int index, uint32_t value) {
     if (index < 0 || index >= PSX_GPR_COUNT) return;
     if (index == 0) return;
+    RecordGprWrite(index, gpr_[index], value);
     gpr_[index] = value;
     // An immediate write beats a pending load-delay write to the same register.
     // The R3000A writes the register in-order, so the later (immediate) write wins.
@@ -75,6 +77,24 @@ void PSXCpu::SetGPR(int index, uint32_t value) {
     if (index == next_load_delay_reg_) {
         next_load_delay_reg_ = -1;
     }
+}
+
+void PSXCpu::RecordGprWrite(int index, uint32_t before, uint32_t value) {
+    if (gpr_write_trace_ == nullptr) return;
+    if (index < 0 || index >= PSX_GPR_COUNT) return;
+    if (index == 0) return;
+    // Model invariant: a step retires at most kMaxGprWritesPerStep writes (one
+    // instruction result + one load-delay commit). A trace must never silently
+    // lose a write, so overflow is reported loudly; it is unreachable by the
+    // model and caught by the golden-trace tests if the invariant is broken.
+    if (gpr_write_trace_->count >= kMaxGprWritesPerStep) {
+        assert(false && "GPR write trace overflow: a step retired more than kMaxGprWritesPerStep writes");
+        return;
+    }
+    gpr_write_trace_->events[gpr_write_trace_->count].index = index;
+    gpr_write_trace_->events[gpr_write_trace_->count].before = before;
+    gpr_write_trace_->events[gpr_write_trace_->count].value = value;
+    gpr_write_trace_->count++;
 }
 
 uint32_t PSXCpu::GetPC() const { return pc_; }
@@ -158,6 +178,23 @@ void PSXCpu::SetPendingBranch(uint32_t target, bool taken) {
 }
 
 int PSXCpu::Step(PSXMemory& memory) {
+    // A load-delay write pending at the start of the step retires during this
+    // step: the R3000A commits the load during the delay slot, before the
+    // delay-slot instruction's own result write. Report it first so the trace
+    // records retirement order (pending load commit, then instruction result).
+    // A same-register immediate write later in the step supersedes the load in
+    // the register file, but the load retirement itself still occurred and is
+    // part of the architectural write stream. This must run unconditionally,
+    // before any early return below (including the interrupt-preempt path),
+    // because every such path still calls UpdateLoadDelay() and therefore
+    // still commits this pending load into the register file (Issue #157 /
+    // Issue #144 integration: an interrupt preempts the next instruction
+    // fetch, not the previous instruction's already-in-flight load-delay
+    // commit).
+    if (gpr_write_trace_ != nullptr && load_delay_reg_ >= 0) {
+        RecordGprWrite(load_delay_reg_, gpr_[load_delay_reg_], load_delay_value_);
+    }
+
     // CAUSE.IP2 (bit 10) mirrors the Interrupt Controller's aggregate pending
     // line every step, independent of delay-slot state, so that CAUSE reads
     // (MFC0) stay live. Software IP[1:0] (bits 8-9, set via MTC0) are left
