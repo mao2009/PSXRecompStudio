@@ -86,8 +86,8 @@ function Measure-CSharpCoverage {
         Where-Object { $_.FullName -notmatch "[\/](bin|obj)[\/]" }
 
     $typePattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?(sealed\s+)?(abstract\s+)?(partial\s+)?(class|struct|interface|record|enum)\s+\w+"
-    $memberPattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?(const\s+)?(sealed\s+)?(virtual\s+)?(override\s+)?(async\s+)?(unsafe\s+)?(extern\s+)?(partial\s+)?[\w<>\[\],\.\?]+[\?\*]?\s+\w+\s*(\(|\{|=>|;)"
-    $propertyBlockPattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?[\w<>\[\],\.\?]+[\?\*]?\s+\w+\s*$"
+    $memberPattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?(required\s+)?(const\s+)?(sealed\s+)?(virtual\s+)?(override\s+)?(async\s+)?(unsafe\s+)?(extern\s+)?(partial\s+)?[\w<>\[\],\.\?]+[\?\*]?\s+\w+\s*(\(|\{|=>|;)"
+    $propertyBlockPattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?(required\s+)?[\w<>\[\],\.\?]+[\?\*]?\s+\w+\s*$"
     $ctorPattern = "^\s*(public|internal)\s+([A-Z]\w*)\s*\("
     $dtorPattern = "^\s*~\w+\s*\("
 

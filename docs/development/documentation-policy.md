@@ -124,7 +124,7 @@ report, not a merge gate.
 
 | Category | Scope | Before this change | After this change |
 |---|---|---|---|
-| C# (managed) | `src/PSXRecomp.Core/**/*.cs`, public/internal symbols | 19.19% (71/370) | 38.02% (146/384) |
+| C# (managed) | `src/PSXRecomp.Core/**/*.cs`, public/internal symbols | 19.19% (71/370) | 38.24% (148/387) |
 | C++ (native, public ABI) | `src/PSXRecomp.Native/include/*.h`, `PSX_API` functions | 0.00% (0/39) | 100.00% (39/39) |
 
 The two named priority interop files
@@ -133,6 +133,10 @@ and the full public C ABI header are fully documented as of this change.
 The remaining `PSXRecomp.Core` gap is other subsystems (Analysis
 contracts, DMA/MMIO routing, GUI-facing types, etc.) not yet brought under
 this policy; track that work under Issue #183.
+Following CodeRabbit review feedback on PR #201, the scanner also recognizes
+C# `required` accessor-block properties, which added the three such properties
+in `AnalysisArtifact.cs` to the measured surface (two documented, one
+`Version` still pending), bringing the baseline to 38.24%.
 
 ## CodeRabbit / CI alignment
 
