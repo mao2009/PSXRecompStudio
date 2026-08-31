@@ -3,10 +3,13 @@
  * @brief Public C ABI for the PSXRecomp native core.
  *
  * This header is the interop boundary named by the project documentation
- * policy (docs/development/documentation-policy.md): every function here is
- * mirrored one-to-one by a P/Invoke declaration in
- * `src/PSXRecomp.Core/NativeInterop.cs`. Keep both sides in lockstep when
- * changing a signature or its documented semantics.
+ * policy (docs/development/documentation-policy.md): most functions here
+ * are mirrored one-to-one by a P/Invoke declaration in
+ * `src/PSXRecomp.Core/NativeInterop.cs`. The one exception is the COP0
+ * read/write pair (PSXCore_GetCop0/PSXCore_SetCop0), which is exercised
+ * only from the native test suite and has no C# binding yet; add one there
+ * when a managed caller needs it. Keep the mirrored subset in lockstep
+ * with the C# side when changing a signature or its documented semantics.
  *
  * Ownership: `PSXCore_Create` returns an opaque handle owned by the caller;
  * it must be released exactly once via `PSXCore_Destroy`. No other function

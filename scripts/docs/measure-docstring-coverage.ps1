@@ -85,8 +85,9 @@ function Measure-CSharpCoverage {
     $files = Get-ChildItem -LiteralPath $Root -Filter "*.cs" -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch "[\/](bin|obj)[\/]" }
 
-    $typePattern = "^\s*(public|internal)\s+(static\s+)?(sealed\s+)?(abstract\s+)?(partial\s+)?(class|struct|interface|record|enum)\s+\w+"
+    $typePattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?(sealed\s+)?(abstract\s+)?(partial\s+)?(class|struct|interface|record|enum)\s+\w+"
     $memberPattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?(const\s+)?(sealed\s+)?(virtual\s+)?(override\s+)?(async\s+)?(unsafe\s+)?(extern\s+)?(partial\s+)?[\w<>\[\],\.\?]+[\?\*]?\s+\w+\s*(\(|\{|=>|;)"
+    $propertyBlockPattern = "^\s*(public|internal)\s+(static\s+)?(readonly\s+)?[\w<>\[\],\.\?]+[\?\*]?\s+\w+\s*$"
     $ctorPattern = "^\s*(public|internal)\s+([A-Z]\w*)\s*\("
     $dtorPattern = "^\s*~\w+\s*\("
 
@@ -100,6 +101,12 @@ function Measure-CSharpCoverage {
             $line = $lines[$i]
             $isSymbol = ($line -match $typePattern) -or ($line -match $memberPattern) -or
                         ($line -match $ctorPattern) -or ($line -match $dtorPattern)
+            if (-not $isSymbol -and ($line -match $propertyBlockPattern)) {
+                # Property whose accessor block opens on the following line.
+                $j = $i + 1
+                while ($j -lt $lines.Count -and $lines[$j].Trim() -eq "") { $j++ }
+                if ($j -lt $lines.Count -and $lines[$j].Trim() -eq "{") { $isSymbol = $true }
+            }
             if (-not $isSymbol) { continue }
 
             $total++
@@ -206,8 +213,12 @@ if ($PSBoundParameters.ContainsKey("Verbose")) {
 }
 
 if ($FailUnder -ge 0) {
-    $csPct = if ($csTotal -eq 0) { 100.0 } else { 100.0 * $csDoc / $csTotal }
-    $cppPct = if ($cppTotal -eq 0) { 100.0 } else { 100.0 * $cppDoc / $cppTotal }
+    if ($csTotal -eq 0 -or $cppTotal -eq 0) {
+        Write-Host ("FAIL: a scan category found no symbols (C# total {0}, C++ total {1}); cannot verify threshold {2}%" -f $csTotal, $cppTotal, $FailUnder)
+        exit 1
+    }
+    $csPct = 100.0 * $csDoc / $csTotal
+    $cppPct = 100.0 * $cppDoc / $cppTotal
     if ($csPct -lt $FailUnder -or $cppPct -lt $FailUnder) {
         Write-Host ("FAIL: coverage below threshold {0}%" -f $FailUnder)
         exit 1

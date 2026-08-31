@@ -71,9 +71,11 @@ authoritative design document (ADR/SSOT) instead of duplicating its content.
 `scripts/docs/measure-docstring-coverage.ps1` is a heuristic, line-based
 scanner (not a Roslyn/Clang syntax-tree analyzer) that reports C# and C++
 coverage separately for a configurable set of target paths, defaulting to
-the interop/public-API surface named above. It always exits 0 (report-only)
-unless `-FailUnder` is explicitly passed; it is a tracking tool for the
-policy, not a merge gate by itself.
+`src/PSXRecomp.Core` (every public/internal C# symbol under it, matching
+policy scope category 1 above) and `src/PSXRecomp.Native/include` (every
+`PSX_API` function). It always exits 0 (report-only) unless `-FailUnder`
+is explicitly passed; it is a tracking tool for the policy, not a merge
+gate by itself.
 
 ### 4. CodeRabbit / CI alignment
 

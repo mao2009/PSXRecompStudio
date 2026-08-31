@@ -124,7 +124,7 @@ report, not a merge gate.
 
 | Category | Scope | Before this change | After this change |
 |---|---|---|---|
-| C# (managed) | `src/PSXRecomp.Core/**/*.cs`, public/internal symbols | 19.19% (71/370) | 37.84% (140/370) |
+| C# (managed) | `src/PSXRecomp.Core/**/*.cs`, public/internal symbols | 19.19% (71/370) | 38.02% (146/384) |
 | C++ (native, public ABI) | `src/PSXRecomp.Native/include/*.h`, `PSX_API` functions | 0.00% (0/39) | 100.00% (39/39) |
 
 The two named priority interop files
