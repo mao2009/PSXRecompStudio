@@ -291,16 +291,6 @@ int PSXCpu::Step(PSXMemory& memory) {
     return 0;
 }
 
-int PSXCpu::Run(PSXMemory& memory, uint32_t maxInstructions) {
-    for (uint32_t i = 0; i < maxInstructions; i++) {
-        int result = Step(memory);
-        if (result != 0) {
-            return result;
-        }
-    }
-    return 0;
-}
-
 void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
     uint32_t opcode = instruction >> 26;
     

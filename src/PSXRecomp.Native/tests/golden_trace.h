@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 #include "psx_core.h"
@@ -113,3 +114,37 @@ inline GoldenTraceEntry CaptureGoldenTraceStep(PSXCore* core) {
     entry.next_pc = PSXCore_GetPC(core);
     return entry;
 }
+
+// Compares two Golden Trace entries field-by-field: PC, instruction, mnemonic,
+// every GPR retirement write (index/before/after, in order), HI/LO, and
+// next_pc. Prints the same "FAIL (expected X, got Y)" diagnostic and returns
+// false on the first mismatch that the four inline replay-comparison blocks
+// this replaces used to produce, so a caller can `return;` immediately just
+// as their inline `ASSERT_EQ` used to (Issue #157, CodeRabbit PR #198).
+#define GOLDEN_TRACE_ASSERT_EQ(a, b) \
+    do { \
+        if ((a) != (b)) { \
+            printf("FAIL (expected %u, got %u)\n", (unsigned)(b), (unsigned)(a)); \
+            return false; \
+        } \
+    } while (0)
+
+inline bool AssertTraceEntriesEqual(const GoldenTraceEntry& actual, const GoldenTraceEntry& expected) {
+    GOLDEN_TRACE_ASSERT_EQ(actual.pc, expected.pc);
+    GOLDEN_TRACE_ASSERT_EQ(actual.instruction, expected.instruction);
+    assert(actual.mnemonic == expected.mnemonic);
+    GOLDEN_TRACE_ASSERT_EQ(actual.reg_count, expected.reg_count);
+    for (int w = 0; w < actual.reg_count; w++) {
+        GOLDEN_TRACE_ASSERT_EQ((unsigned)actual.reg_index[w], (unsigned)expected.reg_index[w]);
+        GOLDEN_TRACE_ASSERT_EQ(actual.reg_before[w], expected.reg_before[w]);
+        GOLDEN_TRACE_ASSERT_EQ(actual.reg_after[w], expected.reg_after[w]);
+    }
+    GOLDEN_TRACE_ASSERT_EQ(actual.hi_before, expected.hi_before);
+    GOLDEN_TRACE_ASSERT_EQ(actual.hi_after, expected.hi_after);
+    GOLDEN_TRACE_ASSERT_EQ(actual.lo_before, expected.lo_before);
+    GOLDEN_TRACE_ASSERT_EQ(actual.lo_after, expected.lo_after);
+    GOLDEN_TRACE_ASSERT_EQ(actual.next_pc, expected.next_pc);
+    return true;
+}
+
+#undef GOLDEN_TRACE_ASSERT_EQ

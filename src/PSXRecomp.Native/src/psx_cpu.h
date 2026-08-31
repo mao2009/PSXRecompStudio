@@ -40,9 +40,15 @@ public:
     // on PSXInterruptController so it stays independently testable.
     void SetHardwareInterruptPending(bool pending);
 
-    // Instruction execution
+    // Instruction execution. There is deliberately no PSXCpu::Run/multi-step
+    // loop here: any caller stepping more than one instruction must re-sample
+    // the Interrupt Controller and call SetHardwareInterruptPending() before
+    // every individual Step() (Issue #144's per-instruction sampling
+    // contract, see above). PSXCore_Run (psx_api.cpp) is that caller for the
+    // C ABI; a class-level Run() here could not honor the contract and would
+    // silently run with stale interrupt state, so it was removed rather than
+    // kept as a foot-gun (CodeRabbit, PR #198).
     int Step(PSXMemory& memory);
-    int Run(PSXMemory& memory, uint32_t maxInstructions);
 
     // Golden Trace GPR write-event recording (Issue #157). A single MIPS I step
     // retires at most kMaxGprWritesPerStep writes: one instruction-result write

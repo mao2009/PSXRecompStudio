@@ -724,20 +724,7 @@ static void test_e2e_minimal_program() {
     PSXCore_SetPC(replay_core, 0);
     for (int i = 0; i < 3; i++) {
         GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
-        ASSERT_EQ(replay.pc, trace[i].pc);
-        ASSERT_EQ(replay.instruction, trace[i].instruction);
-        assert(replay.mnemonic == trace[i].mnemonic);
-        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
-        for (int w = 0; w < replay.reg_count; w++) {
-            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
-            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
-            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
-        }
-        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
-        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
-        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
-        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
-        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+        if (!AssertTraceEntriesEqual(replay, trace[i])) { return; }
     }
     PSXCore_Destroy(replay_core);
 
@@ -801,20 +788,7 @@ static void test_e2e_trace_load_delay_two_writes() {
     PSXCore_SetPC(replay_core, 0);
     for (int i = 0; i < 2; i++) {
         GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
-        ASSERT_EQ(replay.pc, trace[i].pc);
-        ASSERT_EQ(replay.instruction, trace[i].instruction);
-        assert(replay.mnemonic == trace[i].mnemonic);
-        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
-        for (int w = 0; w < replay.reg_count; w++) {
-            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
-            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
-            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
-        }
-        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
-        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
-        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
-        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
-        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+        if (!AssertTraceEntriesEqual(replay, trace[i])) { return; }
     }
     PSXCore_Destroy(replay_core);
 
@@ -880,20 +854,7 @@ static void test_e2e_trace_same_gpr_two_writes() {
     PSXCore_SetPC(replay_core, 0);
     for (int i = 0; i < 2; i++) {
         GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
-        ASSERT_EQ(replay.pc, trace[i].pc);
-        ASSERT_EQ(replay.instruction, trace[i].instruction);
-        assert(replay.mnemonic == trace[i].mnemonic);
-        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
-        for (int w = 0; w < replay.reg_count; w++) {
-            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
-            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
-            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
-        }
-        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
-        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
-        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
-        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
-        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+        if (!AssertTraceEntriesEqual(replay, trace[i])) { return; }
     }
     PSXCore_Destroy(replay_core);
 
@@ -952,20 +913,7 @@ static void test_e2e_trace_same_gpr_old_equals_final() {
     PSXCore_SetPC(replay_core, 0);
     for (int i = 0; i < 2; i++) {
         GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
-        ASSERT_EQ(replay.pc, trace[i].pc);
-        ASSERT_EQ(replay.instruction, trace[i].instruction);
-        assert(replay.mnemonic == trace[i].mnemonic);
-        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
-        for (int w = 0; w < replay.reg_count; w++) {
-            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
-            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
-            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
-        }
-        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
-        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
-        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
-        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
-        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+        if (!AssertTraceEntriesEqual(replay, trace[i])) { return; }
     }
     PSXCore_Destroy(replay_core);
 
