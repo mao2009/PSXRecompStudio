@@ -117,7 +117,7 @@ public static class RealRomAnalyzer
         return (snapshot, log);
     }
 
-    private const int AnalysisSnapshotSchemaVersion = 1;
+    private const int AnalysisSnapshotSchemaVersion = 2;
 
     /// <summary>
     /// Computes the lowercase hex SHA-256 of a byte buffer. Shared so all artifact
@@ -216,9 +216,6 @@ public static class RealRomAnalyzer
     {
         int branchCount = 0;
         int jumpCount = 0;
-        int callCandidateCount = 0;
-        int returnCandidateCount = 0;
-        int basicBlockCount = 0;
 
         for (int i = 0; i < report.DecodedInstructions.Count; i++)
         {
@@ -229,39 +226,25 @@ public static class RealRomAnalyzer
                 case "ConditionalBranch":
                 case "LinkBranch":
                     branchCount++;
-                    if (inst.ControlFlow == "LinkBranch") callCandidateCount++;
                     break;
                 case "JumpAbsolute":
-                    jumpCount++;
-                    break;
                 case "JumpRegister":
                     jumpCount++;
-                    // jalr writes $ra -> call candidate; jr $ra -> return candidate.
-                    if (inst.Mnemonic == "jalr") callCandidateCount++;
-                    else if (inst.Mnemonic == "jr") returnCandidateCount++;
                     break;
             }
-
-            if (i > 0 && inst.ControlFlow != "Sequential")
-            {
-                // A new basic block begins at every non-sequential instruction.
-                basicBlockCount++;
-            }
         }
-
-        // Count the entry block itself plus one block per observed control-flow boundary.
-        basicBlockCount = Math.Max(1, basicBlockCount + 1);
 
         return new AnalysisSummarySnapshot
         {
             DecodeStartAddress = report.DecodeStartAddress,
             DecodedInstructionCount = report.DecodedInstructionCount,
             DecodeFailureCount = report.DecodeFailures.Count,
-            BasicBlockCount = basicBlockCount,
+            BasicBlockCount = report.BasicBlocks.Count,
+            CfgEdgeCount = report.CfgEdges.Count,
             BranchCount = branchCount,
             JumpCount = jumpCount,
-            CallCandidateCount = callCandidateCount,
-            ReturnCandidateCount = returnCandidateCount,
+            CallCandidateCount = report.CallCandidateCount,
+            ReturnCandidateCount = report.ReturnCandidateCount,
         };
     }
 

@@ -1,3 +1,4 @@
+using PSXRecomp.Core.Analysis.Contracts;
 using PSXRecomp.Core.DiscImage;
 
 namespace PSXRecomp.Tests.DiscImageTests;
@@ -81,6 +82,16 @@ public class DiscImageAnalysisReportTests
                 },
             ],
             DecodeFailures = [],
+            BasicBlocks =
+            [
+                new BasicBlock { StartAddress = 0x80010000, EndAddress = 0x80010004, InstructionCount = 2 },
+            ],
+            CfgEdges =
+            [
+                new CfgEdge(0x80010004, 0, "indirect"),
+            ],
+            CallCandidateCount = 0,
+            ReturnCandidateCount = 1,
         };
     }
 }

@@ -134,4 +134,63 @@ public class DiscImageAnalyzerIntegrationTests
         report1.ToTokenString().Should().Be(report2.ToTokenString(),
             "same input should produce identical deterministic token");
     }
+
+    [Fact]
+    public void Analyze_PersonaChd_BasicBlocksBuilt()
+    {
+        if (!FixtureExists()) return;
+
+        var (chdBytes, sha256) = LoadChd();
+        var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
+
+        report.BasicBlocks.Should().NotBeEmpty(
+            "real ROM should produce at least one basic block");
+        report.BasicBlocks.Count.Should().BeGreaterThanOrEqualTo(1);
+
+        var firstBlock = report.BasicBlocks[0];
+        firstBlock.StartAddress.Should().Be(report.EntryPoint);
+        firstBlock.InstructionCount.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void Analyze_PersonaChd_CfgEdgesProduced()
+    {
+        if (!FixtureExists()) return;
+
+        var (chdBytes, sha256) = LoadChd();
+        var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
+
+        report.CfgEdges.Should().NotBeEmpty(
+            "128 instructions from Persona entry point should contain control flow");
+
+        foreach (var edge in report.CfgEdges)
+        {
+            edge.Kind.Should().NotBeNullOrEmpty();
+            new[] { "branch", "jump", "fallthrough", "indirect" }.Should().Contain(edge.Kind);
+        }
+    }
+
+    [Fact]
+    public void Analyze_PersonaChd_BasicBlockCountConsistent()
+    {
+        if (!FixtureExists()) return;
+
+        var (chdBytes, sha256) = LoadChd();
+        var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
+
+        report.BasicBlocks.Count.Should().BeGreaterThanOrEqualTo(1);
+        report.BasicBlocks.Count.Should().BeLessThanOrEqualTo(report.DecodedInstructionCount);
+    }
+
+    [Fact]
+    public void Analyze_PersonaChd_CallReturnCandidates()
+    {
+        if (!FixtureExists()) return;
+
+        var (chdBytes, sha256) = LoadChd();
+        var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
+
+        report.CallCandidateCount.Should().BeGreaterThanOrEqualTo(0);
+        report.ReturnCandidateCount.Should().BeGreaterThanOrEqualTo(0);
+    }
 }

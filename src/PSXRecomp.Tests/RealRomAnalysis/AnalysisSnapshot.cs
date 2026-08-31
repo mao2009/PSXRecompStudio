@@ -100,6 +100,7 @@ public sealed record AnalysisSummarySnapshot
     public required int DecodedInstructionCount { get; init; }
     public required int DecodeFailureCount { get; init; }
     public required int BasicBlockCount { get; init; }
+    public required int CfgEdgeCount { get; init; }
     public required int BranchCount { get; init; }
     public required int JumpCount { get; init; }
     public required int CallCandidateCount { get; init; }
