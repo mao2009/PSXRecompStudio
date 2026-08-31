@@ -29,10 +29,10 @@ public class RealRomAnalysisTests
     /// Core requirement: the same CHD analyzed twice produces identical deterministic
     /// snapshots. Timestamps and the execution log are deliberately excluded.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void AnalysisSnapshotDeterministic()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), "skipped: real-ROM fixture rom/PERSONA.chd not present");
 
         var (snapshot1, _) = RealRomAnalyzer.Analyze(ChdPath, FixtureName);
         var (snapshot2, _) = RealRomAnalyzer.Analyze(ChdPath, FixtureName);
@@ -45,10 +45,10 @@ public class RealRomAnalysisTests
     /// Confirms that the deterministic snapshot itself is self-consistent and stable:
     /// repeated serialization of a single snapshot is byte-identical (stable ordering).
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Snapshot_SerializationIsStable()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), "skipped: real-ROM fixture rom/PERSONA.chd not present");
 
         var (snapshot, _) = RealRomAnalyzer.Analyze(ChdPath, FixtureName);
 
@@ -61,10 +61,10 @@ public class RealRomAnalysisTests
     /// artifacts layout and verifies the full pipeline produced all expected stages:
     /// CHD, ISO9660, SYSTEM.CNF, PS-X EXE, entry point, and MIPS decode.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Analyze_Persona_WritesReusableArtifacts()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), "skipped: real-ROM fixture rom/PERSONA.chd not present");
 
         var snapshot = AnalysisSnapshotWriter.AnalyzeAndWrite(
             ChdPath, FixtureName, ReportDirectory, LogDirectory);
@@ -116,10 +116,10 @@ public class RealRomAnalysisTests
     /// The documented-analysis artifact manifest plus a separately produced report
     /// must decode to a valid DiscImageAnalysisReport (schema stays usable).
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Analyze_Persona_ReportDecodes()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), "skipped: real-ROM fixture rom/PERSONA.chd not present");
 
 #pragma warning disable PSXR005
         var bytes = File.ReadAllBytes(ChdPath);
