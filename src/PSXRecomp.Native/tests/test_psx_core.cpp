@@ -676,9 +676,10 @@ static void test_e2e_minimal_program() {
     ASSERT_EQ(trace[0].pc, 0u);
     ASSERT_EQ(trace[0].instruction, 0x2408000Au);
     assert(trace[0].mnemonic == "ADDIU");
-    ASSERT_EQ((unsigned)trace[0].reg_index, 8u);
-    ASSERT_EQ(trace[0].reg_before, 0u);
-    ASSERT_EQ(trace[0].reg_after, 10u);
+    ASSERT_EQ(trace[0].reg_count, 1);
+    ASSERT_EQ((unsigned)trace[0].reg_index[0], 8u);
+    ASSERT_EQ(trace[0].reg_before[0], 0u);
+    ASSERT_EQ(trace[0].reg_after[0], 10u);
     ASSERT_EQ(trace[0].hi_before, trace[0].hi_after);
     ASSERT_EQ(trace[0].lo_before, trace[0].lo_after);
     ASSERT_EQ(trace[0].next_pc, 4u);
@@ -686,17 +687,23 @@ static void test_e2e_minimal_program() {
     ASSERT_EQ(trace[1].pc, 4u);
     ASSERT_EQ(trace[1].instruction, 0x24090014u);
     assert(trace[1].mnemonic == "ADDIU");
-    ASSERT_EQ((unsigned)trace[1].reg_index, 9u);
-    ASSERT_EQ(trace[1].reg_before, 0u);
-    ASSERT_EQ(trace[1].reg_after, 20u);
+    ASSERT_EQ(trace[1].reg_count, 1);
+    ASSERT_EQ((unsigned)trace[1].reg_index[0], 9u);
+    ASSERT_EQ(trace[1].reg_before[0], 0u);
+    ASSERT_EQ(trace[1].reg_after[0], 20u);
+    ASSERT_EQ(trace[1].hi_before, trace[1].hi_after);
+    ASSERT_EQ(trace[1].lo_before, trace[1].lo_after);
     ASSERT_EQ(trace[1].next_pc, 8u);
 
     ASSERT_EQ(trace[2].pc, 8u);
     ASSERT_EQ(trace[2].instruction, 0x01095021u);
     assert(trace[2].mnemonic == "ADDU");
-    ASSERT_EQ((unsigned)trace[2].reg_index, 10u);
-    ASSERT_EQ(trace[2].reg_before, 0u);
-    ASSERT_EQ(trace[2].reg_after, 30u);
+    ASSERT_EQ(trace[2].reg_count, 1);
+    ASSERT_EQ((unsigned)trace[2].reg_index[0], 10u);
+    ASSERT_EQ(trace[2].reg_before[0], 0u);
+    ASSERT_EQ(trace[2].reg_after[0], 30u);
+    ASSERT_EQ(trace[2].hi_before, trace[2].hi_after);
+    ASSERT_EQ(trace[2].lo_before, trace[2].lo_after);
     ASSERT_EQ(trace[2].next_pc, 12u);
 
     // Final architectural state (Issue #157 acceptance criteria).
@@ -720,9 +727,89 @@ static void test_e2e_minimal_program() {
         ASSERT_EQ(replay.pc, trace[i].pc);
         ASSERT_EQ(replay.instruction, trace[i].instruction);
         assert(replay.mnemonic == trace[i].mnemonic);
-        ASSERT_EQ((unsigned)replay.reg_index, (unsigned)trace[i].reg_index);
-        ASSERT_EQ(replay.reg_before, trace[i].reg_before);
-        ASSERT_EQ(replay.reg_after, trace[i].reg_after);
+        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
+        for (int w = 0; w < replay.reg_count; w++) {
+            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
+            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
+            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
+        }
+        ASSERT_EQ(replay.hi_before, trace[i].hi_before);
+        ASSERT_EQ(replay.hi_after, trace[i].hi_after);
+        ASSERT_EQ(replay.lo_before, trace[i].lo_before);
+        ASSERT_EQ(replay.lo_after, trace[i].lo_after);
+        ASSERT_EQ(replay.next_pc, trace[i].next_pc);
+    }
+    PSXCore_Destroy(replay_core);
+
+    PASS();
+}
+
+// Issue #157: a single step can retire two GPR writes when a load-delay slot
+// instruction writes a register while the pending load is committed. The
+// Golden Trace must record both (reg_count == 2), not just the first diff
+// found -- otherwise a load-delay write is silently lost from the trace.
+static void test_e2e_trace_load_delay_two_writes() {
+    TEST("E2E: Golden Trace records both writes of a load-delay step");
+    PSXCore* core = PSXCore_Create();
+
+    // lw    $t0, 0x100($zero)   ($t0 = GPR[8], load-delay applied)
+    // addiu $t2, $zero, 7       ($t2 = GPR[10], immediate write in the delay slot)
+    PSXCore_WriteMemory32(core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(core, 4, 0x240A0007u);
+    PSXCore_WriteMemory32(core, 0x100, 0xDEADBEEFu);
+    PSXCore_SetPC(core, 0);
+
+    GoldenTraceEntry trace[2];
+    trace[0] = CaptureGoldenTraceStep(core);
+
+    // Step 0 (LW): the load result is queued, no GPR write retires yet.
+    ASSERT_EQ(trace[0].pc, 0u);
+    ASSERT_EQ(trace[0].instruction, 0x8C080100u);
+    assert(trace[0].mnemonic == "LW");
+    ASSERT_EQ(trace[0].reg_count, 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0u);
+    ASSERT_EQ(trace[0].next_pc, 4u);
+
+    trace[1] = CaptureGoldenTraceStep(core);
+
+    // Step 1 (ADDIU in the load-delay slot): the immediate write ($t2) and the
+    // pending load commit ($t0) both retire in the same step -- record both.
+    ASSERT_EQ(trace[1].pc, 4u);
+    ASSERT_EQ(trace[1].instruction, 0x240A0007u);
+    assert(trace[1].mnemonic == "ADDIU");
+    ASSERT_EQ(trace[1].reg_count, 2);
+    ASSERT_EQ((unsigned)trace[1].reg_index[0], 8u);   // $t0: load-delay commit
+    ASSERT_EQ(trace[1].reg_before[0], 0u);
+    ASSERT_EQ(trace[1].reg_after[0], 0xDEADBEEFu);
+    ASSERT_EQ((unsigned)trace[1].reg_index[1], 10u);  // $t2: current instruction
+    ASSERT_EQ(trace[1].reg_before[1], 0u);
+    ASSERT_EQ(trace[1].reg_after[1], 7u);
+    ASSERT_EQ(trace[1].next_pc, 8u);
+
+    // Final architectural state mirrors the trace.
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0xDEADBEEFu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 10), 7u);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u);
+
+    PSXCore_Destroy(core);
+
+    // Determinism: a fresh core reproduces the identical trace.
+    PSXCore* replay_core = PSXCore_Create();
+    PSXCore_WriteMemory32(replay_core, 0, 0x8C080100u);
+    PSXCore_WriteMemory32(replay_core, 4, 0x240A0007u);
+    PSXCore_WriteMemory32(replay_core, 0x100, 0xDEADBEEFu);
+    PSXCore_SetPC(replay_core, 0);
+    for (int i = 0; i < 2; i++) {
+        GoldenTraceEntry replay = CaptureGoldenTraceStep(replay_core);
+        ASSERT_EQ(replay.pc, trace[i].pc);
+        ASSERT_EQ(replay.instruction, trace[i].instruction);
+        assert(replay.mnemonic == trace[i].mnemonic);
+        ASSERT_EQ(replay.reg_count, trace[i].reg_count);
+        for (int w = 0; w < replay.reg_count; w++) {
+            ASSERT_EQ((unsigned)replay.reg_index[w], (unsigned)trace[i].reg_index[w]);
+            ASSERT_EQ(replay.reg_before[w], trace[i].reg_before[w]);
+            ASSERT_EQ(replay.reg_after[w], trace[i].reg_after[w]);
+        }
         ASSERT_EQ(replay.hi_before, trace[i].hi_before);
         ASSERT_EQ(replay.hi_after, trace[i].hi_after);
         ASSERT_EQ(replay.lo_before, trace[i].lo_before);
@@ -1874,6 +1961,7 @@ int main() {
     test_run_multiple();
     test_run_early_exit();
     test_e2e_minimal_program();
+    test_e2e_trace_load_delay_two_writes();
     test_memory_read_write_api();
     test_memory_bounds();
     test_kseg_translation();

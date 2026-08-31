@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <string>
 
@@ -15,21 +16,34 @@
 //
 // Fields intentionally mirror the ADR-005 PC model (pc / next_pc) and the
 // minimal state needed to detect a divergence between two execution engines:
-// the fetched instruction word, the single GPR write it produced (MIPS I
-// instructions retire at most one GPR write per step, load-delay writes
-// included -- see ADR-004), and HI/LO for multiply/divide instructions.
+// the fetched instruction word, every GPR write the step produced, and HI/LO
+// for multiply/divide instructions.
+//
+// A single MIPS I step can retire at most two GPR writes: the current
+// instruction's destination plus one load-delay commit (ADR-004). The trace
+// records all of them so a comparison can never silently lose a write; the
+// load-delay slot is where a step most often produces both.
 struct GoldenTraceEntry {
-    uint32_t pc = 0;             // Address of the instruction that was executed.
-    uint32_t instruction = 0;    // Raw instruction word, fetched via the memory bus.
-    std::string mnemonic;        // Decoded mnemonic (trace readability only).
-    int reg_index = -1;          // GPR index written by this step, or -1 if none.
-    uint32_t reg_before = 0;
-    uint32_t reg_after = 0;
+    uint32_t pc = 0;  // Address of the instruction that was executed.
+    uint32_t instruction = 0;  // Raw instruction word, fetched via the memory bus.
+    std::string mnemonic;  // Decoded mnemonic (trace readability only).
+
+    // GPR writes produced by this step (up to kMaxGprWritesPerStep). Each
+    // entry records the register's net before/after value observed across the
+    // step, so a register written more than once (e.g. an immediate write that
+    // overrides a pending load to the same register) is collapsed to its final
+    // value, matching the register file's architectural end-of-step state.
+    static constexpr int kMaxGprWritesPerStep = 2;
+    int reg_count = 0;                                  // # of GPR writes in this step.
+    int reg_index[kMaxGprWritesPerStep] = {-1, -1};     // GPR index written, -1 if unused.
+    uint32_t reg_before[kMaxGprWritesPerStep] = {};
+    uint32_t reg_after[kMaxGprWritesPerStep] = {};
+
     uint32_t hi_before = 0;
     uint32_t hi_after = 0;
     uint32_t lo_before = 0;
     uint32_t lo_after = 0;
-    uint32_t next_pc = 0;        // PC after Step() (ADR-005: next_pc).
+    uint32_t next_pc = 0;  // PC after Step() (ADR-005: next_pc).
 };
 
 // Minimal mnemonic decoder for trace labeling. Not a substitute for the
@@ -50,6 +64,7 @@ inline std::string DecodeMnemonicForTrace(uint32_t instruction) {
     switch (opcode) {
         case 0x08: return "ADDI";
         case 0x09: return "ADDIU";
+        case 0x23: return "LW";
         default:   return "UNKNOWN";
     }
 }
@@ -73,13 +88,20 @@ inline GoldenTraceEntry CaptureGoldenTraceStep(PSXCore* core) {
 
     PSXCore_Step(core);
 
-    for (int i = 1; i < 32; i++) { // GPR[0] ($zero) never changes by definition.
+    // Record every register written during the step, not just the first: the
+    // load-delay slot of a load commits the pending load *and* can write the
+    // current instruction's own destination in the same step. GPR[0] ($zero)
+    // never changes by definition. The MIPS I model retires at most
+    // kMaxGprWritesPerStep writes per step; if that invariant is ever broken,
+    // the assert fails loudly instead of silently dropping a trace entry.
+    for (int i = 1; i < 32; i++) {
         uint32_t after = PSXCore_GetGPR(core, i);
         if (after != gpr_before[i]) {
-            entry.reg_index = i;
-            entry.reg_before = gpr_before[i];
-            entry.reg_after = after;
-            break;
+            assert(entry.reg_count < GoldenTraceEntry::kMaxGprWritesPerStep);
+            entry.reg_index[entry.reg_count] = i;
+            entry.reg_before[entry.reg_count] = gpr_before[i];
+            entry.reg_after[entry.reg_count] = after;
+            entry.reg_count++;
         }
     }
     entry.hi_after = PSXCore_GetHI(core);
