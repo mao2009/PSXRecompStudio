@@ -165,7 +165,12 @@ void PSXCpu::UpdateLoadDelay() {
 void PSXCpu::WriteRegDelayed(int index, uint32_t value) {
     if (index < 0 || index >= PSX_GPR_COUNT) return;
     if (index == 0) return;
-    // Double load delays to the same register: the last load wins.
+    // Double load delays to the same register: the last load wins. Step()
+    // already recorded the cancelled load's pending commit as a Golden Trace
+    // event this same call now cancels (it samples load_delay_reg_
+    // unconditionally at the top of the step, before this instruction runs)
+    // -- that recorded event's value is real in the trace but never reaches
+    // the register file (golden_trace.h, Issue #202).
     if (index == load_delay_reg_) {
         load_delay_reg_ = -1;
     }

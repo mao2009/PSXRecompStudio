@@ -31,6 +31,21 @@
 // instruction's destination plus one load-delay commit (ADR-004). All of them
 // are recorded so a comparison can never silently lose a write; the load-delay
 // slot is where a step most often produces both.
+//
+// Consecutive loads targeting the SAME register split their retirement events
+// across two separate steps rather than one (Issue #202): neither load writes
+// its GPR immediately (both go through WriteRegDelayed, not SetGPR), so the
+// second load's WriteRegDelayed() call cancels the first load's still-pending
+// commit ("the last load wins", psx_cpu.cpp) before that step's UpdateLoadDelay()
+// ever applies it. Step() still reports the cancelled commit as an event -- it
+// samples the pending load unconditionally at the top of the step, before the
+// step's own instruction can cancel it -- so that event's value is real in the
+// trace but never reaches the register file: reading the GPR right after that
+// step still returns the pre-load value. Only the second load's own commit,
+// retired one step later, actually reaches the register file. Both events
+// report the SAME pre-load `before` value, since the register file itself
+// never changes in between. See test_e2e_trace_consecutive_loads_same_gpr in
+// test_psx_core.cpp for the fixture pinning this exact ordering.
 struct GoldenTraceEntry {
     uint32_t pc = 0;  // Address of the instruction that was executed.
     uint32_t instruction = 0;  // Raw instruction word, fetched via the memory bus.
