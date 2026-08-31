@@ -138,6 +138,7 @@ AI エージェントを含む開発者は、実装前にリポジトリ内の S
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
 - [`docs/architecture/gui-ux.md`](docs/architecture/gui-ux.md) — GUI / UX 設計文書
 - [`docs/development/agent-guide.md`](docs/development/agent-guide.md) — AI 開発エージェント向けガイド
+- [`docs/development/documentation-policy.md`](docs/development/documentation-policy.md) — API ドキュメント／docstring ポリシー
 
 ## Git Workflow（main ブランチ保護）
 
