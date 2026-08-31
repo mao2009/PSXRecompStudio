@@ -254,6 +254,15 @@ public sealed class ChdReader : IDisposable
         uint hunkBytes = ChdHeader.ReadUInt32BE(headerBytes, 56);
         uint unitBytes = ChdHeader.ReadUInt32BE(headerBytes, 60);
 
+        if (hunkBytes == 0)
+        {
+            throw new InvalidDataException("CHD header declares hunkBytes=0; hunks must have a positive size.");
+        }
+        if (unitBytes == 0)
+        {
+            throw new InvalidDataException("CHD header declares unitBytes=0; units must have a positive size.");
+        }
+
         var rawSha1 = headerBytes[64..84].ToArray();
         var sha1 = headerBytes[84..104].ToArray();
         var parentSha1 = headerBytes[104..124].ToArray();
