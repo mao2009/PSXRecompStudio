@@ -83,6 +83,12 @@ internal sealed class ChdHuffmanDecoder
 
         for (int i = 0; i < MaxCodes; i++)
         {
+            if (_codeLengths[i] > MaxBits)
+            {
+                throw new InvalidOperationException(
+                    $"CHD Huffman: code length {_codeLengths[i]} exceeds {MaxBits} bits.");
+            }
+
             if (_codeLengths[i] > 0)
             {
                 bithisto[_codeLengths[i]]++;

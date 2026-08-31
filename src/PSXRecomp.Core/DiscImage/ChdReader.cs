@@ -29,6 +29,7 @@ public sealed class ChdReader : IDisposable
     private readonly ChdHeader _header;
     private readonly ChdMapEntry[] _map;
     private readonly Dictionary<int, byte[]> _hunkCache;
+    private readonly HashSet<int> _resolving;
 
     public ChdHeader Header => _header;
     public int MapEntryBytes => _header.IsCompressed ? 12 : 4;
@@ -40,6 +41,7 @@ public sealed class ChdReader : IDisposable
         _header = header;
         _map = map;
         _hunkCache = new Dictionary<int, byte[]>();
+        _resolving = new HashSet<int>();
     }
 
     public static ChdReader Open(string filePath)
@@ -77,7 +79,9 @@ public sealed class ChdReader : IDisposable
         }
     }
 
-    private int TotalUnits => _header.TotalHunks;
+    private int TotalUnits => _header.UnitBytes > 0
+        ? (int)(_header.LogicalBytes / _header.UnitBytes)
+        : 0;
     public int FramesPerHunk => _header.FramesPerHunk;
 
     /// <summary>
@@ -89,6 +93,12 @@ public sealed class ChdReader : IDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(sectorIndex),
                 $"Sector index {sectorIndex} exceeds total frames {TotalUnits}.");
+        }
+
+        if (FramesPerHunk <= 0)
+        {
+            throw new InvalidDataException(
+                $"CHD header declares hunkBytes={_header.HunkBytes}, unitBytes={_header.UnitBytes}; frames per hunk is 0.");
         }
 
         var hunkIndex = sectorIndex / FramesPerHunk;
@@ -144,7 +154,19 @@ public sealed class ChdReader : IDisposable
                 throw new InvalidDataException(
                     $"CHD hunk {hunkIndex}: self reference to out-of-range hunk {refHunk}.");
             }
-            return GetDecompressedHunk(refHunk);
+            if (!_resolving.Add(hunkIndex))
+            {
+                throw new InvalidDataException(
+                    $"CHD hunk {hunkIndex}: cyclic self reference detected.");
+            }
+            try
+            {
+                return GetDecompressedHunk(refHunk);
+            }
+            finally
+            {
+                _resolving.Remove(hunkIndex);
+            }
         }
 
         if (entry.CompressionType == CompressionParent)
@@ -270,7 +292,9 @@ public sealed class ChdReader : IDisposable
                 {
                     CompressionType = (byte)(offset == 0 ? CompressionParent : 0),
                     CompressedLength = header.HunkBytes,
-                    FileOffset = offset,
+                    // The uncompressed V5 map stores a hunk-unit index; scale it to
+                    // a byte offset, matching MAME's read_hunk (offset * hunkbytes).
+                    FileOffset = (ulong)offset * header.HunkBytes,
                     Crc16 = 0,
                 };
             }
@@ -313,7 +337,7 @@ public sealed class ChdReader : IDisposable
             }
         }
 
-        long mapConsumed = 0;
+        long mapConsumed = 4L * _map.Length;
         if (_header.IsCompressed)
         {
             long original = _stream.Position;
@@ -321,7 +345,7 @@ public sealed class ChdReader : IDisposable
             var mapHeader = new byte[16];
             _stream.ReadExactly(mapHeader, 0, 16);
             uint mapBytes = ChdHeader.ReadUInt32BE(mapHeader, 0);
-            mapConsumed = mapBytes;
+            mapConsumed = 16L + mapBytes;
             _stream.Seek(original, SeekOrigin.Begin);
         }
 
@@ -435,6 +459,8 @@ public sealed class ChdReader : IDisposable
                     break;
 
                 case CompressionSelf0:
+                    type = CompressionSelf;
+                    offset = lastSelf;
                     break;
                 case CompressionSelf1:
                     lastSelf++;
