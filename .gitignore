@@ -110,6 +110,12 @@ temp/
 *.orig
 
 # ====================
+# Local analysis artifacts (real-ROM snapshots / execution logs)
+# ====================
+reports/
+logs/
+
+# ====================
 # CMake / C++ Build
 # ====================
 CMakeCache.txt
