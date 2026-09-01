@@ -83,6 +83,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [GUI / UX](architecture/gui-ux.md)
 - [Development Agent Guide](development/agent-guide.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
+- [Real-ROM Analysis Artifact Format](development/real-rom-analysis-artifacts.md)
 - [API Documentation & Docstring Policy](development/documentation-policy.md)
 - [README Auto-Update](development/readme-autoupdate.md)
 - [Native Library Build and Test Execution](development/native-library-build.md)

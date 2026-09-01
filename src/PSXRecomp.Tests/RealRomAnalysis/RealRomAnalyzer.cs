@@ -1,28 +1,48 @@
 using System.Security.Cryptography;
 using PSXRecomp.Core.DiscImage;
+using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 
 /// <summary>
-/// Orchestrates the real-ROM analysis pipeline for a CHD disc image and produces
-/// two artifacts:
-///   - A deterministic <see cref="AnalysisSnapshot"/> (primary, for cross-ROM comparison)
-///   - An <see cref="ExecutionLogWriter"/> JSONL log (debugging aid)
+/// Runs the Issue #212 analysis pipeline against a local disc image and hands the
+/// result to the deterministic serialization layer, producing two clearly separated
+/// outputs:
 ///
-/// It reuses the existing domain pipeline (<see cref="DiscImageAnalyzer"/>,
-/// <see cref="ChdReader"/>, <see cref="Iso9660Reader"/>, <see cref="PsxExe"/>) rather
-/// than re-implementing any single computation.
+/// <list type="bullet">
+///   <item><b>Deterministic artifacts</b> (<see cref="RealRomAnalysisArtifacts"/>) —
+///   identical byte-for-byte for identical input. Safe to persist and diff.</item>
+///   <item><b>Execution log</b> (<see cref="ExecutionLogEntry"/>) — stage/progress
+///   records that intentionally carry elapsed time and are therefore local-only.</item>
+/// </list>
+///
+/// The two must never mix: nothing from the log reaches an artifact, and the artifact
+/// builder cannot read the clock even if asked to (Domain-layer PSXR005).
+///
+/// No analysis is re-implemented here; <see cref="DiscImageAnalyzer"/> remains the
+/// single producer of analysis results.
 /// </summary>
 [Test]
 public static class RealRomAnalyzer
 {
-    private const int IsoSectorSize = 2048;
+    private const string DiscImageFormat = "CHD";
 
     /// <summary>
-    /// Runs the full pipeline against a CHD file and returns the deterministic snapshot
-    /// together with the execution log entries.
+    /// Reads the disc image at <paramref name="discImagePath"/>, runs the full pipeline,
+    /// and returns the deterministic artifact set together with the execution log.
     /// </summary>
-    public static (AnalysisSnapshot Snapshot, List<ExecutionLogEntry> Log) Analyze(string chdPath, string fixtureName, int? instructionCount = null)
+    /// <param name="fixtureId">
+    /// Canonical fixture alias (see <see cref="AnalysisArtifactSchema.NormalizeFixtureId"/>).
+    /// Used for the artifact directory name only; the formal identity is the disc SHA-256.
+    /// </param>
+    /// <param name="instructionCount">
+    /// Optional bound on the linear decode, forwarded to <see cref="DiscImageAnalyzer"/>.
+    /// The same bound must be used for two runs to be comparable.
+    /// </param>
+    public static (RealRomAnalysisArtifacts Artifacts, List<ExecutionLogEntry> Log) Analyze(
+        string discImagePath,
+        string fixtureId,
+        int? instructionCount = null)
     {
         var log = new List<ExecutionLogEntry>();
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -38,13 +58,13 @@ public static class RealRomAnalyzer
             });
         }
 
-        Record("CHD_OPEN", "START", $"Opening CHD '{fixtureName}'");
+        Record("CHD_OPEN", "START", $"Opening disc image '{fixtureId}'");
         byte[] chdBytes;
         string chdSha256;
         try
         {
 #pragma warning disable PSXR005
-            chdBytes = File.ReadAllBytes(chdPath);
+            chdBytes = File.ReadAllBytes(discImagePath);
 #pragma warning restore PSXR005
             chdSha256 = ComputeSha256(chdBytes);
             Record("CHD_OPEN", "PASS", $"Read {chdBytes.Length} bytes; SHA-256 {chdSha256}");
@@ -59,214 +79,58 @@ public static class RealRomAnalyzer
         Record("ANALYZE", "PASS", $"DiscImageAnalyzer produced report ({report.DecodedInstructionCount} instructions)");
 
         ChdMapStatistics chdStats;
+        IsoVolumeStatistics isoStats;
         using (var chd = ChdReader.Open(new MemoryStream(chdBytes, writable: false)))
         {
             chdStats = chd.ComputeMapStatistics();
             Record("CHD_META", "PASS",
-                $"V5 hunks={chdStats.TotalHunks} cdlz={chdStats.CdlzCount} cdzl={chdStats.CdzlCount}");
+                $"V{chdStats.Version} hunks={chdStats.TotalHunks} cdlz={chdStats.CdlzCount} cdzl={chdStats.CdzlCount}");
+            isoStats = CaptureIso(chd, Record);
         }
 
-        IsoSnapshot iso = CaptureIso(chdBytes, chdSha256, Record);
-        SystemCnfSnapshot systemCnf = new()
+        Record("PSX_EXE", "PASS",
+            $"Boot executable '{report.ExecutableFileName}' entry=0x{report.EntryPoint:X8}");
+
+        var artifacts = DeterministicArtifactBuilder.Build(new DeterministicArtifactInput
         {
-            BootPath = report.SystemCnfBootPath,
-            BootExecutable = report.ExecutableFileName,
-        };
+            FixtureId = fixtureId,
+            DiscImageFormat = DiscImageFormat,
+            DiscImageSha256 = chdSha256,
+            DiscImageSizeBytes = chdBytes.Length,
+            Chd = chdStats,
+            Iso = isoStats,
+            Report = report,
+        });
 
-        PsxExeSnapshot psxExe = CapturePsxExe(chdBytes, report.ExecutableFileName, Record);
+        Record("ARTIFACTS", "PASS",
+            $"Built {artifacts.Files.Count} deterministic artifacts (manifest schema v{artifacts.Manifest.SchemaVersion})");
 
-        var analysis = ComputeAnalysisSummary(report);
-        var instructions = report.DecodedInstructions
-            .Select(i => new InstructionSnapshot
-            {
-                Address = $"0x{i.Address:X8}",
-                RawWord = $"0x{i.RawWord:X8}",
-                Mnemonic = i.Mnemonic,
-            })
-            .ToList();
-
-        var snapshot = new AnalysisSnapshot
-        {
-            SchemaVersion = AnalysisSnapshotSchemaVersion,
-            Input = new AnalysisInputSnapshot
-            {
-                Sha256 = chdSha256,
-                Size = chdBytes.Length,
-                Format = "CHD",
-                ChdVersion = (int)chdStats.Version,
-            },
-            Chd = new ChdSnapshot
-            {
-                Version = (int)chdStats.Version,
-                LogicalBytes = (long)chdStats.LogicalBytes,
-                HunkBytes = (long)chdStats.HunkBytes,
-                TotalHunks = chdStats.TotalHunks,
-                CdlzCount = chdStats.CdlzCount,
-                CdzlCount = chdStats.CdzlCount,
-                MapBytesConsumed = chdStats.MapBytesConsumed,
-                DataRegionSize = chdStats.DataRegionSize,
-            },
-            Iso = iso,
-            SystemCnf = systemCnf,
-            PsxExe = psxExe,
-            Analysis = analysis,
-            Instructions = instructions,
-        };
-
-        Record("SNAPSHOT", "PASS", $"Built deterministic snapshot (schema v{snapshot.SchemaVersion})");
-        return (snapshot, log);
+        return (artifacts, log);
     }
 
-    private const int AnalysisSnapshotSchemaVersion = 2;
-
     /// <summary>
-    /// Computes the lowercase hex SHA-256 of a byte buffer. Shared so all artifact
-    /// writers use a single implementation.
+    /// Computes the lowercase hex SHA-256 of a byte buffer. Shared so every caller in
+    /// the test layer uses a single implementation.
     /// </summary>
     public static string ComputeSha256ForTest(byte[] data) => ComputeSha256(data);
 
-    private static IsoSnapshot CaptureIso(byte[] chdBytes, string chdSha256, Action<string, string, string> record)
+    private static IsoVolumeStatistics CaptureIso(ChdReader chd, Action<string, string, string> record)
     {
         record("FILESYSTEM", "START", "Reading ISO9660 filesystem");
-        var iso = new Iso9660Reader(sector =>
-        {
-            using var chd = ChdReader.Open(new MemoryStream(chdBytes, writable: false));
-            var cdSector = chd.ReadSector(sector);
-            var isoData = new byte[IsoSectorSize];
-            Buffer.BlockCopy(cdSector, 24, isoData, 0, IsoSectorSize);
-            return isoData;
-        });
+
+        var iso = DiscImageAnalyzer.CreateIsoReader(chd);
         iso.Initialize();
 
-        var systemCnfExists = iso.FileExists("SYSTEM.CNF");
-
-        var root = new Iso9660DirectoryEntry
-        {
-            Location = iso.RootDirectoryLocation,
-            Size = iso.RootDirectorySize,
-            Flags = 0x02,
-            FileNameLength = 1,
-            FileName = "\0",
-        };
-        iso.CountEntries(root, out int fileCount, out int directoryCount);
-
+        var statistics = iso.ComputeVolumeStatistics();
         record("FILESYSTEM", "PASS",
-            $"ISO9660 loaded; volume='{iso.VolumeIdentifier}' files={fileCount} dirs={directoryCount} systemCnf={systemCnfExists}");
-        return new IsoSnapshot
-        {
-            VolumeIdentifier = iso.VolumeIdentifier,
-            VolumeSpaceSize = iso.VolumeSpaceSize,
-            RootDirectoryLocation = iso.RootDirectoryLocation,
-            SystemCnfExists = systemCnfExists,
-            FileCount = fileCount,
-            DirectoryCount = directoryCount,
-        };
-    }
+            $"ISO9660 loaded; volume='{statistics.VolumeIdentifier}' files={statistics.FileCount} " +
+            $"dirs={statistics.DirectoryCount} systemCnf={statistics.SystemCnfPresent}");
 
-    private static PsxExeSnapshot CapturePsxExe(byte[] chdBytes, string exeFileName, Action<string, string, string> record)
-    {
-        record("PSX_EXE", "START", "Loading PS-X EXE");
-        try
-        {
-            var iso = new Iso9660Reader(sector =>
-            {
-                using var chd = ChdReader.Open(new MemoryStream(chdBytes, writable: false));
-                var cdSector = chd.ReadSector(sector);
-                var isoData = new byte[IsoSectorSize];
-                Buffer.BlockCopy(cdSector, 24, isoData, 0, IsoSectorSize);
-                return isoData;
-            });
-            iso.Initialize();
-
-            var systemCnfBytes = iso.ReadFile("SYSTEM.CNF");
-            var systemCnf = SystemCnfParser.Parse(systemCnfBytes);
-            var bootPath = NormalizeBootPath(systemCnf.BootPath);
-            var exeBytes = iso.ReadFile(bootPath);
-            var exeFileNameResolved = Path.GetFileName(bootPath.Split(';')[0]);
-            var exe = PsxExe.Load(exeBytes, exeFileNameResolved);
-            var hash = ComputeSha256(exeBytes);
-
-            record("PSX_EXE", "PASS",
-                $"Loaded '{exe.FileName}' entry=0x{exe.Header.EntryPoint:X8}");
-            return new PsxExeSnapshot
-            {
-                FileName = exe.FileName,
-                Serial = Path.GetFileNameWithoutExtension(exe.FileName),
-                FileSize = exe.FileSize,
-                FileHash = hash,
-                EntryPoint = exe.Header.EntryPoint,
-                TextStart = exe.Header.TextStart,
-                TextSize = exe.Header.TextSize,
-                DataStart = exe.Header.DataStart,
-                DataSize = exe.Header.DataSize,
-                BssStart = exe.Header.BssStart,
-                BssSize = exe.Header.BssSize,
-                SpInitial = exe.Header.SpInitial,
-                GpInitial = exe.Header.GpInitial,
-            };
-        }
-        catch (Exception ex)
-        {
-            record("PSX_EXE", "FAIL", ex.Message);
-            throw;
-        }
-    }
-
-    private static AnalysisSummarySnapshot ComputeAnalysisSummary(DiscImageAnalysisReport report)
-    {
-        int branchCount = 0;
-        int jumpCount = 0;
-
-        for (int i = 0; i < report.DecodedInstructions.Count; i++)
-        {
-            var inst = report.DecodedInstructions[i];
-
-            switch (inst.ControlFlow)
-            {
-                case "ConditionalBranch":
-                case "LinkBranch":
-                    branchCount++;
-                    break;
-                case "JumpAbsolute":
-                case "JumpRegister":
-                    jumpCount++;
-                    break;
-            }
-        }
-
-        return new AnalysisSummarySnapshot
-        {
-            DecodeStartAddress = report.DecodeStartAddress,
-            DecodedInstructionCount = report.DecodedInstructionCount,
-            DecodeFailureCount = report.DecodeFailures.Count,
-            BasicBlockCount = report.BasicBlocks.Count,
-            CfgEdgeCount = report.CfgEdges.Count,
-            BranchCount = branchCount,
-            JumpCount = jumpCount,
-            CallCandidateCount = report.CallCandidateCount,
-            ReturnCandidateCount = report.ReturnCandidateCount,
-        };
-    }
-
-    private static string NormalizeBootPath(string bootPath)
-    {
-        var path = bootPath;
-        if (path.StartsWith("cdrom:", StringComparison.OrdinalIgnoreCase))
-        {
-            path = path["cdrom:".Length..];
-        }
-        if (path.StartsWith('\\') || path.StartsWith('/'))
-        {
-            path = path[1..];
-        }
-        path = path.Replace('\\', '/');
-        return path;
+        return statistics;
     }
 
     private static string ComputeSha256(byte[] data)
     {
-        using var sha256 = SHA256.Create();
-        var hash = sha256.ComputeHash(data);
-        return Convert.ToHexString(hash).ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
     }
 }

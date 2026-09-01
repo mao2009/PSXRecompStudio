@@ -48,6 +48,16 @@ Exit codes: `0` clean, `1` violations, `2` setup/internal error.
 
 The check scans the entire tracked tree on every run. At the current scale this is cheap and strictly stronger than diff-only scanning; revisit if the tree grows large enough for full scans to become slow.
 
+## Reserved directory names in source
+
+`forbiddenPathSegments` matches path segments anywhere in the tree, not only at the
+root. A **source** directory named `artifacts`, `build`, `bin`, `obj`, `out`, `dist` or
+`publish` therefore fails the gate even though it holds hand-written code. Rename the
+directory rather than allowlisting it: an allowlist entry is exact-path, so it would
+have to be extended for every file added to that directory, and the gate would weaken
+over time. `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/` is named that way for this
+reason.
+
 ## Allowlist procedure
 
 To add an entry to `allowedPaths`:
@@ -55,6 +65,20 @@ To add an entry to `allowedPaths`:
 1. Justify in the PR why the file is legitimate (synthetic fixture, project asset).
 2. Prefer regenerating/synthesizing content over allowlisting real dumps. Real ROM/BIOS-derived data must never be allowlisted.
 3. Update this document if the change alters the policy's intent.
+
+## Locally generated analysis artifacts
+
+`reports/` and `logs/` are git-ignored working directories for real-ROM analysis output.
+Their format, and the rule separating deterministic artifacts (no timestamps, no local
+paths) from execution logs (timestamps expected, local-only), are defined in
+[Real-ROM Analysis Artifact Format](real-rom-analysis-artifacts.md).
+
+Because `reports/` and `logs/` are git-ignored, this gate never scans their content — it
+checks only the **Git-tracked tree** (`git ls-files`). The rule that neither directory
+contains ROM, ISO, EXE or CHD content is upheld locally by `.gitignore` preventing
+accidental staging, and mechanically here if such content is ever committed as a tracked
+file: the forbidden-path-segment and content-signature rules then catch it like any other
+contaminant.
 
 ## Test fixture boundary
 

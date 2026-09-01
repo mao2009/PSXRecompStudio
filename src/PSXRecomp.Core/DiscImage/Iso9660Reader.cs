@@ -17,6 +17,7 @@ public sealed class Iso9660Reader
     private const byte DirectoryRecordTerminator = 0;
 
     private readonly Func<int, byte[]> _sectorReader;
+    private bool _initialized;
 
     public Iso9660Reader(Func<int, byte[]> sectorReader)
     {
@@ -70,6 +71,7 @@ public sealed class Iso9660Reader
         int rootOffset = 156;
         RootDirectoryLocation = BitConverter.ToUInt32(sector, rootOffset + 2);
         RootDirectorySize = BitConverter.ToUInt32(sector, rootOffset + 10);
+        _initialized = true;
     }
 
     public byte[] ReadFile(string isoPath)
@@ -176,6 +178,46 @@ public sealed class Iso9660Reader
         }
 
         return ReadDirectory(currentDirRecord);
+    }
+
+    /// <summary>
+    /// Collects the deterministic volume statistics for this disc: identity fields from
+    /// the Primary Volume Descriptor plus a full recursive entry count from the root.
+    /// <see cref="Initialize"/> must have been called first.
+    ///
+    /// This is the filesystem-layer counterpart of <c>ChdReader.ComputeMapStatistics</c>;
+    /// it performs a full directory traversal, so callers should compute it once and
+    /// reuse the result rather than calling it per field.
+    /// </summary>
+    public IsoVolumeStatistics ComputeVolumeStatistics()
+    {
+        if (!_initialized)
+        {
+            throw new InvalidOperationException(
+                "ISO 9660: Initialize() must be called before ComputeVolumeStatistics().");
+        }
+
+        var root = new Iso9660DirectoryEntry
+        {
+            Location = RootDirectoryLocation,
+            Size = RootDirectorySize,
+            Flags = 0x02,
+            FileNameLength = 1,
+            FileName = "\0",
+        };
+
+        CountEntries(root, out int fileCount, out int directoryCount);
+
+        return new IsoVolumeStatistics
+        {
+            VolumeIdentifier = VolumeIdentifier,
+            VolumeSpaceSize = VolumeSpaceSize,
+            RootDirectoryLocation = RootDirectoryLocation,
+            RootDirectorySize = RootDirectorySize,
+            SystemCnfPresent = FileExists("SYSTEM.CNF"),
+            FileCount = fileCount,
+            DirectoryCount = directoryCount,
+        };
     }
 
     /// <summary>
