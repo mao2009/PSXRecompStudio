@@ -179,6 +179,40 @@ public sealed class Iso9660Reader
     }
 
     /// <summary>
+    /// Collects the deterministic volume statistics for this disc: identity fields from
+    /// the Primary Volume Descriptor plus a full recursive entry count from the root.
+    /// <see cref="Initialize"/> must have been called first.
+    ///
+    /// This is the filesystem-layer counterpart of <c>ChdReader.ComputeMapStatistics</c>;
+    /// it performs a full directory traversal, so callers should compute it once and
+    /// reuse the result rather than calling it per field.
+    /// </summary>
+    public IsoVolumeStatistics ComputeVolumeStatistics()
+    {
+        var root = new Iso9660DirectoryEntry
+        {
+            Location = RootDirectoryLocation,
+            Size = RootDirectorySize,
+            Flags = 0x02,
+            FileNameLength = 1,
+            FileName = "\0",
+        };
+
+        CountEntries(root, out int fileCount, out int directoryCount);
+
+        return new IsoVolumeStatistics
+        {
+            VolumeIdentifier = VolumeIdentifier,
+            VolumeSpaceSize = VolumeSpaceSize,
+            RootDirectoryLocation = RootDirectoryLocation,
+            RootDirectorySize = RootDirectorySize,
+            SystemCnfPresent = FileExists("SYSTEM.CNF"),
+            FileCount = fileCount,
+            DirectoryCount = directoryCount,
+        };
+    }
+
+    /// <summary>
     /// Recursively counts files and directories beneath a directory record.
     /// Excludes the implicit "." and ".." entries.
     /// </summary>

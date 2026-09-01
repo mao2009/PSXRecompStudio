@@ -38,9 +38,22 @@ public static class DiscImageAnalyzer
         return AnalyzeChd(chd, chdSha256, count);
     }
 
-    private static DiscImageAnalysisReport AnalyzeChd(ChdReader chd, string sha256, int instructionCount)
+    /// <summary>
+    /// Creates an ISO 9660 reader over a CHD disc image, unwrapping each raw CD sector to
+    /// its 2048-byte user-data area. The user-data offset depends on the sector mode
+    /// (Mode 1 at 16, Mode 2 at 24), so this must not be assumed to be a fixed constant.
+    ///
+    /// This is the single definition of "how ISO sectors are read out of a CHD"; callers
+    /// that need filesystem metadata alongside a report should use it rather than
+    /// re-deriving the offset. The returned reader borrows <paramref name="chd"/> and is
+    /// only valid while that reader is alive. <see cref="Iso9660Reader.Initialize"/> has
+    /// not yet been called on it.
+    /// </summary>
+    public static Iso9660Reader CreateIsoReader(ChdReader chd)
     {
-        var iso = new Iso9660Reader(sector =>
+        ArgumentNullException.ThrowIfNull(chd);
+
+        return new Iso9660Reader(sector =>
         {
             var cdSector = chd.ReadSector(sector);
             int userDataOffset = cdSector[15] switch
@@ -60,6 +73,11 @@ public static class DiscImageAnalyzer
             Buffer.BlockCopy(cdSector, userDataOffset, isoData, 0, IsoSectorSize);
             return isoData;
         });
+    }
+
+    private static DiscImageAnalysisReport AnalyzeChd(ChdReader chd, string sha256, int instructionCount)
+    {
+        var iso = CreateIsoReader(chd);
         iso.Initialize();
 
         var systemCnfBytes = iso.ReadFile("SYSTEM.CNF");
