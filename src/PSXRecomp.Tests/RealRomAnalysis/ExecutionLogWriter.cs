@@ -55,7 +55,7 @@ public static class ExecutionLogWriter
 
     private static ExecutionLogEntry Sanitize(ExecutionLogEntry entry)
     {
-        var message = PathRedactor.Redact(entry.Message);
-        return message == entry.Message ? entry : entry with { Message = message };
+        var redacted = PathRedactor.Redact(entry.Message) ?? entry.Message;
+        return redacted == entry.Message ? entry : entry with { Message = redacted };
     }
 }

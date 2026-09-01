@@ -61,6 +61,7 @@ exception (retained in-process for callers that need to rethrow it).
 | `INPUT` | `EmptyInput` | Zero-byte image |
 | `INPUT` | `MissingInputIdentity` | No SHA-256 supplied |
 | `INPUT` | `FixtureUnreadable` | Image file missing or unreadable on disk |
+| `INPUT` | `InvalidInstructionCount` | Non-positive `instructionCount` supplied |
 | `CHD_OPEN` | `ChdOpenFailure` | Not a CHD, unsupported version, malformed header/map |
 | `FILESYSTEM` | `FilesystemFailure` | No Primary Volume Descriptor, unreadable directory tree |
 | `SYSTEM_CNF` | `SystemCnfMissing` | `SYSTEM.CNF` absent from the volume |
@@ -75,6 +76,7 @@ exception (retained in-process for callers that need to rethrow it).
 | `BASIC_BLOCK` | `BasicBlockAnalysisFailure` | No block built from decoded instructions |
 | `REPORT` | `ReportGenerationFailure` | Report could not be assembled |
 | `MANIFEST` | `ArtifactPersistenceFailure` | Artifact could not be written |
+| `MANIFEST` | `DiscMetadataUnreadable` | Post-REPORT CHD/ISO metadata read failure |
 
 A run can pass with a non-zero decode-failure count (a partial decode); the count
 is reported in the manifest. Zero decoded instructions is a `MIPS_DECODE` failure.

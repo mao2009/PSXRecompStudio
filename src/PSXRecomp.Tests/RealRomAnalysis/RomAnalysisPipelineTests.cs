@@ -134,6 +134,57 @@ public class RomAnalysisPipelineTests
         AssertFailure(outcome, RomAnalysisStage.Input, "MissingInputIdentity", RomAnalysisStage.Start);
     }
 
+    // ------------------------------------------------------- instruction-count validation
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void RunFromIsoImage_NonPositiveInstructionCount_FailsAtInputBeforeAnyDecode(int count)
+    {
+        var outcome = RomAnalysisPipeline.RunFromIsoImage(BuildValidDisc(), Sha, instructionCount: count);
+
+        AssertFailure(outcome, RomAnalysisStage.Input, "InvalidInstructionCount", RomAnalysisStage.Start);
+        outcome.FailureReason.Should().Contain(count.ToString());
+        outcome.Report.Should().BeNull();
+        outcome.Stages.Should().NotContain(s => s.Stage > RomAnalysisStage.Input,
+            "an invalid instruction count must be rejected before any input is processed");
+    }
+
+    [Fact]
+    public void RunFromChd_NonPositiveInstructionCount_FailsAtInputOnBothOverloads()
+    {
+        var bytes = Encoding.ASCII.GetBytes("garbage");
+
+        var viaByteArray = RomAnalysisPipeline.RunFromChd(bytes, Sha, instructionCount: 0);
+        var viaStream = RomAnalysisPipeline.RunFromChd(new MemoryStream(bytes, writable: false), Sha, instructionCount: 0);
+
+        viaByteArray.FailureKind.Should().Be("InvalidInstructionCount");
+        viaStream.FailureKind.Should().Be("InvalidInstructionCount");
+        viaByteArray.LastSuccessfulStage.Should().Be(RomAnalysisStage.Start);
+        viaStream.LastSuccessfulStage.Should().Be(RomAnalysisStage.Start);
+    }
+
+    [Fact]
+    public void RunFromIsoImage_PositiveInstructionCount_ReachesReport()
+    {
+        var outcome = RomAnalysisPipeline.RunFromIsoImage(BuildValidDisc(instructionCount: 16), Sha, instructionCount: 1);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Pass);
+        outcome.LastSuccessfulStage.Should().Be(RomAnalysisStage.Report);
+        outcome.Report!.DecodedInstructionCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void RunFromIsoImage_NullInstructionCount_UsesTheDefaultAndReachesReport()
+    {
+        var outcome = RomAnalysisPipeline.RunFromIsoImage(BuildValidDisc(instructionCount: 160), Sha, instructionCount: null);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Pass);
+        outcome.LastSuccessfulStage.Should().Be(RomAnalysisStage.Report);
+        outcome.Report!.DecodedInstructionCount.Should().Be(128,
+            "a null instruction count must fall back to the documented default of 128");
+    }
+
     // ---------------------------------------------------------------- CHD_OPEN
 
     [Fact]

@@ -38,6 +38,9 @@ public static class RealRomAnalyzer
     /// <summary>Stable classification for any artifact/log write failure at the MANIFEST stage.</summary>
     public const string ArtifactPersistenceFailure = "ArtifactPersistenceFailure";
 
+    /// <summary>Stable classification when the post-REPORT CHD/ISO metadata pass cannot read the disc.</summary>
+    public const string DiscMetadataUnreadable = "DiscMetadataUnreadable";
+
     /// <summary>
     /// Runs the pipeline against the local disc image and returns the deterministic
     /// artifact set together with the detailed execution log. The staged outcome and
@@ -52,6 +55,25 @@ public static class RealRomAnalyzer
         RomAnalysisStageRecorder Recorder, List<ExecutionLogEntry> Log) AnalyzeStaged(
         string discImagePath,
         string fixtureId,
+        int? instructionCount = null)
+    {
+        return AnalyzeStagedCore(discImagePath, fixtureId, capture: null, instructionCount);
+    }
+
+    /// <summary>
+    /// Core of <see cref="AnalyzeStaged"/>. The post-REPORT metadata/stats capture is
+    /// injected via <paramref name="capture"/> (null uses the real
+    /// <see cref="CaptureChdMetadata"/>) so the failure boundary around it can be exercised
+    /// deterministically in tests without a real disc. The boundary classifies any expected
+    /// analysis/file-access read failure as <see cref="DiscMetadataUnreadable"/> at MANIFEST
+    /// and never lets it escape to the caller; <see cref="RunAll"/> therefore stays isolated
+    /// per fixture.
+    /// </summary>
+    internal static (RealRomAnalysisArtifacts? Artifacts, RomAnalysisOutcome Outcome,
+        RomAnalysisStageRecorder Recorder, List<ExecutionLogEntry> Log) AnalyzeStagedCore(
+        string discImagePath,
+        string fixtureId,
+        Func<string, (ChdMapStatistics Chd, IsoVolumeStatistics Iso)>? capture,
         int? instructionCount = null)
     {
         ArgumentNullException.ThrowIfNull(discImagePath);
@@ -111,15 +133,26 @@ public static class RealRomAnalyzer
             return (null, outcome, recorder, log);
         }
 
+        capture ??= CaptureChdMetadata;
+
         ChdMapStatistics chdStats;
         IsoVolumeStatistics isoStats;
-#pragma warning disable PSXR005
-        using (var statsStream = File.OpenRead(discImagePath))
-#pragma warning restore PSXR005
-        using (var chd = ChdReader.Open(statsStream))
+        try
         {
-            chdStats = chd.ComputeMapStatistics();
-            isoStats = CaptureIso(chd);
+            (chdStats, isoStats) = capture(discImagePath);
+        }
+        catch (Exception ex) when (IsPostReportMetadataFailure(ex))
+        {
+            // REPORT already passed; the failure is at MANIFEST (the CHD/ISO metadata could
+            // not be read to build the deterministic artifacts). It is classified and
+            // returned — never thrown — so a single fixture's read failure cannot stop
+            // RunAll from processing the remaining fixtures, and COMPLETE is not reached.
+            if (!recorder.HasFailed)
+            {
+                recorder.Fail(RomAnalysisStage.Manifest, DiscMetadataUnreadable, ex);
+            }
+
+            return (null, RomAnalysisOutcome.From(recorder, outcome.Report, outcome.DecodeFailureCount), recorder, log);
         }
 
         Record("CHD_META", "PASS",
@@ -156,8 +189,8 @@ public static class RealRomAnalyzer
         if (staged.Artifacts is null)
         {
             throw new InvalidDataException(
-                $"Fixture '{fixtureId}' failed before the REPORT stage ({staged.Outcome.FailureKind}: {staged.Outcome.FailureReason}); " +
-                "no deterministic artifacts to return.");
+                $"Fixture '{fixtureId}' produced no deterministic artifacts ({staged.Outcome.FailureKind}: {staged.Outcome.FailureReason}); " +
+                "the #215 artifact contract only applies when REPORT and the metadata pass succeed.");
         }
 
         return (staged.Artifacts, staged.Log);
@@ -177,7 +210,19 @@ public static class RealRomAnalyzer
         string logRoot,
         int? instructionCount = null)
     {
-        var staged = AnalyzeStaged(discImagePath, fixtureId, instructionCount);
+        return AnalyzeAndPersistCore(discImagePath, fixtureId, reportRoot, logRoot, capture: null, instructionCount);
+    }
+
+    /// <summary>Core of <see cref="AnalyzeAndPersist"/>; see <see cref="AnalyzeStagedCore"/> for the capture seam.</summary>
+    internal static RealRomAnalysisRunResult AnalyzeAndPersistCore(
+        string discImagePath,
+        string fixtureId,
+        string reportRoot,
+        string logRoot,
+        Func<string, (ChdMapStatistics Chd, IsoVolumeStatistics Iso)>? capture,
+        int? instructionCount = null)
+    {
+        var staged = AnalyzeStagedCore(discImagePath, fixtureId, capture, instructionCount);
         var recorder = staged.Recorder;
 
         string? reportPath = null;
@@ -227,8 +272,18 @@ public static class RealRomAnalyzer
         string logRoot,
         int? instructionCount = null)
     {
+        return RunAllCore(reportRoot, logRoot, capture: null, instructionCount);
+    }
+
+    /// <summary>Core of <see cref="RunAll"/>; see <see cref="AnalyzeStagedCore"/> for the capture seam.</summary>
+    internal static IReadOnlyList<RealRomAnalysisRunResult> RunAllCore(
+        string reportRoot,
+        string logRoot,
+        Func<string, (ChdMapStatistics Chd, IsoVolumeStatistics Iso)>? capture,
+        int? instructionCount = null)
+    {
         return RealRomFixtures.Discover()
-            .Select(fixture => AnalyzeAndPersist(fixture.DiscImagePath, fixture.FixtureId, reportRoot, logRoot, instructionCount))
+            .Select(fixture => AnalyzeAndPersistCore(fixture.DiscImagePath, fixture.FixtureId, reportRoot, logRoot, capture, instructionCount))
             .ToList();
     }
 
@@ -237,11 +292,22 @@ public static class RealRomAnalyzer
 
     private static string ComputeSha256(Stream stream) => Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
 
-    private static IsoVolumeStatistics CaptureIso(ChdReader chd)
+    /// <summary>
+    /// Re-opens the disc image and captures the CHD map statistics plus ISO 9660 volume
+    /// statistics consumed by <see cref="DeterministicArtifactBuilder"/>. This is the
+    /// post-REPORT metadata pass: it may throw the expected analysis/read exceptions, which
+    /// <see cref="AnalyzeStagedCore"/> classifies as <see cref="DiscMetadataUnreadable"/> at
+    /// MANIFEST rather than letting them escape.
+    /// </summary>
+    internal static (ChdMapStatistics Chd, IsoVolumeStatistics Iso) CaptureChdMetadata(string discImagePath)
     {
+#pragma warning disable PSXR005
+        using var statsStream = File.OpenRead(discImagePath);
+#pragma warning restore PSXR005
+        using var chd = ChdReader.Open(statsStream);
         var iso = DiscImageAnalyzer.CreateIsoReader(chd);
         iso.Initialize();
-        return iso.ComputeVolumeStatistics();
+        return (chd.ComputeMapStatistics(), iso.ComputeVolumeStatistics());
     }
 
     private static string StatusLabel(RomAnalysisStageStatus status) => status switch
@@ -256,4 +322,12 @@ public static class RealRomAnalyzer
     private static bool IsFileAccessFailure(Exception ex) =>
         ex is IOException or UnauthorizedAccessException or PathTooLongException or NotSupportedException
             or System.Security.SecurityException;
+
+    /// <summary>
+    /// Expected analysis/file-access failures for the post-REPORT metadata pass. This is
+    /// deliberately narrower than catch-anything: process-level failures are not swallowed.
+    /// </summary>
+    private static bool IsPostReportMetadataFailure(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or PathTooLongException
+            or NotSupportedException or System.Security.SecurityException or InvalidDataException;
 }

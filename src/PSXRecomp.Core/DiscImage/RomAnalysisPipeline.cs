@@ -49,6 +49,11 @@ public static class RomAnalysisPipeline
         recorder ??= new RomAnalysisStageRecorder();
         recorder.Pass(RomAnalysisStage.Start, "Real-ROM analysis flow started");
 
+        if (!ValidateInstructionCount(recorder, instructionCount))
+        {
+            return RomAnalysisOutcome.From(recorder);
+        }
+
         if (!ValidateInput(recorder, discImageBytes, discImageSha256, "CHD"))
         {
             return RomAnalysisOutcome.From(recorder);
@@ -79,6 +84,11 @@ public static class RomAnalysisPipeline
         ArgumentNullException.ThrowIfNull(chdStream);
         recorder ??= new RomAnalysisStageRecorder();
         recorder.Pass(RomAnalysisStage.Start, "Real-ROM analysis flow started");
+
+        if (!ValidateInstructionCount(recorder, instructionCount))
+        {
+            return RomAnalysisOutcome.From(recorder);
+        }
 
         if (string.IsNullOrWhiteSpace(discImageSha256))
         {
@@ -140,6 +150,11 @@ public static class RomAnalysisPipeline
         recorder ??= new RomAnalysisStageRecorder();
         recorder.Pass(RomAnalysisStage.Start, "Real-ROM analysis flow started");
 
+        if (!ValidateInstructionCount(recorder, instructionCount))
+        {
+            return RomAnalysisOutcome.From(recorder);
+        }
+
         if (!ValidateInput(recorder, isoImageBytes, discImageSha256, "ISO"))
         {
             return RomAnalysisOutcome.From(recorder);
@@ -147,6 +162,21 @@ public static class RomAnalysisPipeline
 
         recorder.Skip(RomAnalysisStage.ChdOpen, "Input is a plain ISO 9660 image; no CHD container to open");
         return RunFromIsoSectorReader(recorder, new Iso9660Reader(CreateIsoSectorReader(isoImageBytes)), discImageSha256, instructionCount);
+    }
+
+    private static bool ValidateInstructionCount(
+        RomAnalysisStageRecorder recorder,
+        int? instructionCount)
+    {
+        if (instructionCount.HasValue && instructionCount.Value <= 0)
+        {
+            recorder.Fail(RomAnalysisStage.Input, "InvalidInstructionCount",
+                string.Create(CultureInfo.InvariantCulture,
+                    $"Instruction count must be a positive integer; got {instructionCount.Value}."));
+            return false;
+        }
+
+        return true;
     }
 
     private static bool ValidateInput(
