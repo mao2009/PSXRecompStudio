@@ -32,6 +32,7 @@ Development
 ├── Repository Artifact Policy
 ├── API Documentation & Docstring Policy
 ├── README Auto-Update
+├── Real-ROM Analysis Flow
 └── Terminology
 
 Decisions
@@ -87,6 +88,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [API Documentation & Docstring Policy](development/documentation-policy.md)
 - [README Auto-Update](development/readme-autoupdate.md)
 - [Native Library Build and Test Execution](development/native-library-build.md)
+- [Real-ROM Analysis Flow](development/real-rom-analysis.md)
 - CPU / R3000A — planned
 - Decoder — planned
 - Analyzer — planned

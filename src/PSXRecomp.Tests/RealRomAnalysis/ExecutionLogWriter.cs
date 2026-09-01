@@ -31,6 +31,10 @@ public static class ExecutionLogWriter
 
     /// <summary>
     /// Writes the given entries as JSONL to <paramref name="path"/>.
+    ///
+    /// Persisted log lines are sanitized at this serialization boundary: no absolute
+    /// Windows or POSIX path may appear in the file. Runtime code (the recorder / stage
+    /// details) keeps raw exception messages; only what is persisted is redacted.
     /// </summary>
     public static void Write(string path, IReadOnlyList<ExecutionLogEntry> entries)
     {
@@ -44,8 +48,14 @@ public static class ExecutionLogWriter
         using var writer = new StreamWriter(path, append: false);
         foreach (var entry in entries)
         {
-            writer.WriteLine(JsonSerializer.Serialize(entry, Options));
+            writer.WriteLine(JsonSerializer.Serialize(Sanitize(entry), Options));
         }
 #pragma warning restore PSXR005
+    }
+
+    private static ExecutionLogEntry Sanitize(ExecutionLogEntry entry)
+    {
+        var redacted = PathRedactor.Redact(entry.Message) ?? entry.Message;
+        return redacted == entry.Message ? entry : entry with { Message = redacted };
     }
 }
