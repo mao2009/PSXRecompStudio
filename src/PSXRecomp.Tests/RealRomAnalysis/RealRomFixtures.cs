@@ -65,10 +65,15 @@ public static class RealRomFixtures
         var discImages = Directory.GetFiles(RomDirectory, "*.chd", SearchOption.TopDirectoryOnly);
 #pragma warning restore PSXR005
 
+        var labels = discImages
+            .Select(static path => Path.GetFileNameWithoutExtension(path))
+            .ToList();
+        var fixtureIds = AnalysisArtifactSchema.DisambiguateFixtureIds(labels);
+
         var fixtures = discImages
-            .Select(static path => new RealRomFixture
+            .Select((path, index) => new RealRomFixture
             {
-                FixtureId = AnalysisArtifactSchema.NormalizeFixtureId(Path.GetFileNameWithoutExtension(path)),
+                FixtureId = fixtureIds[index],
                 DiscImagePath = path,
             })
             .OrderBy(static fixture => fixture.FixtureId, StringComparer.Ordinal)

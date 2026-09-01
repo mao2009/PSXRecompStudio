@@ -17,6 +17,7 @@ public sealed class Iso9660Reader
     private const byte DirectoryRecordTerminator = 0;
 
     private readonly Func<int, byte[]> _sectorReader;
+    private bool _initialized;
 
     public Iso9660Reader(Func<int, byte[]> sectorReader)
     {
@@ -70,6 +71,7 @@ public sealed class Iso9660Reader
         int rootOffset = 156;
         RootDirectoryLocation = BitConverter.ToUInt32(sector, rootOffset + 2);
         RootDirectorySize = BitConverter.ToUInt32(sector, rootOffset + 10);
+        _initialized = true;
     }
 
     public byte[] ReadFile(string isoPath)
@@ -189,6 +191,12 @@ public sealed class Iso9660Reader
     /// </summary>
     public IsoVolumeStatistics ComputeVolumeStatistics()
     {
+        if (!_initialized)
+        {
+            throw new InvalidOperationException(
+                "ISO 9660: Initialize() must be called before ComputeVolumeStatistics().");
+        }
+
         var root = new Iso9660DirectoryEntry
         {
             Location = RootDirectoryLocation,

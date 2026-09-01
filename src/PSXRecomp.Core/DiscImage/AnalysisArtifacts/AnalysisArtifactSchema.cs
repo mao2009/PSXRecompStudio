@@ -141,6 +141,113 @@ public static class AnalysisArtifactSchema
     }
 
     /// <summary>
+    /// Maps every label in <paramref name="labels"/> onto a canonical fixture identifier
+    /// that is collision-free across the whole set.
+    ///
+    /// A label whose <see cref="NormalizeFixtureId"/> result is unique keeps that result
+    /// unchanged, so existing non-colliding fixtures retain their ids. When two or more
+    /// distinct labels normalize to the same value, every member of that group gets a
+    /// short deterministic discriminator derived from its own original label appended to
+    /// the normalized form, so no two fixtures share an artifact directory regardless of
+    /// case, separator, or truncation collisions.
+    ///
+    /// The transform is pure: it depends only on the provided labels — not on paths,
+    /// timestamps, randomness, or the host — so the same multiset of labels always
+    /// produces the same ids. Each resulting id obeys <see cref="MaxFixtureIdLength"/> and
+    /// is valid per <see cref="IsValidFixtureId"/>.
+    /// </summary>
+    public static IReadOnlyList<string> DisambiguateFixtureIds(IReadOnlyList<string> labels)
+    {
+        if (labels is null)
+        {
+            throw new ArgumentNullException(nameof(labels));
+        }
+
+        var count = labels.Count;
+        var normalized = new string[count];
+        var groups = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (var index = 0; index < count; index++)
+        {
+            normalized[index] = NormalizeFixtureId(labels[index]);
+            if (!groups.TryGetValue(normalized[index], out var members))
+            {
+                members = new List<int>();
+                groups[normalized[index]] = members;
+            }
+
+            members.Add(index);
+        }
+
+        var result = new string[count];
+
+        // Every id already handed out, kept globally so no id can be produced twice —
+        // not even when a disambiguated member ends up colliding with a different
+        // group's natural alias. Groups are processed in deterministic alias order and
+        // members in deterministic label order so the assignment is stable.
+        var assigned = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (alias, members) in groups.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            var ordered = members.OrderBy(member => labels[member], StringComparer.Ordinal).ToList();
+
+            if (ordered.Count == 1 && assigned.Add(alias))
+            {
+                result[ordered[0]] = alias;
+                continue;
+            }
+
+            foreach (var member in ordered)
+            {
+                var discriminator = Fnv1aHex(labels[member]);
+                var candidate = AppendCollisionDiscriminator(alias, discriminator);
+                var ordinal = 2;
+                while (!assigned.Add(candidate))
+                {
+                    candidate = AppendCollisionDiscriminator(
+                        alias, discriminator + CollisionSeparator + ordinal.ToString(CultureInfo.InvariantCulture));
+                    ordinal++;
+                }
+
+                result[member] = candidate;
+            }
+        }
+
+        return result;
+    }
+
+    private const string CollisionSeparator = "-";
+
+    private static string AppendCollisionDiscriminator(string alias, string discriminator)
+    {
+        var maxBaseLength = MaxFixtureIdLength - (discriminator.Length + 1);
+        var basePart = alias;
+        if (basePart.Length > maxBaseLength)
+        {
+            basePart = basePart[..maxBaseLength].TrimEnd('-');
+        }
+
+        return basePart.Length == 0 ? discriminator : basePart + CollisionSeparator + discriminator;
+    }
+
+    /// <summary>
+    /// Deterministic 32-bit FNV-1a hash of a string, formatted as eight lowercase hex
+    /// digits. Pure integer arithmetic over the UTF-16 code units, so it never depends on
+    /// environment state and never uses a random or non-deterministic API.
+    /// </summary>
+    private static string Fnv1aHex(string value)
+    {
+        const uint offsetBasis = 2166136261;
+        const uint prime = 16777619;
+        var hash = offsetBasis;
+        foreach (var character in value)
+        {
+            hash ^= character;
+            hash *= prime;
+        }
+
+        return hash.ToString("x8", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// Derives the executable serial from the boot executable's on-disc file name.
     /// The transform is pure and title-agnostic: the ISO 9660 <c>;version</c> suffix is
     /// stripped, the name is uppercased invariantly, and a name shaped like

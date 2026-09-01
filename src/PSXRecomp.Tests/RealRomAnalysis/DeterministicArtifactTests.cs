@@ -248,6 +248,87 @@ public class DeterministicArtifactTests
         AnalysisArtifactSchema.IsValidFixtureId(normalized).Should().BeTrue();
     }
 
+    [Fact]
+    public void DisambiguateFixtureIds_KeepsNonCollidingAliasesUnchanged()
+    {
+        var ids = AnalysisArtifactSchema.DisambiguateFixtureIds(
+            new[] { "PERSONA", "Some Game (USA)", "disc_01" });
+
+        ids.Should().Equal("persona", "some-game-usa", "disc_01");
+    }
+
+    [Fact]
+    public void DisambiguateFixtureIds_KeepsASingleLabelAtItsNormalizedId()
+    {
+        var ids = AnalysisArtifactSchema.DisambiguateFixtureIds(new[] { "Some Game (USA)" });
+
+        ids.Should().Equal("some-game-usa");
+    }
+
+    [Fact]
+    public void DisambiguateFixtureIds_ResolvesNameCollisionsUniquely()
+    {
+        // Case, separator-deduplication and content collisions all produce the same
+        // normalized alias; each distinct label must still own a distinct id.
+        var ids = AnalysisArtifactSchema.DisambiguateFixtureIds(new[] { "Foo", "foo", "a-b", "a--b" });
+
+        ids.Should().HaveCount(4);
+        ids.Should().OnlyContain(id => AnalysisArtifactSchema.IsValidFixtureId(id));
+        ids.Should().OnlyContain(id => id.Length <= AnalysisArtifactSchema.MaxFixtureIdLength);
+        ids.Distinct().Should().HaveCount(4, "every distinct colliding label must map to a distinct fixture id");
+    }
+
+    [Fact]
+    public void DisambiguateFixtureIds_ResolvesTruncationCollisions()
+    {
+        // Two names that differ only beyond the 64-character truncation boundary.
+        var longBase = new string('a', 70);
+        var ids = AnalysisArtifactSchema.DisambiguateFixtureIds(new[] { longBase + "XYZ", longBase + "AB" });
+
+        ids.Should().OnlyContain(id => AnalysisArtifactSchema.IsValidFixtureId(id));
+        ids.Should().OnlyContain(id => id.Length <= AnalysisArtifactSchema.MaxFixtureIdLength);
+        ids.Distinct().Should().HaveCount(2,
+            "names that collide only after truncation must still map to distinct ids");
+    }
+
+    [Fact]
+    public void DisambiguateFixtureIds_ResolvesUnnamedCollisions()
+    {
+        // Both labels normalize to "unnamed", yet they are distinct disc images.
+        var ids = AnalysisArtifactSchema.DisambiguateFixtureIds(new[] { "///", "???" });
+
+        ids.Should().OnlyContain(id => AnalysisArtifactSchema.IsValidFixtureId(id));
+        ids.Distinct().Should().HaveCount(2, "distinct labels normalized to 'unnamed' must not share an id");
+    }
+
+    [Fact]
+    public void DisambiguateFixtureIds_IsDeterministicForTheSameInputSet()
+    {
+        var labels = new[] { "Some Game (USA)", "SOME GAME (USA)", "another" };
+        var first = AnalysisArtifactSchema.DisambiguateFixtureIds(labels);
+        var second = AnalysisArtifactSchema.DisambiguateFixtureIds(labels);
+
+        first.Should().Equal(second, "the same input set must always yield the same fixture ids");
+    }
+
+    [Fact]
+    public void DisambiguateFixtureIds_NeverReusesAnIdAcrossTheWholeSet()
+    {
+        var labels = new[]
+        {
+            "Foo", "foo", "PERSONA", "Some Game (USA)", "SOME GAME (USA)",
+            "a-b", "a--b", "///", "???", "disc_01",
+            new string('x', 70) + "AAA", new string('x', 70) + "BBB",
+        };
+        var ids = AnalysisArtifactSchema.DisambiguateFixtureIds(labels);
+
+        ids.Should().HaveCount(labels.Length);
+        ids.Should().OnlyContain(id => AnalysisArtifactSchema.IsValidFixtureId(id));
+        ids.Should().OnlyContain(id => id.Length <= AnalysisArtifactSchema.MaxFixtureIdLength);
+        ids.Distinct().Should().HaveCount(ids.Count,
+            "the mapping must be injective over the whole set, not only within a collision group");
+    }
+
     [Theory]
     [InlineData("Fixture")]
     [InlineData("-leading-dash")]

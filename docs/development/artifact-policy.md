@@ -71,8 +71,14 @@ To add an entry to `allowedPaths`:
 `reports/` and `logs/` are git-ignored working directories for real-ROM analysis output.
 Their format, and the rule separating deterministic artifacts (no timestamps, no local
 paths) from execution logs (timestamps expected, local-only), are defined in
-[Real-ROM Analysis Artifact Format](real-rom-analysis-artifacts.md). Neither directory
-may ever contain ROM, ISO, EXE or CHD content; this gate enforces that mechanically.
+[Real-ROM Analysis Artifact Format](real-rom-analysis-artifacts.md).
+
+Because `reports/` and `logs/` are git-ignored, this gate never scans their content — it
+checks only the **Git-tracked tree** (`git ls-files`). The rule that neither directory
+contains ROM, ISO, EXE or CHD content is upheld locally by `.gitignore` preventing
+accidental staging, and mechanically here if such content is ever committed as a tracked
+file: the forbidden-path-segment and content-signature rules then catch it like any other
+contaminant.
 
 ## Test fixture boundary
 

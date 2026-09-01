@@ -43,9 +43,13 @@ a question about the *run*. Mixing them destroys the property that makes artifac
 useful: a diff between two artifacts would then always be non-empty, and a real
 analysis regression would be indistinguishable from noise.
 
-Both roots (`reports/` and `logs/`) are git-ignored. Neither ever contains ROM, ISO,
-EXE or CHD content — see `docs/development/artifact-policy.md`, which is enforced in CI
-by the Artifact Contamination Gate.
+Both roots (`reports/` and `logs/`) are git-ignored local-only working directories, so
+their content is **not scanned by the CI Artifact Contamination Gate** — that gate checks
+only the Git-tracked tree (`git ls-files`) for contaminants. The guarantee that neither
+directory ever contains ROM, ISO, EXE or CHD content is upheld locally by `.gitignore`
+preventing accidental staging, and mechanically by the same gate if such content is ever
+committed into the tracked tree — see `docs/development/artifact-policy.md`. Reports and
+logs stay out of the repository entirely.
 
 ### How determinism is enforced, not just intended
 
@@ -82,7 +86,23 @@ reports/real-rom/<fixture>/
 ```
 
 `<fixture>` is a **human-facing alias only**, derived mechanically from the disc image's
-file name by `AnalysisArtifactSchema.NormalizeFixtureId` (lowercase ASCII, `-`, `_`, `.`).
+file name. The transform is pure and title-agnostic:
+
+- ASCII letters are lowercased; digits, `-`, `_` and `.` are kept.
+- Every other character collapses to a single `-` (consecutive separators never double).
+- Leading and trailing `-` are trimmed, and any leading non-alphanumeric characters are
+  removed so the id starts with a letter or a digit.
+- The result is truncated to 64 characters.
+- If nothing usable remains the id is `"unnamed"`.
+
+Two distinct fixture names can nevertheless normalize to the same id (case differences,
+separator collisions, truncation past the 64-character boundary). Before artifact
+directories are chosen, `AnalysisArtifactSchema.DisambiguateFixtureIds` detects such
+collisions and, **only for the colliding members**, appends a short deterministic
+discriminator derived from each original name so no two fixtures share a directory.
+Non-colliding fixtures keep their normalized id unchanged, and the whole derivation
+depends only on the fixture names — never on paths, timestamps, randomness or the host.
+
 No title is named in code: fixtures are whatever `rom/*.chd` discovery finds. The
 **formal identity** of an analysis is the disc image SHA-256, recorded in every document.
 Two machines may use different aliases for the same disc; they will still agree on its

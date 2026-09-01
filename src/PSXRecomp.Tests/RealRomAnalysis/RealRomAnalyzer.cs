@@ -79,14 +79,14 @@ public static class RealRomAnalyzer
         Record("ANALYZE", "PASS", $"DiscImageAnalyzer produced report ({report.DecodedInstructionCount} instructions)");
 
         ChdMapStatistics chdStats;
+        IsoVolumeStatistics isoStats;
         using (var chd = ChdReader.Open(new MemoryStream(chdBytes, writable: false)))
         {
             chdStats = chd.ComputeMapStatistics();
             Record("CHD_META", "PASS",
                 $"V{chdStats.Version} hunks={chdStats.TotalHunks} cdlz={chdStats.CdlzCount} cdzl={chdStats.CdzlCount}");
+            isoStats = CaptureIso(chd, Record);
         }
-
-        var isoStats = CaptureIso(chdBytes, Record);
 
         Record("PSX_EXE", "PASS",
             $"Boot executable '{report.ExecutableFileName}' entry=0x{report.EntryPoint:X8}");
@@ -114,11 +114,10 @@ public static class RealRomAnalyzer
     /// </summary>
     public static string ComputeSha256ForTest(byte[] data) => ComputeSha256(data);
 
-    private static IsoVolumeStatistics CaptureIso(byte[] chdBytes, Action<string, string, string> record)
+    private static IsoVolumeStatistics CaptureIso(ChdReader chd, Action<string, string, string> record)
     {
         record("FILESYSTEM", "START", "Reading ISO9660 filesystem");
 
-        using var chd = ChdReader.Open(new MemoryStream(chdBytes, writable: false));
         var iso = DiscImageAnalyzer.CreateIsoReader(chd);
         iso.Initialize();
 
