@@ -1,6 +1,6 @@
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.DiscImage.Artifacts;
+namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 /// <summary>
 /// <c>instructions.json</c>: the detailed instruction artifact. One entry per decoded

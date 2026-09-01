@@ -1,4 +1,4 @@
-using PSXRecomp.Core.DiscImage.Artifacts;
+using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 

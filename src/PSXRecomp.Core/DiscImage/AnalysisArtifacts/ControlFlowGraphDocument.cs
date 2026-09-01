@@ -1,6 +1,6 @@
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.DiscImage.Artifacts;
+namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 /// <summary>
 /// <c>cfg.json</c>: the detailed control-flow artifact. Basic blocks and edges are each

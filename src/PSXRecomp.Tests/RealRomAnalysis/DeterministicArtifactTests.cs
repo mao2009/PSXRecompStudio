@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using PSXRecomp.Core.Analysis.Contracts;
 using PSXRecomp.Core.DiscImage;
-using PSXRecomp.Core.DiscImage.Artifacts;
+using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 

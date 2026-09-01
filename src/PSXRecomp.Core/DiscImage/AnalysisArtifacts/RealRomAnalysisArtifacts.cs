@@ -1,6 +1,6 @@
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.DiscImage.Artifacts;
+namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 /// <summary>
 /// The complete deterministic artifact set for one fixture, together with the exact

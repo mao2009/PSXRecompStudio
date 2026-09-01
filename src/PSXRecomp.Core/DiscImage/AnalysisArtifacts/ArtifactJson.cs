@@ -4,7 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.DiscImage.Artifacts;
+namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 /// <summary>
 /// Canonical JSON encoding for deterministic analysis artifacts.

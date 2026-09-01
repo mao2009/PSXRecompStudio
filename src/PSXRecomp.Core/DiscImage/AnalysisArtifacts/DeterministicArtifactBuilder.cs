@@ -1,7 +1,7 @@
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 
-namespace PSXRecomp.Core.DiscImage.Artifacts;
+namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 /// <summary>
 /// Inputs required to serialize one analysis run. This is a pure value: it carries the

@@ -6,7 +6,7 @@
 
 **Related Issues:** #212, #215
 
-**Related Components:** `src/PSXRecomp.Core/DiscImage/Artifacts/`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
+**Related Components:** `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
 
 ## Purpose
 
@@ -49,7 +49,7 @@ by the Artifact Contamination Gate.
 
 ### How determinism is enforced, not just intended
 
-The serialization layer lives in `PSXRecomp.Core.DiscImage.Artifacts`, which is a
+The serialization layer lives in `PSXRecomp.Core.DiscImage.AnalysisArtifacts`, which is a
 **Domain** layer namespace. The architecture analyzer's forbidden-API rule (PSXR005)
 already bans `System.DateTime.Now`/`UtcNow`, `System.DateTimeOffset`, `System.Guid.NewGuid`,
 `System.Random`, `System.Environment`, `System.IO.File` and `System.IO.Directory` in that

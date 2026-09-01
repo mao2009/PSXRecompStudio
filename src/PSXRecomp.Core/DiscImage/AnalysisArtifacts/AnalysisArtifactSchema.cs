@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
 
-namespace PSXRecomp.Core.DiscImage.Artifacts;
+namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
 /// <summary>
 /// Single source of truth for the deterministic real-ROM analysis artifact format:

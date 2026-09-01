@@ -48,6 +48,16 @@ Exit codes: `0` clean, `1` violations, `2` setup/internal error.
 
 The check scans the entire tracked tree on every run. At the current scale this is cheap and strictly stronger than diff-only scanning; revisit if the tree grows large enough for full scans to become slow.
 
+## Reserved directory names in source
+
+`forbiddenPathSegments` matches path segments anywhere in the tree, not only at the
+root. A **source** directory named `artifacts`, `build`, `bin`, `obj`, `out`, `dist` or
+`publish` therefore fails the gate even though it holds hand-written code. Rename the
+directory rather than allowlisting it: an allowlist entry is exact-path, so it would
+have to be extended for every file added to that directory, and the gate would weaken
+over time. `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/` is named that way for this
+reason.
+
 ## Allowlist procedure
 
 To add an entry to `allowedPaths`:
