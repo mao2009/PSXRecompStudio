@@ -29,13 +29,17 @@ skills/
 │       ├── review/       #   Standard review viewpoints + report format
 │       └── issue/        #   Issue authoring / updating procedure
 │       #   (release is intentionally NOT created yet — see the note below)
-└── project/           # Per-project inputs consumed by common skills
+└── project/           # Per-project inputs and project-scoped skills
     └── psxrecomp-studio/
-        └── profile.md
+        ├── profile.md
+        └── real-rom-analysis/  # Real-ROM analysis / verification flow (#213)
+            └── SKILL.md
 ```
 
 - `common/` skills must stay free of MIPS/R3000A/analyzer/test-command details.
-  Everything project-specific belongs in a `project/<name>/profile.md`.
+  Everything project-specific belongs under `project/<name>/`: the profile that
+  feeds the common skills, plus any skill that is inherently about this project's
+  domain (disc images, R3000A decoding) and therefore cannot be made portable.
 - Porting a skill to another project = copying `common/` and writing a new profile.
 
 ## Task skills vs. gate/execution skills
@@ -69,6 +73,7 @@ gates.
 | `common/task/implementation` | Implementation procedure (Issue confirm → repo state → related survey → SSOT check → approach → implement → test → build/analyzer/E2E → diff review → DoD); Definition of Done | #174 |
 | `common/task/review` | Standard review viewpoints (requirements fit, SSOT, correctness, security, error handling, tests, regression, unintended changes) + report format | #174 |
 | `common/task/issue` | Issue authoring / updating so an Issue serves as the SSOT of a work unit | #174 |
+| `project/psxrecomp-studio/real-rom-analysis` | Repeatable real-ROM verification flow: fixture detection, staged analysis with stage-level progress, PASS/FAIL plus failing stage and reason, separated detailed log and summary report, findings routed to follow-up Issues (spec: `docs/development/real-rom-analysis.md`) | #213 |
 
 ## Release skill evaluation
 

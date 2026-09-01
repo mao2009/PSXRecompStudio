@@ -22,6 +22,7 @@ common skill is ported to another project.
 | CPU/R3000A subsystem specs | `docs/cpu/instruction-set.md`, `docs/cpu/instruction-format.md`, `docs/cpu/registers.md`, `docs/cpu/r3000a.md`, `docs/cpu/pipeline.md`, `docs/cpu/memory.md`, `docs/cpu/exceptions.md`, `docs/cpu/cop0.md` |
 | Test specification | `docs/cpu/test-specification.md` |
 | Repository artifact policy | `docs/development/artifact-policy.md` (SSOT: `config/artifact-policy.json`) |
+| Real-ROM analysis flow (stages, failure kinds, artifacts, CI/SKIP policy) | `docs/development/real-rom-analysis.md` (procedure: `skills/project/psxrecomp-studio/real-rom-analysis/SKILL.md`) |
 | API documentation & docstring policy | `docs/development/documentation-policy.md` (ADR-011), measured by `scripts/docs/measure-docstring-coverage.ps1` |
 
 ## 2. ADR directory
