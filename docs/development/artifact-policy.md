@@ -56,6 +56,14 @@ To add an entry to `allowedPaths`:
 2. Prefer regenerating/synthesizing content over allowlisting real dumps. Real ROM/BIOS-derived data must never be allowlisted.
 3. Update this document if the change alters the policy's intent.
 
+## Locally generated analysis artifacts
+
+`reports/` and `logs/` are git-ignored working directories for real-ROM analysis output.
+Their format, and the rule separating deterministic artifacts (no timestamps, no local
+paths) from execution logs (timestamps expected, local-only), are defined in
+[Real-ROM Analysis Artifact Format](real-rom-analysis-artifacts.md). Neither directory
+may ever contain ROM, ISO, EXE or CHD content; this gate enforces that mechanically.
+
 ## Test fixture boundary
 
 Golden tests (Issue #39 Step 5) embed instruction encodings as C# literals; there are no binary test fixtures today. Any future fixture must be synthetic/generated data committed as source (text) where possible, documented here, and explicitly allowlisted when unavoidably binary.
