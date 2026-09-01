@@ -10,6 +10,11 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// reaches COMPLETE. When no fixture is present — the normal case in CI — the test
 /// skips explicitly with a reason instead of failing, so the disc-image requirement
 /// never breaks the existing pipeline.
+///
+/// Fixture discovery is <see cref="RealRomFixtures"/> (the single SSOT); persistence is
+/// the #215 deterministic artifact set written by <see cref="RealRomArtifactWriter"/>,
+/// orchestrated by <see cref="RealRomAnalyzer.AnalyzeAndPersist"/>. No competing
+/// artifact schema or second flow exists here.
 /// </summary>
 [Test]
 public class RealRomAnalysisSkillTests
@@ -19,39 +24,47 @@ public class RealRomAnalysisSkillTests
 
 #pragma warning disable PSXR005
     private static string ReadRepositoryFile(string relativePath) =>
-        File.ReadAllText(Path.Combine(RomFixtureLocator.RepositoryRoot, relativePath));
+        File.ReadAllText(Path.Combine(RealRomFixtures.RepositoryRoot, relativePath));
 #pragma warning restore PSXR005
 
     [SkippableFact]
     public void EveryLocalFixture_CompletesTheAnalysisFlow()
     {
-        var fixtures = RomFixtureLocator.Discover();
-        Skip.If(fixtures.Count == 0,
-            $"skipped: no real-ROM fixture under '{RomFixtureLocator.DefaultRomDirectory}' " +
-            "(supported: " + string.Join(", ", RomFixtureLocator.SupportedExtensions) + ")");
+        var fixtures = RealRomFixtures.Discover();
+        Skip.If(fixtures.Count == 0, RealRomFixtures.NoFixtureSkipReason);
 
-        foreach (var fixture in fixtures)
+        var results = RealRomAnalyzer.RunAll(
+            RealRomFixtures.ReportRoot, RealRomFixtures.LogRoot, InstructionCount);
+
+        results.Should().HaveCount(fixtures.Count);
+        foreach (var result in results)
         {
-            var result = RealRomAnalysisFlow.Run(
-                fixture,
-                RealRomAnalysisFlow.DefaultReportDirectory,
-                RealRomAnalysisFlow.DefaultLogDirectory,
-                InstructionCount);
-
             result.Outcome.Status.Should().Be(RomAnalysisStatus.Pass,
-                $"fixture '{fixture.Name}' failed at {result.Outcome.FailedStage} " +
+                $"fixture '{result.FixtureId}' failed at {result.Outcome.FailedStage} " +
                 $"({result.Outcome.FailureKind}): {result.Outcome.FailureReason}");
-            result.Outcome.LastSuccessfulStage.Should().Be(RomAnalysisStage.Complete);
+            result.Outcome.LastSuccessfulStage.Should().Be(RomAnalysisStage.Complete,
+                "a fully persisted run ends at COMPLETE, past MANIFEST");
+            result.AnyArtifactAvailable.Should().BeTrue();
         }
     }
 
     [Fact]
     public void SkipConditionIsDrivenByFixturePresenceOnly()
     {
-        using var temp = new TempDirectory();
+        var fixtures = RealRomFixtures.Discover();
 
-        RomFixtureLocator.Discover(temp.Combine("rom")).Should().BeEmpty(
-            "an environment without a rom/ directory yields no fixtures, which the skill reports as SKIP");
+        if (fixtures.Count == 0)
+        {
+            // With no fixtures the skill must report SKIP, never fail. The RunAll loop
+            // over an empty discovery is vacuously empty and callers turn that into SKIP.
+            RealRomAnalyzer.RunAll(RealRomFixtures.ReportRoot, RealRomFixtures.LogRoot, InstructionCount)
+                .Should().BeEmpty();
+        }
+        else
+        {
+            fixtures.Select(f => f.FixtureId).Should().OnlyHaveUniqueItems(
+                "collision-free fixture ids come from AnalysisArtifactSchema.DisambiguateFixtureIds");
+        }
     }
 
     /// <summary>
@@ -70,8 +83,7 @@ public class RealRomAnalysisSkillTests
             .EnumerateArray().Select(e => e.GetString()).ToList();
 
         segments.Should().Contain("rom");
-        extensions.Should().Contain(RomFixtureLocator.SupportedExtensions,
-            "every disc image format the skill accepts must be rejected by the contamination gate");
+        extensions.Should().Contain(".chd", "every disc image format the skill accepts must be rejected by the contamination gate");
     }
 
     /// <summary>

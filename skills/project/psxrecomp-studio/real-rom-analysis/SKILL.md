@@ -39,15 +39,15 @@ recompiler line).
 ## Preconditions
 
 - The disc image is legally owned by the operator and already present locally.
-- It is placed under `rom/` in one of the supported layouts:
+- It is placed under `rom/` as a top-level `.chd` (the layout and the alias the
+  fixture discovery SSOT `RealRomFixtures` recognizes):
 
   ```text
-  rom/<fixture>.chd              → fixture "<fixture>"
-  rom/<fixture>/<anything>.chd   → fixture "<fixture>"
+  rom/<fixture>.chd   → fixture "<fixture>"
   ```
 
-  `.chd` and `.iso` are recognized. Never copy an image anywhere else in the
-  repository, and never rename one to evade the artifact gate.
+  Never copy an image anywhere else in the repository, and never rename one to
+  evade the artifact gate.
 - `git status` is clean of any disc image before starting.
 
 ## Procedure
@@ -67,8 +67,9 @@ analyzes each one and requires every run to reach `COMPLETE`.
 
 ### 2. Run the flow
 
-`RealRomAnalysisFlow.RunAll(romDirectory, reportDirectory, logDirectory)` executes,
-for every discovered fixture:
+The skill test runs `RealRomAnalyzer.RunAll(RealRomFixtures.ReportRoot,
+RealRomFixtures.LogRoot, instructionCount)` — the single orchestration entry
+point — which, for every discovered fixture, executes:
 
 ```text
 START → INPUT → CHD_OPEN → FILESYSTEM → SYSTEM_CNF → BOOT_EXECUTABLE → PSX_EXE
@@ -76,22 +77,31 @@ START → INPUT → CHD_OPEN → FILESYSTEM → SYSTEM_CNF → BOOT_EXECUTABLE �
       → REPORT → MANIFEST → COMPLETE
 ```
 
-Each fixture is analyzed and persisted independently, so one failing title never
-hides the result of another.
+`MANIFEST`/`COMPLETE` are recorded by the orchestrator after the artifacts are
+persisted. Each fixture is analyzed and persisted independently, so one failing
+title never hides the result of another.
 
 ### 3. Read the progress and the verdict
 
-Every run — passing or failing — writes:
+A successful run writes the #215 deterministic artifact set, and a detailed
+per-stage log:
 
 ```text
-reports/real-rom/<fixture>/run-summary.json   verdict, stage table, counts
-logs/real-rom/<fixture>/analysis.log.jsonl    per-stage detail
-reports/real-rom/<fixture>/report.json        full analysis report (PASS only)
+reports/real-rom/<fixture>/manifest.json        identity + counts   (PASS)
+reports/real-rom/<fixture>/report.json          CHD/ISO/exe/decode  (PASS)
+reports/real-rom/<fixture>/instructions.json    decoded instructions (PASS)
+reports/real-rom/<fixture>/cfg.json             blocks + CFG         (PASS)
+logs/real-rom/<fixture>/analysis.log.jsonl      per-stage detail     (best effort)
 ```
 
-Read `run-summary.json` first: `Status`, `LastSuccessfulStage`, `FailedStage`,
-`FailureKind`, `FailureReason`. Consult the log only when the summary is not
-enough. Never paste raw ROM-derived content into a report, an Issue or a PR.
+Persistence is best-effort: if an artifact cannot be written the run is
+classified `ArtifactPersistenceFailure` at `MANIFEST` and stops before
+`COMPLETE`, and the affected artifact's path is unavailable rather than claimed
+present. Read `manifest.json` for the identity and aggregate counts and the log
+for per-stage detail (`Status`, `LastSuccessfulStage`, `FailedStage`,
+`FailureKind`, `FailureReason` live in the run result / outcome, not in a
+separate summary document). Never paste raw ROM-derived content into a report,
+an Issue or a PR.
 
 ### 4. Classify the outcome
 
@@ -132,9 +142,10 @@ absolute local paths, credentials, or agent/session URLs.
   strict ordering, so a misplaced stage fails its tests immediately.
 - **A new failure kind** — classify it in the pipeline and add it to the table in
   the specification document; add a test that reaches it with a synthetic image.
-- **A new container format** — add the extension to `RomFixtureLocator`, add an
-  entry stage path to the pipeline, and extend `config/artifact-policy.json` so
-  the contamination gate rejects the new format too.
+- **A new container format** — add the extension to the fixture discovery SSOT
+  `RealRomFixtures`, add an entry stage path to the pipeline, and extend
+  `config/artifact-policy.json` so the contamination gate rejects the new format
+  too.
 
 Cover every new stage failure with a `SyntheticIsoImageBuilder` test so the
 behaviour is verified in CI without a disc image.

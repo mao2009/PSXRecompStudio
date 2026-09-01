@@ -77,41 +77,55 @@ exception (retained in-process for callers that need to rethrow it).
 | `MANIFEST` | `ArtifactPersistenceFailure` | Artifact could not be written |
 
 A run can pass with a non-zero decode-failure count (a partial decode); the count
-is reported in the summary. Zero decoded instructions is a `MIPS_DECODE` failure.
+is reported in the manifest. Zero decoded instructions is a `MIPS_DECODE` failure.
 
 ## Inputs
 
-Fixtures are *discovered*, never named in code. Two `rom/` layouts are supported:
+Fixtures are *discovered*, never named in code. `RealRomFixtures.Discover()` (the
+single SSOT for fixture discovery) scans `rom/*.chd` at the top level:
 
 ```text
-rom/<fixture>.chd              → fixture "<fixture>"
-rom/<fixture>/<anything>.chd   → fixture "<fixture>"
+rom/<fixture>.chd   → fixture "<fixture>"
 ```
 
-`.chd` and `.iso` are accepted. The fixture name is only a directory-safe alias
-for artifact paths; the formal identity of an input is its SHA-256.
+The fixture name is only a directory-safe alias (disambiguated via
+`AnalysisArtifactSchema.DisambiguateFixtureIds` so different fixtures never share
+an artifact directory); the formal identity of an input is its SHA-256, recorded
+inside the artifacts.
 
 ## Artifacts
 
-Detailed log and summary report are deliberately separate:
+Analysis is orchestrated by `RealRomAnalyzer` and persisted by
+`RealRomArtifactWriter` using the Issue #215 deterministic artifact schema — the
+only persisted schema. There is no separate "run-summary" document.
 
 ```text
-reports/real-rom/<fixture>/report.json       DiscImageAnalysisReport  (PASS only)
-reports/real-rom/<fixture>/run-summary.json  verdict, stage table, counts (always)
-logs/real-rom/<fixture>/analysis.log.jsonl   per-stage detail, JSONL   (always)
+reports/real-rom/<fixture>/manifest.json       invocation identity + counts  (PASS)
+reports/real-rom/<fixture>/report.json         CHD/ISO/SYSTEM.CNF/decode data (PASS)
+reports/real-rom/<fixture>/instructions.json   decoded instruction listing     (PASS)
+reports/real-rom/<fixture>/cfg.json            basic blocks + control-flow     (PASS)
+logs/real-rom/<fixture>/analysis.log.jsonl     per-stage detail, JSONL        (best effort)
 ```
 
-- **`run-summary.json`** — PASS/FAIL/SKIP, last successful stage, failing stage,
-  failure kind and reason, the stage table, and aggregate counts (executable name
-  and SHA-256, entry point, text start/size, decoded instruction count, decode
-  failures, basic block and CFG edge counts, call/return candidates). It contains
-  no decoded instruction text and no ROM bytes, and no timestamps or local paths,
-  so repeated runs over the same input produce byte-identical output.
+- **`manifest.json`** — the formal identity (disc SHA-256, size, executable SHA-256
+  and serial), aggregated counts (decoded instructions, basic blocks, CFG edges),
+  and content hashes of the sibling documents. Deterministic and diffable.
+- **`report.json` / `instructions.json` / `cfg.json`** — the #215 projection of the
+  `DiscImageAnalysisReport` into stable, versioned documents.
 - **`analysis.log.jsonl`** — one JSON object per stage with the full detail text.
-- **`report.json`** — the existing `DiscImageAnalysisReport` (#212 schema).
+  It may be written even for a failing analysis (down to the stage that failed),
+  but persistence is best-effort. Paths are redacted at this boundary.
 
-A failing run still writes the summary and the log, so a failure leaves the same
-evidence trail as a success.
+### Persistence is best-effort
+
+Artifact persistence is isolated per fixture and never throws out of the
+orchestrator. If an artifact cannot be written, the run is classified as
+`ArtifactPersistenceFailure` at the `MANIFEST` stage and the affected artifact is
+represented as **unavailable** (its path is absent/non-null-but-unwritten). A
+`MANIFEST` failure means the run stops before `COMPLETE`. Do not assume a summary
+report or log always exists: a fixture that fails before `REPORT` produces no
+artifacts, and a disk error can make any artifact unavailable. Each fixture is
+handled independently, so one failing title never hides another's result.
 
 ## ROM handling policy
 
@@ -132,10 +146,14 @@ it skips explicitly with a reason and CI stays green; with a fixture present eac
 discovered image must reach `COMPLETE` or the test fails. No existing unit,
 integration or native job depends on a fixture.
 
-The stage model, every stage failure, fixture discovery, multi-fixture handling
-and artifact separation are covered by tests that run everywhere, using synthetic
-in-memory ISO images built by `SyntheticIsoImageBuilder` — no copyrighted data is
-needed to verify the flow itself.
+The stage model and every stage failure are covered by tests that run everywhere,
+using synthetic in-memory ISO images built by `SyntheticIsoImageBuilder` — no
+copyrighted data is needed to verify the flow's classification logic. Tests that
+need a real disc image to reach `REPORT` (the deterministic artifact set,
+persistence-failure classification, full-success `COMPLETE`) skip when no fixture
+is present, exactly like the CI entry point. Persistence isolation, path
+redaction and stream ownership are additionally exercised everywhere with no
+disc image required.
 
 ## Implementation map
 
@@ -145,10 +163,13 @@ needed to verify the flow itself.
 | Stage bookkeeping and ordering invariants | `RomAnalysisStageRecorder` |
 | Classified result | `RomAnalysisOutcome` |
 | Throwing façade (unchanged public contract) | `DiscImageAnalyzer` |
-| Fixture discovery | `PSXRecomp.Tests.RealRomAnalysis.RomFixtureLocator` |
-| Flow driver and artifact persistence | `RealRomAnalysisFlow` |
-| Summary report | `RomAnalysisRunSummary` |
-| Detailed log | `RomAnalysisLogWriter` |
+| CHD→ISO reader (single SSOT) | `DiscImageAnalyzer.CreateIsoReader` |
+| Fixture discovery (single SSOT) | `PSXRecomp.Tests.RealRomAnalysis.RealRomFixtures` |
+| Orchestration: stream run, MANIFEST/COMPLETE, persistence isolation | `RealRomAnalyzer` |
+| Deterministic artifact writer | `RealRomArtifactWriter` |
+| Deterministic artifact builder (schema SSOT, #215) | `PSXRecomp.Core.DiscImage.AnalysisArtifacts.DeterministicArtifactBuilder` |
+| Detailed execution log | `ExecutionLogWriter` |
+| Path redaction (log persistence boundary) | `PathRedactor` (applied in `ExecutionLogWriter`) |
 
 The procedure an agent follows to run and interpret the flow is
 `skills/project/psxrecomp-studio/real-rom-analysis/SKILL.md`.

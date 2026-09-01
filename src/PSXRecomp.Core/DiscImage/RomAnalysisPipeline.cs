@@ -46,7 +46,15 @@ public static class RomAnalysisPipeline
         RomAnalysisStageRecorder? recorder = null)
     {
         ArgumentNullException.ThrowIfNull(discImageBytes);
-        return RunFromChdCore(new MemoryStream(discImageBytes, writable: false), discImageSha256, instructionCount, recorder);
+        recorder ??= new RomAnalysisStageRecorder();
+        recorder.Pass(RomAnalysisStage.Start, "Real-ROM analysis flow started");
+
+        if (!ValidateInput(recorder, discImageBytes, discImageSha256, "CHD"))
+        {
+            return RomAnalysisOutcome.From(recorder);
+        }
+
+        return RunFromChdOpen(new MemoryStream(discImageBytes, writable: false), recorder, discImageSha256, instructionCount);
     }
 
     /// <summary>
@@ -69,15 +77,6 @@ public static class RomAnalysisPipeline
         RomAnalysisStageRecorder? recorder = null)
     {
         ArgumentNullException.ThrowIfNull(chdStream);
-        return RunFromChdCore(chdStream, discImageSha256, instructionCount, recorder);
-    }
-
-    private static RomAnalysisOutcome RunFromChdCore(
-        Stream chdStream,
-        string discImageSha256,
-        int? instructionCount,
-        RomAnalysisStageRecorder? recorder)
-    {
         recorder ??= new RomAnalysisStageRecorder();
         recorder.Pass(RomAnalysisStage.Start, "Real-ROM analysis flow started");
 
@@ -91,6 +90,15 @@ public static class RomAnalysisPipeline
         recorder.Pass(RomAnalysisStage.Input, string.Create(CultureInfo.InvariantCulture,
             $"CHD input accepted: sha256={discImageSha256}"));
 
+        return RunFromChdOpen(chdStream, recorder, discImageSha256, instructionCount);
+    }
+
+    private static RomAnalysisOutcome RunFromChdOpen(
+        Stream chdStream,
+        RomAnalysisStageRecorder recorder,
+        string discImageSha256,
+        int? instructionCount)
+    {
         ChdReader? chd = null;
         try
         {

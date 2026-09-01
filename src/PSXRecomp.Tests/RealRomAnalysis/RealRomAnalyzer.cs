@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
@@ -5,9 +6,8 @@ using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 namespace PSXRecomp.Tests.RealRomAnalysis;
 
 /// <summary>
-/// Runs the Issue #212 analysis pipeline against a local disc image and hands the
-/// result to the deterministic serialization layer, producing two clearly separated
-/// outputs:
+/// Runs the Issue #213 staged pipeline against a local disc image and hands the result to
+/// the deterministic serialization layer, producing two clearly separated outputs:
 ///
 /// <list type="bullet">
 ///   <item><b>Deterministic artifacts</b> (<see cref="RealRomAnalysisArtifacts"/>) —
@@ -19,36 +19,49 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// The two must never mix: nothing from the log reaches an artifact, and the artifact
 /// builder cannot read the clock even if asked to (Domain-layer PSXR005).
 ///
-/// No analysis is re-implemented here; <see cref="DiscImageAnalyzer"/> remains the
-/// single producer of analysis results.
+/// Analysis itself is <em>not</em> re-implemented here: <see cref="RomAnalysisPipeline"/>
+/// owns the stage sequence (START → … → REPORT) and returns a classified
+/// <see cref="RomAnalysisOutcome"/>, and <see cref="DiscImageAnalyzer.CreateIsoReader"/>
+/// remains the single CHD→ISO reader. This type only reads the file, records the I/O-side
+/// MANIFEST / COMPLETE stages, and serializes.
+///
+/// The disc image is read streaming (never buffered whole into memory): the file is hashed
+/// with a streaming SHA-256 and passed to <see cref="RomAnalysisPipeline.RunFromChd(Stream, string, int?, RomAnalysisStageRecorder?)"/>
+/// as a caller-owned, seekable stream. The pipeline manages only the <see cref="ChdReader"/>
+/// lifetime and never disposes the caller's stream.
 /// </summary>
 [Test]
 public static class RealRomAnalyzer
 {
     private const string DiscImageFormat = "CHD";
 
+    /// <summary>Stable classification for any artifact/log write failure at the MANIFEST stage.</summary>
+    public const string ArtifactPersistenceFailure = "ArtifactPersistenceFailure";
+
     /// <summary>
-    /// Reads the disc image at <paramref name="discImagePath"/>, runs the full pipeline,
-    /// and returns the deterministic artifact set together with the execution log.
+    /// Runs the pipeline against the local disc image and returns the deterministic
+    /// artifact set together with the detailed execution log. The staged outcome and
+    /// shared recorder are also returned so the orchestration layer can append the
+    /// MANIFEST / COMPLETE stages after persistence.
     /// </summary>
     /// <param name="fixtureId">
     /// Canonical fixture alias (see <see cref="AnalysisArtifactSchema.NormalizeFixtureId"/>).
     /// Used for the artifact directory name only; the formal identity is the disc SHA-256.
     /// </param>
-    /// <param name="instructionCount">
-    /// Optional bound on the linear decode, forwarded to <see cref="DiscImageAnalyzer"/>.
-    /// The same bound must be used for two runs to be comparable.
-    /// </param>
-    public static (RealRomAnalysisArtifacts Artifacts, List<ExecutionLogEntry> Log) Analyze(
+    public static (RealRomAnalysisArtifacts? Artifacts, RomAnalysisOutcome Outcome,
+        RomAnalysisStageRecorder Recorder, List<ExecutionLogEntry> Log) AnalyzeStaged(
         string discImagePath,
         string fixtureId,
         int? instructionCount = null)
     {
-        var log = new List<ExecutionLogEntry>();
-        var watch = System.Diagnostics.Stopwatch.StartNew();
+        ArgumentNullException.ThrowIfNull(discImagePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fixtureId);
 
-        void Record(string stage, string status, string message)
-        {
+        var recorder = new RomAnalysisStageRecorder();
+        var log = new List<ExecutionLogEntry>();
+        var watch = Stopwatch.StartNew();
+
+        void Record(string stage, string status, string message) =>
             log.Add(new ExecutionLogEntry
             {
                 Stage = stage,
@@ -56,81 +69,191 @@ public static class RealRomAnalyzer
                 Message = message,
                 ElapsedMs = Math.Round(watch.Elapsed.TotalMilliseconds, 3),
             });
-        }
 
-        Record("CHD_OPEN", "START", $"Opening disc image '{fixtureId}'");
-        byte[] chdBytes;
-        string chdSha256;
+        long sizeBytes = 0;
+        string sha256 = string.Empty;
         try
         {
 #pragma warning disable PSXR005
-            chdBytes = File.ReadAllBytes(discImagePath);
+            sizeBytes = new FileInfo(discImagePath).Length;
+            using (var hashStream = File.OpenRead(discImagePath))
+            {
+                sha256 = ComputeSha256(hashStream);
+            }
 #pragma warning restore PSXR005
-            chdSha256 = ComputeSha256(chdBytes);
-            Record("CHD_OPEN", "PASS", $"Read {chdBytes.Length} bytes; SHA-256 {chdSha256}");
+
+            Record("INPUT", "PASS", $"Read {sizeBytes} bytes; SHA-256 {sha256}");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (IsFileAccessFailure(ex))
         {
-            Record("CHD_OPEN", "FAIL", ex.Message);
-            throw;
+            Record("INPUT", "FAILED", ex.Message);
+            recorder.Fail(RomAnalysisStage.Input, "FixtureUnreadable", ex);
+            return (null, RomAnalysisOutcome.From(recorder), recorder, log);
         }
 
-        var report = DiscImageAnalyzer.Analyze(chdBytes, chdSha256, instructionCount);
-        Record("ANALYZE", "PASS", $"DiscImageAnalyzer produced report ({report.DecodedInstructionCount} instructions)");
+        RomAnalysisOutcome outcome;
+#pragma warning disable PSXR005
+        using (var runStream = File.OpenRead(discImagePath))
+#pragma warning restore PSXR005
+        {
+            outcome = RomAnalysisPipeline.RunFromChd(runStream, sha256, instructionCount, recorder);
+        }
+
+        foreach (var stage in outcome.Stages)
+        {
+            Record(stage.Stage.ToString(), StatusLabel(stage.Status),
+                stage.Detail + (stage.FailureKind is not null ? $" [{stage.FailureKind}]" : string.Empty));
+        }
+
+        if (outcome.Report is null)
+        {
+            // Pipeline failed before REPORT; no deterministic artifacts can be built.
+            return (null, outcome, recorder, log);
+        }
 
         ChdMapStatistics chdStats;
         IsoVolumeStatistics isoStats;
-        using (var chd = ChdReader.Open(new MemoryStream(chdBytes, writable: false)))
+#pragma warning disable PSXR005
+        using (var statsStream = File.OpenRead(discImagePath))
+#pragma warning restore PSXR005
+        using (var chd = ChdReader.Open(statsStream))
         {
             chdStats = chd.ComputeMapStatistics();
-            Record("CHD_META", "PASS",
-                $"V{chdStats.Version} hunks={chdStats.TotalHunks} cdlz={chdStats.CdlzCount} cdzl={chdStats.CdzlCount}");
-            isoStats = CaptureIso(chd, Record);
+            isoStats = CaptureIso(chd);
         }
 
-        Record("PSX_EXE", "PASS",
-            $"Boot executable '{report.ExecutableFileName}' entry=0x{report.EntryPoint:X8}");
+        Record("CHD_META", "PASS",
+            $"V{chdStats.Version} hunks={chdStats.TotalHunks} cdlz={chdStats.CdlzCount} cdzl={chdStats.CdzlCount}");
 
         var artifacts = DeterministicArtifactBuilder.Build(new DeterministicArtifactInput
         {
             FixtureId = fixtureId,
             DiscImageFormat = DiscImageFormat,
-            DiscImageSha256 = chdSha256,
-            DiscImageSizeBytes = chdBytes.Length,
+            DiscImageSha256 = sha256,
+            DiscImageSizeBytes = sizeBytes,
             Chd = chdStats,
             Iso = isoStats,
-            Report = report,
+            Report = outcome.Report,
         });
 
         Record("ARTIFACTS", "PASS",
             $"Built {artifacts.Files.Count} deterministic artifacts (manifest schema v{artifacts.Manifest.SchemaVersion})");
 
-        return (artifacts, log);
+        return (artifacts, outcome, recorder, log);
     }
 
     /// <summary>
-    /// Computes the lowercase hex SHA-256 of a byte buffer. Shared so every caller in
-    /// the test layer uses a single implementation.
+    /// Runs the pipeline and returns the deterministic artifact set plus the execution log.
+    /// Kept as the #215 entry point; it throws if analysis failed before the REPORT stage,
+    /// because the deterministic-artifact contract only applies to a successful analysis.
     /// </summary>
-    public static string ComputeSha256ForTest(byte[] data) => ComputeSha256(data);
-
-    private static IsoVolumeStatistics CaptureIso(ChdReader chd, Action<string, string, string> record)
+    public static (RealRomAnalysisArtifacts Artifacts, List<ExecutionLogEntry> Log) Analyze(
+        string discImagePath,
+        string fixtureId,
+        int? instructionCount = null)
     {
-        record("FILESYSTEM", "START", "Reading ISO9660 filesystem");
+        var staged = AnalyzeStaged(discImagePath, fixtureId, instructionCount);
+        if (staged.Artifacts is null)
+        {
+            throw new InvalidDataException(
+                $"Fixture '{fixtureId}' failed before the REPORT stage ({staged.Outcome.FailureKind}: {staged.Outcome.FailureReason}); " +
+                "no deterministic artifacts to return.");
+        }
 
+        return (staged.Artifacts, staged.Log);
+    }
+
+    /// <summary>
+    /// Orchestrates one fixture end to end: analyze, persist artifacts + log, record the
+    /// MANIFEST / COMPLETE stages. A persistence failure is classified as
+    /// <see cref="ArtifactPersistenceFailure"/> at MANIFEST and returned as a result (with
+    /// nullable artifact paths), never thrown. COMPLETE is only reached when the pipeline
+    /// AND every artifact write succeeded.
+    /// </summary>
+    public static RealRomAnalysisRunResult AnalyzeAndPersist(
+        string discImagePath,
+        string fixtureId,
+        string reportRoot,
+        string logRoot,
+        int? instructionCount = null)
+    {
+        var staged = AnalyzeStaged(discImagePath, fixtureId, instructionCount);
+        var recorder = staged.Recorder;
+
+        string? reportPath = null;
+        string? logPath = null;
+        try
+        {
+            if (staged.Artifacts is not null)
+            {
+                reportPath = RealRomArtifactWriter.Write(staged.Artifacts, reportRoot, logRoot, staged.Log);
+                logPath = Path.Combine(logRoot, fixtureId, "analysis.log.jsonl");
+            }
+        }
+        catch (Exception ex) when (IsFileAccessFailure(ex))
+        {
+            reportPath = null;
+            logPath = null;
+            if (!recorder.HasFailed)
+            {
+                recorder.Fail(RomAnalysisStage.Manifest, ArtifactPersistenceFailure, ex);
+            }
+        }
+
+        if (!recorder.HasFailed && reportPath is not null)
+        {
+            recorder.Pass(RomAnalysisStage.Manifest, "Analysis artifacts persisted");
+            recorder.Pass(RomAnalysisStage.Complete, "Real-ROM analysis flow completed");
+        }
+
+        var outcome = RomAnalysisOutcome.From(recorder, staged.Outcome.Report, staged.Outcome.DecodeFailureCount);
+        return new RealRomAnalysisRunResult
+        {
+            FixtureId = fixtureId,
+            Outcome = outcome,
+            Artifacts = staged.Artifacts,
+            ReportPath = reportPath,
+            LogPath = logPath,
+        };
+    }
+
+    /// <summary>
+    /// Analyzes and persists every locally discovered fixture. Each fixture is isolated: a
+    /// persistence or analysis failure for one fixture is returned in that fixture's result
+    /// and never stops the remaining fixtures from running.
+    /// </summary>
+    public static IReadOnlyList<RealRomAnalysisRunResult> RunAll(
+        string reportRoot,
+        string logRoot,
+        int? instructionCount = null)
+    {
+        return RealRomFixtures.Discover()
+            .Select(fixture => AnalyzeAndPersist(fixture.DiscImagePath, fixture.FixtureId, reportRoot, logRoot, instructionCount))
+            .ToList();
+    }
+
+    /// <summary>Computes the lowercase hex SHA-256 of a byte buffer. Shared for tests.</summary>
+    public static string ComputeSha256ForTest(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+
+    private static string ComputeSha256(Stream stream) => Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+
+    private static IsoVolumeStatistics CaptureIso(ChdReader chd)
+    {
         var iso = DiscImageAnalyzer.CreateIsoReader(chd);
         iso.Initialize();
-
-        var statistics = iso.ComputeVolumeStatistics();
-        record("FILESYSTEM", "PASS",
-            $"ISO9660 loaded; volume='{statistics.VolumeIdentifier}' files={statistics.FileCount} " +
-            $"dirs={statistics.DirectoryCount} systemCnf={statistics.SystemCnfPresent}");
-
-        return statistics;
+        return iso.ComputeVolumeStatistics();
     }
 
-    private static string ComputeSha256(byte[] data)
+    private static string StatusLabel(RomAnalysisStageStatus status) => status switch
     {
-        return Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
-    }
+        RomAnalysisStageStatus.Passed => "PASS",
+        RomAnalysisStageStatus.Failed => "FAILED",
+        RomAnalysisStageStatus.Skipped => "SKIP",
+        _ => "?",
+    };
+
+    /// <summary>Class of failures that surface as a classified persistence failure.</summary>
+    private static bool IsFileAccessFailure(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or PathTooLongException or NotSupportedException
+            or System.Security.SecurityException;
 }

@@ -357,6 +357,37 @@ public class RomAnalysisPipelineTests
         }
     }
 
+    [Fact]
+    public void RunFromChd_StreamDoesNotDisposeTheCallersStream()
+    {
+        var bytes = Encoding.ASCII.GetBytes("not a CHD file at all");
+        using var stream = new MemoryStream(bytes, writable: false);
+
+        var outcome = RomAnalysisPipeline.RunFromChd(stream, Sha);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Fail);
+        stream.CanRead.Should().BeTrue("the pipeline must never dispose the caller-owned stream");
+        stream.CanSeek.Should().BeTrue();
+    }
+
+    [Fact]
+    public void RunFromChd_ByteArrayAndStream_ProduceEquivalentFailureOutcomes()
+    {
+        var bytes = Encoding.ASCII.GetBytes("garbage");
+
+        var viaBytes = RomAnalysisPipeline.RunFromChd(bytes, Sha);
+        var viaStream = RomAnalysisPipeline.RunFromChd(new MemoryStream(bytes, writable: false), Sha);
+
+        viaBytes.Status.Should().Be(viaStream.Status);
+        viaBytes.FailedStage.Should().Be(viaStream.FailedStage);
+        viaBytes.FailureKind.Should().Be(viaStream.FailureKind);
+        viaBytes.LastSuccessfulStage.Should().Be(viaStream.LastSuccessfulStage);
+
+        viaBytes.Stages.Select(s => (s.Stage, s.Status)).Should()
+            .Equal(viaStream.Stages.Select(s => (s.Stage, s.Status)),
+                "the byte[] and stream overloads must classify the same input identically");
+    }
+
     private static void AssertFailure(
         RomAnalysisOutcome outcome,
         RomAnalysisStage expectedFailedStage,
