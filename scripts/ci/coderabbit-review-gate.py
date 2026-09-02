@@ -79,6 +79,16 @@ def read_json(path: str) -> Any:
         raise ValueError(f"cannot read JSON snapshot {path}: {exc}") from exc
 
 
+def _item_timestamp(item: dict[str, Any]) -> str:
+    """Return the freshest server timestamp available for review evidence."""
+    for field in ("updatedAt", "updated_at", "submittedAt", "submitted_at",
+                  "createdAt", "created_at"):
+        value = item.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def coderabbit_items(reviews: Any, comments: Any) -> list[dict[str, Any]]:
     result = []
     for item in (reviews if isinstance(reviews, list) else []) + (comments if isinstance(comments, list) else []):
@@ -86,8 +96,25 @@ def coderabbit_items(reviews: Any, comments: Any) -> list[dict[str, Any]]:
         login = author.get("login", item.get("user", {}).get("login", ""))
         if login in {"coderabbitai", "coderabbitai[bot]"}:
             result.append(item)
-    result.sort(key=lambda x: x.get("submittedAt", x.get("submitted_at", x.get("createdAt", x.get("created_at", "")))))
+    # CodeRabbit keeps one long-lived summary comment and edits it as reviews
+    # complete. Its creation timestamp can therefore be much older than a
+    # command acknowledgement posted after it. Prefer updated_at so the newest
+    # summary body is treated as the newest evidence.
+    result.sort(key=_item_timestamp)
     return result
+
+
+def _review_head(item: dict[str, Any], body: str) -> str:
+    commit = item.get("commit", {}) or {}
+    if isinstance(commit, dict):
+        oid = commit.get("oid")
+        if isinstance(oid, str) and oid:
+            return oid
+    commit_id = item.get("commit_id", "")
+    if isinstance(commit_id, str) and commit_id:
+        return commit_id
+    shas = SHA.findall(body)
+    return shas[-1] if shas else ""
 
 
 def classify(items: list[dict[str, Any]], head: str) -> tuple[ReviewState, dict[str, Any] | None, str]:
@@ -111,11 +138,10 @@ def classify(items: list[dict[str, Any]], head: str) -> tuple[ReviewState, dict[
         if not clean:
             return ReviewState.UNKNOWN, latest, "zero-count response lacks the stable clean marker"
     if clean:
-        review_head = latest.get("commit", {}).get("oid", latest.get("commit_id", ""))
+        review_head = _review_head(latest, body)
         if not review_head:
-            shas = SHA.findall(body)
-            review_head = shas[-1] if shas else ""
-        if review_head and review_head != head:
+            return ReviewState.UNKNOWN, latest, "clean response lacks current-head binding"
+        if review_head != head:
             return ReviewState.STALE, latest, f"clean review is bound to {review_head}, not current {head}"
         return ReviewState.COMPLETED_CLEAN, latest, "completed clean CodeRabbit review"
     return ReviewState.UNKNOWN, latest, "unrecognized CodeRabbit response format"
@@ -231,10 +257,7 @@ def main() -> int:
         current = patch_identity(repo, args.base_sha, args.head_sha)
         unresolved = [t for t in threads if not t.get("isResolved", False)] if isinstance(threads, list) else None
         ci_ok = required_ci_checks_pass(checks)
-        direct_head = latest.get("commit", {}).get("oid", latest.get("commit_id", "")) if latest else ""
-        if latest and not direct_head:
-            shas = SHA.findall(latest.get("body", "") or "")
-            direct_head = shas[-1] if shas else ""
+        direct_head = _review_head(latest, latest.get("body", "") or "") if latest else ""
         direct = state == ReviewState.COMPLETED_CLEAN and latest is not None and direct_head == args.head_sha
         equivalent = state == ReviewState.NO_FILES_TO_REVIEW and clean_prior(items[:-1], current, repo) and ci_ok
         passed = gate_decision(state, direct, equivalent,
