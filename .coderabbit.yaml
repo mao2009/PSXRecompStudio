@@ -9,16 +9,13 @@
 # Manual review commands ("@coderabbitai review" / "@coderabbitai full review")
 # always work regardless of this configuration, per the official docs.
 #
-# github-actions[bot] is ignored for automatic reviews as defense in depth: the
-# README publish job and the review trigger commit/comment under that identity,
-# so even if auto-review is later re-enabled, bot-authored commits never start
-# a review on their own and the explicit-trigger ordering cannot be bypassed.
-# Manual "@coderabbitai review" commands still work for ignored authors.
+# Do not add github-actions[bot] to ignore_usernames: production evidence in
+# Issue #229 shows that CodeRabbit does not honor a bot-authored explicit
+# command when that author is ignored. Automatic review remains disabled, so
+# the fixed, ordered command is the only trigger.
 reviews:
   auto_review:
     enabled: false
-    ignore_usernames:
-      - "github-actions[bot]"
 
   # Docstring Coverage pre-merge check (Issue #183, ADR-011). PRs #181/#182
   # reported 4.44%/15.22% coverage against the tool default of an unconditional

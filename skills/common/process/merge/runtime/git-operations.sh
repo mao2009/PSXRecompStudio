@@ -229,6 +229,20 @@ merge_pr_mergeable_reason() {
     return 0
 }
 
+# The repository-owned CodeRabbit Review Gate is the authoritative quality
+# result. Never substitute reviewDecision or raw CodeRabbit status here.
+# Usage: merge_coderabbit_gate_passes <pr_number> <repository>
+merge_coderabbit_gate_passes() {
+    _pr_number="$1"
+    _repo="$2"
+    _repo_args=$(_merge_repo_args "$_repo")
+    # shellcheck disable=SC2086
+    _checks=$(gh pr checks "$_pr_number" $_repo_args --json name,state 2>/dev/null) || return 1
+    printf '%s' "$_checks" | grep -q '"name"[[:space:]]*:[[:space:]]*"CodeRabbit Review Gate"' || return 1
+    printf '%s' "$_checks" | sed -n '/"name"[[:space:]]*:[[:space:]]*"CodeRabbit Review Gate"/,/}/p' | \
+        grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCESS"'
+}
+
 # Execute a standard (non-admin) merge via gh
 # Usage: merge_normal_merge <pr_number> <repository>
 # Returns: 0 if merge succeeded, 1 otherwise

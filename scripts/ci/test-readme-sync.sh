@@ -37,7 +37,7 @@
 #  24. opencode permission rules: catch-all first, specifics last
 #  25. workflow: review-trigger job - isolated pull-requests:write, needs both
 #      upstream jobs, SHA-verification step, fixed-literal trigger comment
-#  26. .coderabbit.yaml: automatic reviews disabled + github-actions[bot] ignored
+#  26. .coderabbit.yaml: automatic reviews disabled and bot command supported
 #  27. workflow: review-trigger SHA flow - expected comes from the publish job's
 #      published_sha output (NOT the event head.sha); unset output refuses
 #  28. publish record-sha functional - README change -> new HEAD SHA; no-op ->
@@ -732,7 +732,7 @@ assert "github.event" not in body and "PR_BODY" not in body, "trigger comment mu
 PY
 }
 
-# --- 26. .coderabbit.yaml: automatic reviews disabled, bot ignored -------------
+# --- 26. .coderabbit.yaml: automatic reviews disabled, bot command supported --
 test_coderabbit_config() {
   local cfg
   cfg="$(cd "$SCRIPT_DIR/../.." && pwd)/.coderabbit.yaml"
@@ -742,7 +742,7 @@ d = yaml.safe_load(open(sys.argv[1]))
 ar = d["reviews"]["auto_review"]
 assert ar.get("enabled") is False, "auto_review.enabled must be false"
 users = ar.get("ignore_usernames") or []
-assert "github-actions[bot]" in users, "github-actions[bot] must be ignored for automatic reviews"
+assert "github-actions[bot]" not in users, "bot must not be ignored: explicit bot command is the ordered trigger"
 for key in ("labels", "description_keyword", "base_branches", "drafts"):
     assert key not in ar, "auto_review must not define %s (no accidental opt-in)" % key
 PY
