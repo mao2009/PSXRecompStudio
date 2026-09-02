@@ -154,6 +154,52 @@ def git(repo: Path, *args: str) -> str:
     return proc.stdout
 
 
+def _tree_entry(repo: Path, rev: str, path: str) -> dict[str, str] | None:
+    """Return immutable file identity for one path at one revision."""
+    raw = git(repo, "ls-tree", "-z", rev, "--", path)
+    if not raw:
+        return None
+    record = raw.split("\0", 1)[0]
+    meta, actual_path = record.split("\t", 1)
+    mode, obj_type, oid = meta.split(" ", 2)
+    if actual_path != path:
+        raise ValueError(f"unexpected tree path for {path}: {actual_path}")
+    if obj_type != "blob":
+        raise ValueError(f"unsupported tree entry type {obj_type}: {path}")
+    return {"mode": mode, "oid": oid}
+
+
+def patch_snapshot(repo: Path, base: str, head: str) -> list[dict[str, Any]]:
+    """Describe the full PR patch using immutable base/head blob identities."""
+    statuses = git(repo, "diff", "--name-status", "-z", "--find-renames=50%", base, head)
+    fields = statuses.split("\0")
+    records: list[dict[str, Any]] = []
+    i = 0
+    while i < len(fields) - 1:
+        status = fields[i]
+        i += 1
+        if not status:
+            continue
+        kind = status[0]
+        old = fields[i]
+        i += 1
+        new = old
+        if kind in {"R", "C"}:
+            new = fields[i]
+            i += 1
+        if kind not in {"A", "D", "M", "R", "C", "T"}:
+            raise ValueError(f"unsupported diff status {status}")
+        records.append({
+            "status": status,
+            "old": old,
+            "new": new,
+            "base_entry": _tree_entry(repo, base, old),
+            "head_entry": _tree_entry(repo, head, new),
+        })
+    records.sort(key=lambda x: (x["old"], x["new"], x["status"]))
+    return records
+
+
 def patch_identity(repo: Path, base: str, head: str) -> dict[str, Any]:
     diff_args = ["diff", "--binary", "--full-index", "--no-ext-diff", "--find-renames=50%", base, head]
     raw = git(repo, *diff_args)
@@ -204,7 +250,13 @@ def patch_identity(repo: Path, base: str, head: str) -> dict[str, Any]:
     raw_meta = git(repo, "diff", "--raw", "-z", base, head)
     if "160000" in raw_meta:
         raise ValueError("submodule changes are unsupported")
-    return {"base": base, "head": head, "stable_patch_id": stable, "files": records}
+    return {
+        "base": base,
+        "head": head,
+        "stable_patch_id": stable,
+        "files": records,
+        "snapshot": patch_snapshot(repo, base, head),
+    }
 
 
 def clean_prior(items: list[dict[str, Any]], current: dict[str, Any], repo: Path) -> bool:
@@ -234,7 +286,11 @@ def clean_prior(items: list[dict[str, Any]], current: dict[str, Any], repo: Path
             old = patch_identity(repo, reviewed_base, reviewed_head)
         except ValueError:
             continue
-        if old["stable_patch_id"] == current["stable_patch_id"] and old["files"] == current["files"]:
+        # The immutable snapshot is stronger than patch-id alone: it binds the
+        # exact changed path/status set plus base/head blob identities and modes.
+        # This rejects any real content or metadata change while tolerating
+        # history-only rebases.
+        if old["snapshot"] == current["snapshot"]:
             return True
     return False
 
