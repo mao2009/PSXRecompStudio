@@ -52,6 +52,16 @@ procedure in `skills/common/process/adr/SKILL.md` (Issue #84), loading
 project-specific inputs (ADR directory, inventory, numbering) from the matching
 `skills/project/<project>/profile.md`.
 
+At task completion, write the final report following the
+`skills/common/process/reporting/SKILL.md` reporting process skill — the
+standard format for implementation/verification results (investigation and
+SSOT, implementation summary, design decisions, changed files,
+targeted/related/full tests, build/analyzer/lint applicability, real
+PASS/FAIL/NOT RUN semantics, existing-vs-new failure separation, git
+status/diff/commit evidence, remaining work, and Issue/PR state). It forbids
+reporting unperformed verification as performed and requires evidence for
+"no problems" conclusions.
+
 ## Before creating a pull request
 
 When the change touched implementation, architecture, CI/build/test
