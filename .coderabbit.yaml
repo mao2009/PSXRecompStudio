@@ -7,7 +7,9 @@
 # publish step has completed (see .github/workflows/readme-autoupdate.yml).
 #
 # Manual review commands ("@coderabbitai review" / "@coderabbitai full review")
-# always work regardless of this configuration, per the official docs.
+# are documented triggers. Do not assume they work for every author/configuration:
+# Issue #229 records a failed bot-authored command when github-actions[bot] was
+# listed in ignore_usernames.
 #
 # Do not add github-actions[bot] to ignore_usernames: production evidence in
 # Issue #229 shows that CodeRabbit does not honor a bot-authored explicit

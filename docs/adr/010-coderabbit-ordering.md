@@ -43,11 +43,16 @@ CodeRabbit's configuration reference and "Automatic review controls" docs
 (https://docs.coderabbit.ai/configuration/auto-review) specify:
 
 - `reviews.auto_review.enabled: false` disables automatic reviews.
-- Manual review commands always work regardless of configuration:
-  `@coderabbitai review` (incremental) and `@coderabbitai full review` (from
-  scratch) posted as a PR comment.
+- The documented manual review commands are `@coderabbitai review`
+  (incremental) and `@coderabbitai full review` (from scratch), posted as PR
+  comments. Their availability must not be assumed for every author/configuration:
+  Issue #229 records production evidence that an explicit command authored by
+  `github-actions[bot]` failed when that bot was listed in
+  `ignore_usernames`.
 - `reviews.auto_review.ignore_usernames` skips automatic reviews for listed
-  authors; **manual** commands are still honored for those authors.
+  authors. This repository must not list `github-actions[bot]` there, because
+  the ordered workflow's explicit command is the required trigger and its
+  bot-authored form was observed to fail under that setting.
 - Positive `reviews.auto_review.labels` opt-in and a
   `description_keyword` opt-in still trigger reviews even when `enabled` is
   `false`; we configure neither so the only review trigger is our explicit
