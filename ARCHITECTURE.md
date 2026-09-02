@@ -55,7 +55,7 @@ mcp/                           # MCP Server (Node.js / TypeScript)
 
 - PSX CPU (R3000A) エミュレーション
 - PSX Memory (RAM, BIOS, Hardware Registers)
-- PSX Hardware (GPU, SPU, DMA, CD-ROM, Timers, Interrupt Controller)
+- PSX Hardware (GPU, SPU, DMA, CD-ROM, Timers, Interrupt Controller — 実装状況は下記「Hardware」節参照)
 - 性能が重要な計算全般
 
 ### 境界
@@ -113,6 +113,7 @@ uint32_t PSXCore_GetRAMSize(void);
 - PC (Program Counter)
 - HI / LO (乗除算結果レジスタ)
 - CP0 (System Control Coprocessor) の基本抽象化
+- ハードウェア割り込みサンプリング: Step/Run 毎に Interrupt Controller の集約ペンディングを CAUSE.IP2 (bit 10) へ反映（詳細: [docs/cpu/exceptions.md](docs/cpu/exceptions.md)）
 
 ### Memory
 
@@ -120,16 +121,23 @@ uint32_t PSXCore_GetRAMSize(void);
 - BIOS: 512 KB
 - Hardware Register Space
 
-### Hardware (将来実装)
+### Hardware (実装状況)
+
+状態は現在のリポジトリ状態（実装・テスト・CI）を反映したものであり、オープン中の Issue や設計上の予定・意図を表すものではない（README の Current Status と同一の基準）。
 
 | コンポーネント | 状態 |
 |---------------|------|
-| GPU           | 未実装 |
-| SPU           | 未実装 |
-| DMA           | 未実装 |
-| CD-ROM        | 未実装 |
-| Timers        | 未実装 |
-| Interrupt Controller | 未実装 |
+| Interrupt Controller | Implemented |
+| CPU interrupt integration | Implemented |
+| DMA | Partially implemented (register-level model + IRQ + C# MMIO adapter + tests; transfer engine / native 実行パスの MemoryBus 配線は未実装) |
+| Timers | Partially implemented (register-level model + tick + IRQ + C# MMIO adapter + tests; GPU 由来 dotclock / HBlank 信号の結線は未実装) |
+| GPU | Planned (interface contract only) |
+| SPU | Planned (interface contract only) |
+| CD-ROM | Planned (interface contract only) |
+| MDEC | Planned (interface contract only) |
+| GTE | Planned (interface contract only) |
+
+Interrupt Controller はレジスタモデル、C ABI、C# アダプタ、ネイティブテストに加え、CPU の Step/Run 毎に集約ペンディングを CAUSE.IP2 へ反映する CPU 割り込み統合まで実装済み（詳細: [docs/cpu/exceptions.md](docs/cpu/exceptions.md)）。DMA / Timers はレジスタレベルモデルまでが実装されており、C# 側 `MemoryBus` の MMIO ルーティング（アダプタ群）とネイティブテストは存在するが、ネイティブ実行パス（`PSXMemory` の hw_regs 領域）から各コントローラへの完全な結線は進行中。GPU / SPU / CD-ROM / MDEC / GTE は `PSXRecomp.Core/Runtime` のインターフェース契約のみで、ネイティブ実装は存在しない。
 
 ## Runtime (将来)
 
