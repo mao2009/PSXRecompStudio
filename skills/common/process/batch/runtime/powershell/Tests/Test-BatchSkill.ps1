@@ -922,6 +922,23 @@ Invoke-BatchTest -Name "Native dispatch failure preserves launch_failure as non-
     if ($retry.Retryable) { throw "launch_failure must not be retryable" }
 }
 
+Invoke-BatchTest -Name "Pre-start native result failure records launch failure semantics" -Test {
+    $orchestrator = Join-Path $scriptPath ".." "Scripts" "Invoke-BatchOrchestrator.ps1"
+    $source = Get-Content $orchestrator -Raw
+    $requiredBranch = @(
+        '$issue.SelectedMechanism -eq "native-subagent"',
+        '$issue.State -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")',
+        'Set-IssueStateTransition -IssueState $issue -ToState "FAILED"',
+        '$issue.LaunchStatus = "FAILED"',
+        '$issue.ExecutionStatus = "NOT_STARTED"',
+        '$issue.FailureClassification = "launch_failure"',
+        '$issue.State = "SUBAGENT_FAILED"'
+    )
+    foreach ($fragment in $requiredBranch) {
+        if (-not $source.Contains($fragment)) { throw "Missing pre-start failure contract: $fragment" }
+    }
+}
+
 Invoke-BatchTest -Name "Normal native dispatch path remains valid" -Test {
     if (-not (Test-ValidIssueTransition -FromState "READY_FOR_NATIVE_DISPATCH" -ToState "DISPATCHED")) {
         throw "READY_FOR_NATIVE_DISPATCH -> DISPATCHED should be valid"
