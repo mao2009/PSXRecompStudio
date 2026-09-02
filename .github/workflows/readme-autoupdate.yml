@@ -439,17 +439,16 @@ jobs:
           EXPECTED_HEAD: ${{ steps.optin.outputs.head }}
         run: |
           set -euo pipefail
-          attempt=0
-          while [[ "$attempt" -lt 60 ]]; do
-            attempt=$((attempt + 1))
+          deadline=$(( $(date +%s) + 240 ))
+          while [[ "$(date +%s)" -lt "$deadline" ]]; do
             current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
             if [[ "$current" != "$EXPECTED_HEAD" ]]; then
               echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
               exit 1
             fi
 
-            comments="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate --slurp)"
-            reviews="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --paginate --slurp)"
+            comments="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100&sort=updated&direction=desc" --slurp)"
+            reviews="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --slurp)"
 
             if jq -e --arg head "$EXPECTED_HEAD" '
               [.[].[] |
