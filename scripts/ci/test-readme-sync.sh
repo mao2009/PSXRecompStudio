@@ -412,7 +412,10 @@ assert outs.get("published_sha"), "publish job must expose a published_sha outpu
 assert "github.event.pull_request.head.sha" in outs["published_sha"] or jobs["publish-readme"]["steps"][-1]["id"] == "record-sha", \
     "publish job must derive published_sha from a record-sha step (not the event head.sha)"
 # The review trigger is a separate concern with its own minimal scope.
-assert jobs["review-trigger"]["permissions"] == {"pull-requests": "write"}, "review-trigger must have pull-requests: write only (no contents)"
+review_permissions = jobs["review-trigger"]["permissions"]
+assert review_permissions.get("pull-requests") == "write", "review-trigger must have pull-requests: write"
+assert review_permissions.get("issues") == "read", "review-trigger must have issues: read for CodeRabbit evidence"
+assert "contents" not in review_permissions, "review-trigger must not have contents permission"
 assert jobs["review-trigger"].get("needs") == ["update-readme", "publish-readme"], "review-trigger must depend on both upstream jobs"
 for jname, job in jobs.items():
     for s in job["steps"]:
@@ -420,7 +423,11 @@ for jname, job in jobs.items():
         blob = (s.get("run") or "") + " " + " ".join(str(v) for v in (s.get("env") or {}).values())
         if "github.token" in blob:
             allowed = (jname == "publish-readme" and sname == "Publish README updates") or \
-                      (jname == "review-trigger" and sname == "Verify PR head SHA matches the README Auto-Update state")
+                      (jname == "review-trigger" and sname in (
+                          "Verify PR head SHA matches the README Auto-Update state",
+                          "Opt in to CodeRabbit review",
+                          "Wait for current-HEAD CodeRabbit review evidence",
+                      ))
             if not allowed:
                 sys.exit("GITHUB_TOKEN referenced outside the publish/review steps: %s/%s" % (jname, sname))
         if jname == "update-readme" and "PUSH_URL" in blob:
@@ -735,6 +742,9 @@ wait = next(s for s in j["steps"] if "Wait for current-HEAD CodeRabbit review ev
 wrun = wait.get("run") or ""
 assert "EXPECTED_HEAD" in (wait.get("env") or {}), "completion check must bind evidence to expected head"
 assert "while" in wrun and "sleep" in wrun, "completion check must use bounded polling"
+assert "deadline=" in wrun and "date +%s" in wrun, "completion check must use an explicit wall-clock deadline"
+assert "--paginate" not in wrun, "completion polling must use bounded API pages"
+assert "per_page=100" in wrun, "completion polling must bound comment/review list size"
 assert "Timed out waiting for CodeRabbit review evidence" in wrun, "completion check must fail closed on timeout"
 PY
 }
