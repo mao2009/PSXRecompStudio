@@ -41,6 +41,35 @@ class StateModelTests(unittest.TestCase):
         self.assertEqual(gate.classify([item(self.clean)], "a" * 40)[0], gate.ReviewState.COMPLETED_CLEAN)
         self.assertEqual(gate.classify([item(self.clean)], "b" * 40)[0], gate.ReviewState.STALE)
 
+    def test_edited_summary_is_newer_than_later_created_ack(self):
+        head = "a" * 40
+        summary = {
+            "user": {"login": "coderabbitai[bot]"},
+            "body": f"{self.clean}\nReviewing files between {'b' * 40} and {head}.",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:03:00Z",
+        }
+        acknowledgement = {
+            "user": {"login": "coderabbitai[bot]"},
+            "body": "Action performed\nReview finished.",
+            "created_at": "2026-01-01T00:02:00Z",
+            "updated_at": "2026-01-01T00:02:00Z",
+        }
+        items = gate.coderabbit_items([], [summary, acknowledgement])
+        self.assertIs(items[-1], summary)
+        self.assertEqual(gate.classify(items, head)[0], gate.ReviewState.COMPLETED_CLEAN)
+
+    def test_clean_comment_without_head_binding_blocks(self):
+        comment = {
+            "user": {"login": "coderabbitai[bot]"},
+            "body": self.clean,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:01:00Z",
+        }
+        state, _, reason = gate.classify(gate.coderabbit_items([], [comment]), "a" * 40)
+        self.assertEqual(state, gate.ReviewState.UNKNOWN)
+        self.assertIn("binding", reason)
+
     def test_actionable_without_thread_is_still_blocking(self):
         state, _, _ = gate.classify([item(self.actionable)], "a" * 40)
         self.assertEqual(state, gate.ReviewState.COMPLETED_ACTIONABLE)
@@ -50,23 +79,23 @@ class StateModelTests(unittest.TestCase):
         no_files = gate.ReviewState.NO_FILES_TO_REVIEW
         blocked = [
             (gate.ReviewState.COMPLETED_ACTIONABLE, False, False, 0, True),
-            (clean, True, False, 1, True),       # unresolved thread
-            (gate.ReviewState.COMPLETED_ACTIONABLE, False, False, 0, True), # outside diff
+            (clean, True, False, 1, True),
+            (gate.ReviewState.COMPLETED_ACTIONABLE, False, False, 0, True),
             (gate.ReviewState.SKIPPED, False, False, 0, True),
             (gate.ReviewState.MISSING, False, False, 0, True),
             (gate.ReviewState.PENDING, False, False, 0, True),
             (gate.ReviewState.FAILED, False, False, 0, True),
             (gate.ReviewState.STALE, False, False, 0, True),
-            (no_files, False, False, 0, True),    # no prior clean review
-            (no_files, False, True, 0, False),    # CI failed
-            (no_files, False, True, 1, True),     # old unresolved blocker
+            (no_files, False, False, 0, True),
+            (no_files, False, True, 0, False),
+            (no_files, False, True, 1, True),
             (gate.ReviewState.UNKNOWN, False, False, 0, True),
         ]
         for args in blocked:
             self.assertFalse(gate.gate_decision(*args), args)
         self.assertTrue(gate.gate_decision(clean, True, False, 0, True))
         self.assertTrue(gate.gate_decision(no_files, False, True, 0, True))
-        self.assertFalse(gate.gate_decision(clean, False, False, 0, True)) # stale/different patch
+        self.assertFalse(gate.gate_decision(clean, False, False, 0, True))
 
 
 class RequiredCICheckTests(unittest.TestCase):
