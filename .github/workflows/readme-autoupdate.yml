@@ -354,33 +354,15 @@ jobs:
 
   review-trigger:
     name: CodeRabbit review trigger
-    # Issue #185: CodeRabbit must review the FINAL PR state, i.e. after the
-    # README Auto-Update has finished. The CodeRabbit GitHub App automatic
-    # reviews are disabled (.coderabbit.yaml), so an explicit "@coderabbitai
-    # review" comment is the only way CodeRabbit starts a review.
-    #
-    # This job is separate from the model and publish jobs on purpose: the
-    # trigger is a distinct concern, owns the ONLY pull-requests permission,
-    # and mechanically gates itself on the upstream job results. The JOB runs
-    # with if: always(), but the trigger STEP fires only when update-readme
-    # succeeded with action=proceed AND publish-readme succeeded AND the
-    # API-fetched head matches published_sha. A job-level publish skip (fork
-    # PR, bootstrap run, upstream failure) means
-    # needs.publish-readme.result == 'skipped' and an EMPTY published_sha; the
-    # gate fails closed and no review comment is ever posted on such a run.
-    #
-    # Loop prevention: the comment is posted with GITHUB_TOKEN, which GitHub
-    # treats as a bot action that does NOT re-trigger pull_request workflows,
-    # and .coderabbit.yaml keeps automatic reviews disabled without ignoring
-    # github-actions[bot], because this fixed bot-authored command is the
-    # supported ordered trigger (Issue #229).
-    # (a manually-requested review is still allowed). The comment is therefore
-    # a terminal action - it never restarts this workflow.
+    # Issue #237: github-actions[bot] review-command comments are not a reliable
+    # CodeRabbit trigger (production E2E: PR #236). After README publication,
+    # opt in through CodeRabbit's supported description_keyword mechanism.
+    # This job first proves the PR is still at publish-readme.outputs.published_sha,
+    # then adds a fixed hidden marker to the PR description. No PR-controlled
+    # content is executed and no CodeRabbit API credential is required.
     if: always()
     needs: [update-readme, publish-readme]
     concurrency:
-      # Serialize triggers per PR even across overlapping workflow runs so
-      # simultaneous synchronize events cannot post duplicate review comments.
       group: coderabbit-trigger-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
@@ -388,23 +370,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # No checkout is needed: both steps talk to the GitHub API (get current
-      # PR head SHA, post the trigger comment) with the job's GITHUB_TOKEN.
-      # Pulling PR-controlled working-tree content into this job would only add
-      # attack surface; the job deliberately has an empty workspace.
-      #
-      # The expected SHA is the publish job's published_sha OUTPUT (the PR head
-      # as it exists AFTER publish). It is NOT github.event.pull_request.head.sha
-      # - that event SHA is captured before publish and is stale whenever the
-      # README commit changed the head. Relying on the GITHUB_TOKEN push to
-      # restart a pull_request workflow (which would then review the new head)
-      # is NOT a valid assumption, so we mechanically verify the current head
-      # against the exact SHA publish produced.
-      #
-      # The output is EMPTY on job-level publish skips (fork PR, bootstrap,
-      # upstream failure). That is the expected contract: the verify step
-      # turns an empty expected value into match=0, so the trigger below
-      # cannot fire without a real publish.
       - name: Verify PR head SHA matches the README Auto-Update state
         id: verify
         env:
@@ -417,21 +382,16 @@ jobs:
           expected="${PUBLISHED_SHA:-}"
           echo "current=$current expected=$expected"
           if [[ -z "$expected" ]]; then
-            echo "::error::publish job did not expose a published_sha output; refusing to trigger a review against an unknown SHA."
+            echo "::error::publish job did not expose a published_sha output; refusing CodeRabbit opt-in."
             echo "match=0" >> "$GITHUB_OUTPUT"
           elif [[ "$current" != "$expected" ]]; then
-            echo "::notice::PR head moved to $current while README Auto-Update ran; the same-PR synchronize run will review the new state."
+            echo "::notice::PR head moved while README Auto-Update ran; refusing stale CodeRabbit opt-in."
             echo "match=0" >> "$GITHUB_OUTPUT"
           else
             echo "match=1" >> "$GITHUB_OUTPUT"
           fi
 
-      # The only CodeRabbit trigger. The comment is a fixed literal; no PR- or
-      # README-controlled content is ever interpolated into it, so it cannot be
-      # rewritten by prompt injection in the PR. The `if` gate above fails
-      # closed: a skipped publish job (needs.publish-readme.result != success)
-      # or an empty published_sha (match=0) both suppress the trigger.
-      - name: Trigger CodeRabbit review
+      - name: Opt in to CodeRabbit review
         if: >
           steps.verify.outputs.match == '1' &&
           needs.update-readme.result == 'success' &&
@@ -442,11 +402,21 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
           script: |
-            const pr = process.env.PR_NUMBER;
-            await github.rest.issues.createComment({
+            const marker = '<!-- coderabbit:review-ready -->';
+            const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: +pr,
-              body: '## CodeRabbit Review Request\n\nPlease review this pull request per the CI flow (Issue #185).\n\n@coderabbitai review',
+              pull_number: +process.env.PR_NUMBER,
             });
-            console.log(`CodeRabbit review requested on PR #${pr}`);
+            const body = pr.data.body || '';
+            if (body.includes(marker)) {
+              console.log('CodeRabbit opt-in marker already present');
+              return;
+            }
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: +process.env.PR_NUMBER,
+              body: body ? body + '\n\n' + marker : marker,
+            });
+            console.log('CodeRabbit description_keyword opt-in applied');
