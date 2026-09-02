@@ -859,6 +859,44 @@ Invoke-BatchTest -Name "Native dispatch request is host-handled and does not spa
     }
 }
 
+Invoke-BatchTest -Name "Native running status advances READY through DISPATCHED" -Test {
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "SUBAGENT_RUNNING"
+    if (($progression -join ",") -ne "DISPATCHED,SUBAGENT_RUNNING") {
+        throw "Skipped native dispatch progression was not preserved"
+    }
+    if (-not (Test-ValidIssueTransition -FromState "READY_FOR_NATIVE_DISPATCH" -ToState $progression[0])) {
+        throw "READY_FOR_NATIVE_DISPATCH -> DISPATCHED should remain valid"
+    }
+    if (-not (Test-ValidIssueTransition -FromState $progression[0] -ToState $progression[1])) {
+        throw "DISPATCHED -> SUBAGENT_RUNNING should remain valid"
+    }
+}
+
+Invoke-BatchTest -Name "Native running status is not eligible for dispatch deadline failure" -Test {
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "SUBAGENT_RUNNING"
+    $stateAfterPoll = $progression[-1]
+    $deadlineExpired = $true
+    if ($deadlineExpired -and $stateAfterPoll -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")) {
+        throw "A running native worker must not fail on dispatch deadline"
+    }
+}
+
+Invoke-BatchTest -Name "Unchanged native request remains eligible for dispatch deadline failure" -Test {
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "READY_FOR_NATIVE_DISPATCH"
+    $stateAfterPoll = if ($progression.Count -gt 0) { $progression[-1] } else { "READY_FOR_NATIVE_DISPATCH" }
+    if ($stateAfterPoll -notin @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")) {
+        throw "An undispatched native request must remain deadline eligible"
+    }
+}
+
+Invoke-BatchTest -Name "Native dispatch progression remains valid in normal polling order" -Test {
+    $first = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "DISPATCHED"
+    $second = Get-NativeDispatchStateProgression -IssueState "DISPATCHED" -RequestStatus "SUBAGENT_RUNNING"
+    if (($first -join ",") -ne "DISPATCHED" -or ($second -join ",") -ne "SUBAGENT_RUNNING") {
+        throw "Normal native dispatch progression changed"
+    }
+}
+
 # ============================================================
 # ORPHANED State Tests
 # ============================================================

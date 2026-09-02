@@ -102,6 +102,36 @@ function Test-ValidIssueTransition {
     return $Script:IssueTransitions[$FromState] -contains $ToState
 }
 
+function Get-NativeDispatchStateProgression {
+    <#
+    .SYNOPSIS
+        Returns the contract-preserving state updates implied by a native status.
+
+    .DESCRIPTION
+        Native polling can skip DISPATCHED.  The returned sequence deliberately
+        includes that state so callers can apply only valid issue transitions.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$IssueState,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RequestStatus
+    )
+
+    switch ($RequestStatus) {
+        "DISPATCHED" {
+            if ($IssueState -eq "READY_FOR_NATIVE_DISPATCH") { return @("DISPATCHED") }
+        }
+        "SUBAGENT_RUNNING" {
+            if ($IssueState -eq "READY_FOR_NATIVE_DISPATCH") { return @("DISPATCHED", "SUBAGENT_RUNNING") }
+            if ($IssueState -eq "DISPATCHED") { return @("SUBAGENT_RUNNING") }
+        }
+    }
+    return @()
+}
+
 function Get-ValidIssueTransitions {
     [CmdletBinding()]
     param(
@@ -188,6 +218,7 @@ function Test-IssueStateRecoverable {
 Export-ModuleMember -Function @(
     'Get-IssueState',
     'Test-ValidIssueTransition',
+    'Get-NativeDispatchStateProgression',
     'Get-ValidIssueTransitions',
     'Get-AllIssueStates',
     'Get-IssueStateDefinition',

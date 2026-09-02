@@ -602,14 +602,21 @@ function Invoke-BatchOrchestration {
                         if ($issue.DispatchRequest -and (Test-Path $issue.DispatchRequest)) {
                             try {
                                 $dispatch = Get-Content $issue.DispatchRequest -Raw | ConvertFrom-Json
-                                if ($dispatch.Status -eq "DISPATCHED" -and $issue.State -eq "READY_FOR_NATIVE_DISPATCH") {
-                                    Set-IssueStateTransition -IssueState $issue -ToState "DISPATCHED" -BatchId $BatchId -Reason "Host native Task/Subagent accepted dispatch"
-                                    $issue.LaunchStatus = "DISPATCHED"
-                                    $issue.ExecutionStatus = "STARTED"
-                                } elseif ($dispatch.Status -eq "SUBAGENT_RUNNING" -and $issue.State -eq "DISPATCHED") {
-                                    Set-IssueStateTransition -IssueState $issue -ToState "SUBAGENT_RUNNING" -BatchId $BatchId -Reason "Host native worker started"
-                                    $issue.LaunchStatus = "STARTED"
-                                    $issue.ExecutionStatus = "STARTED"
+                                $stateProgression = Get-NativeDispatchStateProgression -IssueState $issue.State -RequestStatus $dispatch.Status
+                                foreach ($nextState in $stateProgression) {
+                                    $reason = if ($nextState -eq "DISPATCHED") {
+                                        "Host native Task/Subagent accepted dispatch"
+                                    } else {
+                                        "Host native worker started"
+                                    }
+                                    Set-IssueStateTransition -IssueState $issue -ToState $nextState -BatchId $BatchId -Reason $reason
+                                    if ($nextState -eq "DISPATCHED") {
+                                        $issue.LaunchStatus = "DISPATCHED"
+                                        $issue.ExecutionStatus = "STARTED"
+                                    } elseif ($nextState -eq "SUBAGENT_RUNNING") {
+                                        $issue.LaunchStatus = "STARTED"
+                                        $issue.ExecutionStatus = "STARTED"
+                                    }
                                 }
                             } catch {
                                 Write-BatchLog "Issue ${issueId}: invalid native dispatch status - $($_.Exception.Message)" "WARN"
