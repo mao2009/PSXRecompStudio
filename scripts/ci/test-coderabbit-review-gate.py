@@ -41,6 +41,7 @@ class StateModelTests(unittest.TestCase):
         current = "a" * 40
         previous = "b" * 40
         missing = item("No files to review.")
+        missing.pop("commit")
         stale = item(f"No files to review. Reviewed commit: {previous}", previous)
         bound = item(f"No files to review. Reviewed commit: {current}", current)
 
