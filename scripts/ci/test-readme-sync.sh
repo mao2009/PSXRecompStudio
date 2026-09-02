@@ -743,8 +743,11 @@ wrun = wait.get("run") or ""
 assert "EXPECTED_HEAD" in (wait.get("env") or {}), "completion check must bind evidence to expected head"
 assert "while" in wrun and "sleep" in wrun, "completion check must use bounded polling"
 assert "deadline=" in wrun and "date +%s" in wrun, "completion check must use an explicit wall-clock deadline"
-assert "--paginate" not in wrun, "completion polling must use bounded API pages"
+assert "--paginate" not in wrun and "--slurp" not in wrun, "completion polling must use a single bounded API page"
 assert "per_page=100" in wrun, "completion polling must bound comment/review list size"
+assert 'timeout "$remaining" gh api' in wrun, "each evidence API request must be bounded by remaining deadline"
+assert wrun.count(".head.sha") >= 2, "completion success paths must re-check the current PR head"
+assert wrun.count('date +%s') >= 3, "completion must re-check wall-clock deadline after API calls"
 assert "Timed out waiting for CodeRabbit review evidence" in wrun, "completion check must fail closed on timeout"
 PY
 }
