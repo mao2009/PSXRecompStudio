@@ -8,8 +8,10 @@ Self-contained on standard POSIX tooling — **no `pwsh`/PowerShell required**.
 - POSIX `sh`
 - Git
 - GitHub CLI (`gh`) — optional but required for all GitHub PR operations
-- Does NOT require: `pwsh`, `powershell`, `jq`, `node`; Python 3 is used as the
-  structured JSON parser when `jq` is unavailable.
+- GitHub JSON operations require **either `jq` or Python 3**. `jq` is preferred;
+  Python 3 is the structured JSON fallback when `jq` is unavailable. If neither
+  parser is available, GitHub JSON validation fails closed.
+- Does NOT require: `pwsh`, `powershell`, `node`
 
 ## Layout
 
@@ -91,6 +93,11 @@ Safety guarantees (unchanged from the previous runtime):
   `APPROVAL_VALIDATION`; unchanged HEAD approval remains SHA-bound
 - Approval tied to commit SHA and main HEAD SHA
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)
+- `CodeRabbit Review Gate` is accepted only when it is a successful check-run
+  on the current PR HEAD and its GitHub Actions workflow run belongs to this
+  repository and has the exact trusted path
+  `.github/workflows/coderabbit-review-gate.yml`; same-named checks from other
+  producers or workflows fail closed.
 
 ## Testing
 
