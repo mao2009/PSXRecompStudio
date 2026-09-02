@@ -37,6 +37,17 @@ class StateModelTests(unittest.TestCase):
             actual, _, _ = gate.classify([] if not body else [item(body)], "a" * 40)
             self.assertEqual(actual, expected, body)
 
+    def test_no_files_response_requires_current_head_binding(self):
+        current = "a" * 40
+        previous = "b" * 40
+        missing = item("No files to review.")
+        stale = item(f"No files to review. Reviewed commit: {previous}", previous)
+        bound = item(f"No files to review. Reviewed commit: {current}", current)
+
+        self.assertEqual(gate.classify([missing], current)[0], gate.ReviewState.UNKNOWN)
+        self.assertEqual(gate.classify([stale], current)[0], gate.ReviewState.STALE)
+        self.assertEqual(gate.classify([bound], current)[0], gate.ReviewState.NO_FILES_TO_REVIEW)
+
     def test_clean_direct_review_requires_current_sha(self):
         self.assertEqual(gate.classify([item(self.clean)], "a" * 40)[0], gate.ReviewState.COMPLETED_CLEAN)
         self.assertEqual(gate.classify([item(self.clean)], "b" * 40)[0], gate.ReviewState.STALE)
