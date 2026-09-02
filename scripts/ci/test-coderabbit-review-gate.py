@@ -221,6 +221,10 @@ class EquivalentRebaseTests(unittest.TestCase):
             run(["git", "-C", str(repo), "add", "."], check=True)
             run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
             old_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+            base_branch = run(
+                ["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],
+                check=True, text=True, capture_output=True
+            ).stdout.strip()
 
             run(["git", "-C", str(repo), "checkout", "-qb", "feature"], check=True)
             (repo / "one.txt").write_text("one\n")
@@ -232,14 +236,14 @@ class EquivalentRebaseTests(unittest.TestCase):
             run(["git", "-C", str(repo), "commit", "-qm", "reviewed feature head"], check=True)
             reviewed_head = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
 
-            run(["git", "-C", str(repo), "checkout", "-q", "master"], check=True)
+            run(["git", "-C", str(repo), "checkout", "-q", base_branch], check=True)
             (repo / "main.txt").write_text("main advanced\n")
             run(["git", "-C", str(repo), "add", "."], check=True)
             run(["git", "-C", str(repo), "commit", "-qm", "advance main"], check=True)
             current_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
 
             run(["git", "-C", str(repo), "checkout", "-q", "feature"], check=True)
-            run(["git", "-C", str(repo), "rebase", "master"], check=True)
+            run(["git", "-C", str(repo), "rebase", base_branch], check=True)
             current_head = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
             current = gate.patch_identity(repo, current_base, current_head)
 
