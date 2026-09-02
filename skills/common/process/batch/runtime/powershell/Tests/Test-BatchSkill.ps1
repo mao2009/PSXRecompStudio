@@ -923,20 +923,76 @@ Invoke-BatchTest -Name "Native dispatch failure preserves launch_failure as non-
 }
 
 Invoke-BatchTest -Name "Pre-start native result failure records launch failure semantics" -Test {
-    $orchestrator = Join-Path $scriptPath ".." "Scripts" "Invoke-BatchOrchestrator.ps1"
-    $source = Get-Content $orchestrator -Raw
-    $requiredBranch = @(
-        '$issue.SelectedMechanism -eq "native-subagent"',
-        '$issue.State -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")',
-        'Set-IssueStateTransition -IssueState $issue -ToState "FAILED"',
-        '$issue.LaunchStatus = "FAILED"',
-        '$issue.ExecutionStatus = "NOT_STARTED"',
-        '$issue.FailureClassification = "launch_failure"',
-        '$issue.State = "SUBAGENT_FAILED"'
-    )
-    foreach ($fragment in $requiredBranch) {
-        if (-not $source.Contains($fragment)) { throw "Missing pre-start failure contract: $fragment" }
+    $orchestrator = Join-Path -Path $scriptPath -ChildPath "..\Scripts\Invoke-BatchOrchestrator.ps1"
+    $repositoryRoot = (Resolve-Path (Join-Path -Path $scriptPath -ChildPath "../../../../../../..")).Path
+
+    function Invoke-NativeResultScenario {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$InitialState,
+            [Parameter(Mandatory = $false)]
+            [int]$ProcessId = 0
+        )
+
+        $scenarioId = "batch-prestart-result-$([guid]::NewGuid().ToString('N'))"
+        $stateDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath $scenarioId
+        $worktreePath = Join-Path -Path $stateDir -ChildPath "worktree"
+        $resultDirectory = Join-Path -Path $worktreePath -ChildPath ".subagent"
+        New-Item -ItemType Directory -Path $resultDirectory -Force | Out-Null
+
+        try {
+            $batchState = New-BatchState -BatchId $scenarioId -IssueCount 1
+            $batchState.State = "RUNNING"
+            $issue = New-IssueState -IssueId "scenario" -IssueNumber 224 -Description "native result scenario"
+            $issue.State = $InitialState
+            $issue.WorktreePath = $worktreePath
+            $issue.BranchName = "scenario"
+            $issue.SelectedProvider = "codex"
+            $issue.SelectedMechanism = "native-subagent"
+            $issue.HostAgent = "codex"
+            $issue.NativeCapability = "AVAILABLE"
+            $issue.ExecutionStatus = if ($InitialState -eq "SUBAGENT_RUNNING") { "STARTED" } else { "NOT_STARTED" }
+            $issue.LaunchStatus = if ($InitialState -eq "SUBAGENT_RUNNING") { "STARTED" } else { $InitialState }
+            $issue.SubAgentProcessId = if ($ProcessId -gt 0) { $ProcessId } else { $null }
+
+            $batchStateFile = Get-BatchStateFilePath -BatchId $scenarioId -StateDir $stateDir
+            $issueStatesFile = Join-Path -Path $stateDir -ChildPath ".batch-issues-$scenarioId.json"
+            Save-BatchState -State $batchState -FilePath $batchStateFile
+            Save-IssueStates -Issues @{ scenario = $issue } -FilePath $issueStatesFile
+            @{ Success = $false; Error = "simulated native launch failure" } |
+                ConvertTo-Json | Set-Content -LiteralPath (Join-Path -Path $resultDirectory -ChildPath "result.json")
+
+            $orchestratorArgs = @(
+                "-BatchId", $scenarioId,
+                "-StateDir", $stateDir,
+                "-Repository", $repositoryRoot,
+                "-MaxRetries", "0"
+            )
+            & pwsh -NoProfile -File $orchestrator @orchestratorArgs *> $null
+            if ($LASTEXITCODE -ne 0) { throw "Orchestrator exited with code $LASTEXITCODE for $InitialState" }
+
+            $result = (Get-IssueStates -FilePath $issueStatesFile)["scenario"]
+            return $result
+        } finally {
+            if (Test-Path -LiteralPath $stateDir) {
+                Remove-Item -LiteralPath $stateDir -Recurse -Force
+            }
+        }
     }
+
+    foreach ($initialState in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")) {
+        $result = Invoke-NativeResultScenario -InitialState $initialState
+        if ($result.State -ne "FAILED") { throw "$initialState result must be FAILED, got $($result.State)" }
+        if ($result.State -eq "SUBAGENT_FAILED") { throw "$initialState result must not be SUBAGENT_FAILED" }
+        if ($result.LaunchStatus -ne "FAILED") { throw "$initialState launch status must be FAILED" }
+        if ($result.ExecutionStatus -ne "NOT_STARTED") { throw "$initialState execution must be NOT_STARTED" }
+        if ($result.FailureClassification -ne "launch_failure") { throw "$initialState classification must be launch_failure" }
+        if ($result.LastError -ne "simulated native launch failure") { throw "$initialState LastError was not preserved" }
+    }
+
+    $startedResult = Invoke-NativeResultScenario -InitialState "SUBAGENT_RUNNING" -ProcessId $PID
+    if ($startedResult.State -ne "SUBAGENT_FAILED") { throw "Started native result must be SUBAGENT_FAILED, got $($startedResult.State)" }
+    if ($startedResult.FailureClassification -eq "launch_failure") { throw "Started native result must not be launch_failure" }
 }
 
 Invoke-BatchTest -Name "Normal native dispatch path remains valid" -Test {
