@@ -47,6 +47,11 @@ and the Common Skill in addition to the project knowledge:
 These are the reusable work templates (see `skills/README.md`); they complement,
 not replace, the gates below and the Batch/Merge execution skills.
 
+For design-decision work (recording, updating, or validating an ADR), follow the
+procedure in `skills/common/process/adr/SKILL.md` (Issue #84), loading
+project-specific inputs (ADR directory, inventory, numbering) from the matching
+`skills/project/<project>/profile.md`.
+
 ## Before creating a pull request
 
 When the change touched implementation, architecture, CI/build/test
