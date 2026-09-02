@@ -66,6 +66,11 @@ echo ""
 MERGE_RUNTIME_DIR="$SCRIPT_DIR/.."
 . "$ORCH"
 
+# Existing orchestration fixtures exercise the historical disabled path. The
+# enabled production path has dedicated regression coverage in
+# test-rebase-flow.sh.
+merge_rebase_force_with_lease_enabled() { return 1; }
+
 STATE_FILE="$WORK/.merge-state-149.json"
 
 # ------------------------------------------------------------

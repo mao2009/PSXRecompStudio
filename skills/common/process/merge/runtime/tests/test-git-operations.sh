@@ -371,7 +371,7 @@ echo rebased > "$LEASE_WT/rebased.txt"
 git -C "$LEASE_WT" add rebased.txt
 git -C "$LEASE_WT" commit -q -m rebased
 _lease_new=$(git -C "$LEASE_WT" rev-parse HEAD)
-_lease_result=$(merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin)
+_lease_result=$(merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin issue/lease main)
 assert_true "explicit lease updates rebased feature branch" test "$?" -eq 0
 case "$_lease_result" in
     *"success=true"*) _pass ;;
@@ -381,14 +381,17 @@ _lease_after=$(git -C "$LEASE_WT" ls-remote origin refs/heads/issue/lease | awk 
 assert_output "remote equals expected rebased HEAD" "$_lease_new" git -C "$LEASE_WT" rev-parse refs/remotes/origin/issue/lease
 assert_true "remote lease SHA equals new HEAD" test "$_lease_after" = "$_lease_new"
 
-assert_false "main target is rejected" merge_safe_rebase_push "$LEASE_WT" main "$_lease_old" "$_lease_new" origin
-assert_false "blank expected remote SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "" "$_lease_new" origin
-assert_false "malformed expected local SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" bad origin
+assert_false "main target is rejected" merge_safe_rebase_push "$LEASE_WT" main "$_lease_old" "$_lease_new" origin issue/lease main
+assert_false "unrelated target is rejected" merge_safe_rebase_push "$LEASE_WT" issue/other "$_lease_old" "$_lease_new" origin issue/lease main
+assert_false "release target is rejected" merge_safe_rebase_push "$LEASE_WT" release/v1 "$_lease_old" "$_lease_new" origin issue/lease main
+assert_false "blank validated branch is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin "" main
+assert_false "blank expected remote SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "" "$_lease_new" origin issue/lease main
+assert_false "malformed expected local SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" bad origin issue/lease main
 echo dirty >> "$LEASE_WT/feature.txt"
-assert_false "dirty worktree is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" "$_lease_new" origin
+assert_false "dirty worktree is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" "$_lease_new" origin issue/lease main
 git -C "$LEASE_WT" checkout -- feature.txt
-assert_false "local HEAD mismatch is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" "$_lease_old" origin
-assert_false "stale lease SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin
+assert_false "local HEAD mismatch is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" "$_lease_old" origin issue/lease main
+assert_false "stale lease SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin issue/lease main
 assert_false "generic force push syntax is absent" grep -Eq 'git([[:space:]]+-C[^;]+)?[[:space:]]+push[[:space:]]+(-f|--force)([[:space:]]|$)' "$SCRIPT_DIR/../git-operations.sh"
 assert_true "explicit force-with-lease syntax is present" grep -q -- '--force-with-lease=refs/heads/' "$SCRIPT_DIR/../git-operations.sh"
 git -C "$LEASE_REPO" worktree remove -f "$LEASE_WT" 2>/dev/null || true

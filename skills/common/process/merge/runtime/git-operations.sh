@@ -41,6 +41,14 @@ merge_get_current_commit() {
     git -C "$_worktree" rev-parse HEAD 2>/dev/null
 }
 
+# Read one remote branch SHA without updating local refs.
+merge_get_remote_branch_sha() {
+    _worktree="$1"
+    _remote="$2"
+    _branch="$3"
+    git -C "$_worktree" ls-remote "$_remote" "refs/heads/$_branch" 2>/dev/null | awk 'NR == 1 {print $1}'
+}
+
 # ============================================================
 # Rebase
 # ============================================================
@@ -100,7 +108,7 @@ merge_rebase() {
 }
 
 # Update a rebased PR branch using an explicit, checked lease.
-# Usage: merge_safe_rebase_push <worktree> <branch> <expected_remote_sha> <expected_local_sha> [remote]
+# Usage: merge_safe_rebase_push <worktree> <branch> <expected_remote_sha> <expected_local_sha> [remote] [validated_pr_head] [validated_base]
 merge_safe_rebase_push() {
     _worktree="$1"
     _branch="$2"
@@ -108,14 +116,24 @@ merge_safe_rebase_push() {
     _expected_local="$4"
     _remote="$5"
     [ -n "$_remote" ] || _remote="origin"
+    _validated_head="$6"
+    _validated_base="$7"
 
     if [ ! -d "$_worktree" ] || ! git -C "$_worktree" rev-parse --git-dir >/dev/null 2>&1; then
         echo "ERROR: worktree path is not a git worktree" >&2
         return 1
     fi
     case "$_branch" in
-        ""|main|refs/heads/main|-*|*..*|*/../*|*/.|*/.) echo "ERROR: protected or invalid target branch" >&2; return 1 ;;
+        ""|-*|*..*|*/../*|*/.|*/.) echo "ERROR: invalid target branch" >&2; return 1 ;;
     esac
+    [ -n "$_validated_head" ] && [ "$_branch" = "$_validated_head" ] || {
+        echo "ERROR: target is not the validated current PR head branch" >&2
+        return 1
+    }
+    if [ "$_branch" = "main" ] || { [ -n "$_validated_base" ] && [ "$_branch" = "$_validated_base" ]; }; then
+        echo "ERROR: protected or base branch target" >&2
+        return 1
+    fi
     printf '%s\n' "$_expected_remote" "$_expected_local" |
         grep -Eq '^[0-9a-fA-F]{40}$' || {
             echo "ERROR: expected SHAs must be 40-character hexadecimal values" >&2
