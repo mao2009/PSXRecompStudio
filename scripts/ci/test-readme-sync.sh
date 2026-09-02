@@ -746,7 +746,12 @@ assert "deadline=" in wrun and "date +%s" in wrun, "completion check must use an
 assert "--paginate" not in wrun and "--slurp" not in wrun, "completion polling must use a single bounded API page"
 assert "per_page=100" in wrun, "completion polling must bound comment/review list size"
 assert 'timeout "$remaining" gh api' in wrun, "each evidence API request must be bounded by remaining deadline"
-assert wrun.count(".head.sha") >= 2, "completion success paths must re-check the current PR head"
+assert "bounded_pr()" in wrun, "all PR-head reads must share the remaining-deadline wrapper"
+assert 'timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"' in wrun, "PR-head wrapper must be deadline-bounded"
+assert "finish_review_cycle" in wrun, "evidence success must use a common finalization path"
+assert 'cleaned="${body//$marker/}"' in wrun, "completed review must remove the description opt-in marker"
+assert "CodeRabbit review-ready marker remained after completed review" in wrun, "marker cleanup must be verified fail-closed"
+assert wrun.count(".head.sha") >= 2, "review cycle must verify head before and after marker cleanup"
 assert wrun.count('date +%s') >= 3, "completion must re-check wall-clock deadline after API calls"
 assert "Timed out waiting for CodeRabbit review evidence" in wrun, "completion check must fail closed on timeout"
 PY
