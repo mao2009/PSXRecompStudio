@@ -421,6 +421,13 @@ public static class RomAnalysisPipeline
                 CfgEdges = cfgEdges,
                 CallCandidateCount = callCandidates,
                 ReturnCandidateCount = returnCandidates,
+                FunctionDiscovery = FunctionDiscovery.Build(
+                    header.EntryPoint,
+                    header.TextStart,
+                    header.TextSize,
+                    instructions,
+                    basicBlocks,
+                    cfgEdges),
             };
         }
         catch (Exception ex) when (IsClassifiableFailure(ex))
