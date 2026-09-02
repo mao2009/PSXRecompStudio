@@ -12,6 +12,9 @@ name: CodeRabbit Review Gate
     types: [created, edited]
   check_run:
     types: [completed]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: read
@@ -19,7 +22,7 @@ permissions:
   checks: read
 
 concurrency:
-  group: coderabbit-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_run.pull_requests[0].number || github.run_id }}
+  group: coderabbit-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_run.pull_requests[0].number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -29,7 +32,8 @@ jobs:
       github.event_name == 'pull_request_target' ||
       (github.event_name == 'pull_request_review' && github.event.pull_request.base.ref == 'main') ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
-      (github.event_name == 'check_run' && github.event.check_run.name != 'CodeRabbit Review Gate' && github.event.check_run.pull_requests[0].number != null)
+      (github.event_name == 'check_run' && github.event.check_run.name != 'CodeRabbit Review Gate' && github.event.check_run.pull_requests[0].number != null) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.pull_requests[0].number != null)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -52,8 +56,9 @@ jobs:
             pull_request_target|pull_request_review) number=$(jq -r '.pull_request.number' "$EVENT_PATH") ;;
             issue_comment) number=$(jq -r '.issue.number' "$EVENT_PATH") ;;
             check_run) number=$(jq -r '.check_run.pull_requests[0].number' "$EVENT_PATH") ;;
+            workflow_run) number=$(jq -r '.workflow_run.pull_requests[0].number' "$EVENT_PATH") ;;
           esac
-          [ -n "$number" ] || { echo 'No PR associated with event.' >&2; exit 1; }
+          [ -n "$number" ] && [ "$number" != null ] || { echo 'No PR associated with event.' >&2; exit 1; }
           gh api "repos/${GITHUB_REPOSITORY}/pulls/$number" > "$RUNNER_TEMP/pr.json"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/$number/reviews" --paginate --jq '.[]' > "$RUNNER_TEMP/reviews.ndjson"
           gh api "repos/${GITHUB_REPOSITORY}/issues/$number/comments" --paginate --jq '.[]' > "$RUNNER_TEMP/comments.ndjson"
