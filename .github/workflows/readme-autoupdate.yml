@@ -499,7 +499,7 @@ jobs:
             comments="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100&sort=updated&direction=desc")"
             remaining=$(( deadline - $(date +%s) ))
             (( remaining > 0 )) || break
-            reviews="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100")"
+            reviews="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --paginate --slurp)"
             [[ "$(date +%s)" -lt "$deadline" ]] || break
 
             if jq -e --arg head "$EXPECTED_HEAD" '
@@ -517,9 +517,11 @@ jobs:
             fi
 
             if jq -e --arg head "$EXPECTED_HEAD" '
-              [.[] |
+              [.[].[] |
                 select((.user.login // "") == "coderabbitai[bot]" or (.user.login // "") == "coderabbitai") |
-                select((.commit_id // .commit.oid // "") == $head)
+                select((.commit_id // .commit.oid // "") == $head) |
+                select((.state // "") != "PENDING") |
+                select((.submitted_at // "") != "")
               ] | length > 0
             ' <<<"$reviews" >/dev/null; then
               finish_review_cycle "review-object" || break
