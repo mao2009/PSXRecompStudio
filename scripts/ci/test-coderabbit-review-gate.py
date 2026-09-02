@@ -207,6 +207,59 @@ class PatchIdentityTests(unittest.TestCase):
             self.assertNotEqual(first["files"], changed["files"])
 
 
+class EquivalentRebaseTests(unittest.TestCase):
+    clean = "No actionable comments were generated in the recent review."
+
+    def test_incremental_clean_range_uses_full_historical_pr_patch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            run(["git", "init", "-q", str(repo)], check=True)
+            run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+
+            (repo / "base.txt").write_text("base\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+            old_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+            base_branch = run(
+                ["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],
+                check=True, text=True, capture_output=True
+            ).stdout.strip()
+
+            run(["git", "-C", str(repo), "checkout", "-qb", "feature"], check=True)
+            (repo / "one.txt").write_text("one\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "first feature change"], check=True)
+            incremental_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+            (repo / "two.txt").write_text("two\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "reviewed feature head"], check=True)
+            reviewed_head = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+
+            run(["git", "-C", str(repo), "checkout", "-q", base_branch], check=True)
+            (repo / "main.txt").write_text("main advanced\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "advance main"], check=True)
+            current_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+
+            run(["git", "-C", str(repo), "checkout", "-q", "feature"], check=True)
+            run(["git", "-C", str(repo), "rebase", base_branch], check=True)
+            current_head = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+            current = gate.patch_identity(repo, current_base, current_head)
+
+            summary = item(
+                f"{self.clean}\nReviewing files that changed from the base of the PR and between "
+                f"{incremental_base} and {reviewed_head}.",
+                reviewed_head,
+            )
+            self.assertNotEqual(
+                gate.patch_identity(repo, incremental_base, reviewed_head)["files"],
+                current["files"],
+                "regression fixture must prove the incremental range is not the full PR patch",
+            )
+            self.assertTrue(gate.clean_prior([summary], current, repo))
+
+
 class ReviewThreadPaginationTests(unittest.TestCase):
     @staticmethod
     def page(nodes, has_next=False, end_cursor=None):
