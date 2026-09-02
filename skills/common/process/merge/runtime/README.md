@@ -82,6 +82,8 @@ Safety guarantees (unchanged from the previous runtime):
   runtime's explicit-SHA `--force-with-lease` controlled exception; plain
   `--force-with-lease`, main, and protected base branches are forbidden.
 - Mandatory rebase onto latest `origin/main` before merge
+- A changed rebased HEAD invalidates persisted approval and returns to
+  `APPROVAL_VALIDATION`; unchanged HEAD approval remains SHA-bound
 - Approval tied to commit SHA and main HEAD SHA
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)
 

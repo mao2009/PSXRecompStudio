@@ -140,6 +140,10 @@ Always rebase onto latest main HEAD:
 1. git rebase origin/main
 2. If clean → proceed to validation
 3. If conflict → stop, delegate to Sub-agent
+
+If the rebase changes the PR HEAD, the persisted approval is invalidated and
+the flow returns to `APPROVAL_VALIDATION`; a new approval bound to the rebased
+SHA is required before validation can lead to merge.
 ```
 
 **Never skip rebase, even if branch appears up-to-date.**
@@ -262,6 +266,7 @@ REBASE
 | APPROVAL_VALIDATION | FAILED | No approval or invalid |
 | MAIN_HEAD_REFRESH | REBASE | Main HEAD fetched |
 | REBASE | VALIDATING | Rebase clean |
+| REBASE | APPROVAL_VALIDATION | Rebase changed PR HEAD; fresh approval required |
 | REBASE | CONFLICT | Rebase conflicts |
 | VALIDATING | MERGING | Validation passed |
 | VALIDATING | FAILED | Validation failed |

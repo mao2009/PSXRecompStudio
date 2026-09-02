@@ -239,6 +239,12 @@ _merge_handle_rebase() {
         return 0
     fi
 
+    _pre_rebase_commit=$(merge_get_current_commit "$MERGE_WORKTREE")
+    if [ -z "$_pre_rebase_commit" ]; then
+        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture pre-rebase HEAD"
+        return 0
+    fi
+
     _leased_push_enabled=false
     if merge_rebase_force_with_lease_enabled; then
         _leased_push_enabled=true
@@ -275,12 +281,12 @@ _merge_handle_rebase() {
 
     if [ "$_success" = "true" ]; then
         echo "Rebase succeeded"
+        _expected_local=$(merge_get_current_commit "$MERGE_WORKTREE")
+        if [ -z "$_expected_local" ]; then
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture rebased local HEAD"
+            return 0
+        fi
         if [ "$_leased_push_enabled" = "true" ]; then
-            _expected_local=$(merge_get_current_commit "$MERGE_WORKTREE")
-            if [ -z "$_expected_local" ]; then
-                merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture rebased local HEAD"
-                return 0
-            fi
             _pr_json=$(merge_get_pr_info "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
             _validated_head=$(merge_pr_head_branch "$_pr_json")
             _validated_base=$(merge_pr_field "$_pr_json" baseRefName)
@@ -295,6 +301,20 @@ _merge_handle_rebase() {
                 return 0
             fi
             echo "Safe rebase push succeeded"
+        fi
+        if [ "$_pre_rebase_commit" != "$_expected_local" ]; then
+            if ! merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null; then
+                # No Approval object is a valid state: approval validation will
+                # request a fresh approval. Any other reset failure is fatal.
+                if [ -n "$(merge_state_approval_commit "$MERGE_STATE_FILE")" ]; then
+                    echo "Unable to invalidate stale approval after HEAD change" >&2
+                    merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to invalidate stale approval"
+                    return 0
+                fi
+            fi
+            echo "Rebased HEAD changed; fresh approval required"
+            merge_state_set_string "$MERGE_STATE_FILE" "CurrentCommitSha" "$_expected_local" "State" "APPROVAL_VALIDATION"
+            return 0
         fi
         merge_state_set_string "$MERGE_STATE_FILE" "State" "VALIDATING"
         return 0

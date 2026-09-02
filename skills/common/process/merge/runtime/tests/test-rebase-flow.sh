@@ -47,12 +47,46 @@ MERGE_REPOSITORY=""
 merge_rebase_force_with_lease_enabled() { return 0; }
 merge_rebase() { printf '%s\n' success=true has_conflicts=false; }
 merge_get_remote_branch_sha() { printf '%s\n' "$REMOTE_SHA"; }
+merge_get_current_commit() { printf '%s\n' "$REMOTE_SHA"; }
 PUSH_CALLED=0
 merge_safe_rebase_push() { PUSH_CALLED=$((PUSH_CALLED + 1)); SAFE_ARGS="$*"; return 0; }
 _merge_handle_rebase >/dev/null 2>&1
 assert "enabled flow reaches VALIDATING" test "$(merge_state_get "$STATE" State)" = VALIDATING
 assert "enabled flow calls safe push" test "$PUSH_CALLED" -eq 1
 assert "validated branch is passed" test "$SAFE_ARGS" = "$WORK/wt issue/148-test $REMOTE_SHA $(git -C "$WORK/wt" rev-parse HEAD) origin issue/148-test main"
+
+# A changed HEAD must invalidate the old explicit approval and return to the
+# approval gate instead of entering VALIDATING.
+OLD_SHA="$REMOTE_SHA"
+NEW_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+MAIN_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+merge_state_set_approval "$STATE" "$(merge_approval_object 149 148 "$OLD_SHA" "$MAIN_SHA" alice 2026-01-01T00:00:00Z)"
+printf '0\n' > "$WORK/commit-calls"
+merge_get_current_commit() {
+    _calls=$(cat "$WORK/commit-calls")
+    _calls=$((_calls + 1))
+    printf '%s\n' "$_calls" > "$WORK/commit-calls"
+    if [ "$_calls" -eq 1 ]; then printf '%s\n' "$OLD_SHA"; else printf '%s\n' "$NEW_SHA"; fi
+}
+merge_safe_rebase_push() { PUSH_CALLED=$((PUSH_CALLED + 1)); return 0; }
+merge_state_set_string "$STATE" State REBASE
+_merge_handle_rebase >/dev/null 2>&1
+assert "changed HEAD returns to approval validation" test "$(merge_state_get "$STATE" State)" = APPROVAL_VALIDATION
+assert "changed HEAD removes old approval" test -z "$(merge_state_approval_commit "$STATE")"
+
+# A new approval bound to the rebased SHA can pass the normal approval gate.
+merge_get_current_commit() { printf '%s\n' "$NEW_SHA"; }
+merge_get_main_head() { printf '%s\n' "$MAIN_SHA"; }
+merge_state_set_approval "$STATE" "$(merge_approval_object 149 148 "$NEW_SHA" "$MAIN_SHA" alice 2026-01-01T00:00:00Z)"
+merge_state_set_string "$STATE" State APPROVAL_VALIDATION
+_merge_handle_approval_validation >/dev/null 2>&1
+assert "new SHA approval validates" test "$(merge_state_get "$STATE" State)" = MAIN_HEAD_REFRESH
+
+# Resume with a stale persisted approval remains blocked.
+merge_state_set_approval "$STATE" "$(merge_approval_object 149 148 "$OLD_SHA" "$MAIN_SHA" alice 2026-01-01T00:00:00Z)"
+merge_state_set_string "$STATE" State APPROVAL_VALIDATION
+_merge_handle_approval_validation >/dev/null 2>&1
+assert "stale approval blocks resumed flow" test "$(merge_state_get "$STATE" State)" = APPROVAL_VALIDATION
 
 merge_safe_rebase_push() { return 1; }
 merge_state_set_string "$STATE" State REBASE

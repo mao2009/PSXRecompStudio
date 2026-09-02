@@ -278,6 +278,23 @@ merge_state_get() {
     echo "$_value"
 }
 
+# Return the SHA bound to the persisted Approval object, or empty when no
+# approval exists.  Approval is stored as a single JSON object by this runtime.
+merge_state_approval_commit() {
+    _file_path="$1"
+    sed -n 's/.*"Approval"[[:space:]]*:[[:space:]]*{[^}]*"CommitSha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]\{40\}\)"[^}]*}.*/\1/p' "$_file_path" 2>/dev/null | head -1
+}
+
+# Remove the persisted approval atomically.  This is the canonical reset used
+# when the approved PR HEAD changes; callers must not hand-edit approval fields.
+merge_state_invalidate_approval() {
+    _file_path="$1"
+    _content=$(cat "$_file_path" 2>/dev/null) || return 1
+    _updated=$(printf '%s' "$_content" | sed 's/"Approval"[[:space:]]*:[[:space:]]*{[^}]*}/"Approval": null/')
+    [ "$_updated" != "$_content" ] || return 1
+    merge_save_state_file "$_updated" "$_file_path"
+}
+
 # Update string-keyed state fields and persist atomically.
 # Usage: merge_state_set_string <file_path> <field> <value> [field value ...]
 merge_state_set_string() {
