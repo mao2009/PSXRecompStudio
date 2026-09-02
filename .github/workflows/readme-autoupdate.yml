@@ -447,11 +447,16 @@ jobs:
               exit 1
             fi
 
-            comments="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100&sort=updated&direction=desc" --slurp)"
-            reviews="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --slurp)"
+            remaining=$(( deadline - $(date +%s) ))
+            (( remaining > 0 )) || break
+            comments="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100&sort=updated&direction=desc")"
+            remaining=$(( deadline - $(date +%s) ))
+            (( remaining > 0 )) || break
+            reviews="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100")"
+            [[ "$(date +%s)" -lt "$deadline" ]] || break
 
             if jq -e --arg head "$EXPECTED_HEAD" '
-              [.[].[] |
+              [.[] |
                 select((.user.login // "") == "coderabbitai[bot]" or (.user.login // "") == "coderabbitai") |
                 (.body // "") |
                 select(contains($head)) |
@@ -461,16 +466,28 @@ jobs:
                 )
               ] | length > 0
             ' <<<"$comments" >/dev/null; then
+              current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+              [[ "$current" == "$EXPECTED_HEAD" ]] || {
+                echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
+                exit 1
+              }
+              [[ "$(date +%s)" -lt "$deadline" ]] || break
               echo "CodeRabbit current-HEAD comment evidence observed for $EXPECTED_HEAD"
               exit 0
             fi
 
             if jq -e --arg head "$EXPECTED_HEAD" '
-              [.[].[] |
+              [.[] |
                 select((.user.login // "") == "coderabbitai[bot]" or (.user.login // "") == "coderabbitai") |
                 select((.commit_id // .commit.oid // "") == $head)
               ] | length > 0
             ' <<<"$reviews" >/dev/null; then
+              current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+              [[ "$current" == "$EXPECTED_HEAD" ]] || {
+                echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
+                exit 1
+              }
+              [[ "$(date +%s)" -lt "$deadline" ]] || break
               echo "CodeRabbit current-HEAD review object observed for $EXPECTED_HEAD"
               exit 0
             fi
