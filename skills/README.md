@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #85, #84, #81, #89, #174
+**Related Issues:** #85, #84, #81, #88, #89, #174
 
 ## Purpose
 
@@ -17,11 +17,12 @@ Content is deliberately separated into three kinds:
 ```text
 skills/
 ├── common/            # Generic, portable skills (no project specifics)
-│   ├── process/       #   Gate + execution skills
+│   ├── process/       #   Gate / execution / reporting skills
 │   │   ├── adr/         #   ADR authoring / maintenance (#84)
 │   │   ├── batch/       #   Parallel Issue execution Orchestrator (#155)
 │   │   ├── doc-sync/
 │   │   ├── merge/       #   Safe PR Merge Skill (#146)
+│   │   ├── reporting/   #   Completion-reporting process skill (#88)
 │   │   └── self-review/
 │   └── task/          #   Per-task-type work templates (#174)
 │       ├── common/       #   Project-wide universal rules (the Common Skill)
@@ -53,7 +54,9 @@ The skills under `common/` serve two deliberately distinct roles:
   Definition of Done.
 - **Gate and execution skills** (`common/process/`) prescribe *what must hold
   around that work*: the pre-PR self-review gate, the documentation
-  synchronization gate, parallel issue orchestration (batch), and safe merge.
+  synchronization gate, parallel issue orchestration (batch), and safe merge —
+  and the completion-reporting process skill standardizes the final report an
+  agent produces for the executed work.
 
 Task and gate/execution skills have distinct, non-overlapping responsibilities
 and are not merged into one "super" skill. The Common Skill
@@ -70,6 +73,7 @@ gates.
 | `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
 | `common/process/batch` | Parallel Issue execution Orchestrator with dependency scheduling, retry, failure isolation, and serial merge via Merge Skill | #145, #155 |
 | `common/process/merge` | Safe PR Merge Skill with mandatory approval → rebase → validation → normal merge flow | #146 |
+| `common/process/reporting` | Completion-reporting process skill: standard final report (investigation/SSOT, implementation summary, design decisions, changed files, targeted/related/full tests, build/analyzer/lint applicability, real PASS/FAIL/NOT RUN semantics, existing-vs-new failure separation, git status/diff/commit evidence, remaining work and Issue/PR state) | #88 |
 | `common/task/common` | Project-wide universal rules (Architecture SSOT, Issue as SSOT, ground-truth verification, no fabricated results, scope discipline, Definition of Done) | #174 |
 | `common/task/research` | Research / investigation procedure; standard report (Current State, Requirements, Findings, Constraints, Alternatives, Recommendation, Scope, Test Strategy, Risks, Open Questions); fact/inference/proposal separation | #174 |
 | `common/task/implementation` | Implementation procedure (Issue confirm → repo state → related survey → SSOT check → approach → implement → test → build/analyzer/E2E → diff review → DoD); Definition of Done | #174 |
