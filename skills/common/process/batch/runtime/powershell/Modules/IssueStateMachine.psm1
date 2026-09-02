@@ -158,6 +158,10 @@ function Test-IssueStateActive {
 
     $activeStates = @(
         "SUBAGENT_STARTING",
+        "READY_FOR_NATIVE_DISPATCH",
+        "DISPATCHED",
+        "READY_FOR_NATIVE_DISPATCH",
+        "DISPATCHED",
         "SUBAGENT_RUNNING",
         "SUBAGENT_RETRYING",
         "WAITING_FOR_SUBAGENT",

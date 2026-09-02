@@ -178,7 +178,12 @@ function Invoke-BatchOrchestration {
     Write-Host ""
 
     $configuredProvider = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "" }
-    $providerSelection = Resolve-AgentProvider -ProviderName $configuredProvider
+    try {
+        $providerSelection = Resolve-AgentProvider -ProviderName $configuredProvider -ErrorAction Stop
+    } catch {
+        $providerSelection = @{ Blocked = $true; SelectionReason = "Provider selection failed: $($_.Exception.Message)"; SelectedProvider = $null; SelectedMechanism = $null; HostAgent = $null; NativeSubagentCapability = "UNKNOWN"; ExplicitProviderConfigured = -not [string]::IsNullOrWhiteSpace($configuredProvider) }
+        Write-BatchLog $providerSelection.SelectionReason "ERROR"
+    }
     $resolvedProvider = if ($providerSelection.SelectedProvider) { $providerSelection.SelectedProvider } else { "" }
     Write-BatchLog ("Host agent: {0}; native capability: {1}; configured provider: {2}; selected provider: {3}; mechanism: {4}; reason: {5}" -f $providerSelection.HostAgent, $providerSelection.NativeSubagentCapability, $configuredProvider, $providerSelection.SelectedProvider, $providerSelection.SelectedMechanism, $providerSelection.SelectionReason) "INFO"
 
@@ -189,6 +194,23 @@ function Invoke-BatchOrchestration {
         $issueStates = Get-IssueStates -FilePath $issueStatesFile
         if ($null -eq $issueStates) {
             $issueStates = @{}
+        }
+        # A resumed RUNNING batch must use the persisted immutable selection.
+        if ($batchState.State -eq "RUNNING") {
+            $savedIssue = $issueStates.Values | Where-Object { $_.SelectedProvider } | Select-Object -First 1
+            if ($savedIssue) {
+                $providerSelection = @{
+                    Blocked = $false
+                    HostAgent = $savedIssue.HostAgent
+                    NativeSubagentCapability = $savedIssue.NativeCapability
+                    ExplicitProviderConfigured = $savedIssue.ExplicitProviderConfigured
+                    SelectedProvider = $savedIssue.SelectedProvider
+                    SelectedMechanism = $savedIssue.SelectedMechanism
+                    SelectionReason = $savedIssue.SelectionReason
+                }
+                $resolvedProvider = $savedIssue.SelectedProvider
+                Write-BatchLog "Restored persisted provider selection: $($savedIssue.SelectedProvider) via $($savedIssue.SelectedMechanism)" "INFO"
+            }
         }
         $sync = Sync-StateWithGitHub -BatchState $batchState -IssueStates $issueStates
         $batchState = $sync.BatchState
@@ -283,6 +305,13 @@ function Invoke-BatchOrchestration {
         switch ($batchState.State) {
             "BATCH_INITIALIZING" {
                 Write-BatchLog "=== Phase: Initialization ===" "INFO"
+                $batchState.HostAgent = $providerSelection.HostAgent
+                $batchState.NativeCapability = $providerSelection.NativeSubagentCapability
+                $batchState.ExplicitProviderConfigured = $providerSelection.ExplicitProviderConfigured
+                $batchState.ConfiguredProvider = $configuredProvider
+                $batchState.SelectedProvider = $providerSelection.SelectedProvider
+                $batchState.SelectedMechanism = $providerSelection.SelectedMechanism
+                $batchState.SelectionReason = $providerSelection.SelectionReason
                 Set-BatchStateTransition -BatchState $batchState -ToState "PLANNING"
                 Save-BatchState -State $batchState -FilePath $batchStateFile
                 Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
@@ -350,12 +379,14 @@ function Invoke-BatchOrchestration {
                 if ($providerSelection.Blocked) {
                     foreach ($issueId in $issueStates.Keys) {
                         if ($issueStates[$issueId].State -notin @("COMPLETED", "FAILED", "BLOCKED")) {
-                            $issueStates[$issueId].State = "BLOCKED"
+                            Set-IssueStateTransition -IssueState $issueStates[$issueId] -ToState "BLOCKED" -BatchId $BatchId -Reason $providerSelection.SelectionReason
                             $issueStates[$issueId].LastError = $providerSelection.SelectionReason
                             $issueStates[$issueId].LaunchStatus = "BLOCKED"
                             $issueStates[$issueId].ExecutionStatus = "NOT_STARTED"
                             $issueStates[$issueId].FailureClassification = "provider_selection_blocked"
                             $issueStates[$issueId].SelectionReason = $providerSelection.SelectionReason
+                            $issueStates[$issueId].ConfiguredProvider = $configuredProvider
+                            $issueStates[$issueId].ExplicitProviderConfigured = $providerSelection.ExplicitProviderConfigured
                         }
                     }
                     $batchState.BlockedCount = @($issueStates.Values | Where-Object { $_.State -eq "BLOCKED" }).Count
@@ -514,6 +545,11 @@ function Invoke-BatchOrchestration {
                                         $issueStates[$issueId].SelectedProvider = $providerSelection.SelectedProvider
                                         $issueStates[$issueId].SelectedMechanism = "native-subagent"
                                         $issueStates[$issueId].SelectionReason = $providerSelection.SelectionReason
+                                        $issueStates[$issueId].HostAgent = $providerSelection.HostAgent
+                                        $issueStates[$issueId].NativeCapability = $providerSelection.NativeSubagentCapability
+                                        $issueStates[$issueId].ConfiguredProvider = $configuredProvider
+                                        $issueStates[$issueId].ExplicitProviderConfigured = $providerSelection.ExplicitProviderConfigured
+                                        $issueStates[$issueId].DispatchDeadline = (Get-Date).ToUniversalTime().AddMinutes($subAgentConfig.TimeoutMinutes)
                                         $issueStates[$issueId].DispatchRequest = $requestResult.RequestFile
                                         $issueStates[$issueId].SubAgentProcessId = $null
                                         Write-BatchLog "Native dispatch request ready for ${issueId}: $($requestResult.RequestFile)" "SUCCESS"
@@ -580,6 +616,17 @@ function Invoke-BatchOrchestration {
                             }
                         }
 
+                        if ($issue.State -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED") -and $issue.DispatchDeadline -and (Get-Date).ToUniversalTime() -gt [datetime]$issue.DispatchDeadline) {
+                            Set-IssueStateTransition -IssueState $issue -ToState "SUBAGENT_FAILED" -BatchId $BatchId -Reason "Native dispatch deadline exceeded"
+                            $issue.LaunchStatus = "FAILED"
+                            $issue.ExecutionStatus = "NOT_STARTED"
+                            $issue.FailureClassification = "launch_failure"
+                            $issue.LastError = "Native dispatch deadline exceeded"
+                            Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $issue.LastError
+                            Write-BatchLog "Issue ${issueId}: native dispatch timed out" "ERROR"
+                            continue
+                        }
+
                         if ($resultFile -and (Test-Path $resultFile)) {
                             $result = Get-SubAgentResult -ResultFile $resultFile
                             if ($null -ne $result -and $result.ContainsKey("Success")) {
@@ -598,9 +645,9 @@ function Invoke-BatchOrchestration {
                                     Write-BatchLog "Issue ${issueId}: PR #$($issue.PrNumber) ready (SHA: $($issue.CommitSha))" "SUCCESS"
                                 } elseif (-not $result.Success) {
                                     $processId = $issue.SubAgentProcessId
-                                    if ($processId -and -not (Test-SubAgentProcessRunning -ProcessId $processId)) {
+                                    if (($processId -and -not (Test-SubAgentProcessRunning -ProcessId $processId)) -or $issue.SelectedMechanism -eq "native-subagent") {
                                         $errorMsg = if ($result.ContainsKey("Error")) { $result.Error } else { "Sub-agent failed" }
-                                        $errorCategory = Get-SubAgentFailureCategory -ErrorMessage $errorMsg
+                                        $errorCategory = if ($result.ContainsKey("FailureClassification") -and $result.FailureClassification) { $result.FailureClassification } else { Get-SubAgentFailureCategory -ErrorMessage $errorMsg }
                                         $subAgentState = if ($activeProcesses.ContainsKey($issueId)) { $activeProcesses[$issueId] } else { $null }
 
                                         if ($null -ne $subAgentState) {

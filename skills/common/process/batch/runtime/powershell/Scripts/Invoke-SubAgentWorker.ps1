@@ -111,6 +111,7 @@ function Get-GitChangedFiles {
     return $all | Where-Object { $_ -ne "" }
 }
 
+ $executionPhase = "pre_provider"
 try {
     Write-AgentLog "Starting Sub-agent for Issue #$IssueNumber ($IssueId)"
     Write-AgentLog "Worktree: $WorktreePath"
@@ -233,6 +234,7 @@ IMPORTANT RULES:
 
         # Invoke provider (abstracted - works with any provider)
         Write-AgentLog ("Invoking: {0}" -f $provider.Executable)
+        $executionPhase = "provider_invoked"
         $provider_result = Invoke-AgentProvider `
             -ProviderName $provider_name `
             -ProviderConfig $provider `
@@ -269,9 +271,9 @@ IMPORTANT RULES:
                 IssueId = $IssueId
                 PrNumber = $null
                 CommitSha = $null
-                LaunchStatus = "FAILED"
-                ExecutionStatus = "NOT_STARTED"
-                FailureClassification = "launch_failure"
+                LaunchStatus = if ($agentExitCode -eq -1) { "FAILED" } else { "STARTED" }
+                ExecutionStatus = if ($agentExitCode -eq -1) { "NOT_STARTED" } else { "FAILED" }
+                FailureClassification = if ($agentExitCode -eq -1) { "launch_failure" } else { "implementation_failure" }
                 SelectedProvider = $selection.SelectedProvider
                 SelectedMechanism = $selection.SelectedMechanism
                 SelectionReason = $selection.SelectionReason
@@ -417,9 +419,9 @@ $($changedFiles -join "`n")
         IssueId = $IssueId
         PrNumber = $null
         CommitSha = $null
-        LaunchStatus = "STARTED"
-        ExecutionStatus = "FAILED"
-        FailureClassification = "implementation_failure"
+        LaunchStatus = if ($executionPhase -eq "pre_provider") { "FAILED" } else { "STARTED" }
+        ExecutionStatus = if ($executionPhase -eq "pre_provider") { "NOT_STARTED" } else { "FAILED" }
+        FailureClassification = if ($executionPhase -eq "pre_provider") { "launch_failure" } else { "implementation_failure" }
         CompletedAt = $endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         DurationSeconds = [Math]::Round($duration, 2)
         Error = $_.Exception.Message

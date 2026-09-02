@@ -107,7 +107,7 @@ function Test-SubAgentRetryable {
     )
 
     $retryableCategories = @("api_error", "timeout", "connection_failure", "transient")
-    $nonRetryableCategories = @("code_error", "test_failure", "architecture_violation", "dependency_conflict")
+    $nonRetryableCategories = @("code_error", "test_failure", "architecture_violation", "dependency_conflict", "launch_failure", "provider_switch")
 
     if ($ErrorCategory -in $nonRetryableCategories) {
         return @{
@@ -616,6 +616,8 @@ function New-WorkerCheckpointFromIssueState {
         "WAITING_DEPENDENCY" = "PENDING"
         "WAITING_FOR_SUBAGENT" = "PENDING"
         "SUBAGENT_STARTING" = "STARTING"
+        "READY_FOR_NATIVE_DISPATCH" = "STARTING"
+        "DISPATCHED" = "RUNNING"
         "SUBAGENT_RUNNING" = "RUNNING"
         "SUBAGENT_RETRYING" = "RETRY_PENDING"
         "ORPHANED" = "ORPHANED"
@@ -660,14 +662,24 @@ function New-WorkerCheckpointFromIssueState {
         testPassed = $false
         remainingWork = $null
         failureReason = $IssueState.LastError
-        failureCategory = $null
+        failureCategory = $IssueState.FailureClassification
         retryCount = $IssueState.RetryCount
         maxRetries = $MaxRetries
         lastRetryAt = $null
         processId = $IssueState.SubAgentProcessId
         startedAt = $IssueState.StartedAt
         completedAt = $IssueState.CompletedAt
-        providerMetadata = @{}
+        providerMetadata = @{
+            hostAgent = $IssueState.HostAgent
+            nativeCapability = $IssueState.NativeCapability
+            explicitProviderConfigured = $IssueState.ExplicitProviderConfigured
+            configuredProvider = $IssueState.ConfiguredProvider
+            selectedProvider = $IssueState.SelectedProvider
+            selectedMechanism = $IssueState.SelectedMechanism
+            selectionReason = $IssueState.SelectionReason
+            launchStatus = $IssueState.LaunchStatus
+            executionStatus = $IssueState.ExecutionStatus
+        }
     }
 }
 

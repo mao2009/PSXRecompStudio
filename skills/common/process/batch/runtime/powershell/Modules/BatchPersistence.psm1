@@ -142,6 +142,13 @@ function New-BatchState {
         CreatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         UpdatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         FailureReason = $null
+        HostAgent = $null
+        NativeCapability = $null
+        ExplicitProviderConfigured = $false
+        ConfiguredProvider = $null
+        SelectedProvider = $null
+        SelectedMechanism = $null
+        SelectionReason = $null
         DependencyGraph = $null
         ConcurrencyGroups = $null
         MergeQueueStatus = $null
@@ -178,6 +185,11 @@ function New-IssueState {
         SelectionReason = $null
         SelectedProvider = $null
         SelectedMechanism = $null
+        HostAgent = $null
+        NativeCapability = $null
+        ExplicitProviderConfigured = $false
+        ConfiguredProvider = $null
+        DispatchDeadline = $null
         DispatchRequest = $null
         Report = $null
         SubAgentProcessId = $null

@@ -153,11 +153,11 @@ _ari_select_provider >/dev/null
 _native_worktree="${_TEST_DIR}/native-worktree"
 mkdir -p "$_native_worktree"
 _native_task="${_TEST_DIR}/native-task.json"
-_ari_build_task "native-task" 219 "native test" "$_native_worktree" "issue/219-native" "Implement" "${_native_worktree}/.subagent/result.json" 30 > "$_native_task"
 _ARI_HOST_AGENT="codex"
 _ARI_NATIVE_SUBAGENT_AVAILABLE="true"
 unset ORC_PROVIDER
 _ari_select_provider >/dev/null
+_ari_build_task "native-task" 219 "native test" "$_native_worktree" "issue/219-native" "Implement" "${_native_worktree}/.subagent/result.json" 30 > "$_native_task"
 _native_handle=$(_ari_launch "$_native_task")
 assert_true "native launch returns dispatch handle" test -f "$_native_handle"
 _native_request=$(_json_get_string "$_native_handle" "request_file")
@@ -165,7 +165,18 @@ assert_true "native request exists" test -f "$_native_request"
 assert_true "native request is ready" grep -q '"status": "READY_FOR_NATIVE_DISPATCH"' "$_native_request"
 assert_true "native request has worktree" grep -q '"worktree_path": "' "$_native_request"
 assert_true "native request has branch" grep -q '"branch_name": "issue/219-native"' "$_native_request"
+assert_true "native request preserves expected provider" grep -q '"expected_provider": "codex"' "$_native_request"
 assert_true "native handle has no spawned pid" grep -q '"status": "READY_FOR_NATIVE_DISPATCH"' "$_native_handle"
+
+# Parallel native requests retain independent worktree and issue context.
+_native_worktree_2="${_TEST_DIR}/native-worktree-2"
+mkdir -p "$_native_worktree_2"
+_native_task_2="${_TEST_DIR}/native-task-2.json"
+_ari_build_task "native-task-2" 220 "second native test" "$_native_worktree_2" "issue/220-native" "Implement second" "${_native_worktree_2}/.subagent/result.json" 30 > "$_native_task_2"
+_native_handle_2=$(_ari_launch "$_native_task_2")
+_native_request_2=$(_json_get_string "$_native_handle_2" "request_file")
+assert_true "parallel native request has independent worktree" grep -q '"worktree_path": "'"$_native_worktree_2"'"' "$_native_request_2"
+assert_true "parallel native request preserves issue context" grep -q '"task_id": "native-task-2"' "$_native_request_2"
 
 _ARI_HOST_AGENT=""
 _ARI_NATIVE_SUBAGENT_AVAILABLE="false"

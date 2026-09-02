@@ -448,18 +448,18 @@ function New-NativeDispatchRequest {
     }
     $requestFile = Join-Path $requestDirectory "dispatch-request.json"
     $request = [ordered]@{
-        Status = "READY_FOR_NATIVE_DISPATCH"
-        TaskId = $IssueId
-        IssueId = $IssueId
-        IssueNumber = $IssueNumber
-        WorktreePath = $WorktreePath
-        BranchName = $BranchName
-        Prompt = $Prompt
-        RequiredSkills = @($RequiredSkills)
-        ExecutionScope = $ExecutionScope
-        ValidationRequirements = $ValidationRequirements
-        ResultFile = $ResultFile
-        CreatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        status = "READY_FOR_NATIVE_DISPATCH"
+        task_id = $IssueId
+        issue_id = $IssueId
+        issue_number = $IssueNumber
+        worktree_path = $WorktreePath
+        branch_name = $BranchName
+        prompt = $Prompt
+        required_skills = @($RequiredSkills)
+        execution_scope = $ExecutionScope
+        validation_requirements = $ValidationRequirements
+        result_file = $ResultFile
+        created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
     $request | ConvertTo-Json -Depth 10 | Set-Content -Path $requestFile -Force
     return @{

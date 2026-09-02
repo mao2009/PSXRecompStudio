@@ -13,7 +13,7 @@
         "name": "claude-code",
         "type": "claude-code",
         "enabled": true,
-        "description": "Claude Code AI Agent (default for current runtime)"
+        "description": "Claude Code AI Agent (available when explicitly configured)"
       },
       "opencode": {
         "name": "opencode",

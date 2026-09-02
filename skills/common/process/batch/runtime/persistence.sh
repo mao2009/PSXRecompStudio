@@ -117,9 +117,16 @@ _persistence_new_batch_state() {
   "failed_count": 0,
   "blocked_count": 0,
   "created_at": "${_now}",
-  "updated_at": "${_now}",
-  "failure_reason": null,
-  "merge_queue_status": null
+      "updated_at": "${_now}",
+      "failure_reason": null,
+      "host_agent": null,
+      "native_capability": null,
+      "explicit_provider_configured": false,
+      "configured_provider": null,
+      "selected_provider": null,
+      "selected_mechanism": null,
+      "selection_reason": null,
+      "merge_queue_status": null
 }
 EOF
 }
@@ -209,7 +216,10 @@ _persistence_update_batch_state() {
             completed_count|failed_count|blocked_count|issue_count)
                 _content=$(printf '%s' "$_content" | sed "s/\"${_field}\"[[:space:]]*:[[:space:]]*[0-9]*/\"${_field}\": ${_value}/")
                 ;;
-            failure_reason)
+            explicit_provider_configured)
+                _content=$(printf '%s' "$_content" | sed "s/\"${_field}\"[[:space:]]*:[[:space:]]*\(true\|false\)/\"${_field}\": ${_value}/")
+                ;;
+            failure_reason|host_agent|native_capability|configured_provider|selected_provider|selected_mechanism|selection_reason)
                 if [ -z "$_value" ]; then
                     _content=$(printf '%s' "$_content" | sed "s/\"failure_reason\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"failure_reason\": null/")
                     _content=$(printf '%s' "$_content" | sed "s/\"failure_reason\"[[:space:]]*:[[:space:]]*null/\"failure_reason\": null/")
@@ -258,6 +268,12 @@ _persistence_new_issue_state() {
       "launch_status": null,
       "execution_status": "NOT_STARTED",
       "failure_classification": null,
+      "host_agent": null,
+      "native_capability": null,
+      "explicit_provider_configured": false,
+      "configured_provider": null,
+      "selected_provider": null,
+      "selected_mechanism": null,
       "selection_reason": null,
       "dispatch_request": null,
       "execution_mechanism": null,
@@ -348,7 +364,7 @@ _persistence_update_issue_state() {
 
         # Use sed for replacement within the issue block
         case "$_field" in
-            state|worktree_path|branch_name|last_error|pr_url|launch_status|execution_status|failure_classification|selection_reason|dispatch_request|execution_mechanism)
+            state|worktree_path|branch_name|last_error|pr_url|launch_status|execution_status|failure_classification|host_agent|native_capability|configured_provider|selected_provider|selected_mechanism|selection_reason|dispatch_request|execution_mechanism)
                 if [ -z "$_value" ] || [ "$_value" = "null" ]; then
                     _content=$(printf '%s' "$_content" | sed "/\"${_issue_id}\"/,/}/s/\"${_field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"${_field}\": null/")
                 else

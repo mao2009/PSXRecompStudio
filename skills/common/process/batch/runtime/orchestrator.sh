@@ -236,6 +236,20 @@ _orc_resume() {
         _orc_log WARN "gh CLI not available, skipping GitHub sync"
     fi
 
+    # Restore the immutable provider selection before entering RUNNING.
+    _issues_file=$(_persistence_get_issue_states_path "$_ORC_BATCH_ID")
+    _saved_selection=$(sed -n '/"issue-[^"]*"/,/}/p' "$_issues_file" 2>/dev/null)
+    _ARI_SELECTED_PROVIDER=$(printf '%s' "$_saved_selection" | sed -n 's/.*"selected_provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    _ARI_SELECTED_MECHANISM=$(printf '%s' "$_saved_selection" | sed -n 's/.*"selected_mechanism"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    _ARI_SELECTION_REASON=$(printf '%s' "$_saved_selection" | sed -n 's/.*"selection_reason"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    if [ -z "$_ARI_SELECTED_PROVIDER" ] && [ "$_batch_state" = "RUNNING" ]; then
+        _ari_select_provider "${ORC_PROVIDER:-}"
+        if [ $? -ne 0 ]; then
+            _orc_mark_all_blocked "Persisted provider selection is unavailable"
+            return 0
+        fi
+    fi
+
     _orc_log INFO "Current state: $_batch_state"
     _orc_main_loop
 }
@@ -382,6 +396,16 @@ _orc_phase_scheduling() {
         return 0
     fi
 
+    _batch_file=$(_persistence_get_batch_state_path "$_ORC_BATCH_ID")
+    _persistence_update_batch_state "$_batch_file" \
+        "host_agent" "$_ARI_HOST_AGENT" \
+        "native_capability" "$_ARI_NATIVE_SUBAGENT_AVAILABLE" \
+        "explicit_provider_configured" "$( [ -n "${ORC_PROVIDER:-}" ] && echo true || echo false )" \
+        "configured_provider" "${ORC_PROVIDER:-}" \
+        "selected_provider" "$_ARI_SELECTED_PROVIDER" \
+        "selected_mechanism" "$_ARI_SELECTED_MECHANISM" \
+        "selection_reason" "$_ARI_SELECTION_REASON"
+
     # Transition to RUNNING
     _batch_json=$(_persistence_load_batch "$_ORC_BATCH_ID")
     _batch_json=$(printf '%s' "$_batch_json" | sed 's/"state"[[:space:]]*:[[:space:]]*"[^"]*"/"state": "RUNNING"/')
@@ -400,7 +424,10 @@ _orc_mark_all_blocked() {
         _persistence_update_issue_state "$_issues_file" "$_id" \
             "state" "BLOCKED" "last_error" "$_reason" \
             "launch_status" "BLOCKED" "execution_status" "NOT_STARTED" \
-            "selection_reason" "$_ARI_SELECTION_REASON"
+            "selection_reason" "$_ARI_SELECTION_REASON" \
+            "selected_provider" "$_ARI_SELECTED_PROVIDER" \
+            "selected_mechanism" "$_ARI_SELECTED_MECHANISM" \
+            "configured_provider" "${ORC_PROVIDER:-}"
         _blocked_count=$((_blocked_count + 1))
     done
     _batch_json=$(_persistence_load_batch "$_ORC_BATCH_ID")
@@ -488,11 +515,9 @@ _orc_phase_running() {
                     fi
                     # Check if result file exists
                     _result_file=$(sed -n "/\"issue-${_id}\"/,/}/p" "$_issues_file" | sed -n 's/.*"worktree_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-                    if [ -n "$_result_file" ] && [ -d "$_result_file" ]; then
-                        _result_json=$(find "$_result_file" -name "result*.json" 2>/dev/null | head -1)
-                        if [ -n "$_result_json" ] && [ -f "$_result_json" ]; then
-                            _orc_handle_result "$_id" "$_result_json"
-                        fi
+                    _result_json="$_result_file/.subagent/result.json"
+                    if [ -f "$_result_json" ]; then
+                        _orc_handle_result "$_id" "$_result_json"
                     fi
                     ;;
             esac
@@ -593,7 +618,13 @@ _orc_handle_result() {
 
     _issues_file=$(_persistence_get_issue_states_path "$_ORC_BATCH_ID")
 
-    if [ -n "$_result_provider" ] && [ -n "$_ARI_SELECTED_PROVIDER" ] && [ "$_result_provider" != "$_ARI_SELECTED_PROVIDER" ]; then
+    _expected_provider="$_ARI_SELECTED_PROVIDER"
+    _dispatch_request=$(sed -n "/\"issue-${_issue_id}\"/,/}/p" "$_issues_file" | sed -n 's/.*"dispatch_request"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    if [ -n "$_dispatch_request" ] && [ -f "$_dispatch_request" ]; then
+        _request_expected=$(_json_get_nullable_string "$_dispatch_request" "expected_provider")
+        [ -n "$_request_expected" ] && _expected_provider="$_request_expected"
+    fi
+    if [ -n "$_result_provider" ] && [ -n "$_expected_provider" ] && [ "$_result_provider" != "$_expected_provider" ]; then
         _success="false"
         _error="Provider switch is not a retry"
         _error_category="provider_switch"

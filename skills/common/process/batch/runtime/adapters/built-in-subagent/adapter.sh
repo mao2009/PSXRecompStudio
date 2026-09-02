@@ -30,11 +30,10 @@ _ari_prepare_native_dispatch() {
     {
         echo '{'
         echo '  "status": "READY_FOR_NATIVE_DISPATCH",'
-        sed -e '1d' -e '/"provider"[[:space:]]*:/d' -e '$d' -e '$s/,[[:space:]]*$//' "$_task_file"
+        sed -e '1d' -e 's/"provider"[[:space:]]*:/"expected_provider":/' -e '$d' -e '$s/,[[:space:]]*$//' "$_task_file"
         echo '}'
     } > "$_request_file"
-    _handle_dir="/tmp/batch-native-handle-$$"
-    mkdir -p "$_handle_dir" || return 1
+    _handle_dir=$(mktemp -d "${TMPDIR:-/tmp}/batch-native-handle.XXXXXX") || return 1
     _handle_file="$_handle_dir/handle-$(_json_get_string_local "$_task_file" "task_id").json"
     cat > "$_handle_file" <<EOF
 {

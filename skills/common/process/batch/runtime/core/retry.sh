@@ -159,5 +159,5 @@ _retry_default_config() {
     echo "backoff_base_seconds=5"
     echo "backoff_max_seconds=120"
     echo "retryable=api_error timeout connection_failure transient"
-    echo "non_retryable=code_error test_failure architecture_violation dependency_conflict"
+    echo "non_retryable=code_error test_failure architecture_violation dependency_conflict provider_switch launch_failure"
 }

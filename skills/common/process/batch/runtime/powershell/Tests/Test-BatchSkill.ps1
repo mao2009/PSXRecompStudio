@@ -825,6 +825,20 @@ Invoke-BatchTest -Name "Explicit provider is selected without PATH fallback" -Te
     if ($selection.SelectedMechanism -ne "provider-adapter") { throw "Adapter mechanism missing" }
 }
 
+Invoke-BatchTest -Name "Launch failures and provider switches are never retryable" -Test {
+    $state = New-SubAgentState -IssueId "issue-retry" -Config (New-SubAgentConfig -MaxRetries 3)
+    foreach ($category in @("launch_failure", "provider_switch")) {
+        $retry = Test-SubAgentRetryable -SubAgentState $state -ErrorCategory $category
+        if ($retry.Retryable) { throw "$category must not be retryable" }
+    }
+}
+
+Invoke-BatchTest -Name "Unknown provider selection fails explicitly" -Test {
+    $thrown = $false
+    try { Resolve-AgentProvider -ProviderName "future-provider" -NativeSubagentAvailable:$false -ErrorAction Stop | Out-Null } catch { $thrown = $true }
+    if (-not $thrown) { throw "Unknown provider must be rejected" }
+}
+
 Invoke-BatchTest -Name "Native capability wins over explicit external provider" -Test {
     $selection = Resolve-AgentProvider -HostAgent "codex" -NativeSubagentAvailable:$true -ProviderName "claude-code"
     if ($selection.SelectedProvider -ne "codex" -or $selection.SelectedMechanism -ne "native-subagent") { throw "Native capability did not win" }
@@ -838,8 +852,8 @@ Invoke-BatchTest -Name "Native dispatch request is host-handled and does not spa
         if ($request.Status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Request is not ready" }
         if ($request.SpawnedProcess) { throw "Native request must not spawn a process" }
         $payload = Get-Content $request.RequestFile -Raw | ConvertFrom-Json
-        if ($payload.Status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Payload status mismatch" }
-        if ($payload.WorktreePath -ne $tempDir -or $payload.BranchName -ne "issue/219-native") { throw "Context mismatch" }
+        if ($payload.status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Payload status mismatch" }
+        if ($payload.worktree_path -ne $tempDir -or $payload.branch_name -ne "issue/219-native") { throw "Context mismatch" }
     } finally {
         if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
     }
