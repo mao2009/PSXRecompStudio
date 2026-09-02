@@ -208,15 +208,30 @@ def patch_identity(repo: Path, base: str, head: str) -> dict[str, Any]:
 
 
 def clean_prior(items: list[dict[str, Any]], current: dict[str, Any], repo: Path) -> bool:
+    """Accept prior clean evidence only when the full PR patch is content-equivalent.
+
+    CodeRabbit's clean summary can describe only the most recent incremental
+    review range. The last SHA in that range is still the reviewed PR HEAD, but
+    the first SHA is not necessarily the historical PR base. Recover that base
+    from Git history using merge-base(reviewed_head, current_base), then compare
+    the complete historical PR patch with the current rebased PR patch.
+    """
+    current_base = current.get("base", "")
+    if not isinstance(current_base, str) or not current_base:
+        return False
     for item in reversed(items):
         body = item.get("body", "") or ""
         if "No actionable comments were generated" not in body:
             continue
         shas = SHA.findall(body)
-        if len(shas) < 2:
+        if not shas:
             continue
+        reviewed_head = shas[-1]
         try:
-            old = patch_identity(repo, shas[-2], shas[-1])
+            reviewed_base = git(repo, "merge-base", reviewed_head, current_base).strip()
+            if not reviewed_base:
+                continue
+            old = patch_identity(repo, reviewed_base, reviewed_head)
         except ValueError:
             continue
         if old["stable_patch_id"] == current["stable_patch_id"] and old["files"] == current["files"]:
