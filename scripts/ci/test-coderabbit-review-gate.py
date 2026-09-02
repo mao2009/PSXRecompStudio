@@ -259,6 +259,72 @@ class EquivalentRebaseTests(unittest.TestCase):
             )
             self.assertTrue(gate.clean_prior([summary], current, repo))
 
+    def test_equivalent_rebase_snapshot_matches_even_when_commit_identity_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            run(["git", "init", "-q", str(repo)], check=True)
+            run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "base.txt").write_text("base\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+            base_branch = run(
+                ["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],
+                check=True, text=True, capture_output=True
+            ).stdout.strip()
+            old_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                           check=True, text=True, capture_output=True).stdout.strip()
+
+            run(["git", "-C", str(repo), "checkout", "-qb", "feature"], check=True)
+            (repo / "feature.txt").write_text("reviewed\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "feature"], check=True)
+            reviewed_head = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                check=True, text=True, capture_output=True).stdout.strip()
+
+            run(["git", "-C", str(repo), "checkout", "-q", base_branch], check=True)
+            (repo / "unrelated.txt").write_text("main advanced\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "advance main"], check=True)
+            current_base = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                               check=True, text=True, capture_output=True).stdout.strip()
+
+            run(["git", "-C", str(repo), "checkout", "-q", "feature"], check=True)
+            run(["git", "-C", str(repo), "rebase", base_branch], check=True)
+            current_head = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                               check=True, text=True, capture_output=True).stdout.strip()
+
+            old = gate.patch_identity(repo, old_base, reviewed_head)
+            current = gate.patch_identity(repo, current_base, current_head)
+            self.assertNotEqual(reviewed_head, current_head)
+            self.assertEqual(old["snapshot"], current["snapshot"])
+
+    def test_real_content_change_after_rebase_invalidates_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            run(["git", "init", "-q", str(repo)], check=True)
+            run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "file.txt").write_text("base\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+            base = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                       check=True, text=True, capture_output=True).stdout.strip()
+            (repo / "file.txt").write_text("reviewed\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "reviewed"], check=True)
+            reviewed = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                           check=True, text=True, capture_output=True).stdout.strip()
+            old = gate.patch_identity(repo, base, reviewed)
+
+            (repo / "file.txt").write_text("changed after review\n")
+            run(["git", "-C", str(repo), "add", "."], check=True)
+            run(["git", "-C", str(repo), "commit", "-qm", "unreviewed change"], check=True)
+            changed = run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          check=True, text=True, capture_output=True).stdout.strip()
+            current = gate.patch_identity(repo, base, changed)
+            self.assertNotEqual(old["snapshot"], current["snapshot"])
+
 
 class ReviewThreadPaginationTests(unittest.TestCase):
     @staticmethod
