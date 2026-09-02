@@ -10,7 +10,6 @@ description: >
 version: 0.1.0
 scope: process
 platform: agent-agnostic
-related-issues: "#94"
 ---
 
 # Commit Message Skill
@@ -161,16 +160,25 @@ One commit = one logical change.
 Generate the message from the **actual change**, never from intent, memory, or
 a stale plan:
 
-1. Inspect the real state first: `git status` and `git diff` (staged and
-   unstaged) to see exactly what the commit will contain.
-2. **Type** ← the dominant category of the diff (`feat` / `fix` / `docs` / …).
-3. **Scope** ← the area the diff concentrates in, if naming it adds
+1. Inspect the real state first. For a new commit, inspect `git status`,
+   `git diff --cached` (or `git diff --staged`) for staged content, and
+   `git diff` for unstaged content. Derive the message from the content that
+   will actually be committed; do not use unrelated unstaged changes.
+2. For an amend, inspect the current commit with `git show HEAD` together with
+   the staged amendment (`git diff --cached`) and any relevant unstaged diff;
+   reason about the resulting commit.
+3. For a reword, inspect the commit being reworded with `git show <commit>`.
+   For a squash/fixup or interactive history rewrite, inspect the resulting
+   combined commit or the relevant commit range (`git diff <base>..<tip>` /
+   `git show <tip>`). Do not depend on a non-empty working-tree `git diff`.
+4. **Type** ← the dominant category of the operation's actual change (`feat` / `fix` / `docs` / …).
+5. **Scope** ← the area the change concentrates in, if naming it adds
    information.
-4. **Subject** ← a ≤72-char imperative summary of the principal change, derived
-   from the hunks, not from the task title.
-5. **Body** ← add when the diff cannot convey the *why*: rationale, trade-offs,
+6. **Subject** ← a ≤72-char imperative summary of the principal change, derived
+   from the inspected content, not from the task title.
+7. **Body** ← add when the change cannot convey the *why*: rationale, trade-offs,
    constraints, or a meaningful decision. Do not restate the diff line-by-line.
-6. **Trailers** ← add only when linkage is verified (see
+8. **Trailers** ← add only when linkage is verified (see
    [Issue linkage](#issue-linkage)).
 
 When to ask vs. default:
