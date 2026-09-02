@@ -702,7 +702,8 @@ d = yaml.safe_load(open(sys.argv[1]))
 j = d["jobs"]["review-trigger"]
 assert j.get("needs") == ["update-readme", "publish-readme"], "review-trigger must need both upstream jobs"
 assert j.get("if") == "always()", "review-trigger must use if: always() and gate itself inside"
-assert j["permissions"] == {"pull-requests": "write"}, "review-trigger: pull-requests: write only"
+assert j["permissions"].get("pull-requests") == "write", "review-trigger: pull-requests: write required"
+assert j["permissions"].get("issues") == "read", "review-trigger needs issues: read to observe CodeRabbit comments"
 assert "contents" not in j["permissions"], "review-trigger must not touch contents"
 assert j.get("concurrency", {}).get("group"), "review-trigger must serialize triggers per PR with a concurrency group"
 names = [s.get("name") for s in j["steps"]]
@@ -717,18 +718,24 @@ assert "github.event.pull_request.head.sha" not in env.get("PUBLISHED_SHA", ""),
 vrun = verify.get("run") or ""
 assert 'expected="${PUBLISHED_SHA:-}"' in vrun, "verify step must default expected from PUBLISHED_SHA"
 assert "-z \"$expected\"" in vrun, "verify step must refuse when published_sha output is unset/empty"
-# The trigger step must be gated on: SHA match AND update-readme success/proceed AND publish success.
-trigger = next(s for s in j["steps"] if "Trigger CodeRabbit review" in (s.get("name") or ""))
+# The opt-in step must be gated on SHA match and both upstream successes.
+trigger = next(s for s in j["steps"] if "Opt in to CodeRabbit review" in (s.get("name") or ""))
 cond = trigger.get("if") or ""
-assert cond.count("&&") >= 3, "trigger step must AND together all the gates: %r" % cond
+assert cond.count("&&") >= 3, "opt-in step must AND together all gates: %r" % cond
 for needle in ("steps.verify.outputs.match == '1'",
                "needs.update-readme.result == 'success'",
                "needs.update-readme.outputs.action == 'proceed'",
                "needs.publish-readme.result == 'success'"):
-    assert needle in cond, "trigger step must check %s" % needle
-body = trigger["with"]["script"]
-assert "@coderabbitai review" in body, "trigger comment must contain the @coderabbitai review command"
-assert "github.event" not in body and "PR_BODY" not in body, "trigger comment must be a fixed literal (no PR-controlled interpolation)"
+    assert needle in cond, "opt-in step must check %s" % needle
+run = trigger.get("run") or ""
+assert "coderabbit:review-ready" in run, "opt-in must use the configured description marker"
+assert "@coderabbitai review" not in run, "bot-authored review command must not return"
+assert run.count(".head.sha") >= 2, "opt-in must re-check the PR head around marker mutation"
+wait = next(s for s in j["steps"] if "Wait for current-HEAD CodeRabbit review evidence" in (s.get("name") or ""))
+wrun = wait.get("run") or ""
+assert "EXPECTED_HEAD" in (wait.get("env") or {}), "completion check must bind evidence to expected head"
+assert "while" in wrun and "sleep" in wrun, "completion check must use bounded polling"
+assert "Timed out waiting for CodeRabbit review evidence" in wrun, "completion check must fail closed on timeout"
 PY
 }
 
@@ -741,10 +748,9 @@ import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 ar = d["reviews"]["auto_review"]
 assert ar.get("enabled") is False, "auto_review.enabled must be false"
-users = ar.get("ignore_usernames") or []
-assert "github-actions[bot]" not in users, "bot must not be ignored: explicit bot command is the ordered trigger"
-for key in ("labels", "description_keyword", "base_branches", "drafts"):
-    assert key not in ar, "auto_review must not define %s (no accidental opt-in)" % key
+assert ar.get("description_keyword") == "coderabbit:review-ready", "description_keyword must match the workflow opt-in marker"
+assert ar.get("auto_incremental_review") is True, "incremental review must stay enabled for later final-head changes"
+assert ar.get("auto_pause_after_reviewed_commits") == 0, "auto review must not pause after reviewed commits"
 PY
 }
 
@@ -953,7 +959,7 @@ assert pub["outputs"].get("published_sha") == "${{ steps.record-sha.outputs.sha 
 verify = next(s for s in jobs["review-trigger"]["steps"] if "Verify PR head SHA" in (s.get("name") or ""))
 vrun = verify.get("run") or ""
 assert '-z "$expected"' in vrun, "verify must turn an empty published_sha into a fail-closed match=0"
-trigger = next(s for s in jobs["review-trigger"]["steps"] if "Trigger CodeRabbit review" in (s.get("name") or ""))
+trigger = next(s for s in jobs["review-trigger"]["steps"] if "Opt in to CodeRabbit review" in (s.get("name") or ""))
 cond = trigger.get("if") or ""
 assert "steps.verify.outputs.match == '1'" in cond, \
     "trigger must require match == 1 (empty/mismatch -> match == 0 -> no trigger)"
