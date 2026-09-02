@@ -112,9 +112,9 @@ all attacker-controllable. They may contain prompt-injection instructions
    (`pull-requests: write`, CodeRabbit trigger). The model job receives none.
 5. **Fork PRs never run.** Job-level `if` on all jobs + preflight skip.
 6. **Loop prevention.** Head commits authored by the bot are skipped; the
-   review-trigger comment is posted with `GITHUB_TOKEN` (comments do not
-   re-trigger `pull_request` workflows) and `.coderabbit.yaml` ignores
-   `github-actions[bot]`, so the trigger never restarts the pipeline.
+  review-trigger comment is posted with `GITHUB_TOKEN` (comments do not
+  re-trigger `pull_request` workflows). Automatic reviews remain disabled and
+  the fixed explicit command is the only trigger.
 
 ## Model and authentication
 
@@ -186,6 +186,32 @@ gate fails closed), and the `.coderabbit.yaml` auto-review disable + bot
 ignore.
 
 ## Operational notes
+
+### CodeRabbit Review Gate (Issue #229)
+
+`CodeRabbit Review Gate` is a required repository-owned check. Its explicit
+states are `MISSING`, `TRIGGER_REQUESTED`, `PENDING`, `SKIPPED`, `FAILED`,
+`COMPLETED_CLEAN`, `COMPLETED_ACTIONABLE`, `NO_FILES_TO_REVIEW`, `STALE`, and
+`UNKNOWN`; unknown and non-positive states block. It reads GitHub review
+objects, CodeRabbit comments, review threads, and required CI checks.
+Actionable counts cover findings without inline threads, while unresolved
+threads are independently blocking.
+
+The direct path passes only for a clean completed review attached to the
+current SHA, with no actionable finding, no unresolved thread, and passing CI.
+The only fallback is an explicit `No files to review` response after a prior
+clean review whose exact patch identity matches: stable `git patch-id`, sorted
+changed-file records, and SHA-256 hashes of normalized per-file diffs. Diff
+normalization preserves whitespace, line endings, binary data, and file modes;
+renames retain old/new names, and additions/deletions remain distinct. Binary
+and submodule changes are unsupported and block. A real content change or
+unknown/stale/skipped/missing/pending/failed review blocks.
+
+The gate is trusted `pull_request_target` code and never executes PR code.
+README publication establishes the final head before the fixed review command.
+The bot is deliberately absent from `ignore_usernames`: Issue #229 evidence
+showed an ignored `github-actions[bot]` command did not trigger, while the
+owner-authored command did.
 
 - **CodeRabbit ordering (Issue #185).** CodeRabbit automatic reviews are
   disabled in `.coderabbit.yaml`. After the publish job completes, the

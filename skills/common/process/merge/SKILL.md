@@ -22,7 +22,7 @@ ensuring that merges only happen through the standard GitHub merge path.
 ## Core Principles
 
 1. **Safety over speed**: Never merge if conditions are not met
-2. **No admin bypass**: Never use `--admin`, force push, or protection circumvention
+2. **No admin bypass**: Never use `--admin`, unconditional force push, or protection circumvention
 3. **Mandatory rebase**: Always rebase onto latest main HEAD before merge
 4. **Approval as gate**: User approval is required and tied to commit SHA
 5. **Conflict delegation**: Conflicts are delegated back to Sub-agent, not auto-resolved
@@ -76,10 +76,9 @@ Check for a valid approval record:
 1. Load approval record (if exists)
 2. Verify approval exists
 3. Verify the approval source:
-     github_review  -> the GitHub third-party review gate (reviewDecision)
-                       is enforced via the GitHub API when the merge reaches
-                       the VALIDATING state; the state record is validated by
-                       SHA binding.
+     github_review  -> the repository-owned CodeRabbit Review Gate is the
+                       authoritative CodeRabbit quality result. The GitHub
+                       reviewDecision field is not proof of SHA-bound review.
      explicit_human -> a formal approval source created by `merge.sh approve`:
                        attribute to the authenticated operator identity and
                        bind to both the PR HEAD SHA and the main HEAD SHA.
@@ -97,7 +96,7 @@ Check for a valid approval record:
 For solo/personal development where a GitHub third-party approval is not
 available, an **Explicit Human Approval** can be recorded as a first-class,
 auditable approval source. It is **not** a fake GitHub APPROVED review and
-never uses `--admin`, force push, or protection bypass.
+never uses `--admin`, unconditional force push, or protection bypass.
 
 ```sh
 # Record an explicit human approval bound to the current PR HEAD and main HEAD
@@ -141,6 +140,10 @@ Always rebase onto latest main HEAD:
 1. git rebase origin/main
 2. If clean → proceed to validation
 3. If conflict → stop, delegate to Sub-agent
+
+If the rebase changes the PR HEAD, the persisted approval is invalidated and
+the flow returns to `APPROVAL_VALIDATION`; a new approval bound to the rebased
+SHA is required before validation can lead to merge.
 ```
 
 **Never skip rebase, even if branch appears up-to-date.**
@@ -242,15 +245,19 @@ MAIN_HEAD_REFRESH
     ↓
 REBASE
     ├─ conflict → CONFLICT → (return to caller)
-    └─ clean → VALIDATING
-                   ↓
-                 MERGING
-                   ↓
-                 MERGED
-                   ↓
-                 CLEANUP
-                   ↓
-                 COMPLETED
+    ├─ failure → FAILED
+    ├─ clean, HEAD unchanged → VALIDATING
+    │                              ↓
+    │                            MERGING
+    └─ clean, HEAD changed → APPROVAL_VALIDATION
+                               ↓
+                         fresh SHA-bound approval
+                               ↓
+                          MAIN_HEAD_REFRESH → REBASE
+
+The unchanged-HEAD path is valid only when the existing approval is still
+bound to the exact current HEAD. A changed HEAD invalidates stale approval;
+safe rebase push must complete before returning to `APPROVAL_VALIDATION`.
 ```
 
 ### Transition Rules
@@ -263,6 +270,7 @@ REBASE
 | APPROVAL_VALIDATION | FAILED | No approval or invalid |
 | MAIN_HEAD_REFRESH | REBASE | Main HEAD fetched |
 | REBASE | VALIDATING | Rebase clean |
+| REBASE | APPROVAL_VALIDATION | Rebase changed PR HEAD; fresh approval required |
 | REBASE | CONFLICT | Rebase conflicts |
 | VALIDATING | MERGING | Validation passed |
 | VALIDATING | FAILED | Validation failed |
@@ -280,7 +288,7 @@ Two approval sources are supported, each validated separately:
 
 | Source | Validation |
 |--------|------------|
-| `github_review` | Existing GitHub third-party approval. Enforced via `gh pr view --json reviewDecision` (must be `APPROVED`) when the merge reaches the VALIDATING state. The state record is additionally validated by SHA binding. |
+| `github_review` | Existing GitHub third-party approval. The repository-owned `CodeRabbit Review Gate` is authoritative for CodeRabbit quality; `reviewDecision` alone is not SHA-bound evidence. Required GitHub approvals remain separate merge checks. |
 | `explicit_human` | Formal solo-dev approval created by `merge.sh approve`. Verified by authenticated operator identity, PR HEAD SHA binding, and main HEAD SHA binding. |
 
 The `Approval` object in state carries `"ApprovalSource"`. An absent source is
@@ -323,6 +331,20 @@ To validate an approval:
 ```
 
 **All must match for approval to be valid.**
+
+### CodeRabbit quality gate
+
+Merge Skill does not reimplement CodeRabbit interpretation. It requires the
+required repository check named `CodeRabbit Review Gate` to succeed on the
+current PR head. That gate owns the direct current-head path and the narrowly
+scoped content-equivalent-rebase path for `No files to review`. Raw status
+success, skipped/missing/pending review, zero threads alone, or stale evidence
+never satisfies it.
+
+The `explicit_human` record created by `merge.sh approve` remains the
+canonical locally persisted, authenticated SHA-bound human approval. An
+untraceable prior-session assertion or inferred approval is not accepted; the
+record must bind the current PR HEAD and current `main` HEAD.
 
 ## Conflict Handling
 
@@ -372,9 +394,15 @@ gh pr merge <pr-number> --merge
 | `gh pr merge --admin` | Bypasses protection rules |
 | `--squash` | Changes commit history |
 | `--rebase` | May cause issues |
-| Force push | Bypasses all checks |
+| `git push --force` / `-f` | Unconditional history rewrite; prohibited |
+| Plain `--force-with-lease` | Lease is not explicit; prohibited |
 | Direct push | Bypasses PR process |
 | API merge with bypass | Circumvents protections |
+
+The only force-update exception is the runtime's
+`merge_safe_rebase_push` for a mandatory-rebased PR feature branch. It
+requires an explicit old remote SHA lease and post-push SHA verification.
+Main and protected base branches remain prohibited.
 
 ## Batch Invocation
 

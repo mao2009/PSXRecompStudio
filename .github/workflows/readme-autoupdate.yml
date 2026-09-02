@@ -371,7 +371,9 @@ jobs:
     #
     # Loop prevention: the comment is posted with GITHUB_TOKEN, which GitHub
     # treats as a bot action that does NOT re-trigger pull_request workflows,
-    # and .coderabbit.yaml ignores github-actions[bot] for automatic reviews
+    # and .coderabbit.yaml keeps automatic reviews disabled without ignoring
+    # github-actions[bot], because this fixed bot-authored command is the
+    # supported ordered trigger (Issue #229).
     # (a manually-requested review is still allowed). The comment is therefore
     # a terminal action - it never restarts this workflow.
     if: always()

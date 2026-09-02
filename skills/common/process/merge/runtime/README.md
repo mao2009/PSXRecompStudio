@@ -8,7 +8,10 @@ Self-contained on standard POSIX tooling — **no `pwsh`/PowerShell required**.
 - POSIX `sh`
 - Git
 - GitHub CLI (`gh`) — optional but required for all GitHub PR operations
-- Does NOT require: `pwsh`, `powershell`, `jq`, `python`, `node`
+- GitHub JSON operations require **either `jq` or Python 3**. `jq` is preferred;
+  Python 3 is the structured JSON fallback when `jq` is unavailable. If neither
+  parser is available, GitHub JSON validation fails closed.
+- Does NOT require: `pwsh`, `powershell`, `node`
 
 ## Layout
 
@@ -64,21 +67,37 @@ separate from the GitHub third-party review gate. It:
 - is resumable: `approve -> (interruption) -> merge` re-validates the persisted
   approval before proceeding.
 
-It never fakes a GitHub APPROVED review and never uses `--admin`, force push,
+It never fakes a GitHub APPROVED review and never uses `--admin` or
+unconditional force push,
 or protection bypass.
 
 ## State Machine
 
-`TRIGGER_CHECK → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH → REBASE →
-CONFLICT/VALIDATING → MERGING → MERGED → CLEANUP → COMPLETED`
+`TRIGGER_CHECK → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH → REBASE`
+
+From `REBASE`: `HEAD unchanged → VALIDATING`, provided the existing approval
+still binds to the exact HEAD; `HEAD changed → safe rebase push → invalidate
+stale approval → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH → REBASE`, where a
+fresh SHA-bound approval is required. Rebase or safe-push failure is
+fail-closed and cannot reach `VALIDATING` or `MERGING`.
 
 Safety guarantees (unchanged from the previous runtime):
 
 - **No admin bypass**: never invokes `gh pr merge --admin`
-- No force push, no direct push to main
+- No unconditional force push, no direct push to main
+- After mandatory rebase, a feature branch may be updated only through the
+  runtime's explicit-SHA `--force-with-lease` controlled exception; plain
+  `--force-with-lease`, main, and protected base branches are forbidden.
 - Mandatory rebase onto latest `origin/main` before merge
+- A changed rebased HEAD invalidates persisted approval and returns to
+  `APPROVAL_VALIDATION`; unchanged HEAD approval remains SHA-bound
 - Approval tied to commit SHA and main HEAD SHA
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)
+- `CodeRabbit Review Gate` is accepted only when it is a successful check-run
+  on the current PR HEAD and its GitHub Actions workflow run belongs to this
+  repository and has the exact trusted path
+  `.github/workflows/coderabbit-review-gate.yml`; same-named checks from other
+  producers or workflows fail closed.
 
 ## Testing
 

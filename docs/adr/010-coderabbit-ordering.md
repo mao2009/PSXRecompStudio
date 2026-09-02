@@ -43,11 +43,16 @@ CodeRabbit's configuration reference and "Automatic review controls" docs
 (https://docs.coderabbit.ai/configuration/auto-review) specify:
 
 - `reviews.auto_review.enabled: false` disables automatic reviews.
-- Manual review commands always work regardless of configuration:
-  `@coderabbitai review` (incremental) and `@coderabbitai full review` (from
-  scratch) posted as a PR comment.
+- The documented manual review commands are `@coderabbitai review`
+  (incremental) and `@coderabbitai full review` (from scratch), posted as PR
+  comments. Their availability must not be assumed for every author/configuration:
+  Issue #229 records production evidence that an explicit command authored by
+  `github-actions[bot]` failed when that bot was listed in
+  `ignore_usernames`.
 - `reviews.auto_review.ignore_usernames` skips automatic reviews for listed
-  authors; **manual** commands are still honored for those authors.
+  authors. This repository must not list `github-actions[bot]` there, because
+  the ordered workflow's explicit command is the required trigger and its
+  bot-authored form was observed to fail under that setting.
 - Positive `reviews.auto_review.labels` opt-in and a
   `description_keyword` opt-in still trigger reviews even when `enabled` is
   `false`; we configure neither so the only review trigger is our explicit
@@ -65,16 +70,13 @@ Add a root-level `.coderabbit.yaml`:
 reviews:
   auto_review:
     enabled: false
-    ignore_usernames:
-      - "github-actions[bot]"
 ```
 
 `enabled: false` stops CodeRabbit from racing the README Auto-Update on
-`opened`/`synchronize`. `github-actions[bot]` is added to `ignore_usernames`
-as defense in depth: the README publish and review-trigger actions run under
-that identity, so even if auto-review were later re-enabled, bot-authored
-commits/comments would not start a review by themselves. Manual commands
-(`@coderabbitai review`) are unaffected.
+`opened`/`synchronize`. `github-actions[bot]` is deliberately not ignored:
+Issue #229 production evidence showed that CodeRabbit did not honor an
+explicit command authored by the ignored bot, while the same owner-authored
+command worked. The fixed workflow command remains the only trigger.
 
 ### 2. Explicit review trigger in the README Auto-Update workflow
 

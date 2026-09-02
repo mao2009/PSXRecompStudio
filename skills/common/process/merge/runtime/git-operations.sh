@@ -8,7 +8,7 @@
 #
 # Dependencies: git
 # Optional: gh CLI (for PR operations)
-# Does NOT require: pwsh, powershell, jq, python, node
+# Does NOT require: pwsh, powershell, jq, node
 
 # ============================================================
 # Main HEAD
@@ -39,6 +39,14 @@ merge_fetch_main() {
 merge_get_current_commit() {
     _worktree="$1"
     git -C "$_worktree" rev-parse HEAD 2>/dev/null
+}
+
+# Read one remote branch SHA without updating local refs.
+merge_get_remote_branch_sha() {
+    _worktree="$1"
+    _remote="$2"
+    _branch="$3"
+    git -C "$_worktree" ls-remote "$_remote" "refs/heads/$_branch" 2>/dev/null | awk 'NR == 1 {print $1}'
 }
 
 # ============================================================
@@ -97,6 +105,65 @@ merge_rebase() {
     echo "has_conflicts=false"
     echo "message=Rebase failed without conflicts"
     return 1
+}
+
+# Update a rebased PR branch using an explicit, checked lease.
+# Usage: merge_safe_rebase_push <worktree> <branch> <expected_remote_sha> <expected_local_sha> [remote] [validated_pr_head] [validated_base]
+merge_safe_rebase_push() {
+    _worktree="$1"
+    _branch="$2"
+    _expected_remote="$3"
+    _expected_local="$4"
+    _remote="$5"
+    [ -n "$_remote" ] || _remote="origin"
+    _validated_head="$6"
+    _validated_base="$7"
+
+    if [ ! -d "$_worktree" ] || ! git -C "$_worktree" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "ERROR: worktree path is not a git worktree" >&2
+        return 1
+    fi
+    case "$_branch" in
+        ""|-*|*..*|*/../*|*/.|*/.) echo "ERROR: invalid target branch" >&2; return 1 ;;
+    esac
+    [ -n "$_validated_head" ] && [ "$_branch" = "$_validated_head" ] || {
+        echo "ERROR: target is not the validated current PR head branch" >&2
+        return 1
+    }
+    if [ "$_branch" = "main" ] || { [ -n "$_validated_base" ] && [ "$_branch" = "$_validated_base" ]; }; then
+        echo "ERROR: protected or base branch target" >&2
+        return 1
+    fi
+    printf '%s\n' "$_expected_remote" "$_expected_local" |
+        grep -Eq '^[0-9a-fA-F]{40}$' || {
+            echo "ERROR: expected SHAs must be 40-character hexadecimal values" >&2
+            return 1
+        }
+    [ -z "$(git -C "$_worktree" status --porcelain 2>/dev/null)" ] ||
+        { echo "ERROR: worktree is dirty" >&2; return 1; }
+    _current_local=$(git -C "$_worktree" rev-parse HEAD 2>/dev/null) || return 1
+    [ "$_current_local" = "$_expected_local" ] ||
+        { echo "ERROR: local HEAD changed before push" >&2; return 1; }
+    _tracking=$(git -C "$_worktree" rev-parse "refs/remotes/$_remote/$_branch" 2>/dev/null) || {
+        echo "ERROR: local remote-tracking ref is missing" >&2
+        return 1
+    }
+    [ "$_tracking" = "$_expected_remote" ] ||
+        { echo "ERROR: local remote-tracking SHA changed" >&2; return 1; }
+    _actual_remote=$(git -C "$_worktree" ls-remote "$_remote" "refs/heads/$_branch" 2>/dev/null | awk 'NR == 1 {print $1}')
+    [ "$_actual_remote" = "$_expected_remote" ] ||
+        { echo "ERROR: remote branch moved before lease push" >&2; return 1; }
+
+    git -C "$_worktree" push "--force-with-lease=refs/heads/$_branch:$_expected_remote" "$_remote" "HEAD:refs/heads/$_branch" || return 1
+    git -C "$_worktree" fetch "$_remote" "+refs/heads/$_branch:refs/remotes/$_remote/$_branch" >/dev/null 2>&1 || return 1
+    _after_remote=$(git -C "$_worktree" ls-remote "$_remote" "refs/heads/$_branch" 2>/dev/null | awk 'NR == 1 {print $1}')
+    [ "$_after_remote" = "$_expected_local" ] ||
+        { echo "ERROR: remote HEAD does not match rebased local HEAD" >&2; return 1; }
+    echo "success=true"
+    echo "branch=$_branch"
+    echo "old_remote_sha=$_expected_remote"
+    echo "new_remote_sha=$_after_remote"
+    return 0
 }
 
 # Abort an in-progress rebase in a worktree (no-op if none active)
@@ -227,6 +294,119 @@ merge_pr_mergeable_reason() {
     fi
 
     return 0
+}
+
+# The repository-owned CodeRabbit Review Gate is the authoritative quality
+# result. Never substitute reviewDecision or raw CodeRabbit status here.
+# The accepted check must be bound to the current PR HEAD and produced by the
+# repository-owned GitHub Actions workflow at the exact trusted workflow path.
+# Usage: merge_coderabbit_gate_passes <pr_number> <repository>
+merge_coderabbit_gate_passes() {
+    _pr_number="$1"
+    _repo="$2"
+    _trusted_workflow_path=".github/workflows/coderabbit-review-gate.yml"
+
+    [ -n "$_repo" ] || return 1
+    merge_gh_available || return 1
+
+    _repo_args=$(_merge_repo_args "$_repo")
+    # shellcheck disable=SC2086
+    _head_sha=$(gh pr view "$_pr_number" $_repo_args --json headRefOid --jq '.headRefOid' 2>/dev/null) || return 1
+    printf '%s\n' "$_head_sha" | grep -Eq '^[0-9a-fA-F]{40}$' || return 1
+
+    _pages=$(gh api --paginate --slurp \
+        "repos/$_repo/commits/$_head_sha/check-runs?check_name=CodeRabbit%20Review%20Gate&per_page=100" 2>/dev/null) || return 1
+
+    if command -v jq >/dev/null 2>&1; then
+        _records=$(printf '%s' "$_pages" | jq -r '
+            if type != "array" then empty
+            else
+              [.[].check_runs[]? | select(.name == "CodeRabbit Review Gate")][] |
+              [.head_sha, .status, (.conclusion // ""), (.app.slug // ""), (.details_url // "")] |
+              @tsv
+            end
+        ' 2>/dev/null) || return 1
+    else
+        command -v python3 >/dev/null 2>&1 || return 1
+        _records=$(printf '%s' "$_pages" | python3 -c '
+import json, sys
+try:
+    pages = json.load(sys.stdin)
+    if not isinstance(pages, list):
+        raise SystemExit(1)
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("check_runs"), list):
+            raise SystemExit(1)
+        for check in page["check_runs"]:
+            if not isinstance(check, dict) or check.get("name") != "CodeRabbit Review Gate":
+                continue
+            app = check.get("app") or {}
+            if not isinstance(app, dict):
+                raise SystemExit(1)
+            values = [
+                check.get("head_sha", ""),
+                check.get("status", ""),
+                check.get("conclusion") or "",
+                app.get("slug", ""),
+                check.get("details_url") or "",
+            ]
+            if any(not isinstance(value, str) for value in values):
+                raise SystemExit(1)
+            print("\t".join(values))
+except (json.JSONDecodeError, TypeError, ValueError):
+    raise SystemExit(1)
+' 2>/dev/null) || return 1
+    fi
+
+    [ -n "$_records" ] || return 1
+    _matched=0
+    _tab=$(printf '\t')
+    while IFS="$_tab" read -r _check_head _status _conclusion _app_slug _details_url; do
+        [ -n "$_check_head" ] || return 1
+        [ "$_check_head" = "$_head_sha" ] || return 1
+        [ "$_status" = "completed" ] || return 1
+        [ "$_conclusion" = "success" ] || return 1
+        [ "$_app_slug" = "github-actions" ] || return 1
+
+        _run_id=$(printf '%s' "$_details_url" | sed -n \
+            "s#^https://github.com/$_repo/actions/runs/\([0-9][0-9]*\)/job/[0-9][0-9]*\$#\1#p")
+        [ -n "$_run_id" ] || return 1
+
+        _run=$(gh api "repos/$_repo/actions/runs/$_run_id" 2>/dev/null) || return 1
+        if command -v jq >/dev/null 2>&1; then
+            printf '%s' "$_run" | jq -e \
+                --arg sha "$_head_sha" \
+                --arg path "$_trusted_workflow_path" \
+                --arg repo "$_repo" '
+                    .head_sha == $sha and
+                    .path == $path and
+                    .repository.full_name == $repo
+                ' >/dev/null 2>&1 || return 1
+        else
+            printf '%s' "$_run" | python3 -c '
+import json, sys
+expected_sha, expected_path, expected_repo = sys.argv[1:4]
+try:
+    run = json.load(sys.stdin)
+    repo = run.get("repository") or {}
+    ok = (
+        isinstance(run, dict)
+        and isinstance(repo, dict)
+        and run.get("head_sha") == expected_sha
+        and run.get("path") == expected_path
+        and repo.get("full_name") == expected_repo
+    )
+    raise SystemExit(0 if ok else 1)
+except (json.JSONDecodeError, TypeError, ValueError):
+    raise SystemExit(1)
+' "$_head_sha" "$_trusted_workflow_path" "$_repo" >/dev/null 2>&1 || return 1
+        fi
+        _matched=$((_matched + 1))
+    done <<EOF
+$_records
+EOF
+
+    [ "$_matched" -gt 0 ]
 }
 
 # Execute a standard (non-admin) merge via gh

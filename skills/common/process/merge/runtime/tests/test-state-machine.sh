@@ -70,6 +70,7 @@ assert_true "APPROVAL_VALIDATION -> MAIN_HEAD_REFRESH" merge_valid_transition AP
 assert_true "APPROVAL_VALIDATION -> FAILED" merge_valid_transition APPROVAL_VALIDATION FAILED
 assert_true "MAIN_HEAD_REFRESH -> REBASE" merge_valid_transition MAIN_HEAD_REFRESH REBASE
 assert_true "REBASE -> VALIDATING" merge_valid_transition REBASE VALIDATING
+assert_true "REBASE -> APPROVAL_VALIDATION" merge_valid_transition REBASE APPROVAL_VALIDATION
 assert_true "REBASE -> CONFLICT" merge_valid_transition REBASE CONFLICT
 assert_true "REBASE -> FAILED" merge_valid_transition REBASE FAILED
 assert_true "VALIDATING -> MERGING" merge_valid_transition VALIDATING MERGING
@@ -92,7 +93,7 @@ assert_false "REBASE -> VALIDATING (terminal conflict no-op)" merge_valid_transi
 # --- Valid transitions from a state ---
 echo ""
 echo "--- Get Valid Transitions ---"
-assert_output "REBASE transitions" "VALIDATING CONFLICT FAILED" merge_get_valid_transitions REBASE
+assert_output "REBASE transitions" "VALIDATING APPROVAL_VALIDATION CONFLICT FAILED" merge_get_valid_transitions REBASE
 assert_output "TRIGGER_CHECK transitions" "APPROVAL_VALIDATION FAILED" merge_get_valid_transitions TRIGGER_CHECK
 assert_output "MAIN_HEAD_REFRESH transitions" "REBASE" merge_get_valid_transitions MAIN_HEAD_REFRESH
 assert_output "CONFLICT transitions (empty)" "" merge_get_valid_transitions CONFLICT

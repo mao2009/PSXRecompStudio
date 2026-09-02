@@ -49,6 +49,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 EOF
     exit 0
 fi
+if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
+    echo '[{"name":"CodeRabbit Review Gate","state":"SUCCESS"}]'
+    exit 0
+fi
 exit 1
 FAKEGH
 chmod +x "$_FAKE_GH/gh"
@@ -61,6 +65,11 @@ echo ""
 # Source with the fake gh in place (so merge_gh_available succeeds)
 MERGE_RUNTIME_DIR="$SCRIPT_DIR/.."
 . "$ORCH"
+
+# Existing orchestration fixtures exercise the historical disabled path. The
+# enabled production path has dedicated regression coverage in
+# test-rebase-flow.sh.
+merge_rebase_force_with_lease_enabled() { return 1; }
 
 STATE_FILE="$WORK/.merge-state-149.json"
 

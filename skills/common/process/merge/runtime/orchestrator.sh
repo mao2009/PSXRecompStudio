@@ -39,6 +39,17 @@ MERGE_REPOSITORY=""
 MERGE_STATE_FILE=""
 MERGE_MAIN_DIR="."
 MERGE_RUNTIME_DIR="$_MERGE_RUNTIME_DIR"
+MERGE_CONFIG_FILE=""
+
+# The exception is disabled unless the trusted JSON config explicitly says
+# true.  Missing or malformed configuration therefore fails closed to the
+# historical rebase-only behavior.
+merge_rebase_force_with_lease_enabled() {
+    _config="${MERGE_CONFIG_FILE:-$_MERGE_RUNTIME_DIR/../config/merge-config.json}"
+    [ -f "$_config" ] || return 1
+    _value=$(sed -n '/"merge"[[:space:]]*:[[:space:]]*{/,/^[[:space:]]*}/ s/^[[:space:]]*"allow_rebase_force_with_lease"[[:space:]]*:[[:space:]]*\(true\|false\)[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p' "$_config" | head -1)
+    [ "$_value" = "true" ]
+}
 
 # ============================================================
 # State helpers
@@ -228,6 +239,39 @@ _merge_handle_rebase() {
         return 0
     fi
 
+    _pre_rebase_commit=$(merge_get_current_commit "$MERGE_WORKTREE")
+    if [ -z "$_pre_rebase_commit" ]; then
+        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture pre-rebase HEAD"
+        return 0
+    fi
+
+    _leased_push_enabled=false
+    if merge_rebase_force_with_lease_enabled; then
+        _leased_push_enabled=true
+        _branch=$(merge_state_get "$MERGE_STATE_FILE" "BranchName")
+        _pr_json=$(merge_get_pr_info "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
+        _validated_head=$(merge_pr_head_branch "$_pr_json")
+        _validated_base=$(merge_pr_field "$_pr_json" baseRefName)
+        if [ -z "$_branch" ] || [ "$_branch" != "$_validated_head" ] || [ "$_validated_base" != "main" ]; then
+            echo "PR head/base branch validation failed; refusing rebase push" >&2
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "PR head/base branch validation failed"
+            return 0
+        fi
+        _remote="origin"
+        _expected_remote=$(merge_get_remote_branch_sha "$MERGE_WORKTREE" "$_remote" "$_branch")
+        if [ -z "$_expected_remote" ]; then
+            echo "Unable to capture remote PR head before rebase; refusing push" >&2
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture remote PR head before rebase"
+            return 0
+        fi
+        if ! git -C "$MERGE_WORKTREE" fetch --no-tags "$_remote" "+refs/heads/$_branch:refs/remotes/$_remote/$_branch" >/dev/null 2>&1; then
+            echo "Unable to capture remote-tracking PR head before rebase; refusing push" >&2
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture remote-tracking PR head before rebase"
+            return 0
+        fi
+        merge_state_set_string "$MERGE_STATE_FILE" "RebaseRemoteSha" "$_expected_remote"
+    fi
+
     echo "Performing mandatory rebase onto origin/main..."
     _result=$(merge_rebase "$MERGE_WORKTREE")
 
@@ -237,6 +281,41 @@ _merge_handle_rebase() {
 
     if [ "$_success" = "true" ]; then
         echo "Rebase succeeded"
+        _expected_local=$(merge_get_current_commit "$MERGE_WORKTREE")
+        if [ -z "$_expected_local" ]; then
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to capture rebased local HEAD"
+            return 0
+        fi
+        if [ "$_leased_push_enabled" = "true" ]; then
+            _pr_json=$(merge_get_pr_info "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
+            _validated_head=$(merge_pr_head_branch "$_pr_json")
+            _validated_base=$(merge_pr_field "$_pr_json" baseRefName)
+            if [ "$_branch" != "$_validated_head" ] || [ "$_validated_base" != "main" ]; then
+                echo "PR head/base branch changed during rebase; refusing push" >&2
+                merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "PR head/base branch changed during rebase"
+                return 0
+            fi
+            if ! merge_safe_rebase_push "$MERGE_WORKTREE" "$_branch" "$_expected_remote" "$_expected_local" "$_remote" "$_validated_head" "$_validated_base"; then
+                echo "Safe rebase push failed; refusing VALIDATING transition" >&2
+                merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Safe rebase push failed"
+                return 0
+            fi
+            echo "Safe rebase push succeeded"
+        fi
+        if [ "$_pre_rebase_commit" != "$_expected_local" ]; then
+            if ! merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null; then
+                # No Approval object is a valid state: approval validation will
+                # request a fresh approval. Any other reset failure is fatal.
+                if [ -n "$(merge_state_approval_commit "$MERGE_STATE_FILE")" ]; then
+                    echo "Unable to invalidate stale approval after HEAD change" >&2
+                    merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to invalidate stale approval"
+                    return 0
+                fi
+            fi
+            echo "Rebased HEAD changed; fresh approval required"
+            merge_state_set_string "$MERGE_STATE_FILE" "CurrentCommitSha" "$_expected_local" "State" "APPROVAL_VALIDATION"
+            return 0
+        fi
         merge_state_set_string "$MERGE_STATE_FILE" "State" "VALIDATING"
         return 0
     fi
@@ -298,6 +377,11 @@ _merge_handle_validating() {
     fi
 
     _pr_json=$(merge_get_pr_info "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
+    if ! merge_coderabbit_gate_passes "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY"; then
+        echo "Repository CodeRabbit Review Gate is not successful"
+        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "CodeRabbit Review Gate is not successful"
+        return 0
+    fi
     _reason=$(merge_pr_mergeable_reason "$_pr_json")
     if [ -n "$_reason" ]; then
         echo "PR is not mergeable: $_reason"
