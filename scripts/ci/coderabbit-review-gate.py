@@ -125,6 +125,11 @@ def classify(items: list[dict[str, Any]], head: str) -> tuple[ReviewState, dict[
     if "Review skipped" in body:
         return ReviewState.SKIPPED, latest, "CodeRabbit reported Review skipped"
     if re.search(r"No files to review\.", body, re.I):
+        review_head = _review_head(latest, body)
+        if not review_head:
+            return ReviewState.UNKNOWN, latest, "no-files response lacks current-head binding"
+        if review_head != head:
+            return ReviewState.STALE, latest, f"no-files response is bound to {review_head}, not current {head}"
         return ReviewState.NO_FILES_TO_REVIEW, latest, "CodeRabbit explicitly reported No files to review"
     if re.search(r"Action not completed|pending|in progress", body, re.I) and "No actionable comments" not in body:
         return ReviewState.PENDING, latest, "CodeRabbit did not complete the review"
