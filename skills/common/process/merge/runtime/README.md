@@ -71,8 +71,13 @@ or protection bypass.
 
 ## State Machine
 
-`TRIGGER_CHECK → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH → REBASE →
-CONFLICT/VALIDATING → MERGING → MERGED → CLEANUP → COMPLETED`
+`TRIGGER_CHECK → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH → REBASE`
+
+From `REBASE`: `HEAD unchanged → VALIDATING`, provided the existing approval
+still binds to the exact HEAD; `HEAD changed → safe rebase push → invalidate
+stale approval → APPROVAL_VALIDATION → MAIN_HEAD_REFRESH → REBASE`, where a
+fresh SHA-bound approval is required. Rebase or safe-push failure is
+fail-closed and cannot reach `VALIDATING` or `MERGING`.
 
 Safety guarantees (unchanged from the previous runtime):
 

@@ -245,15 +245,19 @@ MAIN_HEAD_REFRESH
     ↓
 REBASE
     ├─ conflict → CONFLICT → (return to caller)
-    └─ clean → VALIDATING
-                   ↓
-                 MERGING
-                   ↓
-                 MERGED
-                   ↓
-                 CLEANUP
-                   ↓
-                 COMPLETED
+    ├─ failure → FAILED
+    ├─ clean, HEAD unchanged → VALIDATING
+    │                              ↓
+    │                            MERGING
+    └─ clean, HEAD changed → APPROVAL_VALIDATION
+                               ↓
+                         fresh SHA-bound approval
+                               ↓
+                          MAIN_HEAD_REFRESH → REBASE
+
+The unchanged-HEAD path is valid only when the existing approval is still
+bound to the exact current HEAD. A changed HEAD invalidates stale approval;
+safe rebase push must complete before returning to `APPROVAL_VALIDATION`.
 ```
 
 ### Transition Rules
