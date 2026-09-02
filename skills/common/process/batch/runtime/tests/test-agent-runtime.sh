@@ -119,13 +119,34 @@ assert_true "test provider available" _ari_provider_available "test"
 assert_false "unknown provider not available" _ari_provider_available "nonexistent"
 
 # Select test provider
-_sel=$(_ari_select_provider "test")
-assert_output "selected test" "test" printf '%s' "$_sel"
+_ari_select_provider "test" >/dev/null
+assert_output "selected test" "test" _ari_get_provider
 assert_output "get provider" "test" _ari_get_provider
 
-# Select with invalid preferred, falls back
-_sel2=$(_ari_select_provider "nonexistent")
-assert_output "fallback to test" "test" _ari_get_provider
+# No provider is inferred when native capability is unavailable.
+_ARI_NATIVE_SUBAGENT_AVAILABLE="false"
+unset ORC_PROVIDER
+_ari_select_provider >/dev/null
+assert_output "no implicit fallback" "" _ari_get_provider
+assert_output "blocked reason" "No native sub-agent capability and no explicit execution provider configured" printf '%s' "$_ARI_SELECTION_REASON"
+assert_output "blocked provider is empty" "" _ari_get_provider
+
+# An explicitly configured test provider is selected even when no AI CLI is present.
+ORC_PROVIDER="test"
+_ari_select_provider >/dev/null
+assert_output "explicit test provider" "test" _ari_get_provider
+assert_output "explicit selection reason" "Explicit provider configuration selected" printf '%s' "$_ARI_SELECTION_REASON"
+
+# Native capability wins over an explicit external provider.
+_ARI_HOST_AGENT="codex"
+_ARI_NATIVE_SUBAGENT_AVAILABLE="true"
+_ari_select_provider "claude-code" >/dev/null
+assert_output "native provider wins" "codex" _ari_get_provider
+assert_output "native mechanism" "native-subagent" printf '%s' "$_ARI_SELECTED_MECHANISM"
+_ARI_HOST_AGENT=""
+_ARI_NATIVE_SUBAGENT_AVAILABLE="false"
+ORC_PROVIDER="test"
+_ari_select_provider >/dev/null
 
 # --- Provider Interface (Test Provider) ---
 echo ""

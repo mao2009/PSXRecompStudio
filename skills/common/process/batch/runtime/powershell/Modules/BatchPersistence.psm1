@@ -172,6 +172,12 @@ function New-IssueState {
         ApprovedCommitSha = $null
         RetryCount = 0
         LastError = $null
+        LaunchStatus = $null
+        ExecutionStatus = "NOT_STARTED"
+        FailureClassification = $null
+        SelectionReason = $null
+        SelectedProvider = $null
+        SelectedMechanism = $null
         Report = $null
         SubAgentProcessId = $null
         StartedAt = $null

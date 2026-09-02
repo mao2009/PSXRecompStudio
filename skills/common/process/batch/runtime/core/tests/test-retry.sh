@@ -78,6 +78,8 @@ assert_false "no retry code_error" _retry_should_retry code_error 0 3
 assert_false "no retry test_failure" _retry_should_retry test_failure 0 3
 assert_false "no retry architecture_violation" _retry_should_retry architecture_violation 0 3
 assert_false "no retry dependency_conflict" _retry_should_retry dependency_conflict 0 3
+assert_false "no cross-provider retry" _retry_should_retry provider_switch 0 3
+assert_false "launch failure is not implementation retry" _retry_should_retry launch_failure 0 3
 
 # --- Backoff Calculation ---
 echo ""

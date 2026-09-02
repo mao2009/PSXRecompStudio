@@ -370,13 +370,45 @@ _orc_phase_scheduling() {
         done
     fi
 
-    # Select provider
-    _ari_select_provider "test"
-    _orc_log INFO "Using provider: $(_ari_get_provider)"
+    # Resolve once per batch.  No provider is inferred from PATH.
+    _ari_select_provider "${ORC_PROVIDER:-}"
+    _ari_selection_status=$?
+    _orc_log INFO "Provider selection: $(_ari_get_selection_json | tr '\n' ' ')"
+    if [ "$_ari_selection_status" -eq 2 ]; then
+        _orc_mark_all_blocked "No native sub-agent capability and no explicit execution provider configured"
+        return 0
+    elif [ "$_ari_selection_status" -ne 0 ]; then
+        _orc_mark_all_blocked "Explicit execution provider is unavailable"
+        return 0
+    fi
 
     # Transition to RUNNING
     _batch_json=$(_persistence_load_batch "$_ORC_BATCH_ID")
     _batch_json=$(printf '%s' "$_batch_json" | sed 's/"state"[[:space:]]*:[[:space:]]*"[^"]*"/"state": "RUNNING"/')
+    _persistence_save_batch "$_ORC_BATCH_ID" "$_batch_json"
+}
+
+_orc_mark_all_blocked() {
+    _reason="$1"
+    _issues_file=$(_persistence_get_issue_states_path "$_ORC_BATCH_ID")
+    _blocked_count=0
+    for _id in $(grep -o '"issue-[0-9]*"' "$_issues_file" | sed 's/"//g; s/issue-//'); do
+        _state=$(sed -n "/\"issue-${_id}\"/,/}/p" "$_issues_file" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^\"]*\)".*/\1/p')
+        case "$_state" in
+            COMPLETED|FAILED|BLOCKED) continue ;;
+        esac
+        _persistence_update_issue_state "$_issues_file" "$_id" \
+            "state" "BLOCKED" "last_error" "$_reason" \
+            "launch_status" "BLOCKED" "execution_status" "NOT_STARTED" \
+            "selection_reason" "$_ARI_SELECTION_REASON"
+        _blocked_count=$((_blocked_count + 1))
+    done
+    _batch_json=$(_persistence_load_batch "$_ORC_BATCH_ID")
+    _old_blocked=$(echo "$_batch_json" | sed -n 's/.*"blocked_count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+    _old_blocked="${_old_blocked:-0}"
+    _batch_json=$(printf '%s' "$_batch_json" | sed "s/\"blocked_count\"[[:space:]]*:[[:space:]]*[0-9]*/\"blocked_count\": $((_old_blocked + _blocked_count))/")
+    _batch_json=$(printf '%s' "$_batch_json" | sed 's/"state"[[:space:]]*:[[:space:]]*"[^"]*"/"state": "FAILED"/')
+    _batch_json=$(printf '%s' "$_batch_json" | sed "s/\"failure_reason\"[[:space:]]*:[[:space:]]*null/\"failure_reason\": \"${_reason}\"/")
     _persistence_save_batch "$_ORC_BATCH_ID" "$_batch_json"
 }
 
@@ -489,7 +521,10 @@ _orc_dispatch_issue() {
     _persistence_update_issue_state "$_issues_file" "$_issue_id" \
         "state" "SUBAGENT_STARTING" \
         "worktree_path" "$_worktree_path" \
-        "branch_name" "$_branch_name"
+        "branch_name" "$_branch_name" \
+        "launch_status" "STARTING" \
+        "execution_status" "NOT_STARTED" \
+        "selection_reason" "$_ARI_SELECTION_REASON"
 
     # Build task
     _result_file="${_worktree_path}/.subagent/result.json"
@@ -503,7 +538,12 @@ _orc_dispatch_issue() {
     _handle_file=$(_ari_launch "$_task_file")
     if [ $? -ne 0 ]; then
         _orc_log ERROR "Failed to launch task for issue $_issue_id"
-        _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "FAILED" "last_error" "Agent launch failed"
+        _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "FAILED" "last_error" "Agent launch failed" "launch_status" "FAILED" "execution_status" "NOT_STARTED" "failure_classification" "launch_failure"
+        _batch_json=$(_persistence_load_batch "$_ORC_BATCH_ID")
+        _failed_count=$(echo "$_batch_json" | sed -n 's/.*"failed_count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+        _failed_count=$(( ${_failed_count:-0} + 1 ))
+        _batch_json=$(printf '%s' "$_batch_json" | sed "s/\"failed_count\"[[:space:]]*:[[:space:]]*[0-9]*/\"failed_count\": ${_failed_count}/")
+        _persistence_save_batch "$_ORC_BATCH_ID" "$_batch_json"
         return 1
     fi
 
@@ -511,7 +551,8 @@ _orc_dispatch_issue() {
     _sch_claim_slot "$_issue_id"
 
     # Update state to running
-    _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "SUBAGENT_RUNNING"
+    _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "SUBAGENT_RUNNING" \
+        "launch_status" "STARTED" "execution_status" "STARTED"
 
     _orc_log INFO "Launched task for issue $_issue_id (handle: $_handle_file)"
 }
@@ -528,15 +569,23 @@ _orc_handle_result() {
     _commit_sha=$(sed -n 's/.*"commit_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_result_file" | head -1)
     _error=$(sed -n 's/.*"error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_result_file" | head -1)
     _error_category=$(sed -n 's/.*"error_category"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_result_file" | head -1)
+    _result_provider=$(sed -n 's/.*"provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_result_file" | head -1)
 
     _issues_file=$(_persistence_get_issue_states_path "$_ORC_BATCH_ID")
+
+    if [ -n "$_result_provider" ] && [ -n "$_ARI_SELECTED_PROVIDER" ] && [ "$_result_provider" != "$_ARI_SELECTED_PROVIDER" ]; then
+        _success="false"
+        _error="Provider switch is not a retry"
+        _error_category="provider_switch"
+    fi
 
     if [ "$_success" = "true" ]; then
         # Success
         _persistence_update_issue_state "$_issues_file" "$_issue_id" \
             "state" "PR_READY" \
             "pr_number" "${_pr_number:-null}" \
-            "commit_sha" "${_commit_sha:-}"
+            "commit_sha" "${_commit_sha:-}" \
+            "launch_status" "STARTED" "execution_status" "COMPLETED"
 
         # Release scheduler slot
         _sch_release_slot "$_issue_id" "COMPLETED"
@@ -564,7 +613,8 @@ _orc_handle_result() {
             _persistence_update_issue_state "$_issues_file" "$_issue_id" \
                 "state" "SUBAGENT_RETRYING" \
                 "retry_count" "$_new_count" \
-                "last_error" "$_error"
+                "last_error" "$_error" \
+                "execution_status" "STARTED"
 
             _orc_log INFO "Retrying issue $_issue_id (attempt $_new_count, backoff ${_backoff}s)"
             sleep "$_backoff"
@@ -572,7 +622,8 @@ _orc_handle_result() {
             # Permanent failure
             _persistence_update_issue_state "$_issues_file" "$_issue_id" \
                 "state" "FAILED" \
-                "last_error" "$_error"
+                "last_error" "$_error" \
+                "execution_status" "FAILED" "failure_classification" "implementation_failure"
 
             _sch_release_slot "$_issue_id" "SUBAGENT_FAILED"
 

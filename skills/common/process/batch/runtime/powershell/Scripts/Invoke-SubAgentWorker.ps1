@@ -15,7 +15,7 @@
     Issue: #159, #160, #161
     Runtime: PowerShell Core 7.x
     Platform: Cross-platform (Windows, Linux, macOS)
-    Agents: Claude Code (default), OpenCode (legacy)
+    Provider selection is host-native first; external providers require explicit configuration.
 #>
 
 param(
@@ -172,10 +172,29 @@ IMPORTANT RULES:
 
         Import-Module $agent_provider_module -Force
 
-        # Get configured provider (default: claude-code)
-        # Provider can be overridden via environment variable BATCH_AGENT_PROVIDER
-        $provider_name = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "claude-code" }
-        Write-AgentLog ("Using provider: {0}" -f $provider_name)
+        $provider_name = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "" }
+        $selection = Resolve-AgentProvider -ProviderName $provider_name
+        Write-AgentLog ("Host agent: {0}; native capability: {1}; selected provider: {2}; mechanism: {3}; reason: {4}" -f $selection.HostAgent, $selection.NativeSubagentCapability, $selection.SelectedProvider, $selection.SelectedMechanism, $selection.SelectionReason)
+        if ($selection.Blocked) {
+            Write-AgentLog "Worker launch: BLOCKED; Issue execution: NOT STARTED" "WARN"
+            Write-Result @{
+                Success = $false
+                IssueId = $IssueId
+                PrNumber = $null
+                CommitSha = $null
+                LaunchStatus = "BLOCKED"
+                ExecutionStatus = "NOT_STARTED"
+                FailureClassification = "provider_selection_blocked"
+                HostAgent = $selection.HostAgent
+                NativeSubagentCapability = $selection.NativeSubagentCapability
+                SelectedProvider = $selection.SelectedProvider
+                SelectedMechanism = $selection.SelectedMechanism
+                SelectionReason = $selection.SelectionReason
+                Error = $selection.SelectionReason
+            }
+            exit 2
+        }
+        Write-AgentLog ("Using provider: {0} via {1}" -f $selection.SelectedProvider, $selection.SelectedMechanism)
 
         # Load provider configuration
         $provider = Get-AgentProvider -ProviderName $provider_name
@@ -223,6 +242,12 @@ IMPORTANT RULES:
                 IssueId = $IssueId
                 PrNumber = $null
                 CommitSha = $null
+                LaunchStatus = "FAILED"
+                ExecutionStatus = "NOT_STARTED"
+                FailureClassification = "launch_failure"
+                SelectedProvider = $selection.SelectedProvider
+                SelectedMechanism = $selection.SelectedMechanism
+                SelectionReason = $selection.SelectionReason
                 CompletedAt = $endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                 DurationSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
                 Error = $provider_result.Error
@@ -260,6 +285,9 @@ IMPORTANT RULES:
                 IssueId = $IssueId
                 PrNumber = $null
                 CommitSha = $null
+                LaunchStatus = "STARTED"
+                ExecutionStatus = "FAILED"
+                FailureClassification = "implementation_failure"
                 CompletedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                 DurationSeconds = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 2)
                 Error = "No changes produced by AI agent"
@@ -362,6 +390,9 @@ $($changedFiles -join "`n")
         IssueId = $IssueId
         PrNumber = $null
         CommitSha = $null
+        LaunchStatus = "STARTED"
+        ExecutionStatus = "FAILED"
+        FailureClassification = "implementation_failure"
         CompletedAt = $endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         DurationSeconds = [Math]::Round($duration, 2)
         Error = $_.Exception.Message

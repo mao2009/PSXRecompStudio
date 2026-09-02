@@ -72,6 +72,11 @@ function New-SubAgentState {
         StartedAt = $null
         CompletedAt = $null
         LastError = $null
+        LaunchStatus = $null
+        ExecutionStatus = "NOT_STARTED"
+        FailureClassification = $null
+        SelectedProvider = $null
+        SelectedMechanism = $null
         Report = $null
         PrNumber = $null
         CommitSha = $null

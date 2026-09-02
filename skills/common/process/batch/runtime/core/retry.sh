@@ -20,7 +20,7 @@ _retry_should_retry() {
 
     # Non-retryable categories (never retry)
     case "$_category" in
-        code_error|test_failure|architecture_violation|dependency_conflict)
+        code_error|test_failure|architecture_violation|dependency_conflict|provider_switch|launch_failure)
             echo "0 Non-retryable error category: $_category"
             return 1
             ;;

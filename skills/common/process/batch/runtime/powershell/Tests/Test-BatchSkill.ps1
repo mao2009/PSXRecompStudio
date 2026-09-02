@@ -812,6 +812,24 @@ Invoke-BatchTest -Name "Claude Code executable resolves" -Test {
     }
 }
 
+Invoke-BatchTest -Name "Provider selection blocks without native capability or explicit provider" -Test {
+    $selection = Resolve-AgentProvider -NativeSubagentAvailable:$false
+    if (-not $selection.Blocked) { throw "Selection should be blocked" }
+    if ($selection.SelectedProvider) { throw "Blocked selection must not choose a provider" }
+    if ($selection.SelectionReason -notmatch "no explicit") { throw "Missing blocked reason" }
+}
+
+Invoke-BatchTest -Name "Explicit provider is selected without PATH fallback" -Test {
+    $selection = Resolve-AgentProvider -ProviderName "test" -NativeSubagentAvailable:$false
+    if ($selection.Blocked -or $selection.SelectedProvider -ne "test") { throw "Explicit provider was not selected" }
+    if ($selection.SelectedMechanism -ne "provider-adapter") { throw "Adapter mechanism missing" }
+}
+
+Invoke-BatchTest -Name "Native capability wins over explicit external provider" -Test {
+    $selection = Resolve-AgentProvider -HostAgent "codex" -NativeSubagentAvailable:$true -ProviderName "claude-code"
+    if ($selection.SelectedProvider -ne "codex" -or $selection.SelectedMechanism -ne "native-subagent") { throw "Native capability did not win" }
+}
+
 # ============================================================
 # ORPHANED State Tests
 # ============================================================

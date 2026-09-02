@@ -56,6 +56,7 @@ Import-Module (Join-Path $modulePath "BatchGitUtilities.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchMergeQueue.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchPersistence.psm1") -Force
 Import-Module (Join-Path $modulePath "BatchCheckpoint.psm1") -Force
+Import-Module (Join-Path $modulePath "AgentProvider.psm1") -Force
 
 if (-not $MergeSkillPath) {
     $MergeSkillPath = Join-Path $scriptPath ".." ".." ".." ".." ".." "skills" "common" "process" "merge"
@@ -176,7 +177,10 @@ function Invoke-BatchOrchestration {
     Write-Host "Batch ID: $BatchId" -ForegroundColor Cyan
     Write-Host ""
 
-    $resolvedProvider = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "claude-code" }
+    $configuredProvider = if ($env:BATCH_AGENT_PROVIDER) { $env:BATCH_AGENT_PROVIDER } else { "" }
+    $providerSelection = Resolve-AgentProvider -ProviderName $configuredProvider
+    $resolvedProvider = if ($providerSelection.SelectedProvider) { $providerSelection.SelectedProvider } else { "" }
+    Write-BatchLog ("Host agent: {0}; native capability: {1}; configured provider: {2}; selected provider: {3}; mechanism: {4}; reason: {5}" -f $providerSelection.HostAgent, $providerSelection.NativeSubagentCapability, $configuredProvider, $providerSelection.SelectedProvider, $providerSelection.SelectedMechanism, $providerSelection.SelectionReason) "INFO"
 
     $existingState = Get-BatchState -FilePath $batchStateFile
     if ($null -ne $existingState) {
@@ -342,6 +346,26 @@ function Invoke-BatchOrchestration {
 
             "SCHEDULING" {
                 Write-BatchLog "=== Phase: Scheduling ===" "INFO"
+
+                if ($providerSelection.Blocked) {
+                    foreach ($issueId in $issueStates.Keys) {
+                        if ($issueStates[$issueId].State -notin @("COMPLETED", "FAILED", "BLOCKED")) {
+                            $issueStates[$issueId].State = "BLOCKED"
+                            $issueStates[$issueId].LastError = $providerSelection.SelectionReason
+                            $issueStates[$issueId].LaunchStatus = "BLOCKED"
+                            $issueStates[$issueId].ExecutionStatus = "NOT_STARTED"
+                            $issueStates[$issueId].FailureClassification = "provider_selection_blocked"
+                            $issueStates[$issueId].SelectionReason = $providerSelection.SelectionReason
+                        }
+                    }
+                    $batchState.BlockedCount = @($issueStates.Values | Where-Object { $_.State -eq "BLOCKED" }).Count
+                    $batchState.FailureReason = $providerSelection.SelectionReason
+                    $batchState.State = "FAILED"
+                    Save-BatchState -State $batchState -FilePath $batchStateFile
+                    Save-IssueStates -Issues $issueStates -FilePath $issueStatesFile
+                    Write-BatchLog "Worker launch: BLOCKED; Issue execution: NOT STARTED" "WARN"
+                    return
+                }
 
                 $scheduler = New-BatchScheduler -MaxConcurrency $MaxConcurrency
 

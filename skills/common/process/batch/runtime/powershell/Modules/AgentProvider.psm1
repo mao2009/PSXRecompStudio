@@ -332,8 +332,12 @@ function Get-AgentProvider {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [string]$ProviderName = "claude-code"
+        [string]$ProviderName = ""
     )
+
+    if ([string]::IsNullOrWhiteSpace($ProviderName)) {
+        throw "No provider configured. Resolve-AgentProvider must be called before loading a provider."
+    }
 
     switch ($ProviderName) {
         "claude-code" {
@@ -351,6 +355,69 @@ function Get-AgentProvider {
         default {
             throw "Unknown provider: $ProviderName"
         }
+    }
+}
+
+function Resolve-AgentProvider {
+    <#
+    .SYNOPSIS
+        Resolves execution using host-native capability first.
+
+    .DESCRIPTION
+        PATH discovery is intentionally not a selection mechanism. An external
+        provider is eligible only when ProviderName is explicitly supplied.
+        Native capability is reported by the host runtime through deterministic
+        environment values because this child process cannot introspect a host
+        agent API.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$ProviderName = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$HostAgent = $(if ($env:BATCH_HOST_AGENT) { $env:BATCH_HOST_AGENT } else { "" }),
+
+        [Parameter(Mandatory = $false)]
+        [bool]$NativeSubagentAvailable = $(if ($env:BATCH_NATIVE_SUBAGENT_AVAILABLE) { $env:BATCH_NATIVE_SUBAGENT_AVAILABLE -match '^(1|true|yes)$' } else { $false })
+    )
+
+    if ($NativeSubagentAvailable) {
+        $selected = if ($HostAgent) { $HostAgent } else { "host" }
+        return @{
+            HostAgent = $HostAgent
+            NativeSubagentCapability = "AVAILABLE"
+            ExplicitProviderConfigured = $false
+            SelectedProvider = $selected
+            SelectedMechanism = "native-subagent"
+            SelectionReason = "Current host native sub-agent/task capability is available"
+            Blocked = $false
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ProviderName)) {
+        # Loading is the adapter validation step. It may inspect the executable,
+        # but only after explicit selection has been made.
+        $null = Get-AgentProvider -ProviderName $ProviderName
+        return @{
+            HostAgent = $HostAgent
+            NativeSubagentCapability = "UNAVAILABLE"
+            ExplicitProviderConfigured = $true
+            SelectedProvider = $ProviderName
+            SelectedMechanism = "provider-adapter"
+            SelectionReason = "Explicit provider configuration selected"
+            Blocked = $false
+        }
+    }
+
+    return @{
+        HostAgent = $HostAgent
+        NativeSubagentCapability = "UNAVAILABLE"
+        ExplicitProviderConfigured = $false
+        SelectedProvider = $null
+        SelectedMechanism = $null
+        SelectionReason = "No native sub-agent capability and no explicit execution provider configured"
+        Blocked = $true
     }
 }
 
@@ -431,5 +498,6 @@ Export-ModuleMember -Function @(
     'New-ClaudeCodeProvider',
     'Invoke-ClaudeCodeProvider',
     'Get-AgentProvider',
+    'Resolve-AgentProvider',
     'Invoke-AgentProvider'
 )

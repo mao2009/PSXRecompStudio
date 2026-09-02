@@ -41,17 +41,20 @@ Host Agent → Built-in Sub-agent / Task tool
 Task execution (worktree → commit → PR)
 ```
 
-### Provider Hierarchy
+### Provider Selection Policy
 
 The Agent Runtime Interface dispatches tasks through providers:
 
 | Priority | Provider | Description | Required |
 |----------|----------|-------------|----------|
-| 1 | built-in-subagent | Host agent's Task tool | No (requires host agent) |
-| 2 | claude-code | Claude Code CLI | No (optional fallback) |
-| 3 | test | Deterministic test provider | No (CI/testing) |
+| 1 | host-native | Current host agent's native sub-agent/task capability | Requires host capability |
+| 2 | same-provider adapter | Existing supported mechanism for the current provider | Provider-specific |
+| 3 | explicit adapter | External provider explicitly configured by the user/config | Explicit only |
+| 4 | BLOCKED | No eligible execution mechanism | No worker launch |
 
-**No AI CLI is required.** The orchestrator works with any host agent that supports the Task tool interface. CLI adapters are optional fallbacks.
+The presence of `claude`, `opencode`, `codex`, or another CLI on `PATH` is not
+configuration and never selects a provider. A provider switch is not a retry;
+retries remain within the selected provider and mechanism.
 
 ### Legacy Path (PowerShell)
 
@@ -460,7 +463,8 @@ Applied in: `Get-CheckpointDirectory`, `Get-BatchStateFilePath`, `Get-Transition
 - Core checkpoint schema contains NO provider-specific logic
 - `providerMetadata` field isolates provider-specific data (e.g., session ID)
 - New providers only add to `providerMetadata`; core fields unchanged
-- `Save-AllCheckpoints` resolves active provider once from `BATCH_AGENT_PROVIDER` (default `claude-code`)
+- `Save-AllCheckpoints` records the provider selected by the runtime policy; no
+  provider is the default.
 
 ### Cross-Platform Considerations
 
@@ -581,7 +585,7 @@ runtime/
 ├── adapters/
 │   ├── test/adapter.sh               # Test provider (no AI agent)
 │   ├── built-in-subagent/adapter.sh  # Host agent Task tool contract
-│   └── claude-code/adapter.sh        # Optional CLI fallback
+│   └── claude-code/adapter.sh        # Explicitly selected provider adapter
 └── tests/                            # 122 tests
 ```
 
@@ -660,10 +664,10 @@ batch.sh help
 
 | Scenario | Recommended Provider |
 |----------|---------------------|
-| Host agent with Task tool | built-in-subagent (default) |
-| Claude Code installed | claude-code (fallback) |
+| Host agent with native Task tool | host-native mechanism |
+| Explicit provider configured | configured provider adapter |
 | CI / deterministic testing | test |
-| No AI agent available | test |
+| Native unavailable and no provider configured | `BLOCKED` |
 
 ## Non-goals
 
