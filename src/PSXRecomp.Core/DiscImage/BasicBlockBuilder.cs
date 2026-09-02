@@ -137,6 +137,20 @@ public static class BasicBlockBuilder
                         edges.Add(new CfgEdge(cfAddr, decodedInstructions[fallthroughIdx].Address, "fallthrough"));
                     }
                 }
+
+                // A link instruction transfers control to its target and then resumes
+                // after the delay slot.  The existing edge remains "jump" for backward
+                // compatibility; FunctionDiscovery classifies it as a call from the
+                // decoder's LinkInfo rather than duplicating CPU semantics here.
+                if (cfRaw.LinkInfo.WritesLink &&
+                    cfRaw.DelaySlot != R3000aDelaySlotKind.Conditional)
+                {
+                    int returnIdx = cfIdx + 2;
+                    if (returnIdx < decodedInstructions.Count)
+                    {
+                        edges.Add(new CfgEdge(cfAddr, decodedInstructions[returnIdx].Address, "fallthrough"));
+                    }
+                }
             }
             else if (blockEndIdx + 1 < decodedInstructions.Count)
             {

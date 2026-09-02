@@ -314,6 +314,7 @@ public static class DeterministicArtifactBuilder
             EdgeCount = edges.Count,
             BasicBlocks = blocks,
             Edges = edges,
+            FunctionDiscovery = report.FunctionDiscovery,
         };
     }
 

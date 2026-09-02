@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
@@ -25,6 +26,13 @@ public sealed record ControlFlowGraphDocument
     public required int EdgeCount { get; init; }
     public required IReadOnlyList<BasicBlockRecord> BasicBlocks { get; init; }
     public required IReadOnlyList<CfgEdgeRecord> Edges { get; init; }
+
+    /// <summary>
+    /// Optional #210 function-discovery projection. Keeping it optional preserves the
+    /// v1 CFG contract for callers that provide only the existing analysis report.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FunctionDiscoveryArtifact? FunctionDiscovery { get; init; }
 }
 
 /// <summary>

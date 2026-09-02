@@ -35,6 +35,12 @@ public sealed record DiscImageAnalysisReport
     public required int CallCandidateCount { get; init; }
     public required int ReturnCandidateCount { get; init; }
 
+    /// <summary>
+    /// Function/CFG projection built from this report's existing decoded instructions,
+    /// blocks and edges. It is optional for backward-compatible report construction.
+    /// </summary>
+    public FunctionDiscoveryArtifact? FunctionDiscovery { get; init; }
+
     public string ToJson()
     {
         return JsonSerializer.Serialize(this, new JsonSerializerOptions
