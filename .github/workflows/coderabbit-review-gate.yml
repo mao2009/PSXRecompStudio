@@ -125,7 +125,16 @@ jobs:
               "repos/${GITHUB_REPOSITORY}/commits/$PR_HEAD_SHA/check-runs")
             if ! printf '%s' "$checks_pages" | jq -e '
               type == "array" and length > 0 and
-              all(.[]; type == "object" and (.check_runs | type == "array"))
+              all(.[];
+                type == "object" and
+                (.check_runs | type == "array") and
+                all(.check_runs[];
+                  type == "object" and
+                  (.name | type == "string") and
+                  (.status | type == "string") and
+                  ((.conclusion == null) or (.conclusion | type == "string"))
+                )
+              )
             ' >/dev/null; then
               echo 'Malformed or incomplete check-runs response; blocking.' >&2
               exit 1
