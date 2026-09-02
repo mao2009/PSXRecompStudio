@@ -332,8 +332,12 @@ function Get-AgentProvider {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [string]$ProviderName = "claude-code"
+        [string]$ProviderName = ""
     )
+
+    if ([string]::IsNullOrWhiteSpace($ProviderName)) {
+        throw "No provider configured. Resolve-AgentProvider must be called before loading a provider."
+    }
 
     switch ($ProviderName) {
         "claude-code" {
@@ -351,6 +355,118 @@ function Get-AgentProvider {
         default {
             throw "Unknown provider: $ProviderName"
         }
+    }
+}
+
+function Resolve-AgentProvider {
+    <#
+    .SYNOPSIS
+        Resolves execution using host-native capability first.
+
+    .DESCRIPTION
+        PATH discovery is intentionally not a selection mechanism. An external
+        provider is eligible only when ProviderName is explicitly supplied.
+        Native capability is reported by the host runtime through deterministic
+        environment values because this child process cannot introspect a host
+        agent API.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$ProviderName = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$HostAgent = $(if ($env:BATCH_HOST_AGENT) { $env:BATCH_HOST_AGENT } else { "" }),
+
+        [Parameter(Mandatory = $false)]
+        [bool]$NativeSubagentAvailable = $(if ($env:BATCH_NATIVE_SUBAGENT_AVAILABLE) { $env:BATCH_NATIVE_SUBAGENT_AVAILABLE -match '^(1|true|yes)$' } else { $false })
+    )
+
+    if ($NativeSubagentAvailable) {
+        $selected = if ($HostAgent) { $HostAgent } else { "host" }
+        return @{
+            HostAgent = $HostAgent
+            NativeSubagentCapability = "AVAILABLE"
+            ExplicitProviderConfigured = $false
+            SelectedProvider = $selected
+            SelectedMechanism = "native-subagent"
+            SelectionReason = "Current host native sub-agent/task capability is available"
+            Blocked = $false
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ProviderName)) {
+        # Loading is the adapter validation step. It may inspect the executable,
+        # but only after explicit selection has been made.
+        $null = Get-AgentProvider -ProviderName $ProviderName
+        return @{
+            HostAgent = $HostAgent
+            NativeSubagentCapability = "UNAVAILABLE"
+            ExplicitProviderConfigured = $true
+            SelectedProvider = $ProviderName
+            SelectedMechanism = "provider-adapter"
+            SelectionReason = "Explicit provider configuration selected"
+            Blocked = $false
+        }
+    }
+
+    return @{
+        HostAgent = $HostAgent
+        NativeSubagentCapability = "UNAVAILABLE"
+        ExplicitProviderConfigured = $false
+        SelectedProvider = $null
+        SelectedMechanism = $null
+        SelectionReason = "No native sub-agent capability and no explicit execution provider configured"
+        Blocked = $true
+    }
+}
+
+function New-NativeDispatchRequest {
+    <#
+    .SYNOPSIS
+        Materializes the host-native dispatch contract without spawning a process.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$IssueNumber,
+        [Parameter(Mandatory = $true)][string]$IssueId,
+        [Parameter(Mandatory = $true)][string]$WorktreePath,
+        [Parameter(Mandatory = $true)][string]$BranchName,
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)][string]$ResultFile,
+        [Parameter(Mandatory = $false)][string[]]$RequiredSkills = @(
+            "skills/common/task/implementation/SKILL.md",
+            "skills/common/process/batch/SKILL.md"
+        ),
+        [Parameter(Mandatory = $false)][string]$ExecutionScope = "Implement only the requested Issue in the isolated worktree",
+        [Parameter(Mandatory = $false)][string]$ValidationRequirements = "Run targeted tests, related Batch tests, build/analyzer, and report results"
+    )
+
+    $requestDirectory = Join-Path $WorktreePath ".subagent"
+    if (-not (Test-Path $requestDirectory)) {
+        New-Item -ItemType Directory -Path $requestDirectory -Force | Out-Null
+    }
+    $requestFile = Join-Path $requestDirectory "dispatch-request.json"
+    $request = [ordered]@{
+        status = "READY_FOR_NATIVE_DISPATCH"
+        task_id = $IssueId
+        issue_id = $IssueId
+        issue_number = $IssueNumber
+        worktree_path = $WorktreePath
+        branch_name = $BranchName
+        prompt = $Prompt
+        required_skills = @($RequiredSkills)
+        execution_scope = $ExecutionScope
+        validation_requirements = $ValidationRequirements
+        result_file = $ResultFile
+        created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $request | ConvertTo-Json -Depth 10 | Set-Content -Path $requestFile -Force
+    return @{
+        RequestFile = $requestFile
+        Status = "READY_FOR_NATIVE_DISPATCH"
+        ProcessId = $null
+        SpawnedProcess = $false
     }
 }
 
@@ -431,5 +547,7 @@ Export-ModuleMember -Function @(
     'New-ClaudeCodeProvider',
     'Invoke-ClaudeCodeProvider',
     'Get-AgentProvider',
+    'Resolve-AgentProvider',
+    'New-NativeDispatchRequest',
     'Invoke-AgentProvider'
 )

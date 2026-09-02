@@ -1,13 +1,19 @@
 {
   "agentProvider": {
     "enabled": true,
-    "default": "claude-code",
+    "default": null,
+    "selectionPolicy": {
+      "nativeCapabilityFirst": true,
+      "externalProviderRequiresExplicitConfiguration": true,
+      "pathDiscoveryIsNotSelection": true,
+      "crossProviderRetry": false
+    },
     "providers": {
       "claude-code": {
         "name": "claude-code",
         "type": "claude-code",
         "enabled": true,
-        "description": "Claude Code AI Agent (default for current runtime)"
+        "description": "Claude Code AI Agent (available when explicitly configured)"
       },
       "opencode": {
         "name": "opencode",

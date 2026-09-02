@@ -45,6 +45,7 @@ RUNTIME_DIR="${SCRIPT_DIR}/.."
 . "$RUNTIME_DIR/persistence.sh"
 . "$RUNTIME_DIR/agent-runtime.sh"
 . "$RUNTIME_DIR/adapters/test/adapter.sh"
+. "$RUNTIME_DIR/adapters/built-in-subagent/adapter.sh"
 
 # Create temp dir for tests
 _TEST_DIR=$(mktemp -d)
@@ -119,13 +120,68 @@ assert_true "test provider available" _ari_provider_available "test"
 assert_false "unknown provider not available" _ari_provider_available "nonexistent"
 
 # Select test provider
-_sel=$(_ari_select_provider "test")
-assert_output "selected test" "test" printf '%s' "$_sel"
+_ari_select_provider "test" >/dev/null
+assert_output "selected test" "test" _ari_get_provider
 assert_output "get provider" "test" _ari_get_provider
 
-# Select with invalid preferred, falls back
-_sel2=$(_ari_select_provider "nonexistent")
-assert_output "fallback to test" "test" _ari_get_provider
+# No provider is inferred when native capability is unavailable.
+_ARI_NATIVE_SUBAGENT_AVAILABLE="false"
+unset ORC_PROVIDER
+_ari_select_provider >/dev/null
+assert_output "no implicit fallback" "" _ari_get_provider
+assert_output "blocked reason" "No native sub-agent capability and no explicit execution provider configured" printf '%s' "$_ARI_SELECTION_REASON"
+assert_output "blocked provider is empty" "" _ari_get_provider
+
+# An explicitly configured test provider is selected even when no AI CLI is present.
+ORC_PROVIDER="test"
+_ari_select_provider >/dev/null
+assert_output "explicit test provider" "test" _ari_get_provider
+assert_output "explicit selection reason" "Explicit provider configuration selected" printf '%s' "$_ARI_SELECTION_REASON"
+
+# Native capability wins over an explicit external provider.
+_ARI_HOST_AGENT="codex"
+_ARI_NATIVE_SUBAGENT_AVAILABLE="true"
+_ari_select_provider "claude-code" >/dev/null
+assert_output "native provider wins" "codex" _ari_get_provider
+assert_output "native mechanism" "native-subagent" printf '%s' "$_ARI_SELECTED_MECHANISM"
+_ARI_HOST_AGENT=""
+_ARI_NATIVE_SUBAGENT_AVAILABLE="false"
+ORC_PROVIDER="test"
+_ari_select_provider >/dev/null
+
+# Native selection prepares a host dispatch request and does not spawn a worker.
+_native_worktree="${_TEST_DIR}/native-worktree"
+mkdir -p "$_native_worktree"
+_native_task="${_TEST_DIR}/native-task.json"
+_ARI_HOST_AGENT="codex"
+_ARI_NATIVE_SUBAGENT_AVAILABLE="true"
+unset ORC_PROVIDER
+_ari_select_provider >/dev/null
+_ari_build_task "native-task" 219 "native test" "$_native_worktree" "issue/219-native" "Implement" "${_native_worktree}/.subagent/result.json" 30 > "$_native_task"
+_native_handle=$(_ari_launch "$_native_task")
+assert_true "native launch returns dispatch handle" test -f "$_native_handle"
+_native_request=$(_json_get_string "$_native_handle" "request_file")
+assert_true "native request exists" test -f "$_native_request"
+assert_true "native request is ready" grep -q '"status": "READY_FOR_NATIVE_DISPATCH"' "$_native_request"
+assert_true "native request has worktree" grep -q '"worktree_path": "' "$_native_request"
+assert_true "native request has branch" grep -q '"branch_name": "issue/219-native"' "$_native_request"
+assert_true "native request preserves expected provider" grep -q '"expected_provider": "codex"' "$_native_request"
+assert_true "native handle has no spawned pid" grep -q '"status": "READY_FOR_NATIVE_DISPATCH"' "$_native_handle"
+
+# Parallel native requests retain independent worktree and issue context.
+_native_worktree_2="${_TEST_DIR}/native-worktree-2"
+mkdir -p "$_native_worktree_2"
+_native_task_2="${_TEST_DIR}/native-task-2.json"
+_ari_build_task "native-task-2" 220 "second native test" "$_native_worktree_2" "issue/220-native" "Implement second" "${_native_worktree_2}/.subagent/result.json" 30 > "$_native_task_2"
+_native_handle_2=$(_ari_launch "$_native_task_2")
+_native_request_2=$(_json_get_string "$_native_handle_2" "request_file")
+assert_true "parallel native request has independent worktree" grep -q '"worktree_path": "'"$_native_worktree_2"'"' "$_native_request_2"
+assert_true "parallel native request preserves issue context" grep -q '"task_id": "native-task-2"' "$_native_request_2"
+
+_ARI_HOST_AGENT=""
+_ARI_NATIVE_SUBAGENT_AVAILABLE="false"
+ORC_PROVIDER="test"
+_ari_select_provider >/dev/null
 
 # --- Provider Interface (Test Provider) ---
 echo ""

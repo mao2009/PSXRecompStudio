@@ -132,10 +132,10 @@ Invoke-BatchTest -Name "Get-BatchStateDefinition returns complete definition" -T
 # ============================================================
 Write-Host "`n=== Issue State Machine Tests ===" -ForegroundColor Green
 
-Invoke-BatchTest -Name "Issue state machine has all 14 states" -Test {
+Invoke-BatchTest -Name "Issue state machine has all 16 states" -Test {
     $states = Get-AllIssueStates
     $expected = @(
-        "SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
+        "SUBAGENT_STARTING", "READY_FOR_NATIVE_DISPATCH", "DISPATCHED", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
         "SUBAGENT_FAILED", "ORPHANED", "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY",
         "PR_READY", "WAITING_FOR_APPROVAL", "READY_FOR_MERGE",
         "MERGING", "COMPLETED", "BLOCKED", "FAILED"
@@ -143,7 +143,7 @@ Invoke-BatchTest -Name "Issue state machine has all 14 states" -Test {
     foreach ($s in $expected) {
         if ($s -notin $states) { throw "Missing issue state: $s" }
     }
-    if ($states.Count -ne 14) { throw "Expected 14 states, got $($states.Count)" }
+    if ($states.Count -ne 16) { throw "Expected 16 states, got $($states.Count)" }
 }
 
 Invoke-BatchTest -Name "Issue terminal states have no transitions" -Test {
@@ -809,6 +809,91 @@ Invoke-BatchTest -Name "Claude Code executable resolves" -Test {
         if (-not (Test-Path $config.Executable)) {
             Write-Host ("  SKIP: Claude Code CLI not installed ({0})" -f $config.Executable) -ForegroundColor Yellow
         }
+    }
+}
+
+Invoke-BatchTest -Name "Provider selection blocks without native capability or explicit provider" -Test {
+    $selection = Resolve-AgentProvider -NativeSubagentAvailable:$false
+    if (-not $selection.Blocked) { throw "Selection should be blocked" }
+    if ($selection.SelectedProvider) { throw "Blocked selection must not choose a provider" }
+    if ($selection.SelectionReason -notmatch "no explicit") { throw "Missing blocked reason" }
+}
+
+Invoke-BatchTest -Name "Explicit provider is selected without PATH fallback" -Test {
+    $selection = Resolve-AgentProvider -ProviderName "test" -NativeSubagentAvailable:$false
+    if ($selection.Blocked -or $selection.SelectedProvider -ne "test") { throw "Explicit provider was not selected" }
+    if ($selection.SelectedMechanism -ne "provider-adapter") { throw "Adapter mechanism missing" }
+}
+
+Invoke-BatchTest -Name "Launch failures and provider switches are never retryable" -Test {
+    $state = New-SubAgentState -IssueId "issue-retry" -Config (New-SubAgentConfig -MaxRetries 3)
+    foreach ($category in @("launch_failure", "provider_switch")) {
+        $retry = Test-SubAgentRetryable -SubAgentState $state -ErrorCategory $category
+        if ($retry.Retryable) { throw "$category must not be retryable" }
+    }
+}
+
+Invoke-BatchTest -Name "Unknown provider selection fails explicitly" -Test {
+    $thrown = $false
+    try { Resolve-AgentProvider -ProviderName "future-provider" -NativeSubagentAvailable:$false -ErrorAction Stop | Out-Null } catch { $thrown = $true }
+    if (-not $thrown) { throw "Unknown provider must be rejected" }
+}
+
+Invoke-BatchTest -Name "Native capability wins over explicit external provider" -Test {
+    $selection = Resolve-AgentProvider -HostAgent "codex" -NativeSubagentAvailable:$true -ProviderName "claude-code"
+    if ($selection.SelectedProvider -ne "codex" -or $selection.SelectedMechanism -ne "native-subagent") { throw "Native capability did not win" }
+}
+
+Invoke-BatchTest -Name "Native dispatch request is host-handled and does not spawn a process" -Test {
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "native-dispatch-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $request = New-NativeDispatchRequest -IssueId "native-219" -IssueNumber 219 -WorktreePath $tempDir -BranchName "issue/219-native" -Prompt "Implement" -ResultFile (Join-Path $tempDir ".subagent" "result.json")
+        if ($request.Status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Request is not ready" }
+        if ($request.SpawnedProcess) { throw "Native request must not spawn a process" }
+        $payload = Get-Content $request.RequestFile -Raw | ConvertFrom-Json
+        if ($payload.status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Payload status mismatch" }
+        if ($payload.worktree_path -ne $tempDir -or $payload.branch_name -ne "issue/219-native") { throw "Context mismatch" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
+}
+
+Invoke-BatchTest -Name "Native running status advances READY through DISPATCHED" -Test {
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "SUBAGENT_RUNNING"
+    if (($progression -join ",") -ne "DISPATCHED,SUBAGENT_RUNNING") {
+        throw "Skipped native dispatch progression was not preserved"
+    }
+    if (-not (Test-ValidIssueTransition -FromState "READY_FOR_NATIVE_DISPATCH" -ToState $progression[0])) {
+        throw "READY_FOR_NATIVE_DISPATCH -> DISPATCHED should remain valid"
+    }
+    if (-not (Test-ValidIssueTransition -FromState $progression[0] -ToState $progression[1])) {
+        throw "DISPATCHED -> SUBAGENT_RUNNING should remain valid"
+    }
+}
+
+Invoke-BatchTest -Name "Native running status is not eligible for dispatch deadline failure" -Test {
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "SUBAGENT_RUNNING"
+    $stateAfterPoll = $progression[-1]
+    $deadlineExpired = $true
+    if ($deadlineExpired -and $stateAfterPoll -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")) {
+        throw "A running native worker must not fail on dispatch deadline"
+    }
+}
+
+Invoke-BatchTest -Name "Unchanged native request remains eligible for dispatch deadline failure" -Test {
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "READY_FOR_NATIVE_DISPATCH"
+    $stateAfterPoll = if ($progression.Count -gt 0) { $progression[-1] } else { "READY_FOR_NATIVE_DISPATCH" }
+    if ($stateAfterPoll -notin @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")) {
+        throw "An undispatched native request must remain deadline eligible"
+    }
+}
+
+Invoke-BatchTest -Name "Native dispatch progression remains valid in normal polling order" -Test {
+    $first = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "DISPATCHED"
+    $second = Get-NativeDispatchStateProgression -IssueState "DISPATCHED" -RequestStatus "SUBAGENT_RUNNING"
+    if (($first -join ",") -ne "DISPATCHED" -or ($second -join ",") -ne "SUBAGENT_RUNNING") {
+        throw "Normal native dispatch progression changed"
     }
 }
 

@@ -7,10 +7,8 @@
 # Optional: gh CLI (for GitHub operations)
 # Does NOT require: jq, python, node, pwsh, claude, opencode, codex
 #
-# Provider hierarchy:
-#   1. Built-in Sub-agent (host agent Task tool) — primary
-#   2. CLI Adapter (claude-code, opencode, codex) — optional fallback
-#   3. Test Provider (deterministic, no AI agent) — CI/testing
+# Provider selection: host-native capability, then an explicitly configured
+# adapter, otherwise BLOCKED. PATH presence is never a selection signal.
 
 _ORC_BATCH_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -46,8 +44,8 @@ Options (run/resume):
   --repo <dir>            Git repository path (default: current directory)
   --max-concurrency <n>   Max parallel tasks (default: 3)
   --max-retries <n>       Max retry attempts per task (default: 3)
-  --provider <name>       Agent provider: test, built-in-subagent, claude-code
-                          (default: auto-detect, built-in-subagent preferred)
+  --provider <name>       Explicit provider adapter (test, claude-code, ...)
+                          (no provider default; BLOCKED when native is absent)
   --log-level <level>     Log level: DEBUG, INFO, WARN, ERROR (default: INFO)
 
 Options (status):
@@ -60,13 +58,9 @@ Environment Variables:
 
 Provider Architecture:
   The orchestrator dispatches tasks through the Agent Runtime Interface.
-  Providers are tried in this order:
-    1. built-in-subagent  — Host agent's Task tool (requires host agent)
-    2. claude-code        — Claude Code CLI (optional, requires `claude`)
-    3. test               — Deterministic test provider (no AI agent needed)
-
-  Use --provider to force a specific provider. The test provider is
-  useful for CI and deterministic testing without any AI agent.
+  Selection order is: current host native task capability, same-provider
+  mechanism, explicitly configured provider adapter, then BLOCKED. Use
+  --provider (or ORC_PROVIDER) for an external/test adapter.
 
 Examples:
   # Run a batch with issue numbers

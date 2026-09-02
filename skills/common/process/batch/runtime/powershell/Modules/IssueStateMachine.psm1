@@ -17,6 +17,8 @@
 
 $Script:IssueStates = @{
     SUBAGENT_STARTING      = "SUBAGENT_STARTING"
+    READY_FOR_NATIVE_DISPATCH = "READY_FOR_NATIVE_DISPATCH"
+    DISPATCHED             = "DISPATCHED"
     SUBAGENT_RUNNING       = "SUBAGENT_RUNNING"
     SUBAGENT_RETRYING      = "SUBAGENT_RETRYING"
     SUBAGENT_FAILED        = "SUBAGENT_FAILED"
@@ -33,13 +35,15 @@ $Script:IssueStates = @{
 }
 
 $Script:IssueTransitions = @{
-    SUBAGENT_STARTING    = @("SUBAGENT_RUNNING", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED", "PR_READY")
+    SUBAGENT_STARTING    = @("READY_FOR_NATIVE_DISPATCH", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "FAILED", "ORPHANED", "PR_READY")
+    READY_FOR_NATIVE_DISPATCH = @("DISPATCHED", "SUBAGENT_FAILED")
+    DISPATCHED           = @("SUBAGENT_RUNNING", "SUBAGENT_FAILED")
     SUBAGENT_RUNNING     = @("PR_READY", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED")
     SUBAGENT_RETRYING    = @("SUBAGENT_STARTING", "SUBAGENT_FAILED", "ORPHANED")
     SUBAGENT_FAILED      = @()
     ORPHANED             = @("SUBAGENT_STARTING", "SUBAGENT_FAILED", "WAITING_FOR_SUBAGENT")
     WAITING_FOR_SUBAGENT = @("SUBAGENT_STARTING", "BLOCKED")
-    WAITING_DEPENDENCY   = @("SUBAGENT_STARTING")
+    WAITING_DEPENDENCY   = @("SUBAGENT_STARTING", "BLOCKED")
     PR_READY             = @("WAITING_FOR_APPROVAL")
     WAITING_FOR_APPROVAL = @("READY_FOR_MERGE", "PR_READY")
     READY_FOR_MERGE      = @("MERGING")
@@ -51,6 +55,8 @@ $Script:IssueTransitions = @{
 
 $Script:IssueStateDescriptions = @{
     SUBAGENT_STARTING    = "Sub-agent process being launched"
+    READY_FOR_NATIVE_DISPATCH = "Task context prepared; waiting for host native Task/Subagent dispatch"
+    DISPATCHED           = "Host native Task/Subagent accepted the dispatch request"
     SUBAGENT_RUNNING     = "Sub-agent actively investigating, implementing, testing"
     SUBAGENT_RETRYING    = "Sub-agent failed, attempting retry"
     SUBAGENT_FAILED      = "Sub-agent failed after retry limit exhausted"
@@ -94,6 +100,36 @@ function Test-ValidIssueTransition {
     }
 
     return $Script:IssueTransitions[$FromState] -contains $ToState
+}
+
+function Get-NativeDispatchStateProgression {
+    <#
+    .SYNOPSIS
+        Returns the contract-preserving state updates implied by a native status.
+
+    .DESCRIPTION
+        Native polling can skip DISPATCHED.  The returned sequence deliberately
+        includes that state so callers can apply only valid issue transitions.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$IssueState,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RequestStatus
+    )
+
+    switch ($RequestStatus) {
+        "DISPATCHED" {
+            if ($IssueState -eq "READY_FOR_NATIVE_DISPATCH") { return @("DISPATCHED") }
+        }
+        "SUBAGENT_RUNNING" {
+            if ($IssueState -eq "READY_FOR_NATIVE_DISPATCH") { return @("DISPATCHED", "SUBAGENT_RUNNING") }
+            if ($IssueState -eq "DISPATCHED") { return @("SUBAGENT_RUNNING") }
+        }
+    }
+    return @()
 }
 
 function Get-ValidIssueTransitions {
@@ -152,6 +188,10 @@ function Test-IssueStateActive {
 
     $activeStates = @(
         "SUBAGENT_STARTING",
+        "READY_FOR_NATIVE_DISPATCH",
+        "DISPATCHED",
+        "READY_FOR_NATIVE_DISPATCH",
+        "DISPATCHED",
         "SUBAGENT_RUNNING",
         "SUBAGENT_RETRYING",
         "WAITING_FOR_SUBAGENT",
@@ -178,6 +218,7 @@ function Test-IssueStateRecoverable {
 Export-ModuleMember -Function @(
     'Get-IssueState',
     'Test-ValidIssueTransition',
+    'Get-NativeDispatchStateProgression',
     'Get-ValidIssueTransitions',
     'Get-AllIssueStates',
     'Get-IssueStateDefinition',

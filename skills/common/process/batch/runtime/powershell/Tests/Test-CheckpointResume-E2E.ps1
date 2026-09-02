@@ -403,7 +403,7 @@ Invoke-E2ETest -Name "10. Existing state machines still function correctly" -Tes
     if ($batchStates.Count -ne 9) { throw "Batch should have 9 states, got $($batchStates.Count)" }
 
     $issueStates = Get-AllIssueStates
-    if ($issueStates.Count -ne 14) { throw "Issue should have 14 states, got $($issueStates.Count)" }
+    if ($issueStates.Count -ne 16) { throw "Issue should have 16 states, got $($issueStates.Count)" }
 
     $transitions = @(
         @{ From = "BATCH_INITIALIZING"; To = "PLANNING" },

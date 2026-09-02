@@ -5,6 +5,9 @@
 #
 # Dependencies: POSIX sh
 # Does NOT require: jq, python, node, pwsh, claude, opencode, codex
+#
+# Provider selection is deliberately explicit.  The presence of a provider CLI
+# on PATH is never sufficient to select it.
 
 # ============================================================
 # Task/Result JSON Construction (no jq needed)
@@ -37,7 +40,12 @@ _ari_build_task() {
   "prompt": "${_escaped_prompt}",
   "result_file": "${_result_file}",
   "timeout_minutes": ${_timeout},
-  "provider": "${_ARI_SELECTED_PROVIDER:-test}"
+  "required_skills": ["skills/common/task/implementation/SKILL.md", "skills/common/process/batch/SKILL.md"],
+  "execution_scope": "Implement only the requested Issue in the isolated worktree",
+  "validation_requirements": "Run targeted tests, related Batch tests, build/analyzer, and report results",
+  "provider": "${_ARI_SELECTED_PROVIDER}",
+  "mechanism": "${_ARI_SELECTED_MECHANISM}",
+  "selection_reason": "${_ARI_SELECTION_REASON}"
 }
 EOF
 }
@@ -51,7 +59,7 @@ _ari_build_result() {
     _commit_sha="${4:-}"
     _error="${5:-}"
     _error_category="${6:-}"
-    _provider="${7:-test}"
+    _provider="${7:-${_ARI_SELECTED_PROVIDER:-}}"
     _changed_files="${8:-}"
     _now=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -129,9 +137,13 @@ EOF
 # Provider Selection
 # ============================================================
 
-# Available providers (in priority order)
-_ARI_PROVIDERS="test built-in-subagent claude-code"
-_ARI_SELECTED_PROVIDER="test"
+# Selection metadata is kept in the runtime boundary so the orchestrator and
+# adapters do not need to implement their own provider policy.
+_ARI_SELECTED_PROVIDER=""
+_ARI_SELECTED_MECHANISM=""
+_ARI_SELECTION_REASON=""
+_ARI_HOST_AGENT="${BATCH_HOST_AGENT:-${ORC_HOST_AGENT:-}}"
+_ARI_NATIVE_SUBAGENT_AVAILABLE="${BATCH_NATIVE_SUBAGENT_AVAILABLE:-${ORC_NATIVE_SUBAGENT_AVAILABLE:-false}}"
 
 # Check if a provider is available
 # Usage: _ari_provider_available <provider_name>
@@ -146,6 +158,9 @@ _ari_provider_available() {
             # Built-in sub-agent requires host agent with Task tool
             # This is detected at runtime by the orchestrator
             # For standalone usage, this is not available
+            case "$_ARI_NATIVE_SUBAGENT_AVAILABLE" in
+                1|true|TRUE|yes|YES) return 0 ;;
+            esac
             return 1
             ;;
         claude-code)
@@ -158,34 +173,59 @@ _ari_provider_available() {
     esac
 }
 
-# Select the best available provider
-# Usage: _ari_select_provider [preferred_provider]
+# Select a provider using the #219 policy:
+#   1. current host native capability
+#   2. same-provider/explicit adapter
+#   3. BLOCKED
+# The argument is an explicit provider selection, not a preference/fallback.
+# Usage: _ari_select_provider [explicit_provider]
 _ari_select_provider() {
-    _preferred="${1:-}"
+    _explicit="${1:-${ORC_PROVIDER:-}}"
+    _ARI_SELECTED_PROVIDER=""
+    _ARI_SELECTED_MECHANISM=""
+    _ARI_SELECTION_REASON=""
 
-    # Try preferred first
-    if [ -n "$_preferred" ] && _ari_provider_available "$_preferred"; then
-        _ARI_SELECTED_PROVIDER="$_preferred"
-        echo "$_preferred"
+    if _ari_provider_available "built-in-subagent"; then
+        _ARI_SELECTED_PROVIDER="${_ARI_HOST_AGENT:-host}"
+        _ARI_SELECTED_MECHANISM="native-subagent"
+        _ARI_SELECTION_REASON="Current host native sub-agent/task capability is available"
+        echo "$_ARI_SELECTED_PROVIDER"
         return 0
     fi
 
-    # Fallback chain
-    for _provider in $_ARI_PROVIDERS; do
-        if _ari_provider_available "$_provider"; then
-            _ARI_SELECTED_PROVIDER="$_provider"
-            echo "$_provider"
+    if [ -n "$_explicit" ]; then
+        if _ari_provider_available "$_explicit"; then
+            _ARI_SELECTED_PROVIDER="$_explicit"
+            _ARI_SELECTED_MECHANISM="provider-adapter"
+            _ARI_SELECTION_REASON="Explicit provider configuration selected"
+            echo "$_explicit"
             return 0
         fi
-    done
+        _ARI_SELECTION_REASON="Explicit provider is unavailable or has no supported adapter"
+    else
+        _ARI_SELECTION_REASON="No native sub-agent capability and no explicit execution provider configured"
+    fi
 
-    echo "ERROR: No agent provider available" >&2
-    return 1
+    echo "BLOCKED"
+    return 2
 }
 
 # Get provider name
 _ari_get_provider() {
     echo "$_ARI_SELECTED_PROVIDER"
+}
+
+_ari_get_selection_json() {
+    cat <<EOF
+{
+  "host_agent": "${_ARI_HOST_AGENT}",
+  "native_subagent_capability": "${_ARI_NATIVE_SUBAGENT_AVAILABLE}",
+  "configured_provider": "${ORC_PROVIDER:-}",
+  "selected_provider": "${_ARI_SELECTED_PROVIDER}",
+  "selected_mechanism": "${_ARI_SELECTED_MECHANISM}",
+  "selection_reason": "${_ARI_SELECTION_REASON}"
+}
+EOF
 }
 
 # ============================================================
@@ -199,12 +239,13 @@ _ari_launch() {
     _task_file="$1"
     _provider="$_ARI_SELECTED_PROVIDER"
 
+    if [ "$_ARI_SELECTED_MECHANISM" = "native-subagent" ]; then
+        _ari_prepare_native_dispatch "$_task_file"
+        return $?
+    fi
     case "$_provider" in
         test)
             _ari_launch_test "$_task_file"
-            ;;
-        built-in-subagent)
-            _ari_launch_builtin "$_task_file"
             ;;
         claude-code)
             _ari_launch_claude "$_task_file"
@@ -222,6 +263,11 @@ _ari_launch() {
 _ari_poll() {
     _handle_file="$1"
     _provider=$(_json_get_string "$_handle_file" "provider")
+    _mechanism=$(_json_get_string "$_handle_file" "mechanism")
+    if [ "$_mechanism" = "native-subagent" ]; then
+        _ari_native_dispatch_status "$_handle_file"
+        return $?
+    fi
 
     case "$_provider" in
         test)
@@ -247,6 +293,11 @@ _ari_wait() {
     _handle_file="$1"
     _timeout="$2"
     _provider=$(_json_get_string "$_handle_file" "provider")
+    _mechanism=$(_json_get_string "$_handle_file" "mechanism")
+    if [ "$_mechanism" = "native-subagent" ]; then
+        _ari_native_dispatch_status "$_handle_file"
+        return $?
+    fi
 
     case "$_provider" in
         test)

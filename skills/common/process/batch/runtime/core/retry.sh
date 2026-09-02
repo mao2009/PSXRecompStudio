@@ -20,7 +20,7 @@ _retry_should_retry() {
 
     # Non-retryable categories (never retry)
     case "$_category" in
-        code_error|test_failure|architecture_violation|dependency_conflict)
+        code_error|test_failure|architecture_violation|dependency_conflict|provider_switch|launch_failure)
             echo "0 Non-retryable error category: $_category"
             return 1
             ;;
@@ -159,5 +159,5 @@ _retry_default_config() {
     echo "backoff_base_seconds=5"
     echo "backoff_max_seconds=120"
     echo "retryable=api_error timeout connection_failure transient"
-    echo "non_retryable=code_error test_failure architecture_violation dependency_conflict"
+    echo "non_retryable=code_error test_failure architecture_violation dependency_conflict provider_switch launch_failure"
 }
