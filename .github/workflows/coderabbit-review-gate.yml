@@ -111,15 +111,52 @@ jobs:
             }
           done
           jq -s 'add' "$page_file" > "$RUNNER_TEMP/threads.json"
-          checks_pages=$(gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/commits/$PR_HEAD_SHA/check-runs")
-          if ! printf '%s' "$checks_pages" | jq -e '
-            type == "array" and length > 0 and
-            all(.[]; type == "object" and (.check_runs | type == "array"))
-          ' >/dev/null; then
-            echo 'Malformed or incomplete check-runs response; blocking.' >&2
-            exit 1
-          fi
+
+          # A Gate run can begin before CI jobs have finished. Events emitted by
+          # GITHUB_TOKEN cannot be relied on to trigger a second workflow run,
+          # so wait here for the required CI checks to reach a terminal state.
+          # The loop is bounded well below the job timeout and remains fail-closed.
+          required_checks='["Artifact Contamination Gate","Native Core Build and Test",".NET Build and Test","CI Gate"]'
+          checks_pages=''
+          attempt=0
+          while [ "$attempt" -lt 90 ]; do
+            attempt=$((attempt + 1))
+            checks_pages=$(gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/commits/$PR_HEAD_SHA/check-runs")
+            if ! printf '%s' "$checks_pages" | jq -e '
+              type == "array" and length > 0 and
+              all(.[];
+                type == "object" and
+                (.check_runs | type == "array") and
+                all(.check_runs[];
+                  type == "object" and
+                  (.name | type == "string") and
+                  (.status | type == "string") and
+                  ((.conclusion == null) or (.conclusion | type == "string"))
+                )
+              )
+            ' >/dev/null; then
+              echo 'Malformed or incomplete check-runs response; blocking.' >&2
+              exit 1
+            fi
+            if printf '%s' "$checks_pages" | jq -e --argjson required "$required_checks" '
+              [.[].check_runs[]] as $checks |
+              [
+                $required[] as $name |
+                ([$checks[] | select(.name == $name)] | length > 0) and
+                ([$checks[] | select(.name == $name) |
+                  (((.status // "") | ascii_upcase) == "COMPLETED")] | all)
+              ] | all
+            ' >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -ge 90 ]; then
+              echo 'Timed out waiting for required CI checks to complete; blocking.' >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
           jq '[.[].check_runs[] |
             {name,
              status: ((.status // "") | ascii_upcase),
