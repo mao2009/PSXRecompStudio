@@ -18,6 +18,7 @@ Content is deliberately separated into three kinds:
 skills/
 ├── common/            # Generic, portable skills (no project specifics)
 │   ├── process/       #   Gate + execution skills
+│   │   ├── adr/         #   ADR authoring / maintenance (#84)
 │   │   ├── batch/       #   Parallel Issue execution Orchestrator (#155)
 │   │   ├── doc-sync/
 │   │   ├── merge/       #   Safe PR Merge Skill (#146)
@@ -64,6 +65,7 @@ gates.
 
 | Skill | Responsibility | Introduced by |
 |---|---|---|
+| `common/process/adr` | ADR authoring / maintenance: the "is an ADR needed" decision, SSOT / matrix / existing-ADR preflight, sequential numbering, standard Context / Decision / Consequences structure, traceability to Issues / PRs / code / tests, consistency checks, the review-feedback loop, and agent rules | #84 |
 | `common/process/doc-sync` | Documentation synchronization gate: impact mapping, minimal updates, recorded no-op decisions | #89 |
 | `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
 | `common/process/batch` | Parallel Issue execution Orchestrator with dependency scheduling, retry, failure isolation, and serial merge via Merge Skill | #145, #155 |

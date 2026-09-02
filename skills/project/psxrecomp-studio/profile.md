@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #85, #89
+**Related Issues:** #85, #89, #84
 
 Project-specific inputs consumed by the generic skills in
 `skills/common/`. This file is the only place that needs rewriting when a
@@ -44,9 +44,14 @@ Current records:
 | 009 | PR-Triggered README Auto-Update via OpenCode | Accepted |
 | 010 | CodeRabbit Review Runs After README Auto-Update | Accepted |
 | 011 | API Documentation & Docstring Policy | Accepted |
+| 012 | Function Discovery and CFG Hand-off | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).
+
+ADR authoring / maintenance procedure: `skills/common/process/adr/SKILL.md`
+(Issue #84), which consumes this section (directory, inventory, numbering) as
+its project-specific inputs.
 
 ## 3. Architecture enforcement
 
