@@ -499,20 +499,48 @@ function Invoke-BatchOrchestration {
                                 }
 
                                 try {
-                                    $launchResult = Invoke-SubAgentLaunch -IssueId $issueId -IssueNumber $issueStates[$issueId].IssueNumber -Description $issueStates[$issueId].Description -WorktreePath $worktreePath -BranchName $branchName -SubAgentScript $subAgentWorkerScript -TimeoutMinutes $subAgentConfig.TimeoutMinutes
+                                    if ($providerSelection.SelectedMechanism -eq "native-subagent") {
+                                        $requestResult = New-NativeDispatchRequest `
+                                            -IssueId $issueId `
+                                            -IssueNumber $issueStates[$issueId].IssueNumber `
+                                            -WorktreePath $worktreePath `
+                                            -BranchName $branchName `
+                                            -Prompt "Implement Issue #$($issueStates[$issueId].IssueNumber): $($issueStates[$issueId].Description)" `
+                                            -ResultFile (Join-Path $worktreePath ".subagent" "result.json")
+                                        $issueStates[$issueId].State = "READY_FOR_NATIVE_DISPATCH"
+                                        $issueStates[$issueId].LaunchStatus = "READY_FOR_NATIVE_DISPATCH"
+                                        $issueStates[$issueId].ExecutionStatus = "NOT_STARTED"
+                                        $issueStates[$issueId].FailureClassification = $null
+                                        $issueStates[$issueId].SelectedProvider = $providerSelection.SelectedProvider
+                                        $issueStates[$issueId].SelectedMechanism = "native-subagent"
+                                        $issueStates[$issueId].SelectionReason = $providerSelection.SelectionReason
+                                        $issueStates[$issueId].DispatchRequest = $requestResult.RequestFile
+                                        $issueStates[$issueId].SubAgentProcessId = $null
+                                        Write-BatchLog "Native dispatch request ready for ${issueId}: $($requestResult.RequestFile)" "SUCCESS"
+                                    } else {
+                                        $launchResult = Invoke-SubAgentLaunch -IssueId $issueId -IssueNumber $issueStates[$issueId].IssueNumber -Description $issueStates[$issueId].Description -WorktreePath $worktreePath -BranchName $branchName -SubAgentScript $subAgentWorkerScript -TimeoutMinutes $subAgentConfig.TimeoutMinutes
 
-                                    $subAgentState.ProcessId = $launchResult.ProcessId
-                                    $subAgentState.State = "SUBAGENT_RUNNING"
-                                    $subAgentState.StartedAt = $launchResult.StartedAt
-                                    $issueStates[$issueId].State = "SUBAGENT_RUNNING"
-                                    $issueStates[$issueId].SubAgentProcessId = $launchResult.ProcessId
-                                    $activeProcesses[$issueId] = $subAgentState
+                                        $subAgentState.ProcessId = $launchResult.ProcessId
+                                        $subAgentState.State = "SUBAGENT_RUNNING"
+                                        $subAgentState.StartedAt = $launchResult.StartedAt
+                                        $issueStates[$issueId].State = "SUBAGENT_RUNNING"
+                                        $issueStates[$issueId].SubAgentProcessId = $launchResult.ProcessId
+                                        $issueStates[$issueId].LaunchStatus = "STARTED"
+                                        $issueStates[$issueId].ExecutionStatus = "STARTED"
+                                        $issueStates[$issueId].SelectedProvider = $providerSelection.SelectedProvider
+                                        $issueStates[$issueId].SelectedMechanism = "provider-adapter"
+                                        $issueStates[$issueId].SelectionReason = $providerSelection.SelectionReason
+                                        $activeProcesses[$issueId] = $subAgentState
 
-                                    Write-BatchLog "Sub-agent for $issueId started (PID: $($launchResult.ProcessId))" "SUCCESS"
+                                        Write-BatchLog "Sub-agent for $issueId started (PID: $($launchResult.ProcessId))" "SUCCESS"
+                                    }
                                 } catch {
-                                    $issueStates[$issueId].State = "BLOCKED"
+                                    $issueStates[$issueId].State = "FAILED"
+                                    $issueStates[$issueId].LaunchStatus = "FAILED"
+                                    $issueStates[$issueId].ExecutionStatus = "NOT_STARTED"
+                                    $issueStates[$issueId].FailureClassification = "launch_failure"
                                     $issueStates[$issueId].LastError = "Launch failed: $($_.Exception.Message)"
-                                    Write-BatchLog "Issue $issueId BLOCKED: launch failed - $($_.Exception.Message)" "ERROR"
+                                    Write-BatchLog "Issue $issueId launch FAILED (execution NOT_STARTED): $($_.Exception.Message)" "ERROR"
                                     Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $_.Exception.Message
                                 }
                             }
@@ -522,7 +550,7 @@ function Invoke-BatchOrchestration {
                     $activeIssues = @()
                     foreach ($issueId in $issueStates.Keys) {
                         $state = $issueStates[$issueId].State
-                        if ($state -in @("SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING")) {
+                        if ($state -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED", "SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING")) {
                             $activeIssues += $issueId
                         }
                     }
@@ -532,6 +560,25 @@ function Invoke-BatchOrchestration {
                         $issue = $issueStates[$issueId]
                         $worktreePath = $issue.WorktreePath
                         $resultFile = if ($worktreePath) { Join-Path $worktreePath ".subagent" "result.json" } else { $null }
+
+                        # Native dispatch is host-owned. Reflect the lifecycle
+                        # written by the host agent without starting a process.
+                        if ($issue.DispatchRequest -and (Test-Path $issue.DispatchRequest)) {
+                            try {
+                                $dispatch = Get-Content $issue.DispatchRequest -Raw | ConvertFrom-Json
+                                if ($dispatch.Status -eq "DISPATCHED" -and $issue.State -eq "READY_FOR_NATIVE_DISPATCH") {
+                                    Set-IssueStateTransition -IssueState $issue -ToState "DISPATCHED" -BatchId $BatchId -Reason "Host native Task/Subagent accepted dispatch"
+                                    $issue.LaunchStatus = "DISPATCHED"
+                                    $issue.ExecutionStatus = "STARTED"
+                                } elseif ($dispatch.Status -eq "SUBAGENT_RUNNING" -and $issue.State -eq "DISPATCHED") {
+                                    Set-IssueStateTransition -IssueState $issue -ToState "SUBAGENT_RUNNING" -BatchId $BatchId -Reason "Host native worker started"
+                                    $issue.LaunchStatus = "STARTED"
+                                    $issue.ExecutionStatus = "STARTED"
+                                }
+                            } catch {
+                                Write-BatchLog "Issue ${issueId}: invalid native dispatch status - $($_.Exception.Message)" "WARN"
+                            }
+                        }
 
                         if ($resultFile -and (Test-Path $resultFile)) {
                             $result = Get-SubAgentResult -ResultFile $resultFile

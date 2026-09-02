@@ -132,10 +132,10 @@ Invoke-BatchTest -Name "Get-BatchStateDefinition returns complete definition" -T
 # ============================================================
 Write-Host "`n=== Issue State Machine Tests ===" -ForegroundColor Green
 
-Invoke-BatchTest -Name "Issue state machine has all 14 states" -Test {
+Invoke-BatchTest -Name "Issue state machine has all 16 states" -Test {
     $states = Get-AllIssueStates
     $expected = @(
-        "SUBAGENT_STARTING", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
+        "SUBAGENT_STARTING", "READY_FOR_NATIVE_DISPATCH", "DISPATCHED", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING",
         "SUBAGENT_FAILED", "ORPHANED", "WAITING_FOR_SUBAGENT", "WAITING_DEPENDENCY",
         "PR_READY", "WAITING_FOR_APPROVAL", "READY_FOR_MERGE",
         "MERGING", "COMPLETED", "BLOCKED", "FAILED"
@@ -143,7 +143,7 @@ Invoke-BatchTest -Name "Issue state machine has all 14 states" -Test {
     foreach ($s in $expected) {
         if ($s -notin $states) { throw "Missing issue state: $s" }
     }
-    if ($states.Count -ne 14) { throw "Expected 14 states, got $($states.Count)" }
+    if ($states.Count -ne 16) { throw "Expected 16 states, got $($states.Count)" }
 }
 
 Invoke-BatchTest -Name "Issue terminal states have no transitions" -Test {
@@ -828,6 +828,21 @@ Invoke-BatchTest -Name "Explicit provider is selected without PATH fallback" -Te
 Invoke-BatchTest -Name "Native capability wins over explicit external provider" -Test {
     $selection = Resolve-AgentProvider -HostAgent "codex" -NativeSubagentAvailable:$true -ProviderName "claude-code"
     if ($selection.SelectedProvider -ne "codex" -or $selection.SelectedMechanism -ne "native-subagent") { throw "Native capability did not win" }
+}
+
+Invoke-BatchTest -Name "Native dispatch request is host-handled and does not spawn a process" -Test {
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "native-dispatch-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    try {
+        $request = New-NativeDispatchRequest -IssueId "native-219" -IssueNumber 219 -WorktreePath $tempDir -BranchName "issue/219-native" -Prompt "Implement" -ResultFile (Join-Path $tempDir ".subagent" "result.json")
+        if ($request.Status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Request is not ready" }
+        if ($request.SpawnedProcess) { throw "Native request must not spawn a process" }
+        $payload = Get-Content $request.RequestFile -Raw | ConvertFrom-Json
+        if ($payload.Status -ne "READY_FOR_NATIVE_DISPATCH") { throw "Payload status mismatch" }
+        if ($payload.WorktreePath -ne $tempDir -or $payload.BranchName -ne "issue/219-native") { throw "Context mismatch" }
+    } finally {
+        if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+    }
 }
 
 # ============================================================

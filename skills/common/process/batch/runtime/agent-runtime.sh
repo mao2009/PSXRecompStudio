@@ -40,6 +40,9 @@ _ari_build_task() {
   "prompt": "${_escaped_prompt}",
   "result_file": "${_result_file}",
   "timeout_minutes": ${_timeout},
+  "required_skills": ["skills/common/task/implementation/SKILL.md", "skills/common/process/batch/SKILL.md"],
+  "execution_scope": "Implement only the requested Issue in the isolated worktree",
+  "validation_requirements": "Run targeted tests, related Batch tests, build/analyzer, and report results",
   "provider": "${_ARI_SELECTED_PROVIDER}",
   "mechanism": "${_ARI_SELECTED_MECHANISM}",
   "selection_reason": "${_ARI_SELECTION_REASON}"
@@ -237,15 +240,12 @@ _ari_launch() {
     _provider="$_ARI_SELECTED_PROVIDER"
 
     if [ "$_ARI_SELECTED_MECHANISM" = "native-subagent" ]; then
-        _ari_launch_builtin "$_task_file"
+        _ari_prepare_native_dispatch "$_task_file"
         return $?
     fi
     case "$_provider" in
         test)
             _ari_launch_test "$_task_file"
-            ;;
-        built-in-subagent)
-            _ari_launch_builtin "$_task_file"
             ;;
         claude-code)
             _ari_launch_claude "$_task_file"
@@ -263,6 +263,11 @@ _ari_launch() {
 _ari_poll() {
     _handle_file="$1"
     _provider=$(_json_get_string "$_handle_file" "provider")
+    _mechanism=$(_json_get_string "$_handle_file" "mechanism")
+    if [ "$_mechanism" = "native-subagent" ]; then
+        _ari_native_dispatch_status "$_handle_file"
+        return $?
+    fi
 
     case "$_provider" in
         test)
@@ -288,6 +293,11 @@ _ari_wait() {
     _handle_file="$1"
     _timeout="$2"
     _provider=$(_json_get_string "$_handle_file" "provider")
+    _mechanism=$(_json_get_string "$_handle_file" "mechanism")
+    if [ "$_mechanism" = "native-subagent" ]; then
+        _ari_native_dispatch_status "$_handle_file"
+        return $?
+    fi
 
     case "$_provider" in
         test)

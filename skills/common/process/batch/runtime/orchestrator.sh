@@ -457,7 +457,7 @@ _orc_phase_running() {
         fi
 
         case "$_issue_state" in
-            SUBAGENT_STARTING|SUBAGENT_RUNNING|SUBAGENT_RETRYING|PR_READY|MERGING|COMPLETED|BLOCKED|FAILED)
+            READY_FOR_NATIVE_DISPATCH|DISPATCHED|SUBAGENT_STARTING|SUBAGENT_RUNNING|SUBAGENT_RETRYING|PR_READY|MERGING|COMPLETED|BLOCKED|FAILED)
                 # Already dispatched or terminal
                 continue
                 ;;
@@ -473,11 +473,23 @@ _orc_phase_running() {
             _issue_state=$(sed -n "/\"issue-${_id}\"/,/}/p" "$_issues_file" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
             case "$_issue_state" in
-                SUBAGENT_STARTING|SUBAGENT_RUNNING)
+                READY_FOR_NATIVE_DISPATCH|DISPATCHED|SUBAGENT_STARTING|SUBAGENT_RUNNING)
+                    _dispatch_request=$(sed -n "/\"issue-${_id}\"/,/}/p" "$_issues_file" | sed -n 's/.*"dispatch_request"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+                    if [ -n "$_dispatch_request" ] && [ -f "$_dispatch_request" ]; then
+                        _dispatch_status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_dispatch_request" | head -1)
+                        case "$_dispatch_status:$_issue_state" in
+                            DISPATCHED:READY_FOR_NATIVE_DISPATCH)
+                                _persistence_update_issue_state "$_issues_file" "$_id" "state" "DISPATCHED" "launch_status" "DISPATCHED" "execution_status" "STARTED"
+                                ;;
+                            SUBAGENT_RUNNING:DISPATCHED)
+                                _persistence_update_issue_state "$_issues_file" "$_id" "state" "SUBAGENT_RUNNING" "launch_status" "STARTED" "execution_status" "STARTED"
+                                ;;
+                        esac
+                    fi
                     # Check if result file exists
                     _result_file=$(sed -n "/\"issue-${_id}\"/,/}/p" "$_issues_file" | sed -n 's/.*"worktree_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
                     if [ -n "$_result_file" ] && [ -d "$_result_file" ]; then
-                        _result_json=$(find "$_result_file" -name "result-*.json" 2>/dev/null | head -1)
+                        _result_json=$(find "$_result_file" -name "result*.json" 2>/dev/null | head -1)
                         if [ -n "$_result_json" ] && [ -f "$_result_json" ]; then
                             _orc_handle_result "$_id" "$_result_json"
                         fi
@@ -550,9 +562,17 @@ _orc_dispatch_issue() {
     # Claim scheduler slot
     _sch_claim_slot "$_issue_id"
 
-    # Update state to running
-    _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "SUBAGENT_RUNNING" \
-        "launch_status" "STARTED" "execution_status" "STARTED"
+    if [ "$_ARI_SELECTED_MECHANISM" = "native-subagent" ]; then
+        _dispatch_request=$(_json_get_string "$_handle_file" "request_file")
+        _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "READY_FOR_NATIVE_DISPATCH" \
+            "launch_status" "READY_FOR_NATIVE_DISPATCH" "execution_status" "NOT_STARTED" \
+            "execution_mechanism" "native-subagent" "dispatch_request" "$_dispatch_request"
+        _orc_log INFO "Native dispatch request ready for issue $_issue_id (host Task/Subagent must consume it)"
+    else
+        # External adapter launch completed; only this path creates a worker.
+        _persistence_update_issue_state "$_issues_file" "$_issue_id" "state" "SUBAGENT_RUNNING" \
+            "launch_status" "STARTED" "execution_status" "STARTED"
+    fi
 
     _orc_log INFO "Launched task for issue $_issue_id (handle: $_handle_file)"
 }

@@ -17,6 +17,8 @@
 
 $Script:IssueStates = @{
     SUBAGENT_STARTING      = "SUBAGENT_STARTING"
+    READY_FOR_NATIVE_DISPATCH = "READY_FOR_NATIVE_DISPATCH"
+    DISPATCHED             = "DISPATCHED"
     SUBAGENT_RUNNING       = "SUBAGENT_RUNNING"
     SUBAGENT_RETRYING      = "SUBAGENT_RETRYING"
     SUBAGENT_FAILED        = "SUBAGENT_FAILED"
@@ -33,7 +35,9 @@ $Script:IssueStates = @{
 }
 
 $Script:IssueTransitions = @{
-    SUBAGENT_STARTING    = @("SUBAGENT_RUNNING", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED", "PR_READY")
+    SUBAGENT_STARTING    = @("READY_FOR_NATIVE_DISPATCH", "SUBAGENT_RUNNING", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED", "PR_READY")
+    READY_FOR_NATIVE_DISPATCH = @("DISPATCHED", "SUBAGENT_FAILED")
+    DISPATCHED           = @("SUBAGENT_RUNNING", "SUBAGENT_FAILED")
     SUBAGENT_RUNNING     = @("PR_READY", "SUBAGENT_RETRYING", "SUBAGENT_FAILED", "ORPHANED")
     SUBAGENT_RETRYING    = @("SUBAGENT_STARTING", "SUBAGENT_FAILED", "ORPHANED")
     SUBAGENT_FAILED      = @()
@@ -51,6 +55,8 @@ $Script:IssueTransitions = @{
 
 $Script:IssueStateDescriptions = @{
     SUBAGENT_STARTING    = "Sub-agent process being launched"
+    READY_FOR_NATIVE_DISPATCH = "Task context prepared; waiting for host native Task/Subagent dispatch"
+    DISPATCHED           = "Host native Task/Subagent accepted the dispatch request"
     SUBAGENT_RUNNING     = "Sub-agent actively investigating, implementing, testing"
     SUBAGENT_RETRYING    = "Sub-agent failed, attempting retry"
     SUBAGENT_FAILED      = "Sub-agent failed after retry limit exhausted"

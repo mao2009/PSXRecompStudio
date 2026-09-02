@@ -56,6 +56,28 @@ The presence of `claude`, `opencode`, `codex`, or another CLI on `PATH` is not
 configuration and never selects a provider. A provider switch is not a retry;
 retries remain within the selected provider and mechanism.
 
+### Host-Native Dispatch Contract
+
+When the current host exposes a native task/sub-agent capability, the Batch
+runtime prepares an isolated task context and writes a dispatch request with
+status `READY_FOR_NATIVE_DISPATCH`. The host AI agent running this Skill MUST
+consume that request with its own native Task/Subagent tool. The shell and
+PowerShell runtimes MUST NOT spawn, emulate, or substitute a provider CLI for
+this step.
+
+The request includes `task_id`, `issue_number`, `worktree_path`, `branch_name`,
+prompt/context, required Skills, execution scope, validation requirements, and
+result path. The host updates the request lifecycle as it accepts and runs the
+task:
+
+```text
+READY_FOR_NATIVE_DISPATCH → DISPATCHED → SUBAGENT_RUNNING → COMPLETED/FAILED
+```
+
+The runtime collects the result and applies the existing Batch state machine.
+If native capability is unavailable and no explicit external provider is
+configured, the worker remains `BLOCKED` with `Issue execution: NOT_STARTED`.
+
 ### Legacy Path (PowerShell)
 
 ```text

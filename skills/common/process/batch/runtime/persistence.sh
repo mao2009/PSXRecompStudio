@@ -259,6 +259,8 @@ _persistence_new_issue_state() {
       "execution_status": "NOT_STARTED",
       "failure_classification": null,
       "selection_reason": null,
+      "dispatch_request": null,
+      "execution_mechanism": null,
       "created_at": "${_now}",
       "updated_at": "${_now}"
     }
@@ -346,7 +348,7 @@ _persistence_update_issue_state() {
 
         # Use sed for replacement within the issue block
         case "$_field" in
-            state|worktree_path|branch_name|last_error|pr_url|launch_status|execution_status|failure_classification|selection_reason)
+            state|worktree_path|branch_name|last_error|pr_url|launch_status|execution_status|failure_classification|selection_reason|dispatch_request|execution_mechanism)
                 if [ -z "$_value" ] || [ "$_value" = "null" ]; then
                     _content=$(printf '%s' "$_content" | sed "/\"${_issue_id}\"/,/}/s/\"${_field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"${_field}\": null/")
                 else

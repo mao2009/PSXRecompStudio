@@ -178,6 +178,7 @@ function New-IssueState {
         SelectionReason = $null
         SelectedProvider = $null
         SelectedMechanism = $null
+        DispatchRequest = $null
         Report = $null
         SubAgentProcessId = $null
         StartedAt = $null

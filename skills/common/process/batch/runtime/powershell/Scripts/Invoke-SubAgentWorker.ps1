@@ -196,6 +196,33 @@ IMPORTANT RULES:
         }
         Write-AgentLog ("Using provider: {0} via {1}" -f $selection.SelectedProvider, $selection.SelectedMechanism)
 
+        if ($selection.SelectedMechanism -eq "native-subagent") {
+            $nativeRequest = New-NativeDispatchRequest `
+                -IssueId $IssueId `
+                -IssueNumber $IssueNumber `
+                -WorktreePath $WorktreePath `
+                -BranchName $BranchName `
+                -Prompt $agentPrompt `
+                -ResultFile $ResultFile
+            Write-AgentLog "Native dispatch request prepared: $($nativeRequest.RequestFile)" "WARN"
+            Write-AgentLog "This worker script must not spawn or emulate the host Task/Subagent tool" "WARN"
+            Write-Result @{
+                Success = $false
+                IssueId = $IssueId
+                PrNumber = $null
+                CommitSha = $null
+                LaunchStatus = "READY_FOR_NATIVE_DISPATCH"
+                ExecutionStatus = "NOT_STARTED"
+                FailureClassification = "host_native_dispatch_required"
+                SelectedProvider = $selection.SelectedProvider
+                SelectedMechanism = $selection.SelectedMechanism
+                SelectionReason = $selection.SelectionReason
+                DispatchRequest = $nativeRequest.RequestFile
+                Error = "Host agent must consume the native dispatch request"
+            }
+            exit 2
+        }
+
         # Load provider configuration
         $provider = Get-AgentProvider -ProviderName $provider_name
 

@@ -421,6 +421,55 @@ function Resolve-AgentProvider {
     }
 }
 
+function New-NativeDispatchRequest {
+    <#
+    .SYNOPSIS
+        Materializes the host-native dispatch contract without spawning a process.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$IssueNumber,
+        [Parameter(Mandatory = $true)][string]$IssueId,
+        [Parameter(Mandatory = $true)][string]$WorktreePath,
+        [Parameter(Mandatory = $true)][string]$BranchName,
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)][string]$ResultFile,
+        [Parameter(Mandatory = $false)][string[]]$RequiredSkills = @(
+            "skills/common/task/implementation/SKILL.md",
+            "skills/common/process/batch/SKILL.md"
+        ),
+        [Parameter(Mandatory = $false)][string]$ExecutionScope = "Implement only the requested Issue in the isolated worktree",
+        [Parameter(Mandatory = $false)][string]$ValidationRequirements = "Run targeted tests, related Batch tests, build/analyzer, and report results"
+    )
+
+    $requestDirectory = Join-Path $WorktreePath ".subagent"
+    if (-not (Test-Path $requestDirectory)) {
+        New-Item -ItemType Directory -Path $requestDirectory -Force | Out-Null
+    }
+    $requestFile = Join-Path $requestDirectory "dispatch-request.json"
+    $request = [ordered]@{
+        Status = "READY_FOR_NATIVE_DISPATCH"
+        TaskId = $IssueId
+        IssueId = $IssueId
+        IssueNumber = $IssueNumber
+        WorktreePath = $WorktreePath
+        BranchName = $BranchName
+        Prompt = $Prompt
+        RequiredSkills = @($RequiredSkills)
+        ExecutionScope = $ExecutionScope
+        ValidationRequirements = $ValidationRequirements
+        ResultFile = $ResultFile
+        CreatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $request | ConvertTo-Json -Depth 10 | Set-Content -Path $requestFile -Force
+    return @{
+        RequestFile = $requestFile
+        Status = "READY_FOR_NATIVE_DISPATCH"
+        ProcessId = $null
+        SpawnedProcess = $false
+    }
+}
+
 function New-TestProvider {
     return @{
         Name        = "test-provider"
@@ -499,5 +548,6 @@ Export-ModuleMember -Function @(
     'Invoke-ClaudeCodeProvider',
     'Get-AgentProvider',
     'Resolve-AgentProvider',
+    'New-NativeDispatchRequest',
     'Invoke-AgentProvider'
 )

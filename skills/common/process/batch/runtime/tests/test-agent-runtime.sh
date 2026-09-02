@@ -45,6 +45,7 @@ RUNTIME_DIR="${SCRIPT_DIR}/.."
 . "$RUNTIME_DIR/persistence.sh"
 . "$RUNTIME_DIR/agent-runtime.sh"
 . "$RUNTIME_DIR/adapters/test/adapter.sh"
+. "$RUNTIME_DIR/adapters/built-in-subagent/adapter.sh"
 
 # Create temp dir for tests
 _TEST_DIR=$(mktemp -d)
@@ -143,6 +144,29 @@ _ARI_NATIVE_SUBAGENT_AVAILABLE="true"
 _ari_select_provider "claude-code" >/dev/null
 assert_output "native provider wins" "codex" _ari_get_provider
 assert_output "native mechanism" "native-subagent" printf '%s' "$_ARI_SELECTED_MECHANISM"
+_ARI_HOST_AGENT=""
+_ARI_NATIVE_SUBAGENT_AVAILABLE="false"
+ORC_PROVIDER="test"
+_ari_select_provider >/dev/null
+
+# Native selection prepares a host dispatch request and does not spawn a worker.
+_native_worktree="${_TEST_DIR}/native-worktree"
+mkdir -p "$_native_worktree"
+_native_task="${_TEST_DIR}/native-task.json"
+_ari_build_task "native-task" 219 "native test" "$_native_worktree" "issue/219-native" "Implement" "${_native_worktree}/.subagent/result.json" 30 > "$_native_task"
+_ARI_HOST_AGENT="codex"
+_ARI_NATIVE_SUBAGENT_AVAILABLE="true"
+unset ORC_PROVIDER
+_ari_select_provider >/dev/null
+_native_handle=$(_ari_launch "$_native_task")
+assert_true "native launch returns dispatch handle" test -f "$_native_handle"
+_native_request=$(_json_get_string "$_native_handle" "request_file")
+assert_true "native request exists" test -f "$_native_request"
+assert_true "native request is ready" grep -q '"status": "READY_FOR_NATIVE_DISPATCH"' "$_native_request"
+assert_true "native request has worktree" grep -q '"worktree_path": "' "$_native_request"
+assert_true "native request has branch" grep -q '"branch_name": "issue/219-native"' "$_native_request"
+assert_true "native handle has no spawned pid" grep -q '"status": "READY_FOR_NATIVE_DISPATCH"' "$_native_handle"
+
 _ARI_HOST_AGENT=""
 _ARI_NATIVE_SUBAGENT_AVAILABLE="false"
 ORC_PROVIDER="test"

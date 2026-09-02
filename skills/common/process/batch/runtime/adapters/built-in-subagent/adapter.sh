@@ -19,13 +19,41 @@ _ari_provider_available_builtin() {
     return 1
 }
 
-# Launch a task via built-in sub-agent
-# This is a contract definition - the actual invocation is done by the orchestrator
-# through the host agent's sub-agent mechanism.
-_ari_launch_builtin() {
+# Prepare a native dispatch request. The parent host AI agent consumes this
+# request with its own Task/subagent capability. This function never spawns a
+# process and must not be renamed into a provider launcher.
+_ari_prepare_native_dispatch() {
     _task_file="$1"
-    echo "ERROR: Built-in sub-agent must be invoked through host agent's Task tool, not directly." >&2
-    return 1
+    _worktree=$(_json_get_nullable_string_local "$_task_file" "worktree_path")
+    _request_file="${_worktree}/.subagent/dispatch-request.json"
+    mkdir -p "$(dirname "$_request_file")" || return 1
+    {
+        echo '{'
+        echo '  "status": "READY_FOR_NATIVE_DISPATCH",'
+        sed -e '1d' -e '/"provider"[[:space:]]*:/d' -e '$d' -e '$s/,[[:space:]]*$//' "$_task_file"
+        echo '}'
+    } > "$_request_file"
+    _handle_dir="/tmp/batch-native-handle-$$"
+    mkdir -p "$_handle_dir" || return 1
+    _handle_file="$_handle_dir/handle-$(_json_get_string_local "$_task_file" "task_id").json"
+    cat > "$_handle_file" <<EOF
+{
+  "provider": "$(_json_get_string_local "$_task_file" "provider")",
+  "mechanism": "native-subagent",
+  "task_id": "$(_json_get_string_local "$_task_file" "task_id")",
+  "request_file": "$_request_file",
+  "status": "READY_FOR_NATIVE_DISPATCH"
+}
+EOF
+    echo "$_handle_file"
+}
+
+_ari_native_dispatch_status() {
+    _handle_file="$1"
+    _request_file=$(_json_get_string_local "$_handle_file" "request_file")
+    _status=$(_json_get_string_local "$_request_file" "status")
+    [ -n "$_status" ] || _status="READY_FOR_NATIVE_DISPATCH"
+    echo "{\"status\":\"$_status\",\"result_file_exists\":$([ -f "$(dirname "$_request_file")/result.json" ] && echo true || echo false)}"
 }
 
 # Poll built-in sub-agent status
