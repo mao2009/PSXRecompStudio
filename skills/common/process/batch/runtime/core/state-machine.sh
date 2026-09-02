@@ -66,9 +66,9 @@ _sm_valid_issue_transition() {
         SUBAGENT_STARTING)
             case "$_to" in READY_FOR_NATIVE_DISPATCH|SUBAGENT_RUNNING|SUBAGENT_RETRYING|SUBAGENT_FAILED|FAILED) return 0 ;; esac ;;
         READY_FOR_NATIVE_DISPATCH)
-            case "$_to" in DISPATCHED|SUBAGENT_FAILED) return 0 ;; esac ;;
+            case "$_to" in DISPATCHED|SUBAGENT_FAILED|FAILED) return 0 ;; esac ;;
         DISPATCHED)
-            case "$_to" in SUBAGENT_RUNNING|SUBAGENT_FAILED) return 0 ;; esac ;;
+            case "$_to" in SUBAGENT_RUNNING|SUBAGENT_FAILED|FAILED) return 0 ;; esac ;;
         SUBAGENT_RUNNING)
             case "$_to" in PR_READY|SUBAGENT_RETRYING|SUBAGENT_FAILED) return 0 ;; esac ;;
         SUBAGENT_RETRYING)
@@ -117,8 +117,8 @@ _sm_is_issue_active() {
 _sm_get_valid_issue_transitions() {
     case "$1" in
         SUBAGENT_STARTING) echo "READY_FOR_NATIVE_DISPATCH SUBAGENT_RUNNING SUBAGENT_RETRYING SUBAGENT_FAILED FAILED" ;;
-        READY_FOR_NATIVE_DISPATCH) echo "DISPATCHED SUBAGENT_FAILED" ;;
-        DISPATCHED) echo "SUBAGENT_RUNNING SUBAGENT_FAILED" ;;
+        READY_FOR_NATIVE_DISPATCH) echo "DISPATCHED SUBAGENT_FAILED FAILED" ;;
+        DISPATCHED) echo "SUBAGENT_RUNNING SUBAGENT_FAILED FAILED" ;;
         SUBAGENT_RUNNING) echo "PR_READY SUBAGENT_RETRYING SUBAGENT_FAILED" ;;
         SUBAGENT_RETRYING) echo "SUBAGENT_STARTING SUBAGENT_FAILED" ;;
         SUBAGENT_FAILED) echo "" ;;

@@ -897,6 +897,44 @@ Invoke-BatchTest -Name "Native dispatch progression remains valid in normal poll
     }
 }
 
+Invoke-BatchTest -Name "READY_FOR_NATIVE_DISPATCH can transition to FAILED" -Test {
+    if (-not (Test-ValidIssueTransition -FromState "READY_FOR_NATIVE_DISPATCH" -ToState "FAILED")) {
+        throw "READY_FOR_NATIVE_DISPATCH -> FAILED should be valid (launch failure before host accept)"
+    }
+}
+
+Invoke-BatchTest -Name "DISPATCHED can transition to FAILED" -Test {
+    if (-not (Test-ValidIssueTransition -FromState "DISPATCHED" -ToState "FAILED")) {
+        throw "DISPATCHED -> FAILED should be valid (launch failure after host accept, before worker start)"
+    }
+}
+
+Invoke-BatchTest -Name "FAILED remains terminal" -Test {
+    if (-not (Test-IssueStateTerminal -State "FAILED")) { throw "FAILED should be terminal" }
+    if ((Get-ValidIssueTransitions -State "FAILED").Count -ne 0) {
+        throw "FAILED must have no outgoing transitions"
+    }
+}
+
+Invoke-BatchTest -Name "Native dispatch failure preserves launch_failure as non-retryable" -Test {
+    $state = New-SubAgentState -IssueId "issue-launch" -Config (New-SubAgentConfig -MaxRetries 3)
+    $retry = Test-SubAgentRetryable -SubAgentState $state -ErrorCategory "launch_failure"
+    if ($retry.Retryable) { throw "launch_failure must not be retryable" }
+}
+
+Invoke-BatchTest -Name "Normal native dispatch path remains valid" -Test {
+    if (-not (Test-ValidIssueTransition -FromState "READY_FOR_NATIVE_DISPATCH" -ToState "DISPATCHED")) {
+        throw "READY_FOR_NATIVE_DISPATCH -> DISPATCHED should be valid"
+    }
+    if (-not (Test-ValidIssueTransition -FromState "DISPATCHED" -ToState "SUBAGENT_RUNNING")) {
+        throw "DISPATCHED -> SUBAGENT_RUNNING should be valid"
+    }
+    $progression = Get-NativeDispatchStateProgression -IssueState "READY_FOR_NATIVE_DISPATCH" -RequestStatus "SUBAGENT_RUNNING"
+    if (($progression -join ",") -ne "DISPATCHED,SUBAGENT_RUNNING") {
+        throw "Normal native dispatch progression regressed"
+    }
+}
+
 # ============================================================
 # ORPHANED State Tests
 # ============================================================

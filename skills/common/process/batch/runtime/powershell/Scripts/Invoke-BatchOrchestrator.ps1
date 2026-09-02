@@ -624,7 +624,7 @@ function Invoke-BatchOrchestration {
                         }
 
                         if ($issue.State -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED") -and $issue.DispatchDeadline -and (Get-Date).ToUniversalTime() -gt [datetime]$issue.DispatchDeadline) {
-                            Set-IssueStateTransition -IssueState $issue -ToState "SUBAGENT_FAILED" -BatchId $BatchId -Reason "Native dispatch deadline exceeded"
+                            Set-IssueStateTransition -IssueState $issue -ToState "FAILED" -BatchId $BatchId -Reason "Native dispatch deadline exceeded"
                             $issue.LaunchStatus = "FAILED"
                             $issue.ExecutionStatus = "NOT_STARTED"
                             $issue.FailureClassification = "launch_failure"

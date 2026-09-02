@@ -116,6 +116,14 @@ assert_true "SUBAGENT_RETRYING -> SUBAGENT_STARTING" _sm_valid_issue_transition 
 assert_true "SUBAGENT_RETRYING -> SUBAGENT_FAILED" _sm_valid_issue_transition SUBAGENT_RETRYING SUBAGENT_FAILED
 assert_false "SUBAGENT_RETRYING -> PR_READY (invalid)" _sm_valid_issue_transition SUBAGENT_RETRYING PR_READY
 
+assert_true "READY_FOR_NATIVE_DISPATCH -> DISPATCHED" _sm_valid_issue_transition READY_FOR_NATIVE_DISPATCH DISPATCHED
+assert_true "READY_FOR_NATIVE_DISPATCH -> FAILED" _sm_valid_issue_transition READY_FOR_NATIVE_DISPATCH FAILED
+assert_false "READY_FOR_NATIVE_DISPATCH -> SUBAGENT_RUNNING (invalid)" _sm_valid_issue_transition READY_FOR_NATIVE_DISPATCH SUBAGENT_RUNNING
+
+assert_true "DISPATCHED -> SUBAGENT_RUNNING" _sm_valid_issue_transition DISPATCHED SUBAGENT_RUNNING
+assert_true "DISPATCHED -> FAILED" _sm_valid_issue_transition DISPATCHED FAILED
+assert_false "DISPATCHED -> PR_READY (invalid)" _sm_valid_issue_transition DISPATCHED PR_READY
+
 assert_false "SUBAGENT_FAILED -> any (terminal)" _sm_valid_issue_transition SUBAGENT_FAILED SUBAGENT_STARTING
 
 assert_true "WAITING_FOR_SUBAGENT -> SUBAGENT_STARTING" _sm_valid_issue_transition WAITING_FOR_SUBAGENT SUBAGENT_STARTING
@@ -179,6 +187,9 @@ echo "--- Issue Valid Transitions ---"
 assert_output "MERGING transitions" "COMPLETED FAILED PR_READY" _sm_get_valid_issue_transitions MERGING
 assert_output "BLOCKED transitions" "WAITING_FOR_SUBAGENT" _sm_get_valid_issue_transitions BLOCKED
 assert_output "COMPLETED transitions (empty)" "" _sm_get_valid_issue_transitions COMPLETED
+assert_output "READY_FOR_NATIVE_DISPATCH transitions" "DISPATCHED SUBAGENT_FAILED FAILED" _sm_get_valid_issue_transitions READY_FOR_NATIVE_DISPATCH
+assert_output "DISPATCHED transitions" "SUBAGENT_RUNNING SUBAGENT_FAILED FAILED" _sm_get_valid_issue_transitions DISPATCHED
+assert_output "FAILED transitions (empty)" "" _sm_get_valid_issue_transitions FAILED
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
