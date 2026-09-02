@@ -39,6 +39,7 @@ _toggle() {
 
 assert_true "forbid_admin_bypass is true" test "$(_toggle forbid_admin_bypass)" = "true"
 assert_true "forbid_force_push is true" test "$(_toggle forbid_force_push)" = "true"
+assert_true "allow_rebase_force_with_lease is true" test "$(_toggle allow_rebase_force_with_lease)" = "true"
 assert_true "forbid_direct_push is true" test "$(_toggle forbid_direct_push)" = "true"
 assert_true "forbid_protection_bypass is true" test "$(_toggle forbid_protection_bypass)" = "true"
 

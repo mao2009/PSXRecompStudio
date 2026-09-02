@@ -48,6 +48,7 @@
     "strategy": "--merge",
     "forbid_admin_bypass": true,
     "forbid_force_push": true,
+    "allow_rebase_force_with_lease": true,
     "forbid_direct_push": true,
     "forbid_protection_bypass": true
   },

@@ -22,7 +22,7 @@ ensuring that merges only happen through the standard GitHub merge path.
 ## Core Principles
 
 1. **Safety over speed**: Never merge if conditions are not met
-2. **No admin bypass**: Never use `--admin`, force push, or protection circumvention
+2. **No admin bypass**: Never use `--admin`, unconditional force push, or protection circumvention
 3. **Mandatory rebase**: Always rebase onto latest main HEAD before merge
 4. **Approval as gate**: User approval is required and tied to commit SHA
 5. **Conflict delegation**: Conflicts are delegated back to Sub-agent, not auto-resolved
@@ -96,7 +96,7 @@ Check for a valid approval record:
 For solo/personal development where a GitHub third-party approval is not
 available, an **Explicit Human Approval** can be recorded as a first-class,
 auditable approval source. It is **not** a fake GitHub APPROVED review and
-never uses `--admin`, force push, or protection bypass.
+never uses `--admin`, unconditional force push, or protection bypass.
 
 ```sh
 # Record an explicit human approval bound to the current PR HEAD and main HEAD
@@ -385,9 +385,15 @@ gh pr merge <pr-number> --merge
 | `gh pr merge --admin` | Bypasses protection rules |
 | `--squash` | Changes commit history |
 | `--rebase` | May cause issues |
-| Force push | Bypasses all checks |
+| `git push --force` / `-f` | Unconditional history rewrite; prohibited |
+| Plain `--force-with-lease` | Lease is not explicit; prohibited |
 | Direct push | Bypasses PR process |
 | API merge with bypass | Circumvents protections |
+
+The only force-update exception is the runtime's
+`merge_safe_rebase_push` for a mandatory-rebased PR feature branch. It
+requires an explicit old remote SHA lease and post-push SHA verification.
+Main and protected base branches remain prohibited.
 
 ## Batch Invocation
 

@@ -65,7 +65,8 @@ separate from the GitHub third-party review gate. It:
 - is resumable: `approve -> (interruption) -> merge` re-validates the persisted
   approval before proceeding.
 
-It never fakes a GitHub APPROVED review and never uses `--admin`, force push,
+It never fakes a GitHub APPROVED review and never uses `--admin` or
+unconditional force push,
 or protection bypass.
 
 ## State Machine
@@ -76,7 +77,10 @@ CONFLICT/VALIDATING → MERGING → MERGED → CLEANUP → COMPLETED`
 Safety guarantees (unchanged from the previous runtime):
 
 - **No admin bypass**: never invokes `gh pr merge --admin`
-- No force push, no direct push to main
+- No unconditional force push, no direct push to main
+- After mandatory rebase, a feature branch may be updated only through the
+  runtime's explicit-SHA `--force-with-lease` controlled exception; plain
+  `--force-with-lease`, main, and protected base branches are forbidden.
 - Mandatory rebase onto latest `origin/main` before merge
 - Approval tied to commit SHA and main HEAD SHA
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)

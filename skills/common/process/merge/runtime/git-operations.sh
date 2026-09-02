@@ -99,6 +99,55 @@ merge_rebase() {
     return 1
 }
 
+# Update a rebased PR branch using an explicit, checked lease.
+# Usage: merge_safe_rebase_push <worktree> <branch> <expected_remote_sha> <expected_local_sha> [remote]
+merge_safe_rebase_push() {
+    _worktree="$1"
+    _branch="$2"
+    _expected_remote="$3"
+    _expected_local="$4"
+    _remote="$5"
+    [ -n "$_remote" ] || _remote="origin"
+
+    if [ ! -d "$_worktree" ] || ! git -C "$_worktree" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "ERROR: worktree path is not a git worktree" >&2
+        return 1
+    fi
+    case "$_branch" in
+        ""|main|refs/heads/main|-*|*..*|*/../*|*/.|*/.) echo "ERROR: protected or invalid target branch" >&2; return 1 ;;
+    esac
+    printf '%s\n' "$_expected_remote" "$_expected_local" |
+        grep -Eq '^[0-9a-fA-F]{40}$' || {
+            echo "ERROR: expected SHAs must be 40-character hexadecimal values" >&2
+            return 1
+        }
+    [ -z "$(git -C "$_worktree" status --porcelain 2>/dev/null)" ] ||
+        { echo "ERROR: worktree is dirty" >&2; return 1; }
+    _current_local=$(git -C "$_worktree" rev-parse HEAD 2>/dev/null) || return 1
+    [ "$_current_local" = "$_expected_local" ] ||
+        { echo "ERROR: local HEAD changed before push" >&2; return 1; }
+    _tracking=$(git -C "$_worktree" rev-parse "refs/remotes/$_remote/$_branch" 2>/dev/null) || {
+        echo "ERROR: local remote-tracking ref is missing" >&2
+        return 1
+    }
+    [ "$_tracking" = "$_expected_remote" ] ||
+        { echo "ERROR: local remote-tracking SHA changed" >&2; return 1; }
+    _actual_remote=$(git -C "$_worktree" ls-remote "$_remote" "refs/heads/$_branch" 2>/dev/null | awk 'NR == 1 {print $1}')
+    [ "$_actual_remote" = "$_expected_remote" ] ||
+        { echo "ERROR: remote branch moved before lease push" >&2; return 1; }
+
+    git -C "$_worktree" push "--force-with-lease=refs/heads/$_branch:$_expected_remote" "$_remote" "HEAD:refs/heads/$_branch" || return 1
+    git -C "$_worktree" fetch "$_remote" "+refs/heads/$_branch:refs/remotes/$_remote/$_branch" >/dev/null 2>&1 || return 1
+    _after_remote=$(git -C "$_worktree" ls-remote "$_remote" "refs/heads/$_branch" 2>/dev/null | awk 'NR == 1 {print $1}')
+    [ "$_after_remote" = "$_expected_local" ] ||
+        { echo "ERROR: remote HEAD does not match rebased local HEAD" >&2; return 1; }
+    echo "success=true"
+    echo "branch=$_branch"
+    echo "old_remote_sha=$_expected_remote"
+    echo "new_remote_sha=$_after_remote"
+    return 0
+}
+
 # Abort an in-progress rebase in a worktree (no-op if none active)
 # Usage: merge_stop_rebase <worktree_path>
 merge_stop_rebase() {

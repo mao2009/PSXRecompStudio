@@ -343,6 +343,56 @@ assert_true "remote branch removed from other cwd" test -z "$_remote_refs"
 # Worktree directory no longer exists
 assert_false "worktree directory removed" test -d "$WT4"
 
+# ------------------------------------------------------------
+# Controlled force-with-lease after mandatory rebase
+# ------------------------------------------------------------
+echo ""
+echo "--- Controlled Rebase Branch Update ---"
+LEASE_REMOTE="$WORK/lease-remote.git"
+LEASE_REPO="$WORK/lease-repo"
+LEASE_WT="$WORK/lease-wt"
+LEASE_OTHER="$WORK/lease-other"
+git init -q --bare "$LEASE_REMOTE" 2>/dev/null
+git init -q -b main "$LEASE_REPO" 2>/dev/null
+git -C "$LEASE_REPO" config user.email "test@example.com"
+git -C "$LEASE_REPO" config user.name "Test"
+git -C "$LEASE_REPO" remote add origin "$LEASE_REMOTE"
+echo base > "$LEASE_REPO/base.txt"
+git -C "$LEASE_REPO" add base.txt
+git -C "$LEASE_REPO" commit -q -m base
+git -C "$LEASE_REPO" push -q -u origin main
+git -C "$LEASE_REPO" worktree add -q -b issue/lease "$LEASE_WT" main
+echo first > "$LEASE_WT/feature.txt"
+git -C "$LEASE_WT" add feature.txt
+git -C "$LEASE_WT" commit -q -m feature
+git -C "$LEASE_WT" push -q -u origin issue/lease
+_lease_old=$(git -C "$LEASE_WT" rev-parse HEAD)
+echo rebased > "$LEASE_WT/rebased.txt"
+git -C "$LEASE_WT" add rebased.txt
+git -C "$LEASE_WT" commit -q -m rebased
+_lease_new=$(git -C "$LEASE_WT" rev-parse HEAD)
+_lease_result=$(merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin)
+assert_true "explicit lease updates rebased feature branch" test "$?" -eq 0
+case "$_lease_result" in
+    *"success=true"*) _pass ;;
+    *) _fail "lease result reports success" ;;
+esac
+_lease_after=$(git -C "$LEASE_WT" ls-remote origin refs/heads/issue/lease | awk 'NR == 1 {print $1}')
+assert_output "remote equals expected rebased HEAD" "$_lease_new" git -C "$LEASE_WT" rev-parse refs/remotes/origin/issue/lease
+assert_true "remote lease SHA equals new HEAD" test "$_lease_after" = "$_lease_new"
+
+assert_false "main target is rejected" merge_safe_rebase_push "$LEASE_WT" main "$_lease_old" "$_lease_new" origin
+assert_false "blank expected remote SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "" "$_lease_new" origin
+assert_false "malformed expected local SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" bad origin
+echo dirty >> "$LEASE_WT/feature.txt"
+assert_false "dirty worktree is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" "$_lease_new" origin
+git -C "$LEASE_WT" checkout -- feature.txt
+assert_false "local HEAD mismatch is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_new" "$_lease_old" origin
+assert_false "stale lease SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin
+assert_false "generic force push syntax is absent" grep -Eq 'git([[:space:]]+-C[^;]+)?[[:space:]]+push[[:space:]]+(-f|--force)([[:space:]]|$)' "$SCRIPT_DIR/../git-operations.sh"
+assert_true "explicit force-with-lease syntax is present" grep -q -- '--force-with-lease=refs/heads/' "$SCRIPT_DIR/../git-operations.sh"
+git -C "$LEASE_REPO" worktree remove -f "$LEASE_WT" 2>/dev/null || true
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ] && exit 0 || exit 1
