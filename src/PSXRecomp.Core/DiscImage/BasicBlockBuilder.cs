@@ -142,7 +142,8 @@ public static class BasicBlockBuilder
                 // after the delay slot.  The existing edge remains "jump" for backward
                 // compatibility; FunctionDiscovery classifies it as a call from the
                 // decoder's LinkInfo rather than duplicating CPU semantics here.
-                if (cfRaw.LinkInfo.WritesLink)
+                if (cfRaw.LinkInfo.WritesLink &&
+                    cfRaw.DelaySlot != R3000aDelaySlotKind.Conditional)
                 {
                     int returnIdx = cfIdx + 2;
                     if (returnIdx < decodedInstructions.Count)

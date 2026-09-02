@@ -107,14 +107,13 @@ public static class FunctionDiscovery
         {
             foreach (var address in explicitEntries) seeds.Add(address);
         }
-        foreach (var pair in rawByAddress)
-        {
-            if (IsCall(pair.Value) && TryDirectTarget(pair.Value, pair.Key, out var target)) seeds.Add(target);
-        }
 
         var functions = new List<DiscoveredFunction>();
-        foreach (var seed in seeds)
+        var pendingSeeds = new SortedSet<uint>(seeds);
+        while (pendingSeeds.Count > 0)
         {
+            var seed = pendingSeeds.Min;
+            pendingSeeds.Remove(seed);
             var reachable = new SortedSet<uint>();
             var queue = new Queue<uint>();
             if (blockByStart.ContainsKey(seed)) queue.Enqueue(seed);
@@ -132,7 +131,11 @@ public static class FunctionDiscovery
                     if (!rawByAddress.TryGetValue(address, out var raw)) continue;
                     var isReturn = raw.Opcode == R3000aOpcode.Jr && IsRegister(raw.Operand0, 31);
                     if (isReturn) returns.Add(address);
-                    if (IsCall(raw) && TryDirectTarget(raw, address, out var callTarget)) calls.Add(callTarget);
+                    if (IsCall(raw) && TryDirectTarget(raw, address, out var callTarget))
+                    {
+                        calls.Add(callTarget);
+                        if (seeds.Add(callTarget)) pendingSeeds.Add(callTarget);
+                    }
                     if (raw.ControlFlow == R3000aControlFlowKind.JumpRegister && !isReturn) unresolved.Add(address);
 
                     if (edgeBySource.TryGetValue(address, out var outgoing))

@@ -19,9 +19,9 @@ public class FunctionDiscoveryTests
         {
             0x00000000, EncodeBeq(0, 0, 2), 0x00000000, 0x24020001,
             EncodeJal(Base + 0x30), 0x00000000, 0x24020002, EncodeJr(31),
-            0x00000000, 0x24020063, EncodeJr(8), 0x00000000,
+            0x00000000, EncodeJal(Base + 0x44), 0x00000000, 0x00000000,
             EncodeBeq(1, 2, 1), 0x00000000, 0x24020003, EncodeJr(31),
-            0x00000000,
+            0x00000000, 0x00000000, EncodeJr(31), 0x00000000,
         };
         var instructions = words.Select((word, index) => new DecodedInstruction
         {
@@ -42,6 +42,8 @@ public class FunctionDiscoveryTests
         entry.BasicBlocks.Should().Contain(block => block.EndAddress == Base + 0x14,
             "the JAL delay slot belongs to the caller block");
         entry.BasicBlocks.Should().NotContain(block => block.StartAddress == Base + 0x30);
+        artifact.Functions.Should().NotContain(function => function.EntryAddress == Base + 0x44,
+            "a JAL after the entry return is unreachable and must not seed a function");
     }
 
     [Fact]
@@ -73,6 +75,25 @@ public class FunctionDiscoveryTests
         first.Sha256().Should().Be(second.Sha256());
     }
 
+    [Theory]
+    [InlineData(0x11)] // BGEZAL
+    [InlineData(0x10)] // BLTZAL
+    public void ConditionalLinkBranchHasOneTakenAndOneFallthroughEdge(int linkBranchRt)
+    {
+        var instructions = new[]
+        {
+            Instruction(Base, EncodeRegImm(1, linkBranchRt, 2)),
+            Instruction(Base + 4, 0),
+            Instruction(Base + 8, 0),
+            Instruction(Base + 12, 0),
+        };
+        var (_, edges) = BasicBlockBuilder.Build(instructions, Base, instructions.Length);
+
+        edges.Count(edge => edge.SourceAddress == Base && edge.Kind == "branch").Should().Be(1);
+        edges.Count(edge => edge.SourceAddress == Base && edge.Kind == "fallthrough").Should().Be(1);
+        edges.Should().OnlyHaveUniqueItems();
+    }
+
     private static DecodedInstruction Instruction(uint address, uint rawWord) => new()
     {
         Address = address, RawWord = rawWord, Mnemonic = "synthetic", Operands = string.Empty,
@@ -85,4 +106,7 @@ public class FunctionDiscoveryTests
     private static uint EncodeJal(uint target) => (3u << 26) | ((target >> 2) & 0x03FFFFFF);
 
     private static uint EncodeJr(int rs) => ((uint)rs << 21) | 0x08;
+
+    private static uint EncodeRegImm(int rs, int rt, short offset) =>
+        (1u << 26) | ((uint)rs << 21) | ((uint)rt << 16) | (uint)(ushort)offset;
 }
