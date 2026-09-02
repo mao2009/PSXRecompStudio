@@ -8,7 +8,8 @@ Self-contained on standard POSIX tooling — **no `pwsh`/PowerShell required**.
 - POSIX `sh`
 - Git
 - GitHub CLI (`gh`) — optional but required for all GitHub PR operations
-- Does NOT require: `pwsh`, `powershell`, `jq`, `python`, `node`
+- Does NOT require: `pwsh`, `powershell`, `jq`, `node`; Python 3 is used as the
+  structured JSON parser when `jq` is unavailable.
 
 ## Layout
 

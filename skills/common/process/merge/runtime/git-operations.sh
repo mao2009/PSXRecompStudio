@@ -8,7 +8,7 @@
 #
 # Dependencies: git
 # Optional: gh CLI (for PR operations)
-# Does NOT require: pwsh, powershell, jq, python, node
+# Does NOT require: pwsh, powershell, jq, node
 
 # ============================================================
 # Main HEAD
@@ -238,9 +238,25 @@ merge_coderabbit_gate_passes() {
     _repo_args=$(_merge_repo_args "$_repo")
     # shellcheck disable=SC2086
     _checks=$(gh pr checks "$_pr_number" $_repo_args --json name,state 2>/dev/null) || return 1
-    printf '%s' "$_checks" | grep -q '"name"[[:space:]]*:[[:space:]]*"CodeRabbit Review Gate"' || return 1
-    printf '%s' "$_checks" | sed -n '/"name"[[:space:]]*:[[:space:]]*"CodeRabbit Review Gate"/,/}/p' | \
-        grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCESS"'
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$_checks" | jq -e '
+            type == "array" and
+            ([.[] | select(.name == "CodeRabbit Review Gate")] | length > 0) and
+            all(.[]; .name != "CodeRabbit Review Gate" or .state == "SUCCESS")
+        ' >/dev/null 2>&1
+        return $?
+    fi
+    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s' "$_checks" | python3 -c '
+import json, sys
+try:
+    checks = json.load(sys.stdin)
+    matches = [c for c in checks if isinstance(c, dict) and c.get("name") == "CodeRabbit Review Gate"]
+    if not matches or any(c.get("state") != "SUCCESS" for c in matches):
+        raise SystemExit(1)
+except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+    raise SystemExit(1)
+' >/dev/null 2>&1
 }
 
 # Execute a standard (non-admin) merge via gh
