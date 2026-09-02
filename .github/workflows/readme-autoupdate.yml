@@ -439,9 +439,56 @@ jobs:
           EXPECTED_HEAD: ${{ steps.optin.outputs.head }}
         run: |
           set -euo pipefail
+          marker='<!-- coderabbit:review-ready -->'
           deadline=$(( $(date +%s) + 240 ))
+
+          bounded_pr() {
+            local remaining
+            remaining=$(( deadline - $(date +%s) ))
+            (( remaining > 0 )) || return 124
+            timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" "$@"
+          }
+
+          finish_review_cycle() {
+            local evidence_kind="$1"
+            local pr_json current body cleaned remaining
+
+            pr_json="$(bounded_pr)"
+            [[ "$(date +%s)" -lt "$deadline" ]] || return 124
+            current="$(jq -r '.head.sha' <<<"$pr_json")"
+            [[ "$current" == "$EXPECTED_HEAD" ]] || {
+              echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
+              exit 1
+            }
+
+            body="$(jq -r '.body // ""' <<<"$pr_json")"
+            cleaned="${body//$marker/}"
+            if [[ "$cleaned" != "$body" ]]; then
+              remaining=$(( deadline - $(date +%s) ))
+              (( remaining > 0 )) || return 124
+              timeout "$remaining" gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f body="$cleaned" >/dev/null
+            fi
+
+            pr_json="$(bounded_pr)"
+            [[ "$(date +%s)" -lt "$deadline" ]] || return 124
+            current="$(jq -r '.head.sha' <<<"$pr_json")"
+            [[ "$current" == "$EXPECTED_HEAD" ]] || {
+              echo "::error::PR head moved while finalizing CodeRabbit review: expected $EXPECTED_HEAD, got $current"
+              exit 1
+            }
+            [[ "$(jq -r '.body // ""' <<<"$pr_json")" != *"$marker"* ]] || {
+              echo "::error::CodeRabbit review-ready marker remained after completed review"
+              exit 1
+            }
+
+            echo "CodeRabbit current-HEAD $evidence_kind evidence observed for $EXPECTED_HEAD; opt-in marker cleared"
+            exit 0
+          }
+
           while [[ "$(date +%s)" -lt "$deadline" ]]; do
-            current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+            pr_json="$(bounded_pr)" || break
+            [[ "$(date +%s)" -lt "$deadline" ]] || break
+            current="$(jq -r '.head.sha' <<<"$pr_json")"
             if [[ "$current" != "$EXPECTED_HEAD" ]]; then
               echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
               exit 1
@@ -466,14 +513,7 @@ jobs:
                 )
               ] | length > 0
             ' <<<"$comments" >/dev/null; then
-              current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
-              [[ "$current" == "$EXPECTED_HEAD" ]] || {
-                echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
-                exit 1
-              }
-              [[ "$(date +%s)" -lt "$deadline" ]] || break
-              echo "CodeRabbit current-HEAD comment evidence observed for $EXPECTED_HEAD"
-              exit 0
+              finish_review_cycle "comment" || break
             fi
 
             if jq -e --arg head "$EXPECTED_HEAD" '
@@ -482,14 +522,7 @@ jobs:
                 select((.commit_id // .commit.oid // "") == $head)
               ] | length > 0
             ' <<<"$reviews" >/dev/null; then
-              current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
-              [[ "$current" == "$EXPECTED_HEAD" ]] || {
-                echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
-                exit 1
-              }
-              [[ "$(date +%s)" -lt "$deadline" ]] || break
-              echo "CodeRabbit current-HEAD review object observed for $EXPECTED_HEAD"
-              exit 0
+              finish_review_cycle "review-object" || break
             fi
 
             sleep 5
