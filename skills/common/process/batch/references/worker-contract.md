@@ -131,39 +131,60 @@ Every worker MUST NOT:
 
 ### 3.1 Dispatch input (orchestrator → worker)
 
-Every field is required. A dispatch missing any field is invalid and MUST NOT be
-sent; the task becomes `BLOCKED`.
+Every field below is present in every dispatch. A dispatch missing any field is
+invalid and MUST NOT be sent; the task becomes `BLOCKED`. `issue_number` is
+**conditional** and follows the same representation rule as the output contract
+(§3.2): when the task has no Issue, the field is present with the value `none`,
+never omitted.
 
-| Field | Content |
-|---|---|
-| `task_id` | Stable task identifier |
-| `issue_number` | The Issue being implemented, when applicable |
-| `worktree_path` | The worker's exclusive worktree |
-| `branch_name` | The worker's exclusive branch |
-| `base_revision` | The revision the worktree was created from |
-| `objective` | What "done" means for this task |
-| `scope` | The permitted change surface, and what is explicitly out of scope |
-| `required_skills` | Process skills the worker must follow |
-| `verification` | The verification the worker must run and report |
-| `result_contract` | A pointer to §3.2 |
+| Field | Always required | Content |
+|---|---|---|
+| `task_id` | yes | Stable task identifier |
+| `issue_number` | **conditional** | The Issue being implemented, when the task has one |
+| `worktree_path` | yes | The worker's exclusive worktree |
+| `branch_name` | yes | The worker's exclusive branch |
+| `base_revision` | yes | The revision the worktree was created from |
+| `objective` | yes | What "done" means for this task |
+| `scope` | yes | The permitted change surface, and what is explicitly out of scope |
+| `required_skills` | yes | Process skills the worker must follow |
+| `verification` | yes | The verification the worker must run and report |
+| `result_contract` | yes | A pointer to §3.2 |
 
 ### 3.2 Worker output (worker → orchestrator)
 
-Every field is required. Missing or unparseable fields make the result invalid.
+Every field below is **present** in every result. Missing or unparseable fields
+make the result invalid. Three fields carry a value only for certain
+classifications; those are marked **conditional** and are covered by the
+representation rule beneath the table.
 
-| Field | Content |
-|---|---|
-| `task_id` | Must match the dispatched `task_id` |
-| `classification` | Exactly one of `SUCCESS`, `NO_OP`, `BLOCKED`, `FAILED` |
-| `investigation_summary` | What was investigated, including the SSOT consulted |
-| `implementation_summary` | What was changed; for `NO_OP`, the evidence that it was already present |
-| `design_decision` | Why this approach; the alternatives rejected |
-| `changed_files` | The actual changed paths; `[]` for `NO_OP` |
-| `test_results` | Verification actually executed, with real `PASS` / `FAIL` / `NOT RUN` outcomes |
-| `commit_sha` | The resulting commit, when changes were made |
-| `branch` | The branch the work is on |
-| `remaining_work` | Anything not completed; `none` if nothing |
-| `failure_reason` | Required for `BLOCKED` and `FAILED`; the exact condition |
+| Field | Always required | Content |
+|---|---|---|
+| `task_id` | yes | Must match the dispatched `task_id` |
+| `classification` | yes | Exactly one of `SUCCESS`, `NO_OP`, `BLOCKED`, `FAILED` |
+| `investigation_summary` | yes | What was investigated, including the SSOT consulted |
+| `implementation_summary` | yes | What was changed; for `NO_OP`, the evidence that it was already present |
+| `design_decision` | yes | Why this approach; the alternatives rejected |
+| `changed_files` | yes | The actual changed paths; `[]` for `NO_OP` |
+| `test_results` | yes | Verification actually executed, with real `PASS` / `FAIL` / `NOT RUN` outcomes |
+| `branch` | yes | The branch the work is on |
+| `remaining_work` | yes | Anything not completed; `none` if nothing |
+| `issue_number` | **conditional** | The Issue being implemented, when the task has one |
+| `commit_sha` | **conditional** | The resulting commit, when changes were made — so for `SUCCESS`, and for any classification that produced a commit |
+| `failure_reason` | **conditional** | The exact condition; carries a value for `BLOCKED` and `FAILED` |
+
+**Representation of a conditional field that does not apply.** The field is
+present and its value is the explicit marker `none`. It is **never omitted**, and
+never left empty. Absence therefore always means a malformed result, and a
+validator never has to distinguish "the worker had nothing to report here" from
+"the worker forgot this field" — the same reason an inventory entry records why a
+value could not be established rather than silently emptying it
+([`dependency-analysis.md` §2](dependency-analysis.md#2-task-inventory)).
+
+This gives each classification exactly one valid shape: a `NO_OP` carries
+`changed_files: []`, `commit_sha: none` and `failure_reason: none`; a `BLOCKED`
+or `FAILED` carries a real `failure_reason`; a `SUCCESS` carries a real
+`commit_sha` and a non-empty `changed_files`. Section
+[4.1](#41-structural-validation) checks exactly that.
 
 ## 4. Worker result validation
 
@@ -205,8 +226,10 @@ Step 1 is a **pre-validation** step, and it is exclusive:
 1. All required output fields are present and parseable.
 2. `task_id` matches the dispatched task.
 3. `classification` is one of the four permitted values.
-4. Fields required by the classification are present (`failure_reason` for
-   `BLOCKED`/`FAILED`; `changed_files` and `commit_sha` for `SUCCESS`).
+4. Every field of §3.2 is present, including the conditional ones. Fields that
+   carry a value for this classification do so (`failure_reason` for
+   `BLOCKED`/`FAILED`; `changed_files` and `commit_sha` for `SUCCESS`), and
+   fields that do not apply carry the marker `none` rather than being omitted.
 5. No unknown or unexpected fields are silently accepted.
 
 ### 4.2 Substantive validation

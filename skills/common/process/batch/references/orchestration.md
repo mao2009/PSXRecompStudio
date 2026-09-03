@@ -131,6 +131,17 @@ terminating path (§3.6).
   executable work left to order, and task-scoped terminal results never halt a
   batch (§3.6).
 
+  Such a batch takes the **zero-work path**, which is the ordinary lifecycle with
+  nothing to do rather than a stop: Phase 5's postcondition holds vacuously, and
+  `EXECUTION`, `VALIDATION` and `INTEGRATION` are each entered and left having
+  dispatched no worker, validated no result and integrated nothing. It records
+  **no** batch-level stop condition, because nothing prevented it from
+  proceeding; it reaches `REPORTING` by the normal edges of §3.1 and derives its
+  outcome there like any other batch — `NO_OP` by rule 7 when every task result
+  is `NO_OP`, `BLOCKED` by rule 4 when any is `BLOCKED`, `FAILED` by rule 3 when
+  any is `FAILED`. Aggregate verification is `NOT RUN`, since nothing was
+  integrated (§5).
+
 > Phases 1–5 constitute the mandatory planning stage. Dispatching a worker
 > before Phase 5's postcondition holds violates
 > [`../SKILL.md`](../SKILL.md#mandatory-preconditions).
@@ -178,10 +189,16 @@ terminating path (§3.6).
 
 - **Precondition:** A task has settled — its worker delivered a result (task
   state `RESULT_READY`), or it reached a terminal task state without one.
-- **Obligation:** Validate the result against the output contract
-  ([`worker-contract.md` §4](worker-contract.md#4-worker-result-validation)) and
-  run semantic conflict detection
+- **Obligation:** For a task in task state `RESULT_READY` — the only settled
+  state that carries a delivered result — validate that result against the output
+  contract ([`worker-contract.md` §4](worker-contract.md#4-worker-result-validation))
+  and run semantic conflict detection
   ([`worker-contract.md` §5](worker-contract.md#5-semantic-conflict-detection)).
+  A task that settled in a terminal state **without** a delivery has nothing to
+  validate — an orphaned worker, a dependency block, an isolation failure — and
+  this phase leaves its established classification untouched. Validating it would
+  either invent a second result or overwrite the one it already holds, and every
+  task carries exactly one ([`../SKILL.md`](../SKILL.md#invariants)).
 - **Postcondition:** The result is either integration-eligible or explicitly
   ineligible with a recorded reason.
 - **Abort:** Validation is inconclusive → not integration-eligible, and
@@ -216,7 +233,12 @@ terminating path (§3.6).
 - **Precondition:** Phase 9 concluded.
 - **Obligation:** Remove isolation artifacts for integrated work only
   ([`git-worktree.md` §6](git-worktree.md#6-cleanup)).
-- **Postcondition:** No stale worktree or branch remains for integrated tasks.
+- **Postcondition:** Cleanup has been **attempted** for every integrated task: no
+  stale worktree or branch remains where it succeeded, and every artifact that
+  could not be removed is recorded with the reason
+  ([`git-worktree.md` §6.3](git-worktree.md#63-cleanup-failure)). A cleanup
+  failure never reverts a merge and never changes a task result, so it cannot
+  block Phase 11 — the residue is reported, not repaired.
 
 ### Phase 11 — REPORTING
 

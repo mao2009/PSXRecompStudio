@@ -113,14 +113,24 @@ result vocabulary and are assigned only after validation.
 
 ## 4. Dependent task handling
 
-When a task does not reach `SUCCESS`:
+When a task **terminates** with a task result other than `SUCCESS`:
 
 | Effect on dependents | Rule |
 |---|---|
-| Blocked, not skipped | Every dependent takes task state `BLOCKED` and task result `BLOCKED`, with the non-`SUCCESS` dependency named |
+| Blocked, not skipped | Every **non-terminal** dependent takes task state `BLOCKED` and task result `BLOCKED`, with the non-`SUCCESS` dependency named. A dependent that is already terminal keeps the result it holds ([`dependency-analysis.md` §3.1.1](dependency-analysis.md#311-propagation-to-dependents)) |
 | Not silently dropped | A `BLOCKED` dependent stays in the inventory and in the report |
 | Not integrated speculatively | A dependent's work is never integrated on the assumption the dependency was optional |
 | Transitively applied | Dependents of dependents are `BLOCKED` too |
+
+**A prerequisite blocks its dependents only once it is terminal.** A task that
+has not *yet* reached `SUCCESS` but can still get there — one in `RESULT_READY`
+awaiting validation, or returned to it for a fresh approval after a peer's merge
+moved the base ([`review-and-gates.md` §6.3](review-and-gates.md#63-invalidation))
+— has no task result at all yet, and blocking its dependents on a transient
+state would strand work whose premise is still on its way. The wave barrier is
+what makes this safe to rely on: no dependent is evaluated until every member of
+the prior wave holds a terminal task result
+([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement)).
 
 **Failure isolation cuts both ways.** Tasks that do *not* depend on the failed
 task continue normally — one failure never blocks unrelated work. Tasks that
