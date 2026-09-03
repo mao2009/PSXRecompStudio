@@ -370,6 +370,69 @@ int main() {
         testResult.Should().Be(0, "runtime test must pass (ADD/SUB wrap, SRL, SRA correctness)");
     }
 
+    [Fact]
+    public void Exit_Success_Sets_NextPc_And_TerminationReason()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("state->next_pc = 4; state->termination_reason = 0; return 0;");
+    }
+
+    [Fact]
+    public void Exit_NonSuccess_Sets_TerminationReason_And_Returns_Code()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.UnsupportedMemory)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("state->termination_reason = 3; return (int32_t)3u;");
+    }
+
+    [Fact]
+    public void Unsupported_Empty_Program_Is_Refused()
+    {
+        var result = RecompilerHostCodeGen.Generate(new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>()));
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_EMPTY_PROGRAM");
+        result.Source.Should().BeNull();
+    }
+
+    [Fact]
+    public void Unsupported_MultiBlock_Program_Is_Refused()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
+            new RecompilerIrBlock(4, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 8)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_MULTI_BLOCK_PROGRAM");
+        result.Source.Should().BeNull();
+    }
+
+    [Fact]
+    public void RunHostProcess_TimesOut_When_Process_Exceeds_Budget()
+    {
+        #pragma warning disable PSXR005
+        Action act = () => RunHostProcess("sleep", "30", 500);
+        #pragma warning restore PSXR005
+        act.Should().Throw<TimeoutException>();
+    }
+
     #pragma warning disable PSXR005
     private static int CompileWithHostCompiler(string source)
     {
@@ -380,16 +443,13 @@ int main() {
             var outputPath = Path.Combine(tempDir, "test.o");
             File.WriteAllText(sourcePath, source);
 
-            var psi = new ProcessStartInfo("gcc", $"-std=c11 -O0 -Wall -Wextra -c {sourcePath} -o {outputPath}")
-            {
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+            var (exitCode, _, stderr) = RunHostProcess(
+                "gcc", $"-std=c11 -O0 -Wall -Wextra -c {sourcePath} -o {outputPath}", 30000);
 
-            using var process = Process.Start(psi)!;
-            process.WaitForExit(30000);
-            return process.ExitCode;
+            if (exitCode != 0)
+                throw new InvalidOperationException($"Host compilation failed (exit {exitCode}):\n{stderr}");
+
+            return exitCode;
         }
         finally
         {
@@ -410,41 +470,63 @@ int main() {
 
             File.WriteAllText(combinedPath, generatedSource + "\n" + mainSource);
 
-            var compilePsi = new ProcessStartInfo("gcc",
-                $"-std=c11 -O0 -Wall -Wextra {combinedPath} -o {outputPath}")
-            {
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+            var (compileExit, _, compileErr) = RunHostProcess(
+                "gcc", $"-std=c11 -O0 -Wall -Wextra {combinedPath} -o {outputPath}", 30000);
 
-            using (var compileProcess = Process.Start(compilePsi)!)
-            {
-                compileProcess.WaitForExit(30000);
-                if (compileProcess.ExitCode != 0)
-                {
-                    var stderr = compileProcess.StandardError.ReadToEnd();
-                    throw new InvalidOperationException($"Compilation failed (exit {compileProcess.ExitCode}): {stderr}");
-                }
-            }
+            if (compileExit != 0)
+                throw new InvalidOperationException($"Compilation failed (exit {compileExit}):\n{compileErr}");
 
-            var runPsi = new ProcessStartInfo(outputPath)
-            {
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-
-            using (var runProcess = Process.Start(runPsi)!)
-            {
-                runProcess.WaitForExit(10000);
-                return runProcess.ExitCode;
-            }
+            var (runExit, _, _) = RunHostProcess(outputPath, "", 10000);
+            return runExit;
         }
         finally
         {
             if (Directory.Exists(tempDir))
                 Directory.Delete(tempDir, true);
+        }
+    }
+
+    private static (int ExitCode, string Stdout, string Stderr) RunHostProcess(string fileName, string arguments, int timeoutMs)
+    {
+        var psi = new ProcessStartInfo(fileName, arguments)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var process = Process.Start(psi)!;
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
+        if (!process.WaitForExit(timeoutMs))
+        {
+            TryKillTree(process);
+
+            var timedOutOut = stdoutTask.Result;
+            var timedOutErr = stderrTask.Result;
+            throw new TimeoutException(
+                $"Host process timed out after {timeoutMs} ms: {fileName} {arguments}\nstdout:\n{timedOutOut}\nstderr:\n{timedOutErr}");
+        }
+
+        process.WaitForExit();
+        var exitCode = process.ExitCode;
+        var stdout = stdoutTask.Result;
+        var stderr = stderrTask.Result;
+
+        return (exitCode, stdout, stderr);
+    }
+
+    private static void TryKillTree(Process process)
+    {
+        try
+        {
+            process.Kill(true);
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 #pragma warning restore PSXR005

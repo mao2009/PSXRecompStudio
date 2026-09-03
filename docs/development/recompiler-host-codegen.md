@@ -29,8 +29,8 @@ typedef struct {
 - `gpr[0]` is always 0 on entry (caller must ensure).
 - `hi`, `lo`, `pc` are present for ABI stability (Phase 3B+); initialized to
   0 in Phase 3A usage.
-- `termination_reason`: 0 = Success; nonzero = `RecompilerIrTerminationReason`
-  byte value cast to `int32_t`.
+- `termination_reason`: written by the generated block on exit; 0 = Success;
+  nonzero = `RecompilerIrTerminationReason` byte value cast to `int32_t`.
 - `next_pc`: set only on Success exit.
 
 ### Function signature
@@ -40,6 +40,8 @@ static int32_t recompiler_block_0x<entryPc>(RecompilerState* state);
 ```
 
 - Takes a pointer to `RecompilerState`.
+- On every exit, writes `state->termination_reason` (0 on Success, the reason
+  code otherwise).
 - Returns 0 on Success (with `state->next_pc` set), or the termination reason
   code as a non-zero `int32_t`.
 
@@ -54,7 +56,8 @@ For Phase 3A (single-block programs), dispatches to the single block function.
 ### Entry / exit behavior
 
 - Entry: caller initializes `gpr[0] = 0`.
-- Exit: returns termination reason; on Success, sets `state->next_pc`.
+- Exit: returns termination reason and writes it to `state->termination_reason`;
+  on Success, also sets `state->next_pc`.
 - No execution loop (out of scope for Phase 3A).
 
 ### GPR access
@@ -67,7 +70,8 @@ For Phase 3A (single-block programs), dispatches to the single block function.
 
 - All guest values: `uint32_t` / `int32_t` via `<stdint.h>`.
 - Never use host `long`, `int`, or pointer-width arithmetic for guest values.
-- Immediate constants rendered as `(valueu)` for clarity.
+- Immediate constants 0-9 are rendered as plain decimal literals; larger
+  values are rendered as `(valueu)`.
 
 ## UB Avoidance Rules
 
@@ -140,5 +144,8 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
 - IR that fails `RecompilerIrValidator.Validate()`.
 - Undefined `RecompilerIrOperationKind` values.
 - Undefined `RecompilerIrTerminationReason` values.
+- Empty programs (`UNSUPPORTED_EMPTY_PROGRAM`).
+- Multi-block programs (`UNSUPPORTED_MULTI_BLOCK_PROGRAM`; Phase 3A is
+  single-block only).
 
 Generator never silently produces partial source for invalid IR.

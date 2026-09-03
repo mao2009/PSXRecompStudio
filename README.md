@@ -111,7 +111,11 @@ Native code (x86-64 / ARM64)
 Native executable, validated against the interpreter via Golden Trace
 ```
 
-Only the analysis/decoding stages are implemented today; recompilation itself is planned. Do not read "CPU execution foundation implemented" as "recompiler implemented" — they are separate milestones.
+Only the analysis/decoding stages and the Phase 3A deterministic GPR host C code
+generation are implemented today; full static recompilation (memory access,
+control-flow generation, and the executable vertical slice under
+`PSXRecomp.Recompiler`) is planned. Do not read "CPU execution foundation
+implemented" as "recompiler implemented" — they are separate milestones.
 
 ## Technology Stack
 

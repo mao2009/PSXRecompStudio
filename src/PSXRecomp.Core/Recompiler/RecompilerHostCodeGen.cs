@@ -24,6 +24,22 @@ public static class RecompilerHostCodeGen
     {
         ArgumentNullException.ThrowIfNull(program);
 
+        if (program.Blocks.Count == 0)
+        {
+            return new RecompilerHostCodeGenResult(
+                false, null,
+                "UNSUPPORTED_EMPTY_PROGRAM",
+                "Phase 3A host code generation requires at least one block; received zero blocks.");
+        }
+
+        if (program.Blocks.Count > 1)
+        {
+            return new RecompilerHostCodeGenResult(
+                false, null,
+                "UNSUPPORTED_MULTI_BLOCK_PROGRAM",
+                $"Phase 3A supports single-block programs; received {program.Blocks.Count} blocks.");
+        }
+
         var validation = RecompilerIrValidator.Validate(program);
         if (!validation.IsValid)
         {
@@ -126,7 +142,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine();
     }
 
-    private static string EmitOperation(
+    private static string? EmitOperation(
         RecompilerIrOperation op,
         Dictionary<int, string> valueNames)
     {
@@ -193,7 +209,7 @@ public static class RecompilerHostCodeGen
         }
     }
 
-    private static string EmitBinaryOp(
+    private static string? EmitBinaryOp(
         string? result,
         RecompilerIrOperation op,
         string type,
@@ -214,10 +230,11 @@ public static class RecompilerHostCodeGen
     {
         if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc.HasValue)
         {
-            return $"{StateParam}->next_pc = {FormatImmediate(exit.NextPc.Value)}; return 0;";
+            return $"{StateParam}->next_pc = {FormatImmediate(exit.NextPc.Value)}; {StateParam}->termination_reason = 0; return 0;";
         }
 
-        return $"return (int32_t){(byte)exit.Reason}u;";
+        var reason = (byte)exit.Reason;
+        return $"{StateParam}->termination_reason = {reason}; return (int32_t){reason}u;";
     }
 
     private static string FormatImmediate(uint value)
