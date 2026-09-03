@@ -96,8 +96,10 @@ situation the `INTEGRATION → EXECUTION` re-entry rule forbids
 
 C is not B's prerequisite, so no *dependency* of B waits on C. C still holds the
 barrier: it is a member of wave 1, and the barrier is a property of the wave
-rather than of a single edge, so C must settle, be validated and — being
-integration-eligible — be integrated before wave 2 begins.
+rather than of a single edge. So C must settle, be validated, and then be
+**resolved** — integrated if it stays integration-eligible, or terminally
+`BLOCKED` or `FAILED` if its gate closes for good. Either resolution crosses the
+barrier; what wave 2 may not do is start while C is still undetermined.
 
 **If A does not reach `SUCCESS`:** condition 5 catches it at the barrier and B
 takes task state `BLOCKED` and task result `BLOCKED`, naming A as the

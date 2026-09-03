@@ -734,11 +734,17 @@ On recording a batch-level stop condition, in this order:
    to `COMPLETED`. The rule is
    exhaustive over unclassified work: **every task for which no terminal
    classification has been established takes task state `BLOCKED` and task result
-   `BLOCKED`**, naming the stop condition as its reason. "Established" means
-   Phases 7–8 reached a conclusion for it, or Phase 2, 3 or 4 already made it
-   pre-execution terminal. A task whose classification *was* established is not
-   reclassified here; this step records the conclusion the protocol already
-   reached, and only fills the gap where none exists. That covers
+   `BLOCKED`**, naming the stop condition as its reason.
+
+   A classification is **established** when any phase has already given the task
+   a terminal task state and task result:
+   Phase 2, 3 or 4 made it pre-execution terminal
+   ([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result));
+   Phase 6 blocked it at the prerequisite re-check or because its isolation could
+   not be provisioned (§2, Phase 6); or Phases 7–8 reached a conclusion for it.
+   A task whose classification *was* established is not reclassified here; this
+   step records the conclusion the protocol already reached, and only fills the
+   gap where none exists. That covers
    the never-dispatched task, the task validated but not integrated, the
    dispatched task whose worker was stopped without delivering anything, and the
    dispatched task whose delivered result was never validated. A delivered result does not
