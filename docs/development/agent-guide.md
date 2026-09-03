@@ -47,6 +47,26 @@ and the Common Skill in addition to the project knowledge:
 These are the reusable work templates (see `skills/README.md`); they complement,
 not replace, the gates below and the Batch/Merge execution skills.
 
+### Batch / multi-task execution
+
+When a task involves **any** of the following, read and follow
+`skills/common/process/batch/SKILL.md` **before starting implementation**:
+
+- batch processing, or an explicit mention of the Batch Skill;
+- two or more Issues or tasks handed over as one unit of work;
+- parallel implementation;
+- multi-issue or multi-task execution.
+
+That Skill is the single source of truth for batch orchestration and is
+Markdown-only — it requires no batch-specific runtime, wrapper, or configuration,
+so it applies identically regardless of which agent is executing it. Its
+mandatory planning stage (task inventory, dependency analysis, dependency graph,
+execution waves, parallel/sequential classification) must be completed before any
+implementation begins, **including when only one worker will be used**.
+
+Do not restate or re-derive the batch rules here or in any other agent
+entrypoint; route to that Skill instead.
+
 For design-decision work (recording, updating, or validating an ADR), follow the
 procedure in `skills/common/process/adr/SKILL.md` (Issue #84), loading
 project-specific inputs (ADR directory, inventory, numbering) from the matching

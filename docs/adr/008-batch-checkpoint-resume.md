@@ -1,8 +1,25 @@
 # ADR-008: Batch Orchestrator Checkpoint and Resume Design
 
-- **Status**: Accepted
+- **Status**: Superseded by Issue #242
 - **Date**: 2026-08-27
 - **Issue**: #170
+
+> **Superseded.** This ADR recorded the checkpoint/resume design of the Batch
+> Orchestrator *runtime* (checkpoint files, JSON schemas, PowerShell modules,
+> atomic-write mechanics). That runtime has been removed; batch orchestration is
+> now a Markdown-only, agent-agnostic protocol.
+>
+> The *decision* this ADR captured — that an interrupted batch must be resumable
+> without duplicate work or duplicate dispatch, that orphaned workers are
+> detected and either retried within budget or failed, and that unreadable state
+> fails closed rather than being treated as absent — is preserved in
+> [`../../skills/common/process/batch/references/failure-recovery.md`](../../skills/common/process/batch/references/failure-recovery.md).
+> What no longer applies is the prescribed file layout and schema: the protocol
+> requires that resume state be re-establishable, not that it be stored in any
+> particular format.
+>
+> Retained as a historical record. The file paths and module names below refer
+> to assets that no longer exist.
 
 ## Context
 

@@ -1,45 +1,99 @@
-# Batch Orchestrator
+# Batch Orchestration
 
-Processes multiple independent issues in one batch: sub-agents run
-concurrently in isolated worktrees, then their PRs are merged serially
-through an approval gate. See skills/common/process/batch/SKILL.md.
+**Status:** Stable
+
+**Authority:** Reference — the specification is
+[`skills/common/process/batch/SKILL.md`](../skills/common/process/batch/SKILL.md)
+
+Processes multiple Issues or tasks as one batch: each task runs in its own
+isolated worktree and branch, results are validated independently, and changes
+are integrated one at a time through the review and approval gates.
+
+Batch orchestration is defined as a **Markdown-only, agent-agnostic protocol**.
+There is no batch runtime, wrapper, scheduler, or configuration file: any agent
+that can read Markdown and run ordinary Git operations can execute it (#242).
 
 ## Capabilities
 
-- **Parallel Issue execution**: independent issues run concurrently, bounded by max_parallel_subagents (default 3)
-- **Dependency DAG scheduling**: issues form a DAG; each wave starts once its dependencies complete; cycles block the batch
-- **Retry with exponential backoff**: retryable failures retry with `base * 2^retry + jitter` until max_retries (default 3)
-- **Approval-gated merge**: PRs merge one at a time, rebased onto latest main, after SHA-bound approval (no --admin)
-- **Worktree isolation**: each issue runs in its own git worktree/branch; one failure does not block unrelated issues
+- **Mandatory planning stage**: task inventory, dependency analysis, dependency
+  graph, execution waves, and parallel/sequential classification are produced
+  before any implementation begins — including when only one worker is used
+- **Dependency DAG scheduling**: tasks form a DAG; each wave starts once its
+  dependencies complete; a detected cycle blocks the batch
+- **Worker isolation**: every task gets its own worktree and branch; one
+  failure does not block unrelated tasks, and dependents of a failure are
+  blocked rather than skipped
+- **Fail-closed decisions**: unknown dependency, unknown overlap, or unknown
+  parallel safety all resolve to sequential; an unknown gate is a closed gate
+- **Result validation**: no worker result is integrated until it is validated
+  and checked for semantic conflicts against the current base
+- **Approval-gated serial integration**: changes are integrated one at a time,
+  rebased onto the latest base, after explicit SHA-bound approval, with merge
+  execution delegated to the Merge Skill
+- **Retry with backoff**: retryable failures retry within a per-task budget
+  (default 3) using exponential backoff with jitter; non-retryable failures do
+  not retry
 
 ## Lifecycle
 
 ```text
-    Submit Batch
+    Batch requested
          |
          v
-    DAG Resolution (cycle check)
+    Inventory + Preflight        (unexecutable tasks -> BLOCKED)
          |
          v
-    Parallel Waves (worktree per issue)
+    Dependency analysis + DAG    (cycle -> batch BLOCKED)
+         |
+         v
+    Execution waves
          |
          v
       +---+   +---+   +---+
-      | A |   | B |   | C |     A & C run; B waits on A
+      | A |   | C |   | B |      A & C share wave 1; B waits on A
       +---+   +---+   +---+
-         |      |      |
-         +------+------+
-        (retry w/ backoff)
+         |      |       |
+         +------+-------+
+        (retry within budget)
          |
          v
-    Serial Merge Queue (approval gate)
+    Per-result validation + semantic conflict check
          |
          v
-    Merge to main -> cleanup
+    Serial integration: review gate -> approval gate -> Merge Skill
+         |
+         v
+    Aggregate verification -> cleanup -> report
 ```
+
+## Result classification
+
+| Result | Meaning |
+|---|---|
+| `SUCCESS` | Work was required and was completed and validated |
+| `NO_OP` | Work was already present; nothing was required |
+| `BLOCKED` | Preconditions were not satisfied |
+| `FAILED` | Work was required and attempted but did not succeed |
+
+`NO_OP` is never reported as `SUCCESS`, and no result closes an Issue — Issue
+closure follows only from the approved merge.
 
 ## Configuration
 
-Batch behavior is set in `config/batch-config.json` (concurrency,
-retries, checkpoint/resume). Interrupted batches can be resumed from
-persisted batch/worker checkpoints.
+There is no batch configuration file. Policy defaults (concurrency limit 3,
+retry budget 3, backoff base 5s capped at 120s, branch and worktree naming) are
+documented in the Skill's references and may be overridden by an explicit
+operator decision, which is then recorded in the batch report.
+
+## Specification
+
+| Document | Contents |
+|---|---|
+| [`SKILL.md`](../skills/common/process/batch/SKILL.md) | Normative entrypoint: applicability, MUST/MUST NOT rules, lifecycle, invariants, fail-closed rules |
+| [`references/orchestration.md`](../skills/common/process/batch/references/orchestration.md) | Phase contracts, state models, integration ordering, aggregate verification, reporting |
+| [`references/dependency-analysis.md`](../skills/common/process/batch/references/dependency-analysis.md) | Inventory, dependency model, DAG, wave construction, parallel safety |
+| [`references/worker-contract.md`](../skills/common/process/batch/references/worker-contract.md) | Preflight, worker abstraction, dispatch/output contracts, validation, semantic conflicts |
+| [`references/git-worktree.md`](../skills/common/process/batch/references/git-worktree.md) | Isolation, worktree/branch strategy, concurrency, git safety, cleanup |
+| [`references/review-and-gates.md`](../skills/common/process/batch/references/review-and-gates.md) | Review gate, approval gate, merge delegation, Issue lifecycle safety |
+| [`references/failure-recovery.md`](../skills/common/process/batch/references/failure-recovery.md) | Failure classification, retry, recovery, resume |
+| [`references/examples.md`](../skills/common/process/batch/references/examples.md) | Worked conformance scenarios |

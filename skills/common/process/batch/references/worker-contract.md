@@ -1,0 +1,243 @@
+# Worker Contract
+
+**Status:** Stable
+
+**Authority:** Reference — normative detail for
+[`../SKILL.md`](../SKILL.md)
+
+Defines preflight validation, the worker abstraction, the dispatch input
+contract, the required worker output, result validation, and semantic conflict
+detection.
+
+## 1. Preflight validation
+
+Preflight runs **per task, before any worker is dispatched**. Its purpose is to
+guarantee that a dispatched task is genuinely executable, so that the result
+means something.
+
+### 1.1 Required conditions
+
+| # | Condition | On failure |
+|---|---|---|
+| 1 | The task's Issue exists | `BLOCKED` |
+| 2 | The Issue is open | `BLOCKED` |
+| 3 | No existing implementation PR for the Issue | `BLOCKED` |
+| 4 | No conflicting active PR touching the same change surface | `BLOCKED` |
+| 5 | The target functionality is not already present in the base | `BLOCKED` — see §1.3 |
+| 6 | The intended branch does not already exist | `BLOCKED` |
+| 7 | The intended worktree path is free | `BLOCKED` |
+| 8 | The task has not already been processed in this batch | `BLOCKED` |
+| 9 | The working base is the expected base revision, and that revision is recorded | `BLOCKED` |
+
+### 1.2 Preflight rules
+
+- A condition that **cannot be evaluated** is a failed condition. Preflight
+  never passes on an unverifiable check.
+- A failed preflight produces `BLOCKED`, never `NO_OP` and never `FAILED`.
+- The exact failing condition MUST be recorded and reported verbatim.
+- A `BLOCKED` task requires an **explicit operator decision** before it can be
+  retried. The orchestrator MUST NOT clear a preflight block on its own
+  judgement.
+- The base revision used for the batch MUST be recorded, so that results can
+  later be interpreted against a known starting point.
+
+### 1.3 Already-implemented is not success
+
+Condition 5 exists to prevent the most damaging false positive: a batch that
+"passes" because the work was already done before it started.
+
+- Detected **at preflight**: the task is `BLOCKED`. It never runs.
+- Detected **by the worker during execution**: the task is `NO_OP`.
+
+Neither is `SUCCESS`. Neither closes an Issue. Neither counts toward a passing
+batch. See [`../SKILL.md`](../SKILL.md#result-vocabulary).
+
+## 2. Worker abstraction
+
+> **Worker** = an independent, delegated execution unit with its own context and
+> its own isolated worktree and branch.
+
+This definition is deliberately mechanism-free. How a worker is realized is
+decided entirely by the executing agent's native capability, and **no particular
+mechanism is normative**.
+
+Valid realizations include, without preference:
+
+- a native delegated task or sub-agent facility,
+- a separate agent session or context,
+- a separate process,
+- the same context executing tasks one at a time against separate isolated
+  worktrees.
+
+### 2.1 Prohibited normative dependencies
+
+This Skill MUST NOT require, and MUST NOT be written against:
+
+- any specific agent's sub-agent or task API,
+- any specific CLI being installed or present on `PATH`,
+- any specific provider, vendor, or product,
+- any specific operating system, shell, or language runtime.
+
+The presence of a tool on `PATH` is **not** configuration and never selects a
+worker mechanism. Mechanism selection is an explicit operator or agent decision.
+
+### 2.2 Mechanism selection
+
+| Priority | Mechanism | Condition |
+|---|---|---|
+| 1 | The executing agent's native delegated-execution capability | Available |
+| 2 | An explicitly configured external mechanism | Configured explicitly by the operator |
+| 3 | Same-context serialized execution with full isolation | No delegated capability available |
+
+Rules:
+
+- A mechanism switch is **not a retry**. Retries stay within the selected
+  mechanism. A task that failed under one mechanism is not re-attempted under
+  another to make it pass.
+- The selected mechanism MUST be recorded in the report.
+- Priority 3 is a legitimate outcome and preserves all batch semantics — it is
+  **not** permission to abandon them. See
+  [`../SKILL.md`](../SKILL.md#silent-sequential-fallback-is-forbidden).
+
+### 2.3 Worker obligations
+
+Every worker, however realized, MUST:
+
+1. Work only within its assigned worktree and branch.
+2. Investigate the task and the relevant architecture/SSOT before changing code.
+3. Implement only the assigned task — no scope expansion into other tasks.
+4. Run the task's verification.
+5. Report its result in the required output form (§3.2), including honest
+   failure.
+6. Stop and report rather than work around a blocking condition.
+
+Every worker MUST NOT:
+
+1. Touch another worker's worktree or branch.
+2. Modify the shared default branch.
+3. Merge, force push, or push directly to the default branch.
+4. Close the Issue it is working on.
+5. Report unperformed verification as performed.
+6. Report a partial or failed implementation as `SUCCESS`.
+
+## 3. Dispatch and output contracts
+
+### 3.1 Dispatch input (orchestrator → worker)
+
+Every field is required. A dispatch missing any field is invalid and MUST NOT be
+sent; the task becomes `BLOCKED`.
+
+| Field | Content |
+|---|---|
+| `task_id` | Stable task identifier |
+| `issue_number` | The Issue being implemented, when applicable |
+| `worktree_path` | The worker's exclusive worktree |
+| `branch_name` | The worker's exclusive branch |
+| `base_revision` | The revision the worktree was created from |
+| `objective` | What "done" means for this task |
+| `scope` | The permitted change surface, and what is explicitly out of scope |
+| `required_skills` | Process skills the worker must follow |
+| `verification` | The verification the worker must run and report |
+| `result_contract` | A pointer to §3.2 |
+
+### 3.2 Worker output (worker → orchestrator)
+
+Every field is required. Missing or unparseable fields make the result invalid.
+
+| Field | Content |
+|---|---|
+| `task_id` | Must match the dispatched `task_id` |
+| `classification` | Exactly one of `SUCCESS`, `NO_OP`, `BLOCKED`, `FAILED` |
+| `investigation_summary` | What was investigated, including the SSOT consulted |
+| `implementation_summary` | What was changed; for `NO_OP`, the evidence that it was already present |
+| `design_decision` | Why this approach; the alternatives rejected |
+| `changed_files` | The actual changed paths; `[]` for `NO_OP` |
+| `test_results` | Verification actually executed, with real `PASS` / `FAIL` / `NOT RUN` outcomes |
+| `commit_sha` | The resulting commit, when changes were made |
+| `branch` | The branch the work is on |
+| `remaining_work` | Anything not completed; `none` if nothing |
+| `failure_reason` | Required for `BLOCKED` and `FAILED`; the exact condition |
+
+## 4. Worker result validation
+
+Validation runs on **every** result, including results reporting `SUCCESS`. A
+worker's self-assessment is an input to validation, never its conclusion.
+
+### 4.1 Structural validation
+
+1. All required output fields are present and parseable.
+2. `task_id` matches the dispatched task.
+3. `classification` is one of the four permitted values.
+4. Fields required by the classification are present (`failure_reason` for
+   `BLOCKED`/`FAILED`; `changed_files` and `commit_sha` for `SUCCESS`).
+5. No unknown or unexpected fields are silently accepted.
+
+### 4.2 Substantive validation
+
+1. The claimed changed files actually differ on the worker's branch.
+2. The changes lie within the dispatched `scope`. Out-of-scope changes fail
+   validation.
+3. The branch contains the claimed commit, built on the dispatched
+   `base_revision`.
+4. The reported verification is consistent with the observable result — a
+   `SUCCESS` claiming passing tests that were never run fails validation.
+5. `NO_OP` is substantiated by evidence that the functionality was already
+   present, not merely by an absent diff.
+
+### 4.3 Validation outcomes
+
+| Outcome | Consequence |
+|---|---|
+| Valid and `SUCCESS` | Integration-eligible, subject to the gates |
+| Valid and `NO_OP` | Not integration-eligible; operator decision required on the Issue |
+| Valid and `BLOCKED` / `FAILED` | Not integration-eligible; see [`failure-recovery.md`](failure-recovery.md) |
+| **Invalid, for any reason** | **Not integration-eligible.** Re-classified `FAILED` with the validation failure as the reason |
+| **Inconclusive** | **Not integration-eligible.** Treated as invalid |
+
+The orchestrator MUST NOT repair a result to make it valid. Repairing a worker's
+output would make the orchestrator the implementer and destroy the attribution
+that makes per-task validation meaningful.
+
+## 5. Semantic conflict detection
+
+Textual merge cleanliness is not correctness. Two results can merge without any
+git conflict and still be mutually incoherent. Semantic conflict detection is a
+separate, required check.
+
+### 5.1 When it runs
+
+- After validation, before integration.
+- Again before **each** integration, against the base as it stands at that
+  moment — every prior integration in the batch has moved the base.
+
+### 5.2 What it checks
+
+| Check | Conflict indicator |
+|---|---|
+| Shared contract | Two results change the same interface, schema, or contract in incompatible ways |
+| Shared consumer | One result changes a contract another result's code still consumes in its old form |
+| Duplicate implementation | Two results independently introduce the same capability |
+| Behavioural override | One result's change silently negates another's |
+| Shared configuration or generated artifact | Two results change the same key or regenerate the same artifact differently |
+| Verification interference | One result's change causes another's verification to no longer hold on the integrated base |
+
+### 5.3 Outcomes
+
+| Determination | Action |
+|---|---|
+| No semantic conflict | Integration may proceed |
+| Semantic conflict found | **Stop integration** for the affected results; report both tasks and the conflict |
+| **Cannot be determined** | **Stop integration** |
+
+A detected semantic conflict is **not** resolved by the orchestrator editing the
+results. It is reported and returned to the affected tasks, or escalated for an
+operator decision.
+
+## Related
+
+- [`../SKILL.md`](../SKILL.md) — normative entrypoint
+- [`dependency-analysis.md`](dependency-analysis.md) — planning and overlap
+- [`orchestration.md`](orchestration.md) — phase contracts and state model
+- [`git-worktree.md`](git-worktree.md) — isolation provisioning
+- [`review-and-gates.md`](review-and-gates.md) — gates after validation
+- [`failure-recovery.md`](failure-recovery.md) — handling invalid and failed results

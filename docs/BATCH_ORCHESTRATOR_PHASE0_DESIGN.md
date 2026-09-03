@@ -4,9 +4,24 @@
 
 Redesign the Batch Orchestrator from a PowerShell-coupled, CLI-dependent system to an Agent-agnostic, OS-agnostic execution platform that uses the host agent's built-in Sub-agent capabilities as the primary execution path.
 
-**Status:** Phase 0 Design (no code changes)
+**Status:** Superseded (historical record)
 **Date:** 2026-08-26
 **Scope:** Architecture redesign preserving all existing functionality
+
+> **Superseded by Issue #242.** This document designed a shell + PowerShell
+> Batch Orchestrator runtime. That runtime has been removed: batch orchestration
+> is now a Markdown-only, agent-agnostic protocol with no scripts, wrapper,
+> scheduler, state-machine implementation, or configuration file.
+>
+> Every file path, module name, script, and configuration key below refers to
+> assets that **no longer exist**. The behaviour they implemented was migrated
+> into the protocol before deletion — see the Functional Preservation Checklist
+> at the end of this document for the feature list, and
+> [`../skills/common/process/batch/SKILL.md`](../skills/common/process/batch/SKILL.md)
+> for the current specification.
+>
+> This document is retained as a historical record of the design reasoning. It
+> is not a current reference and must not be used as one.
 
 ---
 
