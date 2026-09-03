@@ -624,7 +624,7 @@ function Invoke-BatchOrchestration {
                         }
 
                         if ($issue.State -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED") -and $issue.DispatchDeadline -and (Get-Date).ToUniversalTime() -gt [datetime]$issue.DispatchDeadline) {
-                            Set-IssueStateTransition -IssueState $issue -ToState "SUBAGENT_FAILED" -BatchId $BatchId -Reason "Native dispatch deadline exceeded"
+                            Set-IssueStateTransition -IssueState $issue -ToState "FAILED" -BatchId $BatchId -Reason "Native dispatch deadline exceeded"
                             $issue.LaunchStatus = "FAILED"
                             $issue.ExecutionStatus = "NOT_STARTED"
                             $issue.FailureClassification = "launch_failure"
@@ -681,7 +681,15 @@ function Invoke-BatchOrchestration {
                                                 Write-BatchLog "Issue ${issueId}: FAILED ($($retryCheck.Reason))" "ERROR"
                                             }
                                         } else {
-                                            $issue.State = "SUBAGENT_FAILED"
+                                            if ($issue.SelectedMechanism -eq "native-subagent" -and
+                                                $issue.State -in @("READY_FOR_NATIVE_DISPATCH", "DISPATCHED")) {
+                                                Set-IssueStateTransition -IssueState $issue -ToState "FAILED" -BatchId $BatchId -Reason $errorMsg
+                                                $issue.LaunchStatus = "FAILED"
+                                                $issue.ExecutionStatus = "NOT_STARTED"
+                                                $issue.FailureClassification = "launch_failure"
+                                            } else {
+                                                $issue.State = "SUBAGENT_FAILED"
+                                            }
                                             $issue.LastError = $errorMsg
                                             Fail-SchedulerIssue -Scheduler $scheduler -IssueId $issueId -ErrorMessage $errorMsg
                                             Write-BatchLog "Issue ${issueId}: FAILED ($errorMsg)" "ERROR"
