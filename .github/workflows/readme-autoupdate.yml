@@ -1,6 +1,6 @@
 name: README Auto-Update
 
-# PR-triggered README updater (Issue #180). Three isolated jobs:
+# PR-triggered README updater (Issue #180). Two isolated jobs:
 #
 #   1. update-readme ("model" job, contents: read, NO GITHUB_TOKEN):
 #      runs OpenCode pinned to opencode/big-pickle with assets extracted from
@@ -9,26 +9,14 @@ name: README Auto-Update
 #   2. publish-readme ("publish" job, contents: write): clean workspace, fresh
 #      origin/main extraction, single-file artifact, mechanical validation, then
 #      commits/pushes ONLY the managed README to the PR's own head branch. It
-#      records the resulting PR head SHA (published_sha) as a job output WHEN
-#      THE JOB RUNS. A job-level skip (fork PR, bootstrap run, upstream failure)
-#      never reaches record-sha, so on those runs the output stays empty.
-#   3. review-trigger ("review" job, pull-requests: write): runs AFTER the
-#      publish job, fetches the current PR head SHA via the GitHub API and
-#      compares it against the publish job's published_sha output (NOT the
-#      event's head.sha, which is stale before publish), and then explicitly
-#      opts the PR in through the configured description_keyword marker.
-#      CodeRabbit automatic reviews are disabled in .coderabbit.yaml, so this
-#      is the ONLY supported trigger. The gate is fail-closed: a non-success
-#      publish result, an empty published_sha (job-level skip), or a SHA
-#      mismatch all suppress the trigger.
 #
-# Trust model (see docs/adr/009-readme-autoupdate.md and docs/adr/010-coderabbit-ordering.md):
+# Trust model (see docs/adr/009-readme-autoupdate.md):
 #   Trusted   : origin/main, this workflow, trusted config, trusted publish script
 #   Untrusted : PR branch, PR description, comments, source, README content,
 #               issue content, OpenCode output, repository variables (ignored)
 #
 # Permissions default to nothing; each job grants the minimum it needs. The
-# GITHUB_TOKEN is referenced ONLY in the publish job and the review step.
+# GITHUB_TOKEN is referenced ONLY in the publish job.
 
 "on":
   pull_request:
@@ -212,24 +200,6 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    outputs:
-      # The PR head SHA that exists AFTER this job has finished publishing.
-      # This output is defined only for runs where the JOB executes; the
-      # record-sha step that produces it is the last step in the job, so any
-      # job-level skip (fork PR, bootstrap run, upstream failure) leaves the
-      # output EMPTY. Per path:
-      #   - executed, README changed:   the newly pushed commit's SHA (B)
-      #   - executed, README unchanged: the PR head SHA at publish time (A)
-      #   - executed, in-job barrier:   publish steps gated off (defensive
-      #     race); HEAD at checkout time (A)
-      #   - job-level skip:             record-sha does not run, output EMPTY
-      # review-trigger compares the API-fetched current PR head against this
-      # value and fails closed (match=0) on an empty value. It must never fall
-      # back to github.event.pull_request.head.sha, because that event SHA is
-      # captured BEFORE publish and is therefore stale whenever a README commit
-      # is pushed.
-      published_sha: ${{ steps.record-sha.outputs.sha }}
-
     steps:
       # A clean checkout on this runner. This workspace is NEVER shared with the
       # model job; the only cross-job input is the README-only artifact.
@@ -330,228 +300,3 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
-
-      # Record the PR head SHA as it exists after this job finished.
-      # This step runs unconditionally (no `if:`) ONCE THE JOB RUNS, so the
-      # output is set on every in-job path:
-      #   - README changed:   publish committed+pushes, so HEAD == pushed SHA (B)
-      #   - README unchanged: publish was a no-op, HEAD == PR head at publish (A)
-      #   - in-job barrier:   publish steps gated off (defensive race), HEAD == A
-      # A JOB-LEVEL skip (fork PR, bootstrap run, upstream failure) never
-      # reaches this step, so published_sha is EMPTY on those runs. That is the
-      # intended contract: review-trigger treats an empty published_sha as
-      # fail-closed and never triggers a review without a real publish.
-      # The publish script never pushes to main/forbidden branches, and the only
-      # thing it can commit is managed README.md, so whatever SHA is now at HEAD
-      # is exactly the PR head the README Auto-Update produced.
-      - name: Record published PR head SHA
-        id: record-sha
-        run: |
-          set -euo pipefail
-          sha="$(git rev-parse HEAD)"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "published_sha=$sha"
-
-  review-trigger:
-    name: CodeRabbit review trigger
-    # Issue #237: github-actions[bot] review-command comments are not a reliable
-    # CodeRabbit trigger (production E2E: PR #236). After README publication,
-    # opt in through CodeRabbit's supported description_keyword mechanism.
-    # Success means CodeRabbit subsequently emits current-HEAD review evidence;
-    # merely updating the PR description is never treated as trigger success.
-    if: always()
-    needs: [update-readme, publish-readme]
-    concurrency:
-      group: coderabbit-trigger-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    permissions:
-      pull-requests: write
-      issues: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Verify PR head SHA matches the README Auto-Update state
-        id: verify
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PUBLISHED_SHA: ${{ needs.publish-readme.outputs.published_sha }}
-        run: |
-          set -euo pipefail
-          current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
-          expected="${PUBLISHED_SHA:-}"
-          echo "current=$current expected=$expected"
-          if [[ -z "$expected" ]]; then
-            echo "::error::publish job did not expose a published_sha output; refusing CodeRabbit opt-in."
-            echo "match=0" >> "$GITHUB_OUTPUT"
-          elif [[ "$current" != "$expected" ]]; then
-            echo "::notice::PR head moved while README Auto-Update ran; refusing stale CodeRabbit opt-in."
-            echo "match=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "match=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Opt in and wait for CodeRabbit review
-        id: optin
-        if: >
-          steps.verify.outputs.match == '1' &&
-          needs.update-readme.result == 'success' &&
-          needs.update-readme.outputs.action == 'proceed' &&
-          needs.publish-readme.result == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PUBLISHED_SHA: ${{ needs.publish-readme.outputs.published_sha }}
-        run: |
-          set -euo pipefail
-          marker='<!-- coderabbit:review-ready -->'
-          deadline=$(( $(date +%s) + 240 ))
-          EXPECTED_HEAD="$PUBLISHED_SHA"
-
-          bounded_pr() {
-            local remaining
-            remaining=$(( deadline - $(date +%s) ))
-            (( remaining > 0 )) || return 124
-            timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" "$@"
-          }
-
-          # GitHub's PR update endpoint has no body revision precondition. Keep
-          # the read/transform/write/read sequence bounded and verify the exact
-          # result after every write. A mismatch is retried from a fresh body so
-          # a body-only edit observed after our write is incorporated; if the
-          # result cannot be proven safe, this step fails closed.
-          mutate_marker() {
-            local mode="$1" attempt pr_json current body desired without after remaining
-            for attempt in 1 2 3; do
-              pr_json="$(bounded_pr)" || return 1
-              current="$(jq -r '.head.sha' <<<"$pr_json")"
-              [[ "$current" == "$PUBLISHED_SHA" ]] || {
-                echo "::error::PR head changed during marker mutation; refusing stale body write."
-                return 1
-              }
-              body="$(jq -r '.body // ""' <<<"$pr_json")"
-
-              case "$mode" in
-                present)
-                  without="${body//$marker/}"
-                  if [[ "$body" == *"$marker"* && "$without" != *"$marker"* ]]; then
-                    desired="$body"
-                  else
-                    desired="$without"
-                    if [[ -n "$desired" ]]; then desired+=$'\n\n'; fi
-                    desired+="$marker"
-                  fi
-                  ;;
-                absent) desired="${body//$marker/}" ;;
-                *) echo "::error::unknown marker mutation mode: $mode"; return 1 ;;
-              esac
-
-              if [[ "$desired" == "$body" ]]; then
-                echo "CodeRabbit opt-in marker already in the requested state ($mode)"
-                return 0
-              fi
-
-              remaining=$(( deadline - $(date +%s) ))
-              (( remaining > 0 )) || return 1
-              timeout "$remaining" gh api -X PATCH \
-                "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f body="$desired" >/dev/null || return 1
-
-              after="$(bounded_pr)" || return 1
-              current="$(jq -r '.head.sha' <<<"$after")"
-              body="$(jq -r '.body // ""' <<<"$after")"
-              if [[ "$current" == "$PUBLISHED_SHA" && "$body" == "$desired" ]]; then
-                return 0
-              fi
-              echo "::warning::PR body changed during marker mutation; retrying from fresh state (attempt $attempt/3)."
-            done
-            echo "::error::Could not prove a safe PR-body marker mutation after 3 attempts."
-            return 1
-          }
-
-          if ! mutate_marker present; then
-            echo "::error::CodeRabbit opt-in marker was not safely established."
-            exit 1
-          fi
-          echo "head=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
-
-          finish_review_cycle() {
-            local evidence_kind="$1"
-            local pr_json current remaining
-
-            pr_json="$(bounded_pr)"
-            [[ "$(date +%s)" -lt "$deadline" ]] || return 124
-            current="$(jq -r '.head.sha' <<<"$pr_json")"
-            [[ "$current" == "$EXPECTED_HEAD" ]] || {
-              echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
-              exit 1
-            }
-
-            mutate_marker absent || {
-              echo "::error::Review evidence exists, but marker cleanup could not be proven safe."
-              return 1
-            }
-
-            pr_json="$(bounded_pr)"
-            [[ "$(date +%s)" -lt "$deadline" ]] || return 124
-            current="$(jq -r '.head.sha' <<<"$pr_json")"
-            [[ "$current" == "$EXPECTED_HEAD" ]] || {
-              echo "::error::PR head moved while finalizing CodeRabbit review: expected $EXPECTED_HEAD, got $current"
-              exit 1
-            }
-            [[ "$(jq -r '.body // ""' <<<"$pr_json")" != *"$marker"* ]] || {
-              echo "::error::CodeRabbit review-ready marker remained after completed review"
-              exit 1
-            }
-
-            echo "CodeRabbit current-HEAD $evidence_kind evidence observed for $EXPECTED_HEAD; opt-in marker cleared"
-            exit 0
-          }
-
-          while [[ "$(date +%s)" -lt "$deadline" ]]; do
-            pr_json="$(bounded_pr)" || break
-            [[ "$(date +%s)" -lt "$deadline" ]] || break
-            current="$(jq -r '.head.sha' <<<"$pr_json")"
-            if [[ "$current" != "$EXPECTED_HEAD" ]]; then
-              echo "::error::PR head moved while waiting for CodeRabbit review: expected $EXPECTED_HEAD, got $current"
-              exit 1
-            fi
-
-            remaining=$(( deadline - $(date +%s) ))
-            (( remaining > 0 )) || break
-            comments="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100&sort=updated&direction=desc")"
-            remaining=$(( deadline - $(date +%s) ))
-            (( remaining > 0 )) || break
-            reviews="$(timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --paginate --slurp)"
-            [[ "$(date +%s)" -lt "$deadline" ]] || break
-
-            if jq -e --arg head "$EXPECTED_HEAD" '
-              [.[] |
-                select((.user.login // "") == "coderabbitai[bot]" or (.user.login // "") == "coderabbitai") |
-                (.body // "") |
-                select(contains($head)) |
-                select(
-                  contains("No actionable comments were generated") or
-                  test("Actionable comments posted:[[:space:]]*[0-9]+")
-                )
-              ] | length > 0
-            ' <<<"$comments" >/dev/null; then
-              finish_review_cycle "comment" || break
-            fi
-
-            if jq -e --arg head "$EXPECTED_HEAD" '
-              [.[].[] |
-                select((.user.login // "") == "coderabbitai[bot]" or (.user.login // "") == "coderabbitai") |
-                select((.commit_id // .commit.oid // "") == $head) |
-                select((.state // "") == "COMMENTED" or
-                       (.state // "") == "APPROVED" or
-                       (.state // "") == "CHANGES_REQUESTED") |
-                select((.submitted_at // "") != "")
-              ] | length > 0
-            ' <<<"$reviews" >/dev/null; then
-              finish_review_cycle "review-object" || break
-            fi
-
-            sleep 5
-          done
-          echo "::error::Timed out waiting for CodeRabbit review evidence bound to $EXPECTED_HEAD"
-          exit 1

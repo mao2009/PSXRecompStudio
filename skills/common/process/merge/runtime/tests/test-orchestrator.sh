@@ -49,10 +49,6 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 EOF
     exit 0
 fi
-if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
-    echo '[{"name":"CodeRabbit Review Gate","state":"SUCCESS"}]'
-    exit 0
-fi
 exit 1
 FAKEGH
 chmod +x "$_FAKE_GH/gh"

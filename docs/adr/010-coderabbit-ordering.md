@@ -1,248 +1,31 @@
-# ADR-010: CodeRabbit Review Runs After README Auto-Update
+# ADR-010: CodeRabbit Best-Effort Automated Review
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Issue**: #185
-
-## Context
-
-CodeRabbit (a GitHub App) reviews every eligible pull request automatically.
-The README Auto-Update workflow (#180) analyzes a PR and, when the README
-changed, commits the updated README to the PR's head branch. Because both run
-immediately on PR creation / `synchronize`, CodeRabbit could start its review
-**before** the README Auto-Update finishes. The first review would then cover a
-PR state that does not include the README changes, wasting a review and
-duplicating comments once the README lands.
-
-The goal is a strict execution order:
-
-```text
-PR
- ↓
-README Auto-Update            (publish README commit if any)
- ↓
-CodeRabbit review             (reviews the FINAL PR state)
- ↓
-Human Review / Approval
- ↓
-Merge
-```
-
-Constraints carried over from the existing design:
-
-- No secrets besides the built-in `GITHUB_TOKEN`.
-- PR/repository content is untrusted input; the boundary must be mechanical.
-- The security boundary established in #184 (OpenCode model job has
-  `contents: read` and NO repository credentials) must not be weakened.
-- No automatic merge; final merge always goes through the Human Approval Gate.
-- Fork PRs must keep their existing safe-skip policy.
-
-## Official CodeRabbit Specification (verified)
-
-CodeRabbit's configuration reference and "Automatic review controls" docs
-(https://docs.coderabbit.ai/configuration/auto-review) specify:
-
-- `reviews.auto_review.enabled: false` disables automatic reviews.
-- The documented manual review commands are `@coderabbitai review`
-  (incremental) and `@coderabbitai full review` (from scratch), posted as PR
-  comments. Their availability must not be assumed for every author/configuration:
-  Issue #229 records production evidence that an explicit command authored by
-  `github-actions[bot]` failed when that bot was listed in
-  `ignore_usernames`.
-- `reviews.auto_review.ignore_usernames` skips automatic reviews for listed
-  authors. This repository must not list `github-actions[bot]` there, because
-  the ordered workflow's explicit command is the required trigger and its
-  bot-authored form was observed to fail under that setting.
-- Positive `reviews.auto_review.labels` opt-in and a
-  `description_keyword` opt-in still trigger reviews even when `enabled` is
-  `false`; we configure neither so the only review trigger is our explicit
-  comment.
-- There is no public API/GitHub Action to start a review programmatically;
-  the documented trigger is the PR comment command.
+- Status: Accepted
+- Date: 2026-09-03
 
 ## Decision
 
-### 1. Automatic reviews disabled
+CodeRabbit is a best-effort automated reviewer, not a repository-owned hard gate. Automatic review is enabled without a manual mention, and incremental review is enabled for PR updates. The repository does not add description markers, post review commands, poll for evidence, or require a CodeRabbit check to succeed.
 
-Add a root-level `.coderabbit.yaml`:
+CodeRabbit availability, rate limits, skipped reviews, and missing current-head review do not by themselves block repository CI or merge. Any actual findings that CodeRabbit posts remain review input and must be assessed by a human or the Merge Skill. Existing repository-owned CI and human approval requirements remain mandatory.
 
-```yaml
-reviews:
-  auto_review:
-    enabled: false
-```
+## Configuration
 
-`enabled: false` stops CodeRabbit from racing the README Auto-Update on
-`opened`/`synchronize`. `github-actions[bot]` is deliberately not ignored:
-Issue #229 production evidence showed that CodeRabbit did not honor an
-explicit command authored by the ignored bot, while the same owner-authored
-command worked. The fixed workflow command remains the only trigger.
+The root `.coderabbit.yaml` uses the supported settings:
 
-### 2. Explicit review trigger in the README Auto-Update workflow
+- `reviews.auto_review.enabled: true`
+- `reviews.auto_review.auto_incremental_review: true`
+- `reviews.auto_review.auto_pause_after_reviewed_commits: 0`
+- no `description_keyword`
 
-Add a third job `review-trigger` to `.github/workflows/readme-autoupdate.yml`:
-
-- `needs: [update-readme, publish-readme]`, `if: always()` and then **gated
-  inside the job** on the upstream results:
-  - `needs.update-readme.result == 'success'`
-  - `needs.update-readme.outputs.action == 'proceed'`
-  - `needs.publish-readme.result == 'success'`
-- Only runs for same-repo PRs (fork PRs are skipped by the upstream jobs'
-  `if: <head.repo == repo>`, so their results are `skipped` and the gate fails).
-- The `publish-readme` job exposes the PR head SHA that exists **after** it
-  finishes as the job output `published_sha`. The contract distinguishes three
-  outcomes:
-  - **Executed no-op**: the publish job runs, finds nothing to change, and the
-    final `record-sha` step runs, so `published_sha` is the current PR head
-    (nothing was pushed, so it is still `A`).
-  - **Executed publication**: the publish job runs, commits/pushes the README
-    commit, and `record-sha` runs, so `published_sha` is the new PR head (the
-    pushed README commit, `B`).
-  - **Job-level skip**: the publish job does not run (fork PR, bootstrap run,
-    or upstream failure). `record-sha` lives inside the job, so it does not
-    execute either and `published_sha` is **empty**.
-  The `published_sha` contract mirrors the actual GitHub Actions semantics
-  exactly:
-  - if the `publish-readme` **job runs**, `record-sha` runs and
-    `published_sha` is set — to the current PR head (`A`) on an executed
-    no-op, or to the pushed README commit (`B`) on an executed publication;
-  - if the `publish-readme` **job is skipped at the job level**, `record-sha`
-    does not run and `published_sha` is empty.
-  The value is computed mechanically with `git rev-parse HEAD` in that final
-  `record-sha` step, so whenever the job runs it reflects the exact
-  post-publish head. `published_sha` is therefore **not** set on every run: it
-  is only ever set when the publish job actually executed and recorded a SHA.
-  The empty case is not a bug: `review-trigger` treats an empty `published_sha`
-  as fail-closed and never triggers a review unless the publish job ran and
-  recorded a SHA (so an executed no-op still triggers a review).
-- Before triggering, `review-trigger` fetches the **current** PR head via the
-  GitHub API (`gh api repos/{owner}/{repo}/pulls/{n} --jq '.head.sha'`) and
-  compares it against `needs.publish-readme.outputs.published_sha`. If they
-  differ, or if `published_sha` is empty (which happens exactly on a job-level
-  publish skip), it does **not** trigger CodeRabbit.
-  Because `published_sha` is the real post-publish head, a README commit does
-  not disable the trigger: the API returns `B` and `published_sha == B`,
-  so the review runs against the final PR state.
-  It never compares against `github.event.pull_request.head.sha`, which is
-  captured **before** publish and is therefore stale whenever a README commit
-  is pushed. We also do not rely on the `GITHUB_TOKEN` push restarting a
-  `pull_request` workflow (per the Actions event spec, those runs require
-  approval and other token-triggered events create no runs) to "auto-fix" a
-  stale comparison; the correct SHA is deliberately propagated instead.
-- Triggers the review by posting the fixed comment body
-  `## CodeRabbit Review Request` + `@coderabbitai review` via
-  `actions/github-script`.
-
-The comment is a **fixed literal**. No PR- or README-controlled content is
-interpolated into it, so prompt injection in the PR cannot alter the trigger
-or the workflow.
-
-### 3. Permission separation
-
-| | Model job (`update-readme`) | Publish job (`publish-readme`) | Review job (`review-trigger`) |
-|---|---|---|---|
-| Permission | `contents: read` | `contents: write` | `pull-requests: write` |
-| `GITHUB_TOKEN` | never | publish step only | comment step only |
-| Purpose | analyze PR, emit README-only artifact | commit/push README | post `@coderabbitai review` comment |
-
-The model job still has no repository credentials and no pull-request
-permissions; the review-trigger job is its own concern and owns the only
-`pull-requests` permission. `pull-requests: write` grants the ability to post
-comments/reviews; it is not `contents` and cannot push code, and no repository
-secret is involved.
-
-### 4. Loop prevention
-
-- CodeRabbit auto-review is disabled, so the trigger comment is the only review
-  start point and it does not re-open the workflow state machine.
-- The `@coderabbitai review` comment is posted with `GITHUB_TOKEN`; comments
-  created by the GitHub Actions token do **not** re-trigger `pull_request`
-  workflows, so the comment cannot restart README Auto-Update.
-- The review-trigger job serializes per PR via its own concurrency group
-  (`coderabbit-trigger-<PR number>`, `cancel-in-progress: false`), so
-  overlapping `synchronize` runs cannot post duplicate trigger comments.
-- The README publish job's SHA gate and the trigger comment's
-  `github-actions[bot]` identity keep the publish → synchronize → publish loop
-  closed, unchanged from #180.
-
-### 5. Fork PRs / bootstrap runs
-
-Fork PRs skip the model and publish jobs at the job level and in preflight
-(#180). It is important to distinguish the `review-trigger` **job** running
-from its **trigger step** running:
-
-- The `review-trigger` job uses `if: always()`, so the **job itself always
-  runs**, including its SHA-verification step, even when the upstream
-  `update-readme` / `publish-readme` jobs are skipped on forks or bootstrap
-  runs.
-- Only the final CodeRabbit **trigger step** is suppressed, and only by the
-  upstream result gates and an empty `published_sha`: on forks the upstream
-  jobs are `skipped`, not `success`, so `match=0` and no `@coderabbitai review`
-  comment is ever posted with a fork-controlled context.
-
-Skipped publish runs also expose an **empty** `published_sha` (`record-sha`
-never executes, because the job is skipped at the job level), which the
-SHA-verification **step** treats as fail-closed (`match=0`). The verification
-step still runs in that case; it is only the trigger step that is gated off.
-The first (bootstrap) run that introduces these files analyzes only and never
-publishes; with `publish-readme` skipped, `review-trigger` still runs its
-verification step but does not post a review, so no CodeRabbit review is
-triggered until the trusted assets are on `origin/main` and a real publish
-runs.
-
-### 6. Human Approval Gate preserved
-
-Nothing here merges. CodeRabbit reports on the PR; the final merge still goes
-through the existing Human Approval Gate and `main` ruleset, unchanged.
+This means a newly opened eligible PR is reviewed automatically, and pushes can receive incremental reviews. CodeRabbit may still skip or defer reviews for provider/service conditions or configured exclusions such as drafts, ignored labels/titles/users, manual pause, or rate limits; those states are informational and are not consumed by repository CI.
 
 ## Consequences
 
-### Positive
+README Auto-Update has only two responsibilities: validate a candidate README and publish it safely. It does not coordinate with CodeRabbit. CodeRabbit runs outside GitHub Actions as the installed GitHub App, so README publication and repository CI remain independent of CodeRabbit outages or timing.
 
-- CodeRabbit always reviews the final PR state, including any README commit
-  made by the Auto-Update workflow.
-- The ordering is mechanical (job dependency + result gates + SHA check), not
-  prompt-dependent.
-- Least privilege is preserved: the model job stays credential-free; the
-  review trigger only gets `pull-requests: write`.
-- No double reviews and no automatic-review race with the README update.
+A CodeRabbit finding is not automatically a merge blocker. A confirmed unresolved major finding may be a blocker under normal human review policy; absence of a review is not.
 
-### Negative
+## Supersedes
 
-- A PR whose head moves *after* publish (a commit pushed while
-  `review-trigger` runs) does not get a review from that stale run; the next
-  `synchronize` run that has the stable head reviews instead. This is
-  intentional (stale-review avoidance). The README publish itself cannot cause
-  this because `published_sha` reflects the exact head the publish produced.
-- If the publish **job** is skipped at the job level (fork or bootstrap), no
-  CodeRabbit review is triggered by CI until a real publish occurs; a reviewer
-  can always request a manual `@coderabbitai review`.
-- CodeRabbit review allowances are consumed by manual (`@coderabbitai review`)
-  reviews, which count against the per-developer review rate limit just like
-  automatic ones.
-
-## Alternatives Considered
-
-### Keep automatic reviews enabled and rely on sequencing
-
-Rejected: GitHub Actions cannot guarantee that CodeRabbit waits for the README
-Auto-Update job; automatic reviews would still race the update.
-
-### Separate `workflow_run` workflow for the trigger
-
-Rejected: a third GitHub workflow file adds `workflow_run` semantics and
-another concurrency surface without improving the guarantee. The trigger is
-part of the README Auto-Update run's completion; keeping it as a job in the
-same workflow reuses the existing dependency graph and result gating.
-
-### `pull_request_target` for the trigger
-
-Rejected: runs workflow code defined by the PR ref with the base-branch
-context; unnecessary because the trigger job posts a fixed comment and needs
-no PR-controlled code.
-
-## Related ADRs
-
-- ADR-009: PR-Triggered README Auto-Update via OpenCode (the workflow this
-  issue extends)
-- ADR-007: Repository Artifact Policy (unchanged)
+This ADR supersedes the former design that ordered CodeRabbit after README publication and implemented a repository-owned `CodeRabbit Review Gate` with current-HEAD evidence, marker mutation, polling, and fail-closed timeout behavior.

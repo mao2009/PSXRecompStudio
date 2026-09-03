@@ -76,9 +76,8 @@ Check for a valid approval record:
 1. Load approval record (if exists)
 2. Verify approval exists
 3. Verify the approval source:
-     github_review  -> the repository-owned CodeRabbit Review Gate is the
-                       authoritative CodeRabbit quality result. The GitHub
-                       reviewDecision field is not proof of SHA-bound review.
+     github_review  -> GitHub's required human/third-party approval policy;
+                       CodeRabbit is informational and not a repository gate.
      explicit_human -> a formal approval source created by `merge.sh approve`:
                        attribute to the authenticated operator identity and
                        bind to both the PR HEAD SHA and the main HEAD SHA.
@@ -288,7 +287,7 @@ Two approval sources are supported, each validated separately:
 
 | Source | Validation |
 |--------|------------|
-| `github_review` | Existing GitHub third-party approval. The repository-owned `CodeRabbit Review Gate` is authoritative for CodeRabbit quality; `reviewDecision` alone is not SHA-bound evidence. Required GitHub approvals remain separate merge checks. |
+| `github_review` | Existing GitHub approval required by repository policy. CodeRabbit findings are reviewed when present but do not replace approval. |
 | `explicit_human` | Formal solo-dev approval created by `merge.sh approve`. Verified by authenticated operator identity, PR HEAD SHA binding, and main HEAD SHA binding. |
 
 The `Approval` object in state carries `"ApprovalSource"`. An absent source is
@@ -332,19 +331,9 @@ To validate an approval:
 
 **All must match for approval to be valid.**
 
-### CodeRabbit quality gate
+### CodeRabbit review
 
-Merge Skill does not reimplement CodeRabbit interpretation. It requires the
-required repository check named `CodeRabbit Review Gate` to succeed on the
-current PR head. That gate owns the direct current-head path and the narrowly
-scoped content-equivalent-rebase path for `No files to review`. Raw status
-success, skipped/missing/pending review, zero threads alone, or stale evidence
-never satisfies it.
-
-The `explicit_human` record created by `merge.sh approve` remains the
-canonical locally persisted, authenticated SHA-bound human approval. An
-untraceable prior-session assertion or inferred approval is not accepted; the
-record must bind the current PR HEAD and current `main` HEAD.
+CodeRabbit is a best-effort automated reviewer. Missing, skipped, pending, unavailable, or rate-limited reviews do not block Merge Skill validation. Confirmed unresolved major findings may be considered during human review; repository-owned CI and explicit human approval remain mandatory.
 
 ## Conflict Handling
 

@@ -77,11 +77,11 @@ Then perform the mandatory pre-PR self review defined in
 from the matching `skills/project/<project>/profile.md`. Do not open a PR until
 that skill's completion criteria are met.
 
-CI/review changes must preserve the required repository-owned `CodeRabbit
-Review Gate`. Raw CodeRabbit status, skipped/missing/pending reviews,
-unresolved-thread count alone, and `No files to review` without proven patch
-equivalence are blocking. The Merge Skill consumes this gate and does not
-reimplement its interpretation.
+CodeRabbit is a best-effort automated reviewer, not a repository-owned hard gate.
+Its availability, rate limits, skipped/missing/pending status, or absent current-
+head review do not by themselves block repository CI or merge. Findings that are
+present must still be reviewed appropriately; repository-owned CI and human
+approval remain required.
 
 ## Authority hierarchy
 

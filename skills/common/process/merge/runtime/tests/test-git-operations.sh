@@ -251,43 +251,6 @@ case "$_reason" in
 esac
 
 # ------------------------------------------------------------
-# CodeRabbit gate parsing: exact structured records only
-# ------------------------------------------------------------
-echo ""
-echo "--- CodeRabbit Gate Check Parsing ---"
-gh() { printf '%s' "$FAKE_CHECKS"; }
-
-for _case in \
-    '[{"name":"CodeRabbit Review Gate","state":"SUCCESS"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"SUCCESS"},{"name":"lint","state":"FAILURE"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"SUCCESS"},{"name":"CodeRabbit Review Gate","state":"SUCCESS"}]'; do
-    FAKE_CHECKS=$_case
-    assert_true "valid exact CodeRabbit records pass" merge_coderabbit_gate_passes 230 test/repo
-done
-
-for _case in \
-    '[{"name":"CodeRabbit Review Gate","state":"FAILURE"},{"name":"lint","state":"SUCCESS"}]' \
-    '[]' \
-    '[{"name":"CodeRabbit Review Gate (legacy)","state":"SUCCESS"}]' \
-    '[{"name":"My CodeRabbit Review Gate","state":"SUCCESS"}]' \
-    '[{"name":"CodeRabbit Review Gate Test","state":"SUCCESS"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"FAILURE"},{"name":"CodeRabbit Review Gate (legacy)","state":"SUCCESS"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"SUCCESS"},{"name":"CodeRabbit Review Gate","state":"FAILURE"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"PENDING"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"QUEUED"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"CANCELLED"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"SKIPPED"}]' \
-    '[{"name":"CodeRabbit Review Gate","state":"UNKNOWN"}]' \
-    '[{"name":"CodeRabbit Review Gate"}]' \
-    'null' \
-    '{"name":"CodeRabbit Review Gate","state":"SUCCESS"}' \
-    'not-json'; do
-    FAKE_CHECKS=$_case
-    assert_false "invalid or unsafe CodeRabbit records block" merge_coderabbit_gate_passes 230 test/repo
-done
-unset -f gh
-
-# ------------------------------------------------------------
 # merge_issue_from_branch
 # ------------------------------------------------------------
 echo ""

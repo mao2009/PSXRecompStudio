@@ -35,24 +35,6 @@
 #  23. artifact validation functional: exactly one root README.md passes; extra
 #      file, symlink, or subdirectory fail closed
 #  24. opencode permission rules: catch-all first, specifics last
-#  25. workflow: review-trigger job - isolated pull-requests:write, needs both
-#      upstream jobs, SHA-verification step, fixed-literal trigger comment
-#  26. .coderabbit.yaml: automatic reviews disabled and bot command supported
-#  27. workflow: review-trigger SHA flow - expected comes from the publish job's
-#      published_sha output (NOT the event head.sha); unset output refuses
-#  28. publish record-sha functional - README change -> new HEAD SHA; no-op ->
-#      HEAD unchanged (in-job paths set the output; only executed runs reach it)
-#  29. workflow: README-changed regression (A -> publish -> B -> published_sha=B
-#      -> review-trigger against B) and no reliance on the bot push restarting
-#      the workflow (the push must not be treated as an expected-SHA source)
-#  30. review gate functional: API head vs published_sha - match=1 only when the
-#      publish job ran and the current head equals its output; an EMPTY
-#      published_sha (job-level skip) and mismatches both fail closed to match=0
-#  31. workflow: job-level publish skip (fork / bootstrap / upstream failure)
-#      leaves published_sha EMPTY and the trigger gate closed - the empty
-#      output is the CORRECT contract (record-sha is unreachable), not a bug
-#  32. workflow: marker mutation uses bounded optimistic concurrency and
-#      verifies exact post-write body/HEAD state for insertion and cleanup
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -400,42 +382,20 @@ test_workflow_no_vars() {
 
 # --- 18. workflow: token/scope separation between the three jobs -------------
 test_workflow_token_boundary() {
-  local model_perm publish_perm review_perm
+  local model_perm publish_perm
   python3 - "$WORKFLOW" <<'PY' || fail "workflow structure check failed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-assert jobs["update-readme"]["permissions"] == {"contents": "read"}, "model job must have contents: read only"
-assert jobs["publish-readme"]["permissions"] == {"contents": "write"}, "publish job must have contents: write"
-assert jobs["publish-readme"].get("needs") == "update-readme", "publish job must depend on the model job"
-# The publish job must expose the post-publish PR head SHA to review-trigger.
-outs = jobs["publish-readme"].get("outputs", {})
-assert outs.get("published_sha"), "publish job must expose a published_sha output"
-assert "github.event.pull_request.head.sha" in outs["published_sha"] or jobs["publish-readme"]["steps"][-1]["id"] == "record-sha", \
-    "publish job must derive published_sha from a record-sha step (not the event head.sha)"
-# The review trigger is a separate concern with its own minimal scope.
-review_permissions = jobs["review-trigger"]["permissions"]
-assert review_permissions.get("pull-requests") == "write", "review-trigger must have pull-requests: write"
-assert review_permissions.get("issues") == "read", "review-trigger must have issues: read for CodeRabbit evidence"
-assert "contents" not in review_permissions, "review-trigger must not have contents permission"
-assert jobs["review-trigger"].get("needs") == ["update-readme", "publish-readme"], "review-trigger must depend on both upstream jobs"
-for jname, job in jobs.items():
-    for s in job["steps"]:
-        sname = s.get("name") or ""
-        blob = (s.get("run") or "") + " " + " ".join(str(v) for v in (s.get("env") or {}).values())
-        if "github.token" in blob:
-            allowed = (jname == "publish-readme" and sname == "Publish README updates") or \
-                      (jname == "review-trigger" and sname in (
-                          "Verify PR head SHA matches the README Auto-Update state",
-                          "Opt in and wait for CodeRabbit review",
-                          "Wait for current-HEAD CodeRabbit review evidence",
-                      ))
-            if not allowed:
-                sys.exit("GITHUB_TOKEN referenced outside the publish/review steps: %s/%s" % (jname, sname))
-        if jname == "update-readme" and "PUSH_URL" in blob:
-            sys.exit("PUSH_URL referenced in the model job")
-        if jname != "update-readme" and "PUSH_URL" in blob:
-            sys.exit("PUSH_URL referenced in a non-publish job: %s/%s" % (jname, sname))
+assert set(jobs) == {"update-readme", "publish-readme"}, "README updater must have only model and publish jobs"
+assert jobs["update-readme"]["permissions"] == {"contents": "read"}
+assert jobs["publish-readme"]["permissions"] == {"contents": "write"}
+assert jobs["publish-readme"].get("needs") == "update-readme"
+for job in jobs.values():
+    for step in job["steps"]:
+        blob = (step.get("run") or "") + " " + " ".join(str(v) for v in (step.get("env") or {}).values())
+        if "github.token" in blob and step.get("name") != "Publish README updates":
+            raise AssertionError("GITHUB_TOKEN referenced outside publish step")
 PY
   model_perm="$(python3 - "$WORKFLOW" <<'PY'
 import sys, yaml
@@ -447,14 +407,8 @@ import sys, yaml
 print(yaml.safe_load(open(sys.argv[1]))["jobs"]["publish-readme"]["permissions"]["contents"])
 PY
 )"
-  review_perm="$(python3 - "$WORKFLOW" <<'PY'
-import sys, yaml
-print(yaml.safe_load(open(sys.argv[1]))["jobs"]["review-trigger"]["permissions"]["pull-requests"])
-PY
-)"
   assert_eq "$model_perm" "read" "model job permission must be contents:read"
   assert_eq "$publish_perm" "write" "publish job permission must be contents:write"
-  assert_eq "$review_perm" "write" "review-trigger permission must be pull-requests:write"
 }
 
 # --- 19. workflow: bootstrap gating on publish steps ------------------------
@@ -703,396 +657,22 @@ assert d["permission"].get("websearch") == "deny", "websearch must be denied"
 PY
 }
 
-# --- 25. workflow: review-trigger job (CodeRabbit ordering, Issue #185) -------
-test_workflow_review_trigger() {
-  python3 - "$WORKFLOW" <<'PY' || fail "review-trigger job structure check failed"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-j = d["jobs"]["review-trigger"]
-assert j.get("needs") == ["update-readme", "publish-readme"], "review-trigger must need both upstream jobs"
-assert j.get("if") == "always()", "review-trigger must use if: always() and gate itself inside"
-assert j["permissions"].get("pull-requests") == "write", "review-trigger: pull-requests: write required"
-assert j["permissions"].get("issues") == "read", "review-trigger needs issues: read to observe CodeRabbit comments"
-assert "contents" not in j["permissions"], "review-trigger must not touch contents"
-assert j.get("concurrency", {}).get("group"), "review-trigger must serialize triggers per PR with a concurrency group"
-names = [s.get("name") for s in j["steps"]]
-assert any(n and "Verify PR head SHA" in n for n in names), "review-trigger must verify the PR head SHA"
-# Only one checkout step permitted: the review-trigger must NOT checkout PR code.
-verify = next((s for s in j["steps"] if "Verify PR head SHA" in (s.get("name") or "")), None)
-assert verify is not None, "missing verify step"
-env = verify.get("env") or {}
-assert "PUBLISHED_SHA" in env, "verify step must read the publish job's published_sha output"
-assert "github.event.pull_request.head.sha" not in env.get("PUBLISHED_SHA", ""), \
-    "verify step must NOT use the event head.sha as the expected value (stale before publish)"
-vrun = verify.get("run") or ""
-assert 'expected="${PUBLISHED_SHA:-}"' in vrun, "verify step must default expected from PUBLISHED_SHA"
-assert "-z \"$expected\"" in vrun, "verify step must refuse when published_sha output is unset/empty"
-# The opt-in step must be gated on SHA match and both upstream successes.
-trigger = next(s for s in j["steps"] if "Opt in and wait for CodeRabbit review" in (s.get("name") or ""))
-cond = trigger.get("if") or ""
-assert cond.count("&&") >= 3, "opt-in step must AND together all gates: %r" % cond
-for needle in ("steps.verify.outputs.match == '1'",
-               "needs.update-readme.result == 'success'",
-               "needs.update-readme.outputs.action == 'proceed'",
-               "needs.publish-readme.result == 'success'"):
-    assert needle in cond, "opt-in step must check %s" % needle
-run = trigger.get("run") or ""
-assert "coderabbit:review-ready" in run, "opt-in must use the configured description marker"
-assert "@coderabbitai review" not in run, "bot-authored review command must not return"
-assert run.count(".head.sha") >= 2, "opt-in must re-check the PR head around marker mutation"
-assert "EXPECTED_HEAD" in run, "completion check must bind evidence to expected head"
-assert "while" in run and "sleep" in run, "completion check must use bounded polling"
-assert "deadline=" in run and "date +%s" in run, "completion check must use an explicit wall-clock deadline"
-assert "per_page=100" in run, "completion polling must bound API page size"
-assert 'pulls/$PR_NUMBER/reviews?per_page=100" --paginate --slurp' in run, "review evidence must inspect all review pages within the deadline"
-assert 'select((.state // "") == "COMMENTED" or' in run, "only explicitly submitted review states may count"
-assert '(.state // "") == "APPROVED" or' in run, "approved reviews must count as submitted evidence"
-assert '(.state // "") == "CHANGES_REQUESTED")' in run, "changes-requested reviews must count as submitted evidence"
-assert 'select((.submitted_at // "") != "")' in run, "review evidence must require submission"
-assert 'timeout "$remaining" gh api' in run, "each evidence API request must be bounded by remaining deadline"
-assert "bounded_pr()" in run, "all PR-head reads must share the remaining-deadline wrapper"
-assert 'timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"' in run, "PR-head wrapper must be deadline-bounded"
-assert "finish_review_cycle" in run, "evidence success must use a common finalization path"
-assert "mutate_marker()" in run, "insertion and cleanup must use one marker mutation helper"
-assert "for attempt in 1 2 3" in run, "marker mutation retries must be bounded"
-assert 'desired="${body//$marker/}"' in run, "marker transformation must preserve unrelated body content"
-assert 'desired+="$marker"' in run, "marker insertion must use one canonical marker"
-assert '"$body" == "$desired"' in run, "marker mutation must verify exact post-write body"
-assert "Review evidence exists, but marker cleanup could not be proven safe" in run, "unsafe cleanup must fail closed"
-assert "CodeRabbit review-ready marker remained after completed review" in run, "marker cleanup must be verified fail-closed"
-assert run.count('PR head moved while waiting for CodeRabbit review') >= 1 and \
-       'PR head moved while finalizing CodeRabbit review' in run, \
-    "review cycle must verify head before and after marker cleanup"
-assert run.count('date +%s') >= 3, "completion must re-check wall-clock deadline after API calls"
-assert "Timed out waiting for CodeRabbit review evidence" in run, "completion check must fail closed on timeout"
-PY
-}
-
-# --- 26. workflow: execute current-HEAD failure paths with mocked API ---------
-# The static contract checks above catch accidental removal of the guards, but
-# these scenarios execute the actual review-trigger run block. The mock changes
-# only the PR head; no real GitHub API or body write is used.
-test_workflow_head_move_fail_closed() {
-  local mock run log ec
-  mock="$ROOT_DIR/marker-mock"
-  mkdir -p "$mock"
-
-  cat > "$mock/jq" <<'PY'
-#!/usr/bin/env python3
-import json, sys
-args = sys.argv[1:]
-data = sys.stdin.read()
-if "-e" in args:
-    sys.exit(0 if "No actionable comments were generated" in data and "expected-head" in data else 1)
-query = next((a for a in args if a.startswith(".")), "")
-obj = json.loads(data)
-if query.startswith(".head.sha"):
-    print(obj["head"]["sha"])
-elif query.startswith(".body"):
-    print(obj.get("body") or "")
-else:
-    raise SystemExit("unsupported mock jq query: " + query)
-PY
-  chmod +x "$mock/jq"
-
-  cat > "$mock/gh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-state="$MOCK_STATE"
-count=0
-[[ -f "$state" ]] && count="$(<"$state")"
-echo "scenario=$MOCK_SCENARIO count=$count args=$*" >> "$MOCK_LOG"
-if [[ " $* " == *" -X PATCH "* ]]; then
-  exit 0
-fi
-path=""
-for arg in "$@"; do
-  [[ "$arg" == repos/* ]] && path="$arg"
-done
-if [[ "$path" == *"/issues/"*"/comments"* ]]; then
-  printf '[{"user":{"login":"coderabbitai[bot]"},"body":"No actionable comments were generated for expected-head"}]\n'
-  exit 0
-fi
-if [[ "$path" == *"/pulls/"*"/reviews"* ]]; then
-  printf '[[]]\n'
-  exit 0
-fi
-count=$((count + 1))
-printf '%s\n' "$count" > "$state"
-head="expected-head"
-if [[ "$MOCK_SCENARIO" == "wait-head-move" && "$count" -ge 3 ]]; then
-  head="moved-head"
-elif [[ "$MOCK_SCENARIO" == "finalize-head-move" && "$count" -ge 7 ]]; then
-  head="moved-head"
-fi
-body='description'
-if [[ "$count" -ge 2 && "$count" -le 4 ]]; then
-  body=$'description\n\n<!-- coderabbit:review-ready -->'
-elif [[ "$MOCK_SCENARIO" == "finalize-head-move" && "$count" -eq 5 ]]; then
-  body=$'description\n\n<!-- coderabbit:review-ready --> '
-elif [[ "$MOCK_SCENARIO" == "finalize-head-move" && "$count" -ge 6 ]]; then
-  body=$'description\n\n '
-fi
-python3 - "$head" "$body" <<'PY'
-import json, sys
-print(json.dumps({"head": {"sha": sys.argv[1]}, "body": sys.argv[2]}))
-PY
-SH
-  chmod +x "$mock/gh"
-
-  run="$(wf_step_run review-trigger "Opt in and wait for CodeRabbit review")"
-
-  log="$ROOT_DIR/wait-head-move.log"
-  set +e
-  ( PATH="$mock:$PATH" MOCK_STATE="$ROOT_DIR/wait-head-move.state" \
-      MOCK_SCENARIO=wait-head-move MOCK_LOG="$ROOT_DIR/wait-head-move.api.log" GITHUB_REPOSITORY=owner/repo PR_NUMBER=1 \
-      PUBLISHED_SHA=expected-head GH_TOKEN=test GITHUB_OUTPUT="$ROOT_DIR/wait.out" \
-      bash -e -c "$run" ) >"$log" 2>&1
-  ec=$?
-  set -e
-  assert_ne 0 "$ec" "HEAD move during evidence wait must fail closed"
-  grep -q "PR head moved while waiting for CodeRabbit review" "$log" \
-    || fail "wait HEAD move must use the executable fail-closed guard"
-
-  log="$ROOT_DIR/finalize-head-move.log"
-  set +e
-  ( PATH="$mock:$PATH" MOCK_STATE="$ROOT_DIR/finalize-head-move.state" \
-      MOCK_SCENARIO=finalize-head-move MOCK_LOG="$ROOT_DIR/finalize-head-move.api.log" GITHUB_REPOSITORY=owner/repo PR_NUMBER=1 \
-      PUBLISHED_SHA=expected-head GH_TOKEN=test GITHUB_OUTPUT="$ROOT_DIR/finalize.out" \
-      bash -e -c "$run" ) >"$log" 2>&1
-  ec=$?
-  set -e
-  assert_ne 0 "$ec" "HEAD move after cleanup must fail closed"
-  grep -q "PR head moved while finalizing CodeRabbit review" "$log" \
-    || fail "finalization HEAD move must use the executable fail-closed guard"
-}
-
-# --- 27. .coderabbit.yaml: automatic reviews disabled, bot command supported --
+# --- CodeRabbit configuration and workflow independence --------------------
 test_coderabbit_config() {
-  local cfg
-  cfg="$(cd "$SCRIPT_DIR/../.." && pwd)/.coderabbit.yaml"
-  python3 - "$cfg" <<'PY' || fail "coderabbit config check failed"
+  python3 - "$SCRIPT_DIR/../../.coderabbit.yaml" "$WORKFLOW" <<'PY' || fail "CodeRabbit independence contract failed"
 import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-ar = d["reviews"]["auto_review"]
-assert ar.get("enabled") is False, "auto_review.enabled must be false"
-assert ar.get("description_keyword") == "coderabbit:review-ready", "description_keyword must match the workflow opt-in marker"
-assert ar.get("auto_incremental_review") is True, "incremental review must stay enabled for later final-head changes"
-assert ar.get("auto_pause_after_reviewed_commits") == 0, "auto review must not pause after reviewed commits"
-PY
-}
-
-# --- 27. workflow: review-trigger SHA flow (published_sha, not event head.sha) ---
-# Regression for PR #186 (blocking): expected SHA must come from the publish
-# job's published_sha output, NEVER from github.event.pull_request.head.sha
-# (which is captured before publish and is stale whenever a README commit is
-# pushed). Also guards an unset output so the review can never be triggered
-# against an unknown SHA.
-test_workflow_sha_flow() {
-  python3 - "$WORKFLOW" <<'PY' || fail "review-trigger SHA flow check failed"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-publish = d["jobs"]["publish-readme"]
-# published_sha must come from a step, not be a constant, and must be declared.
-outs = publish.get("outputs", {})
-assert "published_sha" in outs, "publish job must output published_sha"
-assert "github.event.pull_request.head.sha" not in outs["published_sha"], \
-    "published_sha must be derived from the publish result, not the event head.sha"
-verify = next(s for s in d["jobs"]["review-trigger"]["steps"]
-              if "Verify PR head SHA" in (s.get("name") or ""))
-env = verify.get("env") or {}
-assert "PUBLISHED_SHA" in env and "needs.publish-readme.outputs.published_sha" in env["PUBLISHED_SHA"], \
-    "verify step must compare against the publish job's published_sha output"
-# No PR-controlled/untrusted content may feed the expected SHA.
-expected = env["PUBLISHED_SHA"]
-for untrusted in ("github.event.pull_request.body", "github.event.pull_request.title",
-                  "steps.update-readme", "README", "PR_BODY"):
-    assert untrusted not in expected, "expected SHA must not depend on untrusted content: %s" % untrusted
-# git rev-parse HEAD must be absent from the verify step (verify uses the API,
-# not a checkout, so it cannot be fooled by PR-controlled working-tree content).
-assert "git rev-parse HEAD" not in (verify.get("run") or ""), \
-    "verify step must fetch the current head via the API, not a PR checkout"
-# The expected SHA must not be wired to any model/AI output.
-allruns = "".join((s.get("run") or "") for s in d["jobs"]["review-trigger"]["steps"])
-assert "opencode" not in allruns.lower() and "openmodel" not in allruns.lower(), \
-    "review-trigger must not depend on AI/model output"
-PY
-}
-
-# --- 28. publish record-sha functional (in-job paths set the output) -----------
-#                                               ^ job-level skip never reaches this step (covered in 31)
-test_publish_record_sha() {
-  local script
-  script="$(wf_step_run publish-readme "Record published PR head SHA")"
-  [[ -n "$script" ]] || { fail "record-sha step missing from publish job"; return 1; }
-  local d w rt out ec head
-  d="$ROOT_DIR/recksha"
-  mkdir -p "$d"
-  w="$d/w"
-  git init -q --initial-branch=main "$w"
-  git -C "$w" config user.name tester
-  git -C "$w" config user.email tester@example.com
-  printf '# Demo\n' > "$w/README.md"
-  git -C "$w" add -A && git -C "$w" commit -q -m seed
-  head="$(git -C "$w" rev-parse HEAD)"
-
-  # path 1: HEAD unchanged (README no-op / bootstrap skip) -> output == HEAD
-  rt="$d/rt1"; mkdir -p "$rt"; out="$d/out1.txt"
-  ( cd "$w" && RUNNER_TEMP="$rt" GITHUB_OUTPUT="$out" bash -e -c "$script" ) >/dev/null
-  grep -q "^sha=$head$" "$out" || fail "no-op path must record the unchanged HEAD ($head)"
-
-  # path 2: publish advanced HEAD (simulate a committed README change) -> new SHA
-  printf 'update\n' >> "$w/README.md"
-  git -C "$w" add README.md
-  git -C "$w" -c user.name=bot -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
-      commit -q -m "docs: update README"
-  new_head="$(git -C "$w" rev-parse HEAD)"
-  assert_ne "$head" "$new_head" "README commit must create a new HEAD"
-  rt="$d/rt2"; mkdir -p "$rt"; out="$d/out2.txt"
-  ( cd "$w" && RUNNER_TEMP="$rt" GITHUB_OUTPUT="$out" bash -e -c "$script" ) >/dev/null
-  grep -q "^sha=$new_head$" "$out" || fail "changed path must record the new HEAD ($new_head)"
-  if grep -q "^sha=$head$" "$out"; then
-    fail "changed path must NOT record the stale older HEAD"
-  fi
-}
-
-# --- 29. workflow: README-changed regression + no bot-push-restart reliance -----
-# The blocking bug (PR #186) was: after publish pushes a README commit, the
-# event head.sha (A) no longer matches the real PR head (B), so review-trigger
-# skipped. The fix makes review-trigger compare the API-fetched current head
-# against the publish job's published_sha (B). We assert:
-#   - published_sha equals the post-publish HEAD, computed in the publish job;
-#   - review-trigger does NOT rely on a GITHUB_TOKEN push restarting the
-#     workflow (i.e. the bot push is never assumed to be a fresh pull_request
-#     event that would trigger a second review on SHA B).
-test_workflow_readme_changed_regression() {
-  python3 - "$WORKFLOW" <<'PY' || fail "README-changed regression check failed"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-publish = d["jobs"]["publish-readme"]
-steps = publish["steps"]
-record = next((s for s in steps if s.get("id") == "record-sha"), None)
-assert record is not None, "publish job must have a record-sha step"
-recrun = record.get("run") or ""
-# The recorded SHA must come from the job's own git HEAD (post-publish), so it
-# is the real PR head after the README commit (B), not the event SHA (A).
-assert "git rev-parse HEAD" in recrun, "record-sha must use git rev-parse HEAD (post-publish)"
-# It must run unconditionally once the job executes, so published_sha is set
-# on every in-job path; a job-level skip cannot reach it (see test 31).
-assert "if:" not in record, "record-sha step must run on every in-job path"
-# The publish script may END right before record-sha (after pushing B) - ensure
-# ordering: record-sha comes after the push step.
-publish_step = next((s for s in steps if "Publish README updates" in (s.get("name") or "")), None)
-assert publish_step is not None and steps.index(record) > steps.index(publish_step), \
-    "record-sha must run after the publish (push) step so it reflects PR head B"
-verify = next(s for s in d["jobs"]["review-trigger"]["steps"]
-              if "Verify PR head SHA" in (s.get("name") or ""))
-# The only source for the expected SHA is the publish job output; there must be
-# NO fallback to the event head.sha anywhere in the review-trigger job.
-allruns = "".join((s.get("run") or "") + " " + " ".join(str(v) for v in (s.get("env") or {}).values())
-                  for s in d["jobs"]["review-trigger"]["steps"])
-assert "github.event.pull_request.head.sha" not in allruns, \
-    "review-trigger must not compare against the (stale) event head.sha"
-# Per the verified GitHub Actions spec, a GITHUB_TOKEN push is NOT guaranteed to
-# restart a pull_request workflow (those runs require approval and other token
-# events don't create runs at all). So the fix must publish the real post-publish
-# SHA and compare against it; the expected value must never be wired such that a
-# stale review would be "fixed" by a later run restarting. We assert the publish
-# job actually records the post-push SHA (done above) and that review-trigger
-# treats the current head as authoritative only when it matches that SHA.
-PY
-}
-
-# --- 30. review gate functional: API head vs published_sha -----------------------
-# Functional test of the review-trigger "Verify PR head SHA" step (its run
-# block) with a stubbed `gh`. Distinguishes the three contract cases:
-#   - executed no-op:        current == published_sha == A -> match=1
-#   - executed publication:  current == published_sha == B -> match=1
-#   - job-level skip:        published_sha is EMPTY          -> match=0 (fail-closed)
-# plus a post-publish head move -> match=0 (stale-review avoidance).
-test_review_gate_contract() {
-  local script d
-  script="$(wf_step_run review-trigger "Verify PR head SHA")"
-  [[ -n "$script" ]] || { fail "verify step missing from review-trigger"; return 1; }
-  d="$ROOT_DIR/reviewgate"
-  mkdir -p "$d"
-
-  # run_gate <published_sha> <fake_api_head> -> runs the verify step block with
-  # a stub `gh` that reports the fake API head; echoes the produced match line.
-  run_gate() {
-    local out log run
-    out="$d/out.txt"; log="$d/log.txt"
-    rm -f "$out" "$log"
-    run=$'gh() { echo "$FAKE_CURRENT"; }\n'"$script"
-    ( cd "$d" \
-        && GITHUB_OUTPUT="$out" \
-           GITHUB_REPOSITORY=owner/repo \
-           PR_NUMBER=123 \
-           PUBLISHED_SHA="$1" FAKE_CURRENT="$2" \
-           bash -e -c "$run" >"$log" 2>&1 )
-    grep -o '^match=[01]$' "$out" | tail -n1 || echo "no-match-line"
-  }
-
-  local log m
-  # executed no-op: publish ran, current head == published_sha (A) -> success path
-  m="$(run_gate "aaaa" "aaaa" || echo "no-match-line")"
-  assert_eq "$m" "match=1" "executed no-op: matching head must yield match=1"
-  # executed publication: publish ran + pushed B; API head == published_sha (B) -> success path
-  m="$(run_gate "bbbb" "bbbb" || echo "no-match-line")"
-  assert_eq "$m" "match=1" "executed publication: post-publish head must yield match=1"
-  # head moved after publish -> fail-closed (stale-review avoidance)
-  m="$(run_gate "bbbb" "cccc" || echo "no-match-line")"
-  assert_eq "$m" "match=0" "moved head must yield match=0"
-  # job-level skip: published_sha EMPTY -> match=0. The empty output is the
-  # CORRECT contract for a skipped publish job and it must fail closed.
-  m="$(run_gate "" "aaaa" || echo "no-match-line")"
-  assert_eq "$m" "match=0" "job-level skip: empty published_sha must yield match=0"
-  log="$d/log.txt"
-  grep -qi "did not expose a published_sha output" "$log" \
-    || fail "empty published_sha must log the fail-closed error"
-}
-
-# --- 31. workflow: job-level publish skip -> published_sha EMPTY + gate closed --
-# CodeRabbit finding (PR #186): published_sha is NOT set on every path. A
-# job-level skip of the publish JOB (fork PR, bootstrap run, upstream failure)
-# means record-sha never executes, so
-# needs.publish-readme.outputs.published_sha is EMPTY - and that is the CORRECT
-# contract. Assert the workflow keeps it: the empty output is structurally
-# guaranteed (record-sha is unreachable) and the review gate fails closed on it
-# (no trigger without a real publish).
-test_workflow_skip_contract() {
-  python3 - "$WORKFLOW" <<'PY' || fail "job-level skip contract check failed"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-jobs = d["jobs"]
-pub = jobs["publish-readme"]
-pub_if = pub.get("if") or ""
-# Fork PRs and bootstrap runs skip the publish JOB (not just its steps).
-assert "github.event.pull_request.head.repo.full_name == github.repository" in pub_if, \
-    "publish job must skip fork PRs at the job level"
-assert "needs.update-readme.outputs.bootstrap == '0'" in pub_if, \
-    "publish job must skip bootstrap runs at the job level"
-# record-sha is inside the job with no step-level if, so a job-level skip makes
-# it unreachable: no step output, hence no published_sha.
-steps = pub["steps"]
-record = next((s for s in steps if s.get("id") == "record-sha"), None)
-assert record is not None, "publish job must end with a record-sha step"
-assert "if" not in record, "record-sha has no step-level if"
-assert pub["outputs"].get("published_sha") == "${{ steps.record-sha.outputs.sha }}", \
-    "published_sha must come from the in-job record-sha step output"
-# Gate semantics: a skipped publish job yields result 'skipped' (not 'success')
-# and its outputs are empty strings, so both fail-closed checks must exist:
-# the verify step maps an empty expected value to match=0, and the trigger
-# additionally requires the publish result to be success.
-verify = next(s for s in jobs["review-trigger"]["steps"] if "Verify PR head SHA" in (s.get("name") or ""))
-vrun = verify.get("run") or ""
-assert '-z "$expected"' in vrun, "verify must turn an empty published_sha into a fail-closed match=0"
-trigger = next(s for s in jobs["review-trigger"]["steps"] if "Opt in and wait for CodeRabbit review" in (s.get("name") or ""))
-cond = trigger.get("if") or ""
-assert "steps.verify.outputs.match == '1'" in cond, \
-    "trigger must require match == 1 (empty/mismatch -> match == 0 -> no trigger)"
-assert "needs.publish-readme.result == 'success'" in cond, \
-    "trigger must require publish-readme.result == success (a skipped publish job must never trigger a review)"
+config = yaml.safe_load(open(sys.argv[1]))
+auto = config["reviews"]["auto_review"]
+assert auto["enabled"] is True
+assert auto["auto_incremental_review"] is True
+assert auto["auto_pause_after_reviewed_commits"] == 0
+assert "description_keyword" not in auto
+workflow = open(sys.argv[2]).read()
+assert "review-trigger" not in workflow
+assert "@coderabbitai review" not in workflow
+assert "coderabbit-review-gate" not in workflow
+assert "published_sha" not in workflow
+assert "CodeRabbit" not in workflow
 PY
 }
 
@@ -1108,9 +688,7 @@ main() {
          test_publish_bootstrap_refused test_workflow_no_vars test_workflow_token_boundary \
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
-         test_opencode_permission_rules test_workflow_review_trigger test_workflow_head_move_fail_closed test_coderabbit_config \
-         test_workflow_sha_flow test_publish_record_sha test_workflow_readme_changed_regression \
-         test_review_gate_contract test_workflow_skip_contract)
+         test_opencode_permission_rules test_coderabbit_config)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then

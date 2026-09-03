@@ -1,17 +1,11 @@
 # CodeRabbit configuration (Issue #185, Issue #183).
 #
-# Automatic reviews are globally disabled until the README Auto-Update workflow
-# reaches the final PR HEAD. The workflow then opts the PR into CodeRabbit using
-# the officially supported description_keyword mechanism (Issue #237), rather
-# than a github-actions[bot] "@coderabbitai review" comment.
-#
-# PR #236 proved that a bot-authored review command can be posted successfully
-# without CodeRabbit executing it. Trigger success must therefore be based on a
-# CodeRabbit-supported opt-in signal and observed CodeRabbit response.
+# CodeRabbit is a best-effort automated reviewer. Its availability and review
+# timing are intentionally independent of repository-owned CI and README
+# publication.
 reviews:
   auto_review:
-    enabled: false
-    description_keyword: "coderabbit:review-ready"
+    enabled: true
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 0
 
