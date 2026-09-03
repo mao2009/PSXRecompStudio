@@ -122,8 +122,8 @@ Re-evaluation:
    ([`worker-contract.md` §5](worker-contract.md#5-semantic-conflict-detection)).
 4. **Gates:** A and C each still face the full gate sequence individually.
 
-If A and C pass re-evaluation, they integrate normally, one at a time. B is `FAILED`, its worktree and branch **preserved** for
-diagnosis.
+If A and C pass re-evaluation, they integrate normally, one at a time. B is
+`FAILED`, its worktree and branch **preserved** for diagnosis.
 
 **Why this matters:** "B failed, but A and C passed, so ship A and C" is the
 tempting and wrong move. A and C were planned, validated and reviewed in a world
