@@ -82,8 +82,10 @@ result before wave 2 starts. Any result does — `SUCCESS`, `NO_OP`, `BLOCKED` o
 `BLOCKED` and `NO_OP` alike — B is `BLOCKED`, naming A. B is not attempted
 anyway and not dropped from the report. C is unaffected.
 
-**Batch outcome in that case:** `FAILED` if A's result is `FAILED` (rule 2),
-`BLOCKED` if A's result is `BLOCKED` or `NO_OP` (rule 3). C's `SUCCESS` never
+**Batch outcome in that case,** absent a rule 1 match: `FAILED` if A's result
+is `FAILED` (rule 2), `BLOCKED` if A's result is `BLOCKED` or `NO_OP` (rule 3).
+Rule 1 comes first, so if C integrated and aggregate verification then failed,
+the batch is `FAILED` whatever A's result was. Either way C's `SUCCESS` never
 lifts the batch to `SUCCESS`.
 
 ---

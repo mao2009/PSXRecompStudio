@@ -145,14 +145,18 @@ would integrate work whose premise never landed.
 
 If integration of one task fails or stops at a gate:
 
-1. That task's result is recorded with the exact gate and condition.
+1. The gate and the exact condition are recorded against that task. This is a
+   record of what happened, **not** a task result: a task result drives
+   prerequisite propagation and releases the wave, so assigning one before the
+   determination is final could let dependent work start on a premise that has
+   not landed.
 2. **The remaining queue is not drained automatically.** Processing stops at the
    blocked item rather than skipping past it.
 3. That task is not `FAILED` merely for having been stopped at a gate. Where the
    gate closed on a condition that can still change — an approval invalidated by
-   a moved base, for example — the task returns for a fresh determination and is
-   not yet terminal. Where it closed on a condition needing an operator
-   decision, the task is `BLOCKED`.
+   a moved base, for example — the task returns for a fresh determination and
+   **holds no task result yet**. Only where the gate closed on a condition
+   needing an operator decision does the task take task result `BLOCKED`.
 4. Before any further integration, the situation is re-established:
    - Do any remaining tasks depend on the one that stopped? Those are `BLOCKED`.
    - Has the base moved such that remaining approvals are now invalid?

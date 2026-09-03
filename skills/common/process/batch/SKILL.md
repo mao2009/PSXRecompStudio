@@ -421,8 +421,11 @@ Rules:
   context reviews. Automated reviewers are best-effort inputs; their absence,
   unavailability or pending status neither opens nor closes the gate on its own.
 - If integration of one task stops, the remaining queue is **not** drained
-  automatically. Dependents become `BLOCKED`, and remaining approvals and
-  semantic determinations are re-established before any further integration.
+  automatically. A gate that closed on a condition that can still change leaves
+  the task without a task result, awaiting a fresh determination; only a gate
+  that closed on a condition needing an operator decision makes it `BLOCKED`,
+  and only then do its dependents follow. Remaining approvals and semantic
+  determinations are re-established before any further integration.
 - Nothing already merged is reverted automatically. Reverting is an operator
   decision.
 - A gate stop is task-scoped. It stops that task; unrelated tasks keep running
@@ -516,10 +519,13 @@ concurrently or serially, and why.
 
 **Per task**, for every task in the inventory without exception — its
 identifier, its task result, its wave if one was assigned, its branch and
-worktree if any were provisioned, whether it was integrated and via which merge,
-and for every non-`SUCCESS` result the exact condition, quoted. Fields that do
-not apply to a task may be omitted or marked absent; nothing is fabricated to
-fill them.
+worktree if any were provisioned, and whether it was integrated and via which
+merge. For `BLOCKED` and `FAILED`, the exact failing condition, quoted. For
+`NO_OP`, which has no failing condition, the CONFIRMED evidence that the work
+was already present and the operator decision still open on the Issue. Fields
+that do not apply to a task may be omitted or marked absent; nothing is
+fabricated to fill them — least of all a failure for a task that did not
+fail.
 
 **Batch** — the batch outcome with the rule number that produced it; the
 stopping condition quoted verbatim if the batch stopped; counts per task result;

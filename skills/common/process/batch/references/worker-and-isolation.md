@@ -146,7 +146,10 @@ passing batch.
 
 ## Isolation
 
-**Every task gets its own worktree and its own branch. Without exception.**
+**Every dispatched task gets its own worktree and its own branch. Without
+exception.** A task that is never dispatched — resolved before dispatch as
+`NO_OP` or `BLOCKED` — is never provisioned, and has no artifact to create,
+preserve or clean up.
 
 | Property | What isolation guarantees |
 |---|---|
