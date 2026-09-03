@@ -394,6 +394,7 @@ import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
 assert set(jobs) == {"update-readme", "notify-readme"}, "README updater must have only model and notify jobs"
+assert d["concurrency"]["cancel-in-progress"] is True, "stale PR runs must be cancelled before they can notify"
 assert jobs["update-readme"]["permissions"] == {"contents": "read"}
 assert jobs["notify-readme"]["permissions"] == {"contents": "read", "pull-requests": "write"}
 assert jobs["notify-readme"].get("needs") == "update-readme"
@@ -509,8 +510,8 @@ test_workflow_no_bot_push() {
   fi
   local notify_run
   notify_run="$(wf_step_run notify-readme "Notify README candidate")"
-  if echo "$notify_run" | grep -q 'readme-sync.sh" notify'; then
-    fail "notify invocation must use the NOTIFY_SCRIPT capability guard, not a bare call"
+  if ! echo "$notify_run" | grep -qE '^[[:space:]]*"\$NOTIFY_SCRIPT"[[:space:]]+notify[[:space:]]*$'; then
+    fail "notify step must execute the trusted script through NOTIFY_SCRIPT"
   fi
   if ! echo "$notify_run" | grep -q 'NOTIFY_SCRIPT="'; then
     fail "notify step must bind the trusted script path to NOTIFY_SCRIPT"

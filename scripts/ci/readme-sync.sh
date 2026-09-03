@@ -156,12 +156,25 @@ notify_has_marker() {
     return
   fi
   [[ -n "${GITHUB_TOKEN:-}" ]] || die "GITHUB_TOKEN is required to check existing PR comments"
-  local api
+  local api headers body next
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
   api="https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100"
-  if curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-       "$api" | grep -qsF "$marker_line"; then
-    return 0
-  fi
+  while [[ -n "$api" ]]; do
+    headers="$tmpdir/headers"
+    body="$tmpdir/body"
+    if ! curl -fsS -D "$headers" -o "$body" \
+         -H "Authorization: Bearer $GITHUB_TOKEN" \
+         -H "Accept: application/vnd.github+json" "$api"; then
+      die "failed to list PR comments while checking candidate marker"
+    fi
+    if grep -qsF "$marker_line" "$body"; then
+      return 0
+    fi
+    next="$(awk -F'[<>]' '/^[Ll]ink:/ && /rel="next"/ {print $2; exit}' "$headers")"
+    api="$next"
+  done
   return 1
 }
 
@@ -225,8 +238,8 @@ cmd_notify() {
   fi
 
   local added removed
-  added="$(diff -u README.md "$candidate" | grep -c '^+' || true)"
-  removed="$(diff -u README.md "$candidate" | grep -c '^-' || true)"
+  added="$(diff -u README.md "$candidate" | sed '1,2d' | grep -c '^+' || true)"
+  removed="$(diff -u README.md "$candidate" | sed '1,2d' | grep -c '^-' || true)"
 
   local marker_line body
   marker_line="<!-- $marker: $head_sha -->"

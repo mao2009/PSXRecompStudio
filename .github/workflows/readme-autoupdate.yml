@@ -38,7 +38,9 @@ permissions: {}
 
 concurrency:
   group: readme-autoupdate-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  # A run captures one immutable PR_HEAD_SHA. Cancel an older run when the PR
+  # advances so it cannot publish a stale candidate notification afterward.
+  cancel-in-progress: true
 
 jobs:
   update-readme:
