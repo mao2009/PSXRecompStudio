@@ -1,40 +1,43 @@
 #!/usr/bin/env bash
 #
 # Local scenario tests for scripts/ci/readme-sync.sh
-# (Issue #180 README auto-update). No network or GitHub access is required;
-# pushes go to a local bare repository via PUSH_URL.
+# (Issue #180 README auto-update; Issue #244 notify-instead-of-push).
+# No network or GitHub access is required; the notify API is simulated through
+# the GITHUB_API_ROOT directory seam.
 #
 # Scenarios:
 #   1. preflight: proceed on a normal PR head
 #   2. preflight: skip fork PRs
 #   3. preflight: skip bot-authored head commit (loop prevention)
 #   4. preflight: skip when PR repo context is missing
-#   5. publish: no working-tree changes -> clean no-op, no push
-#   6. publish: README-only change is committed as github-actions[bot] and pushed
-#   7. publish: FAILS (no commit/push) when a NON-managed file changed
-#      (e.g. a prompt-injection attempt modifies .github/workflows/...)
-#   8. publish: FAILS when a managed file is deleted
-#   9. publish: refuses to push to main
+#   5. notify: candidate == head README -> no notification (no noise), no comment
+#   6. notify: candidate != head README -> posts one advisory comment with the
+#      marker + head SHA, artifact reference, and apply/decline instructions
+#   7. notify: idempotent - a second run for the same head SHA does not duplicate
+#   8. notify: does not modify the PR head branch or any managed file
+#   9. notify: FAILS (refuses) in bootstrap mode (README_SYNC_BOOTSTRAP=1)
 #  10. workflow YAML is well-formed
 #  11. verify-config: OK for the pinned SSOT + opencode configs
 #  12. verify-config: FAILS when the SSOT config model != opencode/big-pickle
 #  13. verify-config: FAILS when the opencode config model != opencode/big-pickle
 #  14. verify-config: FAILS when the opencode config small_model != opencode/big-pickle
 #  15. verify-config: FAILS when the pinned version is not valid semver
-#  16. publish: FAILS (refuses) in bootstrap mode (README_SYNC_BOOTSTRAP=1)
-#  17. workflow: NO repository-variable overrides (no `vars.`); model literal
-#  18. workflow: model job contents:read + no GITHUB_TOKEN/PUSH_URL; publish job
-#      contents:write with token only in the publish step; publish needs model job
-#  19. workflow: bootstrap gating - publish steps skipped unless origin/main assets exist
-#  20. workflow run-scripts: bash-n (and shellcheck+actionlint if installed) clean;
+#  16. workflow: NO repository-variable overrides (no `vars.`); model literal
+#  17. workflow: model job contents:read + no GITHUB_TOKEN/PUSH_URL; notify job
+#      contents:read + pull-requests:write with token only in the notify step;
+#      notify needs the model job
+#  18. workflow: bootstrap gating - notify steps skipped unless origin/main assets exist
+#  19. workflow run-scripts: bash-n (and shellcheck+actionlint if installed) clean;
 #      ASSETS extraction uses an array with "${ASSETS[@]}" (no unquoted expansion)
-#  21. extraction step functional: origin/main assets -> bootstrap=0, PR-head
+#  20. extraction step functional: origin/main assets -> bootstrap=0, PR-head
 #      fallback -> bootstrap=1 (analyze-only bootstrap path)
-#  22. model-output exporter functional: only-README change exports; other changes
+#  21. model-output exporter functional: only-README change exports; other changes
 #      or a deleted README fail closed
-#  23. artifact validation functional: exactly one root README.md passes; extra
+#  22. artifact validation functional: exactly one root README.md passes; extra
 #      file, symlink, or subdirectory fail closed
-#  24. opencode permission rules: catch-all first, specifics last
+#  23. opencode permission rules: catch-all first, specifics last
+#  24. workflow: does NOT push a bot commit to the PR head branch (Issue #244);
+#      no git push / no commit authoring in the workflow
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,75 +153,90 @@ test_preflight_missing_context() {
   grep -q '^action=skip$' "$out" || fail "expected action=skip"
 }
 
-# --- 5. publish no changes -> no-op ---------------------------------------
-test_publish_noop() {
+# --- 5. notify: candidate == head README -> no notification (no noise) -----
+test_notify_no_noise() {
   setup_repo t5
+  local d
+  d="$ROOT_DIR/t5/api"; mkdir -p "$d"
+  cp "$WORK/README.md" "$d/candidate.md"
+  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=5 PR_HEAD_SHA="$(git rev-parse HEAD)" GITHUB_RUN_ID=123 \
+      CANDIDATE_README="$d/candidate.md" GITHUB_API_ROOT="$d" \
+      bash "$SYNC" notify ) >/dev/null
+  local ec=$?
+  assert_eq 0 "$ec" "notify must succeed when README is consistent"
+  [[ -f "$d/comments.json" ]] && [[ -s "$d/comments.json" ]] \
+    && fail "no comment may be posted when the candidate matches the head README"
+}
+
+# --- 6. notify: candidate != head README -> posts advisory comment ----------
+test_notify_posts_when_changed() {
+  setup_repo t6
+  local d headsha
+  d="$ROOT_DIR/t6/api"; mkdir -p "$d"
+  printf '# Demo\n\n更新ノート：Phase 2Aを追加。\n' > "$d/candidate.md"
+  headsha="$(git -C "$WORK" rev-parse HEAD)"
   local before after
   before="$(git ls-remote "$REMOTE" refs/heads/pr-branch)"
-  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" PUSH_URL="file://$REMOTE" \
-      PR_HEAD_BRANCH=pr-branch bash "$SYNC" publish ) >/dev/null
+  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=6 PR_HEAD_SHA="$headsha" GITHUB_RUN_ID=456 \
+      CANDIDATE_README="$d/candidate.md" GITHUB_API_ROOT="$d" \
+      bash "$SYNC" notify ) >/dev/null
+  local ec=$?
+  assert_eq 0 "$ec" "notify must succeed when a candidate differs"
   after="$(git ls-remote "$REMOTE" refs/heads/pr-branch)"
-  assert_eq "$before" "$after" "no-op: remote branch must be unchanged"
+  assert_eq "$before" "$after" "notify must NOT change the PR head branch"
+  [[ -f "$d/comments.json" ]] || fail "a comment must be posted"
+  grep -qsF "<!-- README-AUTOUPDATE-CANDIDATE:" "$d/comments.json" \
+    || fail "comment must contain the candidate marker"
+  grep -qsF "$headsha" "$d/comments.json" \
+    || fail "comment must reference the head SHA"
+  grep -qi "apply\|decline\|not a merge gate" "$d/comments.json" \
+    || fail "comment must contain apply/decline guidance"
+  grep -q "更新ノート" "$WORK/README.md" \
+    && fail "the checked-out README must NOT be modified by notify"
 }
 
-# --- 6. publish README-only -> bot commit pushed --------------------------
-test_publish_readme_only() {
-  setup_repo t6
-  printf '\n更新ノート：タイマ実行時間の改善を追加。\n' >> "$WORK/README.md"
-  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" PUSH_URL="file://$REMOTE" \
-      PR_HEAD_BRANCH=pr-branch bash "$SYNC" publish ) >/dev/null
-  local remote_head
-  remote_head="$(git ls-remote "$REMOTE" refs/heads/pr-branch | cut -f1)"
-  assert_ne "" "$remote_head" "README change must be pushed"
-  git -C "$WORK" fetch -q origin
-  git -C "$WORK" show "origin/pr-branch:README.md" | grep -q "更新ノート" \
-    || fail "remote README must contain the update"
-  git -C "$WORK" show -s --format='%ae' "origin/pr-branch" | grep -q "41898282+github-actions" \
-    || fail "commit author must be the configured bot"
-  git -C "$WORK" show "origin/pr-branch:.github/workflows/test.yml" | grep -q "echo hi" \
-    || fail "workflow file on remote must be untouched"
-}
-
-# --- 7. publish non-managed change -> fail closed, nothing pushed ---------
-test_publish_non_managed_fail_closed() {
+# --- 7. notify: idempotent per (marker, head SHA) ---------------------------
+test_notify_idempotent() {
   setup_repo t7
-  printf '\nname: EVIL\non: [push]\n' >> "$WORK/.github/workflows/test.yml"
-  local before
-  before="$(git ls-remote "$REMOTE" refs/heads/pr-branch)"
-  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" PUSH_URL="file://$REMOTE" \
-      PR_HEAD_BRANCH=pr-branch bash "$SYNC" publish ) >/dev/null 2>&1;
-  local ec=$?
-  assert_ne 0 "$ec" "publish must fail when a non-managed file is modified"
-  assert_eq "$before" "$(git ls-remote "$REMOTE" refs/heads/pr-branch)" \
-    "remote branch must be unchanged"
-  assert_ne "$(git -C "$WORK" log --oneline -1 --format=%s)" "docs: update README" \
-    "no bot commit may be created"
+  local d headsha
+  d="$ROOT_DIR/t7/api"; mkdir -p "$d"
+  printf '# Demo\n\nchanged again\n' > "$d/candidate.md"
+  headsha="$(git -C "$WORK" rev-parse HEAD)"
+  local run1
+  run1="$(cd "$WORK" && env README_SYNC_CONFIG="$CONFIG" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=7 PR_HEAD_SHA="$headsha" GITHUB_RUN_ID=789 \
+      CANDIDATE_README="$d/candidate.md" GITHUB_API_ROOT="$d" \
+      bash "$SYNC" notify)"
+  local run2
+  run2="$(cd "$WORK" && env README_SYNC_CONFIG="$CONFIG" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=7 PR_HEAD_SHA="$headsha" GITHUB_RUN_ID=790 \
+      CANDIDATE_README="$d/candidate.md" GITHUB_API_ROOT="$d" \
+      bash "$SYNC" notify)"
+  local count
+  count="$(grep -c "<!-- README-AUTOUPDATE-CANDIDATE:" "$d/comments.json" || true)"
+  assert_eq 1 "$count" "a second notify run for the same head SHA must not duplicate the comment"
 }
 
-# --- 8. publish deletion of managed file -> fail closed --------------------
-test_publish_deletion_fail_closed() {
+# --- 8. notify: bootstrap mode -> refused (no token-backed comment) ----------
+test_notify_bootstrap_refused() {
   setup_repo t8
-  rm "$WORK/README.md"
-  local before
-  before="$(git ls-remote "$REMOTE" refs/heads/pr-branch)"
-  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" PUSH_URL="file://$REMOTE" \
-      PR_HEAD_BRANCH=pr-branch bash "$SYNC" publish ) >/dev/null 2>&1;
-  local ec=$?
-  assert_ne 0 "$ec" "publish must fail when a managed file is deleted"
-  assert_eq "$before" "$(git ls-remote "$REMOTE" refs/heads/pr-branch)" \
-    "remote branch must be unchanged"
+  local d headsha ec
+  d="$ROOT_DIR/t8/api"; mkdir -p "$d"
+  printf '# Demo\n\nbootstrap candidate\n' > "$d/candidate.md"
+  headsha="$(git -C "$WORK" rev-parse HEAD)"
+  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" GITHUB_REPOSITORY=owner/repo \
+      PR_NUMBER=8 PR_HEAD_SHA="$headsha" GITHUB_RUN_ID=1 \
+      CANDIDATE_README="$d/candidate.md" GITHUB_API_ROOT="$d" \
+      README_SYNC_BOOTSTRAP=1 bash "$SYNC" notify ) >/dev/null 2>&1
+  ec=$?
+  assert_ne 0 "$ec" "notify must refuse in bootstrap mode"
+  [[ -f "$d/comments.json" ]] && [[ -s "$d/comments.json" ]] \
+    && fail "bootstrap mode must never post a comment"
 }
 
-# --- 9. publish refuses to push to main ----------------------------------
-test_publish_no_main() {
-  setup_repo t9
-  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" PUSH_URL="file://$REMOTE" \
-      PR_HEAD_BRANCH=main bash "$SYNC" publish ) >/dev/null 2>&1;
-  local ec=$?
-  assert_ne 0 "$ec" "publish must refuse to push to main"
-}
-
-# --- 10. workflow structure: triggers + two-job least-privilege scope ---------
+# --- 9. workflow structure: triggers + two-job least-privilege scope ---------
 test_workflow_yaml() {
   python3 - "$WORKFLOW" <<'PY' || fail "workflow YAML did not parse"
 import sys, yaml
@@ -230,8 +248,8 @@ assert "pull_request" in d["on"], "missing pull_request trigger"
 assert d.get("permissions") == {}, "top-level permissions must be empty ({}); jobs grant their own minimum"
 jobs = d["jobs"]
 assert jobs["update-readme"]["permissions"] == {"contents": "read"}, "model job: contents: read only"
-assert jobs["publish-readme"]["permissions"] == {"contents": "write"}, "publish job: contents: write"
-assert jobs["publish-readme"]["needs"] == "update-readme", "publish job must depend on the model job"
+assert jobs["notify-readme"]["permissions"] == {"contents": "read", "pull-requests": "write"}, "notify job: contents read + pull-requests write"
+assert jobs["notify-readme"]["needs"] == "update-readme", "notify job must depend on the model job"
 PY
 }
 
@@ -330,19 +348,7 @@ PY
   assert_ne 0 "$ec" "verify-config must reject a non-semver version (path injection guard)"
 }
 
-# --- 16. publish refuses in bootstrap mode ----------------------------------
-test_publish_bootstrap_refused() {
-  setup_repo t16
-  local ec before after
-  before="$(git ls-remote "$REMOTE" refs/heads/pr-branch)"
-  ( cd "$WORK" && README_SYNC_CONFIG="$CONFIG" PUSH_URL="file://$REMOTE" \
-      PR_HEAD_BRANCH=pr-branch README_SYNC_BOOTSTRAP=1 \
-      bash "$SYNC" publish ) >/dev/null 2>&1
-  ec=$?
-  after="$(git ls-remote "$REMOTE" refs/heads/pr-branch)"
-  assert_ne 0 "$ec" "publish must refuse to run in bootstrap mode"
-  assert_eq "$before" "$after" "bootstrap refusal must leave the remote untouched"
-}
+# --- notify bootstrap refusal is covered by test #8 ---
 
 # wf_step_run <job> <name-substring> -> prints the `run` block of that step
 wf_step_run() {
@@ -382,61 +388,61 @@ test_workflow_no_vars() {
 
 # --- 18. workflow: token/scope separation between the three jobs -------------
 test_workflow_token_boundary() {
-  local model_perm publish_perm
+  local model_perm notify_perm
   python3 - "$WORKFLOW" <<'PY' || fail "workflow structure check failed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-assert set(jobs) == {"update-readme", "publish-readme"}, "README updater must have only model and publish jobs"
+assert set(jobs) == {"update-readme", "notify-readme"}, "README updater must have only model and notify jobs"
 assert jobs["update-readme"]["permissions"] == {"contents": "read"}
-assert jobs["publish-readme"]["permissions"] == {"contents": "write"}
-assert jobs["publish-readme"].get("needs") == "update-readme"
+assert jobs["notify-readme"]["permissions"] == {"contents": "read", "pull-requests": "write"}
+assert jobs["notify-readme"].get("needs") == "update-readme"
 for job in jobs.values():
     for step in job["steps"]:
         blob = (step.get("run") or "") + " " + " ".join(str(v) for v in (step.get("env") or {}).values())
-        if "github.token" in blob and step.get("name") != "Publish README updates":
-            raise AssertionError("GITHUB_TOKEN referenced outside publish step")
+        if "github.token" in blob and step.get("name") != "Notify README candidate":
+            raise AssertionError("GITHUB_TOKEN referenced outside the notify step")
 PY
   model_perm="$(python3 - "$WORKFLOW" <<'PY'
 import sys, yaml
 print(yaml.safe_load(open(sys.argv[1]))["jobs"]["update-readme"]["permissions"]["contents"])
 PY
 )"
-  publish_perm="$(python3 - "$WORKFLOW" <<'PY'
+  notify_perm="$(python3 - "$WORKFLOW" <<'PY'
 import sys, yaml
-print(yaml.safe_load(open(sys.argv[1]))["jobs"]["publish-readme"]["permissions"]["contents"])
+print(yaml.safe_load(open(sys.argv[1]))["jobs"]["notify-readme"]["permissions"]["pull-requests"])
 PY
 )"
   assert_eq "$model_perm" "read" "model job permission must be contents:read"
-  assert_eq "$publish_perm" "write" "publish job permission must be contents:write"
+  assert_eq "$notify_perm" "write" "notify job permission must grant pull-requests:write"
 }
 
-# --- 19. workflow: bootstrap gating on publish steps ------------------------
+# --- 19. workflow: bootstrap gating on notify steps --------------------------
 test_workflow_bootstrap_gating() {
   local job_if cond run
   job_if="$(python3 - "$WORKFLOW" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
-print(d["jobs"]["publish-readme"].get("if") or "")
+print(d["jobs"]["notify-readme"].get("if") or "")
 PY
 )"
   if [[ "$job_if" != *"needs.update-readme.outputs.bootstrap == '0'"* ]]; then
-    fail "publish job must be gated on the model job's bootstrap output (bootstrap runs stay analyze-only)"
+    fail "notify job must be gated on the model job's bootstrap output (bootstrap runs stay analyze-only)"
   fi
-  cond="$(wf_step_if publish-readme "Publish README updates")"
+  cond="$(wf_step_if notify-readme "Notify README candidate")"
   if [[ "$cond" != *"steps.extract.outputs.bootstrap == '0'"* ]]; then
-    fail "publish step must be gated on bootstrap=0"
+    fail "notify step must be gated on bootstrap=0"
   fi
-  cond="$(wf_step_if publish-readme "Download candidate README artifact")"
+  cond="$(wf_step_if notify-readme "Download candidate README artifact")"
   if [[ "$cond" != *"steps.extract.outputs.bootstrap == '0'"* ]]; then
     fail "artifact download must be gated on bootstrap=0"
   fi
-  run="$(wf_step_run publish-readme "Extract trusted assets")"
+  run="$(wf_step_run notify-readme "Extract trusted assets")"
   if ! echo "$run" | grep -q 'git archive origin/main "${ASSETS\[@\]}"'; then
-    fail "publish extraction must use origin/main with the quoted asset array"
+    fail "notify extraction must use origin/main with the quoted asset array"
   fi
   if ! echo "$run" | grep -q '::warning::BOOTSTRAP'; then
-    fail "publish extraction must emit a loud bootstrap warning instead of falling back"
+    fail "notify extraction must emit a loud bootstrap warning instead of falling back"
   fi
 }
 
@@ -485,11 +491,30 @@ PY
   if echo "$run_main" | grep -q '\$ASSETS'; then
     fail "unquoted ASSETS expansion detected"
   fi
-  run_pub="$(wf_step_run publish-readme "Extract trusted assets")"
+  run_pub="$(wf_step_run notify-readme "Extract trusted assets")"
   if ! echo "$run_pub" | grep -q 'git archive origin/main "${ASSETS\[@\]}"'; then
-    fail "publish extract step must use the quoted array expansion in git archive"
+    fail "notify extract step must use the quoted array expansion in git archive"
   fi
   [[ $failed -eq 0 ]]
+}
+
+# --- 21. workflow: no bot push to the PR head branch (Issue #244) -----------
+test_workflow_no_bot_push() {
+  # The workflow must never author a bot commit or push to the PR head branch.
+  # A github-actions[bot]-authored PR HEAD leaves required CI in action_required
+  # with 0 jobs, permanently blocking the merge gate (Issue #244). README
+  # changes are surfaced as an advisory comment only.
+  if grep -qE 'git push|git commit -m "docs: update README"|github-actions\[bot\].*commit|contents: write' "$WORKFLOW"; then
+    fail "workflow must not push a bot-authored commit to the PR head branch (Issue #244)"
+  fi
+  local notify_run
+  notify_run="$(wf_step_run notify-readme "Notify README candidate")"
+  if ! echo "$notify_run" | grep -q 'readme-sync.sh" notify'; then
+    fail "notify step must invoke readme-sync.sh notify (comment-only, no push)"
+  fi
+  if echo "$notify_run" | grep -q 'publish'; then
+    fail "notify step must not invoke a publish path"
+  fi
 }
 
 # --- 21. extraction functional: trusted vs bootstrap ------------------------
@@ -591,7 +616,7 @@ test_model_exporter_gate() {
 # --- 23. artifact validation functional (publish-side gate) -----------------
 test_artifact_validation() {
   local script d rt
-  script="$(wf_step_run publish-readme "Validate artifact")"
+  script="$(wf_step_run notify-readme "Validate artifact")"
   d="$ROOT_DIR/artifact"
   mkdir -p "$d"
 
@@ -679,14 +704,15 @@ PY
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
-         test_preflight_missing_context test_publish_noop \
-         test_publish_readme_only test_publish_non_managed_fail_closed \
-         test_publish_deletion_fail_closed test_publish_no_main \
+         test_preflight_missing_context test_notify_no_noise \
+         test_notify_posts_when_changed test_notify_idempotent \
+         test_notify_bootstrap_refused \
          test_workflow_yaml test_verify_config_ok \
          test_verify_config_rejects_ssot_model test_verify_config_rejects_opencode_model \
          test_verify_config_rejects_small_model test_verify_config_rejects_bad_version \
-         test_publish_bootstrap_refused test_workflow_no_vars test_workflow_token_boundary \
+         test_workflow_no_vars test_workflow_token_boundary \
          test_workflow_bootstrap_gating test_workflow_run_scripts \
+         test_workflow_no_bot_push \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
          test_opencode_permission_rules test_coderabbit_config)
   for t in "${tests[@]}"; do

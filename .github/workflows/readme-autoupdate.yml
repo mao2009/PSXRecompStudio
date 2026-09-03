@@ -1,22 +1,32 @@
 name: README Auto-Update
 
-# PR-triggered README updater (Issue #180). Two isolated jobs:
+# PR-triggered README updater (Issue #180, Issue #244). Two isolated jobs:
 #
 #   1. update-readme ("model" job, contents: read, NO GITHUB_TOKEN):
 #      runs OpenCode pinned to opencode/big-pickle with assets extracted from
 #      origin/main and emits ONLY a candidate README.md artifact. OpenCode can
 #      never publish anything and has no repository credentials.
-#   2. publish-readme ("publish" job, contents: write): clean workspace, fresh
-#      origin/main extraction, single-file artifact, mechanical validation, then
-#      commits/pushes ONLY the managed README to the PR's own head branch. It
+#   2. notify-readme ("notify" job, contents: read + pull-requests: write):
+#      clean workspace, fresh origin/main extraction, single-file artifact,
+#      mechanical validation, then compares the candidate README to the PR
+#      head README. If identical it emits no comment (no noise); if different
+#      it posts ONE idempotent, advisory PR comment referencing the candidate
+#      artifact and the apply/decline instructions.
 #
-# Trust model (see docs/adr/009-readme-autoupdate.md):
-#   Trusted   : origin/main, this workflow, trusted config, trusted publish script
+# The bot NEVER pushes a commit to the PR head branch (Issue #244). A
+# github-actions[bot]-authored PR HEAD leaves required CI in action_required
+# with 0 jobs (GitHub recursion/protection), permanently blocking the merge
+# gate. README updates are instead surfaced as a comment + artifact reference
+# so the author folds them into a normal (human-authored, CI-capable) commit.
+#
+# Trust model (see docs/adr/009-readme-autoupdate.md, Issue #244):
+#   Trusted   : origin/main, this workflow, trusted config, trusted notify script
 #   Untrusted : PR branch, PR description, comments, source, README content,
 #               issue content, OpenCode output, repository variables (ignored)
 #
 # Permissions default to nothing; each job grants the minimum it needs. The
-# GITHUB_TOKEN is referenced ONLY in the publish job.
+# GITHUB_TOKEN is referenced ONLY in the notify job (to post a comment), and
+# never gives write access to repository contents.
 
 "on":
   pull_request:
@@ -60,8 +70,8 @@ jobs:
       # Bootstrap exception (analyze-only): the FIRST PR that introduces these
       # files has no trusted copy on origin/main yet, so it sources them from
       # the PR head (emits ::warning::BOOTSTRAP). Normal PR review gates that
-      # single bootstrap, and the publish job refuses to run in bootstrap
-      # mode - no GITHUB_TOKEN-backed change is ever produced by it.
+      # single bootstrap, and the notify job refuses to run in bootstrap
+      # mode - no GITHUB_TOKEN-backed comment is ever produced by it.
       - name: Extract trusted assets from origin/main
         id: extract
         run: |
@@ -80,7 +90,7 @@ jobs:
             echo "bootstrap=0" >> "$GITHUB_OUTPUT"
             echo "trusted assets extracted from origin/main"
           else
-            echo "::warning::BOOTSTRAP ANALYZE-ONLY: trusted assets not yet on origin/main; model runs from the PR-head copy, publish is skipped this run."
+            echo "::warning::BOOTSTRAP ANALYZE-ONLY: trusted assets not yet on origin/main; model runs from the PR-head copy, notify is skipped this run."
             tar -C . -cf - "${ASSETS[@]}" | tar -x -C "$TRUSTED"
             echo "bootstrap=1" >> "$GITHUB_OUTPUT"
           fi
@@ -141,7 +151,7 @@ jobs:
             --model opencode/big-pickle \
             "$(cat "$RUNNER_TEMP/readme-sync-prompt.md")"
         # No GITHUB_TOKEN here. The model never receives repository credentials;
-        # the only credentialed step is the separate publish job. Big Pickle is
+        # the only credentialed step is the separate notify job. Big Pickle is
         # used for free via OpenCode Zen with no API key.
         env:
           OPENCODE_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate/opencode.json
@@ -157,8 +167,8 @@ jobs:
       # Mechanical output gate: after the model runs, this job asserts that the
       # working tree contains ONLY a (possibly unchanged) README.md modification
       # and exports exactly that file. Anything else makes the job fail, so the
-      # publish job never even sees a candidate. The trusted publish script and
-      # config used by the publish job are re-extracted from origin/main there.
+      # notify job never even sees a candidate. The trusted notify script and
+      # config used by the notify job are re-extracted from origin/main there.
       - name: Validate model output and export candidate README
         if: steps.preflight.outputs.action == 'proceed'
         run: |
@@ -185,19 +195,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish-readme:
-    name: Publish (clean job, origin/main assets, token-backed)
+  notify-readme:
+    name: Notify (clean job, origin/main assets, token-backed comment)
     needs: update-readme
-    # Fork PRs never publish; this job also never runs in bootstrap mode below.
-    # The bootstrap check references the MODEL job's output, so a race where
-    # origin/main gains the trusted assets between the two jobs cannot turn an
-    # analyze-only bootstrap run into a token-backed publish.
+    # Fork PRs never receive a README candidate comment; this job also never
+    # runs in bootstrap mode below. The bootstrap check references the MODEL
+    # job's output, so a race where origin/main gains the trusted assets between
+    # the two jobs cannot turn an analyze-only bootstrap run into a
+    # token-backed comment post.
     if: >
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.update-readme.outputs.action == 'proceed' &&
       needs.update-readme.outputs.bootstrap == '0'
     permissions:
-      contents: write
+      contents: read
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -213,7 +225,7 @@ jobs:
       # Fresh extraction in THIS job from origin/main ONLY - never the PR head.
       # Even if OpenCode modified the model job's trusted directory, it cannot
       # influence this job. If origin/main lacks the assets (bootstrap), the
-      # token-backed publish path is skipped entirely (analyze-only) instead of
+      # token-backed notify path is skipped entirely (analyze-only) instead of
       # executing PR-controlled code with GITHUB_TOKEN.
       - name: Extract trusted assets from origin/main
         id: extract
@@ -233,7 +245,7 @@ jobs:
             echo "bootstrap=0" >> "$GITHUB_OUTPUT"
             echo "trusted assets extracted from origin/main"
           else
-            echo "::warning::BOOTSTRAP ANALYZE-ONLY: no trusted assets on origin/main; refusing to run PR-controlled code with the publish token. Publish steps skipped."
+            echo "::warning::BOOTSTRAP ANALYZE-ONLY: no trusted assets on origin/main; refusing to run PR-controlled code with the notify token. Notify steps skipped."
             echo "bootstrap=1" >> "$GITHUB_OUTPUT"
           fi
           chmod +x "$TRUSTED/scripts/ci/readme-sync.sh" 2>/dev/null || true
@@ -277,26 +289,26 @@ jobs:
           print("artifact OK: exactly one README.md")
           PY
 
-      - name: Apply candidate README to working tree
+      # Runs the trusted origin/main notify script (freshly extracted in this
+      # job). It compares the candidate README against the checked-out PR head
+      # README; when identical it emits no comment (no noise). When they differ,
+      # it posts a single, idempotent, advisory PR comment (marker + head SHA)
+      # referencing the candidate artifact and the apply/decline instructions.
+      # The bot NEVER pushes a commit to the PR head branch (Issue #244): a
+      # github-actions[bot]-authored HEAD leaves required CI in action_required
+      # with 0 jobs, permanently blocking the merge gate. Posting a comment does
+      # not push a commit, so it does not re-trigger pull_request workflows or
+      # leave a CI-capable state broken.
+      - name: Notify README candidate
         if: steps.extract.outputs.bootstrap == '0'
         run: |
-          set -euo pipefail
-          cp "$RUNNER_TEMP/readme-artifact/README.md" README.md
-
-      # Runs the trusted origin/main publish script (freshly extracted in this
-      # job). It inspects the real working tree: only README.md may differ from
-      # the PR head, deletions are rejected, and the push target is exactly
-      # HEAD:refs/heads/<PR head branch> (main and other forbidden branches are
-      # refused). The bot commit re-triggers a synchronize run that preflight
-      # skips as a bot commit (loop prevention).
-      - name: Publish README updates
-        if: steps.extract.outputs.bootstrap == '0'
-        run: |
-          "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" publish
+          "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" notify
         env:
           README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
           README_SYNC_BOOTSTRAP: "0"
-          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CANDIDATE_README: ${{ runner.temp }}/readme-artifact/README.md
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          GITHUB_RUN_ID: ${{ github.run_id }}
