@@ -314,7 +314,7 @@ jobs:
         run: |
           set -euo pipefail
           NOTIFY_SCRIPT="$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh"
-          if grep -q '"notify")' "$NOTIFY_SCRIPT"; then
+          if grep -qE '^[[:space:]]*notify\)' "$NOTIFY_SCRIPT"; then
             "$NOTIFY_SCRIPT" notify
           else
             echo "::warning::README notify command not yet present in the trusted origin/main script; skipping candidate comment (transitional PR)."

@@ -516,7 +516,7 @@ test_workflow_no_bot_push() {
   if ! echo "$notify_run" | grep -q 'NOTIFY_SCRIPT="'; then
     fail "notify step must bind the trusted script path to NOTIFY_SCRIPT"
   fi
-  if ! echo "$notify_run" | grep -qF '"notify")'; then
+  if ! echo "$notify_run" | grep -qF "grep -qE '^[[:space:]]*notify\\)'"; then
     fail "notify step must guard on the trusted script supporting the notify command (transitional PR)"
   fi
   if ! echo "$notify_run" | grep -q '::warning::README notify command not yet present'; then
