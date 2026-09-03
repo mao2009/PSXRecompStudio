@@ -768,7 +768,106 @@ assert "Timed out waiting for CodeRabbit review evidence" in run, "completion ch
 PY
 }
 
-# --- 26. .coderabbit.yaml: automatic reviews disabled, bot command supported --
+# --- 26. workflow: execute current-HEAD failure paths with mocked API ---------
+# The static contract checks above catch accidental removal of the guards, but
+# these scenarios execute the actual review-trigger run block. The mock changes
+# only the PR head; no real GitHub API or body write is used.
+test_workflow_head_move_fail_closed() {
+  local mock run log ec
+  mock="$ROOT_DIR/marker-mock"
+  mkdir -p "$mock"
+
+  cat > "$mock/jq" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+data = sys.stdin.read()
+if "-e" in args:
+    sys.exit(0 if "No actionable comments were generated" in data and "expected-head" in data else 1)
+query = next((a for a in args if a.startswith(".")), "")
+obj = json.loads(data)
+if query.startswith(".head.sha"):
+    print(obj["head"]["sha"])
+elif query.startswith(".body"):
+    print(obj.get("body") or "")
+else:
+    raise SystemExit("unsupported mock jq query: " + query)
+PY
+  chmod +x "$mock/jq"
+
+  cat > "$mock/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$MOCK_STATE"
+count=0
+[[ -f "$state" ]] && count="$(<"$state")"
+echo "scenario=$MOCK_SCENARIO count=$count args=$*" >> "$MOCK_LOG"
+if [[ " $* " == *" -X PATCH "* ]]; then
+  exit 0
+fi
+path=""
+for arg in "$@"; do
+  [[ "$arg" == repos/* ]] && path="$arg"
+done
+if [[ "$path" == *"/issues/"*"/comments"* ]]; then
+  printf '[{"user":{"login":"coderabbitai[bot]"},"body":"No actionable comments were generated for expected-head"}]\n'
+  exit 0
+fi
+if [[ "$path" == *"/pulls/"*"/reviews"* ]]; then
+  printf '[[]]\n'
+  exit 0
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$state"
+head="expected-head"
+if [[ "$MOCK_SCENARIO" == "wait-head-move" && "$count" -ge 3 ]]; then
+  head="moved-head"
+elif [[ "$MOCK_SCENARIO" == "finalize-head-move" && "$count" -ge 7 ]]; then
+  head="moved-head"
+fi
+body='description'
+if [[ "$count" -ge 2 && "$count" -le 4 ]]; then
+  body=$'description\n\n<!-- coderabbit:review-ready -->'
+elif [[ "$MOCK_SCENARIO" == "finalize-head-move" && "$count" -eq 5 ]]; then
+  body=$'description\n\n<!-- coderabbit:review-ready --> '
+elif [[ "$MOCK_SCENARIO" == "finalize-head-move" && "$count" -ge 6 ]]; then
+  body=$'description\n\n '
+fi
+python3 - "$head" "$body" <<'PY'
+import json, sys
+print(json.dumps({"head": {"sha": sys.argv[1]}, "body": sys.argv[2]}))
+PY
+SH
+  chmod +x "$mock/gh"
+
+  run="$(wf_step_run review-trigger "Opt in and wait for CodeRabbit review")"
+
+  log="$ROOT_DIR/wait-head-move.log"
+  set +e
+  ( PATH="$mock:$PATH" MOCK_STATE="$ROOT_DIR/wait-head-move.state" \
+      MOCK_SCENARIO=wait-head-move MOCK_LOG="$ROOT_DIR/wait-head-move.api.log" GITHUB_REPOSITORY=owner/repo PR_NUMBER=1 \
+      PUBLISHED_SHA=expected-head GH_TOKEN=test GITHUB_OUTPUT="$ROOT_DIR/wait.out" \
+      bash -e -c "$run" ) >"$log" 2>&1
+  ec=$?
+  set -e
+  assert_ne 0 "$ec" "HEAD move during evidence wait must fail closed"
+  grep -q "PR head moved while waiting for CodeRabbit review" "$log" \
+    || fail "wait HEAD move must use the executable fail-closed guard"
+
+  log="$ROOT_DIR/finalize-head-move.log"
+  set +e
+  ( PATH="$mock:$PATH" MOCK_STATE="$ROOT_DIR/finalize-head-move.state" \
+      MOCK_SCENARIO=finalize-head-move MOCK_LOG="$ROOT_DIR/finalize-head-move.api.log" GITHUB_REPOSITORY=owner/repo PR_NUMBER=1 \
+      PUBLISHED_SHA=expected-head GH_TOKEN=test GITHUB_OUTPUT="$ROOT_DIR/finalize.out" \
+      bash -e -c "$run" ) >"$log" 2>&1
+  ec=$?
+  set -e
+  assert_ne 0 "$ec" "HEAD move after cleanup must fail closed"
+  grep -q "PR head moved while finalizing CodeRabbit review" "$log" \
+    || fail "finalization HEAD move must use the executable fail-closed guard"
+}
+
+# --- 27. .coderabbit.yaml: automatic reviews disabled, bot command supported --
 test_coderabbit_config() {
   local cfg
   cfg="$(cd "$SCRIPT_DIR/../.." && pwd)/.coderabbit.yaml"
@@ -1009,7 +1108,7 @@ main() {
          test_publish_bootstrap_refused test_workflow_no_vars test_workflow_token_boundary \
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
-         test_opencode_permission_rules test_workflow_review_trigger test_coderabbit_config \
+         test_opencode_permission_rules test_workflow_review_trigger test_workflow_head_move_fail_closed test_coderabbit_config \
          test_workflow_sha_flow test_publish_record_sha test_workflow_readme_changed_regression \
          test_review_gate_contract test_workflow_skip_contract)
   for t in "${tests[@]}"; do
