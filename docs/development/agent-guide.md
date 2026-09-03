@@ -62,6 +62,11 @@ status/diff/commit evidence, remaining work, and Issue/PR state). It forbids
 reporting unperformed verification as performed and requires evidence for
 "no problems" conclusions.
 
+When creating or rewriting commits, follow
+`skills/common/process/commit-message/SKILL.md` for the Conventional Commits
+format, type/scope/subject rules, Issue-linkage trailers, and per-commit
+change granularity.
+
 ## Before creating a pull request
 
 When the change touched implementation, architecture, CI/build/test
