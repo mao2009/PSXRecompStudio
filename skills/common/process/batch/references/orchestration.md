@@ -156,7 +156,7 @@ Allowed transitions:
 | `PLANNING` | `SCHEDULING`, `FAILED` |
 | `SCHEDULING` | `RUNNING`, `FAILED` |
 | `RUNNING` | `WAITING_FOR_MERGE`, `FAILED` |
-| `WAITING_FOR_MERGE` | `MERGING`, `COMPLETED`, `FAILED` |
+| `WAITING_FOR_MERGE` | `MERGING`, `CLEANUP`, `FAILED` |
 | `MERGING` | `CLEANUP`, `FAILED` |
 | `CLEANUP` | `COMPLETED`, `FAILED` |
 | `COMPLETED` | — (terminal) |
@@ -165,27 +165,42 @@ Allowed transitions:
 Any transition not listed is illegal. A batch observed in an unrecognized state
 transitions to `FAILED`; it is never assumed to be healthy.
 
+`WAITING_FOR_MERGE → CLEANUP` is the **no-integration** path, taken when no task
+is integration-eligible and there is therefore nothing to merge. It skips the
+merge, and nothing else: `CLEANUP` carries Phases 9–11 — aggregate verification
+(§5), cleanup (§6) and reporting (§7) — exactly as it does after `MERGING`.
+
+There is **no** edge from `WAITING_FOR_MERGE` to `COMPLETED`. `COMPLETED` is
+reachable only through `CLEANUP`, so a batch can never reach its terminal state
+with aggregate verification, cleanup and reporting unrecorded. A batch that
+merged nothing still reports why, and still reports its aggregate verification
+result as `PASS` / `FAIL` / `NOT RUN`.
+
 ### 3.2 Task state
 
 | From | To |
 |---|---|
-| `WAITING_DEPENDENCY` | `WORKER_STARTING` |
+| `WAITING_DEPENDENCY` | `WORKER_STARTING`, `BLOCKED` |
 | `WAITING_FOR_WORKER` | `WORKER_STARTING`, `BLOCKED` |
 | `WORKER_STARTING` | `READY_FOR_DISPATCH`, `WORKER_RUNNING`, `WORKER_RETRYING`, `WORKER_FAILED`, `FAILED` |
 | `READY_FOR_DISPATCH` | `DISPATCHED`, `WORKER_FAILED`, `FAILED` |
 | `DISPATCHED` | `WORKER_RUNNING`, `WORKER_FAILED`, `FAILED` |
 | `WORKER_RUNNING` | `RESULT_READY`, `WORKER_RETRYING`, `WORKER_FAILED` |
 | `WORKER_RETRYING` | `WORKER_STARTING`, `WORKER_FAILED` |
-| `RESULT_READY` | `WAITING_FOR_APPROVAL` |
-| `WAITING_FOR_APPROVAL` | `READY_FOR_MERGE`, `RESULT_READY` |
+| `RESULT_READY` | `WAITING_FOR_APPROVAL`, `FAILED`, `BLOCKED` |
+| `WAITING_FOR_APPROVAL` | `READY_FOR_MERGE`, `RESULT_READY`, `BLOCKED` |
 | `READY_FOR_MERGE` | `MERGING` |
 | `MERGING` | `COMPLETED`, `FAILED`, `RESULT_READY` |
-| `BLOCKED` | `WAITING_FOR_WORKER` |
+| `BLOCKED` | — (terminal) |
 | `WORKER_FAILED` | — (terminal) |
 | `COMPLETED` | — (terminal) |
 | `FAILED` | — (terminal) |
 
-Terminal states: `WORKER_FAILED`, `COMPLETED`, `FAILED`.
+Terminal states: `BLOCKED`, `WORKER_FAILED`, `COMPLETED`, `FAILED`.
+
+Waiting states that may still be re-dispatched: `WAITING_DEPENDENCY`,
+`WAITING_FOR_WORKER`, `WORKER_RETRYING`. A terminal state is never re-dispatched
+within the batch.
 
 Notes on the two return edges, both of which are safety features:
 
@@ -196,8 +211,39 @@ Notes on the two return edges, both of which are safety features:
   (typically a rebase that moved the head). The approval is re-established
   against the new head before merging is retried.
 
-`BLOCKED → WAITING_FOR_WORKER` is the only path out of `BLOCKED`, and it
-requires the blocking condition to have been resolved explicitly.
+Notes on result rejection — a result reaching `RESULT_READY` is **not**
+guaranteed to advance:
+
+- `RESULT_READY → FAILED` — the result failed structural or substantive
+  validation and is invalid
+  ([`worker-contract.md` §4.3](worker-contract.md#43-validation-outcomes)). The
+  defect is in the result itself. The orchestrator MUST NOT repair it, so the
+  task is terminal.
+- `RESULT_READY → BLOCKED` — the result is valid in itself but cannot proceed:
+  a semantic conflict with a peer result, or a conflict determination that could
+  not be made ([`worker-contract.md` §5.3](worker-contract.md#53-outcomes)).
+  This needs an operator decision, not a repair, so the task is terminal.
+- `WAITING_FOR_APPROVAL → BLOCKED` — a gate closed on a condition that requires
+  an operator decision rather than a fresh determination
+  ([`review-and-gates.md`](review-and-gates.md)).
+
+Which classification applies is decided by the single classification order in
+[`worker-contract.md`](worker-contract.md#classification-order): a defective
+result is `FAILED`, a result blocked by something outside itself is `BLOCKED`.
+No result is ever both.
+
+Notes on `BLOCKED`:
+
+- `WAITING_DEPENDENCY → BLOCKED` — a prerequisite did not reach `SUCCESS`, so
+  the task's premise will not land (§4, and
+  [`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)). A
+  dependent never waits indefinitely on a prerequisite that already failed.
+- `BLOCKED` is **terminal within the batch**. There is no redispatch edge out of
+  it. Clearing a block requires an explicit operator decision
+  ([`worker-contract.md` §1.2](worker-contract.md#12-preflight-rules)), and the
+  re-run that follows is a new batch with a fresh plan — not a resumed state in
+  this one. This is what separates a retryable waiting state from a terminal
+  blocked state.
 
 ### 3.3 Result classification
 
@@ -294,10 +340,24 @@ For every task in the inventory, without exception:
 |---|---|
 | `task_id` | Identifier |
 | `classification` | `SUCCESS` / `NO_OP` / `BLOCKED` / `FAILED` |
-| `wave` | Assigned wave, or `—` if `BLOCKED` at preflight |
-| `branch` | Isolation branch |
+| `wave` | Assigned wave, or `—` if no wave was ever assigned |
+| `branch` | The isolation branch, or `—` if no branch was created |
 | `integrated` | Whether it reached the base, and via which merge |
 | `reason` | For non-`SUCCESS`: the exact condition, quoted |
+
+A task keeps its assigned wave once Phase 5 has assigned one; the wave is `—`
+only when no wave was ever assigned. Together, `wave` and `branch` therefore
+make the kinds of `BLOCKED` distinguishable, so a task blocked before planning is
+never confused with one blocked after it:
+
+| Where the task was blocked | `wave` | `branch` |
+|---|---|---|
+| Inventory or preflight (Phases 2–3) — never planned | `—` | `—` |
+| Isolation provisioning (Phase 6) — planned, never provisioned | The assigned wave | `—` |
+| Dependency, validation, gate or integration — provisioned | The assigned wave | The isolation branch |
+
+In every case `reason` still quotes the exact failing condition, so the two
+`BLOCKED` kinds are distinguishable by both structure and stated cause.
 
 ### 7.3 Batch section
 
@@ -313,8 +373,11 @@ For every task in the inventory, without exception:
 - A task absent from the report is a defect in the report.
 - `NO_OP` is reported as `NO_OP`, never folded into `SUCCESS`.
 - Unrun verification is reported as `NOT RUN`, never as passing.
-- A batch in which every task was `NO_OP` or `BLOCKED` did not succeed; it is
-  reported as having produced no integrated change.
+- A batch passed only if **every** task is `SUCCESS`. Any `NO_OP`, `BLOCKED` or
+  `FAILED` task means the batch did not pass
+  ([`failure-recovery.md` §7.3](failure-recovery.md#73-batch-success-rule)).
+- A batch in which every task was `NO_OP` or `BLOCKED` is additionally reported
+  as having produced no integrated change.
 
 ## Related
 

@@ -57,12 +57,8 @@ When a task involves **any** of the following, read and follow
 - parallel implementation;
 - multi-issue or multi-task execution.
 
-That Skill is the single source of truth for batch orchestration and is
-Markdown-only — it requires no batch-specific runtime, wrapper, or configuration,
-so it applies identically regardless of which agent is executing it. Its
-mandatory planning stage (task inventory, dependency analysis, dependency graph,
-execution waves, parallel/sequential classification) must be completed before any
-implementation begins, **including when only one worker will be used**.
+That Skill is the single source of truth for batch orchestration. It defines its
+own preconditions, worker rules and execution semantics.
 
 Do not restate or re-derive the batch rules here or in any other agent
 entrypoint; route to that Skill instead.

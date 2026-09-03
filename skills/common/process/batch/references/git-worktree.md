@@ -92,6 +92,32 @@ the same task always yields the same names.
 Worktrees MUST be created outside the repository working tree so they are never
 picked up as untracked content.
 
+### 3.1 Retry attempt naming
+
+A retry ([`failure-recovery.md` §2](failure-recovery.md#2-retry-policy)) re-runs
+the task in **new** isolation. It never reuses, reclaims, or overwrites the
+previous attempt's worktree or branch: those may be preserved for diagnosis
+(§6.2), and reclaiming them would destroy exactly the evidence that was kept.
+
+| Attempt | Branch | Worktree directory |
+|---|---|---|
+| 1 | `issue/{issue_number}-{short_description}` | `{issue_number}-{short_description}` |
+| *n* > 1 | `issue/{issue_number}-{short_description}-attempt-{n}` | `{issue_number}-{short_description}-attempt-{n}` |
+
+The suffix is derived from the task's `retry_count`, so every attempt's names
+stay deterministic and the whole attempt history remains identifiable.
+
+Rules:
+
+- Collision detection (§2.1) applies **unchanged** to the attempt-scoped name. A
+  collision on that name is still `BLOCKED`. Attempt scoping is not a licence to
+  auto-rename past a genuine conflict — it only stops an attempt from colliding
+  with its own predecessor.
+- A preserved artifact from an earlier attempt of the **same** task is not a
+  collision for a later attempt, and MUST NOT by itself make the retry
+  `BLOCKED`.
+- Every attempt's branch, worktree and base revision are recorded and reported.
+
 ## 4. Concurrency policy
 
 | Setting | Default | Meaning |
@@ -166,6 +192,7 @@ merges — that would destroy unmerged work.
 | `BLOCKED` | **Preserved** — the work may be resumable |
 | `FAILED` | **Preserved** — required for diagnosis |
 | Merge attempted but not confirmed | **Preserved** |
+| Superseded retry attempt (§3.1) | **Preserved** — the attempt history is diagnostic |
 
 Preserved artifacts are listed in the final report with their paths, so the
 operator knows exactly what remains and why.

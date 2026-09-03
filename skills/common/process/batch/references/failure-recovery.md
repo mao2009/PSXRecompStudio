@@ -127,8 +127,14 @@ If integration of one task fails or is stopped at a gate:
 1. That task's outcome is recorded with the exact gate and condition.
 2. **The remaining queue is not drained automatically.** Processing stops at the
    blocked item rather than skipping past it.
-3. A blocked item **returns to pending**; it is not marked `FAILED`. Being
-   blocked is a state to resolve, not a terminal defeat.
+3. That task's integration is **held**; it is not marked `FAILED` for having
+   been stopped at a gate. Processing stops at the held item rather than
+   skipping past it. Which state the task takes is determined by *why* the gate
+   closed: a condition that can still change — an approval invalidated by a
+   moved base, for example — returns the task to `RESULT_READY` for a fresh
+   determination, while a condition requiring an operator decision makes the
+   task `BLOCKED`, which is terminal
+   ([`orchestration.md` §3.2](orchestration.md#32-task-state)).
 4. Before any further integration proceeds, the situation is re-evaluated:
    - Do any remaining tasks depend on the one that failed? Those are `BLOCKED`.
    - Has the base changed such that remaining approvals are now invalid
@@ -180,8 +186,17 @@ base does not contain is stale, not authoritative.
 
 ### 6.3 Orphan handling
 
-A worker is `ORPHANED` when it is no longer running and left no usable result —
-including when it left a result that is unparseable or incomplete.
+A worker is `ORPHANED` when it is no longer running and delivered no usable
+result — no output at all, or output that cannot be parsed into the required
+result form
+([`worker-contract.md` §3.2](worker-contract.md#32-worker-output-worker--orchestrator)).
+
+`ORPHANED` detection is the **first** classification step, and it is exclusive of
+result validation: there is no parseable result to validate. A worker that did
+deliver a parseable result is never `ORPHANED` — a defect in that result is a
+validation failure and is terminal, not a retryable orphan. The single
+classification order is defined in
+[`worker-contract.md` — Classification order](worker-contract.md#classification-order).
 
 ```text
 ORPHANED detected
@@ -190,6 +205,11 @@ retry budget remaining?
       ├─ yes → increment retry_count → re-provision → re-dispatch
       └─ no  → FAILED  (and NOT counted as completed)
 ```
+
+Re-provisioning uses an **attempt-scoped** worktree and branch
+([`git-worktree.md` §3.1](git-worktree.md#31-retry-attempt-naming)), so a retry
+never reclaims the previous attempt's artifacts, and a preserved orphan artifact
+never by itself blocks the retry.
 
 An orphaned worker's partial output is **never** integrated. Partial output is
 by definition unvalidated.
@@ -220,22 +240,55 @@ it as absent would re-dispatch tasks that may already be in flight or already
 merged — exactly the duplicate-work and duplicate-merge hazard the record exists
 to prevent.
 
-## 7. Reporting failures
+## 7. Reporting non-`SUCCESS` outcomes
 
-Every non-`SUCCESS` outcome is reported with:
+`NO_OP` and the two failure classifications have **different** report shapes.
+`NO_OP` is not a failure: it has no failure category and no failing condition,
+and requiring those of it would force a fabricated failure onto a task that did
+not fail.
+
+### 7.1 `NO_OP`
 
 | Field | Content |
 |---|---|
 | Task | Which task |
-| Classification | `NO_OP` / `BLOCKED` / `FAILED` |
+| Classification | `NO_OP` |
+| Evidence | Why the functionality was already present — substantiated per [`worker-contract.md` §4.2](worker-contract.md#42-substantive-validation), never merely an absent diff |
+| Base revision | The base the task was evaluated against |
+| Verification | The verification actually run, with real `PASS` / `FAIL` / `NOT RUN` outcomes |
+| Preserved artifacts | Worktree and branch retained pending the operator decision |
+| Operator decision | The decision still required on the underlying Issue |
+
+A `NO_OP` report carries no `Category` and no `Condition` field. Neither exists
+for it.
+
+### 7.2 `BLOCKED` and `FAILED`
+
+| Field | Content |
+|---|---|
+| Task | Which task |
+| Classification | `BLOCKED` / `FAILED` |
 | Category | The failure category, including `unknown` |
 | Condition | The exact failing condition, quoted |
 | Attempts | Retries used, out of budget |
 | Preserved artifacts | Worktree and branch retained for diagnosis |
 | Dependents affected | Tasks `BLOCKED` as a consequence |
 
-A batch containing any `FAILED` or `BLOCKED` task is **not** reported as a
-successful batch, regardless of how many tasks succeeded.
+### 7.3 Batch success rule
+
+**A batch passed only if every task in the inventory is `SUCCESS`.**
+
+| The batch contains | Batch outcome |
+|---|---|
+| `SUCCESS` only | Passed |
+| Any `NO_OP` | **Not passed** — the work was already present, which is an operator decision, not a batch success |
+| Any `BLOCKED` | **Not passed** |
+| Any `FAILED` | **Not passed** |
+
+`NO_OP` is never promoted to `SUCCESS`, and never counted toward a passing batch
+in order to make one appear to pass
+([`../SKILL.md`](../SKILL.md#result-vocabulary)). A batch with any non-`SUCCESS`
+task is reported with its exact composition per classification.
 
 ## Related
 

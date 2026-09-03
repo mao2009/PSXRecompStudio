@@ -45,14 +45,9 @@ explicitly.
 If the work involves more than one Issue or task, or parallel implementation, or
 the Batch Skill is named, then
 [`skills/common/process/batch/SKILL.md`](skills/common/process/batch/SKILL.md)
-governs — and its mandatory planning stage (task inventory, dependency analysis,
-dependency graph, execution waves, parallel/sequential classification) must be
-completed **before any implementation begins**, including when only one worker
-will be used.
-
-That Skill is Markdown-only: it needs no batch-specific runtime, wrapper, or
-configuration file, so it is executable by any agent that can read Markdown and
-run ordinary Git operations.
+governs. Read it **before starting implementation**. That Skill defines its own
+preconditions, worker rules and execution semantics; they are deliberately not
+restated here.
 
 ## Rules for this file
 

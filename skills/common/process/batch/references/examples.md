@@ -112,16 +112,17 @@ Re-evaluation:
 
 1. **Does anything depend on B?** Every dependent of B becomes `BLOCKED`, naming
    B. Transitively.
-2. **Do A or C depend on B?** If either does, it is `BLOCKED` — even though its
-   own result was valid, its premise did not land.
+2. **Could A or C depend on B?** No. Wave membership requires the members to be
+   pairwise dependency-free, so no member of wave 1 can depend on another
+   ([`dependency-analysis.md` §5](dependency-analysis.md#5-parallel-safety-determination)).
+   Every dependent of B is necessarily in a later wave and is handled by step 1.
 3. **Semantic conflict:** were A's and C's results validated against a plan that
    assumed B's change would exist? Re-run semantic conflict detection against the
    base as it actually stands
    ([`worker-contract.md` §5](worker-contract.md#5-semantic-conflict-detection)).
 4. **Gates:** A and C each still face the full gate sequence individually.
 
-If A and C are genuinely independent of B and pass re-evaluation, they integrate
-normally, one at a time. B is `FAILED`, its worktree and branch **preserved** for
+If A and C pass re-evaluation, they integrate normally, one at a time. B is `FAILED`, its worktree and branch **preserved** for
 diagnosis.
 
 **Why this matters:** "B failed, but A and C passed, so ship A and C" is the

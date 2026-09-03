@@ -163,6 +163,29 @@ Every field is required. Missing or unparseable fields make the result invalid.
 Validation runs on **every** result, including results reporting `SUCCESS`. A
 worker's self-assessment is an input to validation, never its conclusion.
 
+### Classification order
+
+Exactly one classification path applies to any worker outcome. The steps below
+run **in order**, and the first step that applies decides the outcome. No
+outcome is classified twice, and no outcome is both a retryable orphan and a
+terminal validation failure.
+
+| # | Step | Question | Outcome when it applies |
+|---|---|---|---|
+| 1 | Worker lifecycle | Did the worker stop without delivering a parseable result — no output at all, or output that cannot be parsed into the form of §3.2? | `ORPHANED`, retried within budget ([`failure-recovery.md` §6.3](failure-recovery.md#63-orphan-handling)). Steps 2–4 do **not** run |
+| 2 | Structural validation | Is the delivered result complete and well-formed? (§4.1) | If not: invalid → terminal `FAILED` |
+| 3 | Substantive validation | Do the result's claims match observable reality? (§4.2) | If not: invalid → terminal `FAILED` |
+| 4 | Semantic validation | Does the result conflict with a peer result, or can that not be determined? (§5) | `BLOCKED`; not integration-eligible |
+
+Step 1 is a **pre-validation** step, and it is exclusive:
+
+- A worker that never delivered a parseable result is `ORPHANED`, never `FAILED`
+  by validation — there is nothing to validate.
+- A result that *was* delivered and *is* parseable is never `ORPHANED`. Missing
+  required fields, unmet classification requirements, or claims contradicted by
+  the repository are validation failures under steps 2–3 and are terminal
+  `FAILED`. They are not re-dispatched as orphans.
+
 ### 4.1 Structural validation
 
 1. All required output fields are present and parseable.
