@@ -176,8 +176,8 @@ carries a transition table.
  6. Classify every finding CONFIRMED / INFERRED / UNVERIFIED.
  7. Decide parallel safety, pairwise.
  8. Build the dependency graph and the execution waves.
- 9. Provision an isolated worker, worktree and branch per task.
-10. Execute wave by wave.
+ 9. Provision an isolated worker, worktree and branch for each task in the wave.
+10. Execute the wave, within the concurrency policy.
 11. Validate each delivered worker result.
 12. Re-evaluate dependency and semantic integration safety.
 13. Pass eligible changes to the Merge Skill, one at a time, in dependency order.
@@ -187,7 +187,15 @@ carries a transition table.
 ```
 
 Steps 1–8 are the **planning stage** and are mandatory in full. Steps 9–13 are
-the **execution stage** and repeat per wave. Steps 14–16 run on **every** path.
+the **execution stage** and repeat once per wave — a later wave is provisioned
+from the base as it stands when that wave starts, which every prior integration
+has moved. Steps 14–16 run on **every** path.
+
+A batch with **nothing left to execute** — every task already resolved before
+dispatch, whether `NO_OP`, `BLOCKED` or a mixture — is not a stop and records no
+blocking condition. Steps 9–13 simply have nothing to do, aggregate
+verification is `NOT RUN` because nothing was integrated, and the outcome is
+derived at step 16 like any other batch's.
 
 A condition that leaves the **batch as a whole** unable to continue safely is a
 **batch-level blocking condition**. Most fail-closed stops are not one: they
