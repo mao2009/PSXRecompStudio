@@ -169,7 +169,19 @@ notify_has_marker() {
          -H "Accept: application/vnd.github+json" "$api"; then
       die "failed to list PR comments while checking candidate marker"
     fi
-    if grep -qsF "$marker_line" "$body"; then
+    if python3 - "$body" "$marker_line" <<'PY'
+import json
+import sys
+
+comments = json.load(open(sys.argv[1]))
+marker = sys.argv[2]
+sys.exit(0 if any(
+    comment.get("user", {}).get("login") == "github-actions[bot]"
+    and marker in comment.get("body", "")
+    for comment in comments
+) else 1)
+PY
+    then
       return 0
     fi
     next="$(awk -F'[<>]' '/^[Ll]ink:/ && /rel="next"/ {print $2; exit}' "$headers")"
