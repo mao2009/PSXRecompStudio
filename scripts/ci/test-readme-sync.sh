@@ -760,7 +760,9 @@ assert 'desired+="$marker"' in run, "marker insertion must use one canonical mar
 assert '"$body" == "$desired"' in run, "marker mutation must verify exact post-write body"
 assert "Review evidence exists, but marker cleanup could not be proven safe" in run, "unsafe cleanup must fail closed"
 assert "CodeRabbit review-ready marker remained after completed review" in run, "marker cleanup must be verified fail-closed"
-assert run.count(".head.sha") >= 2, "review cycle must verify head before and after marker cleanup"
+assert run.count('PR head moved while waiting for CodeRabbit review') >= 1 and \
+       'PR head moved while finalizing CodeRabbit review' in run, \
+    "review cycle must verify head before and after marker cleanup"
 assert run.count('date +%s') >= 3, "completion must re-check wall-clock deadline after API calls"
 assert "Timed out waiting for CodeRabbit review evidence" in run, "completion check must fail closed on timeout"
 PY
