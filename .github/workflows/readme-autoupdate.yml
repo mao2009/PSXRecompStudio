@@ -16,9 +16,9 @@ name: README Auto-Update
 #      publish job, fetches the current PR head SHA via the GitHub API and
 #      compares it against the publish job's published_sha output (NOT the
 #      event's head.sha, which is stale before publish), and then explicitly
-#      triggers a CodeRabbit review via an "@coderabbitai review" comment.
+#      opts the PR in through the configured description_keyword marker.
 #      CodeRabbit automatic reviews are disabled in .coderabbit.yaml, so this
-#      is the ONLY review trigger. The gate is fail-closed: a non-success
+#      is the ONLY supported trigger. The gate is fail-closed: a non-success
 #      publish result, an empty published_sha (job-level skip), or a SHA
 #      mismatch all suppress the trigger.
 #
@@ -391,7 +391,7 @@ jobs:
             echo "match=1" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Opt in to CodeRabbit review
+      - name: Opt in and wait for CodeRabbit review
         id: optin
         if: >
           steps.verify.outputs.match == '1' &&
@@ -405,42 +405,8 @@ jobs:
         run: |
           set -euo pipefail
           marker='<!-- coderabbit:review-ready -->'
-          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
-          before_head="$(jq -r '.head.sha' <<<"$pr_json")"
-          body="$(jq -r '.body // ""' <<<"$pr_json")"
-          if [[ "$before_head" != "$PUBLISHED_SHA" ]]; then
-            echo "::error::PR head changed before CodeRabbit opt-in; refusing stale marker."
-            exit 1
-          fi
-
-          if [[ "$body" != *"$marker"* ]]; then
-            new_body="$body"
-            if [[ -n "$new_body" ]]; then
-              new_body+=$'\n\n'
-            fi
-            new_body+="$marker"
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f body="$new_body" >/dev/null
-          else
-            echo "CodeRabbit opt-in marker already present"
-          fi
-
-          after_head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
-          if [[ "$after_head" != "$PUBLISHED_SHA" ]]; then
-            echo "::error::PR head changed during CodeRabbit opt-in; refusing to claim ordered trigger success."
-            exit 1
-          fi
-          echo "head=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for current-HEAD CodeRabbit review evidence
-        if: steps.optin.outputs.head != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EXPECTED_HEAD: ${{ steps.optin.outputs.head }}
-        run: |
-          set -euo pipefail
-          marker='<!-- coderabbit:review-ready -->'
           deadline=$(( $(date +%s) + 240 ))
+          EXPECTED_HEAD="$PUBLISHED_SHA"
 
           bounded_pr() {
             local remaining
@@ -449,9 +415,68 @@ jobs:
             timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" "$@"
           }
 
+          # GitHub's PR update endpoint has no body revision precondition. Keep
+          # the read/transform/write/read sequence bounded and verify the exact
+          # result after every write. A mismatch is retried from a fresh body so
+          # a body-only edit observed after our write is incorporated; if the
+          # result cannot be proven safe, this step fails closed.
+          mutate_marker() {
+            local mode="$1" attempt pr_json current body desired without after remaining
+            for attempt in 1 2 3; do
+              pr_json="$(bounded_pr)" || return 1
+              current="$(jq -r '.head.sha' <<<"$pr_json")"
+              [[ "$current" == "$PUBLISHED_SHA" ]] || {
+                echo "::error::PR head changed during marker mutation; refusing stale body write."
+                return 1
+              }
+              body="$(jq -r '.body // ""' <<<"$pr_json")"
+
+              case "$mode" in
+                present)
+                  without="${body//$marker/}"
+                  if [[ "$body" == *"$marker"* && "$without" != *"$marker"* ]]; then
+                    desired="$body"
+                  else
+                    desired="$without"
+                    if [[ -n "$desired" ]]; then desired+=$'\n\n'; fi
+                    desired+="$marker"
+                  fi
+                  ;;
+                absent) desired="${body//$marker/}" ;;
+                *) echo "::error::unknown marker mutation mode: $mode"; return 1 ;;
+              esac
+
+              if [[ "$desired" == "$body" ]]; then
+                echo "CodeRabbit opt-in marker already in the requested state ($mode)"
+                return 0
+              fi
+
+              remaining=$(( deadline - $(date +%s) ))
+              (( remaining > 0 )) || return 1
+              timeout "$remaining" gh api -X PATCH \
+                "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f body="$desired" >/dev/null || return 1
+
+              after="$(bounded_pr)" || return 1
+              current="$(jq -r '.head.sha' <<<"$after")"
+              body="$(jq -r '.body // ""' <<<"$after")"
+              if [[ "$current" == "$PUBLISHED_SHA" && "$body" == "$desired" ]]; then
+                return 0
+              fi
+              echo "::warning::PR body changed during marker mutation; retrying from fresh state (attempt $attempt/3)."
+            done
+            echo "::error::Could not prove a safe PR-body marker mutation after 3 attempts."
+            return 1
+          }
+
+          if ! mutate_marker present; then
+            echo "::error::CodeRabbit opt-in marker was not safely established."
+            exit 1
+          fi
+          echo "head=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
+
           finish_review_cycle() {
             local evidence_kind="$1"
-            local pr_json current body cleaned remaining
+            local pr_json current remaining
 
             pr_json="$(bounded_pr)"
             [[ "$(date +%s)" -lt "$deadline" ]] || return 124
@@ -461,13 +486,10 @@ jobs:
               exit 1
             }
 
-            body="$(jq -r '.body // ""' <<<"$pr_json")"
-            cleaned="${body//$marker/}"
-            if [[ "$cleaned" != "$body" ]]; then
-              remaining=$(( deadline - $(date +%s) ))
-              (( remaining > 0 )) || return 124
-              timeout "$remaining" gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" -f body="$cleaned" >/dev/null
-            fi
+            mutate_marker absent || {
+              echo "::error::Review evidence exists, but marker cleanup could not be proven safe."
+              return 1
+            }
 
             pr_json="$(bounded_pr)"
             [[ "$(date +%s)" -lt "$deadline" ]] || return 124
@@ -520,7 +542,9 @@ jobs:
               [.[].[] |
                 select((.user.login // "") == "coderabbitai[bot]" or (.user.login // "") == "coderabbitai") |
                 select((.commit_id // .commit.oid // "") == $head) |
-                select((.state // "") != "PENDING") |
+                select((.state // "") == "COMMENTED" or
+                       (.state // "") == "APPROVED" or
+                       (.state // "") == "CHANGES_REQUESTED") |
                 select((.submitted_at // "") != "")
               ] | length > 0
             ' <<<"$reviews" >/dev/null; then

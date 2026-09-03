@@ -51,6 +51,8 @@
 #  31. workflow: job-level publish skip (fork / bootstrap / upstream failure)
 #      leaves published_sha EMPTY and the trigger gate closed - the empty
 #      output is the CORRECT contract (record-sha is unreachable), not a bug
+#  32. workflow: marker mutation uses bounded optimistic concurrency and
+#      verifies exact post-write body/HEAD state for insertion and cleanup
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -425,7 +427,7 @@ for jname, job in jobs.items():
             allowed = (jname == "publish-readme" and sname == "Publish README updates") or \
                       (jname == "review-trigger" and sname in (
                           "Verify PR head SHA matches the README Auto-Update state",
-                          "Opt in to CodeRabbit review",
+                          "Opt in and wait for CodeRabbit review",
                           "Wait for current-HEAD CodeRabbit review evidence",
                       ))
             if not allowed:
@@ -726,7 +728,7 @@ vrun = verify.get("run") or ""
 assert 'expected="${PUBLISHED_SHA:-}"' in vrun, "verify step must default expected from PUBLISHED_SHA"
 assert "-z \"$expected\"" in vrun, "verify step must refuse when published_sha output is unset/empty"
 # The opt-in step must be gated on SHA match and both upstream successes.
-trigger = next(s for s in j["steps"] if "Opt in to CodeRabbit review" in (s.get("name") or ""))
+trigger = next(s for s in j["steps"] if "Opt in and wait for CodeRabbit review" in (s.get("name") or ""))
 cond = trigger.get("if") or ""
 assert cond.count("&&") >= 3, "opt-in step must AND together all gates: %r" % cond
 for needle in ("steps.verify.outputs.match == '1'",
@@ -738,24 +740,29 @@ run = trigger.get("run") or ""
 assert "coderabbit:review-ready" in run, "opt-in must use the configured description marker"
 assert "@coderabbitai review" not in run, "bot-authored review command must not return"
 assert run.count(".head.sha") >= 2, "opt-in must re-check the PR head around marker mutation"
-wait = next(s for s in j["steps"] if "Wait for current-HEAD CodeRabbit review evidence" in (s.get("name") or ""))
-wrun = wait.get("run") or ""
-assert "EXPECTED_HEAD" in (wait.get("env") or {}), "completion check must bind evidence to expected head"
-assert "while" in wrun and "sleep" in wrun, "completion check must use bounded polling"
-assert "deadline=" in wrun and "date +%s" in wrun, "completion check must use an explicit wall-clock deadline"
-assert "per_page=100" in wrun, "completion polling must bound API page size"
-assert 'pulls/$PR_NUMBER/reviews?per_page=100" --paginate --slurp' in wrun, "review evidence must inspect all review pages within the deadline"
-assert 'select((.state // "") != "PENDING")' in wrun, "pending reviews must not count as completed evidence"
-assert 'select((.submitted_at // "") != "")' in wrun, "review evidence must require submission"
-assert 'timeout "$remaining" gh api' in wrun, "each evidence API request must be bounded by remaining deadline"
-assert "bounded_pr()" in wrun, "all PR-head reads must share the remaining-deadline wrapper"
-assert 'timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"' in wrun, "PR-head wrapper must be deadline-bounded"
-assert "finish_review_cycle" in wrun, "evidence success must use a common finalization path"
-assert 'cleaned="${body//$marker/}"' in wrun, "completed review must remove the description opt-in marker"
-assert "CodeRabbit review-ready marker remained after completed review" in wrun, "marker cleanup must be verified fail-closed"
-assert wrun.count(".head.sha") >= 2, "review cycle must verify head before and after marker cleanup"
-assert wrun.count('date +%s') >= 3, "completion must re-check wall-clock deadline after API calls"
-assert "Timed out waiting for CodeRabbit review evidence" in wrun, "completion check must fail closed on timeout"
+assert "EXPECTED_HEAD" in run, "completion check must bind evidence to expected head"
+assert "while" in run and "sleep" in run, "completion check must use bounded polling"
+assert "deadline=" in run and "date +%s" in run, "completion check must use an explicit wall-clock deadline"
+assert "per_page=100" in run, "completion polling must bound API page size"
+assert 'pulls/$PR_NUMBER/reviews?per_page=100" --paginate --slurp' in run, "review evidence must inspect all review pages within the deadline"
+assert 'select((.state // "") == "COMMENTED" or' in run, "only explicitly submitted review states may count"
+assert '(.state // "") == "APPROVED" or' in run, "approved reviews must count as submitted evidence"
+assert '(.state // "") == "CHANGES_REQUESTED")' in run, "changes-requested reviews must count as submitted evidence"
+assert 'select((.submitted_at // "") != "")' in run, "review evidence must require submission"
+assert 'timeout "$remaining" gh api' in run, "each evidence API request must be bounded by remaining deadline"
+assert "bounded_pr()" in run, "all PR-head reads must share the remaining-deadline wrapper"
+assert 'timeout "$remaining" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"' in run, "PR-head wrapper must be deadline-bounded"
+assert "finish_review_cycle" in run, "evidence success must use a common finalization path"
+assert "mutate_marker()" in run, "insertion and cleanup must use one marker mutation helper"
+assert "for attempt in 1 2 3" in run, "marker mutation retries must be bounded"
+assert 'desired="${body//$marker/}"' in run, "marker transformation must preserve unrelated body content"
+assert 'desired+="$marker"' in run, "marker insertion must use one canonical marker"
+assert '"$body" == "$desired"' in run, "marker mutation must verify exact post-write body"
+assert "Review evidence exists, but marker cleanup could not be proven safe" in run, "unsafe cleanup must fail closed"
+assert "CodeRabbit review-ready marker remained after completed review" in run, "marker cleanup must be verified fail-closed"
+assert run.count(".head.sha") >= 2, "review cycle must verify head before and after marker cleanup"
+assert run.count('date +%s') >= 3, "completion must re-check wall-clock deadline after API calls"
+assert "Timed out waiting for CodeRabbit review evidence" in run, "completion check must fail closed on timeout"
 PY
 }
 
@@ -979,7 +986,7 @@ assert pub["outputs"].get("published_sha") == "${{ steps.record-sha.outputs.sha 
 verify = next(s for s in jobs["review-trigger"]["steps"] if "Verify PR head SHA" in (s.get("name") or ""))
 vrun = verify.get("run") or ""
 assert '-z "$expected"' in vrun, "verify must turn an empty published_sha into a fail-closed match=0"
-trigger = next(s for s in jobs["review-trigger"]["steps"] if "Opt in to CodeRabbit review" in (s.get("name") or ""))
+trigger = next(s for s in jobs["review-trigger"]["steps"] if "Opt in and wait for CodeRabbit review" in (s.get("name") or ""))
 cond = trigger.get("if") or ""
 assert "steps.verify.outputs.match == '1'" in cond, \
     "trigger must require match == 1 (empty/mismatch -> match == 0 -> no trigger)"
