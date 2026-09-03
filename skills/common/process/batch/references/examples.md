@@ -249,9 +249,13 @@ happened and is reported. F is about *process*: the planning was skipped
 entirely. E is a valid batch executed serially. F is not a batch at all.
 
 If the planning artifacts cannot be produced, the batch records **stop condition
-S4** and finishes through the terminating path, which derives batch outcome
-`BLOCKED` at `REPORTING` by aggregation rule 2 — absent a rule 1 match — and
-reports why (Scenario G). It
+S4** — unless a more specific condition already names the reason, in which case
+that one is recorded instead: an ambiguous task set is S1, a cycle or an
+uncheckable graph is S2, and an unresolvable ordering is S3
+([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)). S4
+covers the residual case. Either way the batch finishes through the terminating
+path, which derives batch outcome `BLOCKED` at `REPORTING` by aggregation rule 2
+— absent a rule 1 match — and reports why (Scenario G). It
 does not silently degrade into ordinary sequential implementation.
 
 ---
@@ -307,9 +311,12 @@ missing planning artifacts (S4, Scenario F), or a fail-closed stop that leaves
 lifecycle does not.
 
 **The outcome, however, does not generalize.** S1–S5 reach batch outcome
-`BLOCKED` through aggregation rule 2, as here. **S6** — the batch's own execution
-violating the model — shares this lifecycle exactly, Phases 9–11 included, but
-rule 1 matches it first and the outcome is `FAILED`
+`BLOCKED` through aggregation rule 2 **only when rule 1 does not match first** —
+as here, where nothing was integrated and aggregate verification is `NOT RUN`. A
+batch that stops on S5 *after* integrating work can still fail its aggregate
+verification, and rule 1 then makes it `FAILED`. **S6** — the batch's own
+execution violating the model — shares this lifecycle exactly, Phases 9–11
+included, but rule 1 always matches it first and the outcome is `FAILED`
 ([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions),
 [§3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)).
 It is the one stop condition this scenario's outcome does not model, which is

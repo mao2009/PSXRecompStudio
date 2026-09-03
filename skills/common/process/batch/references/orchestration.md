@@ -143,8 +143,11 @@ terminating path (§3.6).
   ([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result)):
   1. **Re-check prerequisites.** Before a wave starts, examine the task result of
      every prerequisite of its members. Transitively assign task state and task
-     result `BLOCKED` to the dependents of any prerequisite that did not reach
-     `SUCCESS`, naming that prerequisite
+     result `BLOCKED` to the **non-terminal** dependents of any prerequisite that
+     did not reach `SUCCESS`, naming that prerequisite. A dependent that is
+     already terminal keeps the result it holds and records the prerequisite as
+     context only — the same guard Phase 4 step 2 applies, for the same reason:
+     no edge leaves a terminal state (§3.2)
      ([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement),
      [`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)).
      Phase 4's propagation covered only the tasks already terminal *before*
