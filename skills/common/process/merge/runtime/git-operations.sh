@@ -295,6 +295,31 @@ merge_pr_mergeable_reason() {
 
     return 0
 }
+
+# Execute a standard (non-admin) merge via gh.
+# Usage: merge_normal_merge <pr_number> <repository>
+# Returns: 0 if the merge command succeeds, 1 otherwise.
+merge_normal_merge() {
+    _pr_number="$1"
+    _repo="$2"
+
+    if ! merge_gh_available; then
+        echo "ERROR: gh CLI not available" >&2
+        return 1
+    fi
+
+    _repo_args=$(_merge_repo_args "$_repo")
+    # STANDARD MERGE ONLY - NEVER pass --admin.
+    # shellcheck disable=SC2086
+    gh pr merge "$_pr_number" $_repo_args --merge >/dev/null 2>&1
+    _rc=$?
+
+    if [ "$_rc" -eq 0 ]; then
+        return 0
+    fi
+    return 1
+}
+
 # ============================================================
 # Authenticated Identity (Explicit Human Approval)
 # ============================================================

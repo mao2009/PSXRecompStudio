@@ -357,6 +357,31 @@ assert_false "local HEAD mismatch is rejected" merge_safe_rebase_push "$LEASE_WT
 assert_false "stale lease SHA is rejected" merge_safe_rebase_push "$LEASE_WT" issue/lease "$_lease_old" "$_lease_new" origin issue/lease main
 assert_false "generic force push syntax is absent" grep -Eq 'git([[:space:]]+-C[^;]+)?[[:space:]]+push[[:space:]]+(-f|--force)([[:space:]]|$)' "$SCRIPT_DIR/../git-operations.sh"
 assert_true "explicit force-with-lease syntax is present" grep -q -- '--force-with-lease=refs/heads/' "$SCRIPT_DIR/../git-operations.sh"
+
+# ------------------------------------------------------------
+# Standard merge helper (CodeRabbit-independent)
+# ------------------------------------------------------------
+echo ""
+echo "--- Standard Merge Helper ---"
+MERGE_BIN="$WORK/merge-bin"
+mkdir -p "$MERGE_BIN"
+cat > "$MERGE_BIN/gh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$FAKE_GH_ARGS"
+if [ "${FAKE_GH_RESULT:-success}" = "failure" ]; then
+    exit 1
+fi
+exit 0
+EOF
+chmod +x "$MERGE_BIN/gh"
+FAKE_GH_ARGS="$WORK/gh-merge.args"
+PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" \
+    merge_normal_merge 238 mao2009/PSXRecompStudio
+assert_true "standard merge helper succeeds" test "$?" -eq 0
+assert_output "standard merge uses --merge" "pr merge 238 --repo mao2009/PSXRecompStudio --merge" cat "$FAKE_GH_ARGS"
+assert_false "standard merge failure propagates" env PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" FAKE_GH_RESULT=failure \
+    merge_normal_merge 238 mao2009/PSXRecompStudio
+assert_false "standard helper has no CodeRabbit dependency" grep -q -i coderabbit "$SCRIPT_DIR/../git-operations.sh"
 git -C "$LEASE_REPO" worktree remove -f "$LEASE_WT" 2>/dev/null || true
 
 echo ""
