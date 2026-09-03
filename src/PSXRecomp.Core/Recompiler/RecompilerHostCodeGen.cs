@@ -51,6 +51,22 @@ public static class RecompilerHostCodeGen
 
         for (var i = 0; i < program.Blocks.Count; i++)
         {
+            var definedResultIds = new HashSet<int>();
+            for (var j = 0; j < program.Blocks[i].Operations.Count; j++)
+            {
+                var id = program.Blocks[i].Operations[j].ResultValueId;
+                if (id >= 0 && !definedResultIds.Add(id))
+                {
+                    return new RecompilerHostCodeGenResult(
+                        false, null,
+                        "DUPLICATE_RESULT_VALUE_ID",
+                        $"Result value id {id} is produced by more than one operation.");
+                }
+            }
+        }
+
+        for (var i = 0; i < program.Blocks.Count; i++)
+        {
             for (var j = 0; j < program.Blocks[i].Operations.Count; j++)
             {
                 var op = program.Blocks[i].Operations[j];

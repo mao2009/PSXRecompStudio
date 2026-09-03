@@ -147,5 +147,6 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
 - Empty programs (`UNSUPPORTED_EMPTY_PROGRAM`).
 - Multi-block programs (`UNSUPPORTED_MULTI_BLOCK_PROGRAM`; Phase 3A is
   single-block only).
+- Duplicate result value ids (`DUPLICATE_RESULT_VALUE_ID`).
 
 Generator never silently produces partial source for invalid IR.

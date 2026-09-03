@@ -425,8 +425,28 @@ int main() {
     }
 
     [Fact]
+    public void Unsupported_Duplicate_Result_Value_Id_Is_Refused()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 2),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("DUPLICATE_RESULT_VALUE_ID");
+        result.Source.Should().BeNull();
+    }
+
+    [Fact]
     public void RunHostProcess_TimesOut_When_Process_Exceeds_Budget()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         #pragma warning disable PSXR005
         Action act = () => RunHostProcess("sleep", "30", 500);
         #pragma warning restore PSXR005
