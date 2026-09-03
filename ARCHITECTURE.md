@@ -143,11 +143,16 @@ Interrupt Controller はレジスタモデル、C ABI、C# アダプタ、ネイ
 
 PSX ランタイムは、BIOS ロード、EXE ロード、メモリマッピング、I/O ループを管理する。
 
-## Recompiler (将来)
+## Recompiler
 
-- 静的再コンパイル (JIT / AOT)
-- 命令ブロックのキャッシュ
-- ホスト ISA への変換 (x86-64, ARM64)
+- `PSXRecomp.Core.Recompiler` owns the backend-agnostic IR and shared
+  interpreter/recompiled state contract (Issue #206).
+- IR values are fixed-width 32-bit guest values; blocks have explicit exits and
+  deterministic canonical serialization.
+- Lowering, host generation, differential comparison, and the executable
+  vertical slice remain separate responsibilities of Issues #207, #208, #211,
+  and #209. Memory and control-flow expansion is deferred until the GPR-only
+  gate is green.
 
 ## Debugger (将来)
 

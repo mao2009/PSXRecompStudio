@@ -89,6 +89,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [README Auto-Update](development/readme-autoupdate.md)
 - [Native Library Build and Test Execution](development/native-library-build.md)
 - [Real-ROM Analysis Flow](development/real-rom-analysis.md)
+- [Recompiler IR / CPU Semantic Contract](development/recompiler-ir-contract.md)
 - CPU / R3000A — planned
 - Decoder — planned
 - Analyzer — planned
