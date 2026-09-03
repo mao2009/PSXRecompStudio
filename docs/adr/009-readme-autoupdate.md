@@ -112,6 +112,15 @@ workspace, it:
 
 Any violation aborts with no comment and no repository mutation.
 
+**Transitional fail-safe:** the notify step runs the notify command only when the
+re-extracted `origin/main` script actually implements it (a capability guard).
+On the PR that first ships the notify design, origin/main still holds the older
+script, so the step emits an explicit `::warning::` and skips the comment
+(analyze-only) rather than failing or posting a mismatched comment. This keeps
+the transitional PR's CI green and never runs a token-backed action against a
+trusted asset that is not yet ready — the same philosophy as the bootstrap
+boundary.
+
 ### 6. Loop Prevention
 
 A PR whose head commit is authored by the bot email is skipped in preflight, so

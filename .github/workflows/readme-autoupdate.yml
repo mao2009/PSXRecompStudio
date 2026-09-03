@@ -299,10 +299,24 @@ jobs:
       # with 0 jobs, permanently blocking the merge gate. Posting a comment does
       # not push a commit, so it does not re-trigger pull_request workflows or
       # leave a CI-capable state broken.
+      #
+      # Transitional guard: this workflow (executed from the PR merge ref) may
+      # reference a "notify" command that the trusted origin/main script does not
+      # yet implement in the same commit. In that case the token-backed notify
+      # path must NOT fail the job; it is skipped with an explicit warning
+      # (analyze-only) until origin/main ships the new script. This mirrors the
+      # bootstrap philosophy: never run a token-backed action against a trusted
+      # asset that is not yet ready.
       - name: Notify README candidate
         if: steps.extract.outputs.bootstrap == '0'
         run: |
-          "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" notify
+          set -euo pipefail
+          NOTIFY_SCRIPT="$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh"
+          if grep -q '"notify")' "$NOTIFY_SCRIPT"; then
+            "$NOTIFY_SCRIPT" notify
+          else
+            echo "::warning::README notify command not yet present in the trusted origin/main script; skipping candidate comment (transitional PR)."
+          fi
         env:
           README_SYNC_CONFIG: ${{ runner.temp }}/readme-sync/trusted/config/readme-autoupdate.json
           README_SYNC_BOOTSTRAP: "0"

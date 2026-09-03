@@ -509,8 +509,17 @@ test_workflow_no_bot_push() {
   fi
   local notify_run
   notify_run="$(wf_step_run notify-readme "Notify README candidate")"
-  if ! echo "$notify_run" | grep -q 'readme-sync.sh" notify'; then
-    fail "notify step must invoke readme-sync.sh notify (comment-only, no push)"
+  if echo "$notify_run" | grep -q 'readme-sync.sh" notify'; then
+    fail "notify invocation must use the NOTIFY_SCRIPT capability guard, not a bare call"
+  fi
+  if ! echo "$notify_run" | grep -q 'NOTIFY_SCRIPT="'; then
+    fail "notify step must bind the trusted script path to NOTIFY_SCRIPT"
+  fi
+  if ! echo "$notify_run" | grep -qF '"notify")'; then
+    fail "notify step must guard on the trusted script supporting the notify command (transitional PR)"
+  fi
+  if ! echo "$notify_run" | grep -q '::warning::README notify command not yet present'; then
+    fail "notify step must fail-safe (warning skip) when origin/main does not yet ship the notify command"
   fi
   if echo "$notify_run" | grep -q 'publish'; then
     fail "notify step must not invoke a publish path"
