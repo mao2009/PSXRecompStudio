@@ -88,6 +88,16 @@ head review do not by themselves block repository CI or merge. Findings that are
 present must still be reviewed appropriately; repository-owned CI and human
 approval remain required.
 
+### Pre-merge README candidate (Issue #244)
+
+Since the README Auto-Update bot no longer pushes to the PR head branch (see
+`docs/development/readme-autoupdate.md` and ADR-009), a README update for a PR
+is delivered as an outstanding candidate comment on that PR, keyed to a head
+SHA. Before merging such a PR, either apply the candidate README to the PR head
+(that invalidates the stale head-SHA comment) or explicitly decline it. A human
+or approved automation performs the apply step; the bot never writes a commit.
+This is an operational expectation and is not a hard-failing CI check.
+
 ## Authority hierarchy
 
 Prefer information in this order when determining current intent:
