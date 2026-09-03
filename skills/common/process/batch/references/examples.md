@@ -82,7 +82,7 @@ execution, 2–3 process what it produced, and 4 is the state that leaves behind
 |---|---|---|
 | 1 | Every member has settled — Phase 6's postcondition | A and C have each stopped executing, holding task state `RESULT_READY` or a terminal task state |
 | 2 | Every delivered result has been validated and classified | A's and C's results pass [`worker-contract.md` §4](worker-contract.md#4-worker-result-validation) and §5; neither is left in `RESULT_READY` |
-| 3 | Every integration-eligible result has been **integrated**, and the re-verifications that integration carries have **settled** | A's authorized merge has landed through the gates and the Merge Skill, and both its pre-merge re-verification against the refreshed base and its post-merge verification have settled |
+| 3 | Every integration-eligible result has been **resolved** — integrated with both re-verifications settled, or terminally `BLOCKED`/`FAILED` because integration stopped | A's authorized merge has landed through the gates and the Merge Skill, and both its pre-merge re-verification against the refreshed base and its post-merge verification have settled |
 | 4 | Every member holds a terminal task state — the state 2–3 leave behind | A and C have each moved out of `RESULT_READY` and carry exactly one terminal task result |
 | 5 | The next wave's prerequisites have been re-checked | A's task result is confirmed `SUCCESS` before B is provisioned |
 

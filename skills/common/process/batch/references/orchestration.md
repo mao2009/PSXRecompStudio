@@ -150,9 +150,9 @@ terminating path (§3.6).
      Phase 4's propagation covered only the tasks already terminal *before*
      execution; a prerequisite can also end `FAILED`, `NO_OP` or `BLOCKED` during
      Phases 6–8,
-     and `WAITING_DEPENDENCY → WORKER_STARTING` would otherwise let its dependent
-     run anyway. This re-check is what keeps §4's ordering rule true and Phase 8's
-     dependency precondition satisfiable.
+     and `WAITING_DEPENDENCY → WAITING_FOR_WORKER → WORKER_STARTING` would
+     otherwise let its dependent run anyway. This re-check is what keeps §4's
+     ordering rule true and Phase 8's dependency precondition satisfiable.
   2. **Provision isolation** for each remaining member
      ([`git-worktree.md`](git-worktree.md)).
   3. **Dispatch** each member to a worker within the concurrency policy, and
@@ -370,7 +370,7 @@ Notes:
 
 | From | To |
 |---|---|
-| `WAITING_DEPENDENCY` | `WAITING_FOR_WORKER`, `WORKER_STARTING`, `BLOCKED` |
+| `WAITING_DEPENDENCY` | `WAITING_FOR_WORKER`, `BLOCKED` |
 | `WAITING_FOR_WORKER` | `WORKER_STARTING`, `BLOCKED` |
 | `WORKER_STARTING` | `READY_FOR_DISPATCH`, `WORKER_RETRYING`, `WORKER_FAILED`, `FAILED`, `BLOCKED` ¶ |
 | `READY_FOR_DISPATCH` | `DISPATCHED`, `WORKER_FAILED`, `FAILED`, `BLOCKED` ¶ |
@@ -438,11 +438,15 @@ two **initial** states, chosen by whether its prerequisites are satisfied:
 `WAITING_FOR_WORKER` is **not** conditional on the slot being busy. It is the
 "ready to run" state, and a task passes through it instantly when a slot is
 already free; making it conditional would leave a dependency-free task in a wave
-under the concurrency cap with no legal entry at all. A task that entered at
-`WAITING_DEPENDENCY` moves to `WAITING_FOR_WORKER` when its last prerequisite
-lands, which is why that edge exists — without it, such a task could only reach
-`WORKER_STARTING` and would begin provisioning in disregard of the concurrency
-cap.
+under the concurrency cap with no legal entry at all.
+
+A task that entered at `WAITING_DEPENDENCY` therefore leaves it only for
+`WAITING_FOR_WORKER` (or `BLOCKED`). There is deliberately **no** direct
+`WAITING_DEPENDENCY → WORKER_STARTING` edge: every task, however it entered,
+passes through `WAITING_FOR_WORKER` before provisioning begins, so the
+concurrency cap applies uniformly
+([`git-worktree.md` §4](git-worktree.md#4-concurrency-policy)) and a dependent
+whose prerequisite has just landed cannot skip the slot it is still owed.
 
 `WAITING_DEPENDENCY` is the only state with no incoming edge. Every other state,
 `WAITING_FOR_WORKER` included, is reached by an edge listed above.

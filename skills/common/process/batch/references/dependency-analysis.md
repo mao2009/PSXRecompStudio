@@ -331,14 +331,26 @@ wave waits on. Wave N+1 MUST NOT start until every one of these holds for wave N
    ([`worker-contract.md` §4](worker-contract.md#4-worker-result-validation),
    [§5](worker-contract.md#5-semantic-conflict-detection)). No member is left in
    task state `RESULT_READY` awaiting a determination.
-3. **Every integration-eligible result has been integrated**, through the gates
-   and the Merge Skill, and **both** re-verifications each integration carries
-   have settled: the re-verification against the refreshed base performed
-   *before* the merge ([`orchestration.md` §4](orchestration.md#4-integration-ordering))
-   and the post-merge verification the Merge Skill owns *after* it
-   ([`review-and-gates.md` §2](review-and-gates.md#2-gate-order),
-   [§8](review-and-gates.md#8-merge-ordering)). An integration whose post-merge
-   verification has not settled is not yet an integration.
+3. **Every integration-eligible result has been resolved** — each has either
+   been **integrated**, through the gates and the Merge Skill, with **both**
+   re-verifications settled (the re-verification against the refreshed base
+   performed *before* the merge,
+   [`orchestration.md` §4](orchestration.md#4-integration-ordering), and the
+   post-merge verification the Merge Skill owns *after* it,
+   [`review-and-gates.md` §2](review-and-gates.md#2-gate-order),
+   [§8](review-and-gates.md#8-merge-ordering)); **or** has stopped integrating
+   and been terminally classified `BLOCKED` or `FAILED`
+   ([`review-and-gates.md` §10](review-and-gates.md#10-gate-reporting),
+   [`failure-recovery.md` §5](failure-recovery.md#5-integration-failure)). An
+   integration whose post-merge verification has not settled is not yet an
+   integration; a result whose gate closed for good is not owed one.
+
+   The second alternative is what keeps the barrier crossable. A validated,
+   integration-eligible result whose review or approval gate closes on a
+   condition requiring an operator decision never merges. Requiring it to be
+   *integrated* would leave the barrier permanently uncrossed and halt every
+   later wave over one task's gate stop — the failure isolation this protocol
+   exists to provide, inverted.
 4. **Every member holds a terminal task state** ([`orchestration.md`
    §3.2](orchestration.md#32-task-state)), and therefore exactly one terminal
    task result.
@@ -375,9 +387,10 @@ exists to provide
   protocol working correctly — is *progressing*, not stalled. It re-enters the
   gates and terminalizes. The barrier waits for that, exactly as it waits for a
   merge to land.
-- A member that ends terminal `BLOCKED` or `FAILED` satisfies condition 4 at
-  once. It does not hold the barrier open, and the next wave proceeds with
-  whichever of its own members are still executable after condition 5.
+- A member that ends terminal `BLOCKED` or `FAILED` satisfies conditions 3 and 4
+  at once — including one that was integration-eligible until its gate closed.
+  It does not hold the barrier open, and the next wave proceeds with whichever of
+  its own members are still executable after condition 5.
 - No member's gate stop turns into a batch-level stop. Only the six conditions of
   [`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions) halt a
   batch, and an ordinary gate stop is not among them
