@@ -89,19 +89,22 @@ terminating path (§3.6).
      [§4.2](dependency-analysis.md#42-unknown-dependencies)). A dependency that
      has not been established yet cannot be propagated along.
   2. **Propagate task state `BLOCKED` and task result `BLOCKED`** transitively to
-     the dependents of every task whose resolved prerequisite is non-`SUCCESS`,
-     including `FAILED`, `BLOCKED`, `NO_OP` and any other non-`SUCCESS` result,
-     over those resolved relationships
+     the dependents of every task whose resolved prerequisite is non-`SUCCESS` —
+     `FAILED`, `BLOCKED`, `NO_OP` or any other non-`SUCCESS` result — over those
+     resolved relationships, **skipping any dependent that is already terminal**,
+     which keeps the result it holds
      ([§3.1.1](dependency-analysis.md#311-propagation-to-dependents)).
-  3. **Build the DAG and run cycle detection** over the tasks that remain
-     non-`BLOCKED` after step 2
-     ([§4.3](dependency-analysis.md#43-graph-construction),
+  3. **Build the DAG and run cycle detection** over the **executable task set**
+     as it stands after step 2 — the inventory minus every pre-execution terminal
+     task, which is not the same as "the tasks that are not `BLOCKED`"
+     ([§3.1](dependency-analysis.md#31-executability-preflight-result),
+     [§4.3](dependency-analysis.md#43-graph-construction),
      [§4.4](dependency-analysis.md#44-cycle-detection)).
 
   The order matters: propagating before step 1 would miss undeclared dependents,
   leaving a task whose prerequisite is blocked still eligible for dispatch, and
   building the graph before step 2 would leave edges pointing at excluded tasks.
-- **Postcondition:** A cycle-free graph over all non-`BLOCKED` tasks exists.
+- **Postcondition:** A cycle-free graph over the executable task set exists.
 - **Abort:** Either of the following records batch-level stop condition S2
   (§3.4); an operator decision is required and the batch takes the terminating
   path (§3.6):
@@ -116,13 +119,17 @@ terminating path (§3.6).
 - **Precondition:** Phase 4 postcondition.
 - **Obligation:** Build execution waves and classify parallel safety per
   [`dependency-analysis.md` §6](dependency-analysis.md#6-wave-construction).
-- **Postcondition:** Every non-`BLOCKED` task is assigned to exactly one wave;
-  the plan is recorded.
-- **Abort:** No task is ready while at least one **non-`BLOCKED`** task remains
-  → batch-level stop condition S3 (§3.4); the batch takes the terminating path
-  (§3.6). A set in which every remaining task is already `BLOCKED` is not S3:
-  there is no executable work left to order, and task-scoped `BLOCKED` results
-  never halt a batch (§3.6).
+- **Postcondition:** Every task in the **executable task set** is assigned to
+  exactly one wave, no pre-execution terminal task is assigned to any wave
+  ([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result)),
+  and the plan is recorded.
+- **Abort:** No task is ready while **unassigned members of the executable task
+  set remain** → batch-level stop condition S3 (§3.4); the batch takes the
+  terminating path (§3.6). An executable task set that is empty from the start is
+  not S3, however the batch got there — every task already `BLOCKED`, every task
+  already `COMPLETED` with task result `NO_OP`, or any mixture. There is no
+  executable work left to order, and task-scoped terminal results never halt a
+  batch (§3.6).
 
 > Phases 1–5 constitute the mandatory planning stage. Dispatching a worker
 > before Phase 5's postcondition holds violates
@@ -131,7 +138,9 @@ terminating path (§3.6).
 ### Phase 6 — EXECUTION
 
 - **Precondition:** Phase 5 postcondition.
-- **Obligation:** For each wave, in order:
+- **Obligation:** For each wave, in order — a wave contains only executable-task-set
+  members, so a pre-execution terminal task is never dispatched here
+  ([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result)):
   1. **Re-check prerequisites.** Before a wave starts, examine the task result of
      every prerequisite of its members. Transitively assign task state and task
      result `BLOCKED` to the dependents of any prerequisite that did not reach
@@ -156,7 +165,9 @@ terminating path (§3.6).
   state `RESULT_READY`) or a terminal task state (§3.2). The terminal *task
   result* is not produced here: a successful worker reaches `RESULT_READY`, and
   task result `SUCCESS` requires an integrated change (§3.3), so Phases 7–8
-  produce it.
+  produce it. Settling is this phase's postcondition for one wave; it is **not**
+  sufficient to start the next one, which waits on the full wave barrier
+  ([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement)).
 - **Abort:** Isolation cannot be provisioned for a task → that task takes task
   state `BLOCKED` and task result `BLOCKED`; it is not run in a shared tree.
 
@@ -170,7 +181,12 @@ terminating path (§3.6).
   ([`worker-contract.md` §5](worker-contract.md#5-semantic-conflict-detection)).
 - **Postcondition:** The result is either integration-eligible or explicitly
   ineligible with a recorded reason.
-- **Abort:** Validation is inconclusive → not integration-eligible.
+- **Abort:** Validation is inconclusive → not integration-eligible, and
+  classified by the row that matches which step was inconclusive
+  ([`worker-contract.md` §4.3](worker-contract.md#43-validation-outcomes)):
+  inconclusive **structural or substantive** validation is terminal `FAILED`, an
+  **undeterminable semantic conflict** is terminal `BLOCKED`. The two are never
+  merged into one "inconclusive" case.
 
 ### Phase 8 — INTEGRATION
 
@@ -296,11 +312,16 @@ Allowed transitions:
 
 † Terminating transition — taken when the batch stops early (§3.6).
 ‡ Wave re-entry — taken while the plan still holds unexecuted waves **and the
-current wave has no integration-eligible result left**. If any remains, the batch
-must pass through `INTEGRATION` first: a later wave whose prerequisite has been
-validated but not integrated would otherwise execute against a base that does not
-contain it. Direct re-entry is legitimate only when every result of the current
-wave is terminal and non-eligible — all `NO_OP`, `BLOCKED` or `FAILED`.
+current wave has crossed the wave barrier**
+([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement)),
+which is the single definition of what a wave must satisfy before the next one
+starts; it is not restated here. The `VALIDATION → EXECUTION` edge is the
+**direct** re-entry, available only when the barrier was crossed without any
+integration being needed — every result of the current wave terminal and
+non-eligible, all `NO_OP`, `BLOCKED` or `FAILED`. Whenever an integration-eligible
+result exists, the batch passes through `INTEGRATION` and re-enters from there
+instead: a later wave whose prerequisite was validated but not integrated would
+otherwise execute against a base that does not contain it.
 
 Notes:
 
@@ -329,7 +350,8 @@ Notes:
   `WAITING_FOR_APPROVAL`, the batch is in `EXECUTION`, `VALIDATION` or
   `INTEGRATION` — whichever phase it is executing.
 - Any transition not listed is illegal. A batch observed in an **unrecognized
-  lifecycle state** is outside this model, so the model cannot govern its exit.
+  lifecycle state**, or observed taking a transition this table does not permit,
+  is outside this model, so the model cannot govern its exit.
   The observation is **recorded as batch-level stop condition S6** (§3.4), and
   the batch then takes the terminating procedure of §3.6 in full — stop dispatching, stop unsafe
   integration, and classify the pending work once no worker is still running —
@@ -348,11 +370,11 @@ Notes:
 
 | From | To |
 |---|---|
-| `WAITING_DEPENDENCY` | `WORKER_STARTING`, `BLOCKED` |
+| `WAITING_DEPENDENCY` | `WAITING_FOR_WORKER`, `WORKER_STARTING`, `BLOCKED` |
 | `WAITING_FOR_WORKER` | `WORKER_STARTING`, `BLOCKED` |
 | `WORKER_STARTING` | `READY_FOR_DISPATCH`, `WORKER_RETRYING`, `WORKER_FAILED`, `FAILED`, `BLOCKED` ¶ |
 | `READY_FOR_DISPATCH` | `DISPATCHED`, `WORKER_FAILED`, `FAILED`, `BLOCKED` ¶ |
-| `DISPATCHED` | `WORKER_RUNNING`, `WORKER_FAILED`, `FAILED`, `BLOCKED` ◊ |
+| `DISPATCHED` | `WORKER_RUNNING`, `WORKER_RETRYING`, `WORKER_FAILED`, `FAILED`, `BLOCKED` ◊ |
 | `WORKER_RUNNING` | `RESULT_READY`, `WORKER_RETRYING`, `WORKER_FAILED`, `BLOCKED` ◊ |
 | `WORKER_RETRYING` | `WORKER_STARTING`, `WORKER_FAILED`, `BLOCKED` ◊ |
 | `RESULT_READY` | `WAITING_FOR_APPROVAL`, `COMPLETED` §, `FAILED`, `BLOCKED` |
@@ -391,11 +413,55 @@ provisioned takes task state `BLOCKED` and task result `BLOCKED` there
 would have no legal transition. **No worker is dispatched after the block**: the
 task never reaches `DISPATCHED`, and it is never run in a shared tree.
 
-Terminal states: `BLOCKED`, `WORKER_FAILED`, `COMPLETED`, `FAILED`.
+These two edges also carry the terminating procedure's classification (§3.6,
+step 4) for a task stopped in `WORKER_STARTING` or `READY_FOR_DISPATCH`. They are
+deliberately **not** marked ◊: unlike the termination-only edges they are
+reachable in ordinary execution as well, so every non-terminal state in this
+table has a legal path to `BLOCKED` when the batch stops, and §3.6 step 4 never
+needs a transition the model does not define.
+
+Terminal states: `BLOCKED`, `WORKER_FAILED`, `COMPLETED`, `FAILED`. No edge
+leaves any of them.
 
 Waiting states that may still be re-dispatched: `WAITING_DEPENDENCY`,
 `WAITING_FOR_WORKER`, `WORKER_RETRYING`. A terminal state is never re-dispatched
 within the batch.
+
+**Entry into the model.** Every task that is dispatched enters at exactly one of
+two **initial** states, chosen by whether its prerequisites are satisfied:
+
+| Entry state | Condition on the task at Phase 6 |
+|---|---|
+| `WAITING_DEPENDENCY` | At least one prerequisite has not yet reached task result `SUCCESS` |
+| `WAITING_FOR_WORKER` | Every prerequisite is satisfied; the task is waiting only for a worker slot ([`git-worktree.md` §4](git-worktree.md#4-concurrency-policy)) |
+
+`WAITING_FOR_WORKER` is **not** conditional on the slot being busy. It is the
+"ready to run" state, and a task passes through it instantly when a slot is
+already free; making it conditional would leave a dependency-free task in a wave
+under the concurrency cap with no legal entry at all. A task that entered at
+`WAITING_DEPENDENCY` moves to `WAITING_FOR_WORKER` when its last prerequisite
+lands, which is why that edge exists — without it, such a task could only reach
+`WORKER_STARTING` and would begin provisioning in disregard of the concurrency
+cap.
+
+`WAITING_DEPENDENCY` is the only state with no incoming edge. Every other state,
+`WAITING_FOR_WORKER` included, is reached by an edge listed above.
+
+A **pre-execution terminal** task never enters that progression at all. Phases 2
+and 3 assign it a terminal state together with a terminal task result directly —
+task state `BLOCKED` with task result `BLOCKED`, or task state `COMPLETED` with
+task result `NO_OP` — and it is excluded from the executable task set
+([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result)).
+A direct assignment at classification time is not a transition and needs no edge;
+what it does need is a legal terminal state carrying exactly one result, which
+§3.3 supplies.
+
+Any transition not listed in the table is illegal. Observing one means the
+task's tracking no longer matches this model, so it is recorded as batch-level
+stop condition **S6** (§3.4) exactly as an unrecognized *batch* state is, and the
+batch takes the terminating procedure of §3.6. It is never repaired by inventing
+an edge, and the affected task is classified by §3.6 step 4 like any other whose
+classification was never established.
 
 Notes on the two return edges, both of which are safety features:
 
@@ -409,16 +475,33 @@ Notes on the two return edges, both of which are safety features:
 Notes on result rejection — a result reaching `RESULT_READY` is **not**
 guaranteed to advance:
 
-- `RESULT_READY → FAILED` — the result failed structural or substantive
-  validation and is invalid
-  ([`worker-contract.md` §4.3](worker-contract.md#43-validation-outcomes)). The
-  defect is in the result itself. The orchestrator MUST NOT repair it, so the
-  task is terminal.
-- `RESULT_READY → BLOCKED` — the result is valid in itself but cannot proceed:
-  a semantic conflict with a peer result, or a conflict determination that could
-  not be made ([`worker-contract.md` §5.3](worker-contract.md#53-outcomes)).
-  This needs an operator decision, so the task takes task state `BLOCKED` and
-  task result `BLOCKED`; it is terminal.
+- `RESULT_READY → FAILED` — covers **two** validated conclusions, and in both
+  the orchestrator has finished classifying the result
+  ([`worker-contract.md` §4.3](worker-contract.md#43-validation-outcomes)):
+  - the result failed structural or substantive validation, or that validation
+    was inconclusive, so it is invalid. The defect is in the result itself and
+    the orchestrator MUST NOT repair it.
+  - the worker honestly delivered `FAILED` and that report *passed* structural
+    and substantive validation. Here the task result is `FAILED` because
+    validation **confirmed** the failure, not because the report was defective.
+
+  Either way the task now holds a **validated terminal `FAILED`** — which is
+  exactly the classification §3.6 step 4 preserves when a batch stops, and what
+  distinguishes it from a delivery the orchestrator never validated.
+- `RESULT_READY → BLOCKED` — the result is valid in itself but cannot proceed.
+  Two validated conclusions reach this edge:
+  - a semantic conflict with a peer result, or a conflict determination that
+    could not be made
+    ([`worker-contract.md` §5.3](worker-contract.md#53-outcomes));
+  - the worker honestly delivered `BLOCKED` — as
+    [`worker-contract.md` §2.3](worker-contract.md#23-worker-obligations)
+    requires of a worker that meets a blocking condition — and that report passed
+    structural and substantive validation.
+
+  Both need an operator decision, so the task takes task state `BLOCKED` and task
+  result `BLOCKED`; it is terminal. As with `RESULT_READY → FAILED`, what makes
+  the result terminal is that validation **concluded**, not that the worker said
+  so.
 - `WAITING_FOR_APPROVAL → BLOCKED` — a gate closed on a condition that requires
   an operator decision rather than a fresh determination
   ([`review-and-gates.md`](review-and-gates.md)).
@@ -510,10 +593,10 @@ condition that triggers the terminating path (§3.6), and there are exactly six:
 |---|---|---|
 | S1 | The requested task set cannot be resolved unambiguously | Phase 1 ([`dependency-analysis.md` §1](dependency-analysis.md#1-task-discovery)) |
 | S2 | A dependency cycle exists, or the graph cannot be checked for cycles | Phase 4 ([`dependency-analysis.md` §4.4](dependency-analysis.md#44-cycle-detection)) |
-| S3 | No task is ready while at least one remaining task is **not** `BLOCKED` — the ordering is unresolvable. A remainder that is entirely `BLOCKED` is not S3 | Phase 5 ([`dependency-analysis.md` §6](dependency-analysis.md#6-wave-construction)) |
-| S4 | Any of the five mandatory planning artifacts cannot be produced | Phases 1–5 ([`../SKILL.md`](../SKILL.md#mandatory-preconditions)) |
+| S3 | No task is ready while unassigned members of the **executable task set** remain — the ordering is unresolvable. An empty executable task set is not S3, whether its tasks ended `BLOCKED` or `COMPLETED` with task result `NO_OP` ([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result)) | Phase 5 ([`dependency-analysis.md` §6](dependency-analysis.md#6-wave-construction)) |
+| S4 | A mandatory planning artifact cannot be produced **for a reason no other stop condition already names** — S1 covers an unresolvable task set, S2 an uncheckable graph or a cycle, S3 an unresolvable ordering, and each of those is recorded as itself | Phases 1–5 ([`../SKILL.md`](../SKILL.md#mandatory-preconditions)) |
 | S5 | A fail-closed stop leaves **the batch as a whole** unable to continue safely — unreadable persisted state, for example | Phases 1–8 ([`../SKILL.md`](../SKILL.md#fail-closed-rules)) |
-| S6 | The batch was observed in an **unrecognized lifecycle state** (§3.1) | Any phase |
+| S6 | The batch's own execution violated this model (§3.1) — it was observed in an **unrecognized lifecycle state**, or it took a **transition the model does not permit**, at batch or task level | Any phase |
 
 S6 is the one stop condition whose outcome is **not** `BLOCKED`: §3.5 rule 1
 matches it and ranks above rule 2, so the batch is `FAILED`. It is listed here
@@ -566,7 +649,7 @@ outcome is derived rather than chosen.
 
 | # | Condition | Batch outcome |
 |---|---|---|
-| 1 | Aggregate verification ran and failed (§5), **or** the batch was observed in an unrecognized lifecycle state (§3.1) | `FAILED` |
+| 1 | Aggregate verification ran and failed (§5), **or** the batch's own execution violated this model — an unrecognized lifecycle state or an impermissible transition (§3.1, §3.2), recorded as S6 | `FAILED` |
 | 2 | A batch-level stop condition was recorded (§3.4, S1–S5; **not** S6, which rule 1 has already matched) | `BLOCKED` |
 | 3 | Any task result is `FAILED` | `FAILED` |
 | 4 | Any task result is `BLOCKED` | `BLOCKED` |
@@ -642,9 +725,13 @@ On recording a batch-level stop condition, in this order:
    running" while its merge is still landing, and `BLOCKED` is terminal, so
    classifying it early would strand a merge that then succeeds with no way back
    to `COMPLETED`. The rule is
-   exhaustive: **every task that does not yet hold a terminal task result takes
-   task state `BLOCKED` and task result `BLOCKED`**, naming the stop condition as
-   its reason. That covers
+   exhaustive over unclassified work: **every task for which no terminal
+   classification has been established takes task state `BLOCKED` and task result
+   `BLOCKED`**, naming the stop condition as its reason. "Established" means
+   Phases 7–8 reached a conclusion for it, or Phase 2, 3 or 4 already made it
+   pre-execution terminal. A task whose classification *was* established is not
+   reclassified here; this step records the conclusion the protocol already
+   reached, and only fills the gap where none exists. That covers
    the never-dispatched task, the task validated but not integrated, the
    dispatched task whose worker was stopped without delivering anything, and the
    dispatched task whose delivered result was never validated. A delivered result does not
@@ -656,9 +743,42 @@ On recording a batch-level stop condition, in this order:
    `BLOCKED`, carrying the stop condition, with its branch and worktree preserved
    (§6). The one delivered
    result that may still complete is a **validated `NO_OP`**, which never needed
-   integration and takes `RESULT_READY → COMPLETED` (§3.2). A delivered `FAILED`
-   likewise keeps its own classification: it is evidence, and the stop does not
-   turn a failure into a block.
+   integration and takes `RESULT_READY → COMPLETED` (§3.2). That is not an
+   exception to the rule above but an instance of it: validation established the
+   `NO_OP` classification at Phase 7, so this step records it rather than
+   overriding it, and the task was never among those for which no classification
+   exists.
+
+   **Delivered is not validated, and only validated results keep their own
+   classification.** A worker's `classification` field is an *input* to
+   validation, never its conclusion
+   ([`worker-contract.md` §4](worker-contract.md#4-worker-result-validation)), so
+   a worker that delivered `FAILED` has not thereby produced task result
+   `FAILED`. A task already in terminal task state `FAILED` or `WORKER_FAILED`
+   keeps `FAILED`, because a conclusion was already established for it: `FAILED`
+   by validation ([`worker-contract.md` §4.3](worker-contract.md#43-validation-outcomes)),
+   `WORKER_FAILED` by the orphan path, where the worker delivered nothing to
+   validate and the failure category itself decided the outcome
+   ([`failure-recovery.md` §6.3](failure-recovery.md#63-orphan-handling)).
+   Neither is reached by validating a delivered result into `WORKER_FAILED` —
+   that route does not exist. The stop does not turn an established failure into
+   a block. A result that is still
+   **unvalidated** when the batch stops holds no terminal task result: it has
+   settled in task state `RESULT_READY` and Phase 7 never ran on it, so it is
+   task state `BLOCKED` and task result `BLOCKED` like every other unclassified
+   delivery — a self-reported `FAILED` included. Recording `FAILED` for it would
+   report a determination this protocol never made, and `BLOCKED` is exactly the
+   value reserved for work that cannot be classified without further information
+   (§3.4).
+
+   The two cases are therefore distinguished by task state alone, which is what
+   makes the rule mechanical rather than a judgement call: `FAILED` or
+   `WORKER_FAILED` means validation already concluded and the result stands;
+   `RESULT_READY` means it never did. A result that *was* validated but not
+   integrated — in `WAITING_FOR_APPROVAL`, `READY_FOR_MERGE` or `MERGING` — is
+   the case the preceding paragraph already settles: valid, unintegrated, and
+   therefore `BLOCKED` because task result `SUCCESS` needs an integrated change
+   (§3.3).
 
    An already-authorized merge that is in flight may be allowed to finish rather
    than abandoned, but it MUST settle **before this step classifies anything, and
@@ -688,7 +808,9 @@ On recording a batch-level stop condition, in this order:
    reported `NOT RUN`. It is never reported as passing.
 6. **`CLEANUP`** — apply the cleanup policy (§6). Isolation artifacts for
    integrated work are removed; artifacts for `FAILED`, `BLOCKED` and `NO_OP`
-   tasks are preserved for diagnosis.
+   tasks are preserved for diagnosis **where any were provisioned**, and reported
+   as absent where none ever were
+   ([`git-worktree.md` §6.2](git-worktree.md#62-what-is-deliberately-preserved)).
 7. **`REPORTING`** — derive the batch outcome by §3.5, then produce the full
    batch report (§7): the plan section, every task in the inventory, the outcome,
    the rule that produced it, and the stop condition.
@@ -759,9 +881,13 @@ integrated work it could not verify as a whole is `BLOCKED` (§3.5, rule 5).
 Cleanup applies to isolation artifacts only, and only for work that was
 integrated. See [`git-worktree.md` §6](git-worktree.md#6-cleanup).
 
-Artifacts for `FAILED` and `BLOCKED` tasks are **deliberately preserved** so the
-work is recoverable and diagnosable. Cleanup failure never reverts a completed
-merge; the two are independent.
+Artifacts for `FAILED`, `BLOCKED` and `NO_OP` tasks are **deliberately
+preserved** so the work is recoverable and diagnosable — but only where they
+exist. A task blocked before Phase 6 provisioned anything, or found already
+implemented at preflight, has no worktree and no branch, and is reported with
+`—` rather than as preserved
+([`git-worktree.md` §6.2](git-worktree.md#62-what-is-deliberately-preserved)).
+Cleanup failure never reverts a completed merge; the two are independent.
 
 ## 7. Final reporting
 
@@ -789,23 +915,36 @@ For every task in the inventory, without exception:
 | `task_result` | `SUCCESS` / `NO_OP` / `BLOCKED` / `FAILED` |
 | `wave` | Assigned wave, or `—` if no wave was ever assigned |
 | `branch` | The isolation branch, or `—` if no branch was created |
+| `worktree` | The isolation worktree path, or `—` if no worktree was created |
 | `integrated` | Whether it reached the base, and via which merge |
 | `reason` | For non-`SUCCESS`: the exact condition, quoted |
 
 A task keeps its assigned wave once Phase 5 has assigned one; the wave is `—`
-only when no wave was ever assigned. Together, `wave` and `branch` therefore
+only when no wave was ever assigned. Together, `wave`, `branch` and `worktree`
 make the kinds of `BLOCKED` distinguishable, so a task blocked before planning is
 never confused with one blocked after it:
 
-| Where the task was blocked | `wave` | `branch` |
-|---|---|---|
-| Inventory or preflight (Phases 2–3) — never planned | `—` | `—` |
-| Prerequisite re-check (Phase 6, step 1) — planned, blocked before provisioning | The assigned wave | `—` |
-| Isolation provisioning (Phase 6, step 2) — planned, never provisioned | The assigned wave | `—` |
-| Validation, gate or integration — provisioned | The assigned wave | The isolation branch |
+| Where the task was blocked | `wave` | `branch` | `worktree` |
+|---|---|---|---|
+| Inventory or preflight (Phases 2–3) — never planned | `—` | `—` | `—` |
+| Prerequisite re-check (Phase 6, step 1) — planned, blocked before provisioning | The assigned wave | `—` | `—` |
+| Isolation provisioning (Phase 6, step 2) — planned, provisioning attempted and failed | The assigned wave | Whatever the failed attempt created, else `—` | Whatever the failed attempt created, else `—` |
+| Validation, gate or integration — provisioned | The assigned wave | The isolation branch | The isolation worktree |
 
 In every case `reason` still quotes the exact failing condition, so the two
 `BLOCKED` kinds are distinguishable by both structure and stated cause.
+
+A task found already implemented at preflight carries `—` in `wave`, `branch`
+and `worktree` alike, for the same reason: as a pre-execution terminal task it
+was never assigned a wave and never provisioned
+([`dependency-analysis.md` §3.1](dependency-analysis.md#31-executability-preflight-result),
+[`git-worktree.md` §6.2](git-worktree.md#62-what-is-deliberately-preserved)). It
+is told apart from the `BLOCKED` rows by its task result, which is `NO_OP`, and
+its `reason` states the evidence that the work was already present rather than a
+failing condition
+([`failure-recovery.md` §7.1](failure-recovery.md#71-no_op)). A `NO_OP` whose
+worker *did* run is the other shape: it holds its assigned wave and its isolation
+branch, both of which are reported.
 
 ### 7.3 Batch section
 

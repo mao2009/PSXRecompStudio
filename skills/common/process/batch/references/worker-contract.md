@@ -182,7 +182,7 @@ terminal validation failure.
 | 1 | Worker delivery | Did the worker stop without delivering a parseable result — no output at all, or output that cannot be parsed into the form of §3.2? | Worker delivery state `ORPHANED`, retried within budget when its cause is retryable ([`failure-recovery.md` §6.3](failure-recovery.md#63-orphan-handling)). Steps 2–4 do **not** run |
 | 2 | Structural validation | Is the delivered result complete and well-formed? (§4.1) | If not: invalid → terminal `FAILED` |
 | 3 | Substantive validation | Do the result's claims match observable reality? (§4.2) | If not: invalid → terminal `FAILED` |
-| 4 | Semantic validation | Does the result conflict with a peer result, or can that not be determined? (§5) | `BLOCKED`; not integration-eligible |
+| 4 | Semantic validation | Does the result conflict with a peer result, or can that not be determined? (§5) | Terminal task state `BLOCKED` with task result `BLOCKED`; not integration-eligible. **Not** `FAILED` — the result itself passed steps 2–3 |
 
 Step 1 is a **pre-validation** step, and it is exclusive:
 
@@ -192,6 +192,13 @@ Step 1 is a **pre-validation** step, and it is exclusive:
   required fields, unmet classification requirements, or claims contradicted by
   the repository are validation failures under steps 2–3 and are terminal
   `FAILED`. They are not re-dispatched as orphans.
+- **A delivered `classification` is an input to these steps, not a shortcut past
+  them.** A worker that reports `SUCCESS`, `NO_OP`, `BLOCKED` or `FAILED` has
+  stated a claim; the terminal task result is what steps 2–4 conclude about that
+  claim. Until they have run, the task holds no terminal task result and stays in
+  task state `RESULT_READY` — which is why a batch that stops before validating a
+  delivery classifies it `BLOCKED` rather than adopting the worker's word for it
+  ([`orchestration.md` §3.6](orchestration.md#36-the-terminating-path), step 4).
 
 ### 4.1 Structural validation
 
@@ -216,13 +223,40 @@ Step 1 is a **pre-validation** step, and it is exclusive:
 
 ### 4.3 Validation outcomes
 
-| Outcome | Consequence |
-|---|---|
-| Valid and `SUCCESS` | Integration-eligible, subject to the gates |
-| Valid and `NO_OP` | Not integration-eligible; operator decision required on the Issue |
-| Valid and `BLOCKED` / `FAILED` | Not integration-eligible; see [`failure-recovery.md`](failure-recovery.md) |
-| **Invalid, for any reason** | **Not integration-eligible.** Re-classified as task state `FAILED` with task result `FAILED`, with the validation failure as the reason |
-| **Inconclusive** | **Not integration-eligible.** Treated as invalid |
+Each row names the step of the [classification order](#classification-order)
+that produced it. The first step that applies decides, and no result is
+classified twice.
+
+| Outcome | Step | Consequence |
+|---|---|---|
+| Valid and `SUCCESS` | 2–3 pass | Integration-eligible, subject to the gates |
+| Valid and `NO_OP` | 2–3 pass | Not integration-eligible; operator decision required on the Issue |
+| Valid and `BLOCKED` / `FAILED` | 2–3 pass | Not integration-eligible; see [`failure-recovery.md`](failure-recovery.md) |
+| **Structurally or substantively invalid** | 2 or 3 | **Not integration-eligible.** Task state `FAILED` with task result `FAILED`, with the validation failure as the reason |
+| **Structural or substantive validation inconclusive** | 2 or 3 | **Not integration-eligible.** The result could not be established as valid, so it is treated as invalid: task state `FAILED` with task result `FAILED`, recording exactly what could not be established |
+| **Semantic conflict found, or undeterminable** | 4 | **Not integration-eligible.** Task state `BLOCKED` with task result `BLOCKED`, recording the conflict or what could not be determined ([§5.3](#53-outcomes)) |
+
+The last two rows are deliberately different, and which one applies is decided by
+*which step* was inconclusive — never by how uncertain the orchestrator feels.
+
+- **Steps 2–3 ask whether the result itself is sound.** "No" and "cannot be
+  established" are both a refusal to certify it, the defect is internal to a
+  result the orchestrator MUST NOT repair, and no operator decision would change
+  what the result contains. Both are terminal `FAILED`.
+- **Step 4 asks whether the result can coexist with something outside itself.**
+  An unresolved or undeterminable semantic conflict says nothing against the
+  result — it may be perfectly valid — and resolving it requires a decision only
+  an operator can make. That is terminal `BLOCKED`, matching
+  [§5.3](#53-outcomes) and the `RESULT_READY → BLOCKED` edge in
+  [`orchestration.md` §3.2](orchestration.md#32-task-state).
+
+This is the same split [`orchestration.md` §3.2](orchestration.md#32-task-state)
+draws between its two rejection edges: `RESULT_READY → FAILED` for a defective
+result, `RESULT_READY → BLOCKED` for a valid result blocked by something outside
+itself. Uncertainty is never resolved upward in either case — a result that
+cannot be shown valid is not thereby valid, and a conflict that cannot be ruled
+out is not thereby absent
+([`../SKILL.md`](../SKILL.md#fail-closed-rules)).
 
 The orchestrator MUST NOT repair a result to make it valid. Repairing a worker's
 output would make the orchestrator the implementer and destroy the attribution

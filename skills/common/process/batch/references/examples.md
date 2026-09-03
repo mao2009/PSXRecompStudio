@@ -69,15 +69,43 @@ Wave 2: [B]
 ```
 
 **Why:** B cannot enter wave 1 — its dependency is unsatisfied. C has no
- dependency and does not overlap A, so it joins A in wave 1. Wave 2 starts only
- after **every** member of wave 1 has settled and its result has been validated;
- a prerequisite is integration-eligible only after the integration rules are
- satisfied.
+dependency and does not overlap A, so it joins A in wave 1.
 
-**If A does not reach `SUCCESS`:** B takes task state `BLOCKED` and task result
-`BLOCKED`, naming A as the
-failed dependency. B is **not** attempted anyway, and **not** dropped from the
-report. C is unaffected and proceeds normally — that is failure isolation
+**When wave 2 may start.** Wave 2 begins only once wave 1 has crossed the **wave
+barrier** ([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement)),
+which is more than "A and C stopped running":
+
+The five conditions are **sequential**, not simultaneous: 1 ends wave 1's
+execution, 2–3 process what it produced, and 4 is the state that leaves behind.
+
+| # | Condition on wave 1 | Satisfied by |
+|---|---|---|
+| 1 | Every member has settled — Phase 6's postcondition | A and C have each stopped executing, holding task state `RESULT_READY` or a terminal task state |
+| 2 | Every delivered result has been validated and classified | A's and C's results pass [`worker-contract.md` §4](worker-contract.md#4-worker-result-validation) and §5; neither is left in `RESULT_READY` |
+| 3 | Every integration-eligible result has been **integrated**, and the re-verifications that integration carries have **settled** | A's authorized merge has landed through the gates and the Merge Skill, and both its pre-merge re-verification against the refreshed base and its post-merge verification have settled |
+| 4 | Every member holds a terminal task state — the state 2–3 leave behind | A and C have each moved out of `RESULT_READY` and carry exactly one terminal task result |
+| 5 | The next wave's prerequisites have been re-checked | A's task result is confirmed `SUCCESS` before B is provisioned |
+
+Condition 3 is the one that matters for B specifically. A **validated** A is not
+enough: B is provisioned from the base as it stands at provisioning time
+([`git-worktree.md` §2.2](git-worktree.md#22-base-revision)), so dispatching B
+while A sits in `RESULT_READY`, `WAITING_FOR_APPROVAL` or `READY_FOR_MERGE` would
+build and verify B against a base that does not contain A's change — the exact
+situation the `INTEGRATION → EXECUTION` re-entry rule forbids
+([`orchestration.md` §3.1](orchestration.md#31-batch-lifecycle-state)).
+
+C is not B's prerequisite, so no *dependency* of B waits on C. C still holds the
+barrier: it is a member of wave 1, and the barrier is a property of the wave
+rather than of a single edge, so C must settle, be validated and — being
+integration-eligible — be integrated before wave 2 begins.
+
+**If A does not reach `SUCCESS`:** condition 5 catches it at the barrier and B
+takes task state `BLOCKED` and task result `BLOCKED`, naming A as the
+failed dependency — and this holds for *every* non-`SUCCESS` result A could
+carry, `FAILED`, `BLOCKED` and `NO_OP` alike
+([`dependency-analysis.md` §3.1.1](dependency-analysis.md#311-propagation-to-dependents)).
+B is **not** attempted anyway, and **not** dropped from the report. C is
+unaffected and proceeds normally — that is failure isolation
 ([`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)).
 
 **Batch outcome in that case:** `FAILED` if A's own result is `FAILED` (rule 3
@@ -222,7 +250,8 @@ entirely. E is a valid batch executed serially. F is not a batch at all.
 
 If the planning artifacts cannot be produced, the batch records **stop condition
 S4** and finishes through the terminating path, which derives batch outcome
-`BLOCKED` at `REPORTING` by aggregation rule 2 and reports why (Scenario G). It
+`BLOCKED` at `REPORTING` by aggregation rule 2 — absent a rule 1 match — and
+reports why (Scenario G). It
 does not silently degrade into ordinary sequential implementation.
 
 ---
@@ -271,11 +300,21 @@ forbidden is dropping the cycle's weakest edge to make the batch runnable —
 resolution is an operator decision
 ([`dependency-analysis.md` §4.4](dependency-analysis.md#44-cycle-detection)).
 
-**The same shape applies to every batch-level stop condition**, whatever raised
-it: an unresolvable task set (S1), an unresolvable ordering (S3), missing
-planning artifacts (S4, Scenario F), or a fail-closed stop that leaves *the batch
-as a whole* unable to continue safely (S5). The condition differs; the lifecycle
-does not.
+**The same lifecycle shape applies to every batch-level stop condition**,
+whatever raised it: an unresolvable task set (S1), an unresolvable ordering (S3),
+missing planning artifacts (S4, Scenario F), or a fail-closed stop that leaves
+*the batch as a whole* unable to continue safely (S5). The condition differs; the
+lifecycle does not.
+
+**The outcome, however, does not generalize.** S1–S5 reach batch outcome
+`BLOCKED` through aggregation rule 2, as here. **S6** — the batch's own execution
+violating the model — shares this lifecycle exactly, Phases 9–11 included, but
+rule 1 matches it first and the outcome is `FAILED`
+([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions),
+[§3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)).
+It is the one stop condition this scenario's outcome does not model, which is
+precisely why the outcome is derived from the rules at `REPORTING` and never read
+off the stop condition.
 
 **What does *not* take this path:** an ordinary gate stop or a single blocked
 task. Those give that task task state `BLOCKED` and task result `BLOCKED` and

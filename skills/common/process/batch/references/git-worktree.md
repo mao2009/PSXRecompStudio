@@ -185,17 +185,39 @@ merges — that would destroy unmerged work.
 
 ### 6.2 What is deliberately preserved
 
-| Task state | Worktree and branch |
+The first column names a **case**, not a task state: `SUCCESS`, `NO_OP`,
+`BLOCKED` and `FAILED` here are *task results*
+([`orchestration.md` §3.3](orchestration.md#33-task-result-classification)).
+
+| Case | Worktree and branch |
 |---|---|
-| `SUCCESS`, merged and confirmed | Removed |
-| `NO_OP` | **Preserved** — pending an operator decision |
-| `BLOCKED` | **Preserved** — the work may be resumable |
-| `FAILED` | **Preserved** — required for diagnosis |
+| Task result `SUCCESS`, merged and confirmed | Removed |
+| Task result `NO_OP`, provisioned — a worker ran and found the work already present | **Preserved** — pending an operator decision |
+| Task result `NO_OP`, never provisioned — preflight found the work already present, so no worker ran | Nothing exists to remove or preserve |
+| Task result `BLOCKED`, provisioned | **Preserved** — the work may be resumable |
+| Task result `BLOCKED`, never provisioned — blocked at inventory, at preflight, or by a non-`SUCCESS` prerequisite | Nothing exists to remove or preserve |
+| Task result `BLOCKED` after a **failed provisioning attempt** (§2) | Whatever the failed attempt left is **preserved**, and the failing step is reported |
+| Task result `FAILED` | **Preserved** — required for diagnosis |
 | Merge attempted but not confirmed | **Preserved** |
 | Superseded retry attempt (§3.1) | **Preserved** — the attempt history is diagnostic |
 
 Preserved artifacts are listed in the final report with their paths, so the
 operator knows exactly what remains and why.
+
+**Preservation presupposes provisioning.** Isolation is created at Phase 6 step 2
+([`orchestration.md` §2](orchestration.md#phase-6--execution)), so a task that
+never reached it has no worktree and no branch, and reporting one as "preserved"
+would name an artifact that was never created. The two never-provisioned rows
+above are reported with `—` in the `branch` and `worktree` fields alike, while
+the `reason` field still quotes the exact condition
+([`orchestration.md` §7.2](orchestration.md#72-per-task-section)) — so a reader
+can always tell "no artifact was ever created" from "an artifact exists and was
+kept".
+
+A **failed provisioning attempt** is the one case in between: the task is
+`BLOCKED` and was never dispatched, but a partial artifact may exist. It is not
+cleaned up — cleanup runs only on confirmed merges (§6.1) — and the report gives
+the failing step from §2 together with whatever path does exist.
 
 ### 6.3 Cleanup failure
 

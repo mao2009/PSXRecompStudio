@@ -175,16 +175,18 @@ recorded in the batch report:
 | 1 | Task inventory | Every task, its identifier, its goal, its expected change surface |
 | 2 | Dependency analysis | For each ordered pair, whether a dependency exists, or that it is unknown |
 | 3 | Dependency graph | The DAG, with a completed cycle check |
-| 4 | Execution waves | The ordered wave assignment of every non-`BLOCKED` task |
+| 4 | Execution waves | The ordered wave assignment of every task in the executable task set — the inventory minus every task already terminal before execution ([`references/dependency-analysis.md` §3.1](references/dependency-analysis.md#31-executability-preflight-result)) |
 | 5 | Parallel/sequential classification | For every task in a wave, whether it is parallel-safe with its wave peers |
 
-If any of these cannot be produced, the batch records **stop condition S4**
+If any of these cannot be produced, the batch records **stop condition S4** —
+unless a more specific stop condition already names the reason, in which case that
+one is recorded instead
 ([`references/orchestration.md` §3.4](references/orchestration.md#batch-level-stop-conditions)).
 It does not proceed as an ordinary sequential implementation, and it does not
 stop silently: it finishes its lifecycle through Phases 9–11
 ([`references/orchestration.md` §3.6](references/orchestration.md#36-the-terminating-path)),
-and the outcome — `BLOCKED`, by aggregation rule 2 — is derived at `REPORTING`
-like every other outcome, never assigned here.
+and the outcome — `BLOCKED` by aggregation rule 2, absent a rule 1 match — is
+derived at `REPORTING` like every other outcome, never assigned here.
 
 ## Silent sequential fallback is forbidden
 
@@ -219,6 +221,13 @@ These hold at every point in the batch:
 6. One task's failure never causes another task's unvalidated result to be
    integrated, and never silently removes that task's dependents from the batch.
 7. Dependents of a non-`SUCCESS` task are `BLOCKED`, not skipped.
+8. A worker's delivered `classification` is an input to validation, never a task
+   result. A task holds a terminal task result only once the orchestrator has
+   classified it
+   ([`references/worker-contract.md` §4](references/worker-contract.md#4-worker-result-validation)).
+9. A task already terminal before execution is never dispatched, and a wave never
+   starts before its predecessor has crossed the wave barrier
+   ([`references/dependency-analysis.md` §6.2](references/dependency-analysis.md#62-wave-advancement)).
 
 ## Fail-closed rules
 
@@ -318,7 +327,7 @@ two ever disagree, the Merge Skill governs merge and approval.
 | [`references/git-worktree.md`](references/git-worktree.md) | Isolation model, worktree and branch strategy and naming, concurrency policy, git safety prohibitions, cleanup |
 | [`references/review-and-gates.md`](references/review-and-gates.md) | Review gate, approval gate, delegation to the Merge Skill, integration and merge ordering, Issue lifecycle safety |
 | [`references/failure-recovery.md`](references/failure-recovery.md) | Failure classification, retry policy and budget, recovery and orphan handling, resume, corrupt-state handling |
-| [`references/examples.md`](references/examples.md) | Worked scenarios, including the six normative decision cases |
+| [`references/examples.md`](references/examples.md) | Worked scenarios — the seven normative decision cases, A–G |
 
 ## Non-goals
 

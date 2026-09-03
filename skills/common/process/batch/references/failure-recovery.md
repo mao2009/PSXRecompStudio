@@ -194,6 +194,17 @@ On resume, recorded state is reconciled against what is actually true:
 **Observable reality wins over the record.** A record claiming a merge that the
 base does not contain is stale, not authoritative.
 
+Reconciliation corrects **the record**, never a task's actual state, and so it
+never moves a task out of a terminal state — which would be impossible, since no
+edge leaves one
+([`orchestration.md` §3.2](orchestration.md#32-task-state)). A record showing
+task state `COMPLETED` with task result `SUCCESS` for a merge the base does not
+contain is evidence that the task never reached `COMPLETED`: the record was
+written in anticipation, or written and then invalidated, and the task's real
+state is whatever reality supports — typically `RESULT_READY` with its branch
+intact, or, if that cannot be established, task state `BLOCKED` and task result
+`BLOCKED` under §6.5. The discrepancy is reported either way.
+
 ### 6.3 Orphan handling
 
 A worker is `ORPHANED` when it is no longer running and delivered no usable
@@ -277,7 +288,7 @@ not fail.
 | Evidence | Why the functionality was already present — substantiated per [`worker-contract.md` §4.2](worker-contract.md#42-substantive-validation), never merely an absent diff |
 | Base revision | The base the task was evaluated against |
 | Verification | The verification actually run, with real `PASS` / `FAIL` / `NOT RUN` outcomes |
-| Preserved artifacts | Worktree and branch retained pending the operator decision |
+| Preserved artifacts | Worktree and branch retained pending the operator decision, or `—` for a preflight `NO_OP`, which never ran and was never provisioned ([`git-worktree.md` §6.2](git-worktree.md#62-what-is-deliberately-preserved)) |
 | Operator decision | The decision still required on the underlying Issue |
 
 A `NO_OP` report carries no `Category` and no `Condition` field. Neither exists
@@ -285,15 +296,33 @@ for it.
 
 ### 7.2 `BLOCKED` and `FAILED`
 
-| Field | Content |
-|---|---|
-| Task | Which task |
-| `task_result` | `BLOCKED` / `FAILED` |
-| Category | The failure category, including `unknown` |
-| Condition | The exact failing condition, quoted |
-| Attempts | Retries used, out of budget |
-| Preserved artifacts | Worktree and branch retained for diagnosis |
-| Dependents affected | Tasks `BLOCKED` as a consequence |
+| Field | Content | Required for |
+|---|---|---|
+| Task | Which task | both |
+| `task_result` | `BLOCKED` / `FAILED` | both |
+| Category | The failure category (§1), including `unknown` | `FAILED`, and any `BLOCKED` that followed an observed failure |
+| Condition | The exact condition, quoted | both |
+| Attempts | Retries used, out of budget | any task that was dispatched |
+| Preserved artifacts | Worktree and branch retained for diagnosis, or `—` where none was ever provisioned ([`git-worktree.md` §6.2](git-worktree.md#62-what-is-deliberately-preserved)) | both |
+| Dependents affected | Tasks `BLOCKED` as a consequence | both |
+
+**A `BLOCKED` task does not always have a failure category.** Categories classify
+*failures* (§1), and much of what produces task result `BLOCKED` is not a failure
+at all: a preflight condition that was not satisfied
+([`worker-contract.md` §1.2](worker-contract.md#12-preflight-rules)), a
+prerequisite that did not reach `SUCCESS` (§4), an undeterminable semantic
+conflict
+([`worker-contract.md` §5.3](worker-contract.md#53-outcomes)), a gate that closed
+on a condition needing an operator decision
+([`review-and-gates.md` §10](review-and-gates.md#10-gate-reporting)), or a
+batch-level stop ([`orchestration.md` §3.6](orchestration.md#36-the-terminating-path)).
+None of these attempted work and none of them failed, so none has a category, and
+inventing one would fabricate a failure exactly as §7.1 forbids for `NO_OP`.
+
+`Condition` is required in every case and carries the meaning: it quotes what was
+not satisfied. A `BLOCKED` task reports `Category` only when a real failure
+preceded the block — an orphaned worker whose cause was non-retryable, for
+example. `FAILED` always reports one.
 
 ### 7.3 Batch success rule
 
