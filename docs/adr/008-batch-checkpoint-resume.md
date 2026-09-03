@@ -13,7 +13,7 @@
 > without duplicate work or duplicate dispatch, that orphaned workers are
 > detected and either retried within budget or failed, and that unreadable state
 > fails closed rather than being treated as absent — is preserved in
-> [`../../skills/common/process/batch/references/failure-recovery.md`](../../skills/common/process/batch/references/failure-recovery.md).
+> [`../../skills/common/process/batch/references/failure-and-recovery.md`](../../skills/common/process/batch/references/failure-and-recovery.md).
 > What no longer applies is the prescribed file layout and schema: the protocol
 > requires that resume state be re-establishable, not that it be stored in any
 > particular format.

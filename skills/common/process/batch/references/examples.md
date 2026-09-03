@@ -2,50 +2,53 @@
 
 **Status:** Stable
 
-**Authority:** Reference — normative detail for
-[`../SKILL.md`](../SKILL.md)
+**Authority:** Reference — explanatory detail for
+[`../SKILL.md`](../SKILL.md), which is the SSOT. Nothing here overrides a rule
+stated there.
 
-Seven decision cases that a compliant execution of this protocol MUST resolve the
-same way. They are the protocol's conformance cases: an agent that reads only
-this file and [`../SKILL.md`](../SKILL.md) should reach these outcomes.
+These are the protocol's conformance cases. An agent reading only
+[`../SKILL.md`](../SKILL.md) and this file should reach the same answers.
+
+For each case, only six questions are asked:
+
+1. May the work execute?
+2. Parallel or serial?
+3. What is each task result?
+4. Is anything merge-eligible?
+5. What is the batch outcome?
+6. What must the report say?
+
+There is no progress state to trace.
 
 ---
 
 ## Scenario A — Three independent tasks
 
 **Given:** Tasks A, B, C. No dependency between any pair. Change surfaces are
-known and disjoint.
+known, disjoint, and every parallel-safety dimension is CONFIRMED for every
+pair.
 
-**Analysis:**
+**May execute:** yes.
 
-```text
-Dependencies:  none
-Overlap:       A ∩ B = ∅,  A ∩ C = ∅,  B ∩ C = ∅
-```
+**Parallel or serial:** **the same wave** — `Wave 1: [A, B, C]`.
 
-**Required outcome:** all three in **the same wave**.
+Sharing a wave permits concurrent *execution*. It never permits concurrent
+*integration*: all three still get separate worktrees and branches, three
+independent validations, and serial, one-at-a-time integration. With the default
+concurrency limit of 3 all three may run at once; at a limit of 2 the wave
+dispatches as `[A, B]` then `[C]` — same wave, same guarantees, smaller groups.
 
-```text
-Wave 1: [A, B, C]
-```
+**Task results:** `SUCCESS` each, if each is implemented, validated and
+integrated.
 
-**Why:** wave membership requires dependency-freedom *and* non-overlap
-([`dependency-analysis.md` §5](dependency-analysis.md#5-parallel-safety-determination)).
-Both hold for every pair.
+**Merge eligibility:** each becomes eligible on its own, one at a time, after
+its own gates.
 
-**Still required:** three separate worktrees and branches, three independent
-validations, and serial integration — one at a time. Sharing a wave permits
-concurrent *execution*; it never permits concurrent *integration*.
+**Batch outcome:** `SUCCESS` by rule 7, and only if aggregate verification also
+passes.
 
-If the concurrency limit is 3 (the default), all three may run at once. If it
-were 2, the wave dispatches as `[A, B]` then `[C]` — same wave, same guarantees,
-smaller groups.
-
-**Batch outcome:** `SUCCESS` only if all three reach task result `SUCCESS` *and*
-aggregate verification passes
-([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome),
-rule 8). Rule 8 is the only route to outcome `SUCCESS`, and it is available to
-any scenario whose tasks all succeed — C and E included.
+**Report:** the wave assignment, and which dimensions were CONFIRMED for each
+pair.
 
 ---
 
@@ -53,68 +56,35 @@ any scenario whose tasks all succeed — C and E included.
 
 **Given:** `A -> B` (B depends on A). C is independent of both.
 
-**Analysis:**
-
 ```text
 Graph:   A → B
          C
 Cycle check: none
 ```
 
-**Required outcome:**
+**May execute:** yes.
 
-```text
-Wave 1: [A, C]
-Wave 2: [B]
-```
+**Parallel or serial:** `Wave 1: [A, C]`, `Wave 2: [B]`. B cannot join wave 1 —
+its dependency is unsatisfied. C has no dependency and does not overlap A, so it
+joins A.
 
-**Why:** B cannot enter wave 1 — its dependency is unsatisfied. C has no
-dependency and does not overlap A, so it joins A in wave 1.
+**When wave 2 starts:** once every member of wave 1 holds a task result, and
+every wave-1 result that was going to be integrated has been integrated. A
+*validated* A is not enough. B is provisioned from the base as it stands at that
+moment, so dispatching B while A is validated but unmerged would build and
+verify B against a base that does not contain its own premise.
 
-**When wave 2 may start.** Wave 2 begins only once wave 1 has crossed the **wave
-barrier** ([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement)),
-which is more than "A and C stopped running":
+C is not B's prerequisite, but C is a wave-1 member, so C must also reach a task
+result before wave 2 starts. Any result does — `SUCCESS`, `NO_OP`, `BLOCKED` or
+`FAILED`. What wave 2 may not do is start while C is still undetermined.
 
-The five conditions are **sequential**, not simultaneous: 1 ends wave 1's
-execution, 2–3 process what it produced, and 4 is the state that leaves behind.
+**If A does not reach `SUCCESS`** — for any non-`SUCCESS` result, `FAILED`,
+`BLOCKED` and `NO_OP` alike — B is `BLOCKED`, naming A. B is not attempted
+anyway and not dropped from the report. C is unaffected.
 
-| # | Condition on wave 1 | Satisfied by |
-|---|---|---|
-| 1 | Every member has settled — Phase 6's postcondition | A and C have each stopped executing, holding task state `RESULT_READY` or a terminal task state |
-| 2 | Every delivered result has been validated and classified | A's and C's results pass [`worker-contract.md` §4](worker-contract.md#4-worker-result-validation) and §5; neither is left in `RESULT_READY` |
-| 3 | Every integration-eligible result has been **resolved** — integrated with both re-verifications settled, or terminally `BLOCKED`/`FAILED` because integration stopped | A's authorized merge has landed through the gates and the Merge Skill, and both its pre-merge re-verification against the refreshed base and its post-merge verification have settled |
-| 4 | Every member holds a terminal task state — the state 2–3 leave behind | A and C have each moved out of `RESULT_READY` and carry exactly one terminal task result |
-| 5 | The next wave's prerequisites have been re-checked | A's task result is confirmed `SUCCESS` before B is provisioned |
-
-Condition 3 is the one that matters for B specifically. A **validated** A is not
-enough: B is provisioned from the base as it stands at provisioning time
-([`git-worktree.md` §2.2](git-worktree.md#22-base-revision)), so dispatching B
-while A sits in `RESULT_READY`, `WAITING_FOR_APPROVAL` or `READY_FOR_MERGE` would
-build and verify B against a base that does not contain A's change — the exact
-situation the `INTEGRATION → EXECUTION` re-entry rule forbids
-([`orchestration.md` §3.1](orchestration.md#31-batch-lifecycle-state)).
-
-C is not B's prerequisite, so no *dependency* of B waits on C. C still holds the
-barrier: it is a member of wave 1, and the barrier is a property of the wave
-rather than of a single edge. So C must settle, be validated, and then be
-**resolved** — integrated if it stays integration-eligible, or terminally
-`BLOCKED` or `FAILED` if its gate closes for good. Either resolution crosses the
-barrier; what wave 2 may not do is start while C is still undetermined.
-
-**If A does not reach `SUCCESS`:** condition 5 catches it at the barrier and B
-takes task state `BLOCKED` and task result `BLOCKED`, naming A as the
-failed dependency — and this holds for *every* non-`SUCCESS` result A could
-carry, `FAILED`, `BLOCKED` and `NO_OP` alike
-([`dependency-analysis.md` §3.1.1](dependency-analysis.md#311-propagation-to-dependents)).
-B is **not** attempted anyway, and **not** dropped from the report. C is
-unaffected and proceeds normally — that is failure isolation
-([`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)).
-
-**Batch outcome in that case:** `FAILED` if A's own result is `FAILED` (rule 3
-takes precedence), `BLOCKED` if A's result is `BLOCKED` or `NO_OP`
-([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)).
-Either way the batch still runs Phases 9–11 and ends in lifecycle state
-`COMPLETED`. C's `SUCCESS` never lifts the batch to outcome `SUCCESS`.
+**Batch outcome in that case:** `FAILED` if A's result is `FAILED` (rule 2),
+`BLOCKED` if A's result is `BLOCKED` or `NO_OP` (rule 3). C's `SUCCESS` never
+lifts the batch to `SUCCESS`.
 
 ---
 
@@ -123,246 +93,164 @@ Either way the batch still runs Phases 9–11 and ends in lifecycle state
 **Given:** A and B may modify the same area. Whether they actually conflict
 cannot be established.
 
-**Required outcome:** **sequential**. A and B go in different waves.
+**May execute:** yes.
 
-```text
-Wave 1: [A]
-Wave 2: [B]
-```
+**Parallel or serial:** **serial** — `Wave 1: [A]`, `Wave 2: [B]`.
 
-**Why:** the fail-closed rule
-([`../SKILL.md`](../SKILL.md#fail-closed-rules)) — parallel safety unknown
-resolves to sequential. Sharing a wave requires overlap to be *established as
-absent*, not merely *unproven as present*.
+**Why:** sharing a wave requires overlap to be established as *absent*
+(CONFIRMED), not merely unproven as present. Unverified parallel safety resolves
+to serial.
 
-**What is forbidden:** reasoning "they probably touch different files, run them
-together". "Probably" is not a permitted state.
+**What is forbidden:** "they probably touch different files, run them together".
+"Probably" is not a permitted state.
 
-**Reporting obligation:** the serialization and its reason are recorded in the
-plan. A reviewer must be able to see that this was a deliberate safety decision
-and check whether it was warranted.
+**Batch outcome:** unaffected by the serialization — decided by the task results
+as in any other scenario.
+
+**Report:** the serialization and its reason. A reviewer must be able to see that
+this was a deliberate safety decision and check whether it was warranted. Running
+serially because safety could not be proven is a **correct** outcome, not a
+shortfall.
 
 ---
 
 ## Scenario D — One worker fails
 
-**Given:** Wave 1 = `[A, B, C]`. B fails. A and C return validated `SUCCESS`
+**Given:** `Wave 1: [A, B, C]`. B fails. A and C return validated `SUCCESS`
 results.
 
-**Required outcome:** **A and C are not integrated unconditionally.** The
-situation is re-evaluated first.
-
-Re-evaluation:
+**May execute:** A and C are **not** integrated unconditionally. The situation is
+re-established first.
 
 1. **Does anything depend on B?** Every dependent of B becomes `BLOCKED`, naming
-   B. Transitively.
-2. **Could A or C depend on B?** No. Wave membership requires the members to be
-   pairwise dependency-free, so no member of wave 1 can depend on another
-   ([`dependency-analysis.md` §5](dependency-analysis.md#5-parallel-safety-determination)).
-   Every dependent of B is necessarily in a later wave and is handled by step 1.
-3. **Semantic conflict:** were A's and C's results validated against a plan that
-   assumed B's change would exist? Re-run semantic conflict detection against the
-   base as it actually stands
-   ([`worker-contract.md` §5](worker-contract.md#5-semantic-conflict-detection)).
+   B, transitively.
+2. **Could A or C depend on B?** No — wave members are pairwise
+   dependency-free, so every dependent of B is necessarily in a later wave and is
+   covered by step 1.
+3. **Semantic safety:** A's and C's results were validated against a plan that
+   assumed B's change would exist. Semantic conflict detection is re-run against
+   the base as it actually stands.
 4. **Gates:** A and C each still face the full gate sequence individually.
 
-If A and C pass re-evaluation, they integrate normally, one at a time. B takes
-task state `FAILED` and task result `FAILED`, its worktree and branch
-**preserved** for diagnosis.
+**Task results:** B is `FAILED`, its worktree and branch preserved for
+diagnosis. A and C are `SUCCESS` if they pass re-evaluation and integrate.
 
-**Batch outcome:** `FAILED`
-([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome),
-rule 3) — one `FAILED` task decides it, regardless of how many peers succeeded.
-The batch nonetheless completes its lifecycle: A and C's integrations are
-aggregate-verified, cleanup runs, and the report states outcome `FAILED` against
-lifecycle state `COMPLETED`. Two integrated tasks are not a partial success; they
-are integrated work inside a failed batch, and the report says exactly that.
+**Merge eligibility:** A and C, one at a time, after re-evaluation. Never B's
+partial output.
+
+**Batch outcome:** `FAILED` by rule 2 — one `FAILED` task decides it, regardless
+of how many peers succeeded. Aggregate verification still runs over what was
+integrated, cleanup still runs, and the report still states every task result.
+
+**Report:** two integrated tasks inside a failed batch are not a partial success.
+The report says exactly that. B's failure never closes B's Issue.
 
 **Why this matters:** "B failed, but A and C passed, so ship A and C" is the
-tempting and wrong move. A and C were planned, validated and reviewed in a world
-where B was expected to land. That assumption must be re-checked, not inherited.
-
-**Also required:** B's partial output is never integrated, and B's failure never
-closes B's Issue.
+tempting and wrong move. A and C were planned and reviewed in a world where B
+was expected to land. That assumption must be re-checked, not inherited.
 
 ---
 
 ## Scenario E — No native parallel worker capability
 
-**Given:** The executing agent has no ability to run delegated workers
-concurrently.
+**Given:** the executing agent cannot run delegated workers concurrently.
 
-**Required outcome:** **Full batch semantics are preserved.** Only throughput
+**May execute:** yes. **Full batch semantics are preserved.** Only throughput
 changes.
 
-The agent MUST still:
+The agent MUST still produce the task inventory, the dependency analysis, the
+cycle-checked graph, the execution waves and the parallel/sequential
+classification; give each task its own worktree and branch; validate each result
+independently; integrate serially through the gates; and report per-task
+results.
 
-| Obligation | Status |
-|---|---|
-| Task inventory | Required |
-| Dependency analysis | Required |
-| Dependency graph + cycle check | Required |
-| Execution waves | Required |
-| Parallel/sequential classification | Required |
-| One worktree + one branch per task | Required |
-| Independent per-task validation | Required |
-| Serial, gated integration | Required |
-| Per-task reporting | Required |
+**Parallel or serial:** the effective concurrency limit is 1, so a wave's
+members execute one after another rather than at the same time. The waves
+themselves are unchanged.
 
-What changes: the effective concurrency limit is 1, so a wave's members execute
-one after another rather than at the same time
-([`git-worktree.md` §4](git-worktree.md#4-concurrency-policy)).
+**Batch outcome:** decided by the task results exactly as if the wave had run
+concurrently.
 
-The report MUST state that execution was serialized and why.
+**Report:** MUST state that execution was serialized, and why.
 
 **What is forbidden:** concluding "no parallel capability, so this is just
-ordinary sequential implementation" and skipping the planning stage. Isolation,
-ordering, validation and gating are independent of concurrency
-([`../SKILL.md`](../SKILL.md#silent-sequential-fallback-is-forbidden)).
+ordinary sequential implementation" and skipping the planning. Isolation,
+ordering, validation and gating are independent of concurrency.
 
 ---
 
-## Scenario F — Batch explicitly requested
+## Scenario F — A batch is explicitly requested
 
-**Given:** The operator says "use the Batch Skill to process these Issues" and
+**Given:** the operator says "use the Batch Skill to process these Issues" and
 supplies several Issue numbers.
 
-**Required outcome:** The five mandatory planning artifacts are produced
-**before** any implementation begins
-([`../SKILL.md`](../SKILL.md#mandatory-preconditions)):
-
-```text
-1. Task inventory
-2. Dependency analysis
-3. Dependency graph (cycle-checked)
-4. Execution waves
-5. Parallel/sequential classification
-```
+**May execute:** only after the five mandatory planning artifacts exist —
+inventory, dependency analysis, cycle-checked graph, execution waves,
+parallel/sequential classification.
 
 **Explicitly forbidden:** a single worker implementing every Issue one after
-another, with no inventory, no graph and no waves, reported as "batch
-completed". That is the exact failure this protocol exists to prevent — it
-produces work that looks like a batch, carries none of a batch's safety
-properties, and reports success.
+another, with no inventory, no graph and no waves, reported as "batch completed".
+That is the exact failure this protocol exists to prevent: it produces work that
+looks like a batch, carries none of a batch's safety properties, and reports
+success.
 
 **Note the distinction from Scenario E.** E is about *capability*: parallelism
 was unavailable, so execution serialized — legitimate, provided the planning
 happened and is reported. F is about *process*: the planning was skipped
 entirely. E is a valid batch executed serially. F is not a batch at all.
 
-If the planning artifacts cannot be produced, the batch records **stop condition
-S4** — unless a more specific condition already names the reason, in which case
-that one is recorded instead: an ambiguous task set is S1, a cycle or an
-uncheckable graph is S2, and an unresolvable ordering is S3
-([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)). S4
-covers the residual case. Either way the batch finishes through the terminating
-path, which derives batch outcome `BLOCKED` at `REPORTING` by aggregation rule 2
-— absent a rule 1 match — and reports why (Scenario G). It
-does not silently degrade into ordinary sequential implementation.
+**If the artifacts cannot be produced:** the batch stops, records the exact
+reason, gives every unclassified task `BLOCKED` naming that reason, and still
+runs aggregate verification (`NOT RUN`), cleanup and reporting. **Batch outcome
+`BLOCKED`** by rule 3. It does not silently degrade into ordinary sequential
+implementation.
 
 ---
 
-## Scenario G — The batch is blocked before it can execute
+## Additional cases
 
-**Given:** Tasks A, B, C. Analysis finds `A -> B`, `B -> C` and `C -> A`. The
-graph contains a cycle, so Phase 4 cannot produce a cycle-free DAG.
+Each row is decided by the same rules. "Batch outcome" assumes the case is the
+only notable thing in the batch; where a batch mixes cases, the ordered outcome
+rules ([`../SKILL.md`](../SKILL.md#batch-outcome)) resolve it.
 
-**Required outcome:** **batch outcome `BLOCKED`, batch lifecycle state
-`COMPLETED`.** Those are two different fields, and both are required
-([`orchestration.md` §3](orchestration.md#3-state-models-and-outcomes)).
-
-What the batch does, in order
-([`orchestration.md` §3.6](orchestration.md#36-the-terminating-path)):
-
-| Step | Action |
-|---|---|
-| Record the condition | Batch-level stop condition S2 of [§3.4](orchestration.md#batch-level-stop-conditions), quoting the cycle path `A -> B -> C -> A`. The outcome itself is derived later, at `REPORTING` |
-| Stop dispatching | No wave was built, so no worker is dispatched, and none is dispatched afterwards |
-| Stop unsafe integration | Nothing was ever integration-eligible; nothing is integrated |
-| Classify pending work | A, B and C each get task state `BLOCKED` and task result `BLOCKED`, naming the cycle as the reason. All three stay in the inventory |
-| Phase 9 `VERIFICATION` | Aggregate verification `NOT RUN` — nothing was integrated. Reported as `NOT RUN`, never as passing |
-| Phase 10 `CLEANUP` | No isolation was provisioned; the report says so |
-| Phase 11 `REPORTING` | Derive the outcome: [§3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome) rule 2 fires on the recorded stop condition, giving `BLOCKED`. Full report: plan section, all three tasks, the outcome, rule 2, and condition S2 |
-| Terminal | Batch lifecycle state `COMPLETED`, carrying batch outcome `BLOCKED` |
-
-Rule 2 — not rule 4 — is what fires, and that is the point of its precedence.
-The three tasks all carry task state `BLOCKED` and task result `BLOCKED`, so rule
-4 would also match; it
-would report the cause as "some task was blocked", which says nothing about the
-cycle. Rule 2 keeps the stop condition itself as the reported cause.
-
-**Why the batch still traverses Phases 9–11:** the lifecycle records what
-happened; the outcome records what came of it. Exiting at Phase 4 would leave
-aggregate verification, cleanup and reporting unstated, and a reader could not
-tell a clean, deliberate stop from a run that simply died. There is no edge into
-`COMPLETED` except from `REPORTING`
-([`orchestration.md` §3.1](orchestration.md#31-batch-lifecycle-state)), so this
-is not a matter of diligence — the shortcut does not exist.
-
-**What is forbidden:** reporting this batch as `FAILED` (nothing was attempted
-and nothing failed), as lifecycle state `BLOCKED` (there is no such lifecycle
-state), or as `COMPLETED` with no outcome recorded (an invalid state). Equally
-forbidden is dropping the cycle's weakest edge to make the batch runnable —
-resolution is an operator decision
-([`dependency-analysis.md` §4.4](dependency-analysis.md#44-cycle-detection)).
-
-**The same lifecycle shape applies to every batch-level stop condition**,
-whatever raised it: an unresolvable task set (S1), an unresolvable ordering (S3),
-missing planning artifacts (S4, Scenario F), or a fail-closed stop that leaves
-*the batch as a whole* unable to continue safely (S5). The condition differs; the
-lifecycle does not.
-
-**The outcome, however, does not generalize.** S1–S5 reach batch outcome
-`BLOCKED` through aggregation rule 2 **only when rule 1 does not match first** —
-as here, where nothing was integrated and aggregate verification is `NOT RUN`. A
-batch that stops on S5 *after* integrating work can still fail its aggregate
-verification, and rule 1 then makes it `FAILED`. **S6** — the batch's own
-execution violating the model — shares this lifecycle exactly, Phases 9–11
-included, but rule 1 always matches it first and the outcome is `FAILED`
-([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions),
-[§3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)).
-It is the one stop condition this scenario's outcome does not model, which is
-precisely why the outcome is derived from the rules at `REPORTING` and never read
-off the stop condition.
-
-**What does *not* take this path:** an ordinary gate stop or a single blocked
-task. Those give that task task state `BLOCKED` and task result `BLOCKED` and
-leave the rest of the batch
-running
-([`review-and-gates.md` §10](review-and-gates.md#10-gate-reporting),
-[`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)). They
-reach the batch outcome through the aggregation rule, not by halting the batch —
-which is why Scenario D's batch keeps integrating A and C after B fails.
-
-**Note the contrast with Scenario D.** There, one *task* is `FAILED` while the
-batch keeps executing its plan. Here the *batch* is blocked, so nothing further
-executes at all. A task result never decides the batch outcome on its own — the
-aggregation rule does
-([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)).
-
----
+| # | Case | May execute? | Task result | Merge-eligible? | Batch outcome | Report must say |
+|---|---|---|---|---|---|---|
+| 1 | Work found already present **before dispatch**, CONFIRMED | Not dispatched | `NO_OP` | No | `NO_OP` (rule 6) if every task is `NO_OP` | The evidence it was already present; the operator decision left open; no artifacts were provisioned |
+| 2 | Worker runs and finds the work already present, CONFIRMED | Yes | `NO_OP` | No | Same as above | The same, plus the preserved worktree and branch |
+| 3 | Whether the work was already done **cannot be CONFIRMED** | Not dispatched | `BLOCKED` | No | `BLOCKED` (rule 3) | The exact condition that could not be established. `NO_OP` is a positive finding, never a fallback |
+| 4 | A prerequisite ends non-`SUCCESS` | Dependent not dispatched | Dependent `BLOCKED` | No | `BLOCKED` (rule 3) | The prerequisite named; the dependent stays in the inventory |
+| 5 | Dependency graph contains a cycle, or cannot be checked | Batch stops before any dispatch | Every task `BLOCKED` | No | `BLOCKED` (rule 3) | The full cycle path, or why the check could not be performed. Breaking the cycle is an operator decision |
+| 6 | Transient failure, retry succeeds within budget | Yes | `SUCCESS` | Yes | `SUCCESS` (rule 7) if all tasks succeed and aggregate verification passes | Every attempt's branch, worktree and base revision; the failure category |
+| 7 | Retry budget exhausted | Attempted | `FAILED` | No | `FAILED` (rule 2) | The last failure category and the attempt count |
+| 8 | Non-retryable failure category | Attempted | `FAILED` | No | `FAILED` (rule 2) | The category, and that no retry was permitted |
+| 9 | Worker delivers a result missing an aspect that applies to it | Attempted | `FAILED` | No | `FAILED` (rule 2) | Exactly what was missing. The orchestrator MUST NOT repair it |
+| 10 | Worker delivers nothing readable | Attempted | Retried if the cause is retryable, else `FAILED` | No | `FAILED` (rule 2) if it ends there | That nothing was delivered; the cause and its category |
+| 11 | Semantic conflict found, or cannot be determined | Yes | `BLOCKED` | **No** | `BLOCKED` (rule 3) | The conflict, or what could not be determined, and both tasks involved |
+| 12 | Approval existence or validity cannot be established | Yes | `BLOCKED` | **No merge** | `BLOCKED` (rule 3) | The condition that could not be established. This is absolute |
+| 13 | The Merge Skill returns the merge blocked | Yes | `BLOCKED` | No | `BLOCKED` (rule 3) | The Merge Skill's outcome verbatim; it is authoritative |
+| 14 | Every task `NO_OP` | Not dispatched, or dispatched and no change needed | All `NO_OP` | No | `NO_OP` (rule 6) | Aggregate verification `NOT RUN`; nothing integrated; the operator decision on each Issue |
+| 15 | Every task `BLOCKED` | No | All `BLOCKED` | No | `BLOCKED` (rule 3) | Each task's exact condition; aggregate verification `NOT RUN` |
+| 16 | Some tasks `SUCCESS`, some `NO_OP` | Yes | Mixed | The `SUCCESS` ones | **`BLOCKED`** (rule 5) | Why: each `NO_OP` leaves an operator decision open, so the batch has outstanding work. `NO_OP` is never promoted to `SUCCESS` |
+| 17 | Cleanup fails after a confirmed merge | Yes | Unchanged — `SUCCESS` stays `SUCCESS` | Already merged | Unchanged — `SUCCESS` (rule 7) if that is what the results give | The artifact that could not be removed, and its path. Cleanup failure never reverts a merge |
+| 18 | Aggregate verification fails | Yes | Possibly all `SUCCESS` | Already merged | **`FAILED`** (rule 1) | The failure against the integrated base, and which tasks are implicated. Nothing is reverted automatically |
+| 19 | Nothing was integrated | — | Whatever they are | No | Per the ordered rules | Aggregate verification `NOT RUN`, never as passing; and that the batch produced no integrated change |
+| 20 | Recorded batch progress is unreadable on resume | **No** | Unclassified tasks `BLOCKED` | No | `BLOCKED` (rule 3) | That the record could not be read. It is never treated as absent — that would risk duplicate dispatch or duplicate merge |
 
 ## Cross-scenario invariants
 
-These hold in every scenario above:
-
 | Invariant | Applies |
 |---|---|
-| One worktree and one branch per **dispatched** task | A, B, C, D, E, F, G — vacuously where nothing was dispatched (G stopped in Phase 4; B's blocked dependent and F's forbidden path are never dispatched). Isolation is provisioned at dispatch, so a task blocked before it has none |
-| Integration is serial, one task at a time | A, B, C, D, E, F, G |
-| Every result is validated before integration | A, B, C, D, E, F, G |
-| An unknown gate is a closed gate | A, B, C, D, E, F, G |
-| `NO_OP` is never `SUCCESS` | A, B, C, D, E, F, G |
-| Issues close only via approved merge | A, B, C, D, E, F, G |
-| Every task appears in the report | A, B, C, D, E, F, G |
-| Phases 9–11 run, and the batch ends in lifecycle state `COMPLETED` with exactly one outcome | A, B, C, D, E, G — and F on its compliant path, which is G's |
+| One worktree and one branch per dispatched task | Every scenario — vacuously where nothing was dispatched |
+| Integration is serial, one task at a time | Every scenario |
+| Every delivered result is validated before integration | Every scenario |
+| A gate that is not CONFIRMED open is closed | Every scenario |
+| `NO_OP` is never `SUCCESS` | Every scenario |
+| Issues close only via approved merge | Every scenario |
+| Every task in the inventory appears in the report | Every scenario |
+| Aggregate verification, cleanup and reporting run on every path | Every scenario |
 
 ## Related
 
-- [`../SKILL.md`](../SKILL.md) — normative entrypoint
-- [`orchestration.md`](orchestration.md) — lifecycle states, batch outcome, terminating path
-- [`dependency-analysis.md`](dependency-analysis.md) — waves and parallel safety
-- [`worker-contract.md`](worker-contract.md) — validation and semantic conflict
-- [`review-and-gates.md`](review-and-gates.md) — gate semantics
-- [`failure-recovery.md`](failure-recovery.md) — failure and dependent handling
-- [`git-worktree.md`](git-worktree.md) — isolation and concurrency
+- [`../SKILL.md`](../SKILL.md) — normative entrypoint and SSOT
+- [`worker-and-isolation.md`](worker-and-isolation.md) — isolation, validation, cleanup
+- [`failure-and-recovery.md`](failure-and-recovery.md) — failure, retry, resume
