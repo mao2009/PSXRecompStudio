@@ -40,10 +40,10 @@ that can read Markdown and run ordinary Git operations can execute it (#242).
     Batch requested
          |
          v
-    Inventory + Preflight        (unexecutable tasks -> BLOCKED)
+    Inventory + Preflight        (unexecutable tasks -> task result BLOCKED)
          |
          v
-    Dependency analysis + DAG    (cycle -> batch BLOCKED)
+    Dependency analysis + DAG    (cycle -> batch outcome BLOCKED)
          |
          v
     Execution waves
@@ -68,7 +68,7 @@ that can read Markdown and run ordinary Git operations can execute it (#242).
 
 ## Result classification
 
-| Result | Meaning |
+| Task result | Meaning |
 |---|---|
 | `SUCCESS` | Work was required and was completed and validated |
 | `NO_OP` | Work was already present; nothing was required |
@@ -77,6 +77,16 @@ that can read Markdown and run ordinary Git operations can execute it (#242).
 
 `NO_OP` is never reported as `SUCCESS`, and no result closes an Issue — Issue
 closure follows only from the approved merge.
+
+The batch itself carries a **lifecycle state** (where it is: the phase it is
+executing, ending at `COMPLETED`) and, separately, a **batch outcome**
+(`SUCCESS` / `NO_OP` / `BLOCKED` / `FAILED`). Reaching `COMPLETED` means the
+final phases ran and reporting finished — not that the batch passed, and not
+that anything was verified: aggregate verification may legitimately be `NOT RUN`,
+as it is for a batch that stopped before integrating anything. A batch that stops
+early records its stop condition and still runs those final phases. Both models,
+and the rule that derives the outcome from the task results, are defined in
+[`references/orchestration.md` §3](../skills/common/process/batch/references/orchestration.md#3-state-models-and-outcomes).
 
 ## Configuration
 

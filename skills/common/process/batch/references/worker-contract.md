@@ -33,7 +33,11 @@ means something.
 
 - A condition that **cannot be evaluated** is a failed condition. Preflight
   never passes on an unverifiable check.
-- A failed preflight produces `BLOCKED`, never `NO_OP` and never `FAILED`.
+- A failed preflight produces task result `BLOCKED`, never `NO_OP` and never
+  `FAILED`. It is a *task* result: what it means for the batch as a whole is
+  decided by the aggregation rule
+  ([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)),
+  never by the preflight itself.
 - The exact failing condition MUST be recorded and reported verbatim.
 - A `BLOCKED` task requires an **explicit operator decision** before it can be
   retried. The orchestrator MUST NOT clear a preflight block on its own
@@ -50,7 +54,7 @@ Condition 5 exists to prevent the most damaging false positive: a batch that
 - Detected **by the worker during execution**: the task is `NO_OP`.
 
 Neither is `SUCCESS`. Neither closes an Issue. Neither counts toward a passing
-batch. See [`../SKILL.md`](../SKILL.md#result-vocabulary).
+batch. See [`../SKILL.md`](../SKILL.md#task-result-vocabulary).
 
 ## 2. Worker abstraction
 
@@ -172,7 +176,7 @@ terminal validation failure.
 
 | # | Step | Question | Outcome when it applies |
 |---|---|---|---|
-| 1 | Worker lifecycle | Did the worker stop without delivering a parseable result — no output at all, or output that cannot be parsed into the form of §3.2? | `ORPHANED`, retried within budget ([`failure-recovery.md` §6.3](failure-recovery.md#63-orphan-handling)). Steps 2–4 do **not** run |
+| 1 | Worker delivery | Did the worker stop without delivering a parseable result — no output at all, or output that cannot be parsed into the form of §3.2? | Worker delivery state `ORPHANED`, retried within budget when its cause is retryable ([`failure-recovery.md` §6.3](failure-recovery.md#63-orphan-handling)). Steps 2–4 do **not** run |
 | 2 | Structural validation | Is the delivered result complete and well-formed? (§4.1) | If not: invalid → terminal `FAILED` |
 | 3 | Substantive validation | Do the result's claims match observable reality? (§4.2) | If not: invalid → terminal `FAILED` |
 | 4 | Semantic validation | Does the result conflict with a peer result, or can that not be determined? (§5) | `BLOCKED`; not integration-eligible |

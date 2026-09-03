@@ -87,19 +87,29 @@ not retry in lockstep and reproduce the condition.
 - A retried task's result faces the full validation and gate sequence. A retry
   never inherits a previous attempt's validation or approval.
 
-## 3. Worker lifecycle states
+## 3. Worker delivery state
 
 Beyond the task state model in
 [`orchestration.md` §3.2](orchestration.md#32-task-state), a worker carries a
-coarse lifecycle state used for recovery:
+coarse **delivery state**, used for recovery. It is a vocabulary of its own
+([`orchestration.md` §3](orchestration.md#3-state-models-and-outcomes)) and it
+describes only *what the worker delivered* — never how the task was classified:
 
-| Lifecycle state | Meaning |
+| Delivery state | Meaning |
 |---|---|
-| `PENDING` | Not yet started (waiting on dependency or on a slot) |
+| `PENDING` | Not yet started (waiting on a dependency or on a slot) |
 | `RUNNING` | Actively executing |
-| `ORPHANED` | The worker is gone and produced no usable result |
-| `SUCCESS` | Completed with a validated result |
-| `FAILED` | Retry budget exhausted, or a non-retryable failure |
+| `DELIVERED` | Stopped having delivered a parseable result, whatever that result claims |
+| `ORPHANED` | Stopped without a parseable result |
+
+What happens next is decided by the classification order in
+[`worker-contract.md`](worker-contract.md#classification-order), not by this
+vocabulary. A worker that failed loudly is `DELIVERED`, carrying a result whose
+`classification` is `FAILED`; a worker that vanished is `ORPHANED`, and whether
+that is retried depends on the failure category, not on the delivery state
+(§6.3). The two are never the same case, which is exactly why delivery states
+carry no `SUCCESS` or `FAILED` value of their own: those belong to the task
+result vocabulary and are assigned only after validation.
 
 ## 4. Dependent task handling
 
@@ -124,7 +134,7 @@ whose premise never landed.
 
 If integration of one task fails or is stopped at a gate:
 
-1. That task's outcome is recorded with the exact gate and condition.
+1. That task's result is recorded with the exact gate and condition.
 2. **The remaining queue is not drained automatically.** Processing stops at the
    blocked item rather than skipping past it.
 3. That task's integration is **held**; it is not marked `FAILED` for having
@@ -198,12 +208,21 @@ validation failure and is terminal, not a retryable orphan. The single
 classification order is defined in
 [`worker-contract.md` — Classification order](worker-contract.md#classification-order).
 
+Delivery state and failure category are orthogonal: `ORPHANED` says the worker
+delivered nothing, the category (§1) says why. **Retry follows the category, not
+the delivery state.** An orphan is retried only when its cause classifies as
+retryable; an orphan whose cause is non-retryable — in practice `launch_failure`,
+where the worker could never be established — is terminal without a retry,
+because re-running it repeats a deterministic failure (§1.1).
+
 ```text
 ORPHANED detected
       ↓
-retry budget remaining?
-      ├─ yes → increment retry_count → re-provision → re-dispatch
-      └─ no  → FAILED  (and NOT counted as completed)
+cause classifies as retryable?  (§1.1 / §1.2; unknown counts as retryable, §1.3)
+      ├─ no  → task result FAILED  (non-retryable category recorded; no retry)
+      └─ yes → retry budget remaining?
+                 ├─ yes → increment retry_count → re-provision → re-dispatch
+                 └─ no  → task result FAILED  (and NOT counted as completed)
 ```
 
 Re-provisioning uses an **attempt-scoped** worktree and branch
@@ -252,7 +271,7 @@ not fail.
 | Field | Content |
 |---|---|
 | Task | Which task |
-| Classification | `NO_OP` |
+| `task_result` | `NO_OP` |
 | Evidence | Why the functionality was already present — substantiated per [`worker-contract.md` §4.2](worker-contract.md#42-substantive-validation), never merely an absent diff |
 | Base revision | The base the task was evaluated against |
 | Verification | The verification actually run, with real `PASS` / `FAIL` / `NOT RUN` outcomes |
@@ -267,7 +286,7 @@ for it.
 | Field | Content |
 |---|---|
 | Task | Which task |
-| Classification | `BLOCKED` / `FAILED` |
+| `task_result` | `BLOCKED` / `FAILED` |
 | Category | The failure category, including `unknown` |
 | Condition | The exact failing condition, quoted |
 | Attempts | Retries used, out of budget |
@@ -276,19 +295,28 @@ for it.
 
 ### 7.3 Batch success rule
 
-**A batch passed only if every task in the inventory is `SUCCESS`.**
+**A batch passed only if every task in the inventory is task result `SUCCESS`.**
 
-| The batch contains | Batch outcome |
+| The batch contains | Passed? |
 |---|---|
-| `SUCCESS` only | Passed |
+| `SUCCESS` only | Passed — provided aggregate verification passed too |
 | Any `NO_OP` | **Not passed** — the work was already present, which is an operator decision, not a batch success |
 | Any `BLOCKED` | **Not passed** |
 | Any `FAILED` | **Not passed** |
 
+"Passed" here means **batch outcome `SUCCESS`**, which is a separate vocabulary
+from the task results above and from the batch's lifecycle state. Reaching
+lifecycle state `COMPLETED` is not passing: a blocked or failed batch reaches
+`COMPLETED` too, carrying outcome `BLOCKED` or `FAILED`
+([`orchestration.md` §3.4](orchestration.md#34-batch-outcome)). Which outcome a
+given composition produces is decided by the ordered aggregation rule in
+[`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome),
+of which this table is the `SUCCESS` half.
+
 `NO_OP` is never promoted to `SUCCESS`, and never counted toward a passing batch
 in order to make one appear to pass
-([`../SKILL.md`](../SKILL.md#result-vocabulary)). A batch with any non-`SUCCESS`
-task is reported with its exact composition per classification.
+([`../SKILL.md`](../SKILL.md#task-result-vocabulary)). A batch with any
+non-`SUCCESS` task is reported with its exact composition per task result.
 
 ## Related
 

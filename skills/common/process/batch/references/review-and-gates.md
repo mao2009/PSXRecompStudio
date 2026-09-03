@@ -225,11 +225,32 @@ Every gate evaluation is reported per task:
 A gate reported as `UNKNOWN` MUST name the condition that could not be
 established. "Unknown" without a named condition is an incomplete report.
 
+A gate outcome is not a batch outcome, and it is not automatically a terminal
+task state either. What a gate stop does to the affected *task* depends on why
+the gate closed
+([`orchestration.md` §3.2](orchestration.md#32-task-state),
+[`failure-recovery.md` §5](failure-recovery.md#5-integration-failure)):
+
+| Why the gate closed | Effect on the task |
+|---|---|
+| A condition that can still change — an approval invalidated by a moved base, for example | Returns to `RESULT_READY` for a fresh determination. **Not** terminal |
+| A condition requiring an operator decision | Terminal task result `BLOCKED` |
+
+Only once a task is terminal does its result reach the batch, and even then the
+batch outcome is decided by the aggregation rule
+([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)),
+never by the gate.
+
+A gate stop halts the batch itself only in the rare case where it leaves the
+batch as a whole unable to continue safely — batch-level stop condition S5
+([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)). An
+ordinary gate stop does not: unrelated tasks keep running and integrating.
+
 ## Related
 
 - [`../SKILL.md`](../SKILL.md) — normative entrypoint
 - [`../../merge/SKILL.md`](../../merge/SKILL.md) — **owner** of approval, rebase, merge, post-merge verification
 - [`../../self-review/SKILL.md`](../../self-review/SKILL.md) — **owner** of review semantics
 - [`worker-contract.md`](worker-contract.md) — validation and semantic conflict detection
-- [`orchestration.md`](orchestration.md) — integration ordering and phases
+- [`orchestration.md`](orchestration.md) — integration ordering, phases, state and outcome models
 - [`failure-recovery.md`](failure-recovery.md) — failure handling at and after the gates

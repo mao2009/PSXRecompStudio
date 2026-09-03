@@ -28,7 +28,12 @@ Rules:
   set is not a task set.
 - The orchestrator MUST NOT silently add tasks that were not requested, and MUST
   NOT silently drop tasks that were.
-- If the set cannot be resolved unambiguously, the batch is `BLOCKED`.
+- If the set cannot be resolved unambiguously, the batch records **stop
+  condition S1**
+  ([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)) and
+  finishes through the terminating path
+  ([`orchestration.md` §3.6](orchestration.md#36-the-terminating-path)). The
+  outcome — `BLOCKED`, by aggregation rule 2 — is derived at `REPORTING`.
 
 ## 2. Task inventory
 
@@ -44,19 +49,60 @@ For each discovered task, record:
 | `owning_ssot` | when applicable | The architecture/SSOT document governing the change |
 | `verification` | yes | How this task's result will be verified |
 
-An inventory entry with a missing required field makes that task `BLOCKED`. It
-does not make the field empty.
+An inventory entry with a missing required field **records the field name and
+the exact reason it could not be established**, and gives that task **task state
+`BLOCKED` and task result `BLOCKED`**. Both are assigned — they are separate
+vocabularies ([`orchestration.md` §3](orchestration.md#3-state-models-and-outcomes)),
+and the result without the state would leave the task with no legal terminal
+state. The value is never fabricated and never silently emptied.
+
+Such an entry is complete in the sense Phase 2 requires
+([`orchestration.md` §2](orchestration.md#phase-2--inventory)): the recorded
+field-and-reason *is* the entry's content for that field. A `BLOCKED` inventory
+entry is therefore representable and reportable, and Phase 2's postcondition is
+satisfiable without inventing data.
 
 ## 3. Task classification
 
 Classify each task on two axes.
 
-### 3.1 Executability (preflight outcome)
+### 3.1 Executability (preflight result)
 
 Determined by the preflight checks in
 [`worker-contract.md`](worker-contract.md#1-preflight-validation).
-A task that fails preflight is `BLOCKED` and is **excluded from wave
-construction**, but it remains in the inventory and in the final report.
+A task that fails preflight takes task result `BLOCKED` and is **excluded from
+wave construction**, but it remains in the inventory and in the final report.
+
+#### 3.1.1 Propagation to dependents
+
+Excluding a blocked task is not enough. Its dependents must be resolved **before
+the graph is built**, or the exclusion silently corrupts the plan:
+
+- Dropping the edge `A -> B` when A is `BLOCKED` would let B dispatch as though
+  its prerequisite had landed — exactly the speculative execution
+  [`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)
+  forbids.
+- Keeping the edge would leave B permanently unready, and an unready task with
+  tasks remaining is batch-level stop condition S3
+  ([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)) —
+  halting a whole batch over one blocked prerequisite.
+
+So: **every dependent of a `BLOCKED` task takes task result `BLOCKED` too,
+transitively, naming the blocked prerequisite**. This runs *after* every
+dependency source has been resolved (§4.1, §4.2) and *before* graph construction
+(§4.3) — the ordering Phase 4 mandates
+([`orchestration.md` §2](orchestration.md#phase-4--analysis)). Resolving
+dependencies first matters: an undeclared structural or verification dependency
+that has not been established yet cannot be propagated along, which would leave a
+dependent of a blocked task eligible for dispatch. Those tasks are then excluded
+from wave construction along with their prerequisite, and they stay in the
+inventory and the report like any other `BLOCKED` task.
+
+This is the same rule [`failure-recovery.md`
+§4](failure-recovery.md#4-dependent-task-handling) applies when a task fails
+during execution, applied one stage earlier. Both halves of failure isolation
+still hold: dependents stop, and tasks that do **not** depend on the blocked task
+are untouched and proceed normally.
 
 ### 3.2 Coupling
 
@@ -104,11 +150,19 @@ Cycle detection runs **before execution planning**, over the whole graph.
 
 If a cycle is found:
 
-1. The batch stops immediately. No wave is constructed and no worker is
+1. Planning stops immediately. No wave is constructed and no worker is
    dispatched.
 2. The full cycle path is reported (e.g. `A -> B -> C -> A`).
-3. The batch outcome is `BLOCKED`, with the cycle as the reason.
-4. Resolution requires an explicit operator decision. The orchestrator MUST NOT
+3. Record **stop condition S2** with the cycle path as its reason
+   ([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)).
+   The outcome is not written here: batch outcome `BLOCKED` is derived at
+   `REPORTING` by aggregation rule 2, the protocol's single outcome-writing
+   point.
+4. The batch then finishes its lifecycle through the terminating path
+   ([`orchestration.md` §3.6](orchestration.md#36-the-terminating-path)):
+   aggregate verification (`NOT RUN`, since nothing was integrated), cleanup, and
+   the full report. Stopping analysis is not stopping the batch.
+5. Resolution requires an explicit operator decision. The orchestrator MUST NOT
    break a cycle by dropping an edge on its own judgement.
 
 A graph that cannot be checked for cycles is treated as containing one.
@@ -156,8 +210,9 @@ while remaining is not empty:
     ready := { t in remaining : every dependency of t is already
                                 assigned to an earlier wave }
 
-    if ready is empty:
-        stop — unresolvable ordering; batch is BLOCKED
+    if ready is empty:                       # `remaining` holds only
+        stop — unresolvable ordering;        # non-BLOCKED tasks, so this
+              batch-level stop condition S3  # is genuine unresolvable ordering
 
     wave := a maximal subset of `ready` whose members are
             pairwise parallel-safe (see §5)
@@ -195,8 +250,11 @@ promise that the executing agent will do so.
 
 ### 6.2 Wave advancement
 
-A wave is complete when every member has reached a terminal result
-(`SUCCESS`, `NO_OP`, `BLOCKED`, `FAILED`).
+A wave is complete when every member has **settled**: each holds either a
+delivered result awaiting validation (task state `RESULT_READY`) or a terminal
+task state ([`orchestration.md` §3.2](orchestration.md#32-task-state)). Terminal
+task results are produced by Phases 7–8, not by the wave finishing
+([`orchestration.md` §2](orchestration.md#phase-6--execution)).
 
 Before the next wave begins:
 
