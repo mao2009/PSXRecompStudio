@@ -171,9 +171,17 @@ public static class RecompilerIrValidator
 
             previousPc = block.EntryPc;
             ValidateExit(block.Exit, diagnostics, blockIndex);
+            var definedValueIds = new HashSet<int>();
             for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
             {
-                ValidateOperation(block.Operations[operationIndex], diagnostics, blockIndex, operationIndex);
+                var operation = block.Operations[operationIndex];
+                ValidateOperation(operation, diagnostics, blockIndex, operationIndex);
+                ValidateInput(operation.InputValueA, definedValueIds, diagnostics, blockIndex, operationIndex);
+                ValidateInput(operation.InputValueB, definedValueIds, diagnostics, blockIndex, operationIndex);
+                if (operation.ResultValueId >= 0)
+                {
+                    definedValueIds.Add(operation.ResultValueId);
+                }
             }
         }
 
@@ -182,7 +190,11 @@ public static class RecompilerIrValidator
 
     private static void ValidateExit(RecompilerIrExit exit, List<RecompilerIrDiagnostic> diagnostics, int blockIndex)
     {
-        if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc is null)
+        if (!Enum.IsDefined(exit.Reason))
+        {
+            Add(diagnostics, RecompilerIrDiagnosticCode.IllegalTermination, "Termination reason must be a defined value.", blockIndex);
+        }
+        else if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc is null)
         {
             Add(diagnostics, RecompilerIrDiagnosticCode.IllegalTermination, "Success exits require a next PC.", blockIndex);
         }
@@ -202,6 +214,12 @@ public static class RecompilerIrValidator
         var hasResult = operation.ResultValueId >= 0;
         var hasA = operation.InputValueA >= 0;
         var hasB = operation.InputValueB >= 0;
+        if (!Enum.IsDefined(operation.Kind))
+        {
+            Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Operation kind must be a defined value.", blockIndex, operationIndex);
+            return;
+        }
+
         var binary = operation.Kind is RecompilerIrOperationKind.Add or RecompilerIrOperationKind.Subtract
             or RecompilerIrOperationKind.And or RecompilerIrOperationKind.Or or RecompilerIrOperationKind.Xor or RecompilerIrOperationKind.Nor;
         var shift = operation.Kind is RecompilerIrOperationKind.ShiftLeftLogical or RecompilerIrOperationKind.ShiftRightLogical or RecompilerIrOperationKind.ShiftRightArithmetic;
@@ -230,6 +248,14 @@ public static class RecompilerIrValidator
             default:
                 Require(hasResult && hasA && (binary ? hasB : !hasB) && (shift ? operation.ShiftAmount <= 31 : operation.ShiftAmount == 0), diagnostics, blockIndex, operationIndex);
                 break;
+        }
+    }
+
+    private static void ValidateInput(int valueId, HashSet<int> definedValueIds, List<RecompilerIrDiagnostic> diagnostics, int blockIndex, int operationIndex)
+    {
+        if (valueId >= 0 && !definedValueIds.Contains(valueId))
+        {
+            Add(diagnostics, RecompilerIrDiagnosticCode.MissingOperand, "Input value must be defined by an earlier operation in the block.", blockIndex, operationIndex);
         }
     }
 
@@ -284,6 +310,7 @@ public sealed record RecompilerMemoryObservation
     public RecompilerMemoryObservation(uint address, uint value, byte width, RecompilerMemoryAccessKind access)
     {
         if (width is not (1 or 2 or 4)) throw new ArgumentOutOfRangeException(nameof(width));
+        if (!Enum.IsDefined(access)) throw new ArgumentOutOfRangeException(nameof(access));
         Address = address;
         Value = value;
         Width = width;
@@ -310,6 +337,7 @@ public sealed record RecompilerStateSnapshot
         IEnumerable<RecompilerMemoryObservation>? memory = null)
     {
         ArgumentNullException.ThrowIfNull(gpr);
+        if (!Enum.IsDefined(termination)) throw new ArgumentOutOfRangeException(nameof(termination));
         var registers = gpr.ToArray();
         if (registers.Length != 32) throw new ArgumentException("A state snapshot must contain exactly 32 GPR values.", nameof(gpr));
         registers[0] = 0;

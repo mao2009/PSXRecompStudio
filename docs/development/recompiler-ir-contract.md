@@ -8,7 +8,9 @@ Related Issues: #205, #206, #207, #208, #211
 
 The first vertical slice executes a validated, backend-agnostic IR block. An IR
 value is a fixed-width 32-bit guest value; operation order is architectural
-side-effect order. The IR is not SSA and does not encode a host language.
+side-effect order. Within each block, input values must refer to a result
+defined by an earlier operation; there is no external input-value namespace.
+The IR is not SSA and does not encode a host language.
 
 Blocks are ordered by entry PC and end in an explicit exit. A successful exit
 provides the next PC; unsupported, exception, and budget exits do not provide
@@ -30,6 +32,7 @@ slots as an optimization. Unresolved indirect flow is an explicit exit.
 Unsupported behavior is a diagnostic/termination result, never an implicit NOP
 or interpreter fallback. Canonical serialization uses fixed property order,
 camelCase, LF, UTF-8 without BOM, and no time, path, machine, or object identity.
+Enum fields at the contract boundary must contain defined members.
 
 Issue boundaries: #207 lowers decoder output into this contract; #208 consumes
 it without changing guest semantics; #211 compares snapshots; #209 composes

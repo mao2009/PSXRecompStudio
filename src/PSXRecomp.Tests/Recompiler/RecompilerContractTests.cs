@@ -47,9 +47,36 @@ public class RecompilerContractTests
     }
 
     [Fact]
+    public void Validator_RejectsUndefinedOperationKind()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, new[] { new RecompilerIrOperation((RecompilerIrOperationKind)255) }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
+        });
+
+        var result = RecompilerIrValidator.Validate(program);
+
+        result.Diagnostics.Select(diagnostic => diagnostic.Code).Should().Contain(RecompilerIrDiagnosticCode.InvalidOperationShape);
+    }
+
+    [Fact]
+    public void Validator_RejectsUndefinedTerminationReason()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(), new RecompilerIrExit((RecompilerIrTerminationReason)255)),
+        });
+
+        var result = RecompilerIrValidator.Validate(program);
+
+        result.Diagnostics.Select(diagnostic => diagnostic.Code).Should().Contain(RecompilerIrDiagnosticCode.IllegalTermination);
+    }
+
+    [Fact]
     public void StateSnapshot_EnforcesZeroAndHasDeterministicSerialization()
     {
         var registers = Enumerable.Range(0, 32).Select(value => (uint)value).ToArray();
+        registers[0] = 0xdeadbeef;
         var snapshot = new RecompilerStateSnapshot(registers, 0x11223344, 0x55667788, 0x80010000);
 
         snapshot.Gpr[0].Should().Be(0u);
@@ -62,9 +89,13 @@ public class RecompilerContractTests
     {
         Action wrongGprCount = () => new RecompilerStateSnapshot(new uint[31], 0, 0, 0);
         Action wrongMemoryWidth = () => new RecompilerMemoryObservation(0, 0, 3, RecompilerMemoryAccessKind.Read);
+        Action wrongMemoryAccess = () => new RecompilerMemoryObservation(0, 0, 4, (RecompilerMemoryAccessKind)255);
+        Action wrongTermination = () => new RecompilerStateSnapshot(new uint[32], 0, 0, 0, termination: (RecompilerIrTerminationReason)255);
 
         wrongGprCount.Should().Throw<ArgumentException>();
         wrongMemoryWidth.Should().Throw<ArgumentOutOfRangeException>();
+        wrongMemoryAccess.Should().Throw<ArgumentOutOfRangeException>();
+        wrongTermination.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
@@ -75,6 +106,49 @@ public class RecompilerContractTests
 
         RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
         block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnsupportedInstruction);
+    }
+
+    [Fact]
+    public void Validator_RequiresPriorDefinitionsWithinEachBlock()
+    {
+        var valid = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 1),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
+        });
+        var invalid = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 1),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 2),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Add, resultValueId: 3, inputValueA: 999, inputValueB: 1000),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
+        });
+
+        RecompilerIrValidator.Validate(valid).IsValid.Should().BeTrue();
+        var first = RecompilerIrValidator.Validate(invalid);
+        var second = RecompilerIrValidator.Validate(invalid);
+        first.Diagnostics.Select(diagnostic => diagnostic.Code).Should().Equal(
+            RecompilerIrDiagnosticCode.MissingOperand,
+            RecompilerIrDiagnosticCode.MissingOperand,
+            RecompilerIrDiagnosticCode.MissingOperand);
+        first.Diagnostics.Should().Equal(second.Diagnostics);
+    }
+
+    [Fact]
+    public void Validator_RejectsSelfReference()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Add, resultValueId: 1, inputValueA: 1, inputValueB: 1) }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
+        });
+
+        RecompilerIrValidator.Validate(program).Diagnostics.Select(diagnostic => diagnostic.Code)
+            .Should().Equal(RecompilerIrDiagnosticCode.MissingOperand, RecompilerIrDiagnosticCode.MissingOperand);
     }
 
     private static RecompilerIrProgram CreateProgram() => new(new[]
