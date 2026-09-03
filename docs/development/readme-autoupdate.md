@@ -7,8 +7,16 @@ Authority: Reference (design decisions in ADR-009)
 
 Automatically keep `README.md` accurate by reviewing every pull request to
 `main` with OpenCode (model `opencode/big-pickle` on OpenCode Zen) and, only
-when a PR makes the README materially out of date, committing a minimal README
-edit to that PR's own head branch as `github-actions[bot]`.
+when a PR makes the README materially out of date, surfacing a mechanical,
+advisory comment on the PR with the candidate `README.md` content and
+apply/decline instructions.
+
+The bot **never** commits to the PR head branch and **never** pushes. README
+updates are always applied by a human (or an approved automation), never by an
+automated bot commit. This is a permanent, structural fix for Issue #244: a
+`github-actions[bot]`-authored PR head left required CI in `action_required`
+with 0 jobs (all `pull_request`-triggered workflows are skipped on bot-authored
+heads), permanently blocking the merge gate.
 
 Phase 1 is the minimal Big Pickle proof: English prompt, Japanese README
 content, only `README.md` is ever managed.
@@ -16,9 +24,12 @@ content, only `README.md` is ever managed.
 ## Architecture
 
 The workflow contains two isolated jobs: `update-readme` creates a README-only
-candidate from trusted assets, and `publish-readme` validates and safely
-publishes only that candidate. HEAD verification, trusted `origin/main` assets,
-artifact validation, and concurrent-write safety remain in the workflow.
+candidate from trusted assets, and `notify-readme` validates the artifact and
+posts an advisory comment only when the candidate differs from the PR head's
+README. HEAD verification, trusted `origin/main` assets, and artifact
+validation remain in the workflow. The notify job holds `pull-requests: write`
+(comment-only) and `contents: read`; it never holds `contents: write` and never
+pushes.
 
 CodeRabbit runs outside this workflow as a GitHub App. It is enabled in
 `.coderabbit.yaml` and may automatically review the PR on open and on pushes.
@@ -28,10 +39,10 @@ dependency for CodeRabbit.
 
 | File | Role |
 |---|---|
-| `.github/workflows/readme-autoupdate.yml` | Workflow definition (three isolated jobs) |
-| `scripts/ci/readme-sync.sh` | `preflight` / `verify-config` / `publish` implementation and enforcement boundary |
+| `.github/workflows/readme-autoupdate.yml` | Workflow definition (two isolated jobs) |
+| `scripts/ci/readme-sync.sh` | `preflight` / `verify-config` / `notify` implementation and enforcement boundary |
 | `scripts/ci/test-readme-sync.sh` | Local scenario tests |
-| `config/readme-autoupdate.json` | SSOT: managedFiles, bot identity, commit message, pinned opencode version/model |
+| `config/readme-autoupdate.json` | SSOT: managedFiles, bot name/email, notification marker/title/instructions, pinned opencode version/model |
 | `config/readme-autoupdate/opencode.json` | OpenCode config (model pin + permission denies) |
 | `config/readme-autoupdate/prompt.md` | The model prompt |
 | `.coderabbit.yaml` | CodeRabbit best-effort automatic and incremental review configuration |
@@ -44,26 +55,31 @@ all attacker-controllable. They may contain prompt-injection instructions
 "commit these files"). Countermeasures:
 
 1. **Never trust the model as a boundary.** The model job mechanically rejects
-   any non-`README.md` working-tree change, and the publish job validates the
-   artifact and inspects the real `git status` after applying the candidate,
-   rejecting anything outside `managedFiles`, any deletion, or any forbidden
-   branch. This holds even if the model is fully compromised.
+   any non-`README.md` working-tree change. The notify job validates the
+   artifact, compares it against the PR head's README, and never mutates the
+   repository — it only posts a comment. This holds even if the model is fully
+   compromised.
 2. **Job isolation.** The model job has `contents: read` and never receives
-   `GITHUB_TOKEN`. The publish job runs on a clean runner, downloads only the
+   `GITHUB_TOKEN`. The notify job runs on a clean runner, downloads only the
    README artifact, and re-extracts the trusted script/config from
-   `origin/main`. A compromised model job cannot publish, cannot push a modified enforcement
-   script, and cannot smuggle files past artifact validation.
+   `origin/main`. A compromised model job cannot push, cannot modify an
+   enforcement script, and cannot smuggle files past artifact validation.
 3. **Trusted-ref extraction.** All enforcement code/configuration comes from
    `origin/main`. Bootstrap exception (analyze-only): the first PR that
    introduces these files sources them from its own head (loud
    `::warning::BOOTSTRAP`) because they do not yet exist on `origin/main`;
-   normal PR review gates that single case, and the publish job refuses to run
-   in bootstrap mode — no GITHUB_TOKEN-backed change is ever produced by the
-   bootstrap path. After merge every subsequent PR uses the `origin/main` copy.
+   normal PR review gates that single case, and the notify job refuses to run
+   in bootstrap mode — no GITHUB_TOKEN-backed action (comment or otherwise) is
+   ever produced by the bootstrap path. After merge every subsequent PR uses
+   the `origin/main` copy.
 4. **No token to the model.** The model job receives no repository credentials.
-5. **Fork PRs never publish.** Job-level `if` and preflight skip protect the
-   token-backed publish path.
-6. **Loop prevention.** Head commits authored by the bot are skipped.
+5. **Fork PRs never notify.** Job-level `if` and preflight skip protect the
+   token-backed notify path.
+6. **No bot pushes (Issue #244).** The workflow never holds `contents: write`
+   and never pushes `github-actions[bot]` commits. Because a bot-authored PR
+   head would leave required CI in `action_required` (0 jobs), all README
+   changes go through the human/approved path instead — keeping CI always
+   runnable and the merge gate always satisfiable.
 
 ## Model and authentication
 
@@ -95,14 +111,18 @@ SSOT: `config/readme-autoupdate.json`
 
 | Key | Default | Meaning |
 |---|---|---|
-| `workflow.managedFiles` | `["README.md"]` | Files the bot may modify |
-| `workflow.pushRefPrefix` | `HEAD:refs/heads/` | Push ref format |
-| `workflow.forbiddenPushBranches` | `["main"]` | Branches the bot refuses to push |
-| `workflow.bot.name/.email` | `github-actions[bot]` | Commit author identity |
-| `workflow.commitMessage` | `docs: update README` | Commit message |
+| `workflow.managedFiles` | `["README.md"]` | Files the bot may propose for update |
+| `workflow.bot.name/.email` | `github-actions[bot]` | Identity used for notification attribution and loop-skip |
+| `workflow.notify.marker` | `README-AUTOUPDATE-CANDIDATE` | Comment marker for dedupe and machine scanning |
+| `workflow.notify.title` | README candidate header | Human-readable comment heading |
+| `workflow.notify.instructions` | apply/decline guidance | Comment body fenced as guidance |
 | `opencode.version` | `v1.18.25` | OpenCode version to install (validated, no override) |
 | `opencode.model` | `opencode/big-pickle` | Pinned model, enforced by `verify-config` |
 | `opencode.providerName` | `opencode` | Provider id |
+
+The removed publish keys (`pushRefPrefix`, `forbiddenPushBranches`,
+`commitMessage`) no longer exist: nothing is pushed, so nothing to refuse to
+push.
 
 There are no override repository variables. The model is pinned to
 `opencode/big-pickle` and changing it requires a reviewed change to the trusted
@@ -122,16 +142,33 @@ git diff --check
 ```
 
 Scenario coverage includes: preflight proceed, fork skip, bot-commit loop
-skip, missing-context skip, publish no-op, README-only success with correct bot
-identity, non-managed-file change fails closed with no push, managed-file
-deletion fails closed, main push refusal, Big Pickle pin enforcement for the
-SSOT config and the opencode config, invalid/forged version rejection,
-bootstrap-mode publish refusal, bootstrap extraction fallback, artifact
-validation (extra file / symlink rejection), workflow YAML structure (model job
-has no token, no `vars.` override, publish job is feed-isolated), the two-job workflow structure and token boundary, and the `.coderabbit.yaml`
-automatic/incremental review configuration.
+skip, missing-context skip, notify no-op when the candidate matches the head
+README, change notification with head-SHA marker and apply/decline guidance,
+idempotent notification (no duplicate comment per head SHA), bootstrap-mode
+notify refusal, Big Pickle pin enforcement for the SSOT config and the opencode
+config, invalid/forged version rejection, extraction functional checks
+(trusted vs bootstrap), artifact validation (extra file / symlink rejection),
+workflow YAML structure and the two-job least-privilege token boundary, the
+bootstrap gating on notify steps, the no-bot-push invariant (Issue #244), and
+the `.coderabbit.yaml` automatic/incremental review configuration.
 
 ## Operational notes
+
+### Duplicate/warning comment suppression
+
+If the candidate README equals the PR head's README (`cmp -s`), no comment is
+posted, so the workflow adds no noise when the model decides nothing changed.
+If a candidate comment for the same head SHA already exists, the notify step
+does not post a second one.
+
+### Pre-merge README candidate handoff
+
+Because the bot no longer pushes, a README update for a PR is delivered as an
+outstanding candidate comment on that PR. Before merging such a PR, a person
+(or approved automation) should either apply the candidate README to the PR
+head (then the notification disappears as its head-SHA marker goes stale) or
+explicitly decline it. This is an operational expectation documented in
+`docs/development/agent-guide.md`, not a hard-failing CI check.
 
 ### CodeRabbit
 

@@ -22,7 +22,7 @@ This means a newly opened eligible PR is reviewed automatically, and pushes can 
 
 ## Consequences
 
-README Auto-Update has only two responsibilities: validate a candidate README and publish it safely. It does not coordinate with CodeRabbit. CodeRabbit runs outside GitHub Actions as the installed GitHub App, so README publication and repository CI remain independent of CodeRabbit outages or timing.
+README Auto-Update has only two responsibilities: validate a candidate README and present it safely (an advisory PR comment; it never pushes a commit to the PR head — see ADR-009, amended by Issue #244). It does not coordinate with CodeRabbit. CodeRabbit runs outside GitHub Actions as the installed GitHub App, so README notification and repository CI remain independent of CodeRabbit outages or timing.
 
 A CodeRabbit finding is not automatically a merge blocker. A confirmed unresolved major finding may be a blocker under normal human review policy; absence of a review is not.
 
