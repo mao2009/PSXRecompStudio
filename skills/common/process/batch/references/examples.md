@@ -69,11 +69,13 @@ Wave 2: [B]
 ```
 
 **Why:** B cannot enter wave 1 — its dependency is unsatisfied. C has no
-dependency and does not overlap A, so it joins A in wave 1. Wave 2 starts only
-after **every** member of wave 1 has reached a terminal result, not merely after
-A finished.
+ dependency and does not overlap A, so it joins A in wave 1. Wave 2 starts only
+ after **every** member of wave 1 has settled and its result has been validated;
+ a prerequisite is integration-eligible only after the integration rules are
+ satisfied.
 
-**If A does not reach `SUCCESS`:** B takes task result `BLOCKED`, naming A as the
+**If A does not reach `SUCCESS`:** B takes task state `BLOCKED` and task result
+`BLOCKED`, naming A as the
 failed dependency. B is **not** attempted anyway, and **not** dropped from the
 report. C is unaffected and proceeds normally — that is failure isolation
 ([`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)).
@@ -135,7 +137,8 @@ Re-evaluation:
 4. **Gates:** A and C each still face the full gate sequence individually.
 
 If A and C pass re-evaluation, they integrate normally, one at a time. B takes
-task result `FAILED`, its worktree and branch **preserved** for diagnosis.
+task state `FAILED` and task result `FAILED`, its worktree and branch
+**preserved** for diagnosis.
 
 **Batch outcome:** `FAILED`
 ([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome),
@@ -241,14 +244,15 @@ What the batch does, in order
 | Record the condition | Batch-level stop condition S2 of [§3.4](orchestration.md#batch-level-stop-conditions), quoting the cycle path `A -> B -> C -> A`. The outcome itself is derived later, at `REPORTING` |
 | Stop dispatching | No wave was built, so no worker is dispatched, and none is dispatched afterwards |
 | Stop unsafe integration | Nothing was ever integration-eligible; nothing is integrated |
-| Classify pending work | A, B and C each get task result `BLOCKED`, naming the cycle as the reason. All three stay in the inventory |
+| Classify pending work | A, B and C each get task state `BLOCKED` and task result `BLOCKED`, naming the cycle as the reason. All three stay in the inventory |
 | Phase 9 `VERIFICATION` | Aggregate verification `NOT RUN` — nothing was integrated. Reported as `NOT RUN`, never as passing |
 | Phase 10 `CLEANUP` | No isolation was provisioned; the report says so |
 | Phase 11 `REPORTING` | Derive the outcome: [§3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome) rule 2 fires on the recorded stop condition, giving `BLOCKED`. Full report: plan section, all three tasks, the outcome, rule 2, and condition S2 |
 | Terminal | Batch lifecycle state `COMPLETED`, carrying batch outcome `BLOCKED` |
 
 Rule 2 — not rule 4 — is what fires, and that is the point of its precedence.
-The three tasks all carry task result `BLOCKED`, so rule 4 would also match; it
+The three tasks all carry task state `BLOCKED` and task result `BLOCKED`, so rule
+4 would also match; it
 would report the cause as "some task was blocked", which says nothing about the
 cycle. Rule 2 keeps the stop condition itself as the reported cause.
 
@@ -274,7 +278,8 @@ as a whole* unable to continue safely (S5). The condition differs; the lifecycle
 does not.
 
 **What does *not* take this path:** an ordinary gate stop or a single blocked
-task. Those give that task task result `BLOCKED` and leave the rest of the batch
+task. Those give that task task state `BLOCKED` and task result `BLOCKED` and
+leave the rest of the batch
 running
 ([`review-and-gates.md` §10](review-and-gates.md#10-gate-reporting),
 [`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)). They

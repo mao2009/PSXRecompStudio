@@ -50,8 +50,8 @@ Provisioning happens before dispatch, per task.
 7. Record: task_id, worktree path, branch, base revision
 ```
 
-If any step fails, the task takes task result `BLOCKED`. It is **never** run in
-a shared tree as a fallback.
+If any step fails, the task takes task state `BLOCKED` and task result `BLOCKED`.
+It is **never** run in a shared tree as a fallback.
 
 ### 2.1 Collision detection
 

@@ -234,7 +234,7 @@ the gate closed
 | Why the gate closed | Effect on the task |
 |---|---|
 | A condition that can still change — an approval invalidated by a moved base, for example | Returns to `RESULT_READY` for a fresh determination. **Not** terminal |
-| A condition requiring an operator decision | Terminal task result `BLOCKED` |
+| A condition requiring an operator decision | Terminal task state `BLOCKED` and task result `BLOCKED` |
 
 Only once a task is terminal does its result reach the batch, and even then the
 batch outcome is decided by the aggregation rule

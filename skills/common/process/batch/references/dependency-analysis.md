@@ -70,8 +70,10 @@ Classify each task on two axes.
 
 Determined by the preflight checks in
 [`worker-contract.md`](worker-contract.md#1-preflight-validation).
-A task that fails preflight takes task result `BLOCKED` and is **excluded from
-wave construction**, but it remains in the inventory and in the final report.
+A task that fails preflight takes task state `BLOCKED` and task result `BLOCKED`.
+An already-present change takes task state `COMPLETED` and task result `NO_OP`.
+Both are **excluded from wave construction**, but remain in the inventory and in
+the final report.
 
 #### 3.1.1 Propagation to dependents
 
@@ -87,8 +89,10 @@ the graph is built**, or the exclusion silently corrupts the plan:
   ([`orchestration.md` §3.4](orchestration.md#batch-level-stop-conditions)) —
   halting a whole batch over one blocked prerequisite.
 
-So: **every dependent of a `BLOCKED` task takes task result `BLOCKED` too,
-transitively, naming the blocked prerequisite**. This runs *after* every
+So: **every dependent of a task with a non-`SUCCESS` result takes task state
+`BLOCKED` and task result `BLOCKED` too, transitively, naming the prerequisite
+that prevented execution**. This includes `FAILED`, `BLOCKED`, `NO_OP` and any
+other non-`SUCCESS` result. This runs *after* every
 dependency source has been resolved (§4.1, §4.2) and *before* graph construction
 (§4.3) — the ordering Phase 4 mandates
 ([`orchestration.md` §2](orchestration.md#phase-4--analysis)). Resolving
@@ -260,8 +264,8 @@ Before the next wave begins:
 
 1. Results from the completed wave are validated
    ([`worker-contract.md`](worker-contract.md#4-worker-result-validation)).
-2. Tasks whose dependencies did not reach `SUCCESS` are re-classified as
-   `BLOCKED` — see
+2. Tasks whose dependencies did not reach `SUCCESS` are assigned task state
+   `BLOCKED` and task result `BLOCKED` — see
    [`failure-recovery.md`](failure-recovery.md#4-dependent-task-handling).
 3. The remaining plan is re-checked against the current base if any integration
    has occurred in the meantime.

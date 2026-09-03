@@ -74,8 +74,8 @@ Do **not** apply this Skill to a single, indivisible task. A single task follows
 1. Produce a **task inventory**, **dependency analysis**, **dependency graph**,
    **execution waves**, and a **parallel/sequential classification** before
    dispatching any worker.
-2. Run **preflight validation** per task and give failures task result `BLOCKED`
-   before any worker is dispatched.
+2. Run **preflight validation** per task and give failures task state `BLOCKED`
+   and task result `BLOCKED` before any worker is dispatched.
 3. Give every worker its **own worktree and own branch**. Workers never share a
    working tree.
 4. Classify every task result as exactly one of `SUCCESS`, `NO_OP`, `BLOCKED`,
@@ -138,7 +138,9 @@ its predecessor's postcondition holds.
 ```text
 1. DISCOVERY    → collect candidate tasks
 2. INVENTORY    → record each task, its scope, and its expected change surface
-3. PREFLIGHT    → per-task executability check; failures take task result BLOCKED
+3. PREFLIGHT    → per-task executability check; failures take task state and
+   task result `BLOCKED`; an already-present change is task state `COMPLETED`
+   with task result `NO_OP`
 4. ANALYSIS     → dependency + overlap analysis, DAG, cycle check
 5. PLANNING     → execution waves, parallel/sequential classification
 6. EXECUTION    → dispatch workers wave by wave, in isolation
@@ -238,8 +240,8 @@ Uncertainty resolves to the safe side. "Probably fine" is not a permitted state.
 Every fail-closed stop MUST be reported with the exact condition that could not
 be established. A stop is a reportable outcome, not a failure to be worked around.
 
-Most fail-closed stops are **task**-scoped: the task takes task result `BLOCKED`
-and unrelated tasks continue. A stop that leaves the **batch as a whole** unable
+Most fail-closed stops are **task**-scoped: the task takes task state `BLOCKED`
+and task result `BLOCKED`, and unrelated tasks continue. A stop that leaves the **batch as a whole** unable
 to continue safely is a batch-level stop condition: it halts dispatch, and the
 batch still finishes Phases 9–11
 ([`references/orchestration.md` §3.6](references/orchestration.md#36-the-terminating-path)).
@@ -279,7 +281,7 @@ The batch outcome is **derived, not chosen**: it follows the ordered aggregation
 rule in
 [`references/orchestration.md` §3.5](references/orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome).
 A single task result `BLOCKED` therefore does not by itself make the batch
-outcome `BLOCKED`, but it does prevent batch outcome `SUCCESS`. The five
+outcome `BLOCKED`, but it does prevent batch outcome `SUCCESS`. The six
 batch-level stop conditions — the only ones that halt a batch — are enumerated in
 [`references/orchestration.md` §3.4](references/orchestration.md#batch-level-stop-conditions).
 

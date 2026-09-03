@@ -23,7 +23,7 @@ means something.
 | 2 | The Issue is open | `BLOCKED` |
 | 3 | No existing implementation PR for the Issue | `BLOCKED` |
 | 4 | No conflicting active PR touching the same change surface | `BLOCKED` |
-| 5 | The target functionality is not already present in the base | `BLOCKED` — see §1.3 |
+| 5 | The target functionality is not already present in the base | `NO_OP` — see §1.3 |
 | 6 | The intended branch does not already exist | `BLOCKED` |
 | 7 | The intended worktree path is free | `BLOCKED` |
 | 8 | The task has not already been processed in this batch | `BLOCKED` |
@@ -33,7 +33,8 @@ means something.
 
 - A condition that **cannot be evaluated** is a failed condition. Preflight
   never passes on an unverifiable check.
-- A failed preflight produces task result `BLOCKED`, never `NO_OP` and never
+- A failed preflight produces task state `BLOCKED` and task result `BLOCKED`,
+  never `NO_OP` and never
   `FAILED`. It is a *task* result: what it means for the batch as a whole is
   decided by the aggregation rule
   ([`orchestration.md` §3.5](orchestration.md#35-aggregation--from-task-results-to-the-batch-outcome)),
@@ -50,8 +51,10 @@ means something.
 Condition 5 exists to prevent the most damaging false positive: a batch that
 "passes" because the work was already done before it started.
 
-- Detected **at preflight**: the task is `BLOCKED`. It never runs.
-- Detected **by the worker during execution**: the task is `NO_OP`.
+- Detected **before dispatch**: the task takes task state `COMPLETED` and task
+  result `NO_OP`. It never runs and receives no isolation artifacts.
+- Detected **by the worker during execution**: after validation, the task takes
+  task state `COMPLETED` and task result `NO_OP`.
 
 Neither is `SUCCESS`. Neither closes an Issue. Neither counts toward a passing
 batch. See [`../SKILL.md`](../SKILL.md#task-result-vocabulary).
@@ -218,7 +221,7 @@ Step 1 is a **pre-validation** step, and it is exclusive:
 | Valid and `SUCCESS` | Integration-eligible, subject to the gates |
 | Valid and `NO_OP` | Not integration-eligible; operator decision required on the Issue |
 | Valid and `BLOCKED` / `FAILED` | Not integration-eligible; see [`failure-recovery.md`](failure-recovery.md) |
-| **Invalid, for any reason** | **Not integration-eligible.** Re-classified `FAILED` with the validation failure as the reason |
+| **Invalid, for any reason** | **Not integration-eligible.** Re-classified as task state `FAILED` with task result `FAILED`, with the validation failure as the reason |
 | **Inconclusive** | **Not integration-eligible.** Treated as invalid |
 
 The orchestrator MUST NOT repair a result to make it valid. Repairing a worker's

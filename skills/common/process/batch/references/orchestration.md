@@ -70,8 +70,10 @@ terminating path (§3.6).
 - **Precondition:** Phase 2 postcondition.
 - **Obligation:** Run every preflight check per
   [`worker-contract.md` §1](worker-contract.md#1-preflight-validation).
-- **Postcondition:** Every task is either preflight-clean or holds task state
-  `BLOCKED` and task result `BLOCKED`, with a recorded failing condition.
+- **Postcondition:** Every task is either preflight-clean, holds task state
+  `BLOCKED` and task result `BLOCKED` with a recorded failing condition, or was
+  found already implemented and holds task state `COMPLETED` and task result
+  `NO_OP`.
 - **Abort:** A preflight condition cannot be evaluated → that task takes task
   state `BLOCKED` and task result `BLOCKED`. An unevaluable condition is never
   treated as passing.
@@ -86,8 +88,10 @@ terminating path (§3.6).
      ([§4.1](dependency-analysis.md#41-dependency-sources),
      [§4.2](dependency-analysis.md#42-unknown-dependencies)). A dependency that
      has not been established yet cannot be propagated along.
-  2. **Propagate task result `BLOCKED`** transitively to the dependents of every
-     blocked task, over those resolved relationships
+  2. **Propagate task state `BLOCKED` and task result `BLOCKED`** transitively to
+     the dependents of every task whose resolved prerequisite is non-`SUCCESS`,
+     including `FAILED`, `BLOCKED`, `NO_OP` and any other non-`SUCCESS` result,
+     over those resolved relationships
      ([§3.1.1](dependency-analysis.md#311-propagation-to-dependents)).
   3. **Build the DAG and run cycle detection** over the tasks that remain
      non-`BLOCKED` after step 2
@@ -134,8 +138,9 @@ terminating path (§3.6).
      `SUCCESS`, naming that prerequisite
      ([`dependency-analysis.md` §6.2](dependency-analysis.md#62-wave-advancement),
      [`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)).
-     Phase 4's propagation covered only the tasks blocked *before* execution; a
-     prerequisite can also end `FAILED`, `NO_OP` or `BLOCKED` during Phases 6–8,
+     Phase 4's propagation covered only the tasks already terminal *before*
+     execution; a prerequisite can also end `FAILED`, `NO_OP` or `BLOCKED` during
+     Phases 6–8,
      and `WAITING_DEPENDENCY → WORKER_STARTING` would otherwise let its dependent
      run anyway. This re-check is what keeps §4's ordering rule true and Phase 8's
      dependency precondition satisfiable.
@@ -152,8 +157,8 @@ terminating path (§3.6).
   result* is not produced here: a successful worker reaches `RESULT_READY`, and
   task result `SUCCESS` requires an integrated change (§3.3), so Phases 7–8
   produce it.
-- **Abort:** Isolation cannot be provisioned for a task → that task's result is
-  `BLOCKED`; it is not run in a shared tree.
+- **Abort:** Isolation cannot be provisioned for a task → that task takes task
+  state `BLOCKED` and task result `BLOCKED`; it is not run in a shared tree.
 
 ### Phase 7 — VALIDATION
 
@@ -361,7 +366,8 @@ Notes:
 
 ◊ **Termination-only transitions.** These exist solely so that the terminating
 procedure (§3.6, step 4) can give every unfinished task a legal terminal state to
-carry its task result `BLOCKED`. Each is **guarded**: it may be taken only after
+carry task state `BLOCKED` and task result `BLOCKED`. Each is **guarded**: it may
+be taken only after
 the task's worker has settled and any authorized in-flight merge has settled, and
 never while work is in flight. Outside §3.6 they are not available — ordinary
 execution never blocks a running task. Without them the terminating procedure
@@ -380,7 +386,7 @@ in an unprovisioned or undispatched state.
 
 ¶ These are the **isolation-provisioning** blocks. Phase 6 provisions a task's
 worktree and branch before dispatching it, and a task whose isolation cannot be
-provisioned takes task result `BLOCKED` there
+provisioned takes task state `BLOCKED` and task result `BLOCKED` there
 ([§2, Phase 6](#phase-6--execution)). Without these two edges that assignment
 would have no legal transition. **No worker is dispatched after the block**: the
 task never reaches `DISPATCHED`, and it is never run in a shared tree.
@@ -411,7 +417,8 @@ guaranteed to advance:
 - `RESULT_READY → BLOCKED` — the result is valid in itself but cannot proceed:
   a semantic conflict with a peer result, or a conflict determination that could
   not be made ([`worker-contract.md` §5.3](worker-contract.md#53-outcomes)).
-  This needs an operator decision, not a repair, so the task is terminal.
+  This needs an operator decision, so the task takes task state `BLOCKED` and
+  task result `BLOCKED`; it is terminal.
 - `WAITING_FOR_APPROVAL → BLOCKED` — a gate closed on a condition that requires
   an operator decision rather than a fresh determination
   ([`review-and-gates.md`](review-and-gates.md)).
@@ -433,6 +440,11 @@ Which classification applies is decided by the single classification order in
 [`worker-contract.md`](worker-contract.md#classification-order): a defective
 result is `FAILED`, a result blocked by something outside itself is `BLOCKED`.
 No result is ever both.
+
+The `MERGING → COMPLETED` edge is guarded: it is legal only after the Merge Skill
+confirms the authorized merge succeeded and its post-merge checks passed. It is
+not a shortcut around integration, aggregate verification, cleanup, or reporting;
+those batch phases still run before the batch lifecycle reaches `COMPLETED`.
 
 Notes on `BLOCKED`:
 
@@ -492,7 +504,7 @@ lifecycle COMPLETED + outcome FAILED    work was attempted and did not succeed
 #### Batch-level stop conditions
 
 A **batch-level stop condition** stops the batch itself. It is the only kind of
-condition that triggers the terminating path (§3.6), and there are exactly five:
+condition that triggers the terminating path (§3.6), and there are exactly six:
 
 | # | Stop condition | Where it is detected |
 |---|---|---|
@@ -512,8 +524,8 @@ observed anywhere.
 
 S5 is deliberately narrow. Most fail-closed stops are *task*-scoped: an approval
 whose validity cannot be established, or an undeterminable semantic conflict,
-stops that task and gives it task result `BLOCKED`, while unrelated tasks
-continue — that is failure isolation
+stops that task and gives it task state `BLOCKED` and task result `BLOCKED`, while
+unrelated tasks continue — that is failure isolation
 ([`failure-recovery.md` §4](failure-recovery.md#4-dependent-task-handling)). S5
 applies only when the condition makes any further work unsafe, whichever task it
 belongs to.
@@ -574,8 +586,9 @@ has carried from the start:
   restated as an outcome.
 - **A stopped batch is diagnosed as stopped.** Rule 2 sits above the task-result
   rules on purpose. When the batch itself was stopped, §3.6 gives its pending
-  tasks task result `BLOCKED`, which would otherwise let rule 4 fire and report
-  a cause — "some task was blocked" — that says nothing about why the batch
+  tasks task state `BLOCKED` and task result `BLOCKED`, which would otherwise let
+  rule 4 fire and report a cause — "some task was blocked" — that says nothing
+  about why the batch
   stopped. Rule 2 keeps the stop condition itself as the reported cause.
 - **A task result `BLOCKED` does not automatically make the batch outcome
   `BLOCKED`.** Rules 1 and 3 take precedence, so a batch that ran to completion
@@ -630,7 +643,8 @@ On recording a batch-level stop condition, in this order:
    classifying it early would strand a merge that then succeeds with no way back
    to `COMPLETED`. The rule is
    exhaustive: **every task that does not yet hold a terminal task result takes
-   task result `BLOCKED`**, naming the stop condition as its reason. That covers
+   task state `BLOCKED` and task result `BLOCKED`**, naming the stop condition as
+   its reason. That covers
    the never-dispatched task, the task validated but not integrated, the
    dispatched task whose worker was stopped without delivering anything, and the
    dispatched task whose delivered result was never validated. A delivered result does not
@@ -638,8 +652,9 @@ On recording a batch-level stop condition, in this order:
    `RESULT_READY`, `READY_FOR_MERGE` or `MERGING` produced work that termination
    then stopped from integrating, and task result `SUCCESS` is reachable only
    from task state `COMPLETED` **with changes integrated** (§3.3) — so an
-   unintegrated delivered result is task result `BLOCKED`, carrying the stop
-   condition, with its branch and worktree preserved (§6). The one delivered
+   unintegrated delivered result is task state `BLOCKED` and task result
+   `BLOCKED`, carrying the stop condition, with its branch and worktree preserved
+   (§6). The one delivered
    result that may still complete is a **validated `NO_OP`**, which never needed
    integration and takes `RESULT_READY → COMPLETED` (§3.2). A delivered `FAILED`
    likewise keeps its own classification: it is evidence, and the stop does not
@@ -650,7 +665,7 @@ On recording a batch-level stop condition, in this order:
    therefore before the batch enters `VERIFICATION`**,
    and only under an approval still valid at that moment
    ([`review-and-gates.md` §6.3](review-and-gates.md#63-invalidation)). A merge
-   that cannot settle by then is task result `BLOCKED`, and it is **not**
+   that cannot settle by then is task state `BLOCKED` and task result `BLOCKED`, and it is **not**
    completed afterwards. Letting it land after Phase 9 would move the integrated
    base out from under the aggregate verification that had just been run over it,
    leaving a change reportable as `SUCCESS` that nothing verified (§5). Anything

@@ -117,7 +117,7 @@ When a task does not reach `SUCCESS`:
 
 | Effect on dependents | Rule |
 |---|---|
-| Blocked, not skipped | Every dependent becomes `BLOCKED`, with the failed dependency named |
+| Blocked, not skipped | Every dependent takes task state `BLOCKED` and task result `BLOCKED`, with the non-`SUCCESS` dependency named |
 | Not silently dropped | A `BLOCKED` dependent stays in the inventory and in the report |
 | Not integrated speculatively | A dependent's work is never integrated on the assumption the dependency was optional |
 | Transitively applied | Dependents of dependents are `BLOCKED` too |
@@ -219,10 +219,12 @@ because re-running it repeats a deterministic failure (§1.1).
 ORPHANED detected
       ↓
 cause classifies as retryable?  (§1.1 / §1.2; unknown counts as retryable, §1.3)
-      ├─ no  → task result FAILED  (non-retryable category recorded; no retry)
+      ├─ no  → task state WORKER_FAILED, task result FAILED
+      │         (non-retryable category recorded; no retry)
       └─ yes → retry budget remaining?
                  ├─ yes → increment retry_count → re-provision → re-dispatch
-                 └─ no  → task result FAILED  (and NOT counted as completed)
+                 └─ no  → task state WORKER_FAILED, task result FAILED
+                           (and NOT counted as completed)
 ```
 
 Re-provisioning uses an **attempt-scoped** worktree and branch
