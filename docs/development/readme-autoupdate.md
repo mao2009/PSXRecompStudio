@@ -15,59 +15,15 @@ content, only `README.md` is ever managed.
 
 ## Architecture
 
-Three isolated jobs share exactly one input, a candidate `README.md` artifact
-(job 3 additionally consumes the publish job's result and posts the CodeRabbit
-trigger):
+The workflow contains two isolated jobs: `update-readme` creates a README-only
+candidate from trusted assets, and `publish-readme` validates and safely
+publishes only that candidate. HEAD verification, trusted `origin/main` assets,
+artifact validation, and concurrent-write safety remain in the workflow.
 
-```text
-pull_request (opened/synchronize/reopened) to main
-        │
-        ▼
-  Job 1: update-readme (model)        permissions: contents: read   (NO GITHUB_TOKEN)
-        │
-        ├─ Checkout PR head (actions/checkout@v4, persist-credentials: false)
-        ├─ Extract trusted assets from origin/main       ◄── security boundary
-        │    scripts/ci/readme-sync.sh
-        │    config/readme-autoupdate.json               (SSOT parameters, model/version pin)
-        │    config/readme-autoupdate/opencode.json      (model pin + permission denies)
-        │    config/readme-autoupdate/prompt.md          (task + injection rules)
-        │    → $RUNNER_TEMP/readme-sync/trusted/
-        ├─ verify-config  → fails unless model == opencode/big-pickle (no fallback)
-        ├─ Preflight      → proceed | skip (fork / bot_commit / missing context)
-        ├─ Install OpenCode (version from the trusted SSOT config)
-        ├─ Run OpenCode on the PR changes
-        │    opencode run --pure --auto --model opencode/big-pickle "<prompt>"
-        └─ Export candidate README (single file)
-             └── artifact: readme-candidate/README.md   ◄── the ONLY cross-job input
-        │
-        ▼
-  Job 2: publish-readme (clean workspace)   permissions: contents: write
-        │
-        ├─ Checkout PR head (fresh, never shared with the model job)
-        ├─ Extract trusted assets from origin/main (fresh extraction, NEVER PR head)
-        ├─ Download artifact + validate: exactly one root-level README.md,
-        │    no symlinks, no extra paths
-        ├─ Apply candidate README to the working tree
-        ├─ Publish (trusted script, GITHUB_TOKEN only here)
-        │    → FAIL-CLOSED commit/push of managed files only
-        └─ record-sha: publish output "published_sha" = git rev-parse HEAD
-             · executed no-op          → published_sha = PR head at publish time (A)
-             · executed publication    → published_sha = pushed README commit (new PR head B)
-             · job-level skip          → record-sha does NOT run; published_sha = EMPTY
-               (fork PR / bootstrap / upstream failure) → review gate fails closed
-        │
-        ▼
-  Job 3: review-trigger (CodeRabbit ordering, Issue #185)
-         permissions: pull-requests: write
-        │
-        ├─ (only if update-readme succeeded + action=proceed + publish succeeded)
-        │     empty published_sha (job-level skip) fails closed → no trigger
-        ├─ Verify API-fetched current PR head == publish-readme.outputs.published_sha
-        │    (never github.event.pull_request.head.sha - stale before publish)
-        └─ Post "@coderabbitai review" comment        ◄── the ONLY review trigger
-             → CodeRabbit reviews the FINAL PR state (auto_review disabled)
-```
-
+CodeRabbit runs outside this workflow as a GitHub App. It is enabled in
+`.coderabbit.yaml` and may automatically review the PR on open and on pushes.
+There is no workflow trigger, marker, evidence polling, timeout, or completion
+dependency for CodeRabbit.
 ## Files
 
 | File | Role |
@@ -78,7 +34,7 @@ pull_request (opened/synchronize/reopened) to main
 | `config/readme-autoupdate.json` | SSOT: managedFiles, bot identity, commit message, pinned opencode version/model |
 | `config/readme-autoupdate/opencode.json` | OpenCode config (model pin + permission denies) |
 | `config/readme-autoupdate/prompt.md` | The model prompt |
-| `.coderabbit.yaml` | CodeRabbit config: automatic reviews disabled so CI controls review timing |
+| `.coderabbit.yaml` | CodeRabbit best-effort automatic and incremental review configuration |
 
 ## Untrusted-input threat model
 
@@ -95,11 +51,8 @@ all attacker-controllable. They may contain prompt-injection instructions
 2. **Job isolation.** The model job has `contents: read` and never receives
    `GITHUB_TOKEN`. The publish job runs on a clean runner, downloads only the
    README artifact, and re-extracts the trusted script/config from
-   `origin/main`. A compromised model job cannot publish, cannot push a
-   modified enforcement script, and cannot smuggle files past the artifact
-   validation. The review-trigger job (`pull-requests: write` only) is a
-   separate concern; it cannot push code and posts a **fixed literal** comment
-   that no PR-controlled content is ever interpolated into.
+   `origin/main`. A compromised model job cannot publish, cannot push a modified enforcement
+   script, and cannot smuggle files past artifact validation.
 3. **Trusted-ref extraction.** All enforcement code/configuration comes from
    `origin/main`. Bootstrap exception (analyze-only): the first PR that
    introduces these files sources them from its own head (loud
@@ -107,14 +60,10 @@ all attacker-controllable. They may contain prompt-injection instructions
    normal PR review gates that single case, and the publish job refuses to run
    in bootstrap mode — no GITHUB_TOKEN-backed change is ever produced by the
    bootstrap path. After merge every subsequent PR uses the `origin/main` copy.
-4. **No token to the model.** The only credentialed steps are `publish` in the
-   publish job (managed-file commit) and the review-trigger comment step
-   (`pull-requests: write`, CodeRabbit trigger). The model job receives none.
-5. **Fork PRs never run.** Job-level `if` on all jobs + preflight skip.
-6. **Loop prevention.** Head commits authored by the bot are skipped; the
-  review-trigger comment is posted with `GITHUB_TOKEN` (comments do not
-  re-trigger `pull_request` workflows). Automatic reviews remain disabled and
-  the fixed explicit command is the only trigger.
+4. **No token to the model.** The model job receives no repository credentials.
+5. **Fork PRs never publish.** Job-level `if` and preflight skip protect the
+   token-backed publish path.
+6. **Loop prevention.** Head commits authored by the bot are skipped.
 
 ## Model and authentication
 
@@ -179,73 +128,19 @@ deletion fails closed, main push refusal, Big Pickle pin enforcement for the
 SSOT config and the opencode config, invalid/forged version rejection,
 bootstrap-mode publish refusal, bootstrap extraction fallback, artifact
 validation (extra file / symlink rejection), workflow YAML structure (model job
-has no token, no `vars.` override, publish job is feed-isolated), the
-review-trigger job structure and gates, the `published_sha` contract for
-executed no-op / executed publication / job-level skip (empty output, review
-gate fails closed), and the `.coderabbit.yaml` auto-review disable + bot
-ignore.
+has no token, no `vars.` override, publish job is feed-isolated), the two-job workflow structure and token boundary, and the `.coderabbit.yaml`
+automatic/incremental review configuration.
 
 ## Operational notes
 
-### CodeRabbit Review Gate (Issue #229)
+### CodeRabbit
 
-`CodeRabbit Review Gate` is a required repository-owned check. Its explicit
-states are `MISSING`, `TRIGGER_REQUESTED`, `PENDING`, `SKIPPED`, `FAILED`,
-`COMPLETED_CLEAN`, `COMPLETED_ACTIONABLE`, `NO_FILES_TO_REVIEW`, `STALE`, and
-`UNKNOWN`; unknown and non-positive states block. It reads GitHub review
-objects, CodeRabbit comments, review threads, and required CI checks.
-Actionable counts cover findings without inline threads, while unresolved
-threads are independently blocking.
-
-The direct path passes only for a clean completed review attached to the
-current SHA, with no actionable finding, no unresolved thread, and passing CI.
-The only fallback is an explicit `No files to review` response after a prior
-clean review whose exact patch identity matches: stable `git patch-id`, sorted
-changed-file records, and SHA-256 hashes of normalized per-file diffs. Diff
-normalization preserves whitespace, line endings, binary data, and file modes;
-renames retain old/new names, and additions/deletions remain distinct. Binary
-and submodule changes are unsupported and block. A real content change or
-unknown/stale/skipped/missing/pending/failed review blocks.
-
-The gate is trusted `pull_request_target` code and never executes PR code.
-README publication establishes the final head before the fixed review command.
-The bot is deliberately absent from `ignore_usernames`: Issue #229 evidence
-showed an ignored `github-actions[bot]` command did not trigger, while the
-owner-authored command did.
-
-- **CodeRabbit ordering (Issue #185).** CodeRabbit automatic reviews are
-  disabled in `.coderabbit.yaml`. After the publish job completes, the
-  `review-trigger` job fetches the current PR head SHA via the GitHub API and
-  compares it against the publish job's `published_sha` output (the exact PR
-  head after publish), then posts an `@coderabbitai review` comment, so
-  CodeRabbit always reviews the final PR state (README commit included).
-  `published_sha` is set only when the publish job runs (its final
-  `record-sha` step computes it); a job-level publish skip leaves it **empty**,
-  which the review gate treats as fail-closed and suppresses the trigger. This
-  deliberately does not compare against `github.event.pull_request.head.sha`
-  (stale whenever a README commit is pushed) and does not rely on the
-  `GITHUB_TOKEN` push restarting a `pull_request` workflow. A run whose head
-  moved *after* publish skips the trigger; the newer synchronize run reviews
-  instead. Fork and bootstrap runs never trigger a review.
-- A bot push triggers a new `pull_request.synchronize` event; because the push
-  is made with `GITHUB_TOKEN`, that workflow run requires approval. Preflight
-  then skips it (bot commit). This is an intentional extra human approval gate;
-  reviewers may notice runs waiting for approval after the bot updates a PR.
-- If OpenCode fails (model 429/unavailable on the free tier, timeout), the
-  model job fails and the publish job is not reached — nothing is pushed and no
-  CodeRabbit review is triggered. Retrying the failed workflow run is the
-  recovery path.
-- The workflow runs on the PR head as checked out by `actions/checkout`
-  (`persist-credentials: false`). Publish pushes via an explicit
-  `https://x-access-token:…` URL; `contents: write` is granted only to the
-  publish job, `pull-requests: write` only to the review-trigger job.
-- Bootstrap runs (the first PR introducing these files) are analyze-only: the
-  model job runs, the publish job is skipped at the job level (it requires
-  `bootstrap == '0'`), the README must be updated manually by the PR author if
-  needed, and no CodeRabbit review is triggered until a real publish succeeds.
-  Because the publish job never runs, `published_sha` is empty and the review
-  gate fails closed.
-
+CodeRabbit is a best-effort automated reviewer, not a repository-owned hard gate.
+Automatic review and incremental review are enabled without a manual mention or
+PR description marker. CodeRabbit availability, rate limits, skipped reviews,
+or a missing current-head review do not by themselves fail repository CI or
+block merge. Findings that are present must still be reviewed appropriately;
+repository-owned CI and human approval remain required.
 ## Phase 2 (deferred)
 
 - Multi-language README (`README.md` as canonical EN SSOT + localized files

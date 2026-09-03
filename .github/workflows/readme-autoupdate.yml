@@ -1,6 +1,6 @@
 name: README Auto-Update
 
-# PR-triggered README updater (Issue #180). Three isolated jobs:
+# PR-triggered README updater (Issue #180). Two isolated jobs:
 #
 #   1. update-readme ("model" job, contents: read, NO GITHUB_TOKEN):
 #      runs OpenCode pinned to opencode/big-pickle with assets extracted from
@@ -9,26 +9,14 @@ name: README Auto-Update
 #   2. publish-readme ("publish" job, contents: write): clean workspace, fresh
 #      origin/main extraction, single-file artifact, mechanical validation, then
 #      commits/pushes ONLY the managed README to the PR's own head branch. It
-#      records the resulting PR head SHA (published_sha) as a job output WHEN
-#      THE JOB RUNS. A job-level skip (fork PR, bootstrap run, upstream failure)
-#      never reaches record-sha, so on those runs the output stays empty.
-#   3. review-trigger ("review" job, pull-requests: write): runs AFTER the
-#      publish job, fetches the current PR head SHA via the GitHub API and
-#      compares it against the publish job's published_sha output (NOT the
-#      event's head.sha, which is stale before publish), and then explicitly
-#      triggers a CodeRabbit review via an "@coderabbitai review" comment.
-#      CodeRabbit automatic reviews are disabled in .coderabbit.yaml, so this
-#      is the ONLY review trigger. The gate is fail-closed: a non-success
-#      publish result, an empty published_sha (job-level skip), or a SHA
-#      mismatch all suppress the trigger.
 #
-# Trust model (see docs/adr/009-readme-autoupdate.md and docs/adr/010-coderabbit-ordering.md):
+# Trust model (see docs/adr/009-readme-autoupdate.md):
 #   Trusted   : origin/main, this workflow, trusted config, trusted publish script
 #   Untrusted : PR branch, PR description, comments, source, README content,
 #               issue content, OpenCode output, repository variables (ignored)
 #
 # Permissions default to nothing; each job grants the minimum it needs. The
-# GITHUB_TOKEN is referenced ONLY in the publish job and the review step.
+# GITHUB_TOKEN is referenced ONLY in the publish job.
 
 "on":
   pull_request:
@@ -212,24 +200,6 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    outputs:
-      # The PR head SHA that exists AFTER this job has finished publishing.
-      # This output is defined only for runs where the JOB executes; the
-      # record-sha step that produces it is the last step in the job, so any
-      # job-level skip (fork PR, bootstrap run, upstream failure) leaves the
-      # output EMPTY. Per path:
-      #   - executed, README changed:   the newly pushed commit's SHA (B)
-      #   - executed, README unchanged: the PR head SHA at publish time (A)
-      #   - executed, in-job barrier:   publish steps gated off (defensive
-      #     race); HEAD at checkout time (A)
-      #   - job-level skip:             record-sha does not run, output EMPTY
-      # review-trigger compares the API-fetched current PR head against this
-      # value and fails closed (match=0) on an empty value. It must never fall
-      # back to github.event.pull_request.head.sha, because that event SHA is
-      # captured BEFORE publish and is therefore stale whenever a README commit
-      # is pushed.
-      published_sha: ${{ steps.record-sha.outputs.sha }}
-
     steps:
       # A clean checkout on this runner. This workspace is NEVER shared with the
       # model job; the only cross-job input is the README-only artifact.
@@ -330,123 +300,3 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PUSH_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
-
-      # Record the PR head SHA as it exists after this job finished.
-      # This step runs unconditionally (no `if:`) ONCE THE JOB RUNS, so the
-      # output is set on every in-job path:
-      #   - README changed:   publish committed+pushes, so HEAD == pushed SHA (B)
-      #   - README unchanged: publish was a no-op, HEAD == PR head at publish (A)
-      #   - in-job barrier:   publish steps gated off (defensive race), HEAD == A
-      # A JOB-LEVEL skip (fork PR, bootstrap run, upstream failure) never
-      # reaches this step, so published_sha is EMPTY on those runs. That is the
-      # intended contract: review-trigger treats an empty published_sha as
-      # fail-closed and never triggers a review without a real publish.
-      # The publish script never pushes to main/forbidden branches, and the only
-      # thing it can commit is managed README.md, so whatever SHA is now at HEAD
-      # is exactly the PR head the README Auto-Update produced.
-      - name: Record published PR head SHA
-        id: record-sha
-        run: |
-          set -euo pipefail
-          sha="$(git rev-parse HEAD)"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "published_sha=$sha"
-
-  review-trigger:
-    name: CodeRabbit review trigger
-    # Issue #185: CodeRabbit must review the FINAL PR state, i.e. after the
-    # README Auto-Update has finished. The CodeRabbit GitHub App automatic
-    # reviews are disabled (.coderabbit.yaml), so an explicit "@coderabbitai
-    # review" comment is the only way CodeRabbit starts a review.
-    #
-    # This job is separate from the model and publish jobs on purpose: the
-    # trigger is a distinct concern, owns the ONLY pull-requests permission,
-    # and mechanically gates itself on the upstream job results. The JOB runs
-    # with if: always(), but the trigger STEP fires only when update-readme
-    # succeeded with action=proceed AND publish-readme succeeded AND the
-    # API-fetched head matches published_sha. A job-level publish skip (fork
-    # PR, bootstrap run, upstream failure) means
-    # needs.publish-readme.result == 'skipped' and an EMPTY published_sha; the
-    # gate fails closed and no review comment is ever posted on such a run.
-    #
-    # Loop prevention: the comment is posted with GITHUB_TOKEN, which GitHub
-    # treats as a bot action that does NOT re-trigger pull_request workflows,
-    # and .coderabbit.yaml keeps automatic reviews disabled without ignoring
-    # github-actions[bot], because this fixed bot-authored command is the
-    # supported ordered trigger (Issue #229).
-    # (a manually-requested review is still allowed). The comment is therefore
-    # a terminal action - it never restarts this workflow.
-    if: always()
-    needs: [update-readme, publish-readme]
-    concurrency:
-      # Serialize triggers per PR even across overlapping workflow runs so
-      # simultaneous synchronize events cannot post duplicate review comments.
-      group: coderabbit-trigger-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    permissions:
-      pull-requests: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      # No checkout is needed: both steps talk to the GitHub API (get current
-      # PR head SHA, post the trigger comment) with the job's GITHUB_TOKEN.
-      # Pulling PR-controlled working-tree content into this job would only add
-      # attack surface; the job deliberately has an empty workspace.
-      #
-      # The expected SHA is the publish job's published_sha OUTPUT (the PR head
-      # as it exists AFTER publish). It is NOT github.event.pull_request.head.sha
-      # - that event SHA is captured before publish and is stale whenever the
-      # README commit changed the head. Relying on the GITHUB_TOKEN push to
-      # restart a pull_request workflow (which would then review the new head)
-      # is NOT a valid assumption, so we mechanically verify the current head
-      # against the exact SHA publish produced.
-      #
-      # The output is EMPTY on job-level publish skips (fork PR, bootstrap,
-      # upstream failure). That is the expected contract: the verify step
-      # turns an empty expected value into match=0, so the trigger below
-      # cannot fire without a real publish.
-      - name: Verify PR head SHA matches the README Auto-Update state
-        id: verify
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PUBLISHED_SHA: ${{ needs.publish-readme.outputs.published_sha }}
-        run: |
-          set -euo pipefail
-          current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
-          expected="${PUBLISHED_SHA:-}"
-          echo "current=$current expected=$expected"
-          if [[ -z "$expected" ]]; then
-            echo "::error::publish job did not expose a published_sha output; refusing to trigger a review against an unknown SHA."
-            echo "match=0" >> "$GITHUB_OUTPUT"
-          elif [[ "$current" != "$expected" ]]; then
-            echo "::notice::PR head moved to $current while README Auto-Update ran; the same-PR synchronize run will review the new state."
-            echo "match=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "match=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      # The only CodeRabbit trigger. The comment is a fixed literal; no PR- or
-      # README-controlled content is ever interpolated into it, so it cannot be
-      # rewritten by prompt injection in the PR. The `if` gate above fails
-      # closed: a skipped publish job (needs.publish-readme.result != success)
-      # or an empty published_sha (match=0) both suppress the trigger.
-      - name: Trigger CodeRabbit review
-        if: >
-          steps.verify.outputs.match == '1' &&
-          needs.update-readme.result == 'success' &&
-          needs.update-readme.outputs.action == 'proceed' &&
-          needs.publish-readme.result == 'success'
-        uses: actions/github-script@v7
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        with:
-          script: |
-            const pr = process.env.PR_NUMBER;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: +pr,
-              body: '## CodeRabbit Review Request\n\nPlease review this pull request per the CI flow (Issue #185).\n\n@coderabbitai review',
-            });
-            console.log(`CodeRabbit review requested on PR #${pr}`);

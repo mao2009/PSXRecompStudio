@@ -377,11 +377,6 @@ _merge_handle_validating() {
     fi
 
     _pr_json=$(merge_get_pr_info "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
-    if ! merge_coderabbit_gate_passes "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY"; then
-        echo "Repository CodeRabbit Review Gate is not successful"
-        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "CodeRabbit Review Gate is not successful"
-        return 0
-    fi
     _reason=$(merge_pr_mergeable_reason "$_pr_json")
     if [ -n "$_reason" ]; then
         echo "PR is not mergeable: $_reason"

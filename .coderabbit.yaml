@@ -1,23 +1,13 @@
 # CodeRabbit configuration (Issue #185, Issue #183).
 #
-# Automatic reviews are DISABLED. CodeRabbit must not start a review before the
-# README Auto-Update workflow has finished; otherwise it could review a PR state
-# that does not yet include the README changes. The README Auto-Update workflow
-# explicitly triggers a review with "@coderabbitai review" after the README
-# publish step has completed (see .github/workflows/readme-autoupdate.yml).
-#
-# Manual review commands ("@coderabbitai review" / "@coderabbitai full review")
-# are documented triggers. Do not assume they work for every author/configuration:
-# Issue #229 records a failed bot-authored command when github-actions[bot] was
-# listed in ignore_usernames.
-#
-# Do not add github-actions[bot] to ignore_usernames: production evidence in
-# Issue #229 shows that CodeRabbit does not honor a bot-authored explicit
-# command when that author is ignored. Automatic review remains disabled, so
-# the fixed, ordered command is the only trigger.
+# CodeRabbit is a best-effort automated reviewer. Its availability and review
+# timing are intentionally independent of repository-owned CI and README
+# publication.
 reviews:
   auto_review:
-    enabled: false
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
 
   # Docstring Coverage pre-merge check (Issue #183, ADR-011). PRs #181/#182
   # reported 4.44%/15.22% coverage against the tool default of an unconditional
