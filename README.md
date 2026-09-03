@@ -54,7 +54,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 
 **CPU execution foundation.** The CPU execution foundation is now functional: instruction decoding, memory-path execution (including KSEG translation), branch/load delay-slot behavior, COP0 and exception handling, hardware interrupt sampling, and deterministic execution tracing all work together to execute a minimal MIPS program end to end. This is a vertical slice through the CPU, not a complete emulator — see [`docs/cpu/`](docs/cpu/) for the detailed specification.
 
-**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. The backend-agnostic IR model and shared state contract are now implemented in `PSXRecomp.Core.Recompiler`, but there is no standalone `PSXRecomp.Recompiler` project and no actual recompilation yet — lowering, host generation, and the executable vertical slice are separate milestones. The CPU/decoder work above is foundational to it, not a substitute for it.
+**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. The backend-agnostic IR model and shared state contract are now implemented in `PSXRecomp.Core.Recompiler`, along with a Phase 2A MIPS→IR lowerer for a pure-GPR instruction subset (`MipsToIrLowerer`); but there is no standalone `PSXRecomp.Recompiler` project and no actual recompilation yet — host generation and the executable vertical slice remain separate milestones. The CPU/decoder work above is foundational to it, not a substitute for it.
 
 ## Core Capabilities
 
