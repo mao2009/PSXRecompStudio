@@ -46,7 +46,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Disc image analysis (CHD → ISO 9660 → PS-X EXE → MIPS analysis, basic blocks / CFG) | Implemented |
 | GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
 | Runtime (BIOS/EXE loading, I/O loop) | Planned |
-| Recompiler (IR contract & state model) | Implemented (in PSXRecomp.Core) |
+| Recompiler (IR contract, state model & host codegen) | Implemented (in PSXRecomp.Core; Phase 3A: GPR host codegen) |
 | Recompiler (full) | Planned |
 | Debugger | Planned |
 | MCP / AI integration | Planned |
@@ -54,7 +54,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 
 **CPU execution foundation.** The CPU execution foundation is now functional: instruction decoding, memory-path execution (including KSEG translation), branch/load delay-slot behavior, COP0 and exception handling, hardware interrupt sampling, and deterministic execution tracing all work together to execute a minimal MIPS program end to end. This is a vertical slice through the CPU, not a complete emulator — see [`docs/cpu/`](docs/cpu/) for the detailed specification.
 
-**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. The backend-agnostic IR model and shared state contract are now implemented in `PSXRecomp.Core.Recompiler`, but there is no standalone `PSXRecomp.Recompiler` project and no actual recompilation yet — lowering, host generation, and the executable vertical slice are separate milestones. The CPU/decoder work above is foundational to it, not a substitute for it.
+**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. The backend-agnostic IR model, shared state contract, and deterministic host C source generation from GPR IR (Phase 3A) are now implemented in `PSXRecomp.Core.Recompiler`, but there is no standalone `PSXRecomp.Recompiler` project and no full recompilation yet — memory access, branch/control-flow generation, and the executable vertical slice are separate milestones. The CPU/decoder work above is foundational to it, not a substitute for it.
 
 ## Core Capabilities
 
