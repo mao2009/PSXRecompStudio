@@ -16,6 +16,7 @@ public static class RecompilerHostCodeGen
 {
     private const string StateStruct = "RecompilerState";
     private const string StateParam = "state";
+    private const string CoreField = "core";
     private const string Sra32Helper = "recompiler_sra32";
     private const string TerminationField = "termination_reason";
     private const string NextPcField = "next_pc";
@@ -32,7 +33,7 @@ public static class RecompilerHostCodeGen
             return new RecompilerHostCodeGenResult(
                 false, null,
                 "UNSUPPORTED_EMPTY_PROGRAM",
-                "Phase 3A host code generation requires at least one block; received zero blocks.");
+                "Host code generation requires at least one block; received zero blocks.");
         }
 
         var validation = RecompilerIrValidator.Validate(program);
@@ -92,13 +93,16 @@ public static class RecompilerHostCodeGen
             }
 
             var flow = program.Blocks[i].Exit.Flow;
-            if (flow is not null && flow.Kind != RecompilerIrFlowKind.Sequential)
+            if (flow is not null)
             {
-                return new RecompilerHostCodeGenResult(
-                    false, null,
-                    "UNSUPPORTED_FLOW_KIND",
-                    $"Exit flow kind '{flow.Kind}' has no host emission in this stage; only a sequential " +
-                    "fall-through is generated, so an explicit transfer must not be silently dropped.");
+                if (!IsEmittableFlow(flow.Kind))
+                {
+                    return new RecompilerHostCodeGenResult(
+                        false, null,
+                        "UNSUPPORTED_FLOW_KIND",
+                        $"Exit flow kind '{flow.Kind}' has no host emission in this stage; " +
+                        "generating a block that silently drops the transfer would produce wrong host code.");
+                }
             }
         }
 
@@ -107,10 +111,9 @@ public static class RecompilerHostCodeGen
     }
 
     /// <summary>
-    /// The operation kinds this stage emits host code for. Memory access and the
-    /// compare operations that feed a branch flow belong to a later backend
-    /// stage; rejecting them keeps an unemitted operation from turning into a
-    /// silently missing side effect.
+    /// The operation kinds this stage emits host code for. Unsupported operation
+    /// kinds are rejected rather than silently dropped, which would produce wrong
+    /// host code by omitting a guest-visible side effect.
     /// </summary>
     private static bool IsEmittable(RecompilerIrOperationKind kind) => kind switch
     {
@@ -127,6 +130,28 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.ShiftLeftLogical => true,
         RecompilerIrOperationKind.ShiftRightLogical => true,
         RecompilerIrOperationKind.ShiftRightArithmetic => true,
+        RecompilerIrOperationKind.CompareEqual => true,
+        RecompilerIrOperationKind.CompareNotEqual => true,
+        RecompilerIrOperationKind.Load8 => true,
+        RecompilerIrOperationKind.Load16 => true,
+        RecompilerIrOperationKind.Load32 => true,
+        RecompilerIrOperationKind.Store8 => true,
+        RecompilerIrOperationKind.Store16 => true,
+        RecompilerIrOperationKind.Store32 => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// The flow kinds this stage can emit host code for. Return and any future
+    /// unsupported flow kinds are rejected; they would produce wrong host code by
+    /// silently dropping the transfer.
+    /// </summary>
+    private static bool IsEmittableFlow(RecompilerIrFlowKind kind) => kind switch
+    {
+        RecompilerIrFlowKind.Sequential => true,
+        RecompilerIrFlowKind.Branch => true,
+        RecompilerIrFlowKind.Jump => true,
+        RecompilerIrFlowKind.Call => true,
         _ => false,
     };
 
@@ -137,6 +162,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("#include <stdint.h>");
         sb.AppendLine();
         EmitTerminationReasonMacros(sb);
+        EmitMemoryHelperDeclarations(sb);
         EmitStateStruct(sb);
         EmitSra32Helper(sb);
 
@@ -159,6 +185,25 @@ public static class RecompilerHostCodeGen
         sb.AppendLine();
     }
 
+    /// <summary>
+    /// Declares the runtime memory helper functions that block functions call for
+    /// guest memory access. The host (or test driver) must provide
+    /// implementations of these at link time. Address translation, alignment,
+    /// endianness, and bounds checking are the memory/runtime contract's
+    /// responsibility, not this backend's.
+    /// </summary>
+    private static void EmitMemoryHelperDeclarations(StringBuilder sb)
+    {
+        sb.AppendLine("/* Runtime memory helpers — provided by the host at link time. */");
+        sb.AppendLine("extern uint8_t  recompiler_read_mem8(void* core, uint32_t address);");
+        sb.AppendLine("extern uint16_t recompiler_read_mem16(void* core, uint32_t address);");
+        sb.AppendLine("extern uint32_t recompiler_read_mem32(void* core, uint32_t address);");
+        sb.AppendLine("extern void     recompiler_write_mem8(void* core, uint32_t address, uint8_t value);");
+        sb.AppendLine("extern void     recompiler_write_mem16(void* core, uint32_t address, uint16_t value);");
+        sb.AppendLine("extern void     recompiler_write_mem32(void* core, uint32_t address, uint32_t value);");
+        sb.AppendLine();
+    }
+
     private static void EmitStateStruct(StringBuilder sb)
     {
         sb.AppendLine("typedef struct {");
@@ -168,6 +213,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t pc;");
         sb.AppendLine("  int32_t " + TerminationField + ";");
         sb.AppendLine("  uint32_t " + NextPcField + ";");
+        sb.AppendLine("  void* " + CoreField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
     }
@@ -268,6 +314,40 @@ public static class RecompilerHostCodeGen
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
                 return $"{result} = {Sra32Helper}({ResolveValue(op.InputValueA, valueNames)}, {op.ShiftAmount}u);";
 
+            case RecompilerIrOperationKind.CompareEqual:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = ({ResolveValue(op.InputValueA, valueNames)} == {ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
+
+            case RecompilerIrOperationKind.CompareNotEqual:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = ({ResolveValue(op.InputValueA, valueNames)} != {ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
+
+            case RecompilerIrOperationKind.Load8:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = (uint32_t)recompiler_read_mem8({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)});";
+
+            case RecompilerIrOperationKind.Load16:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = (uint32_t)recompiler_read_mem16({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)});";
+
+            case RecompilerIrOperationKind.Load32:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = recompiler_read_mem32({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)});";
+
+            case RecompilerIrOperationKind.Store8:
+                return $"recompiler_write_mem8({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, (uint8_t){ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.Store16:
+                return $"recompiler_write_mem16({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, (uint16_t){ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.Store32:
+                return $"recompiler_write_mem32({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+
             default:
                 return null;
         }
@@ -292,13 +372,53 @@ public static class RecompilerHostCodeGen
 
     private static string EmitExit(RecompilerIrExit exit)
     {
-        if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc.HasValue)
+        var flow = exit.Flow;
+        if (flow is null || flow.Kind == RecompilerIrFlowKind.Sequential)
         {
-            return $"{StateParam}->{NextPcField} = {FormatImmediate(exit.NextPc.Value)}; {StateParam}->{TerminationField} = 0; return 0;";
+            if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc.HasValue)
+            {
+                return $"{StateParam}->{NextPcField} = {FormatImmediate(exit.NextPc.Value)}; {StateParam}->{TerminationField} = 0; return 0;";
+            }
+        }
+
+        if (flow is not null)
+        {
+            switch (flow.Kind)
+            {
+                case RecompilerIrFlowKind.Branch:
+                    return EmitBranchExit(flow, exit);
+
+                case RecompilerIrFlowKind.Jump:
+                    return EmitJumpExit(flow);
+
+                case RecompilerIrFlowKind.Call:
+                    return EmitCallExit(flow, exit);
+            }
         }
 
         var reason = (byte)exit.Reason;
         return $"{StateParam}->{TerminationField} = {reason}; return (int32_t){reason}u;";
+    }
+
+    private static string EmitBranchExit(RecompilerIrFlow flow, RecompilerIrExit exit)
+    {
+        var condVar = $"v{flow.ConditionValueId}";
+        var takenTarget = FormatImmediate(flow.Target!.Value);
+        var fallthroughTarget = FormatImmediate(exit.NextPc!.Value);
+        return $"if ({condVar} != 0u) {{ {StateParam}->{NextPcField} = {takenTarget}; }} else {{ {StateParam}->{NextPcField} = {fallthroughTarget}; }} {StateParam}->{TerminationField} = 0; return 0;";
+    }
+
+    private static string EmitJumpExit(RecompilerIrFlow flow)
+    {
+        var target = FormatImmediate(flow.Target!.Value);
+        return $"{StateParam}->{NextPcField} = {target}; {StateParam}->{TerminationField} = 0; return 0;";
+    }
+
+    private static string EmitCallExit(RecompilerIrFlow flow, RecompilerIrExit exit)
+    {
+        var calleeTarget = FormatImmediate(flow.Target!.Value);
+        var returnAddress = FormatImmediate(exit.NextPc!.Value);
+        return $"{StateParam}->{NextPcField} = {calleeTarget}; {StateParam}->{TerminationField} = 0; return 0;";
     }
 
     private static string FormatImmediate(uint value)
@@ -308,6 +428,7 @@ public static class RecompilerHostCodeGen
 
         return $"({value}u)";
     }
+
     private static void EmitDispatchFunction(StringBuilder sb, RecompilerIrProgram program)
     {
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");

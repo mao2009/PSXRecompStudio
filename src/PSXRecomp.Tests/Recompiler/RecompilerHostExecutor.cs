@@ -282,14 +282,79 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     // Deterministic, self-contained C driver appended to the generated source.
     // Reads <gpr[0..31]> <hi> <lo> <pc> <budget> from the input file, runs the
     // bounded dispatch, then prints a stable, parseable state snapshot.
+    //
+    // The driver also provides minimal memory helper implementations backed by
+    // a 2 MiB RAM buffer, matching RecompilerGuestMemory (KUSEG physical,
+    // KSEG0/KSEG1 masked). Out-of-range reads return 0; out-of-range writes are
+    // silently dropped.
     private const string DriverSource = @"
 #include <stdio.h>
+#include <string.h>
+
+#define PSX_TEST_RAM_SIZE (2u * 1024u * 1024u)
+static uint8_t test_ram[PSX_TEST_RAM_SIZE];
+
+static uint32_t test_translate(uint32_t va) {
+    if (va <= 0x7FFFFFFFu) return va;
+    if (va <= 0xBFFFFFFFu) return va & 0x1FFFFFFFu;
+    return 0xFFFFFFFFu;
+}
+
+uint8_t recompiler_read_mem8(void* core, uint32_t address) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa >= PSX_TEST_RAM_SIZE) return 0;
+    return test_ram[pa];
+}
+
+uint16_t recompiler_read_mem16(void* core, uint32_t address) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 2) return 0;
+    return (uint16_t)(test_ram[pa] | ((uint16_t)test_ram[pa + 1] << 8));
+}
+
+uint32_t recompiler_read_mem32(void* core, uint32_t address) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 4) return 0;
+    return (uint32_t)(test_ram[pa]
+        | ((uint32_t)test_ram[pa + 1] << 8)
+        | ((uint32_t)test_ram[pa + 2] << 16)
+        | ((uint32_t)test_ram[pa + 3] << 24));
+}
+
+void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa >= PSX_TEST_RAM_SIZE) return;
+    test_ram[pa] = value;
+}
+
+void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 2) return;
+    test_ram[pa] = (uint8_t)value;
+    test_ram[pa + 1] = (uint8_t)(value >> 8);
+}
+
+void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 4) return;
+    test_ram[pa] = (uint8_t)value;
+    test_ram[pa + 1] = (uint8_t)(value >> 8);
+    test_ram[pa + 2] = (uint8_t)(value >> 16);
+    test_ram[pa + 3] = (uint8_t)(value >> 24);
+}
 
 int main(int argc, char** argv) {
     if (argc < 2) return 90; /* MissingInput */
     FILE* in = fopen(argv[1], ""r"");
     if (!in) return 91;      /* CannotOpenInput */
     RecompilerState state;
+    memset(&state, 0, sizeof(state));
     unsigned long u;
     int i;
     for (i = 0; i < 32; i++) { if (fscanf(in, ""%lu"", &u) != 1) return 92; state.gpr[i] = (uint32_t)u; }
@@ -299,6 +364,8 @@ int main(int argc, char** argv) {
     if (fscanf(in, ""%lu"", &u) != 1) return 92; unsigned long budget = u;
     fclose(in);
     state.gpr[0] = 0;
+    state.core = (void*)0;
+    memset(test_ram, 0, sizeof(test_ram));
     recompiler_dispatch(&state, (uint32_t)budget);
     printf(""RSNAPSHOT_BEGIN\n"");
     printf(""termination=%d\n"", (int)state.termination_reason);

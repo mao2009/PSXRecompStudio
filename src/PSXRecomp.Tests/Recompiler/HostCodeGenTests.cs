@@ -191,6 +191,310 @@ public class HostCodeGenTests
         result.Source.Should().Contain("uint32_t v1 = recompiler_sra32(v0, 4u);");
     }
 
+    // --- Phase 3B: Memory operations ---
+
+    [Theory]
+    [InlineData(RecompilerIrOperationKind.Load8)]
+    [InlineData(RecompilerIrOperationKind.Load16)]
+    [InlineData(RecompilerIrOperationKind.Load32)]
+    public void Generation_Load_Op_Renders_Memory_Helper_Call(RecompilerIrOperationKind kind)
+    {
+        var helperName = kind switch
+        {
+            RecompilerIrOperationKind.Load8 => "recompiler_read_mem8",
+            RecompilerIrOperationKind.Load16 => "recompiler_read_mem16",
+            RecompilerIrOperationKind.Load32 => "recompiler_read_mem32",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
+            new RecompilerIrOperation(kind, resultValueId: 1, inputValueA: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain($"{helperName}(state->core, v0)");
+        result.Source.Should().Contain("uint32_t v1 =");
+        result.Source.Should().Contain("state->gpr[8] = v1;");
+    }
+
+    [Theory]
+    [InlineData(RecompilerIrOperationKind.Store8)]
+    [InlineData(RecompilerIrOperationKind.Store16)]
+    [InlineData(RecompilerIrOperationKind.Store32)]
+    public void Generation_Store_Op_Renders_Memory_Helper_Call(RecompilerIrOperationKind kind)
+    {
+        var helperName = kind switch
+        {
+            RecompilerIrOperationKind.Store8 => "recompiler_write_mem8",
+            RecompilerIrOperationKind.Store16 => "recompiler_write_mem16",
+            RecompilerIrOperationKind.Store32 => "recompiler_write_mem32",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x2000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 8),
+            new RecompilerIrOperation(kind, inputValueA: 0, inputValueB: 1),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain($"{helperName}(state->core, v0,");
+    }
+
+    [Fact]
+    public void Generation_Narrow_Store_Does_Not_Affect_Adjacent_Bytes()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Store8, inputValueA: 0, inputValueB: 1),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        // Store8 must cast to uint8_t, not write 2 or 4 bytes.
+        result.Source.Should().Contain("recompiler_write_mem8(state->core, v0, (uint8_t)v1)");
+        result.Source.Should().NotContain("recompiler_write_mem16(state->core");
+        result.Source.Should().NotContain("recompiler_write_mem32(state->core");
+    }
+
+    [Fact]
+    public void Generation_Memory_Helper_Declarations_Are_Present()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("extern uint8_t  recompiler_read_mem8");
+        result.Source.Should().Contain("extern uint16_t recompiler_read_mem16");
+        result.Source.Should().Contain("extern uint32_t recompiler_read_mem32");
+        result.Source.Should().Contain("extern void     recompiler_write_mem8");
+        result.Source.Should().Contain("extern void     recompiler_write_mem16");
+        result.Source.Should().Contain("extern void     recompiler_write_mem32");
+    }
+
+    [Fact]
+    public void Generation_Core_Field_Is_In_State_Struct()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("void* core;");
+    }
+
+    // --- Phase 3C: Compare operations ---
+
+    [Fact]
+    public void Generation_CompareEqual_Op_Renders_Correctly()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 10),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("uint32_t v2 = (v0 == v1) ? 1u : 0u;");
+    }
+
+    [Fact]
+    public void Generation_CompareNotEqual_Op_Renders_Correctly()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareNotEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 10),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("uint32_t v2 = (v0 != v1) ? 1u : 0u;");
+    }
+
+    // --- Phase 3C: Control-flow operations ---
+
+    [Fact]
+    public void Generation_Branch_Taken_Sets_Target()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0x80000000u,
+                new[]
+                {
+                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+                    new RecompilerIrOperation(RecompilerIrOperationKind.CompareEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+                },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 0x80000008u,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x80000010u, conditionValueId: 2))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("if (v2 != 0u) { state->next_pc = (2147483664u); } else { state->next_pc = (2147483656u); }");
+    }
+
+    [Fact]
+    public void Generation_Branch_NotTaken_Sets_Fallthrough()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0x80000000u,
+                new[]
+                {
+                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+                    new RecompilerIrOperation(RecompilerIrOperationKind.CompareNotEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+                },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 0x80000008u,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x80000010u, conditionValueId: 2))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        // The condition is CompareNotEqual, so when gpr[8] == gpr[9], v2 == 0,
+        // and the else branch (fallthrough) is taken.
+        result.Source.Should().Contain("if (v2 != 0u)");
+        result.Source.Should().Contain("state->next_pc = (2147483656u);"); // fallthrough 0x80000008
+        result.Source.Should().Contain("state->next_pc = (2147483664u);"); // taken 0x80000010
+    }
+
+    [Fact]
+    public void Generation_Jump_Sets_Target()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0x80000000u,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Jump, target: 0x80000020u))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("state->next_pc = (2147483680u);");
+        result.Source.Should().Contain("state->termination_reason = 0; return 0;");
+    }
+
+    [Fact]
+    public void Generation_Call_Sets_Callee_Target()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0x80000000u,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 0x80000008u,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x80000100u))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        // Call sets next_pc to the callee target (0x80000100), not the return address.
+        result.Source.Should().Contain("state->next_pc = (2147483904u);");
+        result.Source.Should().Contain("state->termination_reason = 0; return 0;");
+    }
+
+    [Fact]
+    public void Generation_Sequential_Flow_Sets_NextPc()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 4,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Sequential))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("state->next_pc = 4; state->termination_reason = 0; return 0;");
+    }
+
+    [Fact]
+    public void Generation_Rejects_Return_Flow()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Return))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("IR_VALIDATION_FAILED");
+        result.Source.Should().BeNull();
+    }
+
+    [Fact]
+    public void Generation_Rejects_Unknown_Flow_Kind()
+    {
+        // The RecompilerIrFlow constructor rejects undefined enum values,
+        // preventing unknown flow kinds from reaching codegen.
+        var act = () => new RecompilerIrFlow((RecompilerIrFlowKind)255);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Generation_Rejects_UnresolvedIndirectFlow()
+    {
+        // UnresolvedIndirectFlow is a termination reason, not a flow kind.
+        // The block should still generate (it's a non-Success termination).
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(RecompilerIrTerminationReason.UnresolvedIndirectFlow)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        var reason = (byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow;
+        result.Source.Should().Contain($"state->termination_reason = {reason}; return (int32_t){reason}u;");
+    }
+
+    // --- Existing Phase 3A tests ---
+
     [Fact]
     public void Determinism_Same_IR_Produces_ByteIdentical_Source()
     {
@@ -261,10 +565,6 @@ public class HostCodeGenTests
 
         var result = RecompilerHostCodeGen.Generate(program);
         result.Success.Should().BeTrue();
-        // The SRA operation itself must lower to the well-defined helper, not a
-        // bare implementation-defined signed right-shift cast. (The dispatcher
-        // legitimately uses "(int32_t)" for termination-reason returns, so the
-        // negative assertion is scoped to the SRA operation statement only.)
         var sraLine = result.Source!.Split('\n').Single(line => line.Contains("recompiler_sra32(v0, 4u)"));
         sraLine.Should().NotContain("(int32_t)");
         result.Source.Should().Contain("recompiler_sra32(v0, 4u)");
@@ -338,19 +638,12 @@ public class HostCodeGenTests
     {
         var program = CreateSingleBlockProgram(new[]
         {
-            // v0 = 0xFFFFFFFF (4294967295)
             new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0xFFFFFFFF),
-            // v1 = 1
             new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 1),
-            // v2 = v0 + v1 = 0 (wrapping add of 0xFFFFFFFF + 1)
             new RecompilerIrOperation(RecompilerIrOperationKind.Add, resultValueId: 2, inputValueA: 0, inputValueB: 1),
-            // v3 = v0 - v1 = 0xFFFFFFFE (wrapping sub)
             new RecompilerIrOperation(RecompilerIrOperationKind.Subtract, resultValueId: 3, inputValueA: 0, inputValueB: 1),
-            // v4 = v0 >> 28 (logical, shift by 4) = 0x0F
             new RecompilerIrOperation(RecompilerIrOperationKind.ShiftRightLogical, resultValueId: 4, inputValueA: 0, shiftAmount: 28),
-            // v5 = v0 SRA 28 (arithmetic) = 0xFFFFFFFF (sign-extended)
             new RecompilerIrOperation(RecompilerIrOperationKind.ShiftRightArithmetic, resultValueId: 5, inputValueA: 0, shiftAmount: 28),
-            // Write results to gpr[8..11]
             new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 8),
             new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 3, register: 9),
             new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 4, register: 10),
@@ -373,6 +666,252 @@ int main() {
     return ok ? 0 : 1;
 }");
         testResult.Should().Be(0, "runtime test must pass (ADD/SUB wrap, SRL, SRA correctness)");
+    }
+
+    [Fact]
+    public void Runtime_CompareEqual_EndToEnd()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 42),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 42),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    recompiler_block_0x00000000(&state);
+    return (state.gpr[8] == 1u) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "CompareEqual must produce 1 when inputs are equal");
+    }
+
+    [Fact]
+    public void Runtime_CompareNotEqual_EndToEnd()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 2),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareNotEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    recompiler_block_0x00000000(&state);
+    return (state.gpr[8] == 1u) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "CompareNotEqual must produce 1 when inputs differ");
+    }
+
+    [Fact]
+    public void Runtime_Load32_EndToEnd()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80000000u),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+#include <string.h>
+int main() {
+    /* Write a known value to test_ram[0] via the memory helpers. */
+    extern void recompiler_write_mem32(void*, uint32_t, uint32_t);
+    recompiler_write_mem32(0, 0x80000000u, 0xDEADBEEFu);
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    recompiler_block_0x00000000(&state);
+    return (state.gpr[8] == 0xDEADBEEFu) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "Load32 must read the 32-bit value written by the memory helper");
+    }
+
+    [Fact]
+    public void Runtime_Store32_EndToEnd()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80000000u),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 0xCAFEBABEu),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Store32, inputValueA: 0, inputValueB: 1),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+#include <string.h>
+int main() {
+    extern uint32_t recompiler_read_mem32(void*, uint32_t);
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    recompiler_block_0x00000000(&state);
+    uint32_t readback = recompiler_read_mem32(0, 0x80000000u);
+    return (readback == 0xCAFEBABEu) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "Store32 must write the value to guest memory");
+    }
+
+    [Fact]
+    public void Runtime_Store8_Narrow_Does_Not_Affect_Adjacent_Bytes()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u, new[]
+            {
+                // First write a known 32-bit pattern.
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80000000u),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 0xFFFFFFFF),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Store32, inputValueA: 0, inputValueB: 1),
+                // Then overwrite only the low byte.
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 2, immediate: 0x80000000u),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 3, immediate: 0xAA),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Store8, inputValueA: 2, inputValueB: 3),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000004u)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+#include <string.h>
+int main() {
+    extern uint32_t recompiler_read_mem32(void*, uint32_t);
+    RecompilerState state = {0};
+    state.pc = 0x80000000u;
+    recompiler_dispatch(&state, 10);
+    uint32_t readback = recompiler_read_mem32(0, 0x80000000u);
+    /* Low byte overwritten to 0xAA, upper 3 bytes remain 0xFF. */
+    return (readback == 0xFFFFFFAAu) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "Store8 must only affect the addressed byte");
+    }
+
+    [Fact]
+    public void Runtime_Branch_Taken_EndToEnd()
+    {
+        // Two blocks: block at 0x0 writes 1 to gpr[8], block at 0x10 writes 2 to gpr[9].
+        // Block at 0x0 has a branch: if gpr[8] == gpr[8] (always true), go to 0x10.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+                new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 8),
+                new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 2, register: 8),
+                new RecompilerIrOperation(RecompilerIrOperationKind.CompareEqual, resultValueId: 3, inputValueA: 1, inputValueB: 2),
+            }, new RecompilerIrExit(
+                RecompilerIrTerminationReason.Success,
+                nextPc: 0x80000008u,
+                flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x80000010u, conditionValueId: 3))),
+            new RecompilerIrBlock(0x80000010u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 2),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 9),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000018u)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    state.pc = 0x80000000u;
+    recompiler_dispatch(&state, 10);
+    /* Branch is taken, so gpr[9] should be 2 (written at 0x80000010). */
+    return (state.gpr[9] == 2u) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "Branch taken must transfer to the target block");
+    }
+
+    [Fact]
+    public void Runtime_Jump_EndToEnd()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 5),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+            }, new RecompilerIrExit(
+                RecompilerIrTerminationReason.Success,
+                flow: new RecompilerIrFlow(RecompilerIrFlowKind.Jump, target: 0x80000010u))),
+            new RecompilerIrBlock(0x80000010u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 7),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 9),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000018u)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    state.pc = 0x80000000u;
+    recompiler_dispatch(&state, 10);
+    return (state.gpr[9] == 7u) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "Jump must transfer to the target block");
+    }
+
+    [Fact]
+    public void Runtime_Call_EndToEnd()
+    {
+        // JAL-like: block at 0x0 links (writes $ra = return address), then calls to 0x10.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u, new[]
+            {
+                // Link: $ra = return address (0x80000008 = pc + 8).
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80000008u),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 31),
+            }, new RecompilerIrExit(
+                RecompilerIrTerminationReason.Success,
+                nextPc: 0x80000008u,
+                flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x80000010u))),
+            new RecompilerIrBlock(0x80000010u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 42),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000018u)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    state.pc = 0x80000000u;
+    recompiler_dispatch(&state, 10);
+    /* gpr[8] should be 42 (written at the callee 0x80000010). */
+    return (state.gpr[8] == 42u) ? 0 : 1;
+}");
+        testResult.Should().Be(0, "Call must transfer to the callee block");
     }
 
     [Fact]
@@ -501,7 +1040,7 @@ int main() {
             var combinedPath = Path.Combine(tempDir, "combined.c");
             var outputPath = Path.Combine(tempDir, "test_bin");
 
-            File.WriteAllText(combinedPath, generatedSource + "\n" + mainSource);
+            File.WriteAllText(combinedPath, generatedSource + "\n" + MemoryHelperStubs + "\n" + mainSource);
 
             var (compileExit, _, compileErr) = RunHostProcess(
                 "gcc", $"-std=c11 -O0 -Wall -Wextra {combinedPath} -o {outputPath}", 30000);
@@ -515,7 +1054,9 @@ int main() {
         finally
         {
             if (Directory.Exists(tempDir))
+            {
                 Directory.Delete(tempDir, true);
+            }
         }
     }
 
@@ -573,128 +1114,58 @@ int main() {
         return tempDir;
     }
 
-    [Theory]
-    [InlineData(RecompilerIrOperationKind.Load8)]
-    [InlineData(RecompilerIrOperationKind.Load16)]
-    [InlineData(RecompilerIrOperationKind.Load32)]
-    public void Generation_Rejects_MemoryLoad_Instead_Of_Dropping_It(RecompilerIrOperationKind kind)
-    {
-        // The lowering stage now emits memory operations; this backend has no
-        // emission for them, so it must fail rather than generate a block that
-        // silently omits the access.
-        var program = CreateSingleBlockProgram(new[]
-        {
-            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
-            new RecompilerIrOperation(kind, resultValueId: 1, inputValueA: 0),
-            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 8),
-        });
-
-        var result = RecompilerHostCodeGen.Generate(program);
-
-        result.Success.Should().BeFalse();
-        result.Source.Should().BeNull();
-        result.DiagnosticCode.Should().Be("UNSUPPORTED_OPERATION_KIND");
-    }
-
-    [Fact]
-    public void Generation_Rejects_MemoryStore_Instead_Of_Dropping_It()
-    {
-        var program = CreateSingleBlockProgram(new[]
-        {
-            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
-            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 8),
-            new RecompilerIrOperation(RecompilerIrOperationKind.Store32, inputValueA: 0, inputValueB: 1),
-        });
-
-        var result = RecompilerHostCodeGen.Generate(program);
-
-        result.Success.Should().BeFalse();
-        result.DiagnosticCode.Should().Be("UNSUPPORTED_OPERATION_KIND");
-    }
-
-    [Fact]
-    public void Generation_Rejects_A_BranchFlow_Instead_Of_Falling_Through()
-    {
-        var program = new RecompilerIrProgram(new[]
-        {
-            new RecompilerIrBlock(
-                0,
-                new[]
-                {
-                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
-                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
-                    new RecompilerIrOperation(RecompilerIrOperationKind.CompareEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
-                },
-                new RecompilerIrExit(
-                    RecompilerIrTerminationReason.Success,
-                    nextPc: 8,
-                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x20, conditionValueId: 2))),
-        });
-
-        var result = RecompilerHostCodeGen.Generate(program);
-
-        result.Success.Should().BeFalse();
-        // The compare operation is reported first; both are unemittable here.
-        result.DiagnosticCode.Should().Be("UNSUPPORTED_OPERATION_KIND");
-    }
-
-    [Fact]
-    public void Generation_Rejects_A_JumpFlow_Instead_Of_Falling_Through()
-    {
-        var program = new RecompilerIrProgram(new[]
-        {
-            new RecompilerIrBlock(
-                0,
-                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
-                new RecompilerIrExit(
-                    RecompilerIrTerminationReason.Success,
-                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Jump, target: 0x20))),
-        });
-
-        var result = RecompilerHostCodeGen.Generate(program);
-
-        result.Success.Should().BeFalse();
-        result.DiagnosticCode.Should().Be("UNSUPPORTED_FLOW_KIND");
-    }
-
-    [Fact]
-    public void Generation_Rejects_A_CallFlow_Instead_Of_Dropping_The_Transfer()
-    {
-        // Lowering emits Call for JAL; the Phase 3A backend does not implement a
-        // transfer, and must say so rather than fall through to the next PC.
-        var program = new RecompilerIrProgram(new[]
-        {
-            new RecompilerIrBlock(
-                0,
-                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
-                new RecompilerIrExit(
-                    RecompilerIrTerminationReason.Success,
-                    nextPc: 8,
-                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x20))),
-        });
-
-        var result = RecompilerHostCodeGen.Generate(program);
-
-        result.Success.Should().BeFalse();
-        result.DiagnosticCode.Should().Be("UNSUPPORTED_FLOW_KIND");
-    }
-
-    [Fact]
-    public void Generation_Accepts_An_Explicit_SequentialFlow()
-    {
-        var program = new RecompilerIrProgram(new[]
-        {
-            new RecompilerIrBlock(
-                0,
-                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
-                new RecompilerIrExit(
-                    RecompilerIrTerminationReason.Success,
-                    nextPc: 4,
-                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Sequential))),
-        });
-
-        RecompilerHostCodeGen.Generate(program).Success.Should().BeTrue();
-    }
+    private const string MemoryHelperStubs = @"
+#define PSX_TEST_RAM_SIZE (2u * 1024u * 1024u)
+static uint8_t test_ram[PSX_TEST_RAM_SIZE];
+static uint32_t test_translate(uint32_t va) {
+    if (va <= 0x7FFFFFFFu) return va;
+    if (va <= 0xBFFFFFFFu) return va & 0x1FFFFFFFu;
+    return 0xFFFFFFFFu;
+}
+uint8_t recompiler_read_mem8(void* core, uint32_t address) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa >= PSX_TEST_RAM_SIZE) return 0;
+    return test_ram[pa];
+}
+uint16_t recompiler_read_mem16(void* core, uint32_t address) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 2) return 0;
+    return (uint16_t)(test_ram[pa] | ((uint16_t)test_ram[pa + 1] << 8));
+}
+uint32_t recompiler_read_mem32(void* core, uint32_t address) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 4) return 0;
+    return (uint32_t)(test_ram[pa]
+        | ((uint32_t)test_ram[pa + 1] << 8)
+        | ((uint32_t)test_ram[pa + 2] << 16)
+        | ((uint32_t)test_ram[pa + 3] << 24));
+}
+void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa >= PSX_TEST_RAM_SIZE) return;
+    test_ram[pa] = value;
+}
+void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 2) return;
+    test_ram[pa] = (uint8_t)value;
+    test_ram[pa + 1] = (uint8_t)(value >> 8);
+}
+void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
+    (void)core;
+    uint32_t pa = test_translate(address);
+    if (pa > PSX_TEST_RAM_SIZE - 4) return;
+    test_ram[pa] = (uint8_t)value;
+    test_ram[pa + 1] = (uint8_t)(value >> 8);
+    test_ram[pa + 2] = (uint8_t)(value >> 16);
+    test_ram[pa + 3] = (uint8_t)(value >> 24);
+}
+";
 
     private static RecompilerIrProgram CreateSingleBlockProgram(RecompilerIrOperation[] operations)
     {
@@ -710,13 +1181,10 @@ int main() {
         {
             new RecompilerIrBlock(0, new[]
             {
-                // ADDIU t0, zero, 1  →  Constant(1) → WriteGpr(t0=8)
                 new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
                 new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
-                // ADDIU t1, zero, 2  →  Constant(2) → WriteGpr(t1=9)
                 new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 2),
                 new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 9),
-                // ADDU t2, t0, t1    →  ReadGpr(t0) + ReadGpr(t1) → WriteGpr(t2=10)
                 new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 2, register: 8),
                 new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 3, register: 9),
                 new RecompilerIrOperation(RecompilerIrOperationKind.Add, resultValueId: 4, inputValueA: 2, inputValueB: 3),

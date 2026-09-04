@@ -1,8 +1,10 @@
-# Recompiler Host Code Generation (Phase 3A)
+# Recompiler Host Code Generation (Phase 3A–3C)
 
-Deterministic C source generation from validated #206 GPR IR. Generates
+Deterministic C source generation from validated #206/#264 IR. Generates
 self-contained, compilable C source with fixed-width types and well-defined
-arithmetic — no UB, no host-width assumptions.
+arithmetic — no UB, no host-width assumptions. Supports GPR arithmetic (Phase
+3A), memory access (Phase 3B), comparisons (Phase 3C), and explicit control
+flow (Phase 3C).
 
 ## Backend Choice
 
@@ -23,15 +25,18 @@ typedef struct {
   uint32_t pc;
   int32_t termination_reason;
   uint32_t next_pc;
+  void* core;
 } RecompilerState;
 ```
 
 - `gpr[0]` is always 0 on entry (caller must ensure).
-- `hi`, `lo`, `pc` are present for ABI stability (Phase 3B+); initialized to
-  0 in Phase 3A usage.
+- `hi`, `lo`, `pc` are present for ABI stability; initialized to 0 in usage.
 - `termination_reason`: written by the generated block on exit; 0 = Success;
   nonzero = `RecompilerIrTerminationReason` byte value cast to `int32_t`.
-- `next_pc`: set only on Success exit.
+- `next_pc`: set on Success exit; on Branch, sets the taken or fallthrough
+  target; on Jump/Call, sets the target address.
+- `core`: opaque pointer passed to memory helper functions. The runtime
+  provides the implementation; the codegen never dereferences it.
 
 ### Function signature
 
@@ -71,6 +76,40 @@ completion); a PC that matches no block on the first step is reported as
 - Read: `state->gpr[i]`
 - Write: `state->gpr[i] = value`
 - `$zero` invariant preserved: generator never emits `WriteGpr` to `gpr[0]`.
+
+### Memory access (Phase 3B)
+
+Block functions call extern memory helpers for guest memory access. Address
+translation, alignment, endianness, and bounds checking are the runtime's
+responsibility.
+
+```c
+extern uint8_t  recompiler_read_mem8(void* core, uint32_t address);
+extern uint16_t recompiler_read_mem16(void* core, uint32_t address);
+extern uint32_t recompiler_read_mem32(void* core, uint32_t address);
+extern void     recompiler_write_mem8(void* core, uint32_t address, uint8_t value);
+extern void     recompiler_write_mem16(void* core, uint32_t address, uint16_t value);
+extern void     recompiler_write_mem32(void* core, uint32_t address, uint32_t value);
+```
+
+- Narrow loads zero-extend to `uint32_t`.
+- Narrow stores write only the specified width (little-endian).
+- The `core` pointer is `state->core`.
+
+### Comparisons (Phase 3C)
+
+- `CompareEqual`: `uint32_t v = (a == b) ? 1u : 0u;`
+- `CompareNotEqual`: `uint32_t v = (a != b) ? 1u : 0u;`
+
+### Control flow (Phase 3C)
+
+The exit of each block carries an explicit flow transition:
+
+- **Sequential**: `state->next_pc = <nextPc>;` (same as Phase 3A).
+- **Branch**: `if (cond != 0u) { state->next_pc = <taken>; } else { state->next_pc = <fallthrough>; }`
+- **Jump**: `state->next_pc = <target>;`
+- **Call**: `state->next_pc = <callee_target>;` (the return address is an
+  architectural GPR write the lowering emits).
 
 ## Fixed-Width Policy
 
@@ -152,14 +191,11 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
 - Undefined `RecompilerIrTerminationReason` values.
 - Empty programs (`UNSUPPORTED_EMPTY_PROGRAM`).
 - Duplicate result value ids (`DUPLICATE_RESULT_VALUE_ID`).
-- Operation kinds outside the Phase 3A GPR subset — the memory and compare
-  operations (`UNSUPPORTED_OPERATION_KIND`).
-- An exit flow other than `Sequential`, i.e. `Branch` or `Jump`
-  (`UNSUPPORTED_FLOW_KIND`).
-
-The last two matter now that MIPS-to-IR lowering emits memory access and
-explicit control flow (`docs/development/recompiler-ir-lowering.md`): this
-backend has no emission for them, so it fails rather than generate a block that
-silently drops the access or the transfer.
+- Operation kinds outside the Phase 3A–3C subset
+  (`UNSUPPORTED_OPERATION_KIND`).
+- Exit flow kinds other than `Sequential`, `Branch`, `Jump`, and `Call`
+  (`UNSUPPORTED_FLOW_KIND`). The `Return` flow kind is additionally rejected
+  by the IR validator in `RecompilerIrValidator`, since it cannot carry a
+  register-held target as a static address.
 
 Generator never silently produces partial source for invalid IR.
