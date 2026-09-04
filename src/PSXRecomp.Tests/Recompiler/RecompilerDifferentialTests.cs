@@ -62,8 +62,8 @@ public sealed class RecompilerDifferentialTests
 
         var oddTerm = Snapshot(gpr8: 5, gpr9: 7, gpr11: 12, pc: 0x80000004u, termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded);
         var diffWithPcTerm = RecompilerStateDiff.Compare(reference, oddTerm);
-        Assert.True(diffWithPcTerm.Differences.Any(d => d.FieldPath == "pc"));
-        Assert.True(diffWithPcTerm.Differences.Any(d => d.FieldPath == "termination"));
+        Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "pc");
+        Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "termination");
     }
 
     [Fact]
