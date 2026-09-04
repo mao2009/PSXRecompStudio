@@ -50,14 +50,24 @@ describing an explicit control-flow transition:
   fall-through successor.
 - `Jump` — an unconditional jump to `Target`; the exit must not provide a next
   PC.
-- `Call` / `Return` — reserved extension points for later stages. They are a
-  deliberate part of the contract (so lowering and backends can plan for them)
-  but are rejected by the validator until a stage defines their semantics.
+- `Call` — an unconditional transfer to the callee at `Target`, with the exit's
+  next PC carrying the address control resumes at when the callee returns. The
+  linked return address is an ordinary architectural GPR write that the lowering
+  emits; the flow states the call relation, not the link register. Carrying the
+  return address keeps the code after a call reachable, which lowering a call to
+  a plain `Jump` would erase.
+- `Return` — a reserved extension point. It stays rejected by the validator
+  because a return target lives in a register and `Target` is a static address;
+  a stage that resolves register-held targets defines it.
 
-Branches and jumps are explicit; a backend must not hide or synthesize
+Branches, jumps and calls are explicit; a backend must not hide or synthesize
 fall-through, delay-slot, or call/return behavior. Delay slots and JAL PC+8
 remain lowering/execution responsibilities. `CompareEqual` / `CompareNotEqual`
 operations produce the 0/1 condition values consumed by a `Branch` flow.
+
+A transfer whose target is held in a register (JR, JALR) has no flow: the block
+terminates with `UnresolvedIndirectFlow`, an explicit statement of the frontier
+rather than a synthesized transfer.
 
 ## Functions and metadata
 
@@ -75,9 +85,10 @@ surface.
 The validator rejects, with a machine-readable diagnostic, any program that:
 uses an undefined operation or flow kind; mis-shapes a memory, compare, shift,
 or existing arithmetic operation; writes GPR[0]; leaves a branch condition
-undefined or a successor missing; places a flow on a non-success exit; uses a
-reserved flow; duplicates a function entry PC; or references a function block
-that is not in the program. The same discipline that rejects unsupported
+undefined or a successor missing; leaves a call target or its return-address
+next PC missing; places a flow on a non-success exit; uses a reserved flow;
+duplicates a function entry PC; or references a function block that is not in
+the program. The same discipline that rejects unsupported
 behavior extends to these structures: invalid state or operands fail fast rather
 than degrade.
 

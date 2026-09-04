@@ -143,18 +143,62 @@ public class RecompilerContractExtensionsTests
     }
 
     [Fact]
-    public void CallAndReturnFlow_AreReservedAndFailFast()
+    public void CallFlow_CarriesACalleeTargetAndAReturnAddress()
     {
-        var callBlock = new RecompilerIrBlock(
+        var block = new RecompilerIrBlock(
+            0,
+            Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(
+                RecompilerIrTerminationReason.Success,
+                nextPc: 8,
+                flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x80000000)));
+
+        ValidateProgram(block);
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Call);
+    }
+
+    [Fact]
+    public void CallFlow_WithoutAReturnAddress_FailsFast()
+    {
+        // The exit's next PC is the address control resumes at after the callee
+        // returns; without it a call would erase reachability of the code after it.
+        var block = new RecompilerIrBlock(
             0,
             Array.Empty<RecompilerIrOperation>(),
             new RecompilerIrExit(RecompilerIrTerminationReason.Success, flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x80000000)));
+
+        var result = RecompilerIrValidator.Validate(new RecompilerIrProgram(new[] { block }));
+
+        result.IsValid.Should().BeFalse();
+        result.Diagnostics.Select(d => d.Code).Should().Contain(RecompilerIrDiagnosticCode.InvalidFlow);
+    }
+
+    [Fact]
+    public void CallFlow_WithoutATarget_FailsFast()
+    {
+        var block = new RecompilerIrBlock(
+            0,
+            Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, nextPc: 8, flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call)));
+
+        var result = RecompilerIrValidator.Validate(new RecompilerIrProgram(new[] { block }));
+
+        result.IsValid.Should().BeFalse();
+        result.Diagnostics.Select(d => d.Code).Should().Contain(RecompilerIrDiagnosticCode.InvalidFlow);
+    }
+
+    [Fact]
+    public void ReturnFlow_RemainsReservedAndFailsFast()
+    {
+        // A return target lives in a register, and RecompilerIrFlow.Target is a
+        // static address, so Return stays closed until a stage can express one.
         var returnBlock = new RecompilerIrBlock(
             8,
             Array.Empty<RecompilerIrOperation>(),
             new RecompilerIrExit(RecompilerIrTerminationReason.Success, flow: new RecompilerIrFlow(RecompilerIrFlowKind.Return)));
 
-        var result = RecompilerIrValidator.Validate(new RecompilerIrProgram(new[] { callBlock, returnBlock }));
+        var result = RecompilerIrValidator.Validate(new RecompilerIrProgram(new[] { returnBlock }));
+
         result.IsValid.Should().BeFalse();
         result.Diagnostics.Select(d => d.Code).Should().Contain(RecompilerIrDiagnosticCode.ReservedFlow);
     }

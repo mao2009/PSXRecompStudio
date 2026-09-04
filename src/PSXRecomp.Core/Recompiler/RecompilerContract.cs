@@ -133,10 +133,11 @@ public sealed record RecompilerIrOperation
 
 /// <summary>
 /// Classifies how control flows from a basic block to its successor(s). The
-/// sequential case is the existing "success with a next PC" relation; branch and
-/// jump make control flow explicit. <see cref="Call"/> and <see cref="Return"/>
-/// are reserved extension points for later stages and are rejected by the
-/// validator until a lowering stage defines their semantics.
+/// sequential case is the existing "success with a next PC" relation; branch,
+/// jump and call make control flow explicit. <see cref="Return"/> remains a
+/// reserved extension point and is rejected by the validator: it needs a target
+/// held in a register, which <see cref="RecompilerIrFlow.Target"/> — a static
+/// address — cannot carry.
 /// </summary>
 [Domain]
 public enum RecompilerIrFlowKind : byte
@@ -156,7 +157,11 @@ public enum RecompilerIrFlowKind : byte
 /// exit's next PC.</item>
 /// <item>Jump: unconditional target address.</item>
 /// <item>Sequential: matches the existing success-with-next-PC relation.</item>
-/// <item>Call / Return: reserved (not yet supported).</item>
+/// <item>Call: unconditional target address of the callee, with the exit's next
+/// PC carrying the address control resumes at when the callee returns. The
+/// linked return address itself is an architectural GPR write the lowering
+/// emits; the flow states the call relation, not the link register.</item>
+/// <item>Return: reserved (not yet supported).</item>
 /// </list>
 /// </summary>
 [Domain]
@@ -415,6 +420,19 @@ public static class RecompilerIrValidator
                 }
                 break;
             case RecompilerIrFlowKind.Call:
+                if (flow.Target is null)
+                {
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidFlow, "Call flow requires a callee target.", blockIndex);
+                }
+                if (flow.ConditionValueId >= 0)
+                {
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidFlow, "Call flow carries no condition.", blockIndex);
+                }
+                if (exit.NextPc is null)
+                {
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidFlow, "Call flow requires the return-address next PC.", blockIndex);
+                }
+                break;
             case RecompilerIrFlowKind.Return:
                 Add(diagnostics, RecompilerIrDiagnosticCode.ReservedFlow, $"Flow kind '{flow.Kind}' is reserved and not yet supported.", blockIndex);
                 break;

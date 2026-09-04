@@ -658,6 +658,28 @@ int main() {
     }
 
     [Fact]
+    public void Generation_Rejects_A_CallFlow_Instead_Of_Dropping_The_Transfer()
+    {
+        // Lowering emits Call for JAL; the Phase 3A backend does not implement a
+        // transfer, and must say so rather than fall through to the next PC.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 8,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x20))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_FLOW_KIND");
+    }
+
+    [Fact]
     public void Generation_Accepts_An_Explicit_SequentialFlow()
     {
         var program = new RecompilerIrProgram(new[]
