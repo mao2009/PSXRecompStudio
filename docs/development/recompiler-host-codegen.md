@@ -48,17 +48,23 @@ static int32_t recompiler_block_0x<entryPc>(RecompilerState* state);
 ### Dispatch function
 
 ```c
-int32_t recompiler_dispatch(RecompilerState* state);
+int32_t recompiler_dispatch(RecompilerState* state, uint32_t budget);
 ```
 
-For Phase 3A (single-block programs), dispatches to the single block function.
+A budgeted sequential dispatcher. It selects the block function whose entry PC
+matches `state->pc`, executes it, stops on a non-Success termination, and
+refuses to retire more than `budget` instructions (reporting
+`RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED`). A PC that matches no block after
+at least one step means the straight-line program fell off the end (normal
+completion); a PC that matches no block on the first step is reported as
+`RECOMPILER_REASON_UNSUPPORTED_IR`.
 
 ### Entry / exit behavior
 
-- Entry: caller initializes `gpr[0] = 0`.
+- Entry: caller initializes `gpr[0] = 0`; the dispatcher sets `state->pc` to
+  `state->next_pc` after each retired block via the sequential program counter.
 - Exit: returns termination reason and writes it to `state->termination_reason`;
   on Success, also sets `state->next_pc`.
-- No execution loop (out of scope for Phase 3A).
 
 ### GPR access
 
@@ -145,8 +151,6 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
 - Undefined `RecompilerIrOperationKind` values.
 - Undefined `RecompilerIrTerminationReason` values.
 - Empty programs (`UNSUPPORTED_EMPTY_PROGRAM`).
-- Multi-block programs (`UNSUPPORTED_MULTI_BLOCK_PROGRAM`; Phase 3A is
-  single-block only).
 - Duplicate result value ids (`DUPLICATE_RESULT_VALUE_ID`).
 
 Generator never silently produces partial source for invalid IR.
