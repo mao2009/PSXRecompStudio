@@ -227,20 +227,167 @@ public class MipsToIrMemoryLoweringTests
     }
 
     [Fact]
-    public void LoadDelay_ObservedByTheNextInstruction_FailsFast()
+    public void LoadDelay_ObservedByTheNextInstruction_FusesTheCommitAfterTheObserver()
     {
         // LW $t1, 0($t0) ; ADDU $t2, $t1, $t3 — on hardware the ADDU reads the
-        // pre-load $t1, which this stage does not represent.
+        // pre-load $t1 and the load commits at the ADDU's retirement point.
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.R(0x21, rd: 10, rs: 9, rt: 11, shamt: 0),
+        });
+
+        program.Blocks.Should().ContainSingle("the load and its load-delay slot fuse into one block");
+        var block = program.Blocks[0];
+        block.EntryPc.Should().Be(EntryPc);
+        block.Exit.NextPc.Should().Be(EntryPc + 8, "the fused block covers both instructions");
+
+        var operations = block.Operations.ToList();
+        var load = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.Load32);
+        var observerRead = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.ReadGpr && op.Register == 9);
+        var observerWrite = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 10);
+        var commit = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 9);
+
+        load.Should().BeGreaterThanOrEqualTo(0);
+        // The observer reads $t1 before the loaded value is committed to it, which
+        // is exactly what makes it read the pre-load value.
+        observerRead.Should().BeGreaterThan(load);
+        commit.Should().BeGreaterThan(observerRead);
+        commit.Should().BeGreaterThan(observerWrite);
+
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void LoadDelay_ObservedByAnIndependentThenDependentInstruction_CommitsBeforeTheDependent()
+    {
+        // LW $t1, 0($t0) ; ADDU $t2, $t3, $t4 ; ADDU $t5, $t1, $zero — the load
+        // delay is over by the third instruction, so it reads the loaded value.
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.R(0x21, rd: 10, rs: 11, rt: 12, shamt: 0),
+            MipsEncoding.R(0x21, rd: 13, rs: 9, rt: 0, shamt: 0),
+        });
+
+        // Nothing reads $t1 in the load-delay slot, so no fusion is needed and
+        // each instruction keeps its own block.
+        program.Blocks.Should().HaveCount(3);
+        program.Blocks[0].Operations.Should().Contain(
+            op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 9);
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void LoadDelay_ObservedByAControlTransfer_FusesLoadTransferAndDelaySlot()
+    {
+        // LW $t1, 0($t0) ; BEQ $t1, $t2, target ; NOP — the BEQ compares the
+        // pre-load $t1, and the load commits before the branch delay slot runs.
+        var target = EntryPc + 0x40;
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.Branch(0x04, rs: 9, rt: 10, pc: EntryPc + 4, target: target),
+            MipsEncoding.Nop,
+        });
+
+        program.Blocks.Should().ContainSingle();
+        var block = program.Blocks[0];
+        block.EntryPc.Should().Be(EntryPc, "the fused block is entered at the load");
+
+        var operations = block.Operations.ToList();
+        var compare = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.CompareEqual);
+        var commit = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 9);
+        var delaySlot = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.Nop);
+
+        // Condition first (pre-load value), then the commit, then the delay slot:
+        // the branch delay slot retires after the load has committed.
+        compare.Should().BeGreaterThanOrEqualTo(0);
+        commit.Should().BeGreaterThan(compare);
+        delaySlot.Should().BeGreaterThan(commit);
+
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Branch);
+        block.Exit.Flow.Target.Should().Be(target);
+        block.Exit.NextPc.Should().Be(EntryPc + 12, "the not-taken successor follows the branch delay slot");
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void LoadDelay_ObservedByJal_EmitsNoCommitBecauseTheLinkWriteCancelsIt()
+    {
+        // LW $ra, 0($sp) ; JAL target ; NOP — docs/cpu/pipeline.md: the JAL still
+        // links PC+8 into $ra, because an immediate write cancels the pending load.
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 31, baseRegister: 29, offset: 0),
+            MipsEncoding.JumpAndLink(0x80002000u),
+            MipsEncoding.Nop,
+        });
+
+        // JAL does not read $ra, so the load delay is not observable and no
+        // fusion is needed: the load keeps its own block and the JAL's link write
+        // lands after it, which is the same net register value the hardware
+        // reaches by cancelling the pending load.
+        program.Blocks.Should().HaveCount(2);
+        program.Blocks[0].Operations.Should().Contain(
+            op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 31);
+
+        var callBlock = program.Blocks[1];
+        var linkWrite = callBlock.Operations.Single(
+            op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 31);
+        var linked = callBlock.Operations.Single(op => op.ResultValueId == linkWrite.InputValueA);
+        linked.Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        linked.Immediate.Should().Be(EntryPc + 4 + 8, "the last write to $ra is the JAL link value");
+    }
+
+    [Fact]
+    public void LoadDelay_ObservedByAWriteToTheSameRegister_EmitsNoCommit()
+    {
+        // LW $t1, 0($t1) ; ADDIU $t1, $t1, 1 — the ADDIU reads the pre-load $t1
+        // and its own write cancels the pending load, so only the ADDIU's value
+        // reaches the register.
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 9, offset: 0),
+            MipsEncoding.I(0x09, rt: 9, rs: 9, immediate: 1),
+        });
+
+        program.Blocks.Should().ContainSingle();
+        program.Blocks[0].Operations
+            .Count(op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 9)
+            .Should().Be(1);
+    }
+
+    [Fact]
+    public void LoadDelay_ChainedThroughASecondLoad_FailsFast()
+    {
+        // LW $t1, 0($t0) ; LW $t2, 0($t1) ; ADDU $t3, $t2, $zero — the second
+        // load's own commit would have to land outside the fused block.
         var instructions = new[]
         {
             (R3000aDecoder.Decode(MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 8, offset: 0)), EntryPc),
-            (R3000aDecoder.Decode(MipsEncoding.R(0x21, rd: 10, rs: 9, rt: 11, shamt: 0)), EntryPc + 4),
+            (R3000aDecoder.Decode(MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 9, offset: 0)), EntryPc + 4),
+            (R3000aDecoder.Decode(MipsEncoding.R(0x21, rd: 11, rs: 10, rt: 0, shamt: 0)), EntryPc + 8),
         };
 
         var lower = () => MipsToIrLowerer.LowerProgram(instructions);
 
         lower.Should().Throw<InvalidOperationException>()
-            .WithMessage("*load delay*");
+            .WithMessage("*chained load delays*");
+    }
+
+    [Fact]
+    public void LoadDelay_FusedProgram_SerializesDeterministically()
+    {
+        var words = new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.Branch(0x04, rs: 9, rt: 10, pc: EntryPc + 4, target: EntryPc + 0x40),
+            MipsEncoding.Nop,
+        };
+
+        RecompilerIrSerializer.Serialize(LowerWords(words))
+            .Should().Be(RecompilerIrSerializer.Serialize(LowerWords(words)));
     }
 
     [Fact]

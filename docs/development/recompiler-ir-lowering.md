@@ -3,9 +3,9 @@
 ## Overview
 
 `MipsToIrLowerer` translates decoded R3000a instructions into the #206 IR blocks.
-It maps the pure-GPR subset (Phase 2A), the base+offset memory subset, and the
-direct control-flow subset, and produces machine-readable diagnostics for
-everything else.
+It maps the pure-GPR subset (Phase 2A), the base+offset memory subset with the
+R3000A load delay (Phase 2B), and the branch/jump/call subset with branch delay
+slots (Phase 2C), and produces machine-readable diagnostics for everything else.
 
 The lowerer maps MIPS decoder output into #206 IR types without changing the
 contract's shape. `RecompilerContract.cs` (the #206 SSOT) keeps its operation,
@@ -50,7 +50,9 @@ to a **single** block — see [Delay slots](#delay-slots).
 | BEQ rs,rt,off | `ReadGpr`×2 → `CompareEqual` → delay slot → exit with `Branch` flow | Taken target from `R3000aBranchSemantics`; not-taken successor is the exit's next PC (`pc + 8`) |
 | BNE rs,rt,off | as BEQ with `CompareNotEqual` | |
 | J target | delay slot → exit with `Jump` flow | Target from `R3000aJumpSemantics`; a jump exit carries no next PC |
+| JAL target | `Constant(pc + 8)` → `WriteGpr($ra)` → delay slot → exit with `Call` flow | Link value from `R3000aLinkSemantics`; the exit's next PC is the return address |
 | JR rs | delay slot → exit with `UnresolvedIndirectFlow` | See [Register-indirect control flow](#register-indirect-control-flow) |
+| JALR rd,rs | `ReadGpr(rs)` → `Constant(pc + 8)` → `WriteGpr(rd)` → delay slot → exit with `UnresolvedIndirectFlow` | Target read before the link write, so `JALR rd,rd` keeps the pre-link target |
 
 ## API Surface
 
@@ -83,6 +85,12 @@ overwrites a condition register harmless, exactly as on hardware. The not-taken
 successor is `branchPc + 8` — the instruction after the delay slot, never the
 delay slot itself.
 
+The same ordering carries the link write of a call: `PSXCpu::ExecJal` links
+before the transfer applies, so `$ra` is written ahead of the delay slot and a
+delay-slot instruction reads the new link value. This is what makes the BIOS
+pattern in `docs/cpu/pipeline.md` — `lw $ra, 0($sp)` followed by `jal` — end with
+the linked address rather than the loaded one.
+
 Rejected, never approximated:
 
 - a control transfer with no delay-slot instruction (`LowerProgram` throws);
@@ -92,7 +100,12 @@ Rejected, never approximated:
 - a **load** inside a delay slot: its load-delay shadow lands on a successor
   reached through the transfer, which this stage cannot check
   (`InvalidMemoryAccess`);
-- a delay-slot instruction outside the lowered subset (diagnostic propagated).
+- a delay-slot instruction outside the lowered subset (diagnostic propagated);
+- a resolved transfer target that is lowered but lands **inside** a fused block
+  rather than on its entry — a branch into a delay slot or into a load-delay
+  slot. There is no block to enter, and an execution boundary would read that as
+  "control left the program", so `LowerProgram` throws instead. A target outside
+  the lowered stream is a legitimate exit and is left alone.
 
 Straight-line instructions keep the Phase 2A relation exactly: a success exit
 with a next PC and **no** explicit `Sequential` flow, so an existing Phase 2A
@@ -102,27 +115,73 @@ program still serializes identically.
 
 The R3000A load delay (ADR-004) is real and the native interpreter implements
 it: a load's target register keeps its previous value for exactly one
-instruction. The IR operation surface has no delayed-write representation, and
-adding one would push CPU pipeline state into a generic IR, so this stage
-instead:
+instruction. `PSXCpu::UpdateLoadDelay` (`src/PSXRecomp.Native/src/psx_cpu.cpp`)
+is the SSOT — the pending value commits at the **retirement point of the
+following instruction**, and a write to the same register during that
+instruction cancels it.
 
-- commits a load with an immediate `WriteGpr`, which is **equivalent** whenever
-  the load-delay-slot instruction does not read the target register; and
-- **fails fast** in `LowerProgram` when it does, with a diagnostic naming both
-  PCs (`InvalidMemoryAccess`).
+The IR operation surface has no delayed-write representation, and adding one
+would push CPU pipeline state into a generic IR. It does not need one: the #206
+contract already defines operation order as architectural side-effect order, so
+the delay is expressed by **where the commit is placed**, exactly as the branch
+delay slot is expressed by fusing the transfer with its delay slot.
 
-Cases that stay equivalent and are accepted:
+When the load-delay slot instruction reads the target register, `LowerProgram`
+fuses the pair into one block entered at the load's PC:
+
+```text
+block(entryPc = load PC)
+  1. the load's effective address, access and sign extension — but no commit
+  2. the load-delay-slot instruction's operations (its reads see the old value)
+  3. the commit: WriteGpr(target, loaded)
+  exit: success, next PC = loadPc + 8
+```
+
+When that instruction is itself a control transfer, its own delay slot joins the
+block and the commit sits **between** them — the transfer reads the pre-load
+value, the branch delay slot (which retires later) reads the loaded one:
+
+```text
+block(entryPc = load PC)
+  1. the load's access
+  2. the transfer's operand reads, condition and link write
+  3. the commit
+  4. the transfer's delay-slot operations
+  exit: the transfer's flow
+```
+
+When the load-delay-slot instruction **writes** the load's target register, no
+commit is emitted at all: on hardware that write cancels the pending load
+(`PSXCpu::SetGPR` / `WriteRegDelayed`), so the instruction's own value is the
+one that survives.
+
+Cases where an immediate commit is already equivalent, and no fusion happens:
 
 | Case | Why it is equivalent |
 |---|---|
 | Delay-slot instruction reads other registers | The pending value is never observed |
-| Delay-slot instruction writes the same register | An immediate write cancels the pending load on hardware too |
-| Delay-slot instruction is another load to the same register | The later load wins on both sides |
-| Load targets `$zero` | GPR[0] is immutable |
+| Delay-slot instruction writes the same register without reading it | An immediate write cancels the pending load on hardware too |
+| Load targets `$zero` | GPR[0] is immutable, so the access happens and the value is discarded |
 | Load is the last instruction of the stream | No in-stream observer |
 
-Representing the observable case is future work; see
-[Deferred](#deferred).
+Rejected, never approximated:
+
+- a **chained** load delay — the fused block's load-delay-slot instruction is
+  itself a load whose own value is read by the instruction after the block. Its
+  commit would have to land outside the fused block (`InvalidMemoryAccess`);
+- a **load in a branch delay slot** — its shadow lands on a successor reached
+  through the transfer, which this stage cannot check or represent
+  (`InvalidMemoryAccess`).
+
+### Load-delay state at termination
+
+A load that ends the stream has no in-stream observer, so its commit is emitted
+in its own block. On hardware the value is still pending at that point and
+commits one instruction later. The two states differ only by that one retirement
+step, which is why every differential run gives the interpreter one extra step
+before the state is compared. This lowering never produces a program whose
+`RecompilerStateSnapshot.LoadDelay` is pending; a stage that hands a partially
+retired pipeline across a program boundary will need that state.
 
 ## Load width and signedness
 
@@ -139,22 +198,35 @@ so no truncation operation is emitted.
 ## Register-indirect control flow
 
 `RecompilerIrFlow.Target` is a static address, so it cannot carry a target held
-in a register. JR therefore lowers to a block that retires its delay slot and
-then terminates with `RecompilerIrTerminationReason.UnresolvedIndirectFlow`. That
-is an honest statement of the frontier — control leaves the lowered program here
-— rather than a synthesized transfer. The block does not record which register
-held the target; a stage that resolves indirect flow will.
+in a register. JR and JALR therefore lower to a block that retires its delay slot
+and then terminates with `RecompilerIrTerminationReason.UnresolvedIndirectFlow`.
+That is an honest statement of the frontier — control leaves the lowered program
+here — rather than a synthesized transfer. JR emits no operation of its own; JALR
+emits `ReadGpr(rs)` before its link write, because the link may target the same
+register and the interpreter captures the target first (`PSXCpu::ExecJalr`).
+
+`JR $ra` is **not** special-cased. A return-like flow would need
+`RecompilerIrFlowKind.Return`, which stays reserved precisely because its target
+is register-held; and treating any `JR $ra` as a return would be an analysis
+claim, not a semantic one — the same encoding also implements tail calls and
+computed jumps. It therefore lowers exactly like any other JR, and a program that
+calls and returns is cross-checked against the interpreter up to the return
+boundary (see `MipsToIrLoweringDifferentialTests.JalThenJrRa_ReturnsToTheLinkedAddress`).
+
+Resolving a register-held target — and with it `Return` — needs a contract change
+this stage deliberately does not make; see [Deferred](#deferred).
 
 ## Deferred
 
 | Deferred | Reason |
 |---|---|
-| JAL, JALR | Calls. `RecompilerIrFlowKind.Call` is a reserved extension point; lowering a call to a plain `Jump` would erase the return relation and mis-model reachability. Reported as `ReservedFlow`. |
+| Register-held control-flow targets (JR / JALR resolution, `Return` flow) | `RecompilerIrFlow.Target` is a static address and has no value-id form. Expressing a runtime target needs a #206 contract change, which this stage deliberately does not make; the frontier stays explicit as `UnresolvedIndirectFlow`. |
 | BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branches need signed comparison operations the contract does not have yet. |
 | LWL / LWR, SWL / SWR | Unaligned pair access with the special ADR-004 load-delay pairing. |
 | ADDI / SUB / ADD, SLT / SLTI / SLTU / SLTIU, ANDI / ORI / XORI, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
 | COP0 / COP2, SYSCALL / BREAK | Coprocessor and exception semantics. |
-| Observable load delay | Needs either a delayed-write representation or load/consumer fusion. |
+| Chained load delay, and a load in a branch delay slot | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
+| Pending load delay across a program boundary | `RecompilerStateSnapshot.LoadDelay` can carry it, but no IR operation queues one. |
 | Misalignment and address exceptions | Alignment and translation belong to the memory/runtime contract, not the IR. |
 | SSA, optimization, constant folding | Out of scope for lowering. |
 
@@ -175,7 +247,7 @@ diagnostic. No silent fallback, no generic exceptions.
 ## Host code generation boundary
 
 `RecompilerHostCodeGen` emits the Phase 3A GPR subset only. Because lowering can
-now produce memory operations and explicit flows, the generator **rejects** them
-(`UNSUPPORTED_OPERATION_KIND` / `UNSUPPORTED_FLOW_KIND`) instead of emitting a
-block that silently drops the access or the transfer. Extending the backend is a
-separate stage.
+now produce memory operations and explicit flows — including `Call` — the
+generator **rejects** them (`UNSUPPORTED_OPERATION_KIND` / `UNSUPPORTED_FLOW_KIND`)
+instead of emitting a block that silently drops the access or the transfer.
+Extending the backend is a separate stage (#208).

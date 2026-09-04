@@ -206,6 +206,291 @@ public class MipsToIrLoweringDifferentialTests
         run.Ir.Gpr[12].Should().Be(1u);
     }
 
+    [Fact]
+    public void LoadDelay_DependentInstruction_ReadsThePreLoadValue()
+    {
+        // The instruction in the load-delay slot must observe the *old* $t2, and
+        // the one after it the loaded value (docs/cpu/pipeline.md).
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),               // $t0 = DataBase
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0x1234),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x55),                // pre-load $t2
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 0),
+            MipsEncoding.R(0x21, rd: 11, rs: 10, rt: 0, shamt: 0),               // load-delay slot
+            MipsEncoding.R(0x21, rd: 12, rs: 10, rt: 0, shamt: 0),               // after the delay
+        };
+
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 4);
+
+        run.Ir.Gpr[11].Should().Be(0x55u, "the load-delay slot reads the pre-load register");
+        run.Ir.Gpr[12].Should().Be(0x1234u, "the load has committed by the next instruction");
+        run.Ir.Gpr[10].Should().Be(0x1234u);
+    }
+
+    [Fact]
+    public void LoadDelay_IndependentThenDependentInstruction_MatchesTheInterpreter()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0x1234),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x55),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 9),                   // independent delay slot
+            MipsEncoding.R(0x21, rd: 11, rs: 10, rt: 0, shamt: 0),               // dependent, after the delay
+        };
+
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 4);
+
+        run.Ir.Gpr[13].Should().Be(9u);
+        run.Ir.Gpr[11].Should().Be(0x1234u, "the load delay is over by the second instruction");
+    }
+
+    [Fact]
+    public void LoadDelay_ThenTakenBranch_ComparesThePreLoadValue()
+    {
+        // $t3 equals the *pre-load* $t2, so the branch is taken only if the BEQ
+        // in the load-delay slot reads the old register. Committing the load
+        // early would make it fall through instead.
+        var run = RunBoth(BuildLoadDelayBranch(compareValue: 0x55), retiredInstructions: 10, dataWindowBytes: 4);
+
+        run.Ir.Gpr[10].Should().Be(0x1234u, "the load commits before the branch delay slot");
+        run.Ir.Gpr[12].Should().Be(1u, "the branch delay slot always retires");
+        run.Ir.Gpr[13].Should().Be(0u, "the taken branch skips the fall-through");
+        run.Ir.Gpr[14].Should().Be(7u);
+    }
+
+    [Fact]
+    public void LoadDelay_ThenNotTakenBranch_ComparesThePreLoadValue()
+    {
+        // $t3 equals the *loaded* value, so a lowering that committed the load
+        // early would take the branch; hardware does not.
+        var run = RunBoth(BuildLoadDelayBranch(compareValue: 0x1234), retiredInstructions: 11, dataWindowBytes: 4);
+
+        run.Ir.Gpr[10].Should().Be(0x1234u);
+        run.Ir.Gpr[12].Should().Be(1u);
+        run.Ir.Gpr[13].Should().Be(0xBADu, "the branch was not taken, so the fall-through runs");
+        run.Ir.Gpr[14].Should().Be(7u);
+    }
+
+    [Fact]
+    public void LoadDelay_WriteInTheDelaySlot_CancelsThePendingLoad()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0x1234),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x55),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 10, rs: 10, immediate: 1),                  // ADDIU $t2, $t2, 1
+            MipsEncoding.R(0x21, rd: 11, rs: 10, rt: 0, shamt: 0),
+        };
+
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 4);
+
+        run.Ir.Gpr[10].Should().Be(0x56u, "the delay-slot write reads the pre-load value and cancels the load");
+        run.Ir.Gpr[11].Should().Be(0x56u);
+    }
+
+    [Fact]
+    public void LoadDelay_IntoZeroRegister_PerformsTheAccessAndDiscardsTheValue()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0x1234),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 0, baseRegister: 8, offset: 0),
+            MipsEncoding.R(0x21, rd: 11, rs: 0, rt: 0, shamt: 0),
+        };
+
+        var run = RunBoth(words, retiredInstructions: 6, dataWindowBytes: 4);
+
+        run.Ir.Gpr[0].Should().Be(0u, "GPR[0] is immutable");
+        run.Ir.Gpr[11].Should().Be(0u);
+    }
+
+    [Fact]
+    public void LoadDelay_AtTerminationCommitsOneInstructionLater()
+    {
+        // The lowered program commits a trailing load at the end of the load's own
+        // block, because there is no in-stream instruction to carry the delay. The
+        // interpreter needs one more step to reach the same state — which is the
+        // one-step offset every differential run here accounts for.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0x1234),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x55),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 0),
+        };
+
+        var atTheLoad = RunInterpreter(words, stepBudget: 6, dataWindowBytes: 4);
+        atTheLoad.Gpr[10].Should().Be(0x55u, "the load is still pending when its own step retires");
+
+        var run = RunBoth(words, retiredInstructions: 6, dataWindowBytes: 4);
+        run.Ir.Gpr[10].Should().Be(0x1234u);
+    }
+
+    [Fact]
+    public void Stores_ToOverlappingAddresses_RetireInProgramOrder()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+            MipsEncoding.I(0x0F, rt: 9, rs: 0, immediate: 0x1122),
+            MipsEncoding.I(0x09, rt: 9, rs: 9, immediate: 0x3344),               // $t1 = 0x11223344
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x00AA),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: 10, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0x5566),
+            MipsEncoding.Load(R3000aOpcode.Sh, rt: 11, baseRegister: 8, offset: 0),
+        };
+
+        var run = RunBoth(words, retiredInstructions: 9, dataWindowBytes: 4);
+
+        // The halfword store retires last and overwrites the byte store; the two
+        // high bytes of the word store survive.
+        run.IrMemory.Should().Equal(new byte[] { 0x66, 0x55, 0x22, 0x11 });
+    }
+
+    [Fact]
+    public void Jal_LinksPcPlusEightAndTransfersAfterItsDelaySlot()
+    {
+        var callee = EntryPc + 0x10;
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),                    // 0x00
+            MipsEncoding.JumpAndLink(callee),                                    // 0x04
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),                    // 0x08 delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD),               // 0x0C return address, not run here
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 3),                   // 0x10 callee
+        };
+
+        var run = RunBoth(words, retiredInstructions: 4, dataWindowBytes: 0);
+
+        run.Ir.Gpr[31].Should().Be(EntryPc + 0x0C, "JAL links the branch address + 8");
+        run.Ir.Gpr[9].Should().Be(2u, "the call's delay slot always retires");
+        run.Ir.Gpr[10].Should().Be(0u, "control transferred to the callee, not to the return address");
+        run.Ir.Gpr[11].Should().Be(3u);
+    }
+
+    [Fact]
+    public void JalThenJrRa_ReturnsToTheLinkedAddress()
+    {
+        // JAL links 0x0C; the callee's JR $ra leaves the lowered program, and the
+        // interpreter's PC at that same boundary is the linked address.
+        var callee = EntryPc + 0x14;
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),                    // 0x00
+            MipsEncoding.JumpAndLink(callee),                                    // 0x04
+            MipsEncoding.Nop,                                                    // 0x08 delay slot
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 5),                    // 0x0C return address
+            MipsEncoding.Nop,                                                    // 0x10
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 7),                   // 0x14 callee
+            MipsEncoding.JumpRegister(rs: 31),                                   // 0x18
+            MipsEncoding.Nop,                                                    // 0x1C return delay slot
+        };
+
+        // 0x00, 0x04, 0x08, 0x14, 0x18, 0x1C — the IR stops at the indirect flow.
+        var run = RunBoth(
+            words,
+            retiredInstructions: 6,
+            dataWindowBytes: 0,
+            interpreterExtraSteps: 0,
+            expectedIrTermination: RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+
+        run.Ir.Gpr[31].Should().Be(EntryPc + 0x0C);
+        run.Ir.Gpr[10].Should().Be(7u, "the callee ran");
+        run.Ir.Gpr[9].Should().Be(0u, "the IR run stops before the return lands");
+        run.InterpreterPc.Should().Be(run.Ir.Gpr[31], "the interpreter returns to the linked address");
+    }
+
+    [Fact]
+    public void Jalr_LinksThenLeavesTheProgramThroughItsRegisterTarget()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),               // 0x00
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x0018),               // 0x04 $t0 = EntryPc + 0x18
+            MipsEncoding.JumpAndLinkRegister(rd: 31, rs: 8),                     // 0x08
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 4),                    // 0x0C delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD),               // 0x10
+            MipsEncoding.Nop,                                                    // 0x14
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 6),                   // 0x18 register target
+        };
+
+        var run = RunBoth(
+            words,
+            retiredInstructions: 4,
+            dataWindowBytes: 0,
+            interpreterExtraSteps: 0,
+            expectedIrTermination: RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+
+        run.Ir.Gpr[31].Should().Be(EntryPc + 0x10, "JALR links the branch address + 8");
+        run.Ir.Gpr[9].Should().Be(4u, "the delay slot retires before the transfer");
+        run.Ir.Gpr[11].Should().Be(0u, "the IR does not follow a register-held target");
+        run.InterpreterPc.Should().Be(EntryPc + 0x18, "the interpreter transfers to the register target");
+    }
+
+    [Fact]
+    public void BoundedLoop_StopsOnTheBlockBudgetWithTheInterpreterState()
+    {
+        // An unbounded loop: the IR run must terminate on its budget rather than
+        // spin, and the state at that boundary must match the interpreter's.
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 0),                            // 0x00
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 1),                            // 0x04 loop body
+            MipsEncoding.Branch(BeqOpcodeField, rs: 0, rt: 0, pc: EntryPc + 8, target: EntryPc + 4),
+            MipsEncoding.Nop,                                                            // 0x0C delay slot
+        };
+
+        // Five retired blocks: 0x00, 0x04, (0x08+0x0C), 0x04, (0x08+0x0C) = seven
+        // retired MIPS instructions.
+        var ir = RunLoweredIr(words, blockBudget: 5, dataWindowBytes: 0,
+            RecompilerIrTerminationReason.ExecutionBudgetExceeded);
+        var interpreter = RunInterpreter(words, stepBudget: 7, dataWindowBytes: 0);
+
+        ir.Gpr.Should().Equal(interpreter.Gpr);
+        ir.Result.Pc.Should().Be(interpreter.Pc, "both stop at the top of the loop body");
+        ir.Result.Termination.Should().Be(RecompilerIrTerminationReason.ExecutionBudgetExceeded);
+        ir.Gpr[8].Should().Be(2u);
+    }
+
+    /// <summary>
+    /// LW into $t2 followed by a BEQ in its load-delay slot, comparing against
+    /// <paramref name="compareValue"/> in $t3. Layout: the load at 0x18, the branch
+    /// at 0x1C, its delay slot at 0x20, the fall-through at 0x24 and the taken
+    /// target at 0x28.
+    /// </summary>
+    private static uint[] BuildLoadDelayBranch(ushort compareValue) =>
+    [
+        MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),                            // 0x00
+        MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),                            // 0x04
+        MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0x1234),                            // 0x08
+        MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),            // 0x0C
+        MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x55),                             // 0x10 pre-load $t2
+        MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: compareValue),                     // 0x14 $t3
+        MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 0),           // 0x18
+        MipsEncoding.Branch(BeqOpcodeField, rs: 10, rt: 11, pc: EntryPc + 0x1C, target: EntryPc + 0x28),
+        MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 1),                                // 0x20 delay slot
+        MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 0xBAD),                            // 0x24 fall-through
+        MipsEncoding.I(0x09, rt: 14, rs: 0, immediate: 7),                                // 0x28 target
+    ];
+
     /// <summary>
     /// t0 = <paramref name="leftValue"/>, t1 = <paramref name="rightValue"/>, then
     /// branch over the fall-through block. Layout: branch at 0x08, delay slot at
@@ -231,18 +516,32 @@ public class MipsToIrLoweringDifferentialTests
     /// extra step so that a trailing R3000A load delay commits before the state is
     /// read; the extra step lands on zeroed RAM, which decodes as NOP.
     /// </param>
-    private static DifferentialRun RunBoth(uint[] words, uint retiredInstructions, uint dataWindowBytes)
+    private static DifferentialRun RunBoth(uint[] words, uint retiredInstructions, uint dataWindowBytes) =>
+        RunBoth(words, retiredInstructions, dataWindowBytes, interpreterExtraSteps: 1);
+
+    /// <summary>
+    /// The general form. <paramref name="interpreterExtraSteps"/> is 0 when the
+    /// comparison boundary must be exact — a program whose IR run stops at an
+    /// unresolved indirect transfer has no trailing load delay to settle, and an
+    /// extra interpreter step would run instructions the IR never reached.
+    /// </summary>
+    private static DifferentialRun RunBoth(
+        uint[] words,
+        uint retiredInstructions,
+        uint dataWindowBytes,
+        uint interpreterExtraSteps,
+        RecompilerIrTerminationReason expectedIrTermination = RecompilerIrTerminationReason.Success)
     {
-        var interpreter = RunInterpreter(words, retiredInstructions + 1, dataWindowBytes);
-        var ir = RunLoweredIr(words, retiredInstructions, dataWindowBytes);
+        var interpreter = RunInterpreter(words, retiredInstructions + interpreterExtraSteps, dataWindowBytes);
+        var ir = RunLoweredIr(words, retiredInstructions, dataWindowBytes, expectedIrTermination);
 
         ir.Gpr.Should().Equal(interpreter.Gpr, "the lowered IR must agree with the native interpreter on every GPR");
         ir.Memory.Should().Equal(interpreter.Memory, "the lowered IR must agree with the interpreter on guest memory");
 
-        return new DifferentialRun(ir.Result, ir.Memory);
+        return new DifferentialRun(ir.Result, ir.Memory, interpreter.Pc);
     }
 
-    private static (uint[] Gpr, byte[] Memory) RunInterpreter(uint[] words, uint stepBudget, uint dataWindowBytes)
+    private static (uint[] Gpr, byte[] Memory, uint Pc) RunInterpreter(uint[] words, uint stepBudget, uint dataWindowBytes)
     {
         using var core = new PSXCoreWrapper();
         core.Reset();
@@ -272,11 +571,14 @@ public class MipsToIrLoweringDifferentialTests
             memory[i] = core.ReadMemory8(dataBase + i);
         }
 
-        return (gpr, memory);
+        return (gpr, memory, core.Pc);
     }
 
     private static (uint[] Gpr, byte[] Memory, RecompilerIrEvaluationResult Result) RunLoweredIr(
-        uint[] words, uint blockBudget, uint dataWindowBytes)
+        uint[] words,
+        uint blockBudget,
+        uint dataWindowBytes,
+        RecompilerIrTerminationReason expectedTermination = RecompilerIrTerminationReason.Success)
     {
         var instructions = words
             .Select((word, index) => (R3000aDecoder.Decode(word), EntryPc + (uint)(index * 4)))
@@ -294,7 +596,7 @@ public class MipsToIrLoweringDifferentialTests
             memory,
             blockBudget);
 
-        result.Termination.Should().Be(RecompilerIrTerminationReason.Success);
+        result.Termination.Should().Be(expectedTermination);
 
         var window = new byte[dataWindowBytes];
         for (uint i = 0; i < dataWindowBytes; i++)
@@ -305,5 +607,5 @@ public class MipsToIrLoweringDifferentialTests
         return (result.Gpr.ToArray(), window, result);
     }
 
-    private sealed record DifferentialRun(RecompilerIrEvaluationResult Ir, byte[] IrMemory);
+    private sealed record DifferentialRun(RecompilerIrEvaluationResult Ir, byte[] IrMemory, uint InterpreterPc);
 }

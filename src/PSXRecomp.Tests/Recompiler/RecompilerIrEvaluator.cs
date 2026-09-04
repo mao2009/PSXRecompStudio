@@ -137,6 +137,9 @@ internal static class RecompilerIrEvaluator
         {
             RecompilerIrFlowKind.Branch => values[flow.ConditionValueId] != 0 ? flow.Target!.Value : exit.NextPc!.Value,
             RecompilerIrFlowKind.Jump => flow.Target!.Value,
+            // A call transfers to the callee; the exit's next PC is the return
+            // address, which the linked GPR carries and a later return resolves.
+            RecompilerIrFlowKind.Call => flow.Target!.Value,
             _ => throw new NotSupportedException($"Flow kind '{flow.Kind}' is reserved and has no evaluation."),
         };
     }

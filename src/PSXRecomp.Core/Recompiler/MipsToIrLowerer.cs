@@ -18,10 +18,18 @@ namespace PSXRecomp.Core.Recompiler;
 /// own — <see cref="Lower"/> rejects it — and
 /// <see cref="LowerControlTransfer"/> fuses the control instruction and its delay
 /// slot into a single block whose operations are, in order, the transfer's
-/// operand reads and condition, then the delay-slot instruction's operations,
-/// then the exit that carries the flow. Reading the branch operands first is what
-/// makes a delay slot that overwrites a condition register harmless, exactly as
-/// on hardware.
+/// operand reads, condition and link write, then the delay-slot instruction's
+/// operations, then the exit that carries the flow. Reading the branch operands
+/// first is what makes a delay slot that overwrites a condition register
+/// harmless, exactly as on hardware.
+/// </para>
+/// <para>
+/// A load owns a load delay slot in the same sense: its target register keeps its
+/// previous value for exactly one instruction. When that is architecturally
+/// observable, <see cref="LowerProgram"/> fuses the load with the instruction in
+/// its load-delay slot and places the register commit at that instruction's
+/// retirement point, so the observer reads the pre-load value. Neither delay is
+/// left for a backend to synthesize.
 /// </para>
 /// </summary>
 [Domain]
@@ -69,14 +77,20 @@ public static class MipsToIrLowerer
     /// exit's next PC, <c>entryPc + 8</c> (the instruction after the delay slot).</item>
     /// <item>J — a <see cref="RecompilerIrFlowKind.Jump"/> flow carrying the target
     /// from <see cref="R3000aJumpSemantics"/>; a jump exit carries no next PC.</item>
-    /// <item>JR — the delay slot retires and the block terminates with
-    /// <see cref="RecompilerIrTerminationReason.UnresolvedIndirectFlow"/>: the
-    /// target is a runtime register value, which <see cref="RecompilerIrFlow.Target"/>
-    /// (a static address) cannot express. The block states the frontier rather
-    /// than inventing a transfer.</item>
+    /// <item>JAL — the link write (<c>$ra = entryPc + 8</c>, from
+    /// <see cref="R3000aLinkSemantics"/>) precedes the delay slot, exactly as the
+    /// interpreter links before the transfer applies, and the block exits with a
+    /// <see cref="RecompilerIrFlowKind.Call"/> flow whose target is the callee and
+    /// whose next PC is the return address.</item>
+    /// <item>JR / JALR — the target is a runtime register value, which
+    /// <see cref="RecompilerIrFlow.Target"/> (a static address) cannot express, so
+    /// the delay slot retires and the block terminates with
+    /// <see cref="RecompilerIrTerminationReason.UnresolvedIndirectFlow"/>. JALR
+    /// still performs its link write, after reading the target register, so that
+    /// <c>JALR rd, rd</c> keeps the pre-link target.</item>
     /// </list>
-    /// Everything else — JAL, JALR, and the compare-with-zero branches — is
-    /// reported unsupported rather than approximated.
+    /// The compare-with-zero branches are reported unsupported rather than
+    /// approximated.
     /// </summary>
     /// <param name="control">The control-transfer instruction, at <paramref name="entryPc"/>.</param>
     /// <param name="entryPc">The address of <paramref name="control"/>.</param>
@@ -91,6 +105,263 @@ public static class MipsToIrLowerer
                 RecompilerIrDiagnosticCode.InvalidFlow,
                 $"Opcode '{control.Opcode}' does not own a branch delay slot; lower it with Lower instead.");
         }
+
+        var builder = new BlockBuilder();
+        var failure = TryEmitControlTransfer(builder, control, entryPc, delaySlot, pendingLoad: null, out var exit);
+        return failure ?? MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
+    }
+
+    /// <summary>
+    /// Lowers a linear instruction stream into a program.
+    /// <para>
+    /// A control-transfer instruction consumes the following entry as its delay
+    /// slot, so the pair yields one block. A load whose load-delay slot observes
+    /// its target register consumes that instruction too (see
+    /// <see cref="LowerObservedLoadDelay"/>). Every other instruction yields one
+    /// block. The stream is rejected — never silently approximated — when a
+    /// control transfer has no delay-slot entry, when the delay-slot entry is not
+    /// at <c>pc + 4</c>, when an instruction is unsupported, or when a load delay
+    /// falls outside what a fused block can represent.
+    /// </para>
+    /// </summary>
+    public static RecompilerIrProgram LowerProgram(IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions)
+    {
+        ArgumentNullException.ThrowIfNull(instructions);
+
+        var blocks = new List<RecompilerIrBlock>();
+        for (var i = 0; i < instructions.Count;)
+        {
+            var (instruction, entryPc) = instructions[i];
+
+            if (instruction.DelaySlot != R3000aDelaySlotKind.None)
+            {
+                var delaySlot = RequireDelaySlot(instructions, i);
+                blocks.Add(Require(LowerControlTransfer(instruction, entryPc, delaySlot), instruction, entryPc));
+                i += 2;
+                continue;
+            }
+
+            if (IsLoadDelayObservedByItsDelaySlot(instructions, i))
+            {
+                blocks.Add(LowerObservedLoadDelay(instructions, i, out var consumed));
+                i += consumed;
+                continue;
+            }
+
+            blocks.Add(Require(Lower(instruction, entryPc), instruction, entryPc));
+            i++;
+        }
+
+        EnsureStaticTargetsAreBlockEntries(blocks, instructions);
+        return new RecompilerIrProgram(blocks);
+    }
+
+    /// <summary>
+    /// Rejects a stream in which a resolved transfer target lands inside a fused
+    /// block instead of on its entry — a branch into a delay slot, or into the
+    /// load-delay slot of a fused load. Such a target has no block to enter, and
+    /// an execution boundary would read that as "control left the program" and
+    /// silently stop. A target outside the lowered stream is a legitimate exit and
+    /// is left alone.
+    /// </summary>
+    private static void EnsureStaticTargetsAreBlockEntries(
+        IReadOnlyList<RecompilerIrBlock> blocks,
+        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions)
+    {
+        var loweredPcs = instructions.Select(entry => entry.EntryPc).ToHashSet();
+        var entryPcs = blocks.Select(block => block.EntryPc).ToHashSet();
+
+        foreach (var block in blocks)
+        {
+            var target = block.Exit.Flow?.Target;
+            if (target is null || !loweredPcs.Contains(target.Value) || entryPcs.Contains(target.Value))
+            {
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Cannot build program: the transfer in the block at PC 0x{block.EntryPc:X8} targets PC " +
+                $"0x{target.Value:X8}, which is lowered but is not a block entry. Diagnostic: " +
+                $"[{RecompilerIrDiagnosticCode.InvalidFlow}] the target is inside a fused block — a delay slot or " +
+                "a load-delay slot — which this lowering stage cannot enter.");
+        }
+    }
+
+    /// <summary>
+    /// Fuses a load with the instruction in its load-delay slot into one block,
+    /// entered at the load's PC.
+    /// <para>
+    /// The R3000A commits a load into its target register at the retirement point
+    /// of the following instruction (<c>UpdateLoadDelay</c> in
+    /// <c>src/PSXRecomp.Native/src/psx_cpu.cpp</c>), so that instruction reads the
+    /// pre-load value. The fused block reproduces that ordering literally: the
+    /// load's access, then the observer's operations, then the commit. When the
+    /// observer itself writes the target register the commit is <em>omitted</em>,
+    /// because on hardware that write cancels the pending load.
+    /// </para>
+    /// <para>
+    /// When the observer is a control transfer, its own delay slot joins the block
+    /// as well and the commit is placed between the transfer's operations and the
+    /// delay slot's — the transfer reads the pre-load value, the delay-slot
+    /// instruction (which retires after the commit) reads the loaded one.
+    /// </para>
+    /// </summary>
+    private static RecompilerIrBlock LowerObservedLoadDelay(
+        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions, int index, out int consumed)
+    {
+        var (load, loadPc) = instructions[index];
+        var (observer, observerPc) = instructions[index + 1];
+
+        var builder = new BlockBuilder();
+        var failure = TryEmitLoadValue(builder, load, out var loadedValue);
+        if (failure is not null)
+        {
+            throw Unsupported(failure, load, loadPc);
+        }
+
+        // A write to the load's target register in the load-delay slot cancels the
+        // pending load on hardware (PSXCpu::SetGPR / WriteRegDelayed), so the
+        // commit is dropped rather than reordered.
+        var target = load.LoadDelayInfo.TargetRegister;
+        var writesTarget = TryGetDestinationRegister(observer, out var destination) && destination == target;
+        var pendingLoad = writesTarget ? (PendingLoadCommit?)null : new PendingLoadCommit(target, loadedValue);
+
+        if (observer.DelaySlot != R3000aDelaySlotKind.None)
+        {
+            var observerDelaySlot = RequireDelaySlot(instructions, index + 1);
+            var transferFailure = TryEmitControlTransfer(
+                builder, observer, observerPc, observerDelaySlot, pendingLoad, out var transferExit);
+            if (transferFailure is not null)
+            {
+                throw Unsupported(transferFailure, observer, observerPc);
+            }
+
+            consumed = 3;
+            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit);
+        }
+
+        var observerFailure = TryEmitInstruction(builder, observer);
+        if (observerFailure is not null)
+        {
+            throw Unsupported(observerFailure, observer, observerPc);
+        }
+
+        pendingLoad?.Emit(builder);
+        EnsureChainedLoadDelayIsRepresentable(instructions, index, index + 1);
+
+        consumed = 2;
+        var exit = new RecompilerIrExit(
+            RecompilerIrTerminationReason.Success,
+            unchecked(loadPc + (2 * InstructionSize)));
+        return new RecompilerIrBlock(loadPc, builder.Operations, exit);
+    }
+
+    /// <summary>
+    /// Reports whether the load at <paramref name="index"/> leaves a value that the
+    /// instruction in its load-delay slot reads — the case that only a fused block
+    /// can represent. A load into <c>$zero</c> is never observable (GPR[0] is
+    /// immutable), and an entry that is not at <c>pc + 4</c> is not the
+    /// architectural load-delay slot.
+    /// </summary>
+    private static bool IsLoadDelayObservedByItsDelaySlot(
+        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions, int index)
+    {
+        var (load, loadPc) = instructions[index];
+        if (!load.LoadDelayInfo.ProducesLoadDelay)
+        {
+            return false;
+        }
+
+        var target = load.LoadDelayInfo.TargetRegister;
+        if (target == 0 || index + 1 >= instructions.Count)
+        {
+            return false;
+        }
+
+        var (next, nextPc) = instructions[index + 1];
+        if (nextPc != unchecked(loadPc + InstructionSize))
+        {
+            return false;
+        }
+
+        return TryGetSourceRegisters(next, out var sources) && Array.IndexOf(sources, target) >= 0;
+    }
+
+    /// <summary>
+    /// Rejects a second load delay stacked on the one just fused. The observer of
+    /// the fused load may itself be a load; its own commit then belongs at the
+    /// retirement point of the instruction after the fused block, which is outside
+    /// it. That chained shadow is not representable here, so it fails fast instead
+    /// of committing a value one instruction early.
+    /// </summary>
+    private static void EnsureChainedLoadDelayIsRepresentable(
+        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions, int loadIndex, int observerIndex)
+    {
+        if (!IsLoadDelayObservedByItsDelaySlot(instructions, observerIndex))
+        {
+            return;
+        }
+
+        var (load, loadPc) = instructions[loadIndex];
+        var (observer, observerPc) = instructions[observerIndex];
+        var (consumer, consumerPc) = instructions[observerIndex + 1];
+        throw new InvalidOperationException(
+            $"Cannot build program: the load at PC 0x{loadPc:X8} ({load.Opcode}) is fused with the load at PC " +
+            $"0x{observerPc:X8} ({observer.Opcode}) in its load-delay slot, whose own loaded value is read by the " +
+            $"instruction at PC 0x{consumerPc:X8} ({consumer.Opcode}). Diagnostic: " +
+            $"[{RecompilerIrDiagnosticCode.InvalidMemoryAccess}] chained load delays would have to commit outside " +
+            "the fused block, which this lowering stage does not represent.");
+    }
+
+    private static R3000aInstruction RequireDelaySlot(
+        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions, int index)
+    {
+        var (instruction, entryPc) = instructions[index];
+        if (index + 1 >= instructions.Count)
+        {
+            throw new InvalidOperationException(
+                $"Cannot build program: the control-transfer instruction at PC 0x{entryPc:X8} ({instruction.Opcode}) " +
+                "has no delay-slot instruction. Its delay slot always retires, so the pair cannot be lowered apart.");
+        }
+
+        var (delaySlot, delaySlotPc) = instructions[index + 1];
+        var expectedDelaySlotPc = unchecked(entryPc + InstructionSize);
+        if (delaySlotPc != expectedDelaySlotPc)
+        {
+            throw new InvalidOperationException(
+                $"Cannot build program: the delay slot of the instruction at PC 0x{entryPc:X8} ({instruction.Opcode}) " +
+                $"must be at PC 0x{expectedDelaySlotPc:X8}, but the next entry is at PC 0x{delaySlotPc:X8}.");
+        }
+
+        return delaySlot;
+    }
+
+    private static RecompilerIrBlock Require(MipsToIrLoweringResult result, R3000aInstruction instruction, uint entryPc) =>
+        result.IsSupported && result.Block is not null
+            ? result.Block
+            : throw Unsupported(result, instruction, entryPc);
+
+    private static InvalidOperationException Unsupported(
+        MipsToIrLoweringResult result, R3000aInstruction instruction, uint entryPc) =>
+        new($"Cannot build program: instruction at PC 0x{entryPc:X8} ({instruction.Opcode}) is not supported. " +
+            $"Diagnostic: [{result.DiagnosticCode}] {result.DiagnosticMessage}");
+
+    /// <summary>
+    /// Emits a control transfer and its delay slot into <paramref name="builder"/>
+    /// and produces the block's exit. <paramref name="pendingLoad"/>, when set, is
+    /// the load-delay commit owed at the transfer's own retirement point: it is
+    /// emitted after the transfer's operand reads, condition and link write, and
+    /// before the delay-slot instruction's operations.
+    /// </summary>
+    private static MipsToIrLoweringResult? TryEmitControlTransfer(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit exit)
+    {
+        exit = null!;
 
         if (delaySlot.DelaySlot != R3000aDelaySlotKind.None)
         {
@@ -110,136 +381,209 @@ public static class MipsToIrLowerer
                 "successor reached through the transfer, which this lowering stage cannot check or represent.");
         }
 
-        return control.Opcode switch
+        switch (control.Opcode)
         {
-            R3000aOpcode.Beq => LowerConditionalBranch(control, entryPc, delaySlot, RecompilerIrOperationKind.CompareEqual),
-            R3000aOpcode.Bne => LowerConditionalBranch(control, entryPc, delaySlot, RecompilerIrOperationKind.CompareNotEqual),
-            R3000aOpcode.J => LowerDirectJump(control, entryPc, delaySlot),
-            R3000aOpcode.Jr => LowerJumpRegister(control, entryPc, delaySlot),
-            R3000aOpcode.Jal or R3000aOpcode.Jalr => MipsToIrLoweringResult.Unsupported(
-                control.Opcode,
-                RecompilerIrDiagnosticCode.ReservedFlow,
-                $"Opcode '{control.Opcode}' is a call: it links a return address and transfers control. " +
-                "RecompilerIrFlowKind.Call is a reserved extension point, and lowering a call to a plain Jump would " +
-                "erase the return relation, so it is deferred to the stage that defines Call/Return."),
-            _ => MipsToIrLoweringResult.Unsupported(
+            case R3000aOpcode.Beq:
+                return TryEmitConditionalBranch(
+                    builder, control, controlPc, delaySlot, pendingLoad, RecompilerIrOperationKind.CompareEqual, out exit);
+            case R3000aOpcode.Bne:
+                return TryEmitConditionalBranch(
+                    builder, control, controlPc, delaySlot, pendingLoad, RecompilerIrOperationKind.CompareNotEqual, out exit);
+            case R3000aOpcode.J:
+                return TryEmitDirectJump(builder, control, controlPc, delaySlot, pendingLoad, out exit);
+            case R3000aOpcode.Jal:
+                return TryEmitCall(builder, control, controlPc, delaySlot, pendingLoad, out exit);
+            case R3000aOpcode.Jr:
+            case R3000aOpcode.Jalr:
+                return TryEmitRegisterIndirectTransfer(builder, control, controlPc, delaySlot, pendingLoad, out exit);
+            default:
+                return MipsToIrLoweringResult.Unsupported(
+                    control.Opcode,
+                    RecompilerIrDiagnosticCode.InvalidFlow,
+                    $"Control-transfer opcode '{control.Opcode}' is not supported by this lowering stage.");
+        }
+    }
+
+    private static MipsToIrLoweringResult? TryEmitConditionalBranch(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        RecompilerIrOperationKind compareKind,
+        out RecompilerIrExit exit)
+    {
+        exit = null!;
+        if (!R3000aBranchSemantics.TryGetBranchTarget(control, controlPc, out var target))
+        {
+            return UnresolvedTarget(control, controlPc, "branch");
+        }
+
+        // The condition is evaluated from the register values as they stand
+        // before the delay slot retires, so these reads must precede it.
+        var left = builder.ReadGpr(control.Operand0.Register);
+        var right = builder.ReadGpr(control.Operand1.Register);
+        var condition = builder.Binary(compareKind, left, right);
+
+        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        exit = new RecompilerIrExit(
+            RecompilerIrTerminationReason.Success,
+            nextPc: unchecked(controlPc + (2 * InstructionSize)),
+            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target, condition));
+        return null;
+    }
+
+    private static MipsToIrLoweringResult? TryEmitDirectJump(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit exit)
+    {
+        exit = null!;
+        if (!R3000aJumpSemantics.TryGetJumpTarget(control, controlPc, out var target))
+        {
+            return UnresolvedTarget(control, controlPc, "jump");
+        }
+
+        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        exit = new RecompilerIrExit(
+            RecompilerIrTerminationReason.Success,
+            nextPc: null,
+            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Jump, target));
+        return null;
+    }
+
+    /// <summary>
+    /// Lowers JAL. The interpreter links before the transfer applies
+    /// (<c>PSXCpu::ExecJal</c>), so the link write precedes the delay slot and the
+    /// delay-slot instruction observes the new link register — the same ordering
+    /// that lets <c>lw $ra, 0($sp)</c> followed by <c>jal</c> keep the linked
+    /// address (docs/cpu/pipeline.md).
+    /// </summary>
+    private static MipsToIrLoweringResult? TryEmitCall(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit exit)
+    {
+        exit = null!;
+        if (!R3000aJumpSemantics.TryGetJumpTarget(control, controlPc, out var target))
+        {
+            return UnresolvedTarget(control, controlPc, "jump");
+        }
+
+        if (!R3000aLinkSemantics.TryGetLinkValue(control, controlPc, out var returnAddress))
+        {
+            return MipsToIrLoweringResult.Unsupported(
                 control.Opcode,
                 RecompilerIrDiagnosticCode.InvalidFlow,
-                $"Control-transfer opcode '{control.Opcode}' is not supported by this lowering stage."),
-        };
+                $"'{control.Opcode}' at PC 0x{controlPc:X8} was decoded without link information, so its return " +
+                "address cannot be lowered.");
+        }
+
+        EmitLinkWrite(builder, control, returnAddress);
+
+        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        exit = new RecompilerIrExit(
+            RecompilerIrTerminationReason.Success,
+            nextPc: returnAddress,
+            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target));
+        return null;
     }
 
     /// <summary>
-    /// Lowers a linear instruction stream into a program.
-    /// <para>
-    /// A control-transfer instruction consumes the following entry as its delay
-    /// slot, so the pair yields one block. Every other instruction yields one
-    /// block. The stream is rejected — never silently approximated — when a
-    /// control transfer has no delay-slot entry, when the delay-slot entry is not
-    /// at <c>pc + 4</c>, when an instruction is unsupported, or when an R3000A
-    /// load delay would be architecturally observable (see
-    /// <see cref="EnsureNoObservableLoadDelay"/>).
-    /// </para>
+    /// Lowers JR and JALR. The delay slot retires, then control leaves the program
+    /// through an address held in a register: no IR flow can carry a runtime
+    /// target, so the block terminates and says exactly that rather than inventing
+    /// a transfer. JALR additionally reads its target register before writing the
+    /// link register, which is what makes <c>JALR rd, rd</c> use the pre-link
+    /// value (<c>PSXCpu::ExecJalr</c>).
     /// </summary>
-    public static RecompilerIrProgram LowerProgram(IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions)
+    private static MipsToIrLoweringResult? TryEmitRegisterIndirectTransfer(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit exit)
     {
-        ArgumentNullException.ThrowIfNull(instructions);
-
-        var blocks = new List<RecompilerIrBlock>();
-        for (var i = 0; i < instructions.Count;)
+        exit = null!;
+        if (control.LinkInfo.WritesLink)
         {
-            var (instruction, entryPc) = instructions[i];
-
-            if (instruction.DelaySlot != R3000aDelaySlotKind.None)
+            if (!R3000aLinkSemantics.TryGetLinkValue(control, controlPc, out var returnAddress))
             {
-                if (i + 1 >= instructions.Count)
-                {
-                    throw new InvalidOperationException(
-                        $"Cannot build program: the control-transfer instruction at PC 0x{entryPc:X8} ({instruction.Opcode}) " +
-                        "has no delay-slot instruction. Its delay slot always retires, so the pair cannot be lowered apart.");
-                }
-
-                var (delaySlot, delaySlotPc) = instructions[i + 1];
-                var expectedDelaySlotPc = unchecked(entryPc + InstructionSize);
-                if (delaySlotPc != expectedDelaySlotPc)
-                {
-                    throw new InvalidOperationException(
-                        $"Cannot build program: the delay slot of the instruction at PC 0x{entryPc:X8} ({instruction.Opcode}) " +
-                        $"must be at PC 0x{expectedDelaySlotPc:X8}, but the next entry is at PC 0x{delaySlotPc:X8}.");
-                }
-
-                var fused = LowerControlTransfer(instruction, entryPc, delaySlot);
-                if (!fused.IsSupported || fused.Block is null)
-                {
-                    throw new InvalidOperationException(
-                        $"Cannot build program: the control transfer at PC 0x{entryPc:X8} ({instruction.Opcode}) is not supported. " +
-                        $"Diagnostic: [{fused.DiagnosticCode}] {fused.DiagnosticMessage}");
-                }
-
-                blocks.Add(fused.Block);
-                i += 2;
-                continue;
+                return MipsToIrLoweringResult.Unsupported(
+                    control.Opcode,
+                    RecompilerIrDiagnosticCode.InvalidFlow,
+                    $"'{control.Opcode}' at PC 0x{controlPc:X8} was decoded without link information, so its return " +
+                    "address cannot be lowered.");
             }
 
-            EnsureNoObservableLoadDelay(instructions, i);
-
-            var result = Lower(instruction, entryPc);
-            if (!result.IsSupported || result.Block is null)
-            {
-                throw new InvalidOperationException(
-                    $"Cannot build program: instruction at PC 0x{entryPc:X8} ({instruction.Opcode}) is not supported. " +
-                    $"Diagnostic: [{result.DiagnosticCode}] {result.DiagnosticMessage}");
-            }
-
-            blocks.Add(result.Block);
-            i++;
+            // Reading the target register first is architectural, not decorative:
+            // the link write below may target the same register.
+            builder.ReadGpr(control.Operand1.Register);
+            EmitLinkWrite(builder, control, returnAddress);
         }
 
-        return new RecompilerIrProgram(blocks);
+        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        exit = new RecompilerIrExit(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        return null;
     }
 
-    /// <summary>
-    /// Rejects a stream in which the R3000A load delay is architecturally
-    /// observable. A load's target register keeps its previous value for exactly
-    /// one instruction (ADR-004); this stage commits the loaded value with an
-    /// immediate <c>WriteGpr</c>, which is equivalent only while the delay-slot
-    /// instruction does not read that register. A later write to the same
-    /// register — including a second load — cancels the pending value on hardware
-    /// too, so those cases stay equivalent and are allowed.
-    /// </summary>
-    private static void EnsureNoObservableLoadDelay(
-        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions, int index)
+    private static void EmitLinkWrite(BlockBuilder builder, R3000aInstruction control, uint returnAddress)
     {
-        var (load, loadPc) = instructions[index];
-        if (!load.LoadDelayInfo.ProducesLoadDelay)
+        var linked = builder.Constant(returnAddress);
+        builder.WriteGpr(control.LinkInfo.LinkRegister, linked);
+    }
+
+    private static MipsToIrLoweringResult UnresolvedTarget(R3000aInstruction control, uint controlPc, string kind) =>
+        MipsToIrLoweringResult.Unsupported(
+            control.Opcode,
+            RecompilerIrDiagnosticCode.InvalidFlow,
+            $"The {kind} target of '{control.Opcode}' at PC 0x{controlPc:X8} could not be resolved from the decoded operands.");
+
+    private static MipsToIrLoweringResult? TryEmitDelaySlot(
+        BlockBuilder builder, R3000aInstruction control, R3000aInstruction delaySlot, PendingLoadCommit? pendingLoad)
+    {
+        // The transfer has retired at this point, so an owed load-delay commit
+        // lands here — before the delay-slot instruction, which therefore reads
+        // the loaded value while the transfer read the pre-load one.
+        pendingLoad?.Emit(builder);
+
+        var failure = TryEmitInstruction(builder, delaySlot);
+        if (failure is null)
         {
-            return;
+            return null;
         }
 
-        // GPR[0] is immutable, so a delayed write to it is never observable.
-        var target = load.LoadDelayInfo.TargetRegister;
-        if (target == 0 || index + 1 >= instructions.Count)
-        {
-            return;
-        }
-
-        var (next, nextPc) = instructions[index + 1];
-        if (nextPc != unchecked(loadPc + InstructionSize))
-        {
-            // The next entry is not the architectural load-delay slot.
-            return;
-        }
-
-        if (!TryGetSourceRegisters(next, out var sources) || Array.IndexOf(sources, target) < 0)
-        {
-            return;
-        }
-
-        throw new InvalidOperationException(
-            $"Cannot build program: the load at PC 0x{loadPc:X8} ({load.Opcode}) targets GPR{target}, and the " +
-            $"load-delay-slot instruction at PC 0x{nextPc:X8} ({next.Opcode}) reads it. Diagnostic: " +
-            $"[{RecompilerIrDiagnosticCode.InvalidMemoryAccess}] the R3000A load delay makes that read observe the " +
-            "pre-load value, which this lowering stage does not represent.");
+        return MipsToIrLoweringResult.Unsupported(
+            delaySlot.Opcode,
+            failure.DiagnosticCode ?? RecompilerIrDiagnosticCode.InvalidOperationShape,
+            $"The delay-slot instruction of '{control.Opcode}' could not be lowered: {failure.DiagnosticMessage}");
     }
 
     /// <summary>
@@ -254,6 +598,7 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sll when IsNop(instruction):
             case R3000aOpcode.Lui:
             case R3000aOpcode.J:
+            case R3000aOpcode.Jal:
                 sources = Array.Empty<byte>();
                 return true;
             case R3000aOpcode.Sll:
@@ -291,99 +636,61 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Jr:
                 sources = new[] { instruction.Operand0.Register };
                 return true;
+            case R3000aOpcode.Jalr:
+                sources = new[] { instruction.Operand1.Register };
+                return true;
             default:
                 sources = Array.Empty<byte>();
                 return false;
         }
     }
 
-    private static MipsToIrLoweringResult LowerConditionalBranch(
-        R3000aInstruction control, uint entryPc, R3000aInstruction delaySlot, RecompilerIrOperationKind compareKind)
+    /// <summary>
+    /// Reports the GPR an instruction writes, for the opcodes this stage lowers.
+    /// A load's write is architecturally delayed, but it still cancels an older
+    /// pending load to the same register (<c>PSXCpu::WriteRegDelayed</c>), so it is
+    /// reported here alongside the immediate writes.
+    /// </summary>
+    private static bool TryGetDestinationRegister(R3000aInstruction instruction, out byte destination)
     {
-        if (!R3000aBranchSemantics.TryGetBranchTarget(control, entryPc, out var target))
+        switch (instruction.Opcode)
         {
-            return MipsToIrLoweringResult.Unsupported(
-                control.Opcode,
-                RecompilerIrDiagnosticCode.InvalidFlow,
-                $"The branch target of '{control.Opcode}' at PC 0x{entryPc:X8} could not be resolved from the decoded operands.");
+            case R3000aOpcode.Sll when IsNop(instruction):
+            case R3000aOpcode.Sb:
+            case R3000aOpcode.Sh:
+            case R3000aOpcode.Sw:
+            case R3000aOpcode.Beq:
+            case R3000aOpcode.Bne:
+            case R3000aOpcode.J:
+            case R3000aOpcode.Jr:
+                destination = 0;
+                return false;
+            case R3000aOpcode.Sll:
+            case R3000aOpcode.Srl:
+            case R3000aOpcode.Sra:
+            case R3000aOpcode.Addu:
+            case R3000aOpcode.Subu:
+            case R3000aOpcode.And:
+            case R3000aOpcode.Or:
+            case R3000aOpcode.Xor:
+            case R3000aOpcode.Nor:
+            case R3000aOpcode.Addiu:
+            case R3000aOpcode.Lui:
+            case R3000aOpcode.Lb:
+            case R3000aOpcode.Lbu:
+            case R3000aOpcode.Lh:
+            case R3000aOpcode.Lhu:
+            case R3000aOpcode.Lw:
+                destination = instruction.Operand0.Register;
+                return true;
+            case R3000aOpcode.Jal:
+            case R3000aOpcode.Jalr:
+                destination = instruction.LinkInfo.LinkRegister;
+                return instruction.LinkInfo.WritesLink;
+            default:
+                destination = 0;
+                return false;
         }
-
-        var builder = new BlockBuilder();
-
-        // The condition is evaluated from the register values as they stand
-        // before the delay slot retires, so these reads must precede it.
-        var left = builder.ReadGpr(control.Operand0.Register);
-        var right = builder.ReadGpr(control.Operand1.Register);
-        var condition = builder.Binary(compareKind, left, right);
-
-        var failure = TryEmitDelaySlot(builder, control, delaySlot);
-        if (failure is not null)
-        {
-            return failure;
-        }
-
-        var exit = new RecompilerIrExit(
-            RecompilerIrTerminationReason.Success,
-            nextPc: unchecked(entryPc + (2 * InstructionSize)),
-            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target, condition));
-        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
-    }
-
-    private static MipsToIrLoweringResult LowerDirectJump(
-        R3000aInstruction control, uint entryPc, R3000aInstruction delaySlot)
-    {
-        if (!R3000aJumpSemantics.TryGetJumpTarget(control, entryPc, out var target))
-        {
-            return MipsToIrLoweringResult.Unsupported(
-                control.Opcode,
-                RecompilerIrDiagnosticCode.InvalidFlow,
-                $"The jump target of '{control.Opcode}' at PC 0x{entryPc:X8} could not be resolved from the decoded operands.");
-        }
-
-        var builder = new BlockBuilder();
-        var failure = TryEmitDelaySlot(builder, control, delaySlot);
-        if (failure is not null)
-        {
-            return failure;
-        }
-
-        var exit = new RecompilerIrExit(
-            RecompilerIrTerminationReason.Success,
-            nextPc: null,
-            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Jump, target));
-        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
-    }
-
-    private static MipsToIrLoweringResult LowerJumpRegister(
-        R3000aInstruction control, uint entryPc, R3000aInstruction delaySlot)
-    {
-        var builder = new BlockBuilder();
-        var failure = TryEmitDelaySlot(builder, control, delaySlot);
-        if (failure is not null)
-        {
-            return failure;
-        }
-
-        // The delay slot retires, then control leaves the program through an
-        // address held in a register. No IR flow can carry a runtime target, so
-        // the block terminates and says exactly that.
-        var exit = new RecompilerIrExit(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
-        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
-    }
-
-    private static MipsToIrLoweringResult? TryEmitDelaySlot(
-        BlockBuilder builder, R3000aInstruction control, R3000aInstruction delaySlot)
-    {
-        var failure = TryEmitInstruction(builder, delaySlot);
-        if (failure is null)
-        {
-            return null;
-        }
-
-        return MipsToIrLoweringResult.Unsupported(
-            delaySlot.Opcode,
-            failure.DiagnosticCode ?? RecompilerIrDiagnosticCode.InvalidOperationShape,
-            $"The delay-slot instruction of '{control.Opcode}' could not be lowered: {failure.DiagnosticMessage}");
     }
 
     /// <summary>
@@ -432,15 +739,11 @@ public static class MipsToIrLowerer
                 EmitLui(builder, instruction);
                 return null;
             case R3000aOpcode.Lb:
-                return EmitLoad(builder, instruction, RecompilerIrOperationKind.Load8, signExtendShift: 24);
             case R3000aOpcode.Lbu:
-                return EmitLoad(builder, instruction, RecompilerIrOperationKind.Load8, signExtendShift: 0);
             case R3000aOpcode.Lh:
-                return EmitLoad(builder, instruction, RecompilerIrOperationKind.Load16, signExtendShift: 16);
             case R3000aOpcode.Lhu:
-                return EmitLoad(builder, instruction, RecompilerIrOperationKind.Load16, signExtendShift: 0);
             case R3000aOpcode.Lw:
-                return EmitLoad(builder, instruction, RecompilerIrOperationKind.Load32, signExtendShift: 0);
+                return EmitLoad(builder, instruction);
             case R3000aOpcode.Sb:
                 return EmitStore(builder, instruction, RecompilerIrOperationKind.Store8);
             case R3000aOpcode.Sh:
@@ -492,14 +795,53 @@ public static class MipsToIrLowerer
     }
 
     /// <summary>
-    /// Lowers a load: effective address, the load itself, and — for the
-    /// sign-extending forms — the shift pair that widens the accessed value.
-    /// <paramref name="signExtendShift"/> is 0 for LW and for the zero-extending
-    /// forms (LBU/LHU), which use the loaded value directly.
+    /// Lowers a load and commits it immediately. That is the shape used when the
+    /// load delay is not architecturally observable; the observable case commits
+    /// through <see cref="LowerObservedLoadDelay"/> instead.
     /// </summary>
-    private static MipsToIrLoweringResult? EmitLoad(
-        BlockBuilder builder, R3000aInstruction instruction, RecompilerIrOperationKind loadKind, byte signExtendShift)
+    private static MipsToIrLoweringResult? EmitLoad(BlockBuilder builder, R3000aInstruction instruction)
     {
+        var failure = TryEmitLoadValue(builder, instruction, out var value);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        builder.WriteGpr(instruction.Operand0.Register, value);
+        return null;
+    }
+
+    /// <summary>
+    /// Emits the effective address, the load itself, and — for the sign-extending
+    /// forms — the shift pair that widens the accessed value, producing the value
+    /// the target register will receive. The register commit is deliberately left
+    /// to the caller, because the load delay decides where it belongs.
+    /// </summary>
+    private static MipsToIrLoweringResult? TryEmitLoadValue(
+        BlockBuilder builder, R3000aInstruction instruction, out int value)
+    {
+        value = -1;
+        // The shift amount is the sign-extension width: 0 for the zero-extending
+        // forms (LBU/LHU) and for LW, which use the loaded value directly.
+        (RecompilerIrOperationKind Kind, byte SignExtendShift)? shape = instruction.Opcode switch
+        {
+            R3000aOpcode.Lb => (RecompilerIrOperationKind.Load8, (byte)24),
+            R3000aOpcode.Lbu => (RecompilerIrOperationKind.Load8, (byte)0),
+            R3000aOpcode.Lh => (RecompilerIrOperationKind.Load16, (byte)16),
+            R3000aOpcode.Lhu => (RecompilerIrOperationKind.Load16, (byte)0),
+            R3000aOpcode.Lw => (RecompilerIrOperationKind.Load32, (byte)0),
+            _ => null,
+        };
+
+        if (shape is null)
+        {
+            return MipsToIrLoweringResult.Unsupported(
+                instruction.Opcode,
+                RecompilerIrDiagnosticCode.InvalidOperationShape,
+                $"Opcode '{instruction.Opcode}' is not a load lowered by this stage.");
+        }
+
+        var (loadKind, signExtendShift) = shape.Value;
         var memory = instruction.Operand1;
         if (memory.Kind != R3000aOperandKind.MemoryOffset)
         {
@@ -509,17 +851,16 @@ public static class MipsToIrLowerer
         var address = EmitEffectiveAddress(builder, memory);
         var loaded = builder.Load(loadKind, address);
 
-        var value = loaded;
         if (signExtendShift != 0)
         {
             // The IR load yields the accessed byte/halfword zero-extended into a
             // 32-bit value; MIPS sign extension is expressed with the generic
             // shift operations rather than a signedness flag on the load.
             var shiftedLeft = builder.Shift(RecompilerIrOperationKind.ShiftLeftLogical, loaded, signExtendShift);
-            value = builder.Shift(RecompilerIrOperationKind.ShiftRightArithmetic, shiftedLeft, signExtendShift);
+            loaded = builder.Shift(RecompilerIrOperationKind.ShiftRightArithmetic, shiftedLeft, signExtendShift);
         }
 
-        builder.WriteGpr(instruction.Operand0.Register, value);
+        value = loaded;
         return null;
     }
 
@@ -558,6 +899,15 @@ public static class MipsToIrLowerer
 
     private static uint SignExtend16To32(ushort value) =>
         (value & 0x8000) != 0 ? (uint)(value | 0xFFFF0000) : value;
+
+    /// <summary>
+    /// A load-delay commit owed at a later retirement point: the target register
+    /// and the block-local value the load produced.
+    /// </summary>
+    private readonly record struct PendingLoadCommit(byte Register, int ValueId)
+    {
+        public void Emit(BlockBuilder builder) => builder.WriteGpr(Register, ValueId);
+    }
 
     /// <summary>
     /// Accumulates a block's operations and hands out the block-local value ids.

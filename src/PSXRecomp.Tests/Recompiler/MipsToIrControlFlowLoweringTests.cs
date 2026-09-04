@@ -178,23 +178,138 @@ public class MipsToIrControlFlowLoweringTests
         result.DiagnosticMessage.Should().Contain("delay slot");
     }
 
-    [Theory]
-    [InlineData(R3000aOpcode.Jal)]
-    [InlineData(R3000aOpcode.Jalr)]
-    public void CallOpcodes_AreDeferredBecauseCallFlowIsReserved(R3000aOpcode opcode)
+    [Fact]
+    public void Jal_LinksPcPlusEightBeforeTheDelaySlotAndExitsWithACallFlow()
     {
-        var encoded = opcode == R3000aOpcode.Jal
-            ? MipsEncoding.JumpAndLink(0x80002000u)
-            : MipsEncoding.JumpAndLinkRegister(rd: 31, rs: 8);
+        var target = 0x80002000u;
+        var block = LowerControlTransfer(MipsEncoding.JumpAndLink(target), MipsEncoding.Nop);
 
-        var instruction = R3000aDecoder.Decode(encoded);
-        instruction.Opcode.Should().Be(opcode);
+        block.Operations.Should().HaveCount(3);
 
-        var result = MipsToIrLowerer.LowerControlTransfer(instruction, EntryPc, R3000aDecoder.Decode(MipsEncoding.Nop));
+        // The interpreter links before the transfer applies (PSXCpu::ExecJal), so
+        // the link write precedes the delay slot in the fused block.
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[0].Immediate.Should().Be(EntryPc + 8, "JAL links the branch address + 8");
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[1].Register.Should().Be(31);
+        block.Operations[1].InputValueA.Should().Be(block.Operations[0].ResultValueId);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.Nop);
 
-        result.IsSupported.Should().BeFalse();
-        result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.ReservedFlow);
-        result.UnsupportedOpcode.Should().Be(opcode);
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Call);
+        block.Exit.Flow.Target.Should().Be(target);
+        block.Exit.Flow.ConditionValueId.Should().Be(-1);
+        block.Exit.NextPc.Should().Be(EntryPc + 8, "a call resumes at the return address");
+    }
+
+    [Fact]
+    public void Jal_LinkValueComesFromTheCpuLinkSemantics()
+    {
+        var instruction = R3000aDecoder.Decode(MipsEncoding.JumpAndLink(0x80002000u));
+        R3000aLinkSemantics.TryGetLinkValue(instruction, EntryPc, out var expected).Should().BeTrue();
+
+        var block = LowerControlTransfer(MipsEncoding.JumpAndLink(0x80002000u), MipsEncoding.Nop);
+
+        block.Operations[0].Immediate.Should().Be(expected);
+        block.Exit.NextPc.Should().Be(expected);
+    }
+
+    [Fact]
+    public void Jal_DelaySlotObservesTheLinkedReturnAddress()
+    {
+        // ADDU $t0, $ra, $zero in the delay slot reads the freshly linked $ra,
+        // because the link write retires with the JAL, before the delay slot.
+        var block = LowerControlTransfer(
+            MipsEncoding.JumpAndLink(0x80002000u),
+            MipsEncoding.R(0x21, rd: 8, rs: 31, rt: 0, shamt: 0));
+
+        var operations = block.Operations.ToList();
+        var linkWrite = operations.FindIndex(
+            op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 31);
+        var linkRead = operations.FindIndex(
+            op => op.Kind == RecompilerIrOperationKind.ReadGpr && op.Register == 31);
+
+        linkWrite.Should().BeGreaterThanOrEqualTo(0);
+        linkRead.Should().BeGreaterThan(linkWrite);
+    }
+
+    [Fact]
+    public void Jalr_LinksAndTerminatesAsUnresolvedIndirectFlow()
+    {
+        var block = LowerControlTransfer(MipsEncoding.JumpAndLinkRegister(rd: 31, rs: 8), MipsEncoding.Nop);
+
+        // The target register is read before the link write: PSXCpu::ExecJalr
+        // captures the target first so JALR rd, rd uses the pre-link value.
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(EntryPc + 8);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[2].Register.Should().Be(31);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.Nop);
+
+        // The target is a runtime register value, which a static flow target
+        // cannot carry, so the frontier stays explicit.
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        block.Exit.NextPc.Should().BeNull();
+        block.Exit.Flow.Should().BeNull();
+    }
+
+    [Fact]
+    public void Jalr_ReadsTheTargetRegisterBeforeLinkingWhenTheyAreTheSame()
+    {
+        var block = LowerControlTransfer(MipsEncoding.JumpAndLinkRegister(rd: 8, rs: 8), MipsEncoding.Nop);
+
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[2].Register.Should().Be(8);
+    }
+
+    [Fact]
+    public void Jalr_IntoZeroRegister_EmitsNoLinkWrite()
+    {
+        // JALR $zero, $t0 is architecturally a JR: GPR[0] is immutable.
+        var block = LowerControlTransfer(MipsEncoding.JumpAndLinkRegister(rd: 0, rs: 8), MipsEncoding.Nop);
+
+        block.Operations.Should().NotContain(op => op.Kind == RecompilerIrOperationKind.WriteGpr);
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+    }
+
+    [Fact]
+    public void JrRa_KeepsOrdinaryJrSemanticsWithoutAReturnFlow()
+    {
+        // A return-like JR is not special-cased: RecompilerIrFlowKind.Return needs
+        // a register-held target the contract cannot carry, so JR $ra lowers
+        // exactly like any other JR.
+        var returnLike = LowerControlTransfer(MipsEncoding.JumpRegister(rs: 31), MipsEncoding.Nop);
+        var ordinary = LowerControlTransfer(MipsEncoding.JumpRegister(rs: 8), MipsEncoding.Nop);
+
+        returnLike.Exit.Should().Be(ordinary.Exit);
+        returnLike.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        returnLike.Exit.Flow.Should().BeNull();
+    }
+
+    [Fact]
+    public void CallProgram_LinksIntoTheCalleeAndBackToTheReturnAddress()
+    {
+        // JAL callee ; NOP ; <return address> ...
+        var callee = EntryPc + 0x20;
+        var program = LowerWords(EntryPc,
+            MipsEncoding.JumpAndLink(callee),
+            MipsEncoding.Nop,
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1));
+
+        var callBlock = program.Blocks[0];
+        callBlock.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Call);
+        callBlock.Exit.Flow.Target.Should().Be(callee);
+        callBlock.Exit.NextPc.Should().Be(EntryPc + 8);
+
+        // The return address names a real block, so the call does not erase
+        // reachability of the code after it.
+        program.Blocks.Should().Contain(block => block.EntryPc == callBlock.Exit.NextPc);
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
     }
 
     [Theory]
@@ -310,10 +425,60 @@ public class MipsToIrControlFlowLoweringTests
     [Fact]
     public void LowerProgram_UnsupportedControlTransfer_FailsFast()
     {
-        var lower = () => LowerWords(EntryPc, MipsEncoding.JumpAndLink(0x80002000u), MipsEncoding.Nop);
+        // BLEZ needs a signed comparison the contract does not have yet.
+        var lower = () => LowerWords(EntryPc, MipsEncoding.I(0x06, rt: 0, rs: 8, immediate: 4), MipsEncoding.Nop);
 
         lower.Should().Throw<InvalidOperationException>()
-            .WithMessage("*ReservedFlow*");
+            .WithMessage("*InvalidFlow*");
+    }
+
+    [Fact]
+    public void LowerProgram_BranchIntoADelaySlot_FailsFast()
+    {
+        // The delay slot at EntryPc + 0x0C is fused into the branch's block, so it
+        // is not a block entry; entering it is not representable and must not be
+        // silently read as "control left the program".
+        var lower = () => LowerWords(EntryPc,
+            MipsEncoding.Branch(BeqOpcodeField, rs: 8, rt: 9, pc: EntryPc, target: EntryPc + 0x0C),
+            MipsEncoding.Nop,                                                        // 0x04 delay slot
+            MipsEncoding.Branch(BneOpcodeField, rs: 8, rt: 9, pc: EntryPc + 8, target: EntryPc),
+            MipsEncoding.Nop,                                                        // 0x0C delay slot, branch target
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 1));
+
+        lower.Should().Throw<InvalidOperationException>()
+            .WithMessage("*is not a block entry*");
+    }
+
+    [Fact]
+    public void LowerProgram_BranchToAnAddressOutsideTheStream_IsLeftAlone()
+    {
+        // Leaving the lowered program is legitimate: only a target that is lowered
+        // but unreachable as a block entry is a defect.
+        var program = LowerWords(EntryPc,
+            MipsEncoding.Branch(BeqOpcodeField, rs: 8, rt: 9, pc: EntryPc, target: EntryPc + 0x400),
+            MipsEncoding.Nop);
+
+        program.Blocks.Should().ContainSingle();
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ReturnFlow_RemainsReservedAndIsRejectedByTheValidator()
+    {
+        // Nothing in this stage emits a Return flow; the validator still rejects
+        // one, so the reserved extension point stays closed.
+        var block = new RecompilerIrBlock(
+            EntryPc,
+            Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(
+                RecompilerIrTerminationReason.Success,
+                nextPc: EntryPc + 8,
+                flow: new RecompilerIrFlow(RecompilerIrFlowKind.Return)));
+
+        var diagnostics = RecompilerIrValidator.Validate(new RecompilerIrProgram(new[] { block })).Diagnostics;
+
+        diagnostics.Should().ContainSingle()
+            .Which.Code.Should().Be(RecompilerIrDiagnosticCode.ReservedFlow);
     }
 
     [Fact]
