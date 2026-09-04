@@ -261,8 +261,13 @@ public class HostCodeGenTests
 
         var result = RecompilerHostCodeGen.Generate(program);
         result.Success.Should().BeTrue();
+        // The SRA operation itself must lower to the well-defined helper, not a
+        // bare implementation-defined signed right-shift cast. (The dispatcher
+        // legitimately uses "(int32_t)" for termination-reason returns, so the
+        // negative assertion is scoped to the SRA operation statement only.)
+        var sraLine = result.Source!.Split('\n').Single(line => line.Contains("recompiler_sra32(v0, 4u)"));
+        sraLine.Should().NotContain("(int32_t)");
         result.Source.Should().Contain("recompiler_sra32(v0, 4u)");
-        result.Source.Should().NotContain("(int32_t)");
     }
 
     [Fact]
@@ -408,20 +413,28 @@ int main() {
     }
 
     [Fact]
-    public void Unsupported_MultiBlock_Program_Is_Refused()
+    public void MultiBlock_Program_Is_Generated_With_Budgeted_Dispatcher()
     {
         var program = new RecompilerIrProgram(new[]
         {
-            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
-                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
-            new RecompilerIrBlock(4, Array.Empty<RecompilerIrOperation>(),
-                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 8)),
+            new RecompilerIrBlock(0x80000000u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 5),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000004u)),
+            new RecompilerIrBlock(0x80000004u, new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 7),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 9),
+            }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000008u)),
         });
 
         var result = RecompilerHostCodeGen.Generate(program);
-        result.Success.Should().BeFalse();
-        result.DiagnosticCode.Should().Be("UNSUPPORTED_MULTI_BLOCK_PROGRAM");
-        result.Source.Should().BeNull();
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("int32_t recompiler_dispatch(RecompilerState* state, uint32_t budget)");
+        result.Source.Should().Contain("recompiler_block_0x80000000(state)");
+        result.Source.Should().Contain("recompiler_block_0x80000004(state)");
+        result.Source.Should().Contain("RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED");
     }
 
     [Fact]

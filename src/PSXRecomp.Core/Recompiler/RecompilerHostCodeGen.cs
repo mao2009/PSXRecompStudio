@@ -17,6 +17,9 @@ public static class RecompilerHostCodeGen
     private const string StateStruct = "RecompilerState";
     private const string StateParam = "state";
     private const string Sra32Helper = "recompiler_sra32";
+    private const string TerminationField = "termination_reason";
+    private const string NextPcField = "next_pc";
+    private const string PcField = "pc";
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
@@ -30,14 +33,6 @@ public static class RecompilerHostCodeGen
                 false, null,
                 "UNSUPPORTED_EMPTY_PROGRAM",
                 "Phase 3A host code generation requires at least one block; received zero blocks.");
-        }
-
-        if (program.Blocks.Count > 1)
-        {
-            return new RecompilerHostCodeGenResult(
-                false, null,
-                "UNSUPPORTED_MULTI_BLOCK_PROGRAM",
-                $"Phase 3A supports single-block programs; received {program.Blocks.Count} blocks.");
         }
 
         var validation = RecompilerIrValidator.Validate(program);
@@ -98,6 +93,7 @@ public static class RecompilerHostCodeGen
 
         sb.AppendLine("#include <stdint.h>");
         sb.AppendLine();
+        EmitTerminationReasonMacros(sb);
         EmitStateStruct(sb);
         EmitSra32Helper(sb);
 
@@ -111,6 +107,15 @@ public static class RecompilerHostCodeGen
         return sb.ToString();
     }
 
+    private static void EmitTerminationReasonMacros(StringBuilder sb)
+    {
+        sb.AppendLine("/* RecompilerIrTerminationReason byte values (RecompilerContract). */");
+        sb.AppendLine("#define RECOMPILER_REASON_SUCCESS 0");
+        sb.AppendLine("#define RECOMPILER_REASON_UNSUPPORTED_IR 2");
+        sb.AppendLine("#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7");
+        sb.AppendLine();
+    }
+
     private static void EmitStateStruct(StringBuilder sb)
     {
         sb.AppendLine("typedef struct {");
@@ -118,8 +123,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t hi;");
         sb.AppendLine("  uint32_t lo;");
         sb.AppendLine("  uint32_t pc;");
-        sb.AppendLine("  int32_t termination_reason;");
-        sb.AppendLine("  uint32_t next_pc;");
+        sb.AppendLine("  int32_t " + TerminationField + ";");
+        sb.AppendLine("  uint32_t " + NextPcField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
     }
@@ -246,11 +251,11 @@ public static class RecompilerHostCodeGen
     {
         if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc.HasValue)
         {
-            return $"{StateParam}->next_pc = {FormatImmediate(exit.NextPc.Value)}; {StateParam}->termination_reason = 0; return 0;";
+            return $"{StateParam}->{NextPcField} = {FormatImmediate(exit.NextPc.Value)}; {StateParam}->{TerminationField} = 0; return 0;";
         }
 
         var reason = (byte)exit.Reason;
-        return $"{StateParam}->termination_reason = {reason}; return (int32_t){reason}u;";
+        return $"{StateParam}->{TerminationField} = {reason}; return (int32_t){reason}u;";
     }
 
     private static string FormatImmediate(uint value)
@@ -260,17 +265,55 @@ public static class RecompilerHostCodeGen
 
         return $"({value}u)";
     }
-
     private static void EmitDispatchFunction(StringBuilder sb, RecompilerIrProgram program)
     {
-        sb.AppendLine("int32_t recompiler_dispatch(" + StateStruct + "* " + StateParam + ") {");
+        sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
+        sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
+        sb.AppendLine(IndentUnit + "for (;;) {");
 
-        foreach (var block in program.Blocks)
+        // Resolve the block function for the current PC. A PC that matches no
+        // block means the straight-line program has fallen off the end (normal
+        // completion once at least one step ran); a PC that matches no block on
+        // the very first step means the entry PC cannot start the program.
+        for (var i = 0; i < program.Blocks.Count; i++)
         {
-            var functionName = $"recompiler_block_0x{block.EntryPc:X8}";
-            sb.AppendLine(IndentUnit + $"return {functionName}({StateParam});");
+            var functionName = $"recompiler_block_0x{program.Blocks[i].EntryPc:X8}";
+            var cond = i == 0
+                ? $"{StateParam}->{PcField} == {FormatImmediate(program.Blocks[i].EntryPc)}"
+                : $"else if ({StateParam}->{PcField} == {FormatImmediate(program.Blocks[i].EntryPc)})";
+            var bodyLine = $"{StateParam}->{TerminationField} = {functionName}({StateParam});";
+            if (i == 0)
+            {
+                sb.AppendLine(IndentUnit + IndentUnit + $"if ({cond}) {{");
+            }
+            else
+            {
+                sb.AppendLine(IndentUnit + IndentUnit + cond + " {");
+            }
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + bodyLine);
+            sb.AppendLine(IndentUnit + IndentUnit + "}");
         }
 
+        sb.AppendLine(IndentUnit + IndentUnit + "else {");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
+        sb.AppendLine(IndentUnit + IndentUnit + "}");
+
+        // Stop on a non-Success termination before enforcing the budget.
+        sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} != RECOMPILER_REASON_SUCCESS) {{");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"return {StateParam}->{TerminationField};");
+        sb.AppendLine(IndentUnit + IndentUnit + "}");
+
+        // Bounded execution: refuse to retire more than `budget` instructions.
+        sb.AppendLine(IndentUnit + IndentUnit + "if (steps >= budget) {");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
+        sb.AppendLine(IndentUnit + IndentUnit + "}");
+
+        // Advance the sequential program counter.
+        sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{PcField} = {StateParam}->{NextPcField};");
+        sb.AppendLine(IndentUnit + IndentUnit + "steps++;");
+        sb.AppendLine(IndentUnit + "}");
         sb.AppendLine("}");
         sb.AppendLine();
     }
