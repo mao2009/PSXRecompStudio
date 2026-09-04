@@ -35,6 +35,9 @@ Development
 ├── Real-ROM Analysis Flow
 └── Terminology
 
+Reference
+└── Prior Art / Reference Implementations
+
 Decisions
 └── Architecture Decision Records
 ```
@@ -90,6 +93,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [Native Library Build and Test Execution](development/native-library-build.md)
 - [Real-ROM Analysis Flow](development/real-rom-analysis.md)
 - [Recompiler IR / CPU Semantic Contract](development/recompiler-ir-contract.md)
+- [References and Prior Art](REFERENCES.md)
 - CPU / R3000A — planned
 - Decoder — planned
 - Analyzer — planned
