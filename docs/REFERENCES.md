@@ -13,6 +13,7 @@ This document records architectural and behavioral prior art. It is separate fro
 For every reference implementation, record:
 
 - repository and project identity;
+- reference date and immutable upstream revision;
 - license observed at the time of reference;
 - technical areas consulted;
 - whether source code was directly reused;
@@ -27,6 +28,10 @@ If third-party source or other material is later incorporated, its applicable li
 
 Repository: https://github.com/mstan/psxrecomp
 
+Reference date: 2026-09-04.
+
+Upstream revision observed: `15822694c65463e78477774bd2d5783fdd24cfac`.
+
 License observed when referenced: PolyForm Noncommercial License 1.0.0.
 
 Referenced areas include:
@@ -40,6 +45,7 @@ Referenced areas include:
 
 Usage in PSXRecompStudio:
 
+- Direct source reuse: No.
 - architectural and behavioral prior art only;
 - no direct source copying or mechanical porting is intended under the current policy;
 - implementation is performed independently against PSXRecompStudio SSOTs, semantic contracts, tests, and other appropriate specifications;
@@ -50,6 +56,10 @@ Related work: #248, #249.
 ## N64Recomp
 
 Repository: https://github.com/N64Recomp/N64Recomp
+
+Reference date: 2026-09-04.
+
+Upstream revision observed: `ffb39cdad1da5de07eaaa48bd1db4a89a7986771`.
 
 License observed when referenced: MIT License.
 
@@ -64,6 +74,7 @@ Referenced areas include:
 
 Usage in PSXRecompStudio:
 
+- Direct source reuse: No.
 - reference implementation and prior art;
 - concepts are evaluated against PlayStation/R3000A requirements and the existing PSXRecompStudio IR/analysis architecture rather than copied as an N64-specific design;
 - any future direct source reuse must explicitly preserve the applicable MIT copyright and permission notice requirements.
@@ -92,6 +103,8 @@ Use the following structure for future additions:
 ```text
 Project:
 Repository:
+Reference date:
+Upstream revision observed:
 License observed when referenced:
 Referenced areas:
 Direct source reuse: Yes / No
@@ -100,4 +113,4 @@ License handling if reused:
 Related Issues / ADRs / implementation:
 ```
 
-License descriptions in this document should state what was observed in the referenced repository at the time of review and should avoid presenting this document as legal advice.
+License descriptions in this document should state what was observed in the referenced repository at the recorded upstream revision and reference date, and should avoid presenting this document as legal advice.
