@@ -3,13 +3,13 @@
 [![CI](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-An integrated development environment for analyzing, understanding, and recompiling PlayStation 1 (PSX) titles into natively executable programs.
+An open-source PlayStation 1 (PS1 / PSX) development environment for static recompilation, binary analysis, reverse engineering, MIPS code analysis, and native porting.
 
 *[日本語版 README はこちら / Japanese README](README.ja.md)*
 
 ## What is PSXRecompStudio?
 
-PSXRecompStudio is a from-scratch development environment for working with PS1 software: disassembling and analyzing titles, modeling the R3000A CPU with byte-for-byte fidelity, and — eventually — statically recompiling title code into native programs that run directly on modern Windows, Linux, and macOS without emulation.
+PSXRecompStudio is a from-scratch development environment for analyzing and reverse engineering PlayStation 1 software: disassembling PS-X executables, analyzing R3000A / MIPS I code, modeling CPU behavior with byte-for-byte fidelity, and — eventually — statically recompiling title code into native programs that run directly on modern Windows, Linux, and macOS without emulation.
 
 It combines an Avalonia-based desktop UI, a C# domain/application core, and a C++ native core connected through a stable C ABI, with AI development agents as an optional, evidence-first assistance layer rather than the product itself.
 
