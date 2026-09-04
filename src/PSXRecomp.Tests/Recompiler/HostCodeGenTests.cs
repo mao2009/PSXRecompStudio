@@ -573,6 +573,129 @@ int main() {
         return tempDir;
     }
 
+    [Theory]
+    [InlineData(RecompilerIrOperationKind.Load8)]
+    [InlineData(RecompilerIrOperationKind.Load16)]
+    [InlineData(RecompilerIrOperationKind.Load32)]
+    public void Generation_Rejects_MemoryLoad_Instead_Of_Dropping_It(RecompilerIrOperationKind kind)
+    {
+        // The lowering stage now emits memory operations; this backend has no
+        // emission for them, so it must fail rather than generate a block that
+        // silently omits the access.
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
+            new RecompilerIrOperation(kind, resultValueId: 1, inputValueA: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+
+        result.Success.Should().BeFalse();
+        result.Source.Should().BeNull();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_OPERATION_KIND");
+    }
+
+    [Fact]
+    public void Generation_Rejects_MemoryStore_Instead_Of_Dropping_It()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x1000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Store32, inputValueA: 0, inputValueB: 1),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_OPERATION_KIND");
+    }
+
+    [Fact]
+    public void Generation_Rejects_A_BranchFlow_Instead_Of_Falling_Through()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[]
+                {
+                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+                    new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+                    new RecompilerIrOperation(RecompilerIrOperationKind.CompareEqual, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+                },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 8,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x20, conditionValueId: 2))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+
+        result.Success.Should().BeFalse();
+        // The compare operation is reported first; both are unemittable here.
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_OPERATION_KIND");
+    }
+
+    [Fact]
+    public void Generation_Rejects_A_JumpFlow_Instead_Of_Falling_Through()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Jump, target: 0x20))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_FLOW_KIND");
+    }
+
+    [Fact]
+    public void Generation_Rejects_A_CallFlow_Instead_Of_Dropping_The_Transfer()
+    {
+        // Lowering emits Call for JAL; the Phase 3A backend does not implement a
+        // transfer, and must say so rather than fall through to the next PC.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 8,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Call, target: 0x20))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("UNSUPPORTED_FLOW_KIND");
+    }
+
+    [Fact]
+    public void Generation_Accepts_An_Explicit_SequentialFlow()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(
+                0,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Success,
+                    nextPc: 4,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Sequential))),
+        });
+
+        RecompilerHostCodeGen.Generate(program).Success.Should().BeTrue();
+    }
+
     private static RecompilerIrProgram CreateSingleBlockProgram(RecompilerIrOperation[] operations)
     {
         return new RecompilerIrProgram(new[]

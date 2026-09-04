@@ -93,6 +93,8 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [Native Library Build and Test Execution](development/native-library-build.md)
 - [Real-ROM Analysis Flow](development/real-rom-analysis.md)
 - [Recompiler IR / CPU Semantic Contract](development/recompiler-ir-contract.md)
+- [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)
+- [Recompiler Host Code Generation](development/recompiler-host-codegen.md)
 - [References and Prior Art](REFERENCES.md)
 - CPU / R3000A — planned
 - Decoder — planned

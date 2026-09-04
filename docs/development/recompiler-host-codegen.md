@@ -152,5 +152,14 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
 - Undefined `RecompilerIrTerminationReason` values.
 - Empty programs (`UNSUPPORTED_EMPTY_PROGRAM`).
 - Duplicate result value ids (`DUPLICATE_RESULT_VALUE_ID`).
+- Operation kinds outside the Phase 3A GPR subset — the memory and compare
+  operations (`UNSUPPORTED_OPERATION_KIND`).
+- An exit flow other than `Sequential`, i.e. `Branch` or `Jump`
+  (`UNSUPPORTED_FLOW_KIND`).
+
+The last two matter now that MIPS-to-IR lowering emits memory access and
+explicit control flow (`docs/development/recompiler-ir-lowering.md`): this
+backend has no emission for them, so it fails rather than generate a block that
+silently drops the access or the transfer.
 
 Generator never silently produces partial source for invalid IR.
