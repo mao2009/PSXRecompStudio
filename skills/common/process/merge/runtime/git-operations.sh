@@ -207,7 +207,7 @@ merge_get_pr_info() {
     _repo_args=$(_merge_repo_args "$_repo")
     # shellcheck disable=SC2086
     gh pr view "$_pr_number" $_repo_args \
-        --json "number,title,body,headRefName,baseRefName,state,isDraft,mergeable,reviewDecision,commits" 2>/dev/null
+        --json "number,title,body,headRefName,headRefOid,baseRefName,state,isDraft,mergeable,reviewDecision,commits" 2>/dev/null
 }
 
 # Get a single string field from a gh pr view JSON payload
@@ -248,6 +248,15 @@ merge_pr_is_draft() {
 # Usage: merge_pr_head_branch <json>
 merge_pr_head_branch() {
     merge_pr_field "$1" headRefName
+}
+
+# Get the PR head commit SHA as GitHub currently sees it.
+# This is the commit GitHub would merge, which is not necessarily the local
+# worktree HEAD; the final pre-merge revalidation compares both against the
+# approved SHA so a push landing after approval cannot be merged.
+# Usage: merge_pr_head_oid <json>
+merge_pr_head_oid() {
+    merge_pr_field "$1" headRefOid
 }
 
 # Extract issue number from a branch name like issue/123-foo

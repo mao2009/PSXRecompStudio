@@ -256,6 +256,7 @@ merge_new_state() {
   "CurrentCommitSha": null,
   "ApprovedCommitSha": null,
   "MainHeadSha": null,
+  "RebasedOntoMainSha": null,
   "Approval": null,
   "ConflictFiles": null,
   "FailureReason": null,
@@ -263,6 +264,38 @@ merge_new_state() {
   "UpdatedAt": "${_now}"
 }
 EOF
+}
+
+# Fields introduced after a state file may have been created. A state file
+# written by an older runtime lacks them, and the sed-based field updaters only
+# rewrite keys that already exist, so they must be inserted before use.
+_MERGE_STATE_ADDED_FIELDS="RebasedOntoMainSha"
+
+# Insert any missing state fields as null so later updates apply. Idempotent;
+# safe to call on every load. Returns 1 only when the file cannot be read or
+# rewritten, so callers can fail closed.
+# Usage: merge_state_migrate <file_path>
+merge_state_migrate() {
+    _file_path="$1"
+    [ -f "$_file_path" ] || return 1
+    for _field in $_MERGE_STATE_ADDED_FIELDS; do
+        if grep -q "\"${_field}\"" "$_file_path" 2>/dev/null; then
+            continue
+        fi
+        # Anchor on the mandatory "State" line, which every state file has and
+        # which is always followed by further fields, so the inserted entry is
+        # syntactically valid JSON.
+        _content=$(awk -v f="$_field" '
+            { print }
+            !inserted && $0 ~ /"State"[ \t]*:/ { printf "  \"%s\": null,\n", f; inserted = 1 }
+        ' "$_file_path") || return 1
+        case "$_content" in
+            *"\"${_field}\""*) ;;
+            *) return 1 ;;
+        esac
+        merge_save_state_file "$_content" "$_file_path" || return 1
+    done
+    return 0
 }
 
 # Load a specific merge state field as a string

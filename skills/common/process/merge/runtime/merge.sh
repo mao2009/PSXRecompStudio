@@ -1,7 +1,8 @@
 #!/bin/sh
 # PR Merge Skill: Shell Entry Point
 # Cross-platform CLI for the safe, standalone PR Merge Skill.
-# Enforces: user approval -> rebase -> validation -> normal merge -> cleanup.
+# Enforces: rebase -> validation -> final SHA-bound human approval ->
+#           final HEAD revalidation -> normal merge -> cleanup.
 # Version: 1.0.0
 #
 # Dependencies: git (required)
@@ -32,15 +33,17 @@ Usage:
 Commands:
   merge     Advances the merge state machine by one transition for the PR.
             Safe to re-run: state is persisted and the next step resumes from
-            where it left off (TRIGGER_CHECK -> APPROVAL_VALIDATION ->
-            MAIN_HEAD_REFRESH -> REBASE -> VALIDATING -> MERGING -> MERGED ->
-            CLEANUP -> COMPLETED).
+            where it left off (TRIGGER_CHECK -> MAIN_HEAD_REFRESH -> REBASE ->
+            VALIDATING -> APPROVAL_VALIDATION -> MERGING -> MERGED -> CLEANUP
+            -> COMPLETED). The approval gate runs after the mandatory rebase,
+            so approval binds to the commit that is actually merged.
   approve   Records an Explicit Human Approval for a PR. The approval is bound
             to the current PR HEAD SHA and the current main HEAD SHA, and is
             attributed to the operator's authenticated GitHub identity (gh api
             user login). This is a formal approval source separate from the
             GitHub third-party review gate: it must be created by this explicit
-            operation, never by hand-editing state.
+            operation, never by hand-editing state. Run it once `merge` reports
+            the final merge candidate awaiting approval.
   status    Displays the persisted state for a PR.
   test      Runs the shell runtime test suite.
 
@@ -58,6 +61,8 @@ Safety guarantees:
   - Multi-step flow split into a definitely-rebaseable, resumable state machine
   - Explicit Human Approval uses a real authenticated identity and is bound to
     the PR HEAD and main HEAD SHAs; it never fakes a GitHub APPROVED review
+  - The merged commit always equals the approved commit: a final HEAD
+    revalidation runs immediately before the merge and fails closed
   - Confidential, project-neutral: only git + optional gh are required
   - No pwsh / powershell dependency
 
@@ -65,7 +70,8 @@ Examples:
   # Advance the merge for PR 149 (resumes from current persisted state)
   merge.sh merge --pr 149
 
-  # Record an explicit human approval for PR 149
+  # Record an explicit human approval for PR 149, once `merge` reports the
+  # final merge candidate awaiting approval
   merge.sh approve --pr 149 --worktree ../worktrees/149-merge
 
   # Full context for a batch merge

@@ -64,18 +64,21 @@ assert_false "UNKNOWN is not a valid state" merge_is_valid_state UNKNOWN
 # --- Valid transitions ---
 echo ""
 echo "--- Valid Transitions ---"
-assert_true "TRIGGER_CHECK -> APPROVAL_VALIDATION" merge_valid_transition TRIGGER_CHECK APPROVAL_VALIDATION
+assert_true "TRIGGER_CHECK -> MAIN_HEAD_REFRESH" merge_valid_transition TRIGGER_CHECK MAIN_HEAD_REFRESH
 assert_true "TRIGGER_CHECK -> FAILED" merge_valid_transition TRIGGER_CHECK FAILED
-assert_true "APPROVAL_VALIDATION -> MAIN_HEAD_REFRESH" merge_valid_transition APPROVAL_VALIDATION MAIN_HEAD_REFRESH
-assert_true "APPROVAL_VALIDATION -> FAILED" merge_valid_transition APPROVAL_VALIDATION FAILED
 assert_true "MAIN_HEAD_REFRESH -> REBASE" merge_valid_transition MAIN_HEAD_REFRESH REBASE
+assert_true "MAIN_HEAD_REFRESH -> FAILED" merge_valid_transition MAIN_HEAD_REFRESH FAILED
 assert_true "REBASE -> VALIDATING" merge_valid_transition REBASE VALIDATING
-assert_true "REBASE -> APPROVAL_VALIDATION" merge_valid_transition REBASE APPROVAL_VALIDATION
 assert_true "REBASE -> CONFLICT" merge_valid_transition REBASE CONFLICT
 assert_true "REBASE -> FAILED" merge_valid_transition REBASE FAILED
-assert_true "VALIDATING -> MERGING" merge_valid_transition VALIDATING MERGING
+assert_true "VALIDATING -> APPROVAL_VALIDATION" merge_valid_transition VALIDATING APPROVAL_VALIDATION
 assert_true "VALIDATING -> FAILED" merge_valid_transition VALIDATING FAILED
+assert_true "APPROVAL_VALIDATION -> MERGING" merge_valid_transition APPROVAL_VALIDATION MERGING
+assert_true "APPROVAL_VALIDATION -> MAIN_HEAD_REFRESH" merge_valid_transition APPROVAL_VALIDATION MAIN_HEAD_REFRESH
+assert_true "APPROVAL_VALIDATION -> FAILED" merge_valid_transition APPROVAL_VALIDATION FAILED
 assert_true "MERGING -> MERGED" merge_valid_transition MERGING MERGED
+assert_true "MERGING -> APPROVAL_VALIDATION" merge_valid_transition MERGING APPROVAL_VALIDATION
+assert_true "MERGING -> MAIN_HEAD_REFRESH" merge_valid_transition MERGING MAIN_HEAD_REFRESH
 assert_true "MERGING -> FAILED" merge_valid_transition MERGING FAILED
 assert_true "MERGED -> CLEANUP" merge_valid_transition MERGED CLEANUP
 assert_true "CLEANUP -> COMPLETED" merge_valid_transition CLEANUP COMPLETED
@@ -85,6 +88,13 @@ assert_true "CLEANUP -> FAILED" merge_valid_transition CLEANUP FAILED
 echo ""
 echo "--- Invalid Transitions ---"
 assert_false "TRIGGER_CHECK -> MERGING (invalid)" merge_valid_transition TRIGGER_CHECK MERGING
+# The approval gate binds to the final merge candidate, so it must not be
+# reachable before the mandatory rebase, and must not be skippable on the way
+# to a merge (Issue #247).
+assert_false "TRIGGER_CHECK -> APPROVAL_VALIDATION (approval is no longer first)" merge_valid_transition TRIGGER_CHECK APPROVAL_VALIDATION
+assert_false "REBASE -> APPROVAL_VALIDATION (approval follows validation)" merge_valid_transition REBASE APPROVAL_VALIDATION
+assert_false "VALIDATING -> MERGING (approval cannot be skipped)" merge_valid_transition VALIDATING MERGING
+assert_false "APPROVAL_VALIDATION -> MERGED (merge step cannot be skipped)" merge_valid_transition APPROVAL_VALIDATION MERGED
 assert_false "COMPLETED -> TRIGGER_CHECK (invalid)" merge_valid_transition COMPLETED TRIGGER_CHECK
 assert_false "CONFLICT -> VALIDATING (invalid)" merge_valid_transition CONFLICT VALIDATING
 assert_false "FAILED -> REBASE (invalid)" merge_valid_transition FAILED REBASE
@@ -93,9 +103,11 @@ assert_false "REBASE -> VALIDATING (terminal conflict no-op)" merge_valid_transi
 # --- Valid transitions from a state ---
 echo ""
 echo "--- Get Valid Transitions ---"
-assert_output "REBASE transitions" "VALIDATING APPROVAL_VALIDATION CONFLICT FAILED" merge_get_valid_transitions REBASE
-assert_output "TRIGGER_CHECK transitions" "APPROVAL_VALIDATION FAILED" merge_get_valid_transitions TRIGGER_CHECK
-assert_output "MAIN_HEAD_REFRESH transitions" "REBASE" merge_get_valid_transitions MAIN_HEAD_REFRESH
+assert_output "REBASE transitions" "VALIDATING CONFLICT FAILED" merge_get_valid_transitions REBASE
+assert_output "TRIGGER_CHECK transitions" "MAIN_HEAD_REFRESH FAILED" merge_get_valid_transitions TRIGGER_CHECK
+assert_output "MAIN_HEAD_REFRESH transitions" "REBASE FAILED" merge_get_valid_transitions MAIN_HEAD_REFRESH
+assert_output "VALIDATING transitions" "APPROVAL_VALIDATION FAILED" merge_get_valid_transitions VALIDATING
+assert_output "APPROVAL_VALIDATION transitions" "MERGING MAIN_HEAD_REFRESH FAILED" merge_get_valid_transitions APPROVAL_VALIDATION
 assert_output "CONFLICT transitions (empty)" "" merge_get_valid_transitions CONFLICT
 assert_output "COMPLETED transitions (empty)" "" merge_get_valid_transitions COMPLETED
 assert_output "FAILED transitions (empty)" "" merge_get_valid_transitions FAILED

@@ -2,7 +2,11 @@
 # PR Merge Skill Runtime: Orchestrator
 # State-driven PR merge orchestration. Loads persisted state, processes exactly
 # one transition, and persists the updated state. Enforces strict safety:
-#   user approval -> mandatory rebase -> validation -> standard merge -> cleanup.
+#   mandatory rebase -> validation -> final SHA-bound human approval ->
+#   final HEAD revalidation -> standard merge -> cleanup.
+# The human approval gate deliberately runs AFTER the mandatory rebase, so the
+# approval binds to the exact commit that will be merged rather than to an
+# intermediate SHA the rebase is already known to discard.
 # Never uses --admin, force push, or protection circumvention.
 # Behavioral parity with the PowerShell Invoke-MergeOrchestrator.ps1 runtime.
 # Version: 1.0.0
@@ -78,6 +82,9 @@ merge_load_or_create_state() {
         cat "$MERGE_STATE_FILE"
         return 0
     fi
+    if ! merge_state_migrate "$MERGE_STATE_FILE"; then
+        return 1
+    fi
     if ! merge_load_state_file "$MERGE_STATE_FILE"; then
         return 1
     fi
@@ -136,7 +143,7 @@ _merge_handle_trigger_check() {
     echo "Preconditions met"
     merge_state_set_string "$MERGE_STATE_FILE" \
         "BranchName" "$_head_branch" \
-        "State" "APPROVAL_VALIDATION"
+        "State" "MAIN_HEAD_REFRESH"
     if [ -n "$_issue" ]; then
         merge_state_set_number "$MERGE_STATE_FILE" "IssueNumber" "$_issue"
     fi
@@ -144,7 +151,7 @@ _merge_handle_trigger_check() {
 }
 
 _merge_handle_approval_validation() {
-    echo "=== Approval Validation ==="
+    echo "=== Final Approval Validation ==="
 
     if [ -z "$MERGE_WORKTREE" ] || [ ! -d "$MERGE_WORKTREE" ]; then
         echo "Worktree path not provided or not found"
@@ -153,15 +160,52 @@ _merge_handle_approval_validation() {
     fi
 
     _current_commit=$(merge_get_current_commit "$MERGE_WORKTREE")
-    echo "Current commit: $_current_commit"
+    echo "Final merge candidate HEAD: $_current_commit"
     merge_state_set_string "$MERGE_STATE_FILE" "CurrentCommitSha" "$_current_commit"
+
+    _main_head=$(merge_get_main_head "$MERGE_MAIN_DIR")
+    if [ -z "$_main_head" ]; then
+        echo "ERROR: Failed to get main HEAD" >&2
+        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Failed to get main HEAD"
+        return 0
+    fi
+    echo "Main HEAD: $_main_head"
+
+    # This gate binds a human approval to the commit that will actually be
+    # merged, so it only runs on a candidate that is proven rebased onto the
+    # current main HEAD. Two conditions send the flow back for another
+    # mandatory rebase instead of asking for an approval that cannot survive:
+    #
+    #   1. No RebasedOntoMainSha marker. Either the mandatory rebase has not
+    #      run under this ordering, or the state file predates the marker (a
+    #      legacy state persisted at APPROVAL_VALIDATION under the old
+    #      approval-first ordering, where the rebase had NOT yet happened).
+    #      Fail closed by re-running the rebase; it is idempotent.
+    #   2. Main advanced since the rebase, so the candidate is stale and a
+    #      further mandatory rebase is owed before any merge.
+    _rebased_onto=$(merge_state_get "$MERGE_STATE_FILE" "RebasedOntoMainSha")
+    if [ -z "$_rebased_onto" ] || [ "$_rebased_onto" != "$_main_head" ]; then
+        if [ -z "$_rebased_onto" ]; then
+            echo "Merge candidate is not proven rebased onto the current main HEAD."
+        else
+            echo "Main HEAD advanced since the mandatory rebase (rebased onto ${_rebased_onto}, latest ${_main_head})."
+        fi
+        echo "Re-running the mandatory rebase; approval will be requested for the resulting candidate."
+        merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null
+        merge_state_set_string "$MERGE_STATE_FILE" \
+            "ApprovedCommitSha" "" \
+            "State" "MAIN_HEAD_REFRESH"
+        return 0
+    fi
+    merge_state_set_string "$MERGE_STATE_FILE" "MainHeadSha" "$_main_head"
 
     # Approval must exist in state
     _content=$(cat "$MERGE_STATE_FILE")
     _approval=$(printf '%s' "$_content" | sed -n 's/.*"Approval"[[:space:]]*:[[:space:]]*null.*/null/p' | head -1)
     if [ "$_approval" = "null" ]; then
-        echo "No approval found. User approval required."
-        echo "Please approve the PR before merging."
+        echo "No approval found for the final merge candidate."
+        echo "READY FOR HUMAN APPROVAL: $_current_commit"
+        echo "Record it with: merge.sh approve --pr $MERGE_PR_NUMBER --worktree $MERGE_WORKTREE"
         return 0
     fi
 
@@ -180,15 +224,6 @@ _merge_handle_approval_validation() {
     _approved_by=$(printf '%s' "$_approved_settings" | sed -n 's/.*"ApprovedBy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
     _approved_at=$(printf '%s' "$_approved_settings" | sed -n 's/.*"ApprovedAt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 
-    _main_head=$(merge_get_main_head "$MERGE_MAIN_DIR")
-    if [ -z "$_main_head" ]; then
-        echo "ERROR: Failed to get main HEAD" >&2
-        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Failed to get main HEAD"
-        return 0
-    fi
-    echo "Main HEAD: $_main_head"
-    merge_state_set_string "$MERGE_STATE_FILE" "MainHeadSha" "$_main_head"
-
     # Fail closed on a present-but-unknown approval source before any merge.
     if [ -n "$_approval_source" ] && ! merge_approval_source_known "$_approval_source"; then
         echo "Approval is invalid: unknown approval source '${_approval_source}'"
@@ -200,10 +235,10 @@ _merge_handle_approval_validation() {
        merge_approval_is_valid_sourced \
            "$_approval_source" "$_approved_is_valid" "$_approved_commit" "$_approved_main_head" \
            "$_current_commit" "$_main_head" "$_approved_by" "$_approved_at"; then
-        echo "Approval is valid (source: $(merge_approval_source_normalize "$_approval_source"))"
+        echo "Approval is valid for the final merge candidate (source: $(merge_approval_source_normalize "$_approval_source"))"
         merge_state_set_string "$MERGE_STATE_FILE" \
             "ApprovedCommitSha" "$_current_commit" \
-            "State" "MAIN_HEAD_REFRESH"
+            "State" "MERGING"
     else
         echo "Approval is invalid:"
         _binding_reasons=$(merge_approval_validation_reasons "$_approved_is_valid" "$_approved_commit" "$_approved_main_head" "$_current_commit" "$_main_head")
@@ -211,7 +246,6 @@ _merge_handle_approval_validation() {
         { printf '%s\n' "$_binding_reasons"; printf '%s\n' "$_source_reasons"; } | sed '/^$/d' | sed 's/^/  - /'
         echo "User re-approval required."
         echo "Note: approval record must be created via 'merge.sh approve' before merge."
-        return 0
     fi
     return 0
 }
@@ -226,7 +260,12 @@ _merge_handle_main_head_refresh() {
         return 0
     fi
     echo "Latest main HEAD: $_main_head"
-    merge_state_set_string "$MERGE_STATE_FILE" "MainHeadSha" "$_main_head" "State" "REBASE"
+    # Clear the proven-rebased marker: the candidate is only proven rebased once
+    # REBASE completes against this refreshed main HEAD.
+    merge_state_set_string "$MERGE_STATE_FILE" \
+        "MainHeadSha" "$_main_head" \
+        "RebasedOntoMainSha" "" \
+        "State" "REBASE"
     return 0
 }
 
@@ -302,9 +341,12 @@ _merge_handle_rebase() {
             fi
             echo "Safe rebase push succeeded"
         fi
+        # The rebase produced the final merge candidate. Any approval recorded
+        # earlier belongs to a pre-rebase SHA and is discarded here; the approval
+        # gate downstream requests a fresh one bound to this HEAD.
         if [ "$_pre_rebase_commit" != "$_expected_local" ]; then
             if ! merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null; then
-                # No Approval object is a valid state: approval validation will
+                # No Approval object is a valid state: the approval gate will
                 # request a fresh approval. Any other reset failure is fatal.
                 if [ -n "$(merge_state_approval_commit "$MERGE_STATE_FILE")" ]; then
                     echo "Unable to invalidate stale approval after HEAD change" >&2
@@ -312,11 +354,24 @@ _merge_handle_rebase() {
                     return 0
                 fi
             fi
-            echo "Rebased HEAD changed; fresh approval required"
-            merge_state_set_string "$MERGE_STATE_FILE" "CurrentCommitSha" "$_expected_local" "State" "APPROVAL_VALIDATION"
+            merge_state_set_string "$MERGE_STATE_FILE" "ApprovedCommitSha" ""
+            echo "Rebased HEAD changed; any pre-rebase approval discarded"
+        fi
+
+        # Record the main HEAD this candidate is rebased onto. The approval gate
+        # refuses to bind an approval unless this marker is present and still
+        # equals the live main HEAD, so an approval can never be granted for a
+        # candidate that was not rebased onto the latest main.
+        _rebased_onto=$(merge_state_get "$MERGE_STATE_FILE" "MainHeadSha")
+        if [ -z "$_rebased_onto" ]; then
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "No recorded main HEAD for the mandatory rebase"
             return 0
         fi
-        merge_state_set_string "$MERGE_STATE_FILE" "State" "VALIDATING"
+        echo "Final merge candidate: $_expected_local (rebased onto $_rebased_onto)"
+        merge_state_set_string "$MERGE_STATE_FILE" \
+            "CurrentCommitSha" "$_expected_local" \
+            "RebasedOntoMainSha" "$_rebased_onto" \
+            "State" "VALIDATING"
         return 0
     fi
 
@@ -362,11 +417,11 @@ _merge_handle_conflict() {
 }
 
 _merge_handle_validating() {
-    echo "=== Validation ==="
+    echo "=== CI / Review Gate Validation ==="
 
     if [ -n "$MERGE_WORKTREE" ] && [ -d "$MERGE_WORKTREE" ]; then
         _current_commit=$(merge_get_current_commit "$MERGE_WORKTREE")
-        echo "Current commit after rebase: $_current_commit"
+        echo "Final merge candidate after rebase: $_current_commit"
         merge_state_set_string "$MERGE_STATE_FILE" "CurrentCommitSha" "$_current_commit"
     fi
 
@@ -386,12 +441,101 @@ _merge_handle_validating() {
 
     echo "PR is mergeable"
     echo "Review decision: $(merge_pr_field "$_pr_json" reviewDecision)"
+    echo "CI and review gates passed for the final merge candidate."
 
-    merge_state_set_string "$MERGE_STATE_FILE" "State" "MERGING"
+    # Gates pass on the post-rebase candidate, so a human approval requested
+    # from here is being asked for a commit that is already merge-eligible.
+    merge_state_set_string "$MERGE_STATE_FILE" "State" "APPROVAL_VALIDATION"
+    return 0
+}
+
+# Final HEAD revalidation, performed immediately before the irreversible merge.
+# Closes the window between approval and merge: anything that moved in it must
+# stop the merge. Emits one reason per line on stdout when the merge must NOT
+# proceed, and emits nothing when every binding still holds.
+# Usage: merge_final_head_guard <approved_sha> <approval_record_sha> <local_head>
+#        <remote_pr_head> <rebased_onto_main> <live_main> <pr_gate_reason>
+merge_final_head_guard() {
+    _g_approved="$1"
+    _g_record="$2"
+    _g_local="$3"
+    _g_remote="$4"
+    _g_rebased="$5"
+    _g_main="$6"
+    _g_gate="$7"
+
+    [ -z "$_g_approved" ] && echo "No approved commit SHA is recorded in state"
+    [ -z "$_g_record" ] && echo "Approval record is missing or carries no commit binding"
+    if [ -n "$_g_approved" ] && [ -n "$_g_record" ] && [ "$_g_approved" != "$_g_record" ]; then
+        echo "Approved SHA does not match the approval record: state=${_g_approved}, record=${_g_record}"
+    fi
+
+    if [ -z "$_g_local" ]; then
+        echo "Current PR HEAD could not be determined"
+    elif [ -n "$_g_approved" ] && [ "$_g_local" != "$_g_approved" ]; then
+        echo "PR HEAD changed after approval: approved=${_g_approved}, current=${_g_local}"
+    fi
+
+    if [ -z "$_g_remote" ]; then
+        echo "Remote PR HEAD could not be determined"
+    elif [ -n "$_g_approved" ] && [ "$_g_remote" != "$_g_approved" ]; then
+        echo "Remote PR HEAD does not match the approved SHA: approved=${_g_approved}, remote=${_g_remote}"
+    fi
+
+    if [ -z "$_g_main" ]; then
+        echo "Live main HEAD could not be determined"
+    elif [ -z "$_g_rebased" ]; then
+        echo "No recorded mandatory-rebase base: the candidate is not proven rebased"
+    elif [ "$_g_rebased" != "$_g_main" ]; then
+        echo "Main HEAD advanced after approval: rebased onto ${_g_rebased}, latest ${_g_main}"
+    fi
+
+    [ -n "$_g_gate" ] && echo "$_g_gate"
     return 0
 }
 
 _merge_handle_merging() {
+    echo "=== Final HEAD Revalidation ==="
+
+    if ! merge_gh_available; then
+        echo "ERROR: gh CLI not available, cannot revalidate before merge" >&2
+        merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "gh CLI not available"
+        return 0
+    fi
+
+    _approved=$(merge_state_get "$MERGE_STATE_FILE" "ApprovedCommitSha")
+    _record=$(merge_state_approval_commit "$MERGE_STATE_FILE")
+    _rebased=$(merge_state_get "$MERGE_STATE_FILE" "RebasedOntoMainSha")
+    _local=""
+    if [ -n "$MERGE_WORKTREE" ] && [ -d "$MERGE_WORKTREE" ]; then
+        _local=$(merge_get_current_commit "$MERGE_WORKTREE")
+    fi
+    _live_main=$(merge_get_main_head "$MERGE_MAIN_DIR")
+    _pr_json=$(merge_get_pr_info "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
+    _remote_head=$(merge_pr_head_oid "$_pr_json")
+    _gate_reason=$(merge_pr_mergeable_reason "$_pr_json")
+
+    _reasons=$(merge_final_head_guard "$_approved" "$_record" "$_local" \
+        "$_remote_head" "$_rebased" "$_live_main" "$_gate_reason")
+    if [ -n "$_reasons" ]; then
+        echo "Refusing to merge: the approved state no longer holds."
+        printf '%s\n' "$_reasons" | sed 's/^/  - /'
+        merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null
+        merge_state_set_string "$MERGE_STATE_FILE" "ApprovedCommitSha" ""
+        # A moved main owes another mandatory rebase; every other divergence
+        # only owes a fresh approval on the candidate. Both are fail-closed:
+        # no merge happens on this invocation.
+        if [ -n "$_live_main" ] && [ -n "$_rebased" ] && [ "$_rebased" != "$_live_main" ]; then
+            echo "Returning to the mandatory rebase for the new main HEAD."
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "MAIN_HEAD_REFRESH"
+        else
+            echo "Fresh approval required for the current merge candidate."
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "APPROVAL_VALIDATION"
+        fi
+        return 0
+    fi
+
+    echo "Final HEAD revalidation passed: $_approved"
     echo "=== Standard Merge ==="
     echo "Executing standard merge (no --admin)..."
 

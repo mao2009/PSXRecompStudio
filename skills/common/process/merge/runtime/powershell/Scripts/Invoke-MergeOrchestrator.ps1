@@ -104,10 +104,18 @@ function Invoke-MergeOrchestration {
             CurrentCommitSha = $null
             ApprovedCommitSha = $null
             MainHeadSha = $null
+            RebasedOntoMainSha = $null
             Approval = $null
             CreatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
             UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
         }
+    }
+
+    # A state file written before Issue #247 lacks the rebase marker. Absence is
+    # treated as "not proven rebased", which fails closed into another mandatory
+    # rebase rather than into a merge.
+    if (-not $state.ContainsKey("RebasedOntoMainSha")) {
+        $state.RebasedOntoMainSha = $null
     }
 
     Write-Host "Current State: $($state.State)" -ForegroundColor Yellow
@@ -169,13 +177,13 @@ function Invoke-MergeOrchestration {
                 }
 
                 Write-Host "Preconditions met" -ForegroundColor Green
-                $state.State = "APPROVAL_VALIDATION"
+                $state.State = "MAIN_HEAD_REFRESH"
                 $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
                 Save-MergeState -State $state
             }
 
             "APPROVAL_VALIDATION" {
-                Write-Host "=== Approval Validation ===" -ForegroundColor Cyan
+                Write-Host "=== Final Approval Validation ===" -ForegroundColor Cyan
 
                 # Get current commit SHA
                 if ($state.WorktreePath -and (Test-Path $state.WorktreePath)) {
@@ -188,18 +196,39 @@ function Invoke-MergeOrchestration {
                     return
                 }
 
-                Write-Host "Current commit: $($state.CurrentCommitSha)" -ForegroundColor Gray
+                Write-Host "Final merge candidate HEAD: $($state.CurrentCommitSha)" -ForegroundColor Gray
+
+                $mainHead = Get-MergeMainHead
+                Write-Host "Main HEAD: $mainHead" -ForegroundColor Gray
+
+                # This gate binds a human approval to the commit that will
+                # actually be merged, so it only runs on a candidate proven
+                # rebased onto the current main HEAD. Otherwise the mandatory
+                # rebase is owed first, and any approval bound to the superseded
+                # candidate is discarded rather than carried forward.
+                if ((-not $state.RebasedOntoMainSha) -or ($state.RebasedOntoMainSha -ne $mainHead)) {
+                    if (-not $state.RebasedOntoMainSha) {
+                        Write-Host "Merge candidate is not proven rebased onto the current main HEAD." -ForegroundColor Yellow
+                    } else {
+                        Write-Host "Main HEAD advanced since the mandatory rebase (rebased onto $($state.RebasedOntoMainSha), latest $mainHead)." -ForegroundColor Yellow
+                    }
+                    Write-Host "Re-running the mandatory rebase; approval will be requested for the resulting candidate." -ForegroundColor Yellow
+                    $state.Approval = $null
+                    $state.ApprovedCommitSha = $null
+                    $state.State = "MAIN_HEAD_REFRESH"
+                    $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    Save-MergeState -State $state
+                    return
+                }
+                $state.MainHeadSha = $mainHead
 
                 # Check if approval exists
                 if ($null -eq $state.Approval) {
-                    Write-Host "No approval found. User approval required." -ForegroundColor Yellow
-                    Write-Host "Please approve the PR before merging." -ForegroundColor Yellow
+                    Write-Host "No approval found for the final merge candidate." -ForegroundColor Yellow
+                    Write-Host "READY FOR HUMAN APPROVAL: $($state.CurrentCommitSha)" -ForegroundColor Yellow
+                    Save-MergeState -State $state
                     return
                 }
-
-                # Get current main HEAD for validation
-                $state.MainHeadSha = Get-MergeMainHead
-                Write-Host "Main HEAD: $($state.MainHeadSha)" -ForegroundColor Gray
 
                 # Validate approval
                 $approvalValid = Test-MergeApprovalValid -Approval $state.Approval -CurrentCommitSha $state.CurrentCommitSha -CurrentMainHeadSha $state.MainHeadSha
@@ -208,12 +237,13 @@ function Invoke-MergeOrchestration {
                     Write-Host "Approval is invalid:" -ForegroundColor Red
                     $approvalValid.Reasons | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
                     Write-Host "User re-approval required." -ForegroundColor Yellow
+                    Save-MergeState -State $state
                     return
                 }
 
-                Write-Host "Approval is valid" -ForegroundColor Green
+                Write-Host "Approval is valid for the final merge candidate" -ForegroundColor Green
                 $state.ApprovedCommitSha = $state.CurrentCommitSha
-                $state.State = "MAIN_HEAD_REFRESH"
+                $state.State = "MERGING"
                 $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
                 Save-MergeState -State $state
             }
@@ -225,6 +255,9 @@ function Invoke-MergeOrchestration {
                 $state.MainHeadSha = Get-MergeMainHead
                 Write-Host "Latest main HEAD: $($state.MainHeadSha)" -ForegroundColor Gray
 
+                # The candidate is only proven rebased once REBASE completes
+                # against this refreshed main HEAD.
+                $state.RebasedOntoMainSha = $null
                 $state.State = "REBASE"
                 $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
                 Save-MergeState -State $state
@@ -241,11 +274,33 @@ function Invoke-MergeOrchestration {
                     return
                 }
 
+                $preRebaseCommit = Get-MergeCurrentCommit -WorktreePath $state.WorktreePath
+
                 Write-Host "Performing mandatory rebase onto origin/main..." -ForegroundColor Cyan
                 $rebaseResult = Invoke-MergeRebase -WorktreePath $state.WorktreePath
 
                 if ($rebaseResult.Success) {
                     Write-Host "Rebase succeeded" -ForegroundColor Green
+
+                    $postRebaseCommit = Get-MergeCurrentCommit -WorktreePath $state.WorktreePath
+                    # Any approval recorded earlier belongs to a pre-rebase SHA.
+                    # Discard it; the approval gate downstream asks for a fresh
+                    # one bound to this candidate.
+                    if ($preRebaseCommit -ne $postRebaseCommit) {
+                        $state.Approval = $null
+                        $state.ApprovedCommitSha = $null
+                        Write-Host "Rebased HEAD changed; any pre-rebase approval discarded" -ForegroundColor Yellow
+                    }
+                    if (-not $state.MainHeadSha) {
+                        Write-Host "No recorded main HEAD for the mandatory rebase" -ForegroundColor Red
+                        $state.State = "FAILED"
+                        $state.FailureReason = "No recorded main HEAD for the mandatory rebase"
+                        Save-MergeState -State $state
+                        return
+                    }
+                    $state.CurrentCommitSha = $postRebaseCommit
+                    $state.RebasedOntoMainSha = $state.MainHeadSha
+                    Write-Host "Final merge candidate: $postRebaseCommit (rebased onto $($state.MainHeadSha))" -ForegroundColor Gray
                     $state.State = "VALIDATING"
                 } else {
                     Write-Host "Rebase failed" -ForegroundColor Red
@@ -287,12 +342,12 @@ function Invoke-MergeOrchestration {
             }
 
             "VALIDATING" {
-                Write-Host "=== Validation ===" -ForegroundColor Cyan
+                Write-Host "=== CI / Review Gate Validation ===" -ForegroundColor Cyan
 
                 # Update current commit after rebase
                 if ($state.WorktreePath -and (Test-Path $state.WorktreePath)) {
                     $state.CurrentCommitSha = Get-MergeCurrentCommit -WorktreePath $state.WorktreePath
-                    Write-Host "Current commit after rebase: $($state.CurrentCommitSha)" -ForegroundColor Gray
+                    Write-Host "Final merge candidate after rebase: $($state.CurrentCommitSha)" -ForegroundColor Gray
                 }
 
                 # Check if PR is still mergeable
@@ -307,13 +362,69 @@ function Invoke-MergeOrchestration {
 
                 Write-Host "PR is mergeable" -ForegroundColor Green
                 Write-Host "Review decision: $($mergeable.ReviewDecision)" -ForegroundColor Gray
+                Write-Host "CI and review gates passed for the final merge candidate." -ForegroundColor Green
 
-                $state.State = "MERGING"
+                # Gates pass on the post-rebase candidate, so an approval
+                # requested from here is for an already merge-eligible commit.
+                $state.State = "APPROVAL_VALIDATION"
                 $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
                 Save-MergeState -State $state
             }
 
             "MERGING" {
+                Write-Host "=== Final HEAD Revalidation ===" -ForegroundColor Cyan
+
+                # Close the window between approval and merge: anything that
+                # moved in it must stop the merge (fail closed, never forward).
+                $blockReasons = @()
+                if (-not $state.ApprovedCommitSha) {
+                    $blockReasons += "No approved commit SHA is recorded in state"
+                }
+                if ($null -eq $state.Approval) {
+                    $blockReasons += "Approval record is missing"
+                }
+                $liveHead = $null
+                if ($state.WorktreePath -and (Test-Path $state.WorktreePath)) {
+                    $liveHead = Get-MergeCurrentCommit -WorktreePath $state.WorktreePath
+                }
+                if (-not $liveHead) {
+                    $blockReasons += "Current PR HEAD could not be determined"
+                } elseif ($state.ApprovedCommitSha -and ($liveHead -ne $state.ApprovedCommitSha)) {
+                    $blockReasons += "PR HEAD changed after approval: approved=$($state.ApprovedCommitSha), current=$liveHead"
+                }
+                $liveMain = Get-MergeMainHead
+                $mainMoved = $false
+                if (-not $liveMain) {
+                    $blockReasons += "Live main HEAD could not be determined"
+                } elseif (-not $state.RebasedOntoMainSha) {
+                    $blockReasons += "No recorded mandatory-rebase base: the candidate is not proven rebased"
+                } elseif ($state.RebasedOntoMainSha -ne $liveMain) {
+                    $blockReasons += "Main HEAD advanced after approval: rebased onto $($state.RebasedOntoMainSha), latest $liveMain"
+                    $mainMoved = $true
+                }
+                $stillMergeable = Test-MergePrMergeable -PrNumber $PrNumber -Repository $Repository
+                if (-not $stillMergeable.IsMergeable) {
+                    $blockReasons += $stillMergeable.Reason
+                }
+
+                if ($blockReasons.Count -gt 0) {
+                    Write-Host "Refusing to merge: the approved state no longer holds." -ForegroundColor Red
+                    $blockReasons | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+                    $state.Approval = $null
+                    $state.ApprovedCommitSha = $null
+                    if ($mainMoved) {
+                        Write-Host "Returning to the mandatory rebase for the new main HEAD." -ForegroundColor Yellow
+                        $state.State = "MAIN_HEAD_REFRESH"
+                    } else {
+                        Write-Host "Fresh approval required for the current merge candidate." -ForegroundColor Yellow
+                        $state.State = "APPROVAL_VALIDATION"
+                    }
+                    $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    Save-MergeState -State $state
+                    return
+                }
+
+                Write-Host "Final HEAD revalidation passed: $($state.ApprovedCommitSha)" -ForegroundColor Green
                 Write-Host "=== Standard Merge ===" -ForegroundColor Cyan
                 Write-Host "Executing standard merge (no --admin)..." -ForegroundColor Cyan
 

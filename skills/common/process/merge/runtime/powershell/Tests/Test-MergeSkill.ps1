@@ -82,16 +82,20 @@ Invoke-MergeTest -Name "Get-MergeState returns valid states" -Test {
 
 Invoke-MergeTest -Name "Valid transitions are allowed" -Test {
     $validTransitions = @(
-        @{ From = "TRIGGER_CHECK"; To = "APPROVAL_VALIDATION" },
+        @{ From = "TRIGGER_CHECK"; To = "MAIN_HEAD_REFRESH" },
         @{ From = "TRIGGER_CHECK"; To = "FAILED" },
-        @{ From = "APPROVAL_VALIDATION"; To = "MAIN_HEAD_REFRESH" },
-        @{ From = "APPROVAL_VALIDATION"; To = "FAILED" },
         @{ From = "MAIN_HEAD_REFRESH"; To = "REBASE" },
+        @{ From = "MAIN_HEAD_REFRESH"; To = "FAILED" },
         @{ From = "REBASE"; To = "VALIDATING" },
         @{ From = "REBASE"; To = "CONFLICT" },
-        @{ From = "VALIDATING"; To = "MERGING" },
+        @{ From = "VALIDATING"; To = "APPROVAL_VALIDATION" },
         @{ From = "VALIDATING"; To = "FAILED" },
+        @{ From = "APPROVAL_VALIDATION"; To = "MERGING" },
+        @{ From = "APPROVAL_VALIDATION"; To = "MAIN_HEAD_REFRESH" },
+        @{ From = "APPROVAL_VALIDATION"; To = "FAILED" },
         @{ From = "MERGING"; To = "MERGED" },
+        @{ From = "MERGING"; To = "APPROVAL_VALIDATION" },
+        @{ From = "MERGING"; To = "MAIN_HEAD_REFRESH" },
         @{ From = "MERGING"; To = "FAILED" },
         @{ From = "MERGED"; To = "CLEANUP" },
         @{ From = "CLEANUP"; To = "COMPLETED" },
@@ -111,7 +115,13 @@ Invoke-MergeTest -Name "Invalid transitions are rejected" -Test {
         @{ From = "TRIGGER_CHECK"; To = "MERGING" },
         @{ From = "COMPLETED"; To = "TRIGGER_CHECK" },
         @{ From = "CONFLICT"; To = "VALIDATING" },
-        @{ From = "FAILED"; To = "REBASE" }
+        @{ From = "FAILED"; To = "REBASE" },
+        # The approval gate binds to the final merge candidate (Issue #247), so
+        # it is neither reachable before the mandatory rebase nor skippable.
+        @{ From = "TRIGGER_CHECK"; To = "APPROVAL_VALIDATION" },
+        @{ From = "REBASE"; To = "APPROVAL_VALIDATION" },
+        @{ From = "VALIDATING"; To = "MERGING" },
+        @{ From = "APPROVAL_VALIDATION"; To = "MERGED" }
     )
 
     foreach ($transition in $invalidTransitions) {
@@ -124,7 +134,7 @@ Invoke-MergeTest -Name "Invalid transitions are rejected" -Test {
 
 Invoke-MergeTest -Name "Get-ValidMergeTransitions returns correct transitions" -Test {
     $transitions = Get-ValidMergeTransitions -State "REBASE"
-    $expected = @("VALIDATING", "CONFLICT")
+    $expected = @("VALIDATING", "CONFLICT", "FAILED")
 
     if ($transitions.Count -ne $expected.Count) {
         throw "Expected $($expected.Count) transitions, got $($transitions.Count)"

@@ -44,9 +44,13 @@ cat > "$_FAKE_GH/gh" <<'FAKEGH'
 #!/bin/sh
 # Fake gh: only supports `pr view` returning a static OPEN/main PR.
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-    cat <<'EOF'
-{"number":149,"title":"Test PR","body":"","headRefName":"issue/148-test","baseRefName":"main","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","commits":[]}
-EOF
+    # The pre-merge revalidation compares the remote PR head against the
+    # approved SHA, so tests can pin it by writing this file.
+    _oid=""
+    if [ -f "$(dirname "$0")/head-oid" ]; then
+        _oid=$(cat "$(dirname "$0")/head-oid")
+    fi
+    printf '{"number":149,"title":"Test PR","body":"","headRefName":"issue/148-test","headRefOid":"%s","baseRefName":"main","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","commits":[]}\n' "$_oid"
     exit 0
 fi
 exit 1
@@ -70,7 +74,7 @@ merge_rebase_force_with_lease_enabled() { return 1; }
 STATE_FILE="$WORK/.merge-state-149.json"
 
 # ------------------------------------------------------------
-# Test 1: TRIGGER_CHECK -> APPROVAL_VALIDATION via merge.sh
+# Test 1: TRIGGER_CHECK -> MAIN_HEAD_REFRESH via merge.sh
 # ------------------------------------------------------------
 echo "--- Trigger Check Advancement ---"
 MERGE_PR_NUMBER="149"
@@ -85,7 +89,7 @@ _rc=$?
 assert_true "orchestrator returns success" test "$_rc" -eq 0
 assert_true "state file created" test -f "$STATE_FILE"
 _state=$(merge_state_get "$STATE_FILE" "State")
-assert_true "state transitioned to APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
+assert_true "state transitioned to MAIN_HEAD_REFRESH" test "$_state" = "MAIN_HEAD_REFRESH"
 _branch=$(merge_state_get "$STATE_FILE" "BranchName")
 assert_true "BranchName recorded from PR" test "$_branch" = "issue/148-test"
 _issue=$(merge_state_get "$STATE_FILE" "IssueNumber")
@@ -98,12 +102,12 @@ echo ""
 echo "--- Resumability / Fail-Closed ---"
 merge_orchestrate_one > "$WORK/out2.log" 2>&1
 _rc=$?
-# APPROVAL_VALIDATION requires a worktree; none was provided, so it fails
-# closed to FAILED (safe) rather than advancing to a merge. The FAILED
-# terminal state is now signaled with a non-zero exit.
+# MAIN_HEAD_REFRESH needs a real repository to resolve origin/main; none was
+# provided, so it fails closed to FAILED (safe) rather than advancing toward a
+# merge. The FAILED terminal state is signaled with a non-zero exit.
 assert_true "FAILED fail-closed returns non-zero" test "$_rc" -ne 0
 _state=$(merge_state_get "$STATE_FILE" "State")
-assert_true "no worktree -> fails closed to FAILED" test "$_state" = "FAILED"
+assert_true "no usable repository -> fails closed to FAILED" test "$_state" = "FAILED"
 
 # ------------------------------------------------------------
 # Test 3: FAILED is terminal (no further advancement)
@@ -197,60 +201,81 @@ if command -v git >/dev/null 2>&1; then
     _rc=$?
     assert_true "step 1 (trigger) returns success" test "$_rc" -eq 0
     _state=$(merge_state_get "$STATE2" "State")
-    assert_true "step 1 transitions to APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
+    assert_true "step 1 transitions to MAIN_HEAD_REFRESH" test "$_state" = "MAIN_HEAD_REFRESH"
+
+    # MAIN_HEAD_REFRESH (fetch origin main) -> REBASE. No approval exists yet,
+    # and the flow must still reach the mandatory rebase (Issue #247).
+    merge_orchestrate_one > "$WORK/out5.log" 2>&1
+    _rc=$?
+    assert_true "main head refresh returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "MAIN_HEAD_REFRESH -> REBASE without any approval" test "$_state" = "REBASE"
+
+    # REBASE in a clean worktree (no commits on main since branch creation)
+    # -> VALIDATING
+    merge_orchestrate_one > "$WORK/out6.log" 2>&1
+    _rc=$?
+    assert_true "rebase step returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "clean REBASE -> VALIDATING without any approval" test "$_state" = "VALIDATING"
+    _rebased=$(merge_state_get "$STATE2" "RebasedOntoMainSha")
+    assert_true "rebase base recorded" test -n "$_rebased"
+
+    # VALIDATING uses fake gh mergeable -> APPROVAL_VALIDATION
+    merge_orchestrate_one > "$WORK/out7.log" 2>&1
+    _rc=$?
+    assert_true "validating returns success" test "$_rc" -eq 0
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "VALIDATING -> APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
 
     # No approval record yet -> holds (does not advance), returns success
-    merge_orchestrate_one > "$WORK/out5.log" 2>&1
+    merge_orchestrate_one > "$WORK/out8.log" 2>&1
     _rc=$?
     assert_true "approval hold returns success" test "$_rc" -eq 0
     _state=$(merge_state_get "$STATE2" "State")
     assert_true "no approval -> stays APPROVAL_VALIDATION" test "$_state" = "APPROVAL_VALIDATION"
 
-    # Inject an approval record matching the current commit and main head.
+    # Inject an approval record matching the post-rebase commit and main head.
     # Replace the existing `"Approval": null` value in the state file.
     _commit=$(git -C "$WORK/wt2" rev-parse HEAD 2>/dev/null)
     _main=$(git -C "$REPO" rev-parse main 2>/dev/null)
+    assert_true "approval binds to the post-rebase candidate" test "$_commit" = "$(merge_state_get "$STATE2" CurrentCommitSha)"
     _approval_json='{"PrNumber":150,"IssueNumber":148,"CommitSha":"'$_commit'","MainHeadSha":"'$_main'","ApprovedBy":"user","ApprovedAt":"2026-01-01T00:00:00Z","IsValid":true}'
     _tmp="$STATE2.tmp"
     sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_approval_json}/" "$STATE2" > "$_tmp" 2>/dev/null
     mv "$_tmp" "$STATE2" 2>/dev/null
 
-    merge_orchestrate_one > "$WORK/out6.log" 2>&1
+    merge_orchestrate_one > "$WORK/out9.log" 2>&1
     _rc=$?
     assert_true "valid approval advances returns success" test "$_rc" -eq 0
     _state=$(merge_state_get "$STATE2" "State")
-    assert_true "valid approval -> MAIN_HEAD_REFRESH" test "$_state" = "MAIN_HEAD_REFRESH"
+    assert_true "valid approval on the final candidate -> MERGING" test "$_state" = "MERGING"
+    assert_true "approved SHA is the final candidate" test "$(merge_state_get "$STATE2" ApprovedCommitSha)" = "$_commit"
 
-    # MAIN_HEAD_REFRESH (fetch origin main) -> REBASE
-    merge_orchestrate_one > "$WORK/out7.log" 2>&1
-    _rc=$?
-    assert_true "main head refresh returns success" test "$_rc" -eq 0
-    _state=$(merge_state_get "$STATE2" "State")
-    assert_true "MAIN_HEAD_REFRESH -> REBASE" test "$_state" = "REBASE"
-
-    # REBASE in a clean worktree (no commits on main since branch creation)
-    # -> VALIDATING
-    merge_orchestrate_one > "$WORK/out8.log" 2>&1
-    _rc=$?
-    assert_true "rebase step returns success" test "$_rc" -eq 0
-    _state=$(merge_state_get "$STATE2" "State")
-    assert_true "clean REBASE -> VALIDATING" test "$_state" = "VALIDATING"
-
-    # VALIDATING uses fake gh mergeable -> MERGING
-    merge_orchestrate_one > "$WORK/out9.log" 2>&1
-    _rc=$?
-    assert_true "validating returns success" test "$_rc" -eq 0
-    _state=$(merge_state_get "$STATE2" "State")
-    assert_true "VALIDATING -> MERGING" test "$_state" = "MERGING"
-
-    # MERGING via standard merge; fake gh does not actually merge so it fails
-    # closed to FAILED rather than pretending success. Non-zero exit signals
-    # the terminal FAILED state.
+    # The pre-merge revalidation refuses to merge while the remote PR head does
+    # not match the approved SHA, so the merge cannot race a late push.
+    : > "$_FAKE_GH/head-oid"
     merge_orchestrate_one > "$WORK/out10.log" 2>&1
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "unknown remote head blocks the merge" test "$_state" = "APPROVAL_VALIDATION"
+
+    # With the remote head matching the approved SHA the revalidation passes and
+    # the real merge is attempted; fake gh does not actually merge, so it fails
+    # closed to FAILED rather than pretending success. Non-zero exit signals the
+    # terminal FAILED state.
+    printf '%s' "$_commit" > "$_FAKE_GH/head-oid"
+    _tmp="$STATE2.tmp"
+    sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_approval_json}/" "$STATE2" > "$_tmp" 2>/dev/null
+    mv "$_tmp" "$STATE2" 2>/dev/null
+    merge_orchestrate_one > "$WORK/out11.log" 2>&1
+    _state=$(merge_state_get "$STATE2" "State")
+    assert_true "matching remote head -> MERGING" test "$_state" = "MERGING"
+    merge_orchestrate_one > "$WORK/out12.log" 2>&1
     _rc=$?
     assert_true "MERGING fail-closed returns non-zero" test "$_rc" -ne 0
     _state=$(merge_state_get "$STATE2" "State")
     assert_true "MERGING without real gh merge -> FAILED (fail-closed)" test "$_state" = "FAILED"
+    rm -f "$_FAKE_GH/head-oid"
 
     # ------------------------------------------------------------
     # Test 5: REBASE -> CONFLICT with ConflictFiles persisted as JSON
@@ -290,9 +315,12 @@ if command -v git >/dev/null 2>&1; then
     # Drive straight to REBASE; we exercise the conflict-detection path only.
     merge_new_state 151 148 "$WORK/wc" "issue/cf" > "$STATE3"
     merge_state_set_string "$STATE3" "State" "REBASE" "BranchName" "issue/cf" "WorktreePath" "$WORK/wc"
+    # MAIN_HEAD_REFRESH would have recorded this; REBASE refuses to advance
+    # without a recorded rebase base.
+    merge_state_set_string "$STATE3" "MainHeadSha" "$(git -C "$C2" rev-parse origin/main 2>/dev/null)"
 
     # REBASE against updated origin/main -> conflict
-    merge_orchestrate_one > "$WORK/out11.log" 2>&1
+    merge_orchestrate_one > "$WORK/out-conflict.log" 2>&1
     _rc=$?
     assert_true "conflict rebase returns success" test "$_rc" -eq 0
     _state=$(merge_state_get "$STATE3" "State")
