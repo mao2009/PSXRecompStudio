@@ -1,12 +1,11 @@
 #!/bin/sh
 set -eu
 
-# Regression checks for Issue #260. This is intentionally a policy-contract test:
-# the Merge Skill is the SSOT for review-provider handling, and this test keeps
-# the fail-closed fallback invariants from being weakened accidentally.
+# Regression checks for Issue #260. The provider policy is a normative part of
+# the Merge Skill and keeps fallback semantics deterministic and fail-closed.
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../../../../.." && pwd)
-SKILL="$ROOT/skills/common/process/merge/SKILL.md"
+POLICY="$ROOT/skills/common/process/merge/REVIEW_PROVIDER_POLICY.md"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -14,7 +13,7 @@ fail() {
 }
 
 contains() {
-    grep -F "$1" "$SKILL" >/dev/null 2>&1 || fail "missing policy text: $1"
+    grep -F "$1" "$POLICY" >/dev/null 2>&1 || fail "missing policy text: $1"
 }
 
 contains "Provider-unavailable fallback"
