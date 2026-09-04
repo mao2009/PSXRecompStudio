@@ -4,9 +4,9 @@ description: >
   Commit Message authoring skill for AI agents: the single source of truth for
   writing git commit messages — Conventional Commits format, type/scope/subject
   policy, per-commit change granularity and atomicity, Issue-linkage trailers,
-  amend/rebase handling, generated-commit marking, and deriving type / scope /
-  subject from the actual diff. Use whenever a commit message is created or
-  rewritten.
+  amend/rebase handling, generated-commit marking, sensitive-data exclusion,
+  and deriving type / scope / subject from the actual diff. Use whenever a
+  commit message is created or rewritten.
 version: 0.1.0
 scope: process
 platform: agent-agnostic
@@ -16,10 +16,10 @@ platform: agent-agnostic
 
 The single source of truth for **how a commit message is written**. It owns the
 message content only: format, type/scope/subject, per-commit granularity,
-Issue-linkage trailers, amend/rebase handling, and the AI judgement rules for
-producing a message from the actual diff. It does not govern commit mechanics
-(branching, pushing, rebase flow), merge-time operations, or the final task
-report.
+Issue-linkage trailers, sensitive/session-data exclusion, amend/rebase handling,
+and the AI judgement rules for producing a message from the actual diff. It does
+not govern commit mechanics (branching, pushing, rebase flow), merge-time
+operations, or the final task report.
 
 This skill is project-agnostic; project-specific inputs (closing-keyword
 policy, issue-tracker reference format, concrete examples, automation policy)
@@ -61,6 +61,41 @@ Standard [Conventional Commits] format:
 | `trailers` | Optional; `Refs #<n>` / `Fixes #<n>` / `Closes #<n>` at the end, separated from the body by a blank line. See [Issue linkage](#issue-linkage). |
 
 [Conventional Commits]: https://www.conventionalcommits.org
+
+## Sensitive data and session references
+
+A commit message is durable Git history and may be copied into pull requests,
+mirrors, release tooling, logs, or other public surfaces. Treat every part of the
+message — subject, body, and trailers — as publishable text.
+
+**Never include** any of the following in a commit message:
+
+- ChatGPT, Claude, Codex, OpenCode, or other AI/chat **session or conversation
+  URLs**, session IDs, conversation IDs, or equivalent session locators.
+- API keys, access/refresh tokens, cookies, passwords, credentials, signing
+  material, or other authentication secrets.
+- Private URLs, temporary download links, signed URLs, pre-signed URLs, or URLs
+  containing sensitive query parameters.
+- Personal information or confidential/project-internal information that should
+  not be preserved in public Git history.
+- Internal environment identifiers, hostnames, filesystem paths, infrastructure
+  details, or other values that are sensitive in the project's context.
+
+Do not add generated attribution/footer text that exposes or references an
+AI/chat session, such as `Generated with ... session: <url>`. Identifying that a
+commit was automated, when project policy requires it, must use the durable
+marker rules in [Generated and automation commits](#generated-and-automation-commits)
+and must not include session identifiers or links.
+
+When context from a private session explains *why* a change was made, rewrite
+that rationale as durable project context. Commit messages should retain the
+change, rationale, and verified Issue linkage — not the private conversation that
+produced them.
+
+If sensitive/session data is discovered in an unpublished commit message,
+rewrite it before push. If it is already published/shared, do not silently
+rewrite history; follow the repository's history-rewrite policy and obtain any
+required approval.
 
 ## Type policy
 
@@ -180,6 +215,9 @@ a stale plan:
    constraints, or a meaningful decision. Do not restate the diff line-by-line.
 8. **Trailers** ← add only when linkage is verified (see
    [Issue linkage](#issue-linkage)).
+9. **Sensitive-data check** ← inspect the complete resulting message and remove
+   session references, credentials, private/signed URLs, personal data, or
+   other sensitive information before committing.
 
 When to ask vs. default:
 
@@ -211,6 +249,7 @@ Bad:
 | `feat: add stuff to make it work better` | Subject not actionable; no concrete change named. |
 | `feat(ui,api): add settings panel and refactor shared cache` | Two scopes + two unrelated concerns in one commit. |
 | `fix: correct off-by-one and fix styling and add tests` | Mixed concerns (fix + style + tests) that must be split. |
+| `docs: update guide\n\nGenerated with Claude session: https://example.invalid/session/123` | Leaks a session reference into durable Git history. |
 
 ## Amend and rebase handling
 
@@ -235,6 +274,9 @@ Bad:
   with an **explicit marker** in the subject (e.g. a `chore(<tool>):` type plus
   a clear `[automated]` tag), and state in the body that the commit was
   generated and by what.
+- Generated/automation attribution must never include a session URL, session
+  identifier, conversation URL, conversation identifier, or other sensitive
+  locator; use only durable tool/automation identification.
 - **Humans must review the content** of generated commits before merge, the
   same as any other commit — the marker signals "review this", never "skip
   review".
@@ -257,6 +299,10 @@ Before pushing a commit (and again when rewriting), check its message:
 - [ ] Trailers reference issues that actually exist; closing trailers only when
       the commit closes the issue and the Project Profile permits it.
 - [ ] No fabricated issue numbers, no asserted-but-unverified closing.
+- [ ] No session/conversation URLs or IDs, credentials, tokens, cookies,
+      private/signed URLs, personal information, or other sensitive data.
+- [ ] Generated attribution/footer text contains no session or conversation
+      locator.
 - [ ] The commit is one logical change (or the diff was already split).
 
 Practical note: to avoid an interactive editor session (e.g. vim) blocking an
@@ -268,7 +314,7 @@ configured through `core.editor`.
 | Concern | Owned by |
 |---|---|
 | Branch / commit / push mechanics, rebase flow | Git Workflow Skill *(future — not created yet)* |
-| Commit message authoring (format, type, subject, trailers, granularity) | **this skill** |
+| Commit message authoring (format, type, subject, trailers, granularity, sensitive-data exclusion) | **this skill** |
 | Merge-time operations: approval, rebase-to-main, validation, merge | [Merge Skill](../merge/SKILL.md) |
 | Merge / rebase orchestration across issues | [Batch Skill](../batch/SKILL.md) (reference) |
 | Final task report (which cites commits) | [Reporting Skill](../reporting/SKILL.md) |
