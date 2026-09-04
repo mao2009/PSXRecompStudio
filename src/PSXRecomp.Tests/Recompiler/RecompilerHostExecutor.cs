@@ -67,6 +67,75 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         return run;
     }
 
+    /// <summary>The on-disk product of a recompiled fixture (Issue #209 vertical slice).</summary>
+    public readonly record struct CompiledBinary(string BinaryPath, string InputPath, string DirectoryPath);
+
+    /// <summary>
+    /// Compiles a fixture into a reusable executable and returns the artifact
+    /// locations. The caller owns the returned directory's lifetime. Enables the
+    /// #209 vertical-slice "compare the produced test binary" check.
+    /// </summary>
+    public CompiledBinary CompileRecompiledBinary(RecompilerDifferentialFixture fixture)
+    {
+        ArgumentNullException.ThrowIfNull(fixture);
+        var tempDir = CreateTempDir();
+
+        try
+        {
+            var program = LowerFixture(fixture);
+            var validation = RecompilerIrValidator.Validate(program);
+            if (!validation.IsValid)
+            {
+                throw new InvalidOperationException(
+                    $"IR validation failed with {validation.Diagnostics.Count} diagnostic(s).");
+            }
+
+            var generated = RecompilerHostCodeGen.Generate(program);
+            if (!generated.Success)
+            {
+                throw new InvalidOperationException(
+                    generated.DiagnosticMessage ?? "Host code generation failed.");
+            }
+
+            var sourcePath = Path.Combine(tempDir, "program.c");
+            var inputPath = Path.Combine(tempDir, "input.txt");
+            var binaryPath = Path.Combine(tempDir, "program");
+
+            File.WriteAllText(sourcePath, generated.Source + "\n" + DriverSource);
+            WriteInputFile(inputPath, fixture);
+
+            var (exit, _, stderr) = RunProcess(
+                Compiler, $"{CompilerArgs} {sourcePath} -o {binaryPath}", BuildTimeoutMs, out var timedOut);
+            if (timedOut || exit != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Host compilation failed." + (string.IsNullOrEmpty(stderr) ? "" : "\n" + Truncate(stderr, 2000)));
+            }
+
+            return new CompiledBinary(binaryPath, inputPath, tempDir);
+        }
+        catch
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            throw;
+        }
+    }
+
+    /// <summary>Runs a previously compiled recompiled binary against its fixture input and returns stdout.</summary>
+    public string RunRecompiledBinary(CompiledBinary binary)
+    {
+        var (exit, stdout, _) = RunProcess(binary.BinaryPath, binary.InputPath, RunTimeoutMs, out var timedOut);
+        if (timedOut)
+        {
+            throw new InvalidOperationException("Generated executable exceeded the bounded execution budget.");
+        }
+        if (exit != 0 && !stdout.Contains("RSNAPSHOT_BEGIN"))
+        {
+            throw new InvalidOperationException($"Generated executable failed (exit {exit}).");
+        }
+        return stdout;
+    }
+
     private static RecompilerIrProgram LowerFixture(RecompilerDifferentialFixture fixture)
     {
         var instructions = new List<(R3000aInstruction Instruction, uint EntryPc)>();
