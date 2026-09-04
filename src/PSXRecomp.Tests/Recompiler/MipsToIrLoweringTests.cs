@@ -405,33 +405,35 @@ public class MipsToIrLoweringTests
     }
 
     [Fact]
-    public void Unsupported_Lw_ReturnsDiagnostic()
+    public void Unsupported_Lwl_ReturnsDiagnostic()
     {
-        var instruction = R3000aDecoder.Decode(EncodeI(0x23, 8, 9, 0));
-        instruction.Opcode.Should().Be(R3000aOpcode.Lw);
+        // LWL/LWR keep the paired load-delay behaviour of ADR-004 and are still
+        // outside the lowered subset, unlike the plain LW added alongside it.
+        var instruction = R3000aDecoder.Decode(EncodeI(0x22, 8, 9, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Lwl);
 
         var result = MipsToIrLowerer.Lower(instruction, 0x80000000);
         result.IsSupported.Should().BeFalse();
         result.Block.Should().BeNull();
         result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidOperationShape);
         result.DiagnosticMessage.Should().NotBeNullOrEmpty();
-        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Lw);
+        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Lwl);
     }
 
     [Fact]
-    public void Unsupported_Beq_ReturnsDiagnostic()
+    public void Beq_WithoutItsDelaySlot_ReturnsDiagnostic()
     {
         var instruction = R3000aDecoder.Decode(EncodeI(0x04, 8, 9, 0x100));
         instruction.Opcode.Should().Be(R3000aOpcode.Beq);
 
         var result = MipsToIrLowerer.Lower(instruction, 0x80000000);
         result.IsSupported.Should().BeFalse();
-        result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidOperationShape);
+        result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidFlow);
         result.UnsupportedOpcode.Should().Be(R3000aOpcode.Beq);
     }
 
     [Fact]
-    public void Unsupported_J_ReturnsDiagnostic()
+    public void J_WithoutItsDelaySlot_ReturnsDiagnostic()
     {
         var encodedWord = 0x08000100u;
         var instruction = R3000aDecoder.Decode(encodedWord);
@@ -439,6 +441,7 @@ public class MipsToIrLoweringTests
 
         var result = MipsToIrLowerer.Lower(instruction, 0x80000000);
         result.IsSupported.Should().BeFalse();
+        result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidFlow);
         result.UnsupportedOpcode.Should().Be(R3000aOpcode.J);
     }
 

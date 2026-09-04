@@ -72,6 +72,15 @@ public static class RecompilerHostCodeGen
                         "UNSUPPORTED_OPERATION_KIND",
                         $"Operation kind {(byte)op.Kind} is not a defined enum value.");
                 }
+
+                if (!IsEmittable(op.Kind))
+                {
+                    return new RecompilerHostCodeGenResult(
+                        false, null,
+                        "UNSUPPORTED_OPERATION_KIND",
+                        $"Operation kind '{op.Kind}' has no host emission in this stage; " +
+                        "generating a block that silently drops it would produce wrong host code.");
+                }
             }
 
             if (!Enum.IsDefined(program.Blocks[i].Exit.Reason))
@@ -81,11 +90,45 @@ public static class RecompilerHostCodeGen
                     "UNSUPPORTED_TERMINATION_REASON",
                     $"Termination reason {(byte)program.Blocks[i].Exit.Reason} is not a defined enum value.");
             }
+
+            var flow = program.Blocks[i].Exit.Flow;
+            if (flow is not null && flow.Kind != RecompilerIrFlowKind.Sequential)
+            {
+                return new RecompilerHostCodeGenResult(
+                    false, null,
+                    "UNSUPPORTED_FLOW_KIND",
+                    $"Exit flow kind '{flow.Kind}' has no host emission in this stage; only a sequential " +
+                    "fall-through is generated, so an explicit transfer must not be silently dropped.");
+            }
         }
 
         var source = EmitSource(program);
         return new RecompilerHostCodeGenResult(true, source, null, null);
     }
+
+    /// <summary>
+    /// The operation kinds this stage emits host code for. Memory access and the
+    /// compare operations that feed a branch flow belong to a later backend
+    /// stage; rejecting them keeps an unemitted operation from turning into a
+    /// silently missing side effect.
+    /// </summary>
+    private static bool IsEmittable(RecompilerIrOperationKind kind) => kind switch
+    {
+        RecompilerIrOperationKind.Nop => true,
+        RecompilerIrOperationKind.Constant => true,
+        RecompilerIrOperationKind.ReadGpr => true,
+        RecompilerIrOperationKind.WriteGpr => true,
+        RecompilerIrOperationKind.Add => true,
+        RecompilerIrOperationKind.Subtract => true,
+        RecompilerIrOperationKind.And => true,
+        RecompilerIrOperationKind.Or => true,
+        RecompilerIrOperationKind.Xor => true,
+        RecompilerIrOperationKind.Nor => true,
+        RecompilerIrOperationKind.ShiftLeftLogical => true,
+        RecompilerIrOperationKind.ShiftRightLogical => true,
+        RecompilerIrOperationKind.ShiftRightArithmetic => true,
+        _ => false,
+    };
 
     private static string EmitSource(RecompilerIrProgram program)
     {

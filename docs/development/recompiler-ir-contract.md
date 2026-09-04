@@ -27,7 +27,12 @@ Memory load and store are explicit IR operations on 32-bit guest addresses,
 never host pointers:
 `Load8` / `Load16` / `Load32` produce a result from an address operand;
 `Store8` / `Store16` / `Store32` write a value operand to an address operand and
-produce no result. Translation (including KSEG), alignment, little-endian
+produce no result. In both cases input A is the address and input B, on a store,
+is the value. A narrower access occupies the low bits of the 32-bit IR value —
+zero-extended on a load, truncated on a store — so signedness stays off the
+operation surface: a sign-extending guest load is expressed by the lowering as a
+`ShiftLeftLogical` / `ShiftRightArithmetic` pair. Translation (including KSEG),
+alignment, little-endian
 access, signedness, read/write ordering, MMIO policy, and the resolved memory
 image belong to the memory/runtime contract, not the IR or host backend. The
 ordered memory observations compared through `RecompilerStateSnapshot` describe
