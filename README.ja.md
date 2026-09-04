@@ -3,7 +3,7 @@
 [![CI](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-PlayStation 1 (PSX) タイトルの解析・理解・再コンパイルを支援し、ネイティブ実行可能なプログラムへと変換するための統合開発環境。
+PlayStation 1（PS1 / PSX）向けソフトウェアの静的再コンパイル、バイナリ解析、リバースエンジニアリング、MIPS コード解析、ネイティブ移植を支援するオープンソース開発環境。
 
 *[English README (Canonical / SSOT)](README.md)*
 
@@ -11,7 +11,7 @@ PlayStation 1 (PSX) タイトルの解析・理解・再コンパイルを支援
 
 ## PSXRecompStudio とは
 
-PSXRecompStudio は、PS1 ソフトウェアを扱うためのスクラッチ開発の統合開発環境です。タイトルの逆アセンブル・解析、R3000A CPU のバイト単位で忠実なモデル化を行い、最終的にはタイトルのコードを静的に再コンパイルして、エミュレーションを介さず Windows / Linux / macOS 上でネイティブに直接実行できるプログラムへと変換することを目指します。
+PSXRecompStudio は、PlayStation 1（PS1）ソフトウェアを解析・リバースエンジニアリングするためのスクラッチ開発の統合開発環境です。PS-X EXE の逆アセンブル、R3000A / MIPS I コードの解析、CPU 挙動のバイト単位で忠実なモデル化を行い、最終的にはタイトルコードを静的に再コンパイルして、エミュレーションを介さず Windows / Linux / macOS 上でネイティブに直接実行できるプログラムへ変換することを目指します。
 
 Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケーション Core、そして安定した C ABI で接続された C++ ネイティブ Core から構成されます。AI 開発エージェントはプロダクトそのものではなく、Evidence-first な支援手段の一つという位置付けです。
 
