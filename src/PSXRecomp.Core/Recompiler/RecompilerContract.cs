@@ -20,13 +20,36 @@ public enum RecompilerIrOperationKind : byte
     ShiftLeftLogical,
     ShiftRightLogical,
     ShiftRightArithmetic,
+    /// <summary>
+    /// Reads 8 bits from the guest 32-bit address in input A and produces them
+    /// zero-extended into the 32-bit result. Signedness is not part of the
+    /// operation: a sign-extending guest load is expressed by the lowering as a
+    /// <see cref="ShiftLeftLogical"/> / <see cref="ShiftRightArithmetic"/> pair.
+    /// </summary>
     Load8,
+
+    /// <summary>Reads 16 bits from the address in input A, zero-extended (see <see cref="Load8"/>).</summary>
     Load16,
+
+    /// <summary>Reads 32 bits from the guest 32-bit address in input A.</summary>
     Load32,
+
+    /// <summary>
+    /// Writes the low 8 bits of the value in input B to the guest 32-bit address
+    /// in input A, and produces no result.
+    /// </summary>
     Store8,
+
+    /// <summary>Writes the low 16 bits of input B to the address in input A.</summary>
     Store16,
+
+    /// <summary>Writes the 32-bit value in input B to the address in input A.</summary>
     Store32,
+
+    /// <summary>Produces 1 when inputs A and B are equal, otherwise 0.</summary>
     CompareEqual,
+
+    /// <summary>Produces 1 when inputs A and B differ, otherwise 0.</summary>
     CompareNotEqual,
 }
 
