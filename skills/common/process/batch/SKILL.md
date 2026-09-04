@@ -1,701 +1,583 @@
 ---
-name: batch-orchestrator
+name: batch-orchestration
 description: >
-  Parallel Issue execution Orchestrator for Batch Skill.
-  Manages concurrent Sub-agents with dependency scheduling,
-  retry, failure isolation, and serial merge via Merge Skill.
-  Cross-platform: POSIX shell (default) and PowerShell implementations.
-version: 2.0.0
+  Agent-agnostic orchestration protocol for executing several Issues or tasks as
+  one batch. Defines the evidence bar, task inventory, dependency analysis, the
+  DAG and execution waves, parallel-safety rules, worker abstraction and
+  isolation, result validation, semantic conflict detection, the review and
+  approval gates, serial integration delegated to the Merge Skill, aggregate
+  verification, cleanup, and reporting. Markdown-only: no batch-specific
+  runtime, wrapper, scheduler or configuration file is required to execute it.
+version: 4.0.0
 scope: process
 platform: agent-agnostic
-related-issues: "#155"
+related-issues: "#145, #155, #159, #160, #161, #162, #167, #242"
 ---
 
-# Batch Orchestrator Skill
+# Batch Orchestration Skill
 
-A parallel Issue execution Orchestrator that safely processes multiple
-independent Issues via concurrent Sub-agents, with dependency-aware
-scheduling and serial merge through the Merge Skill.
+## Status of this document
 
-## Core Principles
+**This document is the single source of truth (SSOT) for batch orchestration in
+this repository.** Behaviour is defined here, not in any `.sh`, `.ps1`, `.py`,
+`.js` file or JSON configuration, and none may be introduced as a requirement of
+this Skill.
 
-1. **Safety over speed**: Never compromise existing Merge/Batch safety
-2. **Parallel execution, serial merge**: Sub-agents run in parallel, merges are serialized
-3. **Sub-agent integrity**: Orchestrator never substitutes implementation
-4. **Failure isolation**: One Sub-agent failure does not block unrelated Issues
-5. **Dependency respect**: DAG-based scheduling with cycle detection
-6. **Resume capable**: Crash recovery through persisted state
-7. **Admin bypass forbidden**: Never use `--admin`, force push, or protection circumvention
+The references under `references/` explain detail. They never define a rule that
+contradicts or replaces one stated here. If a reference and this document ever
+disagree, **this document governs**.
 
-## Architecture
+This Skill defines **which facts must be established**, not **which commands to
+run**. Any agent that can read Markdown and perform ordinary Git and repository
+operations can execute it.
 
-### Primary Path (Shell / POSIX)
+## Purpose
 
-```text
-batch.sh (entry point)
-    ↓
-Orchestrator (orchestrator.sh)
-    ↓
-Host Agent → Built-in Sub-agent / Task tool
-    ↓
-Task execution (worktree → commit → PR)
-```
+Execute several Issues or tasks safely as one batch by:
 
-### Provider Selection Policy
+1. making the work set and its dependencies **explicit before execution**,
+2. executing each unit of work in an **isolated worker**,
+3. **validating** every worker result before it is allowed to influence the
+   repository, and
+4. **integrating** results one at a time through the existing review, approval
+   and merge gates.
 
-The Agent Runtime Interface dispatches tasks through providers:
+## Applicability
 
-| Priority | Provider | Description | Required |
-|----------|----------|-------------|----------|
-| 1 | host-native | Current host agent's native sub-agent/task capability | Requires host capability |
-| 2 | same-provider adapter | Existing supported mechanism for the current provider | Provider-specific |
-| 3 | explicit adapter | External provider explicitly configured by the user/config | Explicit only |
-| 4 | BLOCKED | No eligible execution mechanism | No worker launch |
+Apply this Skill when **any** of the following holds:
 
-The presence of `claude`, `opencode`, `codex`, or another CLI on `PATH` is not
-configuration and never selects a provider. A provider switch is not a retry;
-retries remain within the selected provider and mechanism.
+| Trigger | Example |
+|---|---|
+| A batch is explicitly requested | "Use the Batch Skill", "バッチで処理して" |
+| Two or more Issues/tasks are handed over as one unit of work | "Implement #101, #102 and #103" |
+| Parallel implementation is requested | "Do these in parallel" |
+| Multi-issue or multi-task execution is implied | "Work through this backlog" |
 
-### Host-Native Dispatch Contract
+When it applies, the [mandatory planning artifacts](#mandatory-planning-artifacts)
+MUST be produced before any implementation work begins — including when only one
+worker will ultimately be used.
 
-When the current host exposes a native task/sub-agent capability, the Batch
-runtime prepares an isolated task context and writes a dispatch request with
-status `READY_FOR_NATIVE_DISPATCH`. The host AI agent running this Skill MUST
-consume that request with its own native Task/Subagent tool. The shell and
-PowerShell runtimes MUST NOT spawn, emulate, or substitute a provider CLI for
-this step.
+Do **not** apply this Skill to a single, indivisible task. That follows
+[`../../task/implementation/SKILL.md`](../../task/implementation/SKILL.md)
+directly.
 
-The request includes `task_id`, `issue_number`, `worktree_path`, `branch_name`,
-prompt/context, required Skills, execution scope, validation requirements, and
-result path. The host updates the request lifecycle as it accepts and runs the
-task:
+## Definitions
 
-```text
-READY_FOR_NATIVE_DISPATCH → DISPATCHED → SUBAGENT_RUNNING → COMPLETED/FAILED
-```
+| Term | Definition |
+|---|---|
+| **Batch** | One execution of this protocol over a defined set of tasks. |
+| **Task** | One independently completable unit of work, normally one Issue. The unit of the dependency graph, of worker assignment, and of result classification. |
+| **Worker** | An independent, delegated execution unit with its own context and its own isolated worktree and branch. A worker is an *abstraction*: how it is realized is left entirely to the executing agent's native capability. |
+| **Wave** | A set of tasks whose dependencies are all satisfied and which have been established parallel-safe with respect to each other. |
+| **Orchestrator** | The role executing this protocol. It plans, dispatches, validates and integrates. It never implements task work itself. |
+| **Integration** | Bringing one worker's validated result into the shared branch, through the review, approval and merge gates. |
+| **Gate** | A condition that MUST hold before the protocol may advance. |
 
-The runtime collects the result and applies the existing Batch state machine.
-If native capability is unavailable and no explicit external provider is
-configured, the worker remains `BLOCKED` with `Issue execution: NOT_STARTED`.
+## Evidence classification
 
-### Legacy Path (PowerShell)
+Every finding this protocol relies on carries exactly one label. This vocabulary
+is shared with the Merge Skill.
 
-```text
-batch.ps1 (entry point)
-    ↓
-Orchestrator (Invoke-BatchOrchestrator.ps1)
-    ↓
-Sub-agent Worker (pwsh child process)
-    ↓
-Task execution
-```
+| Label | Meaning |
+|---|---|
+| **CONFIRMED** | Actually observed from a trusted source during this run. |
+| **INFERRED** | A reasonable conclusion from CONFIRMED facts, not itself observed. |
+| **UNVERIFIED** | Not established — including "the check could not be performed" and "the tool was unavailable". |
 
-Both implementations are functionally equivalent. The Shell version is the default for cross-platform use.
+Rules:
 
-## Batch State Machine
+- **Opening a gate requires CONFIRMED.** A gate whose status is INFERRED or
+  UNVERIFIED is a closed gate.
+- **Permitting parallel execution requires every safety condition CONFIRMED**
+  for that specific pair of tasks. INFERRED or UNVERIFIED safety means
+  **SERIAL**.
+- Where the unknown affects correctness rather than only scheduling, the
+  affected task is **BLOCKED**.
+- UNVERIFIED findings MUST be reported, never omitted and never skipped because
+  a check was unavailable.
+- INFERRED may support a decision that fails safe — choosing serial execution is
+  such a decision. It may never open a gate or authorise parallelism.
 
-### States
+**Absence of evidence of a conflict is not evidence of independence.** Never
+promote INFERRED to CONFIRMED because a conflict seems unlikely.
 
-```text
-BATCH_INITIALIZING
-PLANNING
-SCHEDULING
-RUNNING
-WAITING_FOR_MERGE
-MERGING
-CLEANUP
-COMPLETED
-FAILED
-```
+## Normative rules
 
-### Transitions
+### MUST
 
-```text
-BATCH_INITIALIZING → PLANNING → SCHEDULING → RUNNING
-    ↓                                                    ↓
-    └→ FAILED                              WAITING_FOR_MERGE → MERGING → CLEANUP → COMPLETED
-                                              ↓                                        ↓
-                                           COMPLETED                               FAILED
-                                              ↓
-                                           FAILED
-```
+1. Produce the five [mandatory planning artifacts](#mandatory-planning-artifacts)
+   before dispatching any worker.
+2. Give every worker its **own worktree and own branch**. Workers never share a
+   working tree.
+3. Classify every task's outcome as exactly one **task result**: `SUCCESS`,
+   `NO_OP`, `BLOCKED` or `FAILED`.
+4. **Validate** each worker's delivered result before integrating it.
+5. Re-establish dependency and semantic integration safety immediately before
+   each integration, against the base **as it currently stands**.
+6. Integrate **one task at a time**, in dependency order.
+7. Delegate all merge execution to the Merge Skill
+   ([`../merge/SKILL.md`](../merge/SKILL.md)).
+8. Run aggregate verification, cleanup and reporting on **every** path,
+   including every early stop.
+9. Derive exactly one **batch outcome** by the
+   [ordered outcome rules](#batch-outcome), and report the rule that produced it.
+10. Report the task result for every task in the inventory, including everything
+    not completed.
 
-## Issue State Machine
+### MUST NOT
 
-### States
+1. **MUST NOT** treat a batch as executed when a single worker processed every
+   task sequentially without an inventory, graph and waves having been produced.
+   See [Silent sequential fallback is forbidden](#silent-sequential-fallback-is-forbidden).
+2. **MUST NOT** implement task work in the orchestrator context. The
+   orchestrator never substitutes its own implementation for a worker's, and
+   never repairs a worker's result to make it pass.
+3. **MUST NOT** merge directly, use administrative bypass, force push, or push
+   directly to the default branch.
+4. **MUST NOT** integrate an unvalidated, incomplete, or malformed worker
+   result.
+5. **MUST NOT** integrate anything while a required condition is INFERRED or
+   UNVERIFIED.
+6. **MUST NOT** close an Issue because a worker reported completion. Issue
+   closure is a consequence of the approved merge only.
+7. **MUST NOT** treat `NO_OP` as `SUCCESS`, or as evidence that the batch
+   passed.
+8. **MUST NOT** change worker mechanism or provider as a retry. A mechanism
+   switch is not a retry.
+9. **MUST NOT** skip aggregate verification, cleanup or reporting because the
+   batch stopped early.
 
-```text
-SUBAGENT_STARTING
-SUBAGENT_RUNNING
-SUBAGENT_RETRYING
-SUBAGENT_FAILED
-WAITING_FOR_SUBAGENT
-WAITING_DEPENDENCY
-PR_READY
-WAITING_FOR_APPROVAL
-READY_FOR_MERGE
-MERGING
-COMPLETED
-BLOCKED
-FAILED
-```
+### SHOULD
 
-## Dependency Management
+1. Keep concurrency at or below **3** simultaneous workers unless the operator
+   raises it deliberately.
+2. Retry a transient failure at most **3** times with exponential backoff.
+3. Prefer a smaller wave over an uncertain one.
 
-### DAG Construction
+### MAY
 
-Issues are modeled as a Directed Acyclic Graph (DAG):
+1. Run waves with a single member when the graph or the available capability
+   allows nothing wider.
+2. Record batch progress in any durable form so an interrupted batch can be
+   resumed. No particular format is required, and none is required to exist.
 
-```text
-Issue A (no deps) ─┐
-Issue B (depends on A) ─┤→ Parallel waves
-Issue C (no deps) ─┘
-```
+## Workflow
 
-### Cycle Detection
-
-Cycles are detected before execution begins. If a cycle is found:
-- Batch stops immediately
-- Cycle path is reported
-- User must resolve dependency conflict
-
-### Concurrency Groups
-
-Issues are grouped into waves based on dependency completion:
-
-```text
-Wave 1: [A, C] (no dependencies)
-Wave 2: [B] (depends on A)
-Wave 3: [D] (depends on B and C)
-```
-
-## Parallel Execution
-
-### Concurrency Limit
+The batch performs these steps in this order. This is an ordered procedure, not
+a state machine: there is no separate progress vocabulary to track, and no step
+carries a transition table.
 
 ```text
-max_parallel_subagents: 3 (configurable)
+ 1. Retrieve the tasks or Issues from a trusted source.
+ 2. Confirm each one's live state and requirements.
+ 3. Build the task inventory.
+ 4. Resolve dependencies between tasks.
+ 5. Investigate each task's expected change surface.
+ 6. Classify every finding CONFIRMED / INFERRED / UNVERIFIED.
+ 7. Decide parallel safety, pairwise.
+ 8. Build the dependency graph and the execution waves.
+ 9. Provision an isolated worker, worktree and branch for each task in the wave.
+10. Execute the wave, within the concurrency policy.
+11. Validate each delivered worker result.
+12. Re-evaluate dependency and semantic integration safety.
+13. Pass eligible changes to the Merge Skill, one at a time, in dependency order.
+14. Run aggregate verification when anything was integrated.
+15. Attempt cleanup.
+16. Report every task result and the batch outcome.
 ```
 
-### Dispatch Rules
+Steps 1–8 are the **planning stage** and are mandatory in full. Steps 9–13 are
+the **execution stage** and repeat once per wave — a later wave is provisioned
+from the base as it stands when that wave starts, which every prior integration
+has moved. Steps 14–16 run on **every** path.
 
-1. Check dependency completion
-2. Check concurrency slot availability
-3. Create Worktree and Branch
-4. Initialize environment
-5. Launch Sub-agent
-6. Monitor completion
+A batch with **nothing left to execute** — every task already resolved before
+dispatch, whether `NO_OP`, `BLOCKED` or a mixture — is not a stop and records no
+blocking condition. Steps 9–13 simply have nothing to do, aggregate
+verification is `NOT RUN` because nothing was integrated, and the outcome is
+derived at step 16 like any other batch's.
 
-### Failure Isolation
+A condition that leaves the **batch as a whole** unable to continue safely is a
+**batch-level blocking condition**. Most fail-closed stops are not one: they
+stop a single task and leave the rest of the batch running
+([Fail-closed rules](#fail-closed-rules)).
+
+**A batch that stops on a batch-level blocking condition does not skip steps
+14–16.** It records that condition verbatim, stops dispatching further workers,
+integrates nothing that was not already established eligible, classifies every
+task that has no established task result as `BLOCKED` naming that condition, and
+then runs aggregate verification, cleanup and reporting exactly as a batch that
+merged every task does. Stopping is a reportable outcome, not an exit.
+
+## Mandatory planning artifacts
+
+Before any worker is dispatched, all five artifacts below MUST exist and MUST
+appear in the batch report:
+
+| # | Artifact | Content |
+|---|---|---|
+| 1 | Task inventory | Every task, its identifier, its goal, its expected change surface |
+| 2 | Dependency analysis | For each ordered pair, whether a dependency exists, or that it could not be established |
+| 3 | Dependency graph | The DAG, with a completed cycle check |
+| 4 | Execution waves | The wave assignment of every task that is still to be executed |
+| 5 | Parallel/sequential classification | For every task in a wave, whether it is parallel-safe with its wave peers, with the evidence |
+
+If any of these cannot be produced, the batch **stops**, records the exact
+reason, and finishes through steps 14–16. It does not proceed as an ordinary
+sequential implementation, and it does not stop silently.
+
+## Silent sequential fallback is forbidden
+
+Whether workers run **concurrently** is a capability question. Whether the batch
+**semantics** apply is not.
+
+An agent that lacks a native parallel worker capability MUST NOT collapse the
+batch into ordinary one-by-one implementation. It MUST still:
+
+- produce all five mandatory planning artifacts,
+- give each task its own worktree and branch,
+- execute tasks in explicit, dependency-aware wave order,
+- validate each result independently before integration,
+- integrate one at a time through the gates, and
+- report per-task results.
+
+It MUST additionally state in the report that execution was serialized, and why.
+Serialized execution of a correctly planned batch is a valid outcome. Skipping
+the planning and calling the result a batch is not.
+
+## Dependency and parallel safety
+
+### Dependencies
+
+A dependency `A -> B` ("B depends on A") is established from any of:
+
+| Source | Example |
+|---|---|
+| Declared | The Issue states "depends on #101" / "blocked by #101" |
+| Structural | B modifies or consumes an interface, schema or contract that A introduces or changes |
+| Sequential | A's change must exist in the base before B's change is meaningful |
+| Verification | B's tests cannot pass until A is integrated |
+
+Rules:
+
+- Dependencies come from evidence, never from Issue-number ordering.
+- A pair whose relationship cannot be established is **treated as dependent**.
+  The direction is chosen so that the task with the broader or less certain
+  change surface runs first, and the choice is recorded with its reason.
+- The graph is built over the tasks that are still to be executed — the
+  inventory minus every task that already holds a task result.
+- **A cycle, or a graph that cannot be checked for cycles, blocks the batch.**
+  The full cycle path is reported. The orchestrator MUST NOT break a cycle by
+  dropping an edge on its own judgement; that is an operator decision.
+
+### Prerequisites
+
+- A task is not dispatched while any prerequisite is still to be resolved.
+- Once a prerequisite holds a task result other than `SUCCESS` — `FAILED`,
+  `BLOCKED` or `NO_OP` — every dependent that does not already hold a task
+  result becomes `BLOCKED`, transitively, naming that prerequisite. A dependent
+  that already holds a task result keeps it, and records the prerequisite as
+  context.
+- A prerequisite that is still being worked on holds **no** task result yet and
+  therefore blocks nothing. Dependents wait; they are not pre-emptively blocked.
+- A dependent is **blocked, never skipped**: it stays in the inventory and in the
+  report, and its work is never integrated on the assumption that the
+  prerequisite was optional.
+
+### Parallel safety
+
+Two tasks may share a wave **only when every dimension below is CONFIRMED for
+that specific pair**:
+
+- [ ] No dependency between them, in either direction
+- [ ] No overlap of change surfaces — files, modules, generated artifacts
+- [ ] No shared public contract, interface or schema change
+- [ ] No shared mutable configuration
+- [ ] No architectural coupling that requires ordering
+- [ ] No execution-order requirement
+
+**File non-overlap alone is never sufficient.** Two tasks touching disjoint
+files can still conflict through a shared contract, shared configuration,
+architectural coupling, or a required order. "Different files" is a starting
+observation, not a conclusion.
+
+| Evidence level on any dimension | Execution |
+|---|---|
+| All dimensions CONFIRMED | **PARALLEL permitted** |
+| Any dimension INFERRED | **SERIAL** |
+| Any dimension UNVERIFIED | **SERIAL**, or **BLOCKED** where the unknown affects correctness |
+
+Serialization is a safety decision, not a degradation. A wave of one is a normal
+outcome. Both are reported as such, with the reason.
+
+### Waves
+
+- A wave holds only tasks whose dependencies are already satisfied by an earlier
+  wave, and whose members are pairwise parallel-safe.
+- Wave membership expresses **permission** to run concurrently. The number of
+  workers actually running at once is bounded by the concurrency policy
+  ([`references/worker-and-isolation.md`](references/worker-and-isolation.md#concurrency)).
+- **A wave's successor does not start until every member of the current wave
+  holds a task result.** Because task result `SUCCESS` requires the integration
+  to have completed, this is also what guarantees that every wave-1 change that
+  was going to land has landed. A later task is provisioned from the base as it
+  stands at that moment, so dispatching it while a prerequisite is validated but
+  not yet integrated would build and verify it against a base that does not
+  contain its own premise.
+- Wave ordering never halts the batch. A member that ends `BLOCKED` or `FAILED`
+  resolves the wave for it; the next wave proceeds with whichever of its own
+  members are still executable.
+
+## Result vocabulary
+
+Task results and batch outcomes are two separate vocabularies with the same four
+spellings. A task result describes one task; a batch outcome describes the
+batch. Reporting MUST qualify every use — "task result `BLOCKED`", "batch outcome
+`BLOCKED`".
+
+### Task result
+
+Every task in the inventory ends with exactly one:
+
+| Task result | Meaning | Integration | Issue closure |
+|---|---|---|---|
+| `SUCCESS` | Work was required, the worker produced it, validation passed, and the required integration completed | Completed | Via approved merge only |
+| `NO_OP` | No work was required — the change was already present, established by evidence | Not eligible | Never |
+| `BLOCKED` | A required precondition, dependency, gate or piece of evidence did not hold, so the work could not safely proceed or conclude | Not eligible | Never |
+| `FAILED` | Work was required and was attempted, and the implementation or its verification did not succeed | Not eligible | Never |
+
+Rules:
+
+- **`NO_OP` requires CONFIRMED evidence that the functionality is already
+  present.** An absent diff is not that evidence. This holds identically whether
+  the finding comes from the pre-dispatch check or from the worker: both produce
+  task result `NO_OP`, and neither is `SUCCESS`.
+- **Where it cannot be CONFIRMED whether the work was already done, the task is
+  `BLOCKED`, not `NO_OP`.** `NO_OP` is a positive finding, never a fallback.
+- `NO_OP` is reported as `NO_OP`. It never counts toward a passing batch, and it
+  always leaves an explicit operator decision open on the underlying Issue.
+- `BLOCKED` is not a milder `FAILED`. `FAILED` means work was attempted and did
+  not work. `BLOCKED` means it was not attempted, or cannot be concluded,
+  without a decision only the operator can make.
+- A worker's own classification is an **input** to validation, never the task
+  result. The orchestrator assigns the task result after validating the claim.
+
+### Batch outcome
+
+Derived once, at reporting time, by these rules **in order**. The first match
+decides, and the report names the rule number.
+
+| # | Condition | Batch outcome |
+|---|---|---|
+| 1 | Aggregate verification ran and failed | `FAILED` |
+| 2 | Any task result is `FAILED` | `FAILED` |
+| 3 | Any task result is `BLOCKED`, or a batch-level blocking condition was recorded ([Workflow](#workflow)) | `BLOCKED` |
+| 4 | Aggregate verification is `NOT RUN` while at least one task result is `SUCCESS` | `BLOCKED` |
+| 5 | At least one task result is `SUCCESS` **and** at least one is `NO_OP` | `BLOCKED` |
+| 6 | The inventory is empty, or every task result is `NO_OP` | `NO_OP` |
+| 7 | Every task result is `SUCCESS` **and** aggregate verification is `PASS` | `SUCCESS` |
+
+The rules are exhaustive and deliberately overlap; the ordering is what makes
+the outcome unique. Consequences worth stating:
+
+- **Batch outcome `SUCCESS` requires every task in the inventory to be task
+  result `SUCCESS`.** Rule 7 is the only route to it.
+- **`NO_OP` is never promoted.** Rule 5 exists because a `NO_OP` task leaves an
+  operator decision open; a batch that also integrated real work still has that
+  decision outstanding.
+- **Aggregate verification is load-bearing.** Rule 1 fails a batch whose tasks
+  all reported `SUCCESS`, and rule 4 refuses `SUCCESS` to a batch that
+  integrated work it never verified as a whole.
+- **The reported cause is the condition, not the rule alone.** Where the batch
+  itself stopped, the report quotes the stopping condition verbatim; "some task
+  was blocked" is not a cause.
+
+## Gates and integration
+
+Integration is **serial**: exactly one task at a time, in dependency order, and
+within a wave in the order results were validated.
+
+Per task, in this order, each requiring CONFIRMED evidence to open:
 
 ```text
-Issue A → SUCCESS → continues
-Issue B → BLOCKED → does not affect A or C
-Issue C → RUNNING → continues
-Issue D → depends on B → BLOCKED
+1. Eligibility      result validated, classification SUCCESS,
+                    every dependency already integrated
+2. Semantic safety  no semantic conflict against the base as it stands now
+3. Review           reviewed per ../self-review/SKILL.md and satisfied
+4. Approval         explicit, attributed, current, SHA-bound  → owned by the Merge Skill
+5. Merge            → executed by the Merge Skill
+6. Post-merge       → verified by the Merge Skill
 ```
 
-## Sub-agent Responsibilities
-
-Each Sub-agent MUST:
-
-1. Investigate the Issue
-2. Research repository architecture
-3. Check Architecture / SSOT
-4. Design implementation
-5. Implement changes
-6. Run tests
-7. Verify results
-8. Create structured report
-9. Create PR
-
-### Required Report Fields
-
-| Field | Description |
-|-------|-------------|
-| InvestigationSummary | What was investigated |
-| ImplementationSummary | What was implemented |
-| DesignDecision | Why this design was chosen |
-| ChangedFiles | List of modified files |
-| TestResults | Test execution results |
-| PrNumber | GitHub PR number |
-| CommitSha | Commit SHA |
-
-## Retry Mechanism
-
-### Retryable Errors
-
-- API connection errors
-- Sub-agent startup failures
-- Timeouts
-- Transient failures
-
-### Non-Retryable Errors
-
-- Code compilation errors
-- Test failures
-- Architecture violations
-- Dependency conflicts
-
-### Backoff
-
-```text
-backoff = base_seconds * 2^retry_count + random_jitter
-```
-
-### Retry Flow
-
-```text
-Sub-agent fails
-    ↓
-Categorize error
-    ↓
-Retryable?
-├─ YES → Wait backoff → Retry
-│         ↓
-│       Success → Continue
-│
-└─ NO / Retry limit → BLOCKED → User notification
-```
-
-## Merge Control
-
-### Serial Merge
-
-PRs are merged one at a time through the Merge Skill:
-
-```text
-PR A → Rebase → Approval → Validation → Merge → main updates
-    ↓
-PR B → Rebase (onto new main) → Approval → Validation → Merge
-    ↓
-PR C → Same process
-```
-
-### Merge Skill Integration
-
-The Batch Orchestrator NEVER merges directly. It delegates to the Merge Skill which enforces:
-
-- Mandatory rebase onto latest main HEAD
-- SHA-bound approval validation
-- Standard merge only (no `--admin`)
-- Conflict delegation to Sub-agent
-
-## Approval Management
-
-### Per-Issue Independence
-
-Each Issue has independent approval tracked by commit SHA.
-
-### Invalidation Conditions
-
-- Rebase changed content
-- Commit changed
-- PR content changed
-- Force push detected
-- HEAD SHA changed
-
-## Resume / Crash Recovery
-
-### Persisted State
-
-| File | Content |
-|------|---------|
-| `.batch-state-{id}.json` | Batch-level state |
-| `.batch-issues-{id}.json` | Per-Issue states |
-| `.batch-checkpoints-{id}/batch-checkpoint.json` | Batch checkpoint with worker summaries |
-| `.batch-checkpoints-{id}/worker-{issueId}.json` | Per-worker runtime checkpoints |
-| `.batch-log-{id}.jsonl` | Transition audit log (JSONL) |
-
-### Checkpoint Lifecycle
-
-Checkpoints are saved atomically at key transitions:
-
-```text
-BATCH_INITIALIZING → PLANNING → SCHEDULING → RUNNING
-    ↓                                                    ↓
-    └→ FAILED                              WAITING_FOR_MERGE → MERGING → CLEANUP → COMPLETED
-                                               ↓                                        ↓
-                                            COMPLETED                               FAILED
-                                               ↓
-                                            FAILED
-```
-
-Worker checkpoints are saved at:
-- Phase transitions: `agent_completed` → `commit` → `push` → `pr_created`
-- State changes: `PENDING` → `RUNNING` → `SUCCESS`/`ORPHANED`/`FAILED`
-- Retry events: increment `retryCount`, update `lastRetryAt`
-- Before git operations: capture `changedFiles`, `branch`, `baseCommit`
-
-### Checkpoint Schema (Provider-Neutral)
-
-Core schema (version 1) is independent of any specific agent provider:
-
-**Batch Checkpoint:**
-```json
-{
-  "schemaVersion": 1,
-  "batchId": "batch-123",
-  "createdAt": "2026-01-01T00:00:00Z",
-  "updatedAt": "2026-01-01T00:00:00Z",
-  "batchState": "RUNNING",
-  "issueCount": 5,
-  "completedCount": 2,
-  "failedCount": 0,
-  "blockedCount": 1,
-  "failureReason": null,
-  "workers": {
-    "issue-1": { "state": "SUCCESS", "updatedAt": "..." }
-  }
-}
-```
-
-**Worker Checkpoint:**
-```json
-{
-  "schemaVersion": 1,
-  "issueId": "issue-1",
-  "issueNumber": 42,
-  "description": "Add feature X",
-  "createdAt": "2026-01-01T00:00:00Z",
-  "updatedAt": "2026-01-01T00:00:00Z",
-  "provider": "claude-code",
-  "lifecycleState": "RUNNING",
-  "completedPhases": ["agent_completed", "commit"],
-  "branch": "issue/42-feature-x",
-  "baseCommit": "abc123",
-  "currentCommit": "def456",
-  "resultCommit": null,
-  "prNumber": null,
-  "prState": null,
-  "worktreePath": "/tmp/worktree/issue-42",
-  "testResult": null,
-  "testPassed": false,
-  "remainingWork": null,
-  "failureReason": null,
-  "failureCategory": null,
-  "retryCount": 0,
-  "maxRetries": 3,
-  "lastRetryAt": null,
-  "processId": 12345,
-  "startedAt": "2026-01-01T00:00:00Z",
-  "completedAt": null,
-  "providerMetadata": { "sessionId": "abc" }
-}
-```
-
-### Lifecycle States (Worker Checkpoint)
-
-| State | Meaning | Source Issue State |
-|-------|---------|-------------------|
-| `PENDING` | Not yet started | `WAITING_DEPENDENCY`, `WAITING_FOR_SUBAGENT` |
-| `RUNNING` | Active execution | `SUBAGENT_STARTING`, `SUBAGENT_RUNNING`, `SUBAGENT_RETRYING`, `PR_READY` |
-| `ORPHANED` | Process died, no result | `ORPHANED` |
-| `SUCCESS` | Completed, PR ready | `COMPLETED` |
-| `FAILED` | Exhausted retries | `SUBAGENT_FAILED`, `FAILED` |
-
-### ORPHANED Detection and Recovery
-
-1. **Detection**: On resume, `Test-OrphanedProcess` checks:
-   - Process liveness via PID
-   - Result file existence and JSON validity
-   - Corrupt result.json → treat as orphaned
-
-2. **Recovery Flow**:
-   ```
-   ORPHANED detected
-       ↓
-   retryCount < maxRetries?
-       ├─ YES → retryCount++ → WAITING_FOR_SUBAGENT → redispatch
-       └─ NO  → SUBAGENT_FAILED (NOT added to completedIssues)
-   ```
-
-3. **Retry Budget Continuation**: `retryCount` and `maxRetries` persist in checkpoint and survive orchestrator restarts.
-
-### Retry Budget
-
-- Per-issue `maxRetries` (default 3, configurable)
-- `retryCount` increments on each retry attempt
-- Checkpointed at every retry transition
-- On resume, `Test-SubAgentRetryable` observes persisted count
-
-### Idempotency
-
-- **PR Existence Check**: Before launching worker, `Test-GitPrExists` runs regardless of branch existence
-- **Git Operation Validation**: `$LASTEXITCODE` checked after `git add/commit/push`; commit SHA verified
-- **Duplicate Prevention**: Existing PR → transition to `PR_READY`, skip worker launch
-
-### Atomic Persistence
-
-All writes use temp-file + atomic rename:
-
-```powershell
-$tmpFile = "$FilePath.tmp.$pid.$(Get-Random)"
-$Data | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Force
-Move-Item -Path $tmpFile -Destination $FilePath -Force
-```
-
-Transition log uses `Add-Content -ErrorAction Stop` with parent directory auto-creation.
-
-### Corrupt State Handling (Fail-Closed)
-
-| Scenario | Behavior |
-|----------|----------|
-| Missing state file | Return `$null` (new run) |
-| Existing file, corrupt JSON | **Throw error** (fail-closed) |
-| Existing file, valid JSON | Return parsed state |
-
-Prevents silent progress loss and duplicate dispatch.
-
-### Safe Filename Generation
-
-**Checkpoint Directory**: `.batch-checkpoints-{BatchId}`
-
-**Worker Filename**: `worker-{safeIssueId}.json`
-
-**Encoding Rules**:
-- Safe IssueIds (`^[a-zA-Z0-9_-]+$`): used directly → `worker-issue-1.json`
-- Unsafe IssueIds: `~` + uppercase hex of UTF-8 bytes → `worker-~69737375652F31.json` for `issue/1`
-- Blank/whitespace IssueIds: **rejected** before filename generation
-
-**Injectivity Guarantee**: Distinct IssueIds always produce distinct filenames. No collision between `issue/1` (`~69737375652F31`) and `issue_2F1` (safe, unchanged).
-
-### BatchId / IssueId Validation
-
-Rejected patterns at all path construction points:
-- Empty or whitespace-only
-- Path separators: `/` `\`
-- Parent traversal: `..`
-
-Applied in: `Get-CheckpointDirectory`, `Get-BatchStateFilePath`, `Get-TransitionLogPath`, `Get-WorkerCheckpointPath`.
-
-### Resume Behavior
-
-1. Load batch checkpoint (`Get-BatchCheckpoint`)
-2. Load all worker checkpoints (`Get-AllWorkerCheckpoints`)
-3. Load legacy state (`Get-BatchState`, `Get-IssueStates`)
-4. Build recovery context (`New-RecoveryContext`)
-5. Reconcile: checkpoint data takes precedence when legacy state is missing/stale
-6. Restore `retryCount`, `completedPhases`, `currentCommit`, `prNumber`, `providerMetadata`
-7. Detect ORPHANED workers from checkpoint + process liveness
-8. Resume scheduling from `RUNNING` state
-
-### Provider-Neutral Design
-
-- Core checkpoint schema contains NO provider-specific logic
-- `providerMetadata` field isolates provider-specific data (e.g., session ID)
-- New providers only add to `providerMetadata`; core fields unchanged
-- `Save-AllCheckpoints` records the provider selected by the runtime policy; no
-  provider is the default.
-
-### Cross-Platform Considerations
-
-| Platform | Notes |
-|----------|-------|
-| **Windows** | Native `Move-Item -Force` atomic rename; NTFS supports |
-| **Linux/macOS** | `Move-Item` atomic on same filesystem; PowerShell Core 7.x |
-| **Linux without pwsh** | Shell implementation (orchestrator.sh) uses same atomic pattern; no pwsh required |
-
-The Shell runtime (`orchestrator.sh`, `persistence.sh`) provides equivalent checkpoint/resume without PowerShell dependency. PowerShell is ONLY needed for the legacy `batch.ps1` entry point.
-
-### Provider Implementation Details Isolation
-
-Provider-specific implementation details MUST NOT leak into core checkpoint schema:
-- Session tokens, API keys → `providerMetadata` only
-- Provider-specific phase names → map to standard `completedPhases` values
-- Provider-specific error categories → map to standard `failureCategory` values
-
-### Configuration
-
-Checkpoint behavior controlled in `config/batch-config.json`:
-
-```json
-{
-  "checkpoint": {
-    "enabled": true,
-    "provider_neutral": true,
-    "recovery": {
-      "orphan_detection": true,
-      "idempotency_protection": true
-    }
-  }
-}
-```
-
-### Recovery Process (Detailed)
-
-```text
-1. Resume invoked (batch.sh resume / batch.ps1 resume)
-2. Load batch checkpoint → Get-BatchCheckpoint
-3. Load worker checkpoints → Get-AllWorkerCheckpoints
-4. Load legacy state → Get-BatchState, Get-IssueStates
-5. Sync-StateWithGitHub → verify PR/branch reality
-6. For each issue with worker checkpoint:
-   a. Build recovery context → New-RecoveryContext
-   b. If ORPHANED in checkpoint + process dead → Test-OrphanedProcess
-   c. If retry eligible → increment retryCount → WAITING_FOR_SUBAGENT
-   d. If retry exhausted → SUBAGENT_FAILED
-7. For issues without worker checkpoint:
-   a. Use legacy issue state
-   b. Apply ORPHANED detection from process liveness
-8. Enter RUNNING loop with restored state
-9. Continue scheduling and dispatch
-```
+Rules:
+
+- **A gate whose status is not CONFIRMED open is closed.** There is no "probably
+  approved" and no "conflict probably absent". A closed gate stops that task and
+  is reported with the exact condition that could not be established.
+- Before **each** integration the base is refreshed, the change re-verified
+  against the current base, and semantic conflict detection re-run. Every prior
+  integration in the batch has moved the base.
+- Review is a distinct pass from authoring: the worker authors, and a separate
+  context reviews. Automated reviewers are best-effort inputs; their absence,
+  unavailability or pending status neither opens nor closes the gate on its own.
+- If integration of one task stops, the remaining queue is **not** drained
+  automatically. A gate that closed on a condition that can still change leaves
+  the task without a task result, awaiting a fresh determination; only a gate
+  that closed on a condition needing an operator decision makes it `BLOCKED`,
+  and only then do its dependents follow. Remaining approvals and semantic
+  determinations are re-established before any further integration.
+- Nothing already merged is reverted automatically. Reverting is an operator
+  decision.
+- A gate stop is task-scoped. It stops that task; unrelated tasks keep running
+  and integrating. That failure isolation is the reason this protocol exists.
+
+### Merge Skill boundary
+
+[`../merge/SKILL.md`](../merge/SKILL.md) is the **authority** on rebase,
+approval validity, exact-SHA approval binding, mergeability, merge execution and
+post-merge verification. This Skill MUST NOT perform, reimplement or approximate
+any of them.
+
+This Skill owns exactly one thing at the boundary: **which task is handed to the
+Merge Skill, and in what order.** It invokes the Merge Skill for one task at a
+time and accepts its outcome as authoritative. Where this document states a
+merge or approval condition, that statement is a **reference** to the Merge
+Skill's rule, never a second definition of it. If the two disagree, the Merge
+Skill governs.
+
+**Batch execution is never itself a merge condition.** A change does not become
+mergeable because it is part of a batch.
+
+## Aggregate verification
+
+Per-task verification proves each task in isolation. Aggregate verification
+proves the *combination*, which no worker observed. It runs when **anything was
+integrated**, and confirms that:
+
+1. the integrated base builds and its test suite passes as a whole,
+2. each `SUCCESS` task's intended change is actually present in that base, and
+3. no integration silently reverted an earlier one.
+
+Its result is `PASS`, `FAIL` or `NOT RUN`, with the meanings
+[`../reporting/SKILL.md`](../reporting/SKILL.md) gives those words.
+
+- Nothing integrated → `NOT RUN`. That is a correct, expected report.
+- Could not be run → `NOT RUN`, with the reason. It is never reported as
+  passing.
+- `FAIL` is reported against the integrated base, identifying which tasks are
+  implicated. Nothing is reverted automatically.
 
 ## Cleanup
 
-After merge confirmation:
+Cleanup removes isolation artifacts, and **only for work whose merge is
+CONFIRMED present on the default branch**. It is attempted for every such task.
 
-1. Delete Worktree
-2. Delete local Branch
-3. Delete remote Branch
-4. Prune stale references
-5. Mark Issue as COMPLETED
+- Artifacts for `NO_OP`, `BLOCKED` and `FAILED` tasks are **deliberately
+  preserved** where any were provisioned, so the work stays recoverable and
+  diagnosable.
+- A cleanup failure is **recorded and reported** with the artifact that could not
+  be removed. It never reverts a merge, never changes a task result, and never
+  stops reporting.
+- Residual artifacts are listed in the report with their paths, so the operator
+  knows exactly what remains and why.
 
-## Dependencies
+Detail: [`references/worker-and-isolation.md`](references/worker-and-isolation.md#cleanup).
 
-### Required
+## Fail-closed rules
 
-| Tool | Purpose |
-|------|---------|
-| git | Repository operations, worktree management |
+Uncertainty resolves to the safe side. "Probably fine" is not a permitted state.
 
-### Optional
+| Unknown condition | Required resolution |
+|---|---|
+| Dependency between two tasks | Treat as **dependent**; order them |
+| Change-surface overlap | Treat as **overlapping** → serial |
+| Parallel safety | **Serial** |
+| Whether a precondition holds | Task is **BLOCKED** |
+| Whether the work was already done | Task is **BLOCKED**, not `NO_OP` |
+| Worker result incomplete or malformed | **Do not integrate** |
+| Semantic conflict status | **Do not integrate** |
+| Review requirement or performance | **Do not integrate** |
+| Approval existence or validity | **Do not merge** |
+| Recorded batch progress unreadable | **Stop**; do not re-dispatch and do not integrate |
 
-| Tool | Purpose | Used By |
-|------|---------|---------|
-| gh | GitHub PR/issue operations | github-operations.sh, merge-queue.sh |
-| claude | Claude Code CLI | adapters/claude-code/ |
-| pwsh | PowerShell (for PS runtime only) | powershell/ |
+Every fail-closed stop MUST be reported with the exact condition that could not
+be established. Most are **task**-scoped and leave the rest of the batch
+running. A condition that leaves the **batch as a whole** unable to continue
+safely is a batch-level blocking condition: it stops dispatch, and the batch
+still runs steps 14-16 ([Workflow](#workflow)).
 
-### Not Required
+## Reporting contract
 
-| Tool | Notes |
-|------|-------|
-| jq | Shell version uses sed-based JSON |
-| python | Not needed |
-| node | Not needed |
-| opencode | Not a required dependency |
-| codex | Not a required dependency |
+The batch report follows [`../reporting/SKILL.md`](../reporting/SKILL.md) and
+MUST additionally contain:
 
-When `gh` is not available, GitHub-dependent operations (PR creation, approval checks, merge) return graceful errors. The orchestrator continues processing and stops safely before any merge that requires approval verification.
+**Plan** — the task inventory; the dependency determinations, including every
+one that could not be established and how it was resolved; the DAG and the
+cycle-check result; the wave assignment; the parallel/sequential classification
+with the evidence and the reason for every serialization; and whether workers ran
+concurrently or serially, and why.
 
-## Configuration
+**Per task**, for every task in the inventory without exception — its
+identifier, its task result, its wave if one was assigned, its branch and
+worktree if any were provisioned, and whether it was integrated and via which
+merge. For `BLOCKED` and `FAILED`, the exact failing condition, quoted. For
+`NO_OP`, which has no failing condition, the CONFIRMED evidence that the work
+was already present and the operator decision still open on the Issue. Fields
+that do not apply to a task may be omitted or marked absent; nothing is
+fabricated to fill them — least of all a failure for a task that did not
+fail.
 
-Project-specific configuration in `config/batch-config.json`.
+**Batch** — the batch outcome with the rule number that produced it; the
+stopping condition quoted verbatim if the batch stopped; counts per task result;
+the aggregate verification result; every fail-closed stop with the condition
+that could not be established; residual artifacts; and the remaining work and
+operator decisions.
 
-## Runtime
+Honesty rules:
 
-### Shell (POSIX sh) — Default
+- A task absent from the report is a defect in the report.
+- `NO_OP` is reported as `NO_OP`, never folded into `SUCCESS`.
+- Verification that was not run is reported `NOT RUN`, never as passing.
+- Batch outcome `SUCCESS` requires **every** task to be task result `SUCCESS`.
+- A batch that integrated nothing is additionally reported as having produced no
+  integrated change.
+- The parallel-safety decision is reported explicitly, including which
+  dimensions were CONFIRMED and which forced serial execution. A batch that ran
+  serially because safety could not be proven is a **correct** outcome and is
+  reported as such, not as a shortfall.
 
-```text
-runtime/
-├── batch.sh                          # CLI entry point
-├── orchestrator.sh                   # Main orchestrator loop
-├── persistence.sh                    # JSON state I/O (atomic writes)
-├── git-operations.sh                 # Worktree CRUD, branch ops
-├── agent-runtime.sh                  # Provider dispatch interface
-├── github-operations.sh              # PR management via gh CLI
-├── merge-queue.sh                    # Serial merge with approval gate
-├── core/                             # Pure logic (zero I/O)
-│   ├── state-machine.sh              # Batch/issue state transitions
-│   ├── dependency-graph.sh           # DAG, cycle detection
-│   ├── scheduler.sh                  # Concurrency-aware scheduling
-│   ├── retry.sh                      # Exponential backoff
-│   ├── contracts.sh                  # State schema validation
-│   └── tests/                        # 227 tests
-├── adapters/
-│   ├── test/adapter.sh               # Test provider (no AI agent)
-│   ├── built-in-subagent/adapter.sh  # Host agent Task tool contract
-│   └── claude-code/adapter.sh        # Explicitly selected provider adapter
-└── tests/                            # 122 tests
-```
+## Responsibility boundaries
 
-### PowerShell — Legacy
+This Skill owns orchestration only. It MUST NOT reimplement what another Skill
+owns:
 
-```text
-runtime/
-└── powershell/
-    ├── Modules/
-    │   ├── BatchStateMachine.psm1
-    │   ├── IssueStateMachine.psm1
-    │   ├── DependencyGraph.psm1
-    │   ├── BatchScheduler.psm1
-    │   ├── BatchSubAgent.psm1
-    │   ├── BatchGitUtilities.psm1
-    │   ├── BatchMergeQueue.psm1
-    │   └── BatchPersistence.psm1
-    ├── Scripts/
-    │   └── Invoke-BatchOrchestrator.ps1
-    └── Tests/
-        └── Test-BatchSkill.ps1
-```
+| Concern | Owner |
+|---|---|
+| Dependency analysis, waves, worker assignment, integration order | **This Skill** |
+| Approval validation, main-HEAD refresh, mandatory rebase, conflict handling, merge execution, post-merge verification | [`../merge/SKILL.md`](../merge/SKILL.md) |
+| Pre-PR review semantics and the review checklist | [`../self-review/SKILL.md`](../self-review/SKILL.md) |
+| How an individual task is implemented | [`../../task/implementation/SKILL.md`](../../task/implementation/SKILL.md) |
+| Documentation synchronization | [`../doc-sync/SKILL.md`](../doc-sync/SKILL.md) |
+| Commit message format | [`../commit-message/SKILL.md`](../commit-message/SKILL.md) |
+| Final report format and `PASS` / `FAIL` / `NOT RUN` semantics | [`../reporting/SKILL.md`](../reporting/SKILL.md) |
 
-### Design Principles
+## References
 
-- **Core Logic**: Pure functions, zero I/O, zero external dependencies
-- **Runtime Layer**: POSIX sh compatible, sources Core modules
-- **Git**: Only hard dependency
-- **Agent Runtime**: Provider-agnostic dispatch via adapter pattern
-- **State**: JSON files with atomic writes (temp + mv)
-
-## Usage
-
-### Shell (POSIX sh) — Cross-platform
-
-```sh
-# Run batch with issue numbers
-batch.sh run batch-100 101 102 103
-
-# Run with test provider (no AI agent needed)
-batch.sh run batch-100 101 102 --provider test
-
-# Run with custom concurrency and retries
-batch.sh run batch-100 101 102 103 --max-concurrency 5 --max-retries 5
-
-# Resume after interruption (syncs with GitHub)
-batch.sh resume batch-100
-
-# Check status
-batch.sh status batch-100
-
-# Show help
-batch.sh help
-```
-
-### PowerShell (Windows / pwsh)
-
-```powershell
-# Run batch with issues file
-.\wrapper\batch.ps1 run -BatchId my-batch -IssuesFile issues.json
-
-# Run with inline issue IDs
-.\wrapper\batch.ps1 run -BatchId my-batch -IssueIds @("140","141","142")
-
-# Check status
-.\wrapper\batch.ps1 status -BatchId my-batch
-
-# Resume after crash
-.\wrapper\batch.ps1 resume -BatchId my-batch
-
-# Run tests
-.\wrapper\batch.ps1 test
-```
-
-### Provider Selection
-
-| Scenario | Recommended Provider |
-|----------|---------------------|
-| Host agent with native Task tool | host-native mechanism |
-| Explicit provider configured | configured provider adapter |
-| CI / deterministic testing | test |
-| Native unavailable and no provider configured | `BLOCKED` |
+| Reference | Contents |
+|---|---|
+| [`references/worker-and-isolation.md`](references/worker-and-isolation.md) | Worker abstraction and mechanism selection, pre-dispatch checks, worktree and branch strategy, concurrency, git safety, worker result reporting and validation, semantic conflict detection, cleanup |
+| [`references/failure-and-recovery.md`](references/failure-and-recovery.md) | Failure classification, retry policy and budget, non-delivering workers, integration failure, resume and reconciliation |
+| [`references/examples.md`](references/examples.md) | Worked conformance scenarios |
 
 ## Non-goals
 
-- Replacing human judgment on merge timing
-- Automatic merge without user approval
-- Orchestrator implementing code for Sub-agents
-- Parallel merge to main
-- Admin bypass or protection circumvention
-- Ignoring dependency ordering
+- Replacing human judgement on merge timing.
+- Merging without explicit approval.
+- Implementing task work in the orchestrator.
+- Parallel merges into the default branch.
+- Administrative bypass or protection-rule circumvention.
+- Providing or requiring a batch-specific executable runtime or configuration
+  file.
+- Tracking batch or task progress as a normative state machine. Progress is an
+  execution detail; the protocol's closed vocabularies are the evidence labels,
+  the task result and the batch outcome.

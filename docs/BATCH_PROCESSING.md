@@ -1,45 +1,21 @@
-# Batch Orchestrator
+# Batch Orchestration
 
-Processes multiple independent issues in one batch: sub-agents run
-concurrently in isolated worktrees, then their PRs are merged serially
-through an approval gate. See skills/common/process/batch/SKILL.md.
+**Status:** Stable
 
-## Capabilities
+**Authority:** Reference — the specification is
+[`skills/common/process/batch/SKILL.md`](../skills/common/process/batch/SKILL.md)
 
-- **Parallel Issue execution**: independent issues run concurrently, bounded by max_parallel_subagents (default 3)
-- **Dependency DAG scheduling**: issues form a DAG; each wave starts once its dependencies complete; cycles block the batch
-- **Retry with exponential backoff**: retryable failures retry with `base * 2^retry + jitter` until max_retries (default 3)
-- **Approval-gated merge**: PRs merge one at a time, rebased onto latest main, after SHA-bound approval (no --admin)
-- **Worktree isolation**: each issue runs in its own git worktree/branch; one failure does not block unrelated issues
+This is an orientation page for the Markdown-only, agent-agnostic Batch Skill.
+It intentionally does not duplicate the evidence bar, the workflow, the result
+vocabulary or the outcome rules. The normative entrypoint and single source of
+truth is
+[`skills/common/process/batch/SKILL.md`](../skills/common/process/batch/SKILL.md).
 
-## Lifecycle
+## Specification
 
-```text
-    Submit Batch
-         |
-         v
-    DAG Resolution (cycle check)
-         |
-         v
-    Parallel Waves (worktree per issue)
-         |
-         v
-      +---+   +---+   +---+
-      | A |   | B |   | C |     A & C run; B waits on A
-      +---+   +---+   +---+
-         |      |      |
-         +------+------+
-        (retry w/ backoff)
-         |
-         v
-    Serial Merge Queue (approval gate)
-         |
-         v
-    Merge to main -> cleanup
-```
-
-## Configuration
-
-Batch behavior is set in `config/batch-config.json` (concurrency,
-retries, checkpoint/resume). Interrupted batches can be resumed from
-persisted batch/worker checkpoints.
+| Document | Contents |
+|---|---|
+| [`SKILL.md`](../skills/common/process/batch/SKILL.md) | Normative SSOT: applicability, definitions, evidence classification, MUST/MUST NOT rules, the workflow, dependency and parallel-safety rules, result vocabulary and batch outcome, gates and the Merge Skill boundary, aggregate verification, cleanup, fail-closed rules, reporting contract |
+| [`references/worker-and-isolation.md`](../skills/common/process/batch/references/worker-and-isolation.md) | Worker abstraction and mechanism selection, task inventory, pre-dispatch checks, worktree/branch strategy, concurrency, git safety, worker result reporting and validation, semantic conflict detection, cleanup |
+| [`references/failure-and-recovery.md`](../skills/common/process/batch/references/failure-and-recovery.md) | Failure classification, retry policy and budget, non-delivering workers, dependent handling, integration failure, resume and reconciliation |
+| [`references/examples.md`](../skills/common/process/batch/references/examples.md) | Worked conformance scenarios |

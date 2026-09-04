@@ -40,7 +40,7 @@ Current records:
 | 005 | PC Update Model | Accepted |
 | 006 | Architecture Enforcement via Analyzer | Accepted |
 | 007 | Repository Artifact Policy and CI Contamination Gate | Accepted |
-| 008 | Batch Orchestrator Checkpoint and Resume Design | Accepted |
+| 008 | Batch Orchestrator Checkpoint and Resume Design | Superseded (#242) |
 | 009 | PR-Triggered README Auto-Update via OpenCode | Accepted |
 | 010 | CodeRabbit Review Runs After README Auto-Update | Accepted |
 | 011 | API Documentation & Docstring Policy | Accepted |

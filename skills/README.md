@@ -19,7 +19,8 @@ skills/
 ├── common/            # Generic, portable skills (no project specifics)
 │   ├── process/       #   Gate / execution / reporting skills
 │   │   ├── adr/         #   ADR authoring / maintenance (#84)
-│   │   ├── batch/       #   Parallel Issue execution Orchestrator (#155)
+│   │   ├── batch/       #   Batch orchestration protocol, Markdown-only (#242)
+│   │   │   └── references/ #  Normative detail for the batch protocol
 │   │   ├── commit-message/ #   Commit Message authoring skill (#94)
 │   │   ├── doc-sync/
 │   │   ├── merge/       #   Safe PR Merge Skill (#146)
@@ -72,7 +73,7 @@ gates.
 | `common/process/adr` | ADR authoring / maintenance: the "is an ADR needed" decision, SSOT / matrix / existing-ADR preflight, sequential numbering, standard Context / Decision / Consequences structure, traceability to Issues / PRs / code / tests, consistency checks, the review-feedback loop, and agent rules | #84 |
 | `common/process/doc-sync` | Documentation synchronization gate: impact mapping, minimal updates, recorded no-op decisions | #89 |
 | `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
-| `common/process/batch` | Parallel Issue execution Orchestrator with dependency scheduling, retry, failure isolation, and serial merge via Merge Skill | #145, #155 |
+| `common/process/batch` | Agent-agnostic batch orchestration protocol (Markdown-only): task inventory, dependency analysis and DAG, execution waves, parallel-safety rules, worker abstraction and isolation, result validation, semantic conflict detection, failure/retry/recovery, review and approval gates, serial integration delegated to the Merge Skill, cleanup and reporting | #145, #155, #242 |
 | `common/process/commit-message` | Commit Message authoring skill: Conventional Commits format, type/scope/subject policy, per-commit change granularity and atomicity, Issue-linkage trailers (`Refs`/`Fixes`/`Closes`), amend/rebase handling, generated-commit marking, and AI judgement rules for deriving the message from the actual diff | #94 |
 | `common/process/merge` | Safe PR Merge Skill with mandatory approval → rebase → validation → normal merge flow | #146 |
 | `common/process/reporting` | Completion-reporting process skill: standard final report (investigation/SSOT, implementation summary, design decisions, changed files, targeted/related/full tests, build/analyzer/lint applicability, real PASS/FAIL/NOT RUN semantics, existing-vs-new failure separation, git status/diff/commit evidence, remaining work and Issue/PR state) | #88 |
@@ -118,6 +119,17 @@ these files become its entries without relocation.
 ## Conventions
 
 - One directory per skill, containing `SKILL.md`.
+- A skill whose normative detail is too large for one file may add a
+  `references/` subdirectory of Markdown files. `SKILL.md` stays the compact
+  normative entrypoint and links to them; the references are part of the same
+  skill and the same SSOT, never a second definition of it
+  (`common/process/batch` is the current example).
+- A skill's process specification must be followable by reading alone. Where a
+  skill also ships an optional runtime (`common/process/merge` currently does),
+  that runtime is a convenience for agents that can run it — never the SSOT of
+  the process, and never a precondition for following the skill. An agent that
+  cannot execute it must still be able to carry out the skill from its Markdown.
+  `common/process/batch` has no runtime at all (#242).
 - Frontmatter: `name`, `description`, `version`, plus optional `scope`,
   `platform`, `related-issues`.
 - Skills evolve through normal PRs; recurring review findings should promote
