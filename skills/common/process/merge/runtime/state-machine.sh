@@ -9,6 +9,18 @@
 
 # ============================================================
 # Merge State Machine (11 states)
+#
+# Ordering invariant: the SHA-bound human approval gate runs on the FINAL
+# merge candidate HEAD, so it is entered only after the mandatory rebase and
+# the CI/review gates have produced that HEAD:
+#
+#   TRIGGER_CHECK -> MAIN_HEAD_REFRESH -> REBASE -> VALIDATING
+#                 -> APPROVAL_VALIDATION -> MERGING -> MERGED -> CLEANUP
+#
+# Approval is never requested for an intermediate SHA that the mandatory
+# rebase is already known to discard. Any HEAD or main-HEAD movement observed
+# after approval returns the flow to APPROVAL_VALIDATION (fresh approval) or
+# MAIN_HEAD_REFRESH (re-rebase), never forward to MERGED.
 # ============================================================
 
 # Check whether a merge state transition is valid
@@ -19,19 +31,19 @@ merge_valid_transition() {
     _to="$2"
     case "$_from" in
         TRIGGER_CHECK)
-            case "$_to" in APPROVAL_VALIDATION|FAILED) return 0 ;; esac ;;
-        APPROVAL_VALIDATION)
             case "$_to" in MAIN_HEAD_REFRESH|FAILED) return 0 ;; esac ;;
         MAIN_HEAD_REFRESH)
-            case "$_to" in REBASE) return 0 ;; esac ;;
+            case "$_to" in REBASE|FAILED) return 0 ;; esac ;;
         REBASE)
-            case "$_to" in VALIDATING|APPROVAL_VALIDATION|CONFLICT|FAILED) return 0 ;; esac ;;
+            case "$_to" in VALIDATING|CONFLICT|FAILED) return 0 ;; esac ;;
         CONFLICT)
             return 1 ;;
         VALIDATING)
-            case "$_to" in MERGING|FAILED) return 0 ;; esac ;;
+            case "$_to" in APPROVAL_VALIDATION|FAILED) return 0 ;; esac ;;
+        APPROVAL_VALIDATION)
+            case "$_to" in MERGING|MAIN_HEAD_REFRESH|FAILED) return 0 ;; esac ;;
         MERGING)
-            case "$_to" in MERGED|FAILED) return 0 ;; esac ;;
+            case "$_to" in MERGED|APPROVAL_VALIDATION|MAIN_HEAD_REFRESH|FAILED) return 0 ;; esac ;;
         MERGED)
             case "$_to" in CLEANUP) return 0 ;; esac ;;
         CLEANUP)
@@ -57,13 +69,13 @@ merge_is_terminal() {
 # Usage: merge_get_valid_transitions <state>
 merge_get_valid_transitions() {
     case "$1" in
-        TRIGGER_CHECK) echo "APPROVAL_VALIDATION FAILED" ;;
-        APPROVAL_VALIDATION) echo "MAIN_HEAD_REFRESH FAILED" ;;
-        MAIN_HEAD_REFRESH) echo "REBASE" ;;
-        REBASE) echo "VALIDATING APPROVAL_VALIDATION CONFLICT FAILED" ;;
+        TRIGGER_CHECK) echo "MAIN_HEAD_REFRESH FAILED" ;;
+        MAIN_HEAD_REFRESH) echo "REBASE FAILED" ;;
+        REBASE) echo "VALIDATING CONFLICT FAILED" ;;
         CONFLICT) echo "" ;;
-        VALIDATING) echo "MERGING FAILED" ;;
-        MERGING) echo "MERGED FAILED" ;;
+        VALIDATING) echo "APPROVAL_VALIDATION FAILED" ;;
+        APPROVAL_VALIDATION) echo "MERGING MAIN_HEAD_REFRESH FAILED" ;;
+        MERGING) echo "MERGED APPROVAL_VALIDATION MAIN_HEAD_REFRESH FAILED" ;;
         MERGED) echo "CLEANUP" ;;
         CLEANUP) echo "COMPLETED FAILED" ;;
         COMPLETED) echo "" ;;
@@ -77,11 +89,11 @@ merge_get_valid_transitions() {
 merge_get_all_states() {
     cat <<'EOF'
 TRIGGER_CHECK
-APPROVAL_VALIDATION
 MAIN_HEAD_REFRESH
 REBASE
 CONFLICT
 VALIDATING
+APPROVAL_VALIDATION
 MERGING
 MERGED
 CLEANUP

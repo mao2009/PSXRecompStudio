@@ -38,6 +38,10 @@ MERGE_RUNTIME_DIR="$SCRIPT_DIR/.."
 . "$SCRIPT_DIR/../orchestrator.sh"
 STATE="$WORK/state.json"
 merge_new_state 149 148 "$WORK/wt" issue/148-test > "$STATE"
+# MAIN_HEAD_REFRESH records the main HEAD the mandatory rebase runs against;
+# REBASE refuses to advance without it, so seed it as that state would.
+MAIN_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+merge_state_set_string "$STATE" MainHeadSha "$MAIN_SHA"
 MERGE_PR_NUMBER=149
 MERGE_STATE_FILE="$STATE"
 MERGE_WORKTREE="$WORK/wt"
@@ -55,11 +59,12 @@ assert "enabled flow reaches VALIDATING" test "$(merge_state_get "$STATE" State)
 assert "enabled flow calls safe push" test "$PUSH_CALLED" -eq 1
 assert "validated branch is passed" test "$SAFE_ARGS" = "$WORK/wt issue/148-test $REMOTE_SHA $(git -C "$WORK/wt" rev-parse HEAD) origin issue/148-test main"
 
-# A changed HEAD must invalidate the old explicit approval and return to the
-# approval gate instead of entering VALIDATING.
+# A changed HEAD must invalidate the old explicit approval, then continue into
+# VALIDATING. Under the post-#247 ordering the approval gate runs after the
+# mandatory rebase, so the rebase never bounces back to it: it discards the
+# stale record, and the gate downstream asks for one bound to the rebased SHA.
 OLD_SHA="$REMOTE_SHA"
 NEW_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-MAIN_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 merge_state_set_approval "$STATE" "$(merge_approval_object 149 148 "$OLD_SHA" "$MAIN_SHA" alice 2026-01-01T00:00:00Z)"
 printf '0\n' > "$WORK/commit-calls"
 merge_get_current_commit() {
@@ -71,16 +76,19 @@ merge_get_current_commit() {
 merge_safe_rebase_push() { PUSH_CALLED=$((PUSH_CALLED + 1)); return 0; }
 merge_state_set_string "$STATE" State REBASE
 _merge_handle_rebase >/dev/null 2>&1
-assert "changed HEAD returns to approval validation" test "$(merge_state_get "$STATE" State)" = APPROVAL_VALIDATION
+assert "changed HEAD still advances to VALIDATING" test "$(merge_state_get "$STATE" State)" = VALIDATING
 assert "changed HEAD removes old approval" test -z "$(merge_state_approval_commit "$STATE")"
+assert "changed HEAD records the rebased candidate" test "$(merge_state_get "$STATE" CurrentCommitSha)" = "$NEW_SHA"
+assert "changed HEAD records the rebase base" test "$(merge_state_get "$STATE" RebasedOntoMainSha)" = "$MAIN_SHA"
 
-# A new approval bound to the rebased SHA can pass the normal approval gate.
+# A new approval bound to the rebased SHA passes the approval gate and reaches
+# the merge step directly, with no second approval round.
 merge_get_current_commit() { printf '%s\n' "$NEW_SHA"; }
 merge_get_main_head() { printf '%s\n' "$MAIN_SHA"; }
 merge_state_set_approval "$STATE" "$(merge_approval_object 149 148 "$NEW_SHA" "$MAIN_SHA" alice 2026-01-01T00:00:00Z)"
 merge_state_set_string "$STATE" State APPROVAL_VALIDATION
 _merge_handle_approval_validation >/dev/null 2>&1
-assert "new SHA approval validates" test "$(merge_state_get "$STATE" State)" = MAIN_HEAD_REFRESH
+assert "new SHA approval validates" test "$(merge_state_get "$STATE" State)" = MERGING
 
 # Resume with a stale persisted approval remains blocked.
 merge_state_set_approval "$STATE" "$(merge_approval_object 149 148 "$OLD_SHA" "$MAIN_SHA" alice 2026-01-01T00:00:00Z)"

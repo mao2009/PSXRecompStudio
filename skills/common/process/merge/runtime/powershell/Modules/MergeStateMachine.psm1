@@ -31,14 +31,26 @@ $Script:States = @{
 }
 
 # Valid transitions
+#
+# Ordering invariant (Issue #247): the SHA-bound human approval gate runs on the
+# FINAL merge candidate, so it is entered only after the mandatory rebase and
+# the CI/review gates have produced that HEAD:
+#
+#   TRIGGER_CHECK -> MAIN_HEAD_REFRESH -> REBASE -> VALIDATING
+#                 -> APPROVAL_VALIDATION -> MERGING -> MERGED -> CLEANUP
+#
+# Approval is never requested for an intermediate SHA the mandatory rebase is
+# already known to discard. Any HEAD or main-HEAD movement seen after approval
+# returns the flow to APPROVAL_VALIDATION (fresh approval) or MAIN_HEAD_REFRESH
+# (re-rebase), never forward to MERGED.
 $Script:Transitions = @{
-    TRIGGER_CHECK       = @("APPROVAL_VALIDATION", "FAILED")
-    APPROVAL_VALIDATION = @("MAIN_HEAD_REFRESH", "FAILED")
-    MAIN_HEAD_REFRESH   = @("REBASE")
-    REBASE              = @("VALIDATING", "CONFLICT")
+    TRIGGER_CHECK       = @("MAIN_HEAD_REFRESH", "FAILED")
+    MAIN_HEAD_REFRESH   = @("REBASE", "FAILED")
+    REBASE              = @("VALIDATING", "CONFLICT", "FAILED")
     CONFLICT            = @()
-    VALIDATING          = @("MERGING", "FAILED")
-    MERGING             = @("MERGED", "FAILED")
+    VALIDATING          = @("APPROVAL_VALIDATION", "FAILED")
+    APPROVAL_VALIDATION = @("MERGING", "MAIN_HEAD_REFRESH", "FAILED")
+    MERGING             = @("MERGED", "APPROVAL_VALIDATION", "MAIN_HEAD_REFRESH", "FAILED")
     MERGED              = @("CLEANUP")
     CLEANUP             = @("COMPLETED", "FAILED")
     COMPLETED           = @()

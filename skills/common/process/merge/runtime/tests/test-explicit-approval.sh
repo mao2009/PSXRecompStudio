@@ -309,15 +309,32 @@ EOF
     _rc=$?
     assert_true "step1 (trigger) returns success" test "$_rc" -eq 0
     _st=$(sed -n 's/.*"State"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)
-    assert_true "step1 -> APPROVAL_VALIDATION" test "$_st" = "APPROVAL_VALIDATION"
+    assert_true "step1 -> MAIN_HEAD_REFRESH" test "$_st" = "MAIN_HEAD_REFRESH"
 
-    # Resume: approval validation must accept the persisted explicit approval.
+    # The mandatory rebase runs before the approval gate (Issue #247), so an
+    # already-recorded approval never lets the rebase be skipped. Resume until
+    # the flow reaches the gate on the final merge candidate.
+    _step=0
+    while [ "$_step" -lt 6 ]; do
+        _st=$(sed -n 's/.*"State"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)
+        case "$_st" in
+            APPROVAL_VALIDATION|MERGING|MERGED|FAILED|CONFLICT) break ;;
+        esac
+        "$MERGE_SH" merge --pr 176 --worktree "$WT" --main-dir "$REPO" --state-file "$STATE" > "$WORK/merge-step$_step.log" 2>&1
+        _step=$((_step + 1))
+    done
+    assert_true "flow reaches the approval gate after the mandatory rebase" test "$_st" = "APPROVAL_VALIDATION"
+    assert_true "rebase base recorded before approval is evaluated" test -n "$(merge_state_get "$STATE" RebasedOntoMainSha)"
+
+    # Resume: the approval gate must accept the persisted explicit approval and
+    # advance straight to the merge step, with no second approval round.
     "$MERGE_SH" merge --pr 176 --worktree "$WT" --main-dir "$REPO" --state-file "$STATE" > "$WORK/merge2.log" 2>&1
     _rc=$?
     assert_true "step2 (approval validation) returns success" test "$_rc" -eq 0
-    contains "Approval is valid (source: explicit_human)" "$(cat "$WORK/merge2.log")" && _pass || _fail "explicit approval accepted on resume"
+    contains "(source: explicit_human)" "$(cat "$WORK/merge2.log")" && _pass || _fail "explicit approval accepted on resume"
     _st=$(sed -n 's/.*"State"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)
-    assert_true "explicit approval advances to MAIN_HEAD_REFRESH" test "$_st" = "MAIN_HEAD_REFRESH"
+    assert_true "explicit approval advances to MERGING" test "$_st" = "MERGING"
+    assert_true "the approved SHA is the merge candidate" test "$(merge_state_get "$STATE" ApprovedCommitSha)" = "$(git -C "$WT" rev-parse HEAD)"
 
     echo ""
     echo "--- Bypass: hand-editing state cannot pass the gate ---"
@@ -326,7 +343,10 @@ EOF
     # with a mismatched commit. This must be rejected, not treated as approved.
     BYPASS="$WORK/.merge-state-bypass.json"
     merge_new_state 180 176 "$WT" "issue/176-approval" > "$BYPASS"
-    merge_state_set_string "$BYPASS" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_commit"
+    # The gate only evaluates an approval record on a candidate proven rebased
+    # onto the current main HEAD, so seed the marker the rebase would have left.
+    merge_state_set_string "$BYPASS" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_commit" \
+        "MainHeadSha" "$_main" "RebasedOntoMainSha" "$_main"
     _fake_approval='{"PrNumber":180,"IssueNumber":176,"CommitSha":"'$_commit'","MainHeadSha":"'$_main'","ApprovedBy":"","ApprovedAt":"","ApprovalSource":"explicit_human","IsValid":true}'
     _tmp="$BYPASS.tmp"
     sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_fake_approval}/" "$BYPASS" > "$_tmp" 2>/dev/null
@@ -341,7 +361,8 @@ EOF
     # Bypass with unknown source -> rejected.
     UNKNOWN="$WORK/.merge-state-unknown.json"
     merge_new_state 181 176 "$WT" "issue/176-approval" > "$UNKNOWN"
-    merge_state_set_string "$UNKNOWN" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_commit"
+    merge_state_set_string "$UNKNOWN" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_commit" \
+        "MainHeadSha" "$_main" "RebasedOntoMainSha" "$_main"
     _unknown_approval='{"PrNumber":181,"IssueNumber":176,"CommitSha":"'$_commit'","MainHeadSha":"'$_main'","ApprovedBy":"x","ApprovedAt":"2026-01-01T00:00:00Z","ApprovalSource":"carrier_pigeon","IsValid":true}'
     _tmp2="$UNKNOWN.tmp"
     sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_unknown_approval}/" "$UNKNOWN" > "$_tmp2" 2>/dev/null
@@ -363,15 +384,23 @@ EOF
 
     STATE2="$WORK/.merge-state-177.json"
     merge_new_state 177 176 "$WT" "issue/176-approval" > "$STATE2"
-    merge_state_set_string "$STATE2" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_commit"
+    # The candidate was rebased onto the previous main HEAD, which has since
+    # advanced.
+    merge_state_set_string "$STATE2" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_commit" \
+        "MainHeadSha" "$_main" "RebasedOntoMainSha" "$_main"
     _approval2='{"PrNumber":177,"IssueNumber":176,"CommitSha":"'$_commit'","MainHeadSha":"'$_main'","ApprovedBy":"approver-gh","ApprovedAt":"2026-01-01T00:00:00Z","ApprovalSource":"explicit_human","IsValid":true}'
     _tmp3="$STATE2.tmp"
     sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_approval2}/" "$STATE2" > "$_tmp3" 2>/dev/null
     mv "$_tmp3" "$STATE2" 2>/dev/null
     "$MERGE_SH" merge --pr 177 --worktree "$WT" --main-dir "$REPO" --state-file "$STATE2" > "$WORK/mainchange.log" 2>&1
     _st=$(sed -n 's/.*"State"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE2" | head -1)
-    assert_true "main HEAD change invalidates approval (does not advance)" test "$_st" = "APPROVAL_VALIDATION"
-    contains "Main HEAD has changed" "$(cat "$WORK/mainchange.log")" && _pass || _fail "main HEAD change reason reported"
+    # A main HEAD that moved after the rebase makes the candidate stale: the
+    # approval is discarded and another mandatory rebase is owed. What must
+    # never happen is advancing toward a merge on the stale approval.
+    assert_true "main HEAD change does not advance toward a merge" test "$_st" != "MERGING"
+    assert_true "main HEAD change returns to the mandatory rebase" test "$_st" = "MAIN_HEAD_REFRESH"
+    assert_true "main HEAD change discards the stale approval" test -z "$(merge_state_approval_commit "$STATE2")"
+    contains "Main HEAD advanced since the mandatory rebase" "$(cat "$WORK/mainchange.log")" && _pass || _fail "main HEAD change reason reported"
 
     # PR HEAD change invalidates approval.
     echo pr > "$WT/pr.txt"
@@ -380,7 +409,8 @@ EOF
     _new_head=$(git -C "$WT" rev-parse HEAD)
     STATE3="$WORK/.merge-state-178.json"
     merge_new_state 178 176 "$WT" "issue/176-approval" > "$STATE3"
-    merge_state_set_string "$STATE3" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_new_head"
+    merge_state_set_string "$STATE3" "State" "APPROVAL_VALIDATION" "CurrentCommitSha" "$_new_head" \
+        "MainHeadSha" "$_new_main" "RebasedOntoMainSha" "$_new_main"
     _approval3='{"PrNumber":178,"IssueNumber":176,"CommitSha":"'$_commit'","MainHeadSha":"'$_new_main'","ApprovedBy":"approver-gh","ApprovedAt":"2026-01-01T00:00:00Z","ApprovalSource":"explicit_human","IsValid":true}'
     _tmp4="$STATE3.tmp"
     sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_approval3}/" "$STATE3" > "$_tmp4" 2>/dev/null
@@ -388,6 +418,7 @@ EOF
     "$MERGE_SH" merge --pr 178 --worktree "$WT" --main-dir "$REPO" --state-file "$STATE3" > "$WORK/headchange.log" 2>&1
     _st=$(sed -n 's/.*"State"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE3" | head -1)
     assert_true "PR HEAD change invalidates approval (does not advance)" test "$_st" = "APPROVAL_VALIDATION"
+    assert_true "PR HEAD change does not reach the merge step" test "$_st" != "MERGING"
     contains "Commit SHA mismatch" "$(cat "$WORK/headchange.log")" && _pass || _fail "PR HEAD change reason reported"
 fi
 
