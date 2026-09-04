@@ -22,28 +22,41 @@ internal sealed class RecompilerGuestMemory
             nameof(virtualAddress), virtualAddress, "The test memory model maps KUSEG/KSEG0/KSEG1 only.");
     }
 
-    public byte Read8(uint virtualAddress) => _ram[Translate(virtualAddress)];
+    public byte Read8(uint virtualAddress)
+    {
+        var physical = Translate(virtualAddress);
+        if (physical >= RamSize) return 0;
+        return _ram[physical];
+    }
 
     public ushort Read16(uint virtualAddress)
     {
         var physical = Translate(virtualAddress);
+        if (physical > RamSize - 2) return 0;
         return (ushort)(_ram[physical] | (_ram[physical + 1] << 8));
     }
 
     public uint Read32(uint virtualAddress)
     {
         var physical = Translate(virtualAddress);
+        if (physical > RamSize - 4) return 0;
         return (uint)(_ram[physical]
             | (_ram[physical + 1] << 8)
             | (_ram[physical + 2] << 16)
             | (_ram[physical + 3] << 24));
     }
 
-    public void Write8(uint virtualAddress, byte value) => _ram[Translate(virtualAddress)] = value;
+    public void Write8(uint virtualAddress, byte value)
+    {
+        var physical = Translate(virtualAddress);
+        if (physical >= RamSize) return;
+        _ram[physical] = value;
+    }
 
     public void Write16(uint virtualAddress, ushort value)
     {
         var physical = Translate(virtualAddress);
+        if (physical > RamSize - 2) return;
         _ram[physical] = (byte)value;
         _ram[physical + 1] = (byte)(value >> 8);
     }
@@ -51,6 +64,7 @@ internal sealed class RecompilerGuestMemory
     public void Write32(uint virtualAddress, uint value)
     {
         var physical = Translate(virtualAddress);
+        if (physical > RamSize - 4) return;
         _ram[physical] = (byte)value;
         _ram[physical + 1] = (byte)(value >> 8);
         _ram[physical + 2] = (byte)(value >> 16);

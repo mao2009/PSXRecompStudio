@@ -278,7 +278,7 @@ public sealed record RecompilerIrProgram
     {
         ArgumentNullException.ThrowIfNull(blocks);
         Blocks = new ReadOnlyCollection<RecompilerIrBlock>(blocks.OrderBy(block => block.EntryPc).ToArray());
-        Functions = new ReadOnlyCollection<RecompilerIrFunction>((functions ?? Array.Empty<RecompilerIrFunction>()).ToArray());
+        Functions = new ReadOnlyCollection<RecompilerIrFunction>((functions ?? Array.Empty<RecompilerIrFunction>()).OrderBy(function => function.EntryPc).ToArray());
     }
 
     public IReadOnlyList<RecompilerIrBlock> Blocks { get; }

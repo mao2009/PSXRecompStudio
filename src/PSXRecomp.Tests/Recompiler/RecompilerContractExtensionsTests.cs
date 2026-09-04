@@ -246,6 +246,38 @@ public class RecompilerContractExtensionsTests
     }
 
     [Fact]
+    public void Functions_AreSortedByEntryPc_RegardlessOfInputOrder()
+    {
+        var blockA = new RecompilerIrBlock(
+            0x100,
+            new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x104));
+        var blockB = new RecompilerIrBlock(
+            0x200,
+            new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Nop) },
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x204));
+
+        var functionA = new RecompilerIrFunction(0x100, new[] { blockA });
+        var functionB = new RecompilerIrFunction(0x200, new[] { blockB });
+
+        var ascending = new RecompilerIrProgram(
+            new[] { blockA, blockB },
+            new[] { functionA, functionB });
+        var descending = new RecompilerIrProgram(
+            new[] { blockA, blockB },
+            new[] { functionB, functionA });
+
+        ascending.Functions.Should().HaveCount(2);
+        ascending.Functions[0].EntryPc.Should().Be(0x100u);
+        ascending.Functions[1].EntryPc.Should().Be(0x200u);
+
+        descending.Functions[0].EntryPc.Should().Be(0x100u);
+        descending.Functions[1].EntryPc.Should().Be(0x200u);
+
+        RecompilerIrSerializer.Serialize(ascending).Should().Be(RecompilerIrSerializer.Serialize(descending));
+    }
+
+    [Fact]
     public void MemoryOp_InvalidShapes_FailFast()
     {
         RecompilerIrProgram Program(params RecompilerIrOperation[] ops) =>
