@@ -31,6 +31,100 @@ function Get-MergeMainHead {
     return git rev-parse origin/main
 }
 
+function Get-MergeRemoteHeadState {
+    <#
+    .SYNOPSIS
+        Compares the worktree HEAD with the PR branch head on the remote.
+    .DESCRIPTION
+        Lets a merge candidate be checked against the commit GitHub would
+        actually merge. Fetches the remote branch into its remote-tracking ref
+        first. Read-only: rewrites no history and pushes nothing.
+
+        Relation values:
+          same          the worktree HEAD is the PR head
+          remote_ahead  someone pushed on top of it; a fast-forward recovers
+          local_ahead   local work not pushed yet (normal before a rebase push)
+          diverged      histories disagree; unrecoverable without a rewrite
+          unknown       the remote head could not be established
+    .PARAMETER WorktreePath
+        Path to the Worktree.
+    .PARAMETER BranchName
+        The PR branch name.
+    .PARAMETER Remote
+        The remote name (default: origin).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WorktreePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BranchName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Remote = "origin"
+    )
+
+    $unknown = @{ Relation = "unknown"; RemoteSha = $null; LocalSha = $null }
+    if (-not $WorktreePath -or -not (Test-Path $WorktreePath) -or -not $BranchName) {
+        return $unknown
+    }
+
+    & git -C $WorktreePath fetch --no-tags $Remote "+refs/heads/$BranchName`:refs/remotes/$Remote/$BranchName" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        return $unknown
+    }
+
+    $remoteSha = (& git -C $WorktreePath rev-parse "refs/remotes/$Remote/$BranchName" 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $unknown }
+    $localSha = (& git -C $WorktreePath rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $unknown }
+    if (-not $remoteSha -or -not $localSha) { return $unknown }
+
+    $remoteSha = "$remoteSha".Trim()
+    $localSha = "$localSha".Trim()
+
+    if ($remoteSha -eq $localSha) {
+        return @{ Relation = "same"; RemoteSha = $remoteSha; LocalSha = $localSha }
+    }
+
+    & git -C $WorktreePath merge-base --is-ancestor $localSha $remoteSha 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        return @{ Relation = "remote_ahead"; RemoteSha = $remoteSha; LocalSha = $localSha }
+    }
+
+    & git -C $WorktreePath merge-base --is-ancestor $remoteSha $localSha 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        return @{ Relation = "local_ahead"; RemoteSha = $remoteSha; LocalSha = $localSha }
+    }
+
+    return @{ Relation = "diverged"; RemoteSha = $remoteSha; LocalSha = $localSha }
+}
+
+function Invoke-MergeFastForwardToRemote {
+    <#
+    .SYNOPSIS
+        Fast-forwards the worktree onto the already-fetched remote PR head.
+    .DESCRIPTION
+        A fast-forward only: no merge commit, no history rewrite, no push, and
+        it fails rather than discarding local commits the remote lacks.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WorktreePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BranchName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Remote = "origin"
+    )
+
+    & git -C $WorktreePath merge --ff-only "refs/remotes/$Remote/$BranchName" 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Invoke-MergeRebase {
     <#
     .SYNOPSIS
@@ -301,7 +395,7 @@ function Get-MergePrInfo {
         [string]$Repository
     )
 
-    $prArgs = @("pr", "view", $PrNumber, "--json", "number,title,body,headRefName,baseRefName,state,isDraft,mergeable,reviewDecision,commits")
+    $prArgs = @("pr", "view", $PrNumber, "--json", "number,title,body,headRefName,headRefOid,baseRefName,state,isDraft,mergeable,reviewDecision,commits")
     if ($Repository) {
         $prArgs += "--repo"
         $prArgs += $Repository
@@ -400,6 +494,8 @@ function Remove-MergeWorktree {
 
 Export-ModuleMember -Function @(
     'Get-MergeMainHead',
+    'Get-MergeRemoteHeadState',
+    'Invoke-MergeFastForwardToRemote',
     'Invoke-MergeRebase',
     'Stop-MergeRebase',
     'Invoke-NormalMerge',

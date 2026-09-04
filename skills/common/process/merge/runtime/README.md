@@ -81,23 +81,33 @@ the mandatory rebase and the CI/review gates have produced it (Issue #247).
 Approval is never requested for an intermediate SHA the rebase is already known
 to discard, so the normal case needs exactly one approval.
 
-From `REBASE`: a clean rebase always continues to `VALIDATING`. A changed HEAD
-additionally runs the safe rebase push and discards any pre-rebase approval, so
-the gate downstream asks for one bound to the rebased SHA. Rebase or safe-push
-failure is fail-closed and cannot reach `VALIDATING` or `MERGING`; a conflict
-goes to `CONFLICT` and never reaches the approval gate.
+From `REBASE`: the mandatory rebase first compares the worktree with the PR
+branch head on the remote and fast-forwards onto it when the remote is ahead, so
+the candidate is the commit GitHub would merge. That step is fast-forward only,
+and a diverged or undeterminable remote head fails closed. A clean rebase then
+always continues to `VALIDATING`. A changed HEAD additionally runs the safe
+rebase push and discards any pre-rebase approval, so the gate downstream asks for
+one bound to the rebased SHA. Rebase or safe-push failure is fail-closed and
+cannot reach `VALIDATING` or `MERGING`; a conflict goes to `CONFLICT` and never
+reaches the approval gate.
 
 From `APPROVAL_VALIDATION`: a candidate that is not proven rebased onto the live
 main HEAD -- no recorded rebase base, or main advanced since the rebase --
 discards any approval and returns to `MAIN_HEAD_REFRESH` for another mandatory
-rebase.
+rebase. The same applies when the remote PR head is strictly ahead of the
+candidate, so a push landing while the gate waits never produces an approval
+request for a SHA GitHub would not merge.
 
 From `MERGING`: a final HEAD revalidation runs immediately before the merge. It
 requires the approved SHA to still equal the local PR HEAD and the PR HEAD
 GitHub reports, main to be unmoved since the rebase, and the PR to still be
 open, non-draft, mergeable and passing its gates. Any divergence discards the
-approval and returns to `APPROVAL_VALIDATION`, or to `MAIN_HEAD_REFRESH` when
-main moved; the merge never proceeds on that invocation.
+approval and the merge does not proceed on that invocation. A moved main HEAD,
+and a remote PR head that is not the candidate, both return to
+`MAIN_HEAD_REFRESH` so the candidate is rebuilt; only a fault confined to the
+approval record returns to `APPROVAL_VALIDATION`. Routing remote drift through
+the rebase is what makes it converge: re-prompting would offer the unchanged
+local HEAD, which this guard would reject again.
 
 Safety guarantees (unchanged from the previous runtime):
 
@@ -111,6 +121,8 @@ Safety guarantees (unchanged from the previous runtime):
   approval gate downstream requires one bound to the rebased HEAD
 - Approval tied to commit SHA and main HEAD SHA, and re-checked against the
   GitHub PR HEAD immediately before the merge
+- The worktree is only ever fast-forwarded onto the remote PR head; diverged
+  histories fail closed rather than being rewritten or force-pushed
 - The commit that is merged is always the commit the approval record binds to
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)
 - CodeRabbit is a best-effort automated reviewer outside this runtime. Missing,

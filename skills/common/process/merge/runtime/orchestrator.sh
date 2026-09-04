@@ -197,6 +197,24 @@ _merge_handle_approval_validation() {
             "State" "MAIN_HEAD_REFRESH"
         return 0
     fi
+    # A push that lands while this gate waits for a human makes the candidate
+    # stale. Never ask anyone to approve a SHA GitHub would not merge: rebuild
+    # the candidate first. Only a remote that is strictly ahead counts as drift,
+    # so local work that has not been pushed yet is unaffected.
+    _gate_branch=$(merge_state_get "$MERGE_STATE_FILE" "BranchName")
+    if [ -n "$_gate_branch" ]; then
+        _gate_remote_state=$(merge_remote_head_state "$MERGE_WORKTREE" "origin" "$_gate_branch")
+        if [ "$(merge_remote_head_field "$_gate_remote_state" relation)" = "remote_ahead" ]; then
+            echo "Remote PR head moved ahead of this candidate (remote $(merge_remote_head_field "$_gate_remote_state" remote_sha))."
+            echo "Rebuilding the merge candidate; approval will be requested for the result."
+            merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null
+            merge_state_set_string "$MERGE_STATE_FILE" \
+                "ApprovedCommitSha" "" \
+                "State" "MAIN_HEAD_REFRESH"
+            return 0
+        fi
+    fi
+
     merge_state_set_string "$MERGE_STATE_FILE" "MainHeadSha" "$_main_head"
 
     # Approval must exist in state
@@ -276,6 +294,37 @@ _merge_handle_rebase() {
         echo "Worktree path not provided or not found"
         merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Worktree path not provided or not found"
         return 0
+    fi
+
+    # The mandatory rebase must start from the commit GitHub would merge. When
+    # the PR head has moved on the remote -- someone pushed while this flow was
+    # running, or between approval and merge -- fast-forward onto it first, so
+    # the rebase produces a candidate that actually matches the PR. Nothing is
+    # rewritten or pushed here, and a history that cannot be fast-forwarded
+    # fails closed rather than discarding either side.
+    _sync_branch=$(merge_state_get "$MERGE_STATE_FILE" "BranchName")
+    if [ -n "$_sync_branch" ]; then
+        _remote_state=$(merge_remote_head_state "$MERGE_WORKTREE" "origin" "$_sync_branch")
+        case "$(merge_remote_head_field "$_remote_state" relation)" in
+            remote_ahead)
+                echo "Remote PR head moved ahead of the worktree; fast-forwarding onto $(merge_remote_head_field "$_remote_state" remote_sha)"
+                if ! merge_ff_worktree_to_remote "$MERGE_WORKTREE" "origin" "$_sync_branch"; then
+                    echo "Unable to fast-forward the worktree onto the remote PR head" >&2
+                    merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to fast-forward the worktree onto the remote PR head"
+                    return 0
+                fi
+                ;;
+            diverged)
+                echo "Worktree and remote PR head have diverged; refusing to rewrite either" >&2
+                merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Worktree and remote PR head have diverged"
+                return 0
+                ;;
+            unknown)
+                echo "Unable to establish the remote PR head before rebase" >&2
+                merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Unable to establish the remote PR head before rebase"
+                return 0
+                ;;
+        esac
     fi
 
     _pre_rebase_commit=$(merge_get_current_commit "$MERGE_WORKTREE")
@@ -522,11 +571,22 @@ _merge_handle_merging() {
         printf '%s\n' "$_reasons" | sed 's/^/  - /'
         merge_state_invalidate_approval "$MERGE_STATE_FILE" 2>/dev/null
         merge_state_set_string "$MERGE_STATE_FILE" "ApprovedCommitSha" ""
-        # A moved main owes another mandatory rebase; every other divergence
-        # only owes a fresh approval on the candidate. Both are fail-closed:
-        # no merge happens on this invocation.
+        # Route by what actually diverged. Both branches are fail-closed: no
+        # merge happens on this invocation.
+        #
+        #   main moved            -> the candidate is stale; rebase again
+        #   remote PR head moved  -> the CANDIDATE ITSELF changed. Asking for a
+        #                            fresh approval here would offer the stale
+        #                            local HEAD, which the same guard would
+        #                            reject again, so rebuild the candidate from
+        #                            the remote PR head first.
+        #   approval record only  -> local and remote agree on the candidate, so
+        #                            only a fresh approval is owed.
         if [ -n "$_live_main" ] && [ -n "$_rebased" ] && [ "$_rebased" != "$_live_main" ]; then
             echo "Returning to the mandatory rebase for the new main HEAD."
+            merge_state_set_string "$MERGE_STATE_FILE" "State" "MAIN_HEAD_REFRESH"
+        elif [ -z "$_remote_head" ] || [ "$_remote_head" != "$_local" ]; then
+            echo "Rebuilding the merge candidate from the remote PR head."
             merge_state_set_string "$MERGE_STATE_FILE" "State" "MAIN_HEAD_REFRESH"
         else
             echo "Fresh approval required for the current merge candidate."

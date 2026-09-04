@@ -93,16 +93,28 @@ Fetch the latest main HEAD:
 
 ### 3. Mandatory Rebase
 
-Always rebase onto latest main HEAD:
+Always rebase onto latest main HEAD, starting from the commit GitHub would
+merge:
 
 ```text
-1. git rebase origin/main
-2. If conflict  -> stop, delegate to Sub-agent
-3. If failure   -> FAILED
-4. If clean     -> record the resulting HEAD as the final merge candidate,
+1. Compare the worktree HEAD with the PR branch head on the remote:
+     same         -> proceed
+     remote_ahead -> fast-forward onto the remote PR head, then proceed
+     local_ahead  -> proceed (local work not pushed yet)
+     diverged     -> FAILED (never rewrite either side)
+     unknown      -> FAILED (the candidate cannot be verified)
+2. git rebase origin/main
+3. If conflict  -> stop, delegate to Sub-agent
+4. If failure   -> FAILED
+5. If clean     -> record the resulting HEAD as the final merge candidate,
                    record the main HEAD it was rebased onto, and proceed to
                    validation
 ```
+
+Step 1 is a **fast-forward only**: it creates no merge commit, rewrites no
+history, pushes nothing, and never discards commits either side does not
+contain. It exists so a PR head that moved on the remote becomes the candidate,
+rather than the rebase producing a candidate the PR does not contain.
 
 **Never skip rebase, even if branch appears up-to-date.**
 
@@ -151,6 +163,10 @@ post-rebase candidate:
 2. If the candidate is not proven rebased onto the live main HEAD -- no
    recorded rebase base, or main has advanced since the rebase -- discard any
    approval and return to MAIN_HEAD_REFRESH for another mandatory rebase
+2a. If the remote PR head is strictly ahead of the candidate -- a push landed
+   while this gate was waiting -- discard any approval and return to
+   MAIN_HEAD_REFRESH, so nobody is asked to approve a SHA that GitHub would
+   not merge
 3. Load the approval record; if absent, hold and report the candidate SHA that
    requires approval
 4. Verify the approval source:
@@ -223,9 +239,17 @@ Any divergence stops the merge, **fail closed**:
 | Divergence | Result |
 |------------|--------|
 | Main HEAD advanced | Approval discarded, return to `MAIN_HEAD_REFRESH` for another mandatory rebase |
-| Anything else | Approval discarded, return to `APPROVAL_VALIDATION` for a fresh approval |
+| Remote PR head is not the candidate (moved, or undeterminable) | Approval discarded, return to `MAIN_HEAD_REFRESH` to **rebuild the candidate** from the remote PR head |
+| Anything else (local and remote agree; only the approval record is at fault) | Approval discarded, return to `APPROVAL_VALIDATION` for a fresh approval |
 
 The merge never proceeds on the same invocation as a detected divergence.
+
+The middle row matters for termination, not only safety. A moved remote PR head
+means the **candidate itself changed**, so returning to `APPROVAL_VALIDATION`
+would offer the unchanged local HEAD again, and this same revalidation would
+reject it again — a merge that can never happen and an approval requested for a
+SHA that can never merge. Routing through the mandatory rebase re-synchronises
+the candidate onto the remote PR head, so the flow converges instead.
 
 ### 9. Normal Merge
 
@@ -683,6 +707,16 @@ To use this Skill in another project:
     files written by earlier versions are migrated on load, so a legacy state
     persisted at `APPROVAL_VALIDATION` re-runs the mandatory rebase instead of
     merging.
+  - The mandatory rebase now starts from the commit GitHub would merge: when the
+    remote PR head has moved ahead, the worktree is fast-forwarded onto it
+    first. Fast-forward only — no merge commit, no history rewrite, no push —
+    and a diverged or undeterminable remote head fails closed.
+  - A remote PR head that is not the current candidate routes the flow back
+    through the mandatory rebase rather than to a fresh approval, so remote-only
+    drift converges onto the new candidate instead of repeatedly requesting
+    approval for a stale local HEAD that can never merge. The approval gate
+    applies the same rule before prompting, so a push that lands while it waits
+    never results in an approval request for a superseded SHA.
   - Rebase safety preconditions are unchanged: PR head/base validation, the
     explicit remote SHA lease, and post-push SHA verification all still run
     before the approval gate is reached.

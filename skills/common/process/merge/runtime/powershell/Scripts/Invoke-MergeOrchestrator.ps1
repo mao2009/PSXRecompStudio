@@ -220,6 +220,25 @@ function Invoke-MergeOrchestration {
                     Save-MergeState -State $state
                     return
                 }
+                # A push landing while this gate waits for a human makes the
+                # candidate stale. Never ask anyone to approve a SHA GitHub
+                # would not merge: rebuild the candidate first. Only a remote
+                # strictly ahead counts as drift, so local work that has not
+                # been pushed yet is unaffected.
+                if ($state.BranchName) {
+                    $gateRemote = Get-MergeRemoteHeadState -WorktreePath $state.WorktreePath -BranchName $state.BranchName
+                    if ($gateRemote.Relation -eq "remote_ahead") {
+                        Write-Host "Remote PR head moved ahead of this candidate (remote $($gateRemote.RemoteSha))." -ForegroundColor Yellow
+                        Write-Host "Rebuilding the merge candidate; approval will be requested for the result." -ForegroundColor Yellow
+                        $state.Approval = $null
+                        $state.ApprovedCommitSha = $null
+                        $state.State = "MAIN_HEAD_REFRESH"
+                        $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+                        Save-MergeState -State $state
+                        return
+                    }
+                }
+
                 $state.MainHeadSha = $mainHead
 
                 # Check if approval exists
@@ -272,6 +291,41 @@ function Invoke-MergeOrchestration {
                     $state.FailureReason = "Worktree path not provided or not found"
                     Save-MergeState -State $state
                     return
+                }
+
+                # The mandatory rebase must start from the commit GitHub would
+                # merge. When the PR head moved on the remote, fast-forward onto
+                # it first so the rebase produces a candidate that matches the
+                # PR. Nothing is rewritten or pushed here, and a history that
+                # cannot be fast-forwarded fails closed.
+                if ($state.BranchName) {
+                    $remoteState = Get-MergeRemoteHeadState -WorktreePath $state.WorktreePath -BranchName $state.BranchName
+                    switch ($remoteState.Relation) {
+                        "remote_ahead" {
+                            Write-Host "Remote PR head moved ahead of the worktree; fast-forwarding onto $($remoteState.RemoteSha)" -ForegroundColor Yellow
+                            if (-not (Invoke-MergeFastForwardToRemote -WorktreePath $state.WorktreePath -BranchName $state.BranchName)) {
+                                Write-Host "Unable to fast-forward the worktree onto the remote PR head" -ForegroundColor Red
+                                $state.State = "FAILED"
+                                $state.FailureReason = "Unable to fast-forward the worktree onto the remote PR head"
+                                Save-MergeState -State $state
+                                return
+                            }
+                        }
+                        "diverged" {
+                            Write-Host "Worktree and remote PR head have diverged; refusing to rewrite either" -ForegroundColor Red
+                            $state.State = "FAILED"
+                            $state.FailureReason = "Worktree and remote PR head have diverged"
+                            Save-MergeState -State $state
+                            return
+                        }
+                        "unknown" {
+                            Write-Host "Unable to establish the remote PR head before rebase" -ForegroundColor Red
+                            $state.State = "FAILED"
+                            $state.FailureReason = "Unable to establish the remote PR head before rebase"
+                            Save-MergeState -State $state
+                            return
+                        }
+                    }
                 }
 
                 $preRebaseCommit = Get-MergeCurrentCommit -WorktreePath $state.WorktreePath
@@ -402,6 +456,24 @@ function Invoke-MergeOrchestration {
                     $blockReasons += "Main HEAD advanced after approval: rebased onto $($state.RebasedOntoMainSha), latest $liveMain"
                     $mainMoved = $true
                 }
+                # The commit GitHub would merge, which is not necessarily the
+                # local worktree HEAD: a push landing after approval must not be
+                # merged under the old approval.
+                $remoteHead = $null
+                $prInfo = Get-MergePrInfo -PrNumber $PrNumber -Repository $Repository
+                if ($prInfo) { $remoteHead = $prInfo.headRefOid }
+                $remoteDrift = $false
+                if (-not $remoteHead) {
+                    $blockReasons += "Remote PR HEAD could not be determined"
+                    $remoteDrift = $true
+                } elseif ($state.ApprovedCommitSha -and ($remoteHead -ne $state.ApprovedCommitSha)) {
+                    $blockReasons += "Remote PR HEAD does not match the approved SHA: approved=$($state.ApprovedCommitSha), remote=$remoteHead"
+                    $remoteDrift = $true
+                } elseif ($liveHead -and ($remoteHead -ne $liveHead)) {
+                    $blockReasons += "Remote PR HEAD does not match the merge candidate: candidate=$liveHead, remote=$remoteHead"
+                    $remoteDrift = $true
+                }
+
                 $stillMergeable = Test-MergePrMergeable -PrNumber $PrNumber -Repository $Repository
                 if (-not $stillMergeable.IsMergeable) {
                     $blockReasons += $stillMergeable.Reason
@@ -412,8 +484,20 @@ function Invoke-MergeOrchestration {
                     $blockReasons | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
                     $state.Approval = $null
                     $state.ApprovedCommitSha = $null
+                    # Route by what actually diverged. Both branches are
+                    # fail-closed: no merge happens on this invocation.
+                    #   main moved           -> rebase again
+                    #   remote PR head moved -> the CANDIDATE ITSELF changed, so
+                    #                           rebuild it from the remote PR
+                    #                           head. Re-prompting here would
+                    #                           offer the stale local HEAD, which
+                    #                           this same guard rejects again.
+                    #   approval record only -> only a fresh approval is owed.
                     if ($mainMoved) {
                         Write-Host "Returning to the mandatory rebase for the new main HEAD." -ForegroundColor Yellow
+                        $state.State = "MAIN_HEAD_REFRESH"
+                    } elseif ($remoteDrift) {
+                        Write-Host "Rebuilding the merge candidate from the remote PR head." -ForegroundColor Yellow
                         $state.State = "MAIN_HEAD_REFRESH"
                     } else {
                         Write-Host "Fresh approval required for the current merge candidate." -ForegroundColor Yellow

@@ -189,8 +189,8 @@ if command -v git >/dev/null 2>&1; then
     git -C "$REPO" add f.txt
     git -C "$REPO" commit -q -m init
     git -C "$REPO" push -q -u origin main
-    git -C "$REPO" worktree add -q -b issue/148-wt "$WORK/wt2" 2>/dev/null
-    git -C "$REPO" push -q -u origin issue/148-wt 2>/dev/null
+    git -C "$REPO" worktree add -q -b issue/148-test "$WORK/wt2" 2>/dev/null
+    git -C "$REPO" push -q -u origin issue/148-test 2>/dev/null
 
     STATE2="$WORK/.merge-state-150.json"
     MERGE_PR_NUMBER="150"
@@ -252,25 +252,39 @@ if command -v git >/dev/null 2>&1; then
     assert_true "valid approval on the final candidate -> MERGING" test "$_state" = "MERGING"
     assert_true "approved SHA is the final candidate" test "$(merge_state_get "$STATE2" ApprovedCommitSha)" = "$_commit"
 
-    # The pre-merge revalidation refuses to merge while the remote PR head does
-    # not match the approved SHA, so the merge cannot race a late push.
+    # The pre-merge revalidation refuses to merge while the remote PR head
+    # cannot be established. It rebuilds the candidate rather than re-asking for
+    # an approval it could not verify, so the flow converges instead of looping.
     : > "$_FAKE_GH/head-oid"
     merge_orchestrate_one > "$WORK/out10.log" 2>&1
     _state=$(merge_state_get "$STATE2" "State")
-    assert_true "unknown remote head blocks the merge" test "$_state" = "APPROVAL_VALIDATION"
+    assert_true "unverifiable remote head does not merge" test "$_state" != "MERGED"
+    assert_true "unverifiable remote head rebuilds the candidate" test "$_state" = "MAIN_HEAD_REFRESH"
 
-    # With the remote head matching the approved SHA the revalidation passes and
-    # the real merge is attempted; fake gh does not actually merge, so it fails
-    # closed to FAILED rather than pretending success. Non-zero exit signals the
-    # terminal FAILED state.
+    # Once the remote head matches again the rebuild returns to the approval
+    # gate, and a fresh approval reaches the merge step.
     printf '%s' "$_commit" > "$_FAKE_GH/head-oid"
+    _i=0
+    while [ "$_i" -lt 5 ]; do
+        _state=$(merge_state_get "$STATE2" "State")
+        case "$_state" in
+            APPROVAL_VALIDATION|FAILED|CONFLICT|MERGED|COMPLETED) break ;;
+        esac
+        merge_orchestrate_one > "$WORK/out11-$_i.log" 2>&1
+        _i=$((_i + 1))
+    done
+    assert_true "rebuild returns to the approval gate" test "$_state" = "APPROVAL_VALIDATION"
+
     _tmp="$STATE2.tmp"
     sed "s/\"Approval\"[[:space:]]*:[[:space:]]*null/\"Approval\": ${_approval_json}/" "$STATE2" > "$_tmp" 2>/dev/null
     mv "$_tmp" "$STATE2" 2>/dev/null
-    merge_orchestrate_one > "$WORK/out11.log" 2>&1
+    merge_orchestrate_one > "$WORK/out12.log" 2>&1
     _state=$(merge_state_get "$STATE2" "State")
     assert_true "matching remote head -> MERGING" test "$_state" = "MERGING"
-    merge_orchestrate_one > "$WORK/out12.log" 2>&1
+
+    # fake gh does not actually merge, so MERGING fails closed to FAILED rather
+    # than pretending success. Non-zero exit signals the terminal FAILED state.
+    merge_orchestrate_one > "$WORK/out13.log" 2>&1
     _rc=$?
     assert_true "MERGING fail-closed returns non-zero" test "$_rc" -ne 0
     _state=$(merge_state_get "$STATE2" "State")
@@ -300,6 +314,9 @@ if command -v git >/dev/null 2>&1; then
     echo "feature" > "$WORK/wc/cf.txt"
     git -C "$WORK/wc" add cf.txt
     git -C "$WORK/wc" commit -q -m "feature changes cf"
+    # A PR branch exists on the remote; the mandatory rebase checks the
+    # candidate against the remote PR head before rebasing.
+    git -C "$WORK/wc" push -q -u origin issue/cf 2>/dev/null
     # Main edits the same file differently and advances origin/main
     git -C "$C2" checkout -q main
     echo "main" > "$C2/cf.txt"

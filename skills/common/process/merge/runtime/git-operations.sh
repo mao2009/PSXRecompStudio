@@ -50,6 +50,76 @@ merge_get_remote_branch_sha() {
 }
 
 # ============================================================
+# PR head synchronisation
+# ============================================================
+
+# Compare the worktree HEAD with the PR branch head on the remote, so a merge
+# candidate can be checked against the commit GitHub would actually merge.
+# Fetches the remote branch into its remote-tracking ref first. Read-only: it
+# rewrites no history and pushes nothing.
+# Usage: merge_remote_head_state <worktree> <remote> <branch>
+# Emits KEY=VALUE lines: relation, remote_sha, local_sha
+#   relation=same          the worktree HEAD is the PR head
+#   relation=remote_ahead  someone pushed on top of it; a fast-forward recovers
+#   relation=local_ahead   local work not pushed yet (normal before a rebase push)
+#   relation=diverged      histories disagree; unrecoverable without a rewrite
+#   relation=unknown       the remote head could not be established
+merge_remote_head_state() {
+    _worktree="$1"
+    _remote="$2"
+    [ -n "$_remote" ] || _remote="origin"
+    _branch="$3"
+
+    if [ -z "$_worktree" ] || [ ! -d "$_worktree" ] || [ -z "$_branch" ]; then
+        echo "relation=unknown"
+        return 1
+    fi
+    if ! git -C "$_worktree" fetch --no-tags "$_remote" \
+            "+refs/heads/$_branch:refs/remotes/$_remote/$_branch" >/dev/null 2>&1; then
+        echo "relation=unknown"
+        return 1
+    fi
+
+    _rsha=$(git -C "$_worktree" rev-parse "refs/remotes/$_remote/$_branch" 2>/dev/null)
+    _lsha=$(git -C "$_worktree" rev-parse HEAD 2>/dev/null)
+    if [ -z "$_rsha" ] || [ -z "$_lsha" ]; then
+        echo "relation=unknown"
+        return 1
+    fi
+
+    echo "remote_sha=$_rsha"
+    echo "local_sha=$_lsha"
+    if [ "$_rsha" = "$_lsha" ]; then
+        echo "relation=same"
+    elif git -C "$_worktree" merge-base --is-ancestor "$_lsha" "$_rsha" 2>/dev/null; then
+        echo "relation=remote_ahead"
+    elif git -C "$_worktree" merge-base --is-ancestor "$_rsha" "$_lsha" 2>/dev/null; then
+        echo "relation=local_ahead"
+    else
+        echo "relation=diverged"
+    fi
+    return 0
+}
+
+# Read one field out of a merge_remote_head_state result.
+# Usage: merge_remote_head_field <result> <key>
+merge_remote_head_field() {
+    printf '%s' "$1" | sed -n "s/^$2=\(.*\)$/\1/p" | head -1
+}
+
+# Fast-forward the worktree onto the already-fetched remote PR head. This is a
+# fast-forward only: no merge commit, no history rewrite, no push, and it fails
+# rather than discarding local commits the remote does not contain.
+# Usage: merge_ff_worktree_to_remote <worktree> <remote> <branch>
+merge_ff_worktree_to_remote() {
+    _worktree="$1"
+    _remote="$2"
+    [ -n "$_remote" ] || _remote="origin"
+    _branch="$3"
+    git -C "$_worktree" merge --ff-only "refs/remotes/$_remote/$_branch" >/dev/null 2>&1
+}
+
+# ============================================================
 # Rebase
 # ============================================================
 

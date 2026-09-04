@@ -88,6 +88,10 @@ _reset_stubs() {
     merge_get_current_commit() { printf '%s\n' "$H1"; }
     merge_get_pr_info() { _pr_json "$H1"; }
     merge_rebase() { printf '%s\n' success=true has_conflicts=false; }
+    # Fixtures below use synthetic SHAs and no remote; Scenario 5c re-sources
+    # the runtime to exercise the real PR-head synchronisation against git.
+    merge_remote_head_state() { printf '%s\n' "relation=same"; }
+    merge_ff_worktree_to_remote() { return 0; }
     MERGE_CALLED=0
     merge_normal_merge() { MERGE_CALLED=$((MERGE_CALLED + 1)); return 0; }
 }
@@ -237,8 +241,166 @@ merge_state_set_approval "$S" "$(merge_approval_object 243 242 "$H2" "$M1" alice
 merge_get_current_commit() { printf '%s\n' "$H2"; }
 merge_get_pr_info() { _pr_json "$H3"; }
 _merge_handle_merging >/dev/null 2>&1
-assert "remote HEAD move blocks the merge" test "$(merge_state_get "$S" State)" = APPROVAL_VALIDATION
 assert "no merge on remote HEAD move" test "$MERGE_CALLED" -eq 0
+assert "remote HEAD move revokes the approval" test -z "$(merge_state_approval_commit "$S")"
+# A moved remote head means the CANDIDATE changed, so the flow must rebuild it
+# rather than re-offer the stale local HEAD for approval (Scenario 5c proves the
+# rebuild converges; offering the stale HEAD here would loop).
+assert "remote HEAD move rebuilds the candidate" test "$(merge_state_get "$S" State)" = MAIN_HEAD_REFRESH
+refute "remote HEAD move does not re-prompt on the stale candidate" test "$(merge_state_get "$S" State)" = APPROVAL_VALIDATION
+
+# ------------------------------------------------------------------
+# Scenario 5c: remote-only HEAD drift must RECOVER, not re-ask for the stale
+# local candidate. Blocking the first merge is not enough: the flow has to take
+# the remote PR head as the new candidate and reach a merge of that SHA.
+# Runs against a real repository so the fast-forward and rebase are real.
+# ------------------------------------------------------------------
+echo ""
+echo "--- Scenario 5c: remote-only HEAD drift recovery ---"
+_reset_stubs
+# Restore the real git-facing helpers this scenario is about.
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../git-operations.sh"
+
+R="$WORK/5c"
+mkdir -p "$R"
+git init -q --bare "$R/remote.git"
+git init -q -b main "$R/repo"
+git -C "$R/repo" config user.email t@e.com
+git -C "$R/repo" config user.name t
+git -C "$R/repo" remote add origin "$R/remote.git"
+echo base > "$R/repo/base.txt"
+git -C "$R/repo" add base.txt
+git -C "$R/repo" commit -qm base
+git -C "$R/repo" push -q -u origin main
+R_M1=$(git -C "$R/repo" rev-parse main)
+
+git -C "$R/repo" worktree add -q -b issue/242-5c "$R/wt" main
+echo two > "$R/wt/a.txt"
+git -C "$R/wt" add a.txt
+git -C "$R/wt" commit -qm h2
+git -C "$R/wt" push -q -u origin issue/242-5c
+R_H2=$(git -C "$R/wt" rev-parse HEAD)
+
+# Someone pushes on top of the PR branch; the worktree stays behind on H2.
+git clone -q "$R/remote.git" "$R/other" 2>/dev/null
+git -C "$R/other" config user.email o@e.com
+git -C "$R/other" config user.name o
+git -C "$R/other" checkout -q issue/242-5c
+echo three > "$R/other/b.txt"
+git -C "$R/other" add b.txt
+git -C "$R/other" commit -qm h3
+git -C "$R/other" push -q origin issue/242-5c
+R_H3=$(git -C "$R/other" rev-parse HEAD)
+
+assert "fixture: remote moved ahead of the worktree" test "$R_H2" != "$R_H3"
+assert "fixture: worktree is still on the approved SHA" test "$(git -C "$R/wt" rev-parse HEAD)" = "$R_H2"
+
+S="$WORK/s5c.json"
+MERGE_STATE_FILE="$S"
+MERGE_WORKTREE="$R/wt"
+MERGE_BRANCH="issue/242-5c"
+MERGE_MAIN_DIR="$R/repo"
+merge_new_state 243 242 "$R/wt" issue/242-5c > "$S"
+merge_state_set_string "$S" \
+    "State" "MERGING" \
+    "BranchName" "issue/242-5c" \
+    "CurrentCommitSha" "$R_H2" \
+    "ApprovedCommitSha" "$R_H2" \
+    "MainHeadSha" "$R_M1" \
+    "RebasedOntoMainSha" "$R_M1"
+merge_state_set_approval "$S" "$(merge_approval_object 243 242 "$R_H2" "$R_M1" alice 2026-01-01T00:00:00Z)"
+
+merge_gh_available() { return 0; }
+merge_get_main_head() { printf '%s\n' "$R_M1"; }
+merge_rebase_force_with_lease_enabled() { return 1; }
+merge_get_pr_info() {
+    printf '{"number":243,"title":"t","headRefName":"issue/242-5c","headRefOid":"%s","baseRefName":"main","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","commits":[{"conclusion":"SUCCESS"}]}' "$R_H3"
+}
+MERGE_CALLED=0
+merge_normal_merge() { MERGE_CALLED=$((MERGE_CALLED + 1)); return 0; }
+
+_5c_step() {
+    case "$(merge_state_get "$S" State)" in
+        MAIN_HEAD_REFRESH)   _merge_handle_main_head_refresh ;;
+        REBASE)              _merge_handle_rebase ;;
+        VALIDATING)          _merge_handle_validating ;;
+        APPROVAL_VALIDATION) _merge_handle_approval_validation ;;
+        MERGING)             _merge_handle_merging ;;
+        *) return 0 ;;
+    esac
+}
+
+# Drive the recovery to the point where a human is asked for an approval.
+_5c_log="$WORK/5c.log"
+: > "$_5c_log"
+_i=0
+while [ "$_i" -lt 8 ]; do
+    _i=$((_i + 1))
+    _5c_step >> "$_5c_log" 2>&1
+    case "$(merge_state_get "$S" State)" in
+        APPROVAL_VALIDATION)
+            grep -q "READY FOR HUMAN APPROVAL" "$_5c_log" && break ;;
+        FAILED|CONFLICT|MERGED|COMPLETED) break ;;
+    esac
+done
+
+assert "first merge attempt is blocked" test "$MERGE_CALLED" -eq 0
+assert "stale approval is revoked" test -z "$(merge_state_approval_commit "$S")"
+assert "recovery rebuilds from the remote PR head" test "$(merge_state_get "$S" RebasedOntoMainSha)" = "$R_M1"
+assert "worktree fast-forwarded onto the remote PR head" test "$(git -C "$R/wt" rev-parse HEAD)" = "$R_H3"
+assert "candidate becomes the remote PR head" test "$(merge_state_get "$S" CurrentCommitSha)" = "$R_H3"
+assert "flow settles at the approval gate" test "$(merge_state_get "$S" State)" = APPROVAL_VALIDATION
+
+# Negative assertion: the stale local candidate must never be offered.
+refute "stale local H2 is never offered for approval" grep -q "READY FOR HUMAN APPROVAL: $R_H2" "$_5c_log"
+assert "the new candidate H3 is offered for approval" grep -q "READY FOR HUMAN APPROVAL: $R_H3" "$_5c_log"
+
+# Approve the new candidate and finish: the merge must happen, on that SHA.
+merge_state_set_approval "$S" "$(merge_approval_object 243 242 "$R_H3" "$R_M1" alice 2026-01-01T00:00:00Z)"
+_merge_handle_approval_validation >> "$_5c_log" 2>&1
+assert "approval on the recovered candidate -> MERGING" test "$(merge_state_get "$S" State)" = MERGING
+assert "approved SHA is the remote PR head" test "$(merge_state_get "$S" ApprovedCommitSha)" = "$R_H3"
+_merge_handle_merging >> "$_5c_log" 2>&1
+assert "recovered candidate merges" test "$(merge_state_get "$S" State)" = MERGED
+assert "merge executed exactly once" test "$MERGE_CALLED" -eq 1
+assert "merged SHA equals approved SHA" test "$(merge_state_get "$S" ApprovedCommitSha)" = "$R_H3"
+
+# --- PR head synchronisation primitive, against the same real repository ---
+echo ""
+echo "--- Remote PR head relation ---"
+_rel() { merge_remote_head_field "$(merge_remote_head_state "$1" origin "$2")" relation; }
+assert "in sync -> same" test "$(_rel "$R/wt" issue/242-5c)" = same
+git -C "$R/wt" reset -q --hard "$R_H2"
+assert "remote ahead -> remote_ahead" test "$(_rel "$R/wt" issue/242-5c)" = remote_ahead
+assert "fast-forward succeeds" merge_ff_worktree_to_remote "$R/wt" origin issue/242-5c
+assert "fast-forward reaches the remote head" test "$(git -C "$R/wt" rev-parse HEAD)" = "$R_H3"
+echo local > "$R/wt/local.txt"
+git -C "$R/wt" add local.txt
+git -C "$R/wt" commit -qm "local only"
+assert "unpushed local work -> local_ahead" test "$(_rel "$R/wt" issue/242-5c)" = local_ahead
+git -C "$R/wt" reset -q --hard "$R_H2"
+echo fork > "$R/wt/fork.txt"
+git -C "$R/wt" add fork.txt
+git -C "$R/wt" commit -qm "diverging"
+assert "rewritten history -> diverged" test "$(_rel "$R/wt" issue/242-5c)" = diverged
+assert "missing branch -> unknown" test "$(_rel "$R/wt" issue/242-does-not-exist)" = unknown
+
+# A diverged or unverifiable remote head must fail closed in REBASE, never
+# silently rebase a candidate the PR does not contain.
+merge_state_set_string "$S" "State" "REBASE"
+_merge_handle_rebase >/dev/null 2>&1
+assert "diverged remote head fails closed at REBASE" test "$(merge_state_get "$S" State)" = FAILED
+assert "diverged remote head does not merge" test "$MERGE_CALLED" -eq 1
+
+merge_state_set_string "$S" "State" "REBASE" "BranchName" "issue/242-does-not-exist"
+_merge_handle_rebase >/dev/null 2>&1
+assert "unverifiable remote head fails closed at REBASE" test "$(merge_state_get "$S" State)" = FAILED
+
+# Restore the shared fixture context for the scenarios that follow.
+MERGE_WORKTREE="$WORK/wt"
+MERGE_BRANCH="issue/242-x"
+MERGE_MAIN_DIR="$WORK/wt"
 
 # ------------------------------------------------------------------
 # Scenario 6: main advances after approval -> stale approval cannot merge
