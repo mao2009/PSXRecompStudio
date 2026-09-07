@@ -95,6 +95,7 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)
 - [Recompiler Host Code Generation](development/recompiler-host-codegen.md)
 - [References and Prior Art](REFERENCES.md)
+- [Architecture Decision Records](adr/)
 - CPU / R3000A
   - [R3000A Overview](cpu/r3000a.md)
   - [Registers](cpu/registers.md)
