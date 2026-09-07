@@ -9,7 +9,7 @@ description: >
 version: 1.0.0
 scope: process
 platform: agent-agnostic
-related-issues: "#174"
+related-issues: "#174, #270"
 ---
 
 # Review Skill
@@ -52,6 +52,31 @@ Apply this skill to review a change:
 - Conducting the pre-PR self review (which additionally invokes the self-review
   gate semantics).
 - Answering / analyzing external review findings on a PR.
+- Producing the independent current-HEAD review a merge policy requires when an
+  automated review provider could not review the merge candidate (see
+  [Independent review as merge evidence](#independent-review-as-merge-evidence)).
+
+## Independent review as merge evidence
+
+A merge policy may require an *independent* review of the merge candidate — for
+instance the Merge Skill's
+[Review Provider Policy](../../process/merge/REVIEW_PROVIDER_POLICY.md), whose
+fallback path is unlocked by a recorded `FALLBACK_REVIEW_PASS`.
+
+This skill supplies the checklist for that review; the policy owns when it is
+required and what it unlocks. For the review to count as independent evidence:
+
+- it is performed by a reviewing context **separate from the one that authored
+  the change** — the author's pre-PR self review never qualifies;
+- it applies all eight viewpoints below against the **exact current PR HEAD
+  SHA**, and records that SHA;
+- it reports in this skill's [Report Format](#report-format), with the reviewer
+  / tool identity and timestamp;
+- any unresolved `blocker` finding makes the verdict a failure, which the policy
+  treats as fail-closed.
+
+The review's verdict is evidence, never an approval: the final SHA-bound human
+approval is a separate, still-mandatory gate.
 
 ## Preconditions
 
