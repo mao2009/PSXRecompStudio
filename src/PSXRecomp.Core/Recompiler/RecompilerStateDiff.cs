@@ -92,6 +92,7 @@ public static class RecompilerStateDiff
         Add("termination", (byte)reference.Termination, (byte)actual.Termination, diffs);
         AddLoadDelay(diffs, reference.LoadDelay, actual.LoadDelay);
         AddException(diffs, reference.Exception, actual.Exception);
+        AddMemory(diffs, reference.Memory, actual.Memory);
 
         var classification = diffs.Count == 0
             ? RecompilerComparisonClassification.Match
@@ -147,6 +148,45 @@ public static class RecompilerStateDiff
         if (expected.InDelaySlot != actual.InDelaySlot)
         {
             diffs.Add(new RecompilerStateDifference("exception.inDelaySlot", $"{expected.InDelaySlot}", $"{actual.InDelaySlot}"));
+        }
+    }
+
+    /// <summary>
+    /// Compares the ordered memory-observation lists (the fixture's memory window,
+    /// sampled after execution by both executors). Positional comparison keeps the
+    /// diff deterministic: both sides sample the same addresses in the same order.
+    /// </summary>
+    private static void AddMemory(
+        List<RecompilerStateDifference> diffs,
+        IReadOnlyList<RecompilerMemoryObservation> expected,
+        IReadOnlyList<RecompilerMemoryObservation> actual)
+    {
+        if (expected.Count != actual.Count)
+        {
+            diffs.Add(new RecompilerStateDifference(
+                "memory.count",
+                $"{expected.Count}",
+                $"{actual.Count}"));
+            return;
+        }
+
+        for (var i = 0; i < expected.Count; i++)
+        {
+            var e = expected[i];
+            var a = actual[i];
+            var field = $"memory[{FormatUint(e.Address)}]";
+            if (e.Value != a.Value)
+            {
+                diffs.Add(new RecompilerStateDifference(
+                    field, FormatUint(e.Value), FormatUint(a.Value)));
+            }
+            else if (e.Address != a.Address || e.Width != a.Width || e.Access != a.Access)
+            {
+                diffs.Add(new RecompilerStateDifference(
+                    field,
+                    $"{FormatUint(e.Address)} {e.Width} {e.Access}",
+                    $"{FormatUint(a.Address)} {a.Width} {a.Access}"));
+            }
         }
     }
 

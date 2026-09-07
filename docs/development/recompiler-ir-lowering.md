@@ -178,8 +178,11 @@ Rejected, never approximated:
 A load that ends the stream has no in-stream observer, so its commit is emitted
 in its own block. On hardware the value is still pending at that point and
 commits one instruction later. The two states differ only by that one retirement
-step, which is why every differential run gives the interpreter one extra step
-before the state is compared. This lowering never produces a program whose
+step, so an end-to-end fixture is never allowed to end in a trailing load:
+trailing-load-at-termination stays covered by the lowering differential tests,
+and the interpreter's retirement budget is expressed independently as the
+fixture's `ReferenceStepBudget` rather than a shared step budget plus an extra
+step. This lowering never produces a program whose
 `RecompilerStateSnapshot.LoadDelay` is pending; a stage that hands a partially
 retired pipeline across a program boundary will need that state.
 

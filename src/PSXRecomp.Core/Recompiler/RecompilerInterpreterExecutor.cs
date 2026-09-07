@@ -24,11 +24,19 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         using var core = new PSXCoreWrapper();
         core.Reset();
 
-        // Place the straight-line program in guest RAM at the entry address.
+        // Place the program in guest RAM at the entry address.
         var ramOffset = TranslateAddress(fixture.EntryPc);
         for (var i = 0; i < fixture.Instructions.Count; i++)
         {
             core.WriteMemory32(ramOffset + unchecked((uint)i * 4u), fixture.Instructions[i]);
+        }
+
+        // Apply the initial guest memory (byte writes, in fixture order).
+        // PSXMemory addresses are physical, so virtual fixture addresses are
+        // translated here just as the executed loads/stores translate them.
+        foreach (var item in fixture.InitialMemory)
+        {
+            core.WriteMemory8(TranslateAddress(item.Address), item.Value);
         }
 
         // Apply the initial architectural state.
@@ -40,9 +48,11 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         core.Lo = fixture.InitialLo;
         core.Pc = fixture.EntryPc;
 
-        // Bounded execution: retire at most StepBudget instructions.
+        // Bounded execution: retire at most ReferenceStepBudget instructions.
+        // Fixtures with control transfer retire more MIPS instructions than the
+        // host retires fused blocks, which is why the reference has its own budget.
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
-        for (uint step = 0; step < fixture.StepBudget; step++)
+        for (uint step = 0; step < fixture.ReferenceStepBudget; step++)
         {
             var status = core.Step();
             if (status != 0)
@@ -52,10 +62,28 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             }
         }
 
+        // The budget exhausted while the CPU is still inside the program means the
+        // run was cut short rather than completed: the interpreter reports the
+        // same ExecutionBudgetExceeded reason the generated dispatch reports.
+        if (termination == RecompilerIrTerminationReason.Success && PcWithinProgram(core.Pc, fixture))
+        {
+            termination = RecompilerIrTerminationReason.ExecutionBudgetExceeded;
+        }
+
         var gpr = new uint[RecompilerDifferentialFixture.GprCount];
         for (var i = 0; i < RecompilerDifferentialFixture.GprCount; i++)
         {
             gpr[i] = core.GetGpr(i);
+        }
+
+        var memory = new List<RecompilerMemoryObservation>(fixture.MemoryWindow.Count);
+        foreach (var address in fixture.MemoryWindow)
+        {
+            memory.Add(new RecompilerMemoryObservation(
+                address,
+                core.ReadMemory8(TranslateAddress(address)),
+                width: 1,
+                RecompilerMemoryAccessKind.Read));
         }
 
         var snapshot = new RecompilerStateSnapshot(
@@ -63,9 +91,22 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             hi: core.Hi,
             lo: core.Lo,
             pc: core.Pc,
-            termination: termination);
+            termination: termination,
+            memory: memory);
 
         return RecompilerExecutionResult.Completed(snapshot);
+    }
+
+    private static bool PcWithinProgram(uint pc, RecompilerDifferentialFixture fixture)
+    {
+        var programStart = fixture.EntryPc;
+        var programEnd = unchecked(fixture.EntryPc + (uint)fixture.Instructions.Count * 4u);
+        if (programEnd < programStart)
+        {
+            return false;
+        }
+
+        return pc >= programStart && pc < programEnd;
     }
 
     // Mirrors PSXCpu::TranslateAddress for the KUSEG/KSEG0/KSEG1 ranges used by
