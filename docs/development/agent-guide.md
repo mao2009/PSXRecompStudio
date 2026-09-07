@@ -20,14 +20,12 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 
 ## Git Workflow
 
-main ブランチは GitHub Repository Rules により保護されています。直接 push は禁止です。
-
-開発フロー：
-1. `git checkout -b feature/your-feature` で feature branch 作成
-2. 変更をコミット・push
-3. PR 作成 → CI 通過 → レビュー → main へマージ
-
-main への変更は Pull Request 経由でのみ可能です。
+This guide is routing/authority-level reference, not the Git operations SSOT.
+Branch creation, commit/push mechanics, rebase safety, PR handoff, and
+post-merge cleanup are owned by
+[`skills/common/process/git-workflow/SKILL.md`](../../skills/common/process/git-workflow/SKILL.md).
+Read and follow that skill before performing any repository Git operation;
+do not re-derive its rules here.
 
 ## AI bootstrap path
 
