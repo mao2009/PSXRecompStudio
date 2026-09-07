@@ -19,6 +19,24 @@ name: README Auto-Update
 # gate. README updates are instead surfaced as a comment + artifact reference
 # so the author folds them into a normal (human-authored, CI-capable) commit.
 #
+# This workflow is ADVISORY maintenance automation and must never affect
+# whether a pull request is mergeable (Issue #268). GitHub turns a PR into
+# mergeable_state=unstable ("Mergeable with non-passing commit status") when
+# ANY check run on the head SHA fails - including check runs that are not in
+# the branch ruleset's required list, as this workflow's are not. Every step
+# below therefore carries `continue-on-error: true`, which is documented to
+# "allow a job to pass when this step fails", so each job's check run
+# concludes `success`. Job-level `continue-on-error` is deliberately NOT used:
+# it only keeps the workflow RUN green while the job's own check run is still
+# reported as `failure` (the exact condition that produces `unstable`), and it
+# additionally masks the real result behind `needs.<job>.result == 'success'`.
+#
+# Fail-closed behavior is preserved rather than weakened: each step is gated on
+# the previous step's `outcome == 'success'`, so the first failure still stops
+# the chain and no later step ever runs against a half-built state. Failures
+# stay observable through a final `if: always()` step that emits a
+# `::warning::` annotation and a job summary.
+#
 # Trust model (see docs/adr/009-readme-autoupdate.md, Issue #244):
 #   Trusted   : origin/main, this workflow, trusted config, trusted notify script
 #   Untrusted : PR branch, PR description, comments, source, README content,
@@ -56,9 +74,17 @@ jobs:
     outputs:
       action: ${{ steps.preflight.outputs.action }}
       bootstrap: ${{ steps.extract.outputs.bootstrap }}
+      # Because every step is continue-on-error (Issue #268), this job now
+      # completes successfully even when the model or the output gate failed.
+      # Export whether a validated candidate was actually published so the
+      # token-backed notify job stays gated exactly as it was when a failing
+      # step aborted the whole job.
+      candidate: ${{ steps.upload.outcome }}
 
     steps:
       - name: Checkout PR head
+        id: checkout
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -76,6 +102,8 @@ jobs:
       # mode - no GITHUB_TOKEN-backed comment is ever produced by it.
       - name: Extract trusted assets from origin/main
         id: extract
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/readme-sync"
@@ -105,6 +133,8 @@ jobs:
       # consulted and there is no fallback default.
       - name: Verify Big Pickle pin and pinned OpenCode version
         id: verify
+        if: steps.extract.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" verify-config
@@ -114,6 +144,8 @@ jobs:
 
       - name: Preflight
         id: preflight
+        if: steps.verify.outcome == 'success'
+        continue-on-error: true
         run: |
           "$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh" preflight
         env:
@@ -124,7 +156,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
       - name: Install OpenCode (${{ steps.verify.outputs.version }} from trusted SSOT config)
-        if: steps.preflight.outputs.action == 'proceed'
+        id: install
+        if: steps.preflight.outcome == 'success' && steps.preflight.outputs.action == 'proceed'
+        continue-on-error: true
         run: |
           curl -fsSL https://opencode.ai/install | bash -s -- --version "${{ steps.verify.outputs.version }}" --no-modify-path
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
@@ -134,7 +168,9 @@ jobs:
       # unless the trusted config also pins opencode/big-pickle. No fallback: an
       # unavailable model fails this step explicitly.
       - name: Run OpenCode on the PR changes
-        if: steps.preflight.outputs.action == 'proceed'
+        id: model
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
         timeout-minutes: 10
         run: |
           echo "PR: #$PR_NUMBER $PR_TITLE" > "$RUNNER_TEMP/readme-sync-prompt.md"
@@ -172,7 +208,9 @@ jobs:
       # notify job never even sees a candidate. The trusted notify script and
       # config used by the notify job are re-extracted from origin/main there.
       - name: Validate model output and export candidate README
-        if: steps.preflight.outputs.action == 'proceed'
+        id: validate
+        if: steps.model.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           [[ -f README.md ]] || { echo "::error::candidate README.md is missing (model deleted it); not publishing anything."; exit 1; }
@@ -189,13 +227,49 @@ jobs:
           echo "candidate README exported (unchanged or updated)"
 
       - name: Upload candidate README artifact
-        if: steps.preflight.outputs.action == 'proceed'
+        id: upload
+        if: steps.validate.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: readme-candidate-${{ github.run_id }}
           path: ${{ runner.temp }}/readme-candidate/README.md
           if-no-files-found: error
           retention-days: 1
+
+      # Advisory reporting (Issue #268). Every step above is continue-on-error,
+      # so this job's check run always concludes `success` and can never turn
+      # the PR into mergeable_state=unstable. A real failure is not swallowed:
+      # it is surfaced here as a workflow warning annotation and a job summary.
+      - name: Summarize advisory outcome
+        if: always()
+        continue-on-error: true
+        env:
+          STEP_OUTCOMES: |
+            checkout=${{ steps.checkout.outcome }}
+            extract=${{ steps.extract.outcome }}
+            verify=${{ steps.verify.outcome }}
+            preflight=${{ steps.preflight.outcome }}
+            install=${{ steps.install.outcome }}
+            model=${{ steps.model.outcome }}
+            validate=${{ steps.validate.outcome }}
+            upload=${{ steps.upload.outcome }}
+        run: |
+          set -uo pipefail
+          printf '%s\n' "$STEP_OUTCOMES"
+          {
+            echo "### README Auto-Update - model job (advisory; never gates the PR)"
+            echo
+            echo '```'
+            printf '%s\n' "$STEP_OUTCOMES"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$STEP_OUTCOMES" in
+            *=failure*)
+              echo "::warning::README Auto-Update model job had a failing step. README maintenance is advisory automation and deliberately reports success so it cannot make this pull request unstable (Issue #268). Inspect this job's log to diagnose."
+              ;;
+          esac
+          exit 0
 
   notify-readme:
     name: Notify (clean job, origin/main assets, token-backed comment)
@@ -208,7 +282,8 @@ jobs:
     if: >
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.update-readme.outputs.action == 'proceed' &&
-      needs.update-readme.outputs.bootstrap == '0'
+      needs.update-readme.outputs.bootstrap == '0' &&
+      needs.update-readme.outputs.candidate == 'success'
     permissions:
       contents: read
       pull-requests: write
@@ -218,6 +293,8 @@ jobs:
       # A clean checkout on this runner. This workspace is NEVER shared with the
       # model job; the only cross-job input is the README-only artifact.
       - name: Checkout PR head
+        id: checkout
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -231,6 +308,8 @@ jobs:
       # executing PR-controlled code with GITHUB_TOKEN.
       - name: Extract trusted assets from origin/main
         id: extract
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           ROOT="$RUNNER_TEMP/readme-sync"
@@ -253,7 +332,9 @@ jobs:
           chmod +x "$TRUSTED/scripts/ci/readme-sync.sh" 2>/dev/null || true
 
       - name: Download candidate README artifact
-        if: steps.extract.outputs.bootstrap == '0'
+        id: download
+        if: steps.extract.outcome == 'success' && steps.extract.outputs.bootstrap == '0'
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: readme-candidate-${{ github.run_id }}
@@ -262,7 +343,9 @@ jobs:
       # Mechanical artifact inspection: exactly one root-level README.md file is
       # allowed. Extra paths, subdirectories, and symlinks fail closed.
       - name: Validate artifact (README.md only)
-        if: steps.extract.outputs.bootstrap == '0'
+        id: validate
+        if: steps.download.outcome == 'success' && steps.extract.outputs.bootstrap == '0'
+        continue-on-error: true
         run: |
           set -euo pipefail
           python3 - "$RUNNER_TEMP/readme-artifact" <<'PY'
@@ -310,7 +393,9 @@ jobs:
       # bootstrap philosophy: never run a token-backed action against a trusted
       # asset that is not yet ready.
       - name: Notify README candidate
-        if: steps.extract.outputs.bootstrap == '0'
+        id: notify
+        if: steps.validate.outcome == 'success' && steps.extract.outputs.bootstrap == '0'
+        continue-on-error: true
         run: |
           set -euo pipefail
           NOTIFY_SCRIPT="$RUNNER_TEMP/readme-sync/trusted/scripts/ci/readme-sync.sh"
@@ -328,3 +413,34 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+
+      # Advisory reporting (Issue #268), mirroring the model job. A failed
+      # candidate notification is README maintenance, not a merge gate, so this
+      # job's check run always concludes `success` while the real outcome is
+      # surfaced as a warning annotation and a job summary.
+      - name: Summarize advisory outcome
+        if: always()
+        continue-on-error: true
+        env:
+          STEP_OUTCOMES: |
+            checkout=${{ steps.checkout.outcome }}
+            extract=${{ steps.extract.outcome }}
+            download=${{ steps.download.outcome }}
+            validate=${{ steps.validate.outcome }}
+            notify=${{ steps.notify.outcome }}
+        run: |
+          set -uo pipefail
+          printf '%s\n' "$STEP_OUTCOMES"
+          {
+            echo "### README Auto-Update - notify job (advisory; never gates the PR)"
+            echo
+            echo '```'
+            printf '%s\n' "$STEP_OUTCOMES"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$STEP_OUTCOMES" in
+            *=failure*)
+              echo "::warning::README Auto-Update notify job had a failing step. The candidate comment is advisory automation and deliberately reports success so it cannot make this pull request unstable (Issue #268). Inspect this job's log to diagnose."
+              ;;
+          esac
+          exit 0
