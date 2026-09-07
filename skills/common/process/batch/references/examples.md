@@ -237,6 +237,8 @@ rules ([`../SKILL.md`](../SKILL.md#batch-outcome)) resolve it.
 | 18 | Aggregate verification fails | Yes | Possibly all `SUCCESS` | Already merged | **`FAILED`** (rule 1) | The failure against the integrated base, and which tasks are implicated. Nothing is reverted automatically |
 | 19 | Nothing was integrated | — | Whatever they are | No | Per the ordered rules | Aggregate verification `NOT RUN`, never as passing; and that the batch produced no integrated change |
 | 20 | Recorded batch progress is unreadable on resume | **No** | Unclassified tasks `BLOCKED` | No | `BLOCKED` (rule 3) | That the record could not be read. It is never treated as absent — that would risk duplicate dispatch or duplicate merge |
+| 21 | Issue is closed at the time of pre-dispatch check (condition 2) | Not dispatched | `BLOCKED` | No | `BLOCKED` (rule 3) | The exact pre-dispatch condition that failed (Issue is closed); no worktree or branch provisioned; explicit operator decision required before retry |
+| 22 | An existing implementation PR for the Issue is found at pre-dispatch (condition 3) | Not dispatched | `BLOCKED` | No | `BLOCKED` (rule 3) | The existing PR identified; no new worktree or branch provisioned; the orchestrator MUST NOT auto-close or overwrite the existing PR; explicit operator decision required |
 
 ## Cross-scenario invariants
 
