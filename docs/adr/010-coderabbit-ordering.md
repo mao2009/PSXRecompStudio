@@ -64,7 +64,14 @@ Positive: a provider outage or exhausted quota no longer blocks an otherwise val
 
 Negative: the fallback is more expensive than before — it now costs a full independent review pass, where Issue #260's version cost none. That is deliberate; the cheaper version bought availability by lowering the evidence bar. A `CODERABBIT_PENDING` or `CODERABBIT_UNKNOWN` state still blocks, and is resolved by re-requesting a review to obtain terminal evidence, not by waiting it out.
 
-Not addressed here: the Merge Skill's `Merge Strategy` section names `gh pr merge --merge` as the standard method and lists `--squash` as not allowed, while Issue #270 assumes squash is the default merge method. That inconsistency predates this amendment and is orthogonal to review-provider semantics; it is left for a separate decision rather than resolved as a side effect.
+Not addressed here at amendment time: the Merge Skill's `Merge Strategy` section
+named `gh pr merge --merge` as the standard method and listed `--squash` as not
+allowed, while Issue #270 assumes squash is the default merge method. That
+inconsistency predated this amendment and was orthogonal to review-provider
+semantics. It was subsequently resolved by the Merge Skill 1.5.0 Squash and
+merge standardization (Issue #265, PR #273), which made `gh pr merge --squash`
+the standard method; this amendment does not depend on either side of that
+change.
 
 ### Alternatives Considered
 
