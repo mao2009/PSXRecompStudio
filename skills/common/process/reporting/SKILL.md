@@ -69,6 +69,15 @@ disciplines into concrete written-report obligations:
 8. **Do not fill unverifiable items by guessing.** An item that cannot be
    verified is marked `NOT RUN` / `UNKNOWN` with the reason it could not be
    verified, never supplied by inference presented as fact.
+9. **Distinguish a review-provider failure from a review result.** An external
+   review that did not complete — the provider was unavailable, rate-limited,
+   skipped the change, is still pending, or its absence has no established cause
+   — is reported as `NOT RUN` together with the provider state that was actually
+   established. It is never reported as `PASS`, and never as `FAIL` either: a
+   provider that could not review produced no verdict on the change. Only a
+   completed review yields `PASS` / `FAIL`. Where a project's merge policy
+   defines provider states or a fallback evidence path, name the state it
+   defines rather than inventing wording here.
 
 ## Standard procedure
 
@@ -139,6 +148,7 @@ For each gate applicable to the change, report the actual result:
 | Full test suite | PASS / FAIL / NOT RUN | command actually run |
 | Build | PASS / FAIL / NOT RUN | command actually run |
 | Analyzer / lint / format | PASS / FAIL / NOT RUN | command actually run |
+| External / automated review | PASS / FAIL / NOT RUN | the completed review, or the established provider state (rule 9) |
 
 Gates that are **not applicable** to the change (for example the test/build
 surface for a documentation-only or process-only change) are recorded as

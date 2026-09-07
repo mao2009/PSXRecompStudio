@@ -98,11 +98,12 @@ Then perform the mandatory pre-PR self review defined in
 from the matching `skills/project/<project>/profile.md`. Do not open a PR until
 that skill's completion criteria are met.
 
-CodeRabbit is a best-effort automated reviewer, not a repository-owned hard gate.
-Its availability, rate limits, skipped/missing/pending status, or absent current-
-head review do not by themselves block repository CI or merge. Findings that are
-present must still be reviewed appropriately; repository-owned CI and human
-approval remain required.
+CodeRabbit is the preferred automated reviewer, not a single-provider mandatory
+gate. Provider state and the fallback path are defined by
+`skills/common/process/merge/REVIEW_PROVIDER_POLICY.md`: a provider failure or
+skip is never a review pass, and the fallback unlocks only with a recorded
+independent current-HEAD review. Repository-owned CI and the final SHA-bound
+human approval remain mandatory on every path.
 
 ### Pre-merge README candidate (Issue #244)
 

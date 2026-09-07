@@ -167,9 +167,13 @@ Safety guarantees (unchanged from the previous runtime):
 - A merge commit or rebase merge is never selected by default; it requires an
   explicit, per-invocation `--merge-method` request
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)
-- CodeRabbit is a best-effort automated reviewer outside this runtime. Missing,
-  skipped, pending, unavailable, or rate-limited reviews do not block the merge
-  flow; findings that are present remain subject to human review.
+- CodeRabbit is a best-effort automated reviewer outside this runtime, so the
+  runtime never polls it and never derives a merge decision from it. Whether the
+  available review evidence lets a candidate merge is decided by the Skill's
+  [Review Provider Policy](../REVIEW_PROVIDER_POLICY.md) — including the
+  fail-closed fallback, which requires an independent current-HEAD review — and
+  is carried into the runtime as the human approval it validates. A provider
+  failure state is never treated here as a review pass.
 
 ## Testing
 

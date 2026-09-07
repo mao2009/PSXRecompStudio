@@ -8,10 +8,10 @@ description: >
   on an explicit exception.
   Prevents admin bypass and protection rule circumvention.
   Cross-platform: POSIX shell (default) and PowerShell implementations.
-version: 1.5.0
+version: 1.6.0
 scope: process
 platform: agent-agnostic
-related-issues: "#146, #176, #247, #265"
+related-issues: "#146, #176, #247, #260, #265, #270"
 ---
 
 # PR Merge Skill
@@ -182,7 +182,10 @@ After successful rebase, validate the **final merge candidate**:
 1. Verify PR is still open, not a draft, and mergeable
 2. Verify required checks are passing for this HEAD
 3. Verify the repository review gate is satisfied
-4. Record validation result
+4. Verify the automated-review evidence for this HEAD satisfies
+   REVIEW_PROVIDER_POLICY.md (established provider state, findings resolved,
+   and — on the fallback path — a recorded independent current-HEAD review)
+5. Record validation result
 ```
 
 A failure here stops the flow **before** any human approval is requested, so an
@@ -206,7 +209,9 @@ post-rebase candidate:
    requires approval
 4. Verify the approval source:
      github_review  -> GitHub's required human/third-party approval policy;
-                       CodeRabbit is informational and not a repository gate.
+                       CodeRabbit is not an approval source. What its review
+                       evidence means for this candidate is decided earlier, in
+                       VALIDATING, per REVIEW_PROVIDER_POLICY.md.
      explicit_human -> a formal approval source created by `merge.sh approve`:
                        attribute to the authenticated operator identity and
                        bind to both the PR HEAD SHA and the main HEAD SHA.
@@ -496,9 +501,30 @@ The same comparison is repeated at the Final HEAD Revalidation step immediately
 before the merge, against the PR HEAD as GitHub reports it, so a push that lands
 between approval and merge cannot be merged.
 
-### CodeRabbit review
+### Automated review provider
 
-CodeRabbit is a best-effort automated reviewer. Missing, skipped, pending, unavailable, or rate-limited reviews do not block Merge Skill validation. Confirmed unresolved major findings may be considered during human review; repository-owned CI and explicit human approval remain mandatory.
+[`REVIEW_PROVIDER_POLICY.md`](REVIEW_PROVIDER_POLICY.md) is the **single source
+of truth** for automated-review provider states, fallback eligibility, and the
+review evidence the merge gate requires. This Skill consumes it; it does not
+restate or relax it, and no other skill defines provider semantics of its own.
+
+In summary — the policy is authoritative on the detail:
+
+- CodeRabbit is the **preferred** automated reviewer, not a single-provider
+  mandatory gate; provider capacity never becomes the only path to merge.
+- A provider failure or non-completion state (`CODERABBIT_RATE_LIMITED`,
+  `CODERABBIT_UNAVAILABLE`, `CODERABBIT_SKIPPED`, `CODERABBIT_PENDING`,
+  `CODERABBIT_UNKNOWN`) is **never** a review pass and is never reported as one.
+- When a provider failure state is established from provider-side evidence, the
+  fallback path supplies review evidence instead of waiting on the provider. It
+  is fail-closed: green current-HEAD CI, zero unresolved actionable findings, a
+  recorded `FALLBACK_REVIEW_PASS` from an **independent** current-HEAD review
+  (a reviewing context separate from the author; the pre-PR self review does not
+  qualify), an audit note, and the final SHA-bound human approval.
+- Actual CodeRabbit findings are never waived by provider availability: any
+  unresolved actionable finding blocks the merge.
+
+Repository-owned CI and explicit human approval remain mandatory in every path.
 
 ## Conflict Handling
 
@@ -827,6 +853,33 @@ To use this Skill in another project:
     after the rebase, SHA-bound human approval on the final PR HEAD, approval
     invalidation when the PR HEAD moves, and the admin-bypass / direct-push /
     unsafe-force-push prohibitions all still apply exactly as before.
+- **1.6.0** — Fail-closed fallback review evidence (Issue #270):
+  - [`REVIEW_PROVIDER_POLICY.md`](REVIEW_PROVIDER_POLICY.md) is named the single
+    source of truth for provider states and fallback eligibility, and lists the
+    skills that reference it as adapters. This Skill's former "CodeRabbit
+    review" paragraph stated a looser rule than that policy (missing / skipped /
+    pending / unavailable / rate-limited reviews "do not block validation"),
+    which was a second, contradicting definition of provider semantics; it is
+    replaced by a summary that defers to the policy.
+  - The policy gained a parseable provider state vocabulary
+    (`CODERABBIT_REVIEWED` / `CODERABBIT_RATE_LIMITED` /
+    `CODERABBIT_UNAVAILABLE` / `CODERABBIT_SKIPPED` / `CODERABBIT_PENDING` /
+    `CODERABBIT_UNKNOWN`), each with the evidence required to establish it, and
+    `CODERABBIT_UNKNOWN` as the fail-closed default. A provider failure state is
+    never a review pass.
+  - The fallback now additionally requires a recorded `FALLBACK_REVIEW_PASS`
+    from an **independent** current-HEAD review — a reviewing context separate
+    from the author, applying the Review Skill's viewpoints, bound to the merge
+    candidate SHA. The author's pre-PR self review does not qualify.
+    `FALLBACK_REVIEW_FAIL` and `FALLBACK_REVIEW_ABSENT` block.
+  - `CODERABBIT_SKIPPED` became fallback-eligible, but only when the skip's
+    cause is positively established (the provider reported the skip and its
+    reason, or the PR matches a configured repository-side exclusion). An
+    unexplained absent review stays `CODERABBIT_UNKNOWN` and remains blocked.
+  - `VALIDATING` now explicitly checks the review-provider evidence for the
+    final candidate. Required CI, the mandatory rebase, the admin-bypass /
+    direct-push / unsafe-force-push prohibitions, the Squash and merge default
+    (1.5.0), and the final SHA-bound human approval are unchanged.
 - **1.4.0** — Approval / rebase ordering (Issue #247):
   - The SHA-bound human approval gate now runs **after** the mandatory rebase and
     the CI/review gates, on the final merge candidate. Previously

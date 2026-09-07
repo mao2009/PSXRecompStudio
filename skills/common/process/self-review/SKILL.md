@@ -145,6 +145,12 @@ Constraints:
 - Success metric is **not** fewer external reviews — it is **fewer fix/re-review
   cycles after PR creation**.
 - External review is a complement, never a substitute for this gate.
+- **This gate is not independent review evidence.** It is performed by the
+  authoring context on its own change. Where a merge policy requires an
+  independent review of the merge candidate — for example when an automated
+  review provider is unavailable — that evidence must come from a reviewing
+  context separate from the author. A completed self review never satisfies it,
+  and claiming otherwise would let a change approve itself.
 
 ## External-review feedback loop
 
