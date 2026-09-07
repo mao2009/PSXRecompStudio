@@ -38,6 +38,9 @@
 #  23. opencode permission rules: catch-all first, specifics last
 #  24. workflow: does NOT push a bot commit to the PR head branch (Issue #244);
 #      no git push / no commit authoring in the workflow
+#  25. notify: the real REST path (no GITHUB_API_ROOT) exits 0 after posting -
+#      regression guard for the leaked RETURN trap that failed the job with
+#      "tmpdir: unbound variable" after a successful comment (Issue #268)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -711,6 +714,62 @@ assert "CodeRabbit" not in workflow
 PY
 }
 
+# --- 25. notify: real REST path exits 0 after posting (Issue #268) ------------
+# The GITHUB_API_ROOT seam used by the other notify scenarios bypasses curl
+# entirely, so it never covered the path that actually runs in CI. This scenario
+# stubs curl to exercise the real REST path: listing comments (no existing
+# marker) and then posting one. Before the fix, notify_has_marker armed a RETURN
+# trap that stayed armed after it returned and fired again when cmd_notify
+# returned, aborting under `set -u` with "tmpdir: unbound variable" *after* the
+# comment had been posted - failing the notify job on a successful run.
+test_notify_rest_path_succeeds() {
+  setup_repo t26
+  local d headsha stub log ec
+  d="$ROOT_DIR/t26/api"; mkdir -p "$d"
+  printf '# Demo\n\nREST パス用の候補。\n' > "$d/candidate.md"
+  headsha="$(git -C "$WORK" rev-parse HEAD)"
+  stub="$ROOT_DIR/t26/stub"; mkdir -p "$stub"
+  cat > "$stub/curl" <<'EOF'
+#!/usr/bin/env bash
+# Minimal curl stub: GET (with -D) lists zero comments; POST reports HTTP 201.
+out=""
+dump=""
+post=0
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -o) out="${args[i + 1]}" ;;
+    -D) dump="${args[i + 1]}" ;;
+    -X) [[ "${args[i + 1]}" == "POST" ]] && post=1 ;;
+  esac
+done
+if [[ "$post" -eq 1 ]]; then
+  [[ -n "$out" ]] && printf '{"id":1}\n' > "$out"
+  printf '201'
+  exit 0
+fi
+[[ -n "$dump" ]] && printf 'HTTP/2 200\r\ncontent-type: application/json\r\n\r\n' > "$dump"
+[[ -n "$out" ]] && printf '[]\n' > "$out"
+exit 0
+EOF
+  chmod +x "$stub/curl"
+  log="$ROOT_DIR/t26/notify.log"
+  ( cd "$WORK" && PATH="$stub:$PATH" README_SYNC_CONFIG="$CONFIG" \
+      GITHUB_REPOSITORY=owner/repo PR_NUMBER=26 PR_HEAD_SHA="$headsha" \
+      GITHUB_RUN_ID=2626 CANDIDATE_README="$d/candidate.md" \
+      GITHUB_TOKEN=stub-token \
+      bash "$SYNC" notify ) > "$log" 2>&1
+  ec=$?
+  assert_eq 0 "$ec" "notify must exit 0 on the real REST path after posting"
+  if ! grep -q 'posted README candidate notification' "$log"; then
+    fail "notify must report the posted candidate notification"
+  fi
+  if grep -q 'unbound variable' "$log"; then
+    fail "notify must not leave a RETURN trap armed (tmpdir unbound variable)"
+  fi
+  return 0
+}
+
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
@@ -724,7 +783,8 @@ main() {
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_no_bot_push \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
-         test_opencode_permission_rules test_coderabbit_config)
+         test_opencode_permission_rules test_coderabbit_config \
+         test_notify_rest_path_succeeds)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then
