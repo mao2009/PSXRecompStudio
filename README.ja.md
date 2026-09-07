@@ -47,14 +47,18 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | Golden Trace（決定論的実行トレース） | 実装済み |
 | GPU / SPU / CD-ROM / MDEC / GTE | 予定（インターフェース定義のみ） |
 | Runtime（BIOS/EXE ロード、I/O ループ） | 予定 |
-| Recompiler | 予定 |
+| Synthetic MIPS Recompiler vertical slice（IR/lowering、メモリ、制御フロー、host codegen、differential validation） | 実装済み・差分検証済み |
+| 実 ROM 関数の再コンパイル | 次のマイルストーン・未完了（#225） |
+| フルタイトルの静的再コンパイル | 未実装 |
 | Debugger | 予定 |
 | MCP / AI 連携 | 予定 |
 | Ghidra 連携 | 予定 |
 
 **CPU 実行基盤について**: CPU 実行基盤はすでに機能しています。命令デコード、メモリパス経由の実行（KSEG 変換を含む）、Branch/Load Delay Slot の挙動、COP0・例外処理、ハードウェア割り込みのサンプリング、決定論的な実行トレースが組み合わさり、最小の MIPS プログラムをエンドツーエンドで実行できます。これは CPU を貫く縦切りの実装であり、完全なエミュレータではありません。詳細仕様は [`docs/cpu/`](docs/cpu/) を参照してください。
 
-**Recompiler について**: PSXRecompStudio の最終目標は静的再コンパイルですが、Recompiler 自体はまだ着手されていません。`PSXRecomp.Recompiler` プロジェクトはまだ存在しません。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
+**Recompiler について**: PSXRecompStudio の最終目標は静的再コンパイルです。backend-agnostic な Recompiler IR と共有 state contract、MIPS→IR lowering、決定論的な host C 生成、メモリバックエンド（各幅の load/store、unaligned access、load-delay セマンティクス）、制御フローバックエンド（branch、jump、link、delay slot、bounded/budget 付きループ）、interpreter-vs-recompiled の differential validator が `PSXRecomp.Core.Recompiler` に実装済みです（`PSXRecomp.Recompiler` という独立プロジェクトはまだ存在しません。[ディレクトリ構成](#ディレクトリ構成) を参照）。これらにより、**synthetic な MIPS fixture** に対する MIPS → IR → 生成された host C → build → bounded execution → interpreter diff → MATCH という end-to-end vertical slice が実装・差分検証済みです（#207、#208、#209、#211。#266 の統合スモークテストで再確認済み）。
+
+これはまだ実ゲームコードの静的再コンパイルではありません。実 ROM 由来の関数は解析済みですが（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）、まだ Recompiler の実行・差分検証パスへは接続されておらず、最初の実 ROM 関数を接続することが次のマイルストーンです（#225）。フルタイトルの再コンパイル、完全な Runtime 統合、完全なハードウェアサポートは未実装です。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
 
 ## Core Capabilities
 
@@ -62,6 +66,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 - 実行エンジンから独立してテスト可能な R3000A/MIPS I 命令デコード・ドメインモデル。
 - Delay Slot・例外処理のセマンティクスを正しく扱いながら実際の命令列を実行する Native CPU + Memory Bus。
 - 将来の Recompiler バックエンドを interpreter と比較検証するための、決定論的で再生可能な実行トレース（Golden Trace）。
+- 決定論的な MIPS→IR→host-C の Recompiler パイプライン。bounded execution と interpreter differential validation を備え、synthetic fixture 上で end-to-end に証明済み（実 ROM コードではまだ未証明）。
 - Native 実装の詳細を管理層へ漏らさない C# ⇄ C++ の相互運用境界（C ABI + P/Invoke）。
 
 ## アーキテクチャ
@@ -76,7 +81,7 @@ PSXRecompStudio
 ├── PSXRecomp.Tests
 ├── PSXRecompStudio.Tests  # Headless GUI テスト
 ├── PSXRecomp.Runtime      # 予定
-├── PSXRecomp.Recompiler   # 予定
+├── PSXRecomp.Recompiler   # 予定（独立プロジェクトとして）。IR/lowering/codegen は現在 PSXRecomp.Core/Recompiler に実装済み
 ├── PSXRecomp.Debugger     # 予定
 └── mcp/                   # 予定（MCP Server）
 ```
@@ -97,21 +102,35 @@ C++ Native Core（PSXRecomp.Native）
 
 ## 再コンパイルワークフロー
 
-想定しているエンドツーエンドのパイプラインです。現在実装済みなのは解析・逆アセンブル段階までで、静的再コンパイルはこれからです。
+現在、2 つのパスがあります。**synthetic パス**は実装済みで、interpreter に対して差分検証済みです。
+
+```text
+MIPS fixture
+        ↓  decode / analysis
+Recompiler IR（lowering + validation）
+        ↓  決定論的な host C 生成
+生成された host C
+        ↓  host compile
+Bounded execution
+        ↓
+Interpreter reference execution
+        ↓  State Snapshot / checkpoint 比較
+Differential validation → MATCH
+```
+
+**実 ROM パス**は同じ disc/EXE 解析（関数・命令境界、CFG/basic blocks — 実装済み）を再利用しますが、まだ上記の Recompiler 実行・差分検証パスへは接続されていません。最初の実 ROM 関数を接続することが次のマイルストーンで、#225 で追跡しています。
 
 ```text
 PSX タイトル（ROM/EXE、ユーザーが用意）
-        ↓  逆アセンブル・解析（Ghidra 連携：予定）
-関数・命令境界、MMIO の発見事項
-        ↓  R3000A ドメインモデル + デコーダー（実装済み）
-型付けされた命令表現
-        ↓  静的再コンパイル（予定 — PSXRecomp.Recompiler）
-ネイティブコード（x86-64 / ARM64）
+        ↓  逆アセンブル・解析（実装済み。Ghidra 連携：予定）
+関数・命令境界、MMIO の発見事項、CFG/basic blocks
+        ↓  候補となる実 ROM 関数
+Recompiler 実行 / differential validation   ← 次のマイルストーン（#225）
         ↓
-ネイティブ実行ファイル（Golden Trace により interpreter と比較検証）
+ネイティブ実行ファイル（interpreter と比較検証）
 ```
 
-現在実装済みなのは解析・デコード段階のみで、再コンパイル自体は予定です。「CPU 実行基盤が実装済み」であることを「Recompiler が実装済み」と読み替えないでください。両者は別のマイルストーンです。
+フルタイトルの静的再コンパイル（実タイトルの全関数、および Runtime・ハードウェア統合）は未実装です。「synthetic な Recompiler vertical slice が実装済み」であることを「実 ROM またはフルタイトルの再コンパイルが実装済み」と読み替えないでください。両者は別のマイルストーンです。
 
 ## 技術スタック
 

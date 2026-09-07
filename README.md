@@ -46,15 +46,18 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Disc image analysis (CHD → ISO 9660 → PS-X EXE → MIPS analysis, basic blocks / CFG) | Implemented |
 | GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
 | Runtime (BIOS/EXE loading, I/O loop) | Planned |
-| Recompiler (IR contract, state model & host codegen) | Implemented (in PSXRecomp.Core; Phase 3A: GPR host codegen) |
-| Recompiler (full) | Planned |
+| Synthetic MIPS recompiler vertical slice (IR/lowering, memory, control flow, host codegen, differential validation) | Implemented and differentially validated |
+| Real-ROM function recompilation | Next milestone — not yet complete (#225) |
+| Full-title static recompilation | Not implemented |
 | Debugger | Planned |
 | MCP / AI integration | Planned |
 | Ghidra integration | Planned |
 
 **CPU execution foundation.** The CPU execution foundation is now functional: instruction decoding, memory-path execution (including KSEG translation), branch/load delay-slot behavior, COP0 and exception handling, hardware interrupt sampling, and deterministic execution tracing all work together to execute a minimal MIPS program end to end. This is a vertical slice through the CPU, not a complete emulator — see [`docs/cpu/`](docs/cpu/) for the detailed specification.
 
-**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. The backend-agnostic IR model, shared state contract, and deterministic host C source generation from GPR IR (Phase 3A) are now implemented in `PSXRecomp.Core.Recompiler`, but there is no standalone `PSXRecomp.Recompiler` project and no full recompilation yet — memory access, branch/control-flow generation, and the executable vertical slice are separate milestones. The CPU/decoder work above is foundational to it, not a substitute for it.
+**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. A backend-agnostic Recompiler IR and shared state contract, MIPS→IR lowering, deterministic host C generation, a memory backend (load/store at every width, unaligned access, load-delay semantics), a control-flow backend (branches, jumps, links, delay slots, bounded/budgeted loops), and an interpreter-vs-recompiled differential validator are all implemented in `PSXRecomp.Core.Recompiler` (there is no standalone `PSXRecomp.Recompiler` project yet — see [Repository Structure](#repository-structure)). Together these prove an executable, differentially-validated **synthetic MIPS fixture** vertical slice: MIPS → IR → generated host C → build → bounded execution → interpreter diff → match (#207, #208, #209, #211; re-verified end-to-end by the integration smoke test, #266).
+
+This is not yet static recompilation of real game code: real-ROM-derived functions are analyzed (see [Disc image analysis](#current-status) above) but not yet wired into the Recompiler execution/differential path — connecting the first real-ROM function is the next milestone (#225). Full-title recompilation, complete runtime integration, and complete hardware support remain unimplemented. The CPU/decoder work above is foundational to it, not a substitute for it.
 
 ## Core Capabilities
 
@@ -62,6 +65,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 - R3000A/MIPS I instruction decoding and domain modeling, independently testable from the execution engine.
 - A native CPU + memory bus that executes real instruction sequences with correct delay-slot and exception semantics.
 - Deterministic, replayable execution traces (Golden Trace) intended to validate future recompiler backends against the interpreter.
+- A deterministic MIPS→IR→host-C Recompiler pipeline with bounded execution and interpreter differential validation, proven end-to-end on a synthetic fixture (not yet on real-ROM code).
 - A C# ⇄ C++ interop boundary (C ABI + P/Invoke) that keeps native implementation details out of the managed layer.
 
 ## Architecture
@@ -76,7 +80,7 @@ PSXRecompStudio
 ├── PSXRecomp.Tests
 ├── PSXRecompStudio.Tests  # Headless GUI tests
 ├── PSXRecomp.Runtime      # Planned
-├── PSXRecomp.Recompiler   # Planned
+├── PSXRecomp.Recompiler   # Planned standalone project — IR/lowering/codegen currently live in PSXRecomp.Core/Recompiler
 ├── PSXRecomp.Debugger     # Planned
 └── mcp/                   # Planned (MCP server)
 ```
@@ -97,25 +101,42 @@ Layering and dependency direction (Domain / Application / Infrastructure / Inter
 
 ## Recompilation Workflow
 
-The intended end-to-end pipeline — analysis and disassembly today, static recompilation ahead:
+Two paths exist today. The **synthetic path** is implemented end to end and
+differentially validated against the interpreter:
+
+```text
+MIPS fixture
+        ↓  decode / analysis
+Recompiler IR (lowering + validation)
+        ↓  deterministic host C generation
+Generated host C
+        ↓  host compile
+Bounded execution
+        ↓
+Interpreter reference execution
+        ↓  State Snapshot / checkpoint comparison
+Differential validation → MATCH
+```
+
+The **real-ROM path** reuses the same disc/EXE analysis (function/instruction
+boundaries, CFG/basic blocks — implemented) but is not yet connected to the
+Recompiler execution/differential path above; connecting the first real-ROM
+function is the next milestone, tracked in #225:
 
 ```text
 PSX title (ROM/EXE, user-supplied)
-        ↓  disassembly / analysis (Ghidra integration: planned)
-Function/instruction boundaries, MMIO findings
-        ↓  R3000A domain model + decoder (implemented)
-Typed instruction representation
-        ↓  static recompilation (planned — PSXRecomp.Recompiler)
-Native code (x86-64 / ARM64)
+        ↓  disassembly / analysis (implemented; Ghidra integration: planned)
+Function/instruction boundaries, MMIO findings, CFG/basic blocks
+        ↓  candidate real-ROM function
+Recompiler execution / differential validation   ← next milestone (#225)
         ↓
-Native executable, validated against the interpreter via Golden Trace
+Native executable, validated against the interpreter
 ```
 
-Only the analysis/decoding stages and the Phase 3A deterministic GPR host C code
-generation are implemented today; full static recompilation (memory access,
-control-flow generation, and the executable vertical slice under
-`PSXRecomp.Recompiler`) is planned. Do not read "CPU execution foundation
-implemented" as "recompiler implemented" — they are separate milestones.
+Full-title static recompilation (every function of a real title, plus runtime
+and hardware integration) is not implemented. Do not read "synthetic
+Recompiler vertical slice implemented" as "real-ROM or full-title
+recompilation implemented" — they are separate milestones.
 
 ## Technology Stack
 
