@@ -24,7 +24,7 @@ public sealed class RecompilerVerticalSliceTests
         Assert.True(result.Actual.Status == RecompilerExecutionStatus.Completed,
             $"recompiled host failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}");
         Assert.True(result.BothCompleted);
-        Assert.True(result.IsMatch, result.Diff!.Describe());
+        Assert.True(result.IsMatch, RecompilerDifferentialArtifacts.FailureMessage(result, actual));
 
         // The sliced program leaves t2 (GPR10) = 1 + 2 = 3.
         Assert.Equal(1u, result.Reference.Snapshot!.Gpr[8]);

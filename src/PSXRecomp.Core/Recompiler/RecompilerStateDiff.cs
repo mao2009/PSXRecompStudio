@@ -93,6 +93,7 @@ public static class RecompilerStateDiff
         AddLoadDelay(diffs, reference.LoadDelay, actual.LoadDelay);
         AddException(diffs, reference.Exception, actual.Exception);
         AddMemory(diffs, reference.Memory, actual.Memory);
+        AddCheckpointTrace(diffs, reference.PcTrace, actual.PcTrace);
 
         var classification = diffs.Count == 0
             ? RecompilerComparisonClassification.Match
@@ -187,6 +188,56 @@ public static class RecompilerStateDiff
                     $"{FormatUint(e.Address)} {e.Width} {e.Access}",
                     $"{FormatUint(a.Address)} {a.Width} {a.Access}"));
             }
+        }
+    }
+
+    /// <summary>
+    /// Compares the block boundary trace of the recompiled host (
+    /// <paramref name="actual"/>) against the instruction trace of the interpreter
+    /// (<paramref name="expected"/>). A host block always retires one or more whole
+    /// instructions — the interpreter retires each of those at their own PCs — so a
+    /// matching execution means every host block-entry PC appears in the interpreter
+    /// trace in the same order: the host trace is an ordered subsequence of the
+    /// reference trace. Both traces empty (default snapshots) contributes nothing.
+    /// </summary>
+    private static void AddCheckpointTrace(
+        List<RecompilerStateDifference> diffs,
+        IReadOnlyList<uint> expected,
+        IReadOnlyList<uint> actual)
+    {
+        if (expected.Count == 0 || actual.Count == 0) return;
+
+        var referenceIndex = 0;
+        for (var i = 0; i < actual.Count; i++)
+        {
+            var matched = false;
+            while (referenceIndex < expected.Count)
+            {
+                if (expected[referenceIndex] == actual[i])
+                {
+                    matched = true;
+                    referenceIndex++;
+                    break;
+                }
+                referenceIndex++;
+            }
+
+            if (matched) continue;
+
+            // First (and only) diverging checkpoint: the host retired a block whose
+            // entry PC the interpreter trace never reached at the matching position.
+            var expectedText = referenceIndex < expected.Count
+                ? FormatUint(expected[referenceIndex])
+                : "(end of interpreter trace)";
+            diffs.Add(new RecompilerStateDifference(
+                $"checkpoint[{i}]",
+                expectedText,
+                FormatUint(actual[i])));
+            diffs.Add(new RecompilerStateDifference(
+                "checkpoint",
+                $"{expected.Count} interpreter PCs, {actual.Count} host blocks",
+                $"diverged after {i} matching checkpoint(s)"));
+            return;
         }
     }
 

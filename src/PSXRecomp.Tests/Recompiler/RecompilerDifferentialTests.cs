@@ -112,6 +112,55 @@ public sealed class RecompilerDifferentialTests
     }
 
     [Fact]
+    public void Write_OnMatch_WritesNothing_And_ReturnsNull()
+    {
+        var fixture = RecompilerFixtures.AddThree();
+        var result = RecompilerDifferentialRunner.Run(fixture, new StubExecutor(0), new StubExecutor(0));
+
+        var artifacts = RecompilerDifferentialArtifacts.Write(result);
+
+        Assert.Null(artifacts);
+    }
+
+    [Fact]
+    public void Write_OnMismatch_EmitsTheFullArtifactBundle()
+    {
+        // B6: a mismatch must be diagnosable after the fact, not just in the
+        // console. Every listed artifact file must exist and be non-empty.
+        var fixture = RecompilerFixtures.AddThree();
+        var result = RecompilerDifferentialRunner.Run(fixture, new StubExecutor(0), new StubExecutor(gpr8Override: 0xDEADBEEF));
+
+        var artifacts = RecompilerDifferentialArtifacts.Write(result);
+        try
+        {
+            Assert.NotNull(artifacts);
+            Assert.True(Directory.Exists(artifacts));
+            foreach (var expected in new[]
+                     {
+                         "fixture.txt", "diff.txt", "diff.machine-readable.txt", "checkpoint.txt",
+                         "reference-snapshot.json", "actual-snapshot.json",
+                     })
+            {
+                var path = Path.Combine(artifacts!, expected);
+                Assert.True(File.Exists(path), $"expected artifact file missing: {expected}");
+                Assert.NotEmpty(File.ReadAllText(path));
+            }
+
+            // FailureMessage writes its own bundle (it doesn't reuse Write's); it
+            // must still report a path back for that bundle.
+            var message = RecompilerDifferentialArtifacts.FailureMessage(result);
+            Assert.Contains("Differential artifacts:", message);
+            var messageArtifacts = message[(message.IndexOf("Differential artifacts: ", StringComparison.Ordinal) + "Differential artifacts: ".Length)..];
+            Assert.True(Directory.Exists(messageArtifacts));
+            Directory.Delete(messageArtifacts, recursive: true);
+        }
+        finally
+        {
+            if (artifacts is not null && Directory.Exists(artifacts)) Directory.Delete(artifacts, recursive: true);
+        }
+    }
+
+    [Fact]
     public void GenerationFailure_Is_Reported_And_Produces_No_BothCompleted()
     {
         var fixture = RecompilerFixtures.AddThree();

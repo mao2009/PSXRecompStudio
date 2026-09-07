@@ -23,6 +23,7 @@ internal static class SnapshotParser
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
         var gprSeen = 0;
         var memory = new List<RecompilerMemoryObservation>();
+        var pcTrace = ParseCheckpoints(lines, begin);
 
         for (var i = begin + 1; i < end; i++)
         {
@@ -69,7 +70,27 @@ internal static class SnapshotParser
 
         if (gprSeen != 32) return null;
 
-        return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination, memory: memory);
+        return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination, memory: memory, pcTrace: pcTrace);
+    }
+
+    /// <summary>
+    /// Collects the ordered <c>CKPT 0x........</c> block-retirement markers the host
+    /// dispatch emits under -DRECOMPILER_CHECKPOINTS (every marker lands before the
+    /// RSNAPSHOT block, so scanning [0, begin) keeps the ordering stable).
+    /// </summary>
+    private static List<uint> ParseCheckpoints(string[] lines, int begin)
+    {
+        var checkpoints = new List<uint>();
+        for (var i = 0; i < begin; i++)
+        {
+            var line = lines[i].Trim();
+            if (!line.StartsWith("CKPT ", StringComparison.Ordinal)) continue;
+            if (TryParseHex(line, "CKPT ", out var checkpoint))
+            {
+                checkpoints.Add(checkpoint);
+            }
+        }
+        return checkpoints;
     }
 
     private static bool TryParseKeyValue(string line, string prefix, out string value)

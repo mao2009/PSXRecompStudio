@@ -160,6 +160,9 @@ public static class RecompilerHostCodeGen
         var sb = new StringBuilder();
 
         sb.AppendLine("#include <stdint.h>");
+        sb.AppendLine("#ifdef RECOMPILER_CHECKPOINTS");
+        sb.AppendLine("#include <stdio.h>");
+        sb.AppendLine("#endif");
         sb.AppendLine();
         EmitTerminationReasonMacros(sb);
         EmitMemoryHelperDeclarations(sb);
@@ -454,6 +457,14 @@ public static class RecompilerHostCodeGen
             {
                 sb.AppendLine(IndentUnit + IndentUnit + cond + " {");
             }
+            // B1 checkpoint: under -DRECOMPILER_CHECKPOINTS the generated binary
+            // prints the guest PC of every retired block, so the harness can compare
+            // the recompiled block trace against the interpreter's instruction trace.
+            // Guaranteed emitted only when the matching block actually retires, so a
+            // normal no-block Success exit never prints a spurious trailing PC.
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + bodyLine);
             sb.AppendLine(IndentUnit + IndentUnit + "}");
         }

@@ -60,6 +60,7 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         // budget must not keep the interpreter executing the zeroed RAM past the
         // end of the program (which would move its PC off the host's).
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
+        var pcTrace = new List<uint>((int)fixture.ReferenceStepBudget);
         for (uint step = 0; step < fixture.ReferenceStepBudget; step++)
         {
             if (!PcWithinProgram(core.Pc, fixture))
@@ -67,6 +68,7 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
                 break;
             }
 
+            pcTrace.Add(core.Pc);
             var status = core.Step();
             if (status != 0)
             {
@@ -105,7 +107,8 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             lo: core.Lo,
             pc: core.Pc,
             termination: termination,
-            memory: memory);
+            memory: memory,
+            pcTrace: pcTrace);
 
         return RecompilerExecutionResult.Completed(snapshot);
     }
