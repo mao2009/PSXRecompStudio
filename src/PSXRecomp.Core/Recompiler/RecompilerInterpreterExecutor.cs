@@ -24,7 +24,19 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         using var core = new PSXCoreWrapper();
         core.Reset();
 
-        // Place the straight-line program in guest RAM at the entry address.
+        // Apply the initial guest memory first (byte writes, in fixture order).
+        // PSXMemory addresses are physical, so virtual fixture addresses are
+        // translated here just as the executed loads/stores translate them. The
+        // program words are written afterwards so the code image wins at any
+        // address InitialMemory overlaps — mirroring the generated host, where the
+        // code is baked into the compiled blocks and initial memory only fills the
+        // surrounding RAM (Issue #209, CodeRabbit finding 1).
+        foreach (var item in fixture.InitialMemory)
+        {
+            core.WriteMemory8(TranslateAddress(item.Address), item.Value);
+        }
+
+        // Place the program in guest RAM at the entry address.
         var ramOffset = TranslateAddress(fixture.EntryPc);
         for (var i = 0; i < fixture.Instructions.Count; i++)
         {
@@ -40,10 +52,21 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         core.Lo = fixture.InitialLo;
         core.Pc = fixture.EntryPc;
 
-        // Bounded execution: retire at most StepBudget instructions.
+        // Bounded execution: retire at most ReferenceStepBudget instructions.
+        // Fixtures with control transfer retire more MIPS instructions than the
+        // host retires fused blocks, which is why the reference has its own budget.
+        // Stop stepping as soon as the PC leaves the program: the host's dispatch
+        // returns Success when the PC matches no block, so a surplus reference
+        // budget must not keep the interpreter executing the zeroed RAM past the
+        // end of the program (which would move its PC off the host's).
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
-        for (uint step = 0; step < fixture.StepBudget; step++)
+        for (uint step = 0; step < fixture.ReferenceStepBudget; step++)
         {
+            if (!PcWithinProgram(core.Pc, fixture))
+            {
+                break;
+            }
+
             var status = core.Step();
             if (status != 0)
             {
@@ -52,10 +75,28 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             }
         }
 
+        // The budget exhausted while the CPU is still inside the program means the
+        // run was cut short rather than completed: the interpreter reports the
+        // same ExecutionBudgetExceeded reason the generated dispatch reports.
+        if (termination == RecompilerIrTerminationReason.Success && PcWithinProgram(core.Pc, fixture))
+        {
+            termination = RecompilerIrTerminationReason.ExecutionBudgetExceeded;
+        }
+
         var gpr = new uint[RecompilerDifferentialFixture.GprCount];
         for (var i = 0; i < RecompilerDifferentialFixture.GprCount; i++)
         {
             gpr[i] = core.GetGpr(i);
+        }
+
+        var memory = new List<RecompilerMemoryObservation>(fixture.MemoryWindow.Count);
+        foreach (var address in fixture.MemoryWindow)
+        {
+            memory.Add(new RecompilerMemoryObservation(
+                address,
+                core.ReadMemory8(TranslateAddress(address)),
+                width: 1,
+                RecompilerMemoryAccessKind.Read));
         }
 
         var snapshot = new RecompilerStateSnapshot(
@@ -63,9 +104,22 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             hi: core.Hi,
             lo: core.Lo,
             pc: core.Pc,
-            termination: termination);
+            termination: termination,
+            memory: memory);
 
         return RecompilerExecutionResult.Completed(snapshot);
+    }
+
+    private static bool PcWithinProgram(uint pc, RecompilerDifferentialFixture fixture)
+    {
+        var programStart = fixture.EntryPc;
+        var programEnd = unchecked(fixture.EntryPc + (uint)fixture.Instructions.Count * 4u);
+        if (programEnd < programStart)
+        {
+            return false;
+        }
+
+        return pc >= programStart && pc < programEnd;
     }
 
     // Mirrors PSXCpu::TranslateAddress for the KUSEG/KSEG0/KSEG1 ranges used by

@@ -99,20 +99,19 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 
             var sourcePath = Path.Combine(tempDir, "program.c");
             var inputPath = Path.Combine(tempDir, "input.txt");
-            var binaryPath = Path.Combine(tempDir, "program");
 
             File.WriteAllText(sourcePath, generated.Source + "\n" + DriverSource);
             WriteInputFile(inputPath, fixture);
 
             var (exit, _, stderr) = RunProcess(
-                Compiler, $"{CompilerArgs} {sourcePath} -o {binaryPath}", BuildTimeoutMs, out var timedOut);
+                Compiler, $"{CompilerArgs} {sourcePath} -o {ResolveBinaryCandidate(tempDir)}", BuildTimeoutMs, out var timedOut);
             if (timedOut || exit != 0)
             {
                 throw new InvalidOperationException(
                     $"Host compilation failed." + (string.IsNullOrEmpty(stderr) ? "" : "\n" + Truncate(stderr, 2000)));
             }
 
-            return new CompiledBinary(binaryPath, inputPath, tempDir);
+            return new CompiledBinary(ResolveBinaryPath(tempDir), inputPath, tempDir);
         }
         catch
         {
@@ -178,7 +177,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                     $"Host compilation failed (exit {compileExit}):\n{Truncate(compileErr, 2000)}");
             }
 
-            var (runExit, stdout, _) = RunProcess(outputPath, inputPath, RunTimeoutMs, out var runTimedOut);
+            var (runExit, stdout, _) = RunProcess(ResolveBinaryPath(tempDir), inputPath, RunTimeoutMs, out var runTimedOut);
 
             if (runTimedOut)
             {
@@ -228,6 +227,19 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         sb.Append(fixture.InitialLo).Append('\n');
         sb.Append(fixture.EntryPc).Append('\n');
         sb.Append(fixture.StepBudget).Append('\n');
+
+        sb.Append(fixture.InitialMemory.Count).Append('\n');
+        foreach (var item in fixture.InitialMemory)
+        {
+            sb.Append(item.Address).Append(' ').Append(item.Value).Append('\n');
+        }
+
+        sb.Append(fixture.MemoryWindow.Count).Append('\n');
+        foreach (var address in fixture.MemoryWindow)
+        {
+            sb.Append(address).Append('\n');
+        }
+
         File.WriteAllText(path, sb.ToString());
     }
 
@@ -276,12 +288,28 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         return tempDir;
     }
 
+    // The MinGW toolchain appends ".exe" on Windows; POSIX builds produce the name
+    // given to -o. The driver therefore asks gcc for the extensionless name and
+    // resolves whatever the platform actually produced before running it.
+    private static string ResolveBinaryCandidate(string dir) => Path.Combine(dir, "program");
+
+    private static string ResolveBinaryPath(string dir)
+    {
+        var candidate = ResolveBinaryCandidate(dir);
+        if (File.Exists(candidate)) return candidate;
+        var exe = candidate + ".exe";
+        return File.Exists(exe) ? exe : candidate;
+    }
+
     private static string Truncate(string value, int max) =>
         value.Length <= max ? value : value.Substring(0, max) + "...";
 
     // Deterministic, self-contained C driver appended to the generated source.
-    // Reads <gpr[0..31]> <hi> <lo> <pc> <budget> from the input file, runs the
-    // bounded dispatch, then prints a stable, parseable state snapshot.
+    // The input file carries <gpr[0..31]> <hi> <lo> <pc> <host block budget>, then
+    // the fixture's initial memory as (address, byte) writes and the memory window
+    // addresses to sample into the snapshot. The driver zeroes guest RAM, applies
+    // the initial memory, runs the bounded dispatch, then prints a stable,
+    // parseable state snapshot including each sampled window byte.
     //
     // The driver also provides minimal memory helper implementations backed by
     // a 2 MiB RAM buffer, matching RecompilerGuestMemory (KUSEG physical,
@@ -292,7 +320,12 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 #include <string.h>
 
 #define PSX_TEST_RAM_SIZE (2u * 1024u * 1024u)
+#define PSX_TEST_MAX_INIT 256u
+#define PSX_TEST_MAX_WINDOW 256u
 static uint8_t test_ram[PSX_TEST_RAM_SIZE];
+static uint32_t init_addrs[PSX_TEST_MAX_INIT];
+static uint32_t init_vals[PSX_TEST_MAX_INIT];
+static uint32_t window_addrs[PSX_TEST_MAX_WINDOW];
 
 static uint32_t test_translate(uint32_t va) {
     if (va <= 0x7FFFFFFFu) return va;
@@ -355,17 +388,38 @@ int main(int argc, char** argv) {
     if (!in) return 91;      /* CannotOpenInput */
     RecompilerState state;
     memset(&state, 0, sizeof(state));
-    unsigned long u;
+    unsigned long u, a, v;
     int i;
     for (i = 0; i < 32; i++) { if (fscanf(in, ""%lu"", &u) != 1) return 92; state.gpr[i] = (uint32_t)u; }
     if (fscanf(in, ""%lu"", &u) != 1) return 92; state.hi = (uint32_t)u;
     if (fscanf(in, ""%lu"", &u) != 1) return 92; state.lo = (uint32_t)u;
     if (fscanf(in, ""%lu"", &u) != 1) return 92; state.pc = (uint32_t)u;
     if (fscanf(in, ""%lu"", &u) != 1) return 92; unsigned long budget = u;
+
+    if (fscanf(in, ""%lu"", &u) != 1) return 92;
+    if (u > PSX_TEST_MAX_INIT) return 93;       /* TooManyInits */
+    unsigned long init_count = u;
+    for (i = 0; i < (int)init_count; i++) {
+        if (fscanf(in, ""%lu %lu"", &a, &v) != 2) return 92;
+        init_addrs[i] = (uint32_t)a;
+        init_vals[i] = (uint32_t)v;
+    }
+
+    if (fscanf(in, ""%lu"", &u) != 1) return 92;
+    if (u > PSX_TEST_MAX_WINDOW) return 94;     /* TooManyWindowAddresses */
+    unsigned long window_count = u;
+    for (i = 0; i < (int)window_count; i++) {
+        if (fscanf(in, ""%lu"", &a) != 1) return 92;
+        window_addrs[i] = (uint32_t)a;
+    }
     fclose(in);
+
     state.gpr[0] = 0;
     state.core = (void*)0;
     memset(test_ram, 0, sizeof(test_ram));
+    for (i = 0; i < (int)init_count; i++) {
+        recompiler_write_mem8((void*)0, init_addrs[i], (uint8_t)init_vals[i]);
+    }
     recompiler_dispatch(&state, (uint32_t)budget);
     printf(""RSNAPSHOT_BEGIN\n"");
     printf(""termination=%d\n"", (int)state.termination_reason);
@@ -373,6 +427,9 @@ int main(int argc, char** argv) {
     printf(""hi=0x%08X\n"", state.hi);
     printf(""lo=0x%08X\n"", state.lo);
     for (i = 0; i < 32; i++) printf(""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
+    for (i = 0; i < (int)window_count; i++)
+        printf(""mem[0x%08X]=0x%02X\n"", window_addrs[i],
+               (unsigned)recompiler_read_mem8((void*)0, window_addrs[i]));
     printf(""RSNAPSHOT_END\n"");
     return (int)state.termination_reason;
 }

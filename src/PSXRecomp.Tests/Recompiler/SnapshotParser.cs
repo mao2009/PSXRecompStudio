@@ -22,6 +22,7 @@ internal static class SnapshotParser
         uint hi = 0, lo = 0, pc = 0;
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
         var gprSeen = 0;
+        var memory = new List<RecompilerMemoryObservation>();
 
         for (var i = begin + 1; i < end; i++)
         {
@@ -49,12 +50,26 @@ internal static class SnapshotParser
                 if (!uint.TryParse(valuePart.Substring(3), System.Globalization.NumberStyles.HexNumber, null, out var value)) return null;
                 gpr[index] = value;
                 gprSeen++;
+                continue;
+            }
+
+            if (line.StartsWith("mem[", StringComparison.Ordinal))
+            {
+                var close = line.IndexOf(']');
+                if (close < 0) return null;
+                var addressPart = line.Substring(4, close - 4);
+                if (!addressPart.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) return null;
+                if (!uint.TryParse(addressPart.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out var address)) return null;
+                var valuePart = line.Substring(close + 1).Trim();
+                if (!valuePart.StartsWith("=0x", StringComparison.Ordinal)) return null;
+                if (!byte.TryParse(valuePart.Substring(3), System.Globalization.NumberStyles.HexNumber, null, out var value)) return null;
+                memory.Add(new RecompilerMemoryObservation(address, value, width: 1, RecompilerMemoryAccessKind.Read));
             }
         }
 
         if (gprSeen != 32) return null;
 
-        return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination);
+        return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination, memory: memory);
     }
 
     private static bool TryParseKeyValue(string line, string prefix, out string value)

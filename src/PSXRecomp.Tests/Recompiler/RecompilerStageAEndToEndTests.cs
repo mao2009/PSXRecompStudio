@@ -7,6 +7,10 @@ namespace PSXRecomp.Tests.Recompiler;
 #pragma warning disable PSXR005
 
 [Test]
+// Issue #209 Stage A vertical slice: straight-line integer arithmetic, plus the
+// harness-level guarantee that the native-interpreter executor stops stepping at
+// the end of the program instead of retiring surplus reference-budget steps into
+// the following RAM (matching the host dispatch's no-block Success return).
 public sealed class RecompilerStageAEndToEndTests
 {
     [Fact]
@@ -27,6 +31,29 @@ public sealed class RecompilerStageAEndToEndTests
         // Sanity: the fixture produced the expected arithmetic result.
         Assert.Equal(12u, result.Reference.Snapshot!.Gpr[11]);
         Assert.Equal(12u, result.Actual.Snapshot!.Gpr[11]);
+    }
+
+    [Fact]
+    public void SurplusReferenceBudget_StopsAtProgramEnd_And_MatchesTheHost()
+    {
+        // The interpreter must not keep stepping past the end of the program when
+        // its reference budget exceeds the program length: the host's dispatch
+        // returns Success as soon as the PC matches no block, so the reference
+        // must retire the same single instruction and stop on the same PC.
+        var fixture = RecompilerFixtures.Issue209ExtraBudgetStopsAtProgramEnd();
+        var result = RecompilerDifferentialRunner.Run(
+            fixture, new RecompilerInterpreterExecutor(), new RecompilerHostExecutor());
+
+        Assert.True(result.BothCompleted, result.Reference.Status == RecompilerExecutionStatus.Completed
+            ? $"host executor failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}"
+            : "interpreter executor failed.");
+        Assert.True(result.IsMatch, result.Diff!.Describe());
+        Assert.Equal(RecompilerIrTerminationReason.Success, result.Reference.Snapshot!.Termination);
+        Assert.Equal(RecompilerIrTerminationReason.Success, result.Actual.Snapshot!.Termination);
+        Assert.Equal(0x80000004u, result.Reference.Snapshot!.PC);
+        Assert.Equal(0x80000004u, result.Actual.Snapshot!.PC);
+        Assert.Equal(5u, result.Reference.Snapshot!.Gpr[8]);
+        Assert.Equal(5u, result.Actual.Snapshot!.Gpr[8]);
     }
 
     [Fact]
