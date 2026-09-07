@@ -72,6 +72,58 @@ public class MipsToIrLoweringDifferentialTests
     }
 
     [Fact]
+    public void UnalignedLw_MatchesTheInterpreterByteForByte()
+    {
+        // The interpreter (psx_cpu.cpp ExecLw) and the IR memory model are both
+        // byte-wise and alignment-agnostic, so an LW whose effective address is
+        // not word-aligned re-assembles the four straddled bytes in both. This
+        // pins that intentionally permissive alignment contract.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),               // LUI   $t0, 0x8000
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),               // ADDIU $t0, $t0, 0x1000
+            MipsEncoding.I(0x0F, rt: 9, rs: 0, immediate: 0x1122),               // LUI   $t1, 0x1122
+            MipsEncoding.I(0x09, rt: 9, rs: 9, immediate: 0x3344),               // ADDIU $t1, $t1, 0x3344
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 4),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 1),
+        };
+
+        var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 8);
+
+        run.Ir.Gpr[10].Should().Be(0x44112233u,
+            "the unaligned LW straddles the word boundary and re-assembles the four bytes");
+        run.IrMemory.Should().Equal(
+            new byte[] { 0x44, 0x33, 0x22, 0x11, 0x44, 0x33, 0x22, 0x11 });
+    }
+
+    [Fact]
+    public void UnalignedSw_MatchesTheInterpreterByteForByte()
+    {
+        // An SW to a non-word-aligned address must land its four bytes at exactly
+        // that address in both engines — shifting the existing word store neither
+        // down nor losing the straddling byte into the next word.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),               // LUI   $t0, 0x8000
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),               // ADDIU $t0, $t0, 0x1000
+            MipsEncoding.I(0x0F, rt: 9, rs: 0, immediate: 0x0022),               // LUI   $t1, 0x0022
+            MipsEncoding.I(0x09, rt: 9, rs: 9, immediate: 0x4466),               // ADDIU $t1, $t1, 0x4466   ($t1 = 0x00224466)
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.I(0x0F, rt: 10, rs: 0, immediate: 0x3355),              // LUI   $t2, 0x3355
+            MipsEncoding.I(0x09, rt: 10, rs: 10, immediate: 0x4477),             // ADDIU $t2, $t2, 0x4477   ($t2 = 0x33554477)
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 10, baseRegister: 8, offset: 1),
+        };
+
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 5);
+
+        run.IrMemory.Should().Equal(
+            new byte[] { 0x66, 0x77, 0x44, 0x55, 0x33 },
+            "the unaligned SW sits exactly on the unaligned address, keeps the byte before it, and writes through to the next word boundary");
+        run.Ir.Gpr[10].Should().Be(0x33554477u);
+    }
+
+    [Fact]
     public void Beq_Taken_SkipsTheFallThroughButRetiresTheDelaySlot()
     {
         var words = BuildConditionalBranch(BeqOpcodeField, leftValue: 5, rightValue: 5);
