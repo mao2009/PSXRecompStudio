@@ -57,6 +57,7 @@ public sealed record RecompilerDifferentialFixture
         uint? referenceStepBudget = null)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A fixture needs a name.", nameof(name));
+        Name = name;
         Instructions = new ReadOnlyCollection<uint>(encodedInstructions.ToArray());
         if (Instructions.Count == 0) throw new ArgumentException("A fixture needs at least one instruction.", nameof(encodedInstructions));
         if (stepBudget == 0) throw new ArgumentOutOfRangeException(nameof(stepBudget));

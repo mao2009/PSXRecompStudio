@@ -91,9 +91,19 @@ jobs:
           ls -l src/PSXRecomp.Tests/bin/Release/net10.0/libPSXRecomp.Native.so
 
       - name: Test
+        env:
+          RECOMPILER_ARTIFACT_ROOT: ${{ runner.temp }}/recompiler-differential-artifacts
         run: |
           dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
           dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
+
+      - name: Upload differential harness failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recompiler-differential-artifacts
+          path: ${{ runner.temp }}/recompiler-differential-artifacts
+          if-no-files-found: ignore
 
   gui-tests:
     name: GUI Headless Tests

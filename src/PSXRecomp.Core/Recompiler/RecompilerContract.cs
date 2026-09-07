@@ -631,7 +631,8 @@ public sealed record RecompilerStateSnapshot
         RecompilerLoadDelayState? loadDelay = null,
         RecompilerExceptionState? exception = null,
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success,
-        IEnumerable<RecompilerMemoryObservation>? memory = null)
+        IEnumerable<RecompilerMemoryObservation>? memory = null,
+        IEnumerable<uint>? pcTrace = null)
     {
         ArgumentNullException.ThrowIfNull(gpr);
         if (!Enum.IsDefined(termination)) throw new ArgumentOutOfRangeException(nameof(termination));
@@ -646,6 +647,7 @@ public sealed record RecompilerStateSnapshot
         Exception = exception ?? new RecompilerExceptionState();
         Termination = termination;
         Memory = new ReadOnlyCollection<RecompilerMemoryObservation>((memory ?? Array.Empty<RecompilerMemoryObservation>()).ToArray());
+        PcTrace = new ReadOnlyCollection<uint>((pcTrace ?? Array.Empty<uint>()).ToArray());
     }
 
     public IReadOnlyList<uint> Gpr { get; }
@@ -656,6 +658,15 @@ public sealed record RecompilerStateSnapshot
     public RecompilerExceptionState Exception { get; }
     public RecompilerIrTerminationReason Termination { get; }
     public IReadOnlyList<RecompilerMemoryObservation> Memory { get; }
+
+    /// <summary>
+    /// The ordered guest PCs retired during the bounded run. The interpreter
+    /// records one PC per retired MIPS instruction (delay slots included); the
+    /// recompiled host records one PC per retired block (so a fused branch+delay
+    /// block retires a single entry). The host trace is therefore an ordered
+    /// subsequence of the interpreter trace for a matching execution (B1).
+    /// </summary>
+    public IReadOnlyList<uint> PcTrace { get; }
 }
 
 [Domain]

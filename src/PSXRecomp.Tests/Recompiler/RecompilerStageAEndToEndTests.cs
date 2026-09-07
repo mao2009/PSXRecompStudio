@@ -26,7 +26,7 @@ public sealed class RecompilerStageAEndToEndTests
         Assert.True(result.Actual.Status == RecompilerExecutionStatus.Completed,
             $"host executor failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}");
         Assert.True(result.BothCompleted);
-        Assert.True(result.IsMatch, result.Diff!.Describe());
+        Assert.True(result.IsMatch, RecompilerDifferentialArtifacts.FailureMessage(result, actual));
 
         // Sanity: the fixture produced the expected arithmetic result.
         Assert.Equal(12u, result.Reference.Snapshot!.Gpr[11]);
@@ -41,13 +41,14 @@ public sealed class RecompilerStageAEndToEndTests
         // returns Success as soon as the PC matches no block, so the reference
         // must retire the same single instruction and stop on the same PC.
         var fixture = RecompilerFixtures.Issue209ExtraBudgetStopsAtProgramEnd();
+        var actual = new RecompilerHostExecutor();
         var result = RecompilerDifferentialRunner.Run(
-            fixture, new RecompilerInterpreterExecutor(), new RecompilerHostExecutor());
+            fixture, new RecompilerInterpreterExecutor(), actual);
 
         Assert.True(result.BothCompleted, result.Reference.Status == RecompilerExecutionStatus.Completed
             ? $"host executor failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}"
             : "interpreter executor failed.");
-        Assert.True(result.IsMatch, result.Diff!.Describe());
+        Assert.True(result.IsMatch, RecompilerDifferentialArtifacts.FailureMessage(result, actual));
         Assert.Equal(RecompilerIrTerminationReason.Success, result.Reference.Snapshot!.Termination);
         Assert.Equal(RecompilerIrTerminationReason.Success, result.Actual.Snapshot!.Termination);
         Assert.Equal(0x80000004u, result.Reference.Snapshot!.PC);

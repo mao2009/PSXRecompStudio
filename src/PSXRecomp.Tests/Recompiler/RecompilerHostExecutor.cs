@@ -23,10 +23,25 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 
     private const string Compiler = "gcc";
     private const string CompilerArgs = "-std=c11 -O0 -Wall -Wextra";
+    private const string CheckpointCompileFlag = "-DRECOMPILER_CHECKPOINTS";
     private const int BuildTimeoutMs = 30000;
     private const int RunTimeoutMs = 5000;
 
     public string Name => ExecutorName;
+
+    /// <summary>The generated C source from the most recent build/run (B6 artifact).</summary>
+    public string? LastGeneratedSource { get; private set; }
+
+    /// <summary>The lowered Recompiler IR of the most recent run (B6 artifact snapshot).</summary>
+    public RecompilerIrProgram? LastGeneratedProgram { get; private set; }
+
+    /// <summary>
+    /// The preserved build directory of the most recent failed build/run (B6
+    /// artifact), or null when the last run succeeded. Contains program.c,
+    /// program.stdout.txt and program.stderr.txt. Retained only on failure so
+    /// successful runs keep their temp dirs. The caller owns its lifetime.
+    /// </summary>
+    public string? LastArtifactsPath { get; private set; }
 
     public RecompilerExecutionResult Execute(RecompilerDifferentialFixture fixture)
     {
@@ -36,6 +51,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         try
         {
             program = LowerFixture(fixture);
+            LastGeneratedProgram = program;
         }
         catch (Exception ex)
         {
@@ -148,72 +164,86 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 
     private RecompilerExecutionResult BuildAndRun(RecompilerDifferentialFixture fixture, string generatedSource)
     {
+        LastGeneratedSource = generatedSource;
         var tempDir = CreateTempDir();
         try
         {
             var sourcePath = Path.Combine(tempDir, "program.c");
             var inputPath = Path.Combine(tempDir, "input.txt");
             var outputPath = Path.Combine(tempDir, "program");
+            var stdoutPath = Path.Combine(tempDir, "program.stdout.txt");
+            var stderrPath = Path.Combine(tempDir, "program.stderr.txt");
 
             File.WriteAllText(sourcePath, generatedSource + "\n" + DriverSource);
             WriteInputFile(inputPath, fixture);
 
             var (compileExit, _, compileErr) = RunProcess(
-                Compiler, $"{CompilerArgs} {sourcePath} -o {outputPath}", BuildTimeoutMs, out var buildTimedOut);
+                Compiler, $"{CompilerArgs} {CheckpointCompileFlag} {sourcePath} -o {outputPath}", BuildTimeoutMs, out var buildTimedOut);
 
             if (buildTimedOut)
             {
-                return RecompilerExecutionResult.Failed(
-                    RecompilerExecutionStatus.BuildFailed,
-                    "BUILD_TIMEOUT",
-                    "Host compilation exceeded the build timeout.");
+                File.WriteAllText(stderrPath, compileErr);
+                return FailAndPreserve(tempDir, "BUILD_TIMEOUT", "Host compilation exceeded the build timeout.");
             }
 
             if (compileExit != 0)
             {
-                return RecompilerExecutionResult.Failed(
-                    RecompilerExecutionStatus.BuildFailed,
-                    "BUILD_FAILED",
+                File.WriteAllText(stderrPath, compileErr);
+                return FailAndPreserve(tempDir, "BUILD_FAILED",
                     $"Host compilation failed (exit {compileExit}):\n{Truncate(compileErr, 2000)}");
             }
 
-            var (runExit, stdout, _) = RunProcess(ResolveBinaryPath(tempDir), inputPath, RunTimeoutMs, out var runTimedOut);
+            var (runExit, runOut, runErr) = RunProcess(ResolveBinaryPath(tempDir), inputPath, RunTimeoutMs, out var runTimedOut);
 
             if (runTimedOut)
             {
-                return RecompilerExecutionResult.Failed(
-                    RecompilerExecutionStatus.TimedOut,
-                    "EXECUTION_TIMEOUT",
+                File.WriteAllText(stdoutPath, runOut);
+                File.WriteAllText(stderrPath, runErr);
+                return FailAndPreserve(tempDir, "EXECUTION_TIMEOUT",
                     "Generated executable exceeded the bounded execution budget.");
             }
 
-            if (runExit != 0 && !stdout.Contains("RSNAPSHOT_BEGIN"))
+            if (runExit != 0 && !runOut.Contains("RSNAPSHOT_BEGIN"))
             {
-                return RecompilerExecutionResult.Failed(
-                    RecompilerExecutionStatus.ExecutionFailed,
-                    "EXECUTION_FAILED",
+                File.WriteAllText(stdoutPath, runOut);
+                File.WriteAllText(stderrPath, runErr);
+                return FailAndPreserve(tempDir, "EXECUTION_FAILED",
                     $"Generated executable failed (exit {runExit}).");
             }
 
-            var snapshot = SnapshotParser.Parse(stdout);
+            var snapshot = SnapshotParser.Parse(runOut);
             if (snapshot is null)
             {
-                return RecompilerExecutionResult.Failed(
-                    RecompilerExecutionStatus.MalformedResult,
-                    "MALFORMED_SNAPSHOT",
-                    Truncate(stdout, 2000));
+                File.WriteAllText(stdoutPath, runOut);
+                return FailAndPreserve(tempDir, "MALFORMED_SNAPSHOT", Truncate(runOut, 2000));
             }
 
             return RecompilerExecutionResult.Completed(snapshot);
         }
         finally
         {
-            if (Directory.Exists(tempDir))
+            // Success paths own their temp dir; failure paths keep it for the
+            // failure artifacts (B6) and expose it via LastArtifactsPath.
+            if (Directory.Exists(tempDir) && tempDir != LastArtifactsPath)
             {
                 Directory.Delete(tempDir, true);
             }
         }
     }
+
+    private RecompilerExecutionResult FailAndPreserve(string tempDir, string code, string message)
+    {
+        LastArtifactsPath = tempDir;
+        return RecompilerExecutionResult.Failed(RecompilerExecutionStatusFromCode(code), code, message);
+    }
+
+    private static RecompilerExecutionStatus RecompilerExecutionStatusFromCode(string code) => code switch
+    {
+        "BUILD_TIMEOUT" or "BUILD_FAILED" => RecompilerExecutionStatus.BuildFailed,
+        "EXECUTION_TIMEOUT" => RecompilerExecutionStatus.TimedOut,
+        "EXECUTION_FAILED" => RecompilerExecutionStatus.ExecutionFailed,
+        _ => RecompilerExecutionStatus.MalformedResult,
+    };
 
     private static void WriteInputFile(string path, RecompilerDifferentialFixture fixture)
     {
