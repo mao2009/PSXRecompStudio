@@ -29,8 +29,10 @@ public sealed record RecompilerInitialMemoryItem(uint Address, byte Value);
 /// omitted it defaults to <see cref="StepBudget"/>.
 /// </para>
 /// <para>
-/// <see cref="InitialMemory"/> populates guest RAM at both sides before execution
-/// (the program words are placed at <see cref="EntryPc"/> first).
+/// <see cref="InitialMemory"/> populates guest RAM at both sides before execution,
+/// with the program words written after the initial memory bytes so the code image
+/// wins at any overlapping address — matching the host, where the code is baked
+/// into the generated blocks rather than loaded into RAM.
 /// <see cref="MemoryWindow"/> names guest addresses that both executors sample
 /// after execution into the snapshot's memory observations, so the differential
 /// comparison can prove store/load behavior (widths, endianness, store order)

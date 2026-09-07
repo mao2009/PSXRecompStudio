@@ -38,6 +38,25 @@ internal static class RecompilerFixtures
     public static RecompilerDifferentialFixture Issue209Add() =>
         new("issue-209-add", Issue209Words, EntryPc, stepBudget: 3);
 
+    /// <summary>
+    /// A one-instruction program whose interpreter budget is larger than its host
+    /// budget. The interpreter must stop stepping as soon as the PC leaves the
+    /// program — the host's dispatch returns Success when the PC matches no block
+    /// — so the surplus reference steps must not retire zeroed-RAM NOPs past the
+    /// end of the program and walk its PC away from the host's (Issue #209,
+    /// CodeRabbit finding 2).
+    /// </summary>
+    public static RecompilerDifferentialFixture Issue209ExtraBudgetStopsAtProgramEnd() =>
+        new(
+            "issue-209-extra-reference-budget-stops-at-program-end",
+            encodedInstructions: new[]
+            {
+                MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 5),                        // 0x00 ADDIU $t0, $zero, 5
+            },
+            entryPc: EntryPc,
+            stepBudget: 1,
+            referenceStepBudget: 5);
+
     // ---- Stage B: memory (Issue #209) ----
 
     /// <summary>The guest address of the Stage B/C data area (bytes the tests sample).</summary>
@@ -142,6 +161,35 @@ internal static class RecompilerFixtures
                 DataBase + 3,
                 DataBase + 4,
                 DataBase + 5,
+            });
+
+    /// <summary>
+    /// An InitialMemory byte that overlaps the code image both through the KSEG0
+    /// entry address and directly through its physical alias, plus one byte that
+    /// is disjoint from the code. The interpreter must write the initial memory
+    /// before the program words so the code wins at overlapping addresses,
+    /// mirroring the generated host, where the code is baked into the compiled
+    /// blocks and initial memory applies only to the surrounding RAM (Issue #209,
+    /// CodeRabbit finding 1).
+    /// </summary>
+    public static RecompilerDifferentialFixture Issue209InitialMemoryOverlapsCode() =>
+        new(
+            "issue-209-initial-memory-overlaps-code",
+            encodedInstructions: new[]
+            {
+                MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 5),                        // 0x00 ADDIU $t0, $zero, 5
+            },
+            entryPc: EntryPc,
+            stepBudget: 1,
+            initialMemory: new[]
+            {
+                new RecompilerInitialMemoryItem(EntryPc, 0xFF),                          // virtual alias of the code word
+                new RecompilerInitialMemoryItem(0x00000000u, 0xAA),                      // physical alias of the code word
+                new RecompilerInitialMemoryItem(DataBase, 0x55),                         // disjoint from the code
+            },
+            memoryWindow: new uint[]
+            {
+                DataBase,
             });
 
     // ---- Stage C: control flow (Issue #209) ----
@@ -270,8 +318,14 @@ internal static class RecompilerFixtures
 
     /// <summary>
     /// An unbounded BEQ loop that never exits. Both sides must stop on their budget
-    /// with the identical state (termination ExecutionBudgetExceeded, PC back at the
-    /// loop top) rather than spin or fall through.
+    /// with the identical state (termination ExecutionBudgetExceeded, PC parked at
+    /// the loop body) rather than spin or fall through. The host retires four
+    /// blocks — prologue, the first loop body, the fused BEQ+delay-slot test, then
+    /// the second loop body — before its budget check parks the PC at 0x80000004;
+    /// the interpreter retires seven instructions (the prologue plus two full
+    /// body/test/delay iterations) and lands on the same PC with $t0 = 2. A smaller
+    /// reference budget stops mid-iteration and leaves the two sides with different
+    /// $t0 values, which is why the interpreter's budget must be seven.
     /// </summary>
     public static RecompilerDifferentialFixture Issue209UnboundedLoop() =>
         new(
@@ -284,6 +338,6 @@ internal static class RecompilerFixtures
                 MipsEncoding.Nop,                                                        // 0x0C delay slot
             },
             entryPc: EntryPc,
-            stepBudget: 2,
-            referenceStepBudget: 2);
+            stepBudget: 3,
+            referenceStepBudget: 7);
 }

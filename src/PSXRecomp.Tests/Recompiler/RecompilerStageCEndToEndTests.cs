@@ -110,13 +110,14 @@ public sealed class RecompilerStageCEndToEndTests
         Assert.True(result.BothCompleted);
 
         // Both sides must stop on the identical cut-off state rather than spin or
-        // fall through: budget exhausted, PC parked back at the loop top.
+        // fall through: budget exhausted, PC parked at the loop body, the counter
+        // incremented twice on both sides.
         Assert.Equal(RecompilerIrTerminationReason.ExecutionBudgetExceeded, result.Reference.Snapshot!.Termination);
         Assert.Equal(RecompilerIrTerminationReason.ExecutionBudgetExceeded, result.Actual.Snapshot!.Termination);
-        Assert.Equal(0x80000008u, result.Reference.Snapshot!.PC);
-        Assert.Equal(0x80000008u, result.Actual.Snapshot!.PC);
-        Assert.Equal(1u, result.Reference.Snapshot!.Gpr[8]);
-        Assert.Equal(1u, result.Actual.Snapshot!.Gpr[8]);
+        Assert.Equal(0x80000004u, result.Reference.Snapshot!.PC);
+        Assert.Equal(0x80000004u, result.Actual.Snapshot!.PC);
+        Assert.Equal(2u, result.Reference.Snapshot!.Gpr[8]);
+        Assert.Equal(2u, result.Actual.Snapshot!.Gpr[8]);
     }
 
     [Fact]

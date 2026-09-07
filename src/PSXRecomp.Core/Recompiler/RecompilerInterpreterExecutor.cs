@@ -24,19 +24,23 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         using var core = new PSXCoreWrapper();
         core.Reset();
 
+        // Apply the initial guest memory first (byte writes, in fixture order).
+        // PSXMemory addresses are physical, so virtual fixture addresses are
+        // translated here just as the executed loads/stores translate them. The
+        // program words are written afterwards so the code image wins at any
+        // address InitialMemory overlaps — mirroring the generated host, where the
+        // code is baked into the compiled blocks and initial memory only fills the
+        // surrounding RAM (Issue #209, CodeRabbit finding 1).
+        foreach (var item in fixture.InitialMemory)
+        {
+            core.WriteMemory8(TranslateAddress(item.Address), item.Value);
+        }
+
         // Place the program in guest RAM at the entry address.
         var ramOffset = TranslateAddress(fixture.EntryPc);
         for (var i = 0; i < fixture.Instructions.Count; i++)
         {
             core.WriteMemory32(ramOffset + unchecked((uint)i * 4u), fixture.Instructions[i]);
-        }
-
-        // Apply the initial guest memory (byte writes, in fixture order).
-        // PSXMemory addresses are physical, so virtual fixture addresses are
-        // translated here just as the executed loads/stores translate them.
-        foreach (var item in fixture.InitialMemory)
-        {
-            core.WriteMemory8(TranslateAddress(item.Address), item.Value);
         }
 
         // Apply the initial architectural state.
@@ -51,9 +55,18 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         // Bounded execution: retire at most ReferenceStepBudget instructions.
         // Fixtures with control transfer retire more MIPS instructions than the
         // host retires fused blocks, which is why the reference has its own budget.
+        // Stop stepping as soon as the PC leaves the program: the host's dispatch
+        // returns Success when the PC matches no block, so a surplus reference
+        // budget must not keep the interpreter executing the zeroed RAM past the
+        // end of the program (which would move its PC off the host's).
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
         for (uint step = 0; step < fixture.ReferenceStepBudget; step++)
         {
+            if (!PcWithinProgram(core.Pc, fixture))
+            {
+                break;
+            }
+
             var status = core.Step();
             if (status != 0)
             {

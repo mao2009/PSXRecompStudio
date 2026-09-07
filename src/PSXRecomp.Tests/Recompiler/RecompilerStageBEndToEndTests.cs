@@ -91,6 +91,33 @@ public sealed class RecompilerStageBEndToEndTests
     }
 
     [Fact]
+    public void InitialMemory_OverlappingTheCodeImage_DoesNotCorruptTheInstructions()
+    {
+        // The interpreter must apply the initial memory before the program words so
+        // an overlapping byte cannot corrupt an instruction (the generated host
+        // bakes the code into its compiled blocks, so it is immune to this). The
+        // init bytes that do not overlap the code must still land in RAM.
+        var fixture = RecompilerFixtures.Issue209InitialMemoryOverlapsCode();
+        var result = RecompilerDifferentialRunner.Run(
+            fixture, new RecompilerInterpreterExecutor(), new RecompilerHostExecutor());
+
+        Assert.True(result.BothCompleted, result.Reference.Status == RecompilerExecutionStatus.Completed
+            ? $"host executor failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}"
+            : "interpreter executor failed.");
+        Assert.True(result.IsMatch, result.Diff!.Describe());
+        Assert.Equal(RecompilerIrTerminationReason.Success, result.Reference.Snapshot!.Termination);
+
+        // The code won: ADDIU $t0, $zero, 5 ran on both sides despite the
+        // InitialMemory bytes written across its virtual and physical aliases.
+        Assert.Equal(5u, result.Reference.Snapshot!.Gpr[8]);
+        Assert.Equal(5u, result.Actual.Snapshot!.Gpr[8]);
+
+        // The disjoint init byte is still visible in the window on both sides.
+        Assert.Equal(0x55u, (byte)result.Reference.Snapshot!.Memory[0].Value);
+        Assert.Equal(0x55u, (byte)result.Actual.Snapshot!.Memory[0].Value);
+    }
+
+    [Fact]
     public void MemoryHostSnapshots_Are_Deterministic_Across_Independent_Runs()
     {
         var executor = new RecompilerHostExecutor();
