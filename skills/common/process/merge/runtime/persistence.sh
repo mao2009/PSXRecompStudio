@@ -257,6 +257,7 @@ merge_new_state() {
   "ApprovedCommitSha": null,
   "MainHeadSha": null,
   "RebasedOntoMainSha": null,
+  "MainCommitSha": null,
   "Approval": null,
   "ConflictFiles": null,
   "FailureReason": null,
@@ -269,7 +270,10 @@ EOF
 # Fields introduced after a state file may have been created. A state file
 # written by an older runtime lacks them, and the sed-based field updaters only
 # rewrite keys that already exist, so they must be inserted before use.
-_MERGE_STATE_ADDED_FIELDS="RebasedOntoMainSha"
+# MainCommitSha records the commit the merge creates on main (a squash commit
+# under the standard method). It is deliberately a separate field from every
+# PR HEAD field, because the two SHAs are never the same value.
+_MERGE_STATE_ADDED_FIELDS="RebasedOntoMainSha MainCommitSha"
 
 # Insert any missing state fields as null so later updates apply. Idempotent;
 # safe to call on every load. Returns 1 only when the file cannot be read or

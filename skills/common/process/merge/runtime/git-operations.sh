@@ -375,12 +375,54 @@ merge_pr_mergeable_reason() {
     return 0
 }
 
-# Execute a standard (non-admin) merge via gh.
-# Usage: merge_normal_merge <pr_number> <repository>
-# Returns: 0 if the merge command succeeds, 1 otherwise.
-merge_normal_merge() {
+# Merge methods this runtime will ever pass to `gh pr merge`.
+# `--squash` is the standard method (Issue #265). `--merge` (merge commit) and
+# `--rebase` (rebase merge) are exceptions that a caller must request
+# explicitly; they are never selected by default.
+# Usage: merge_merge_methods
+merge_merge_methods() {
+    echo "--squash --merge --rebase"
+}
+
+# The standard merge method used when no explicit exception is requested.
+# Usage: merge_default_merge_method
+merge_default_merge_method() {
+    echo "--squash"
+}
+
+# Check whether a merge method string is one this runtime may execute.
+# Usage: merge_merge_method_known <method>
+# Returns: 0 if known, 1 if empty or unknown (fail closed).
+merge_merge_method_known() {
+    _method="$1"
+    [ -n "$_method" ] || return 1
+    case " $(merge_merge_methods) " in
+        *" $_method "*) return 0 ;;
+    esac
+    return 1
+}
+
+# Execute the merge via gh, using the standard Squash and merge method unless an
+# explicit exception method is supplied by the caller.
+#
+# Squash and merge creates a NEW commit on the base branch. Its SHA is not the
+# PR HEAD SHA; see merge_pr_merged_status for how the two are reported apart.
+#
+# Usage: merge_execute_merge <pr_number> <repository> [method]
+#   method: omitted/empty -> --squash (standard path)
+#           --merge | --rebase -> explicit exception, caller-requested only
+# Returns: 0 if the merge command succeeds, 1 otherwise (including an unknown
+# method, which fails closed without invoking gh).
+merge_execute_merge() {
     _pr_number="$1"
     _repo="$2"
+    _method="$3"
+    [ -n "$_method" ] || _method=$(merge_default_merge_method)
+
+    if ! merge_merge_method_known "$_method"; then
+        echo "ERROR: unknown merge method '$_method'" >&2
+        return 1
+    fi
 
     if ! merge_gh_available; then
         echo "ERROR: gh CLI not available" >&2
@@ -388,9 +430,9 @@ merge_normal_merge() {
     fi
 
     _repo_args=$(_merge_repo_args "$_repo")
-    # STANDARD MERGE ONLY - NEVER pass --admin.
+    # STANDARD PATH IS --squash - NEVER pass --admin.
     # shellcheck disable=SC2086
-    gh pr merge "$_pr_number" $_repo_args --merge >/dev/null 2>&1
+    gh pr merge "$_pr_number" $_repo_args "$_method" >/dev/null 2>&1
     _rc=$?
 
     if [ "$_rc" -eq 0 ]; then
@@ -449,8 +491,19 @@ merge_approval_source_normalize() {
     fi
 }
 
-# Test whether a PR has been merged (mirrors Test-MergePrMerged)
-# Emits KEY=VALUE lines (is_merged=<bool>, merge_commit=<sha>, state=<state>)
+# Test whether a PR has been merged (mirrors Test-MergePrMerged).
+#
+# Emits KEY=VALUE lines:
+#   is_merged=<bool>
+#   main_commit_sha=<sha>  the commit the merge CREATED on the base branch.
+#                          Under the standard Squash and merge method this is a
+#                          brand-new squash commit whose SHA is NOT the PR HEAD
+#                          SHA; the two are deliberately reported as separate
+#                          values and must never be treated as one SHA.
+#   pr_head_sha=<sha>      the PR HEAD SHA GitHub reports (the merge candidate
+#                          the approval was bound to).
+#   state=<state>
+#
 # Usage: merge_pr_merged_status <pr_number> <repository>
 merge_pr_merged_status() {
     _pr_number="$1"
@@ -463,7 +516,7 @@ merge_pr_merged_status() {
     fi
 
     _repo_args=$(_merge_repo_args "$_repo")
-    _json=$(gh pr view "$_pr_number" $_repo_args --json "state,mergeCommit" 2>/dev/null)
+    _json=$(gh pr view "$_pr_number" $_repo_args --json "state,headRefOid,mergeCommit" 2>/dev/null)
     _rc=$?
 
     if [ "$_rc" -ne 0 ] || [ -z "$_json" ]; then
@@ -473,10 +526,13 @@ merge_pr_merged_status() {
     fi
 
     _state=$(merge_pr_field "$_json" state)
-    _merge_commit=$(printf '%s' "$_json" | sed -n 's/.*"oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    _pr_head_sha=$(merge_pr_head_oid "$_json")
+    # "mergeCommit": {"oid": "..."} is the base-branch commit the merge created.
+    _main_commit_sha=$(printf '%s' "$_json" | sed -n 's/.*"oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 
     echo "is_merged=$( [ "$_state" = "MERGED" ] && echo true || echo false )"
-    echo "merge_commit=$_merge_commit"
+    echo "main_commit_sha=$_main_commit_sha"
+    echo "pr_head_sha=$_pr_head_sha"
     echo "state=$_state"
 
     if [ "$_state" = "MERGED" ]; then

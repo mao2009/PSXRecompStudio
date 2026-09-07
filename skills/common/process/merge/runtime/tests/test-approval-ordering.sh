@@ -8,8 +8,10 @@
 #   TRIGGER_CHECK -> MAIN_HEAD_REFRESH -> REBASE -> VALIDATING
 #                 -> APPROVAL_VALIDATION -> MERGING -> MERGED
 #
-# Invariant: the commit that is merged is always the commit the approval record
-# is bound to. Approval is never requested for an intermediate SHA that the
+# Invariant: the PR HEAD that is merged is always the PR HEAD the approval
+# record is bound to (the squash commit the merge then creates on main is a
+# separate SHA and is never part of this comparison). Approval is never
+# requested for an intermediate SHA that the
 # mandatory rebase is known to discard.
 
 PASS=0
@@ -93,7 +95,7 @@ _reset_stubs() {
     merge_remote_head_state() { printf '%s\n' "relation=same"; }
     merge_ff_worktree_to_remote() { return 0; }
     MERGE_CALLED=0
-    merge_normal_merge() { MERGE_CALLED=$((MERGE_CALLED + 1)); return 0; }
+    merge_execute_merge() { MERGE_CALLED=$((MERGE_CALLED + 1)); return 0; }
 }
 
 echo "=== Merge Approval / Rebase Ordering Tests (Issue #247) ==="
@@ -318,7 +320,7 @@ merge_get_pr_info() {
     printf '{"number":243,"title":"t","headRefName":"issue/242-5c","headRefOid":"%s","baseRefName":"main","state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","commits":[{"conclusion":"SUCCESS"}]}' "$R_H3"
 }
 MERGE_CALLED=0
-merge_normal_merge() { MERGE_CALLED=$((MERGE_CALLED + 1)); return 0; }
+merge_execute_merge() { MERGE_CALLED=$((MERGE_CALLED + 1)); return 0; }
 
 _5c_step() {
     case "$(merge_state_get "$S" State)" in
@@ -364,7 +366,7 @@ assert "approved SHA is the remote PR head" test "$(merge_state_get "$S" Approve
 _merge_handle_merging >> "$_5c_log" 2>&1
 assert "recovered candidate merges" test "$(merge_state_get "$S" State)" = MERGED
 assert "merge executed exactly once" test "$MERGE_CALLED" -eq 1
-assert "merged SHA equals approved SHA" test "$(merge_state_get "$S" ApprovedCommitSha)" = "$R_H3"
+assert "merged candidate equals the approved PR HEAD" test "$(merge_state_get "$S" ApprovedCommitSha)" = "$R_H3"
 
 # --- PR head synchronisation primitive, against the same real repository ---
 echo ""
@@ -507,7 +509,7 @@ assert "late review gate failure blocks the merge" test "$(merge_state_get "$S" 
 assert "no merge on late gate failure" test "$MERGE_CALLED" -eq 0
 
 # ------------------------------------------------------------------
-# Scenario 10: resume / recovery keeps approved SHA == merged SHA
+# Scenario 10: resume / recovery keeps approved PR HEAD == merged candidate
 # ------------------------------------------------------------------
 echo ""
 echo "--- Scenario 10: resume and recovery ---"
@@ -550,7 +552,7 @@ assert "migration is idempotent" merge_state_migrate "$S"
 assert "no duplicate marker after re-migration" test "$(grep -c RebasedOntoMainSha "$S")" -eq 1
 
 # Resuming at MERGING with a state whose approval no longer matches must not
-# merge: the approved SHA and the merged SHA can never diverge.
+# merge: the approved PR HEAD and the merged candidate can never diverge.
 _reset_stubs
 S=$(_state s10b MERGING "$H2" "$M1" "$H2")
 MERGE_STATE_FILE="$S"
@@ -570,7 +572,7 @@ merge_get_current_commit() { printf '%s\n' "$H2"; }
 merge_get_pr_info() { _pr_json "$H2"; }
 _merge_handle_merging >/dev/null 2>&1
 assert "consistent resume merges" test "$(merge_state_get "$S" State)" = MERGED
-assert "merged SHA equals approved SHA" test "$(merge_state_get "$S" ApprovedCommitSha)" = "$H2"
+assert "merged candidate equals the approved PR HEAD" test "$(merge_state_get "$S" ApprovedCommitSha)" = "$H2"
 
 # ------------------------------------------------------------------
 # Final HEAD guard unit checks

@@ -36,7 +36,13 @@ param(
     [string]$Repository,
 
     [Parameter(Mandatory = $false)]
-    [string]$StateFile
+    [string]$StateFile,
+
+    # EXCEPTION ONLY. The standard method is Squash and merge (Issue #265);
+    # --merge and --rebase require naming the method explicitly here.
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("--squash", "--merge", "--rebase")]
+    [string]$MergeMethod
 )
 
 # Get the script directory
@@ -48,6 +54,7 @@ switch ($Command) {
         if (-not $PrNumber) {
             Write-Host "Usage: merge.ps1 merge -PrNumber <number>" -ForegroundColor Red
             Write-Host "Optional: -IssueNumber <number> -WorktreePath <path> -BranchName <name> -Repository <owner/repo>" -ForegroundColor Yellow
+            Write-Host "Merge method: Squash and merge by default. -MergeMethod --merge|--rebase is an explicit exception." -ForegroundColor Yellow
             exit 1
         }
 
@@ -69,6 +76,9 @@ switch ($Command) {
         }
         if ($StateFile) {
             $scriptArgs.StateFile = $StateFile
+        }
+        if ($MergeMethod) {
+            $scriptArgs.MergeMethod = $MergeMethod
         }
 
         & (Join-Path $runtimePath "Scripts" "Invoke-MergeOrchestrator.ps1") @scriptArgs

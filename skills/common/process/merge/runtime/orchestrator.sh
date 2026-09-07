@@ -3,10 +3,14 @@
 # State-driven PR merge orchestration. Loads persisted state, processes exactly
 # one transition, and persists the updated state. Enforces strict safety:
 #   mandatory rebase -> validation -> final SHA-bound human approval ->
-#   final HEAD revalidation -> standard merge -> cleanup.
+#   final HEAD revalidation -> squash merge -> post-merge verification ->
+#   cleanup.
 # The human approval gate deliberately runs AFTER the mandatory rebase, so the
 # approval binds to the exact commit that will be merged rather than to an
 # intermediate SHA the rebase is already known to discard.
+# The standard merge method is Squash and merge (Issue #265). Approval binds to
+# the final PR HEAD; the squash commit the merge creates on main is a NEW,
+# different commit and is recorded under its own name.
 # Never uses --admin, force push, or protection circumvention.
 # Behavioral parity with the PowerShell Invoke-MergeOrchestrator.ps1 runtime.
 # Version: 1.0.0
@@ -44,6 +48,9 @@ MERGE_STATE_FILE=""
 MERGE_MAIN_DIR="."
 MERGE_RUNTIME_DIR="$_MERGE_RUNTIME_DIR"
 MERGE_CONFIG_FILE=""
+# Explicit merge-method exception requested by the caller (`--merge-method`).
+# Empty means the standard path, i.e. Squash and merge.
+MERGE_MERGE_METHOD=""
 
 # The exception is disabled unless the trusted JSON config explicitly says
 # true.  Missing or malformed configuration therefore fails closed to the
@@ -53,6 +60,42 @@ merge_rebase_force_with_lease_enabled() {
     [ -f "$_config" ] || return 1
     _value=$(sed -n '/"merge"[[:space:]]*:[[:space:]]*{/,/^[[:space:]]*}/ s/^[[:space:]]*"allow_rebase_force_with_lease"[[:space:]]*:[[:space:]]*\(true\|false\)[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p' "$_config" | head -1)
     [ "$_value" = "true" ]
+}
+
+# Read the configured standard merge strategy from the trusted JSON config.
+# Missing, malformed, or unknown configuration fails closed to the runtime's
+# own default (`--squash`) rather than silently reintroducing a merge commit.
+# Usage: merge_configured_strategy
+merge_configured_strategy() {
+    _config="${MERGE_CONFIG_FILE:-$_MERGE_RUNTIME_DIR/../config/merge-config.json}"
+    _value=""
+    if [ -f "$_config" ]; then
+        _value=$(sed -n '/"merge"[[:space:]]*:[[:space:]]*{/,/^[[:space:]]*}/ s/^[[:space:]]*"strategy"[[:space:]]*:[[:space:]]*"\([^"]*\)"[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p' "$_config" | head -1)
+    fi
+    if merge_merge_method_known "$_value"; then
+        echo "$_value"
+        return 0
+    fi
+    merge_default_merge_method
+}
+
+# Resolve the merge method for this invocation.
+#
+# The standard path is Squash and merge. A merge commit (`--merge`) or a rebase
+# merge (`--rebase`) is used ONLY when the operator names it explicitly on the
+# invocation that performs the merge (`merge.sh merge --merge-method ...`); the
+# exception is deliberately not persisted, so it can never be inherited by a
+# later resumed run. An unknown value fails closed to the standard method.
+# Usage: merge_resolve_merge_method
+merge_resolve_merge_method() {
+    if [ -n "$MERGE_MERGE_METHOD" ]; then
+        if merge_merge_method_known "$MERGE_MERGE_METHOD"; then
+            echo "$MERGE_MERGE_METHOD"
+            return 0
+        fi
+        echo "WARNING: ignoring unknown merge method '$MERGE_MERGE_METHOD'" >&2
+    fi
+    merge_configured_strategy
 }
 
 # ============================================================
@@ -596,25 +639,43 @@ _merge_handle_merging() {
     fi
 
     echo "Final HEAD revalidation passed: $_approved"
-    echo "=== Standard Merge ==="
-    echo "Executing standard merge (no --admin)..."
 
-    if merge_normal_merge "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY"; then
-        echo "Standard merge succeeded"
+    # The approval binds to this final PR HEAD. The merge creates a separate,
+    # new commit on main; that SHA does not exist yet and is read back from
+    # GitHub during post-merge verification.
+    _method=$(merge_resolve_merge_method)
+    if [ "$_method" = "$(merge_default_merge_method)" ]; then
+        echo "=== Squash Merge ==="
+        echo "Executing Squash and merge (no --admin)..."
+    else
+        echo "=== Merge (explicit method exception: $_method) ==="
+        echo "Executing an explicitly requested non-squash merge (no --admin)..."
+    fi
+    echo "Final PR HEAD (approved merge candidate): $_approved"
+
+    if merge_execute_merge "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY" "$_method"; then
+        echo "Merge succeeded ($_method)"
         merge_state_set_string "$MERGE_STATE_FILE" "State" "MERGED"
     else
-        echo "Standard merge failed"
+        echo "Merge failed ($_method)"
         merge_state_set_string "$MERGE_STATE_FILE" "State" "FAILED" "FailureReason" "Merge failed"
     fi
     return 0
 }
 
+# Post-merge verification.
+#
+# Under Squash and merge the commit created on main is a NEW commit: its SHA is
+# expected to differ from the final PR HEAD SHA. That difference is the normal,
+# passing case here, never an anomaly. The two values are recorded and reported
+# under distinct names so nothing downstream can conflate them.
 _merge_handle_merged() {
-    echo "=== Merge Verification ==="
+    echo "=== Post-Merge Verification ==="
 
     _status=$(merge_pr_merged_status "$MERGE_PR_NUMBER" "$MERGE_REPOSITORY")
     _is_merged=$(printf '%s' "$_status" | sed -n 's/^is_merged=\(.*\)$/\1/p')
-    _merge_commit=$(printf '%s' "$_status" | sed -n 's/^merge_commit=\(.*\)$/\1/p')
+    _main_commit_sha=$(printf '%s' "$_status" | sed -n 's/^main_commit_sha=\(.*\)$/\1/p')
+    _pr_head_sha=$(printf '%s' "$_status" | sed -n 's/^pr_head_sha=\(.*\)$/\1/p')
 
     if [ "$_is_merged" != "true" ]; then
         echo "PR is not merged on GitHub"
@@ -623,7 +684,43 @@ _merge_handle_merged() {
     fi
 
     echo "PR is merged on GitHub"
-    echo "Merge commit: $_merge_commit"
+
+    _approved=$(merge_state_get "$MERGE_STATE_FILE" "ApprovedCommitSha")
+    [ -n "$_pr_head_sha" ] || _pr_head_sha="$_approved"
+    _rebased_onto=$(merge_state_get "$MERGE_STATE_FILE" "RebasedOntoMainSha")
+    _live_main=$(merge_get_main_head "$MERGE_MAIN_DIR")
+
+    # Record the main-side commit under its own name before anything else, so
+    # the evidence survives even if a later check holds this state.
+    if [ -n "$_main_commit_sha" ]; then
+        merge_state_set_string "$MERGE_STATE_FILE" "MainCommitSha" "$_main_commit_sha"
+    fi
+
+    echo "Final PR HEAD (approved merge candidate): $_pr_head_sha"
+    echo "Commit created on main by the merge:      ${_main_commit_sha:-<unknown>}"
+    echo "Main HEAD after merge:                    ${_live_main:-<unknown>}"
+
+    # Hold (do not advance to CLEANUP) while the post-merge evidence is
+    # incomplete. Holding is retryable; FAILED is terminal and would strand the
+    # worktree/branch after an already-irreversible merge.
+    if [ -z "$_main_commit_sha" ]; then
+        echo "Cannot yet establish the commit the merge created on main; re-run to retry."
+        return 0
+    fi
+    if [ -z "$_live_main" ]; then
+        echo "Cannot yet establish the main HEAD after the merge; re-run to retry."
+        return 0
+    fi
+    if [ -n "$_rebased_onto" ] && [ "$_live_main" = "$_rebased_onto" ]; then
+        echo "Main HEAD has not advanced past the rebase base ($_rebased_onto); re-run to retry."
+        return 0
+    fi
+
+    if [ -n "$_pr_head_sha" ] && [ "$_main_commit_sha" != "$_pr_head_sha" ]; then
+        echo "PR HEAD and the main-side commit SHA differ. This is the expected,"
+        echo "normal result of a squash merge, not an anomaly."
+    fi
+
     merge_state_set_string "$MERGE_STATE_FILE" "State" "CLEANUP"
     return 0
 }

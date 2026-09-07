@@ -2,26 +2,32 @@
 name: pr-merge
 description: >
   Safe PR Merge Skill for Batch and Standalone use.
-  Enforces mandatory rebase → validation → final SHA-bound approval → normal
-  merge flow.
+  Enforces mandatory rebase → validation → final SHA-bound approval → squash
+  merge → post-merge verification flow.
+  Standard merge method is Squash and merge; merge commit / rebase merge only
+  on an explicit exception.
   Prevents admin bypass and protection rule circumvention.
   Cross-platform: POSIX shell (default) and PowerShell implementations.
-version: 1.4.0
+version: 1.5.0
 scope: process
 platform: agent-agnostic
-related-issues: "#146, #176, #247"
+related-issues: "#146, #176, #247, #265"
 ---
 
 # PR Merge Skill
 
 A safe, standalone PR Merge Skill that enforces a strict merge flow:
 **Latest Main HEAD Rebase → Validation → Final SHA-bound Human Approval →
-Normal Merge**.
+Squash and Merge → Post-Merge Verification**.
 
 The human approval gate runs **after** the mandatory rebase, so the approval
 binds to the exact commit that will be merged. Requesting it earlier would bind
 it to a SHA the mandatory rebase is already known to discard, forcing a second
 approval round (Issue #247).
+
+The merge itself uses **Squash and merge** (Issue #265). Squashing creates a
+**new** commit on `main`; its SHA is not the PR HEAD SHA, and the two are kept
+strictly apart throughout this Skill — see [SHA semantics](#sha-semantics).
 
 This Skill prevents admin bypass and protection rule circumvention,
 ensuring that merges only happen through the standard GitHub merge path.
@@ -32,9 +38,38 @@ ensuring that merges only happen through the standard GitHub merge path.
 2. **No admin bypass**: Never use `--admin`, unconditional force push, or protection circumvention
 3. **Mandatory rebase**: Always rebase onto latest main HEAD before merge
 4. **Approval as final gate**: User approval is required and tied to the SHA of
-   the final merge candidate, i.e. the post-rebase HEAD that will be merged
-5. **Conflict delegation**: Conflicts are delegated back to Sub-agent, not auto-resolved
-6. **Standalone and Batch compatible**: Same safety conditions regardless of invocation
+   the final merge candidate, i.e. the post-rebase PR HEAD that will be merged
+5. **Squash and merge by default**: The standard merge method is
+   `gh pr merge <pr-number> --squash`. A merge commit or a rebase merge is
+   performed **only** on an explicit exception (see
+   [Merge Strategy](#merge-strategy))
+6. **Never conflate PR HEAD with the squash commit**: Approval binds to the
+   final PR HEAD; the commit squashing creates on `main` is a different,
+   later-existing SHA
+7. **Conflict delegation**: Conflicts are delegated back to Sub-agent, not auto-resolved
+8. **Standalone and Batch compatible**: Same safety conditions regardless of invocation
+
+## SHA semantics
+
+Five distinct SHAs appear in this flow. They are **never** treated as
+interchangeable, and each is reported under its own name:
+
+| Concept | What it is |
+|---|---|
+| **pre-rebase HEAD** | The PR HEAD before the mandatory rebase runs. Discarded as a merge candidate. |
+| **post-rebase PR HEAD** | The candidate the mandatory rebase produced, rebased onto the current main HEAD. |
+| **approved PR HEAD** | The SHA a human approval is bound to (`approved_commit_sha`). |
+| **final PR HEAD** | The candidate actually merged. Normally equal to the approved PR HEAD; it differs only when a divergence forced a fresh approval (see [Final HEAD Revalidation](#8-final-head-revalidation)). |
+| **squash commit SHA** | The **new** commit Squash and merge creates on `main` (`main_commit_sha`). It does not exist until after the merge and is never equal to any PR HEAD above. |
+
+Consequences that the flow depends on:
+
+- Approval binds to the **final PR HEAD** — never to the squash commit SHA,
+  which cannot exist at approval time.
+- After a squash merge, `PR HEAD SHA != squash commit SHA` is the **expected,
+  normal, passing** result. It is never reported as an anomaly or a failure.
+- Any check, record, or report that would assert
+  `PR HEAD SHA == merged commit SHA` is invalid under this Skill.
 
 ## When to apply
 
@@ -251,15 +286,21 @@ reject it again — a merge that can never happen and an approval requested for 
 SHA that can never merge. Routing through the mandatory rebase re-synchronises
 the candidate onto the remote PR head, so the flow converges instead.
 
-### 9. Normal Merge
+### 9. Squash Merge
 
-Execute merge through standard GitHub path:
+Execute the merge through the standard GitHub path, using Squash and merge:
 
 ```text
-1. gh pr merge <pr-number> --merge
-2. Verify merge succeeded
-3. Record merge commit SHA
+1. gh pr merge <pr-number> --squash
+2. Verify the merge command succeeded
+3. The merged candidate is the final PR HEAD (the approved SHA). The commit
+   this creates on main is a NEW squash commit whose SHA is read back in the
+   next step -- it does not exist yet and is never assumed here.
 ```
+
+A merge commit (`--merge`) or a rebase merge (`--rebase`) is used here only
+when explicitly requested as an exception; see
+[Merge Strategy](#merge-strategy).
 
 **NEVER use:**
 - `gh pr merge --admin`
@@ -273,9 +314,29 @@ Verify the merge on GitHub:
 
 ```text
 1. Confirm PR state is MERGED
-2. Verify merge commit exists on main
-3. Record final state
+2. Confirm main HEAD advanced past the main HEAD the candidate was rebased onto
+3. Read the commit the merge created on main and record it as the squash commit
+   SHA (main_commit_sha) -- a field distinct from every PR HEAD field
+4. Record the final PR HEAD alongside it
+5. Confirm the driving Issue closed when a closing keyword was expected
+6. Record final state
 ```
+
+Expected results:
+
+| Observation | Verdict |
+|---|---|
+| Squash commit SHA differs from the final PR HEAD SHA | **PASS** — this is the normal result of a squash merge |
+| Squash commit SHA equals a PR HEAD SHA | Not required, not expected; never asserted as a precondition |
+| Squash commit SHA cannot yet be read, or main has not advanced | Hold in `MERGED` and retry — never treated as merged-and-verified |
+| PR state is not `MERGED` | `FAILED` |
+
+GitHub's closing keywords (`Closes #n` / `Fixes #n` in the PR body) work
+identically for a squash merge, so Issue closure is verified exactly as before.
+
+Post-merge verification **holds** rather than failing terminally when its
+evidence is incomplete: the merge is already irreversible, and a terminal
+failure would strand the worktree and branch before [Cleanup](#11-cleanup).
 
 ### 11. Cleanup
 
@@ -379,9 +440,14 @@ fails closed. Validation results from one source are never reused for the
 other source.
 
 Whatever the source, the approval is only ever evaluated against the **final
-merge candidate**: the post-rebase HEAD, validated against a main HEAD that has
-not moved since the rebase. An approval that predates the mandatory rebase is
-discarded rather than carried forward.
+merge candidate**: the post-rebase PR HEAD, validated against a main HEAD that
+has not moved since the rebase. An approval that predates the mandatory rebase
+is discarded rather than carried forward.
+
+An approval is **never** bound to the squash commit SHA. That commit is created
+by the merge, so it does not exist while approval is being granted or
+validated; binding to it would be impossible, and treating the two as one SHA
+would break the approval gate. See [SHA semantics](#sha-semantics).
 
 ### Approval Record
 
@@ -422,6 +488,9 @@ To validate an approval:
 ```
 
 **All must match for approval to be valid.**
+
+Every comparison above is between **PR HEAD SHAs** (and main HEAD SHAs). None of
+them involves the squash commit SHA, which does not exist yet.
 
 The same comparison is repeated at the Final HEAD Revalidation step immediately
 before the merge, against the PR HEAD as GitHub reports it, so a push that lands
@@ -464,25 +533,58 @@ Return to caller:
 
 ## Merge Strategy
 
-### Standard Merge
+### Standard: Squash and merge
 
-Use standard GitHub merge:
+The standard merge method is **Squash and merge**:
 
 ```text
-gh pr merge <pr-number> --merge
+gh pr merge <pr-number> --squash
 ```
+
+It is the configured default (`config/merge-config.json` → `merge.strategy`)
+and what the runtime executes when no exception is requested. Missing or
+malformed configuration fails closed to `--squash` rather than reintroducing a
+merge commit.
+
+Squashing produces a **new** commit on `main`. Its SHA is recorded separately
+from the PR HEAD; see [SHA semantics](#sha-semantics).
+
+### Exception: merge commit or rebase merge
+
+`--merge` (merge commit) and `--rebase` (rebase merge) are **not** used on the
+standard path. They are performed only when the operator names the method
+explicitly on the invocation that performs the merge:
+
+```sh
+# Explicit exception - merge commit instead of a squash merge
+runtime/merge.sh merge --pr <number> --merge-method --merge
+
+# Explicit exception - rebase merge
+runtime/merge.sh merge --pr <number> --merge-method --rebase
+```
+
+Properties of the exception:
+
+- **Explicit per invocation**: it is never persisted to the merge state, so a
+  resumed or re-run merge returns to Squash and merge rather than silently
+  inheriting the exception.
+- **Recorded**: the merge step names the method it used in its output, so the
+  exception is visible in the run record.
+- **Fail closed**: an unrecognized method is rejected; it never falls through
+  to `gh` and never silently becomes something else.
+- Every other gate is unchanged: the mandatory rebase, current-HEAD validation,
+  SHA-bound approval, and final HEAD revalidation all still apply.
 
 ### What is NOT allowed
 
 | Method | Reason |
 |--------|--------|
 | `gh pr merge --admin` | Bypasses protection rules |
-| `--squash` | Changes commit history |
-| `--rebase` | May cause issues |
 | `git push --force` / `-f` | Unconditional history rewrite; prohibited |
 | Plain `--force-with-lease` | Lease is not explicit; prohibited |
 | Direct push | Bypasses PR process |
 | API merge with bypass | Circumvents protections |
+| Merge commit / rebase merge **without** an explicit exception | The standard path is Squash and merge |
 
 The only force-update exception is the runtime's
 `merge_safe_rebase_push` for a mandatory-rebased PR feature branch. It
@@ -510,7 +612,7 @@ Final SHA-bound human approval
     ↓
 Final HEAD revalidation
     ↓
-Normal merge
+Squash merge
     ↓
 Cleanup
     ↓
@@ -540,7 +642,7 @@ Final SHA-bound human approval
     ↓
 Final HEAD revalidation
     ↓
-Normal merge
+Squash merge
     ↓
 Cleanup
 ```
@@ -551,7 +653,8 @@ After merge confirmation:
 
 ```text
 1. Confirm PR merged on GitHub
-2. Verify merge commit exists on main
+2. Verify the squash commit the merge created exists on main, recorded as
+   main_commit_sha (a value distinct from the final PR HEAD)
 3. Delete Worktree (if provided)
 4. Delete local Branch
 5. Delete remote Branch
@@ -577,6 +680,7 @@ Cleanup failure does not revert merge.
 | `approved_commit_sha` | Approved commit SHA |
 | `main_head_sha` | Main HEAD SHA |
 | `rebased_onto_main_sha` | Main HEAD the current candidate was rebased onto |
+| `main_commit_sha` | The commit the merge created on `main` (the squash commit). Written only during post-merge verification, and never equal to any PR HEAD field above |
 | `created_at` | Creation timestamp |
 | `updated_at` | Last update timestamp |
 
@@ -648,7 +752,8 @@ after an interruption.
 runtime/merge.sh merge --pr 149
 
 # Record an explicit human approval for PR 149. Run this once the flow reports
-# the final merge candidate awaiting approval, so it binds to the merged SHA.
+# the final merge candidate awaiting approval, so it binds to the PR HEAD that
+# is merged (never to the squash commit, which does not exist yet).
 runtime/merge.sh approve --pr 149 --worktree ../worktrees/149-merge
 
 # Full context for a batch-driven merge
@@ -658,6 +763,10 @@ runtime/merge.sh merge --pr 149 --issue 148 \
 
 # Show current state only
 runtime/merge.sh status --pr 149
+
+# EXCEPTION ONLY: merge with a merge commit instead of Squash and merge.
+# Not persisted, so a later resumed run returns to the standard squash method.
+runtime/merge.sh merge --pr 149 --merge-method --merge
 
 # Run the runtime test suite
 runtime/merge.sh test
@@ -686,6 +795,38 @@ To use this Skill in another project:
 
 ## Changelog
 
+- **1.5.0** — Squash and merge standardization (Issue #265):
+  - The standard merge method is now **Squash and merge**
+    (`gh pr merge <pr-number> --squash`). Previously the Skill, the config
+    (`merge.strategy`) and both runtimes hardcoded `--merge`, and `--squash`
+    was listed as a forbidden method.
+  - A merge commit (`--merge`) and a rebase merge (`--rebase`) are now
+    exceptions, reachable only by naming the method explicitly on the
+    invocation that performs the merge (`merge.sh merge --merge-method ...`).
+    The override is not persisted, so a resumed run cannot inherit it, and an
+    unrecognized method fails closed to the standard squash method.
+  - Added an explicit [SHA semantics](#sha-semantics) contract separating five
+    concepts that a squash merge makes genuinely distinct: pre-rebase HEAD,
+    post-rebase PR HEAD, approved PR HEAD, final PR HEAD, and the squash commit
+    SHA created on `main`. `PR HEAD SHA == merged commit SHA` is no longer a
+    valid assumption anywhere in this Skill.
+  - Post-merge verification now confirms the PR is `MERGED`, that `main`
+    advanced past the rebase base, and reads back the commit the merge created
+    on `main`, recording it as the new `main_commit_sha` state field. A PR HEAD
+    that differs from that SHA is the expected, passing result — never an
+    anomaly. Incomplete post-merge evidence holds in `MERGED` and retries
+    instead of failing terminally, so cleanup is never stranded after an
+    already-irreversible merge.
+  - Reporting vocabulary de-conflated: the runtime's ambiguous `merge_commit`
+    result key became `main_commit_sha`, which is emitted alongside a separate
+    `pr_head_sha`; `merge_normal_merge` became `merge_execute_merge` (and
+    `Invoke-NormalMerge` became `Invoke-MergePr`), since "normal merge" is
+    GitHub's name for the merge-commit method this Skill no longer uses by
+    default.
+  - Approval safety is unchanged: mandatory rebase, current-HEAD validation
+    after the rebase, SHA-bound human approval on the final PR HEAD, approval
+    invalidation when the PR HEAD moves, and the admin-bypass / direct-push /
+    unsafe-force-push prohibitions all still apply exactly as before.
 - **1.4.0** — Approval / rebase ordering (Issue #247):
   - The SHA-bound human approval gate now runs **after** the mandatory rebase and
     the CI/review gates, on the final merge candidate. Previously

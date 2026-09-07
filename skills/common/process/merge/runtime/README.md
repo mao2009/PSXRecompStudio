@@ -50,6 +50,44 @@ sh ./merge.sh status --pr 149
 The state machine is persisted to `.merge-state-<pr>.json` on every step, so
 re-running `merge` resumes from the last recorded state.
 
+### Merge method
+
+The standard method is **Squash and merge** (`gh pr merge <pr> --squash`,
+Issue #265). It is the configured default (`config/merge-config.json` →
+`merge.strategy`); missing or malformed configuration fails closed to
+`--squash` rather than reintroducing a merge commit.
+
+A merge commit or a rebase merge is an **exception**, requested explicitly on
+the invocation that performs the merge:
+
+```sh
+sh ./merge.sh merge --pr 149 --merge-method --merge
+sh ./merge.sh merge --pr 149 --merge-method --rebase
+```
+
+The override is per-invocation and is never persisted, so a resumed run returns
+to Squash and merge. An unrecognized method is rejected up front.
+
+### SHA semantics
+
+Squash and merge creates a **new** commit on `main`. Five SHAs are kept apart
+and are never conflated:
+
+| Concept | Where it lives |
+|---|---|
+| pre-rebase HEAD | discarded once the mandatory rebase runs |
+| post-rebase PR HEAD | `CurrentCommitSha` |
+| approved PR HEAD | `ApprovedCommitSha`, and the `Approval` record's `CommitSha` |
+| final PR HEAD | the candidate revalidated immediately before the merge |
+| squash commit SHA | `MainCommitSha`, written only by post-merge verification |
+
+The approval binds to the final PR HEAD, never to the squash commit, which does
+not exist until the merge has happened. After the merge,
+`PR HEAD SHA != squash commit SHA` is the **expected, passing** result:
+`merge_pr_merged_status` reports the two under the separate keys
+`pr_head_sha` and `main_commit_sha` precisely so nothing downstream can read one
+as the other.
+
 ### Explicit Human Approval
 
 `approve` records an `explicit_human` approval as a first-class approval source
@@ -119,11 +157,15 @@ Safety guarantees (unchanged from the previous runtime):
 - Mandatory rebase onto latest `origin/main` before merge
 - A changed rebased HEAD invalidates any persisted pre-rebase approval; the
   approval gate downstream requires one bound to the rebased HEAD
-- Approval tied to commit SHA and main HEAD SHA, and re-checked against the
+- Approval tied to the PR HEAD SHA and main HEAD SHA, and re-checked against the
   GitHub PR HEAD immediately before the merge
 - The worktree is only ever fast-forwarded onto the remote PR head; diverged
   histories fail closed rather than being rewritten or force-pushed
-- The commit that is merged is always the commit the approval record binds to
+- The candidate that is merged is always the PR HEAD the approval record binds
+  to. The squash commit the merge then creates on `main` is a separate SHA and
+  is never compared against, or substituted for, that approved PR HEAD
+- A merge commit or rebase merge is never selected by default; it requires an
+  explicit, per-invocation `--merge-method` request
 - Conflicts are delegated back to a Sub-agent (never auto-resolved)
 - CodeRabbit is a best-effort automated reviewer outside this runtime. Missing,
   skipped, pending, unavailable, or rate-limited reviews do not block the merge

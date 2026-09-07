@@ -359,10 +359,10 @@ assert_false "generic force push syntax is absent" grep -Eq 'git([[:space:]]+-C[
 assert_true "explicit force-with-lease syntax is present" grep -q -- '--force-with-lease=refs/heads/' "$SCRIPT_DIR/../git-operations.sh"
 
 # ------------------------------------------------------------
-# Standard merge helper (CodeRabbit-independent)
+# Standard merge helper: Squash and merge (Issue #265, CodeRabbit-independent)
 # ------------------------------------------------------------
 echo ""
-echo "--- Standard Merge Helper ---"
+echo "--- Squash Merge Helper ---"
 MERGE_BIN="$WORK/merge-bin"
 mkdir -p "$MERGE_BIN"
 cat > "$MERGE_BIN/gh" <<'EOF'
@@ -376,12 +376,66 @@ EOF
 chmod +x "$MERGE_BIN/gh"
 FAKE_GH_ARGS="$WORK/gh-merge.args"
 PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" \
-    merge_normal_merge 238 mao2009/PSXRecompStudio
+    merge_execute_merge 238 mao2009/PSXRecompStudio
 assert_true "standard merge helper succeeds" test "$?" -eq 0
-assert_output "standard merge uses --merge" "pr merge 238 --repo mao2009/PSXRecompStudio --merge" cat "$FAKE_GH_ARGS"
+assert_output "standard merge uses --squash" "pr merge 238 --repo mao2009/PSXRecompStudio --squash" cat "$FAKE_GH_ARGS"
+# The standard path must never reach for a merge commit.
+assert_false "standard merge does not use --merge" grep -q -- '--merge$' "$FAKE_GH_ARGS"
+assert_false "standard merge does not use --admin" grep -q -- '--admin' "$FAKE_GH_ARGS"
+
+# Default method resolution is squash, and squash is never treated as forbidden.
+assert_output "default merge method is --squash" "--squash" merge_default_merge_method
+assert_true "--squash is a known merge method" merge_merge_method_known "--squash"
+
+# An explicit exception is honored, but only when named by the caller.
+PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" \
+    merge_execute_merge 238 mao2009/PSXRecompStudio --merge
+assert_output "explicit exception uses --merge" "pr merge 238 --repo mao2009/PSXRecompStudio --merge" cat "$FAKE_GH_ARGS"
+PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" \
+    merge_execute_merge 238 mao2009/PSXRecompStudio --rebase
+assert_output "explicit exception uses --rebase" "pr merge 238 --repo mao2009/PSXRecompStudio --rebase" cat "$FAKE_GH_ARGS"
+
+# An unknown method fails closed without invoking gh at all.
+: > "$FAKE_GH_ARGS"
+assert_false "unknown merge method is rejected" env PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" \
+    merge_execute_merge 238 mao2009/PSXRecompStudio --admin
+assert_true "rejected method never invokes gh" test ! -s "$FAKE_GH_ARGS"
+assert_false "--admin is not a known merge method" merge_merge_method_known "--admin"
+
 assert_false "standard merge failure propagates" env PATH="$MERGE_BIN:$PATH" FAKE_GH_ARGS="$FAKE_GH_ARGS" FAKE_GH_RESULT=failure \
-    merge_normal_merge 238 mao2009/PSXRecompStudio
+    merge_execute_merge 238 mao2009/PSXRecompStudio
 assert_false "standard helper has no CodeRabbit dependency" grep -q -i coderabbit "$SCRIPT_DIR/../git-operations.sh"
+assert_false "runtime never passes --admin to gh pr merge" \
+    grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge[^\n]*--admin' "$SCRIPT_DIR/../git-operations.sh"
+
+# ------------------------------------------------------------
+# Post-merge status reports the main-side commit apart from the PR HEAD.
+# For a squash merge these two SHAs necessarily differ; that is the normal case.
+# ------------------------------------------------------------
+echo ""
+echo "--- Post-Merge SHA Separation ---"
+PR_HEAD_SHA=1111111111111111111111111111111111111111
+SQUASH_SHA=2222222222222222222222222222222222222222
+cat > "$MERGE_BIN/gh" <<EOF
+#!/bin/sh
+if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
+    printf '{"headRefOid":"$PR_HEAD_SHA","mergeCommit":{"oid":"$SQUASH_SHA"},"state":"MERGED"}\n'
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$MERGE_BIN/gh"
+_merged_status=$(PATH="$MERGE_BIN:$PATH" merge_pr_merged_status 238 mao2009/PSXRecompStudio)
+_reported_main=$(printf '%s' "$_merged_status" | sed -n 's/^main_commit_sha=\(.*\)$/\1/p')
+_reported_head=$(printf '%s' "$_merged_status" | sed -n 's/^pr_head_sha=\(.*\)$/\1/p')
+assert_true "main-side commit SHA reported under its own key" test "$_reported_main" = "$SQUASH_SHA"
+assert_true "PR HEAD SHA reported under its own key" test "$_reported_head" = "$PR_HEAD_SHA"
+assert_true "the two SHAs are reported as distinct values" test "$_reported_main" != "$_reported_head"
+# The legacy, ambiguous key must be gone so nothing downstream can read a
+# "merge commit" and assume it is the PR HEAD.
+assert_false "ambiguous merge_commit key is not emitted" \
+    sh -c 'printf "%s" "$1" | grep -q "^merge_commit="' _ "$_merged_status"
+
 git -C "$LEASE_REPO" worktree remove -f "$LEASE_WT" 2>/dev/null || true
 
 echo ""

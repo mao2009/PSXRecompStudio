@@ -6,7 +6,10 @@
 
 .DESCRIPTION
     Manages the lifecycle of PR merging, including approval validation,
-    mandatory rebase, validation, normal merge, and cleanup.
+    mandatory rebase, validation, squash merge, post-merge verification, and
+    cleanup.
+    The standard merge method is Squash and merge (Issue #265); a merge commit
+    or rebase merge requires an explicit -MergeMethod exception.
     Enforces strict safety conditions and prevents admin bypass.
 
 .NOTES
@@ -33,7 +36,15 @@ param(
     [string]$Repository,
 
     [Parameter(Mandatory = $false)]
-    [string]$StateFile
+    [string]$StateFile,
+
+    # EXCEPTION ONLY. The standard method is Squash and merge; --merge (merge
+    # commit) and --rebase (rebase merge) are performed only when named here
+    # explicitly. The value is not persisted, so a resumed run returns to
+    # Squash and merge.
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("--squash", "--merge", "--rebase")]
+    [string]$MergeMethod = "--squash"
 )
 
 # Import modules using cross-platform path construction
@@ -105,6 +116,7 @@ function Invoke-MergeOrchestration {
             ApprovedCommitSha = $null
             MainHeadSha = $null
             RebasedOntoMainSha = $null
+            MainCommitSha = $null
             Approval = $null
             CreatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
             UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -116,6 +128,12 @@ function Invoke-MergeOrchestration {
     # rebase rather than into a merge.
     if (-not $state.ContainsKey("RebasedOntoMainSha")) {
         $state.RebasedOntoMainSha = $null
+    }
+    # A state file written before Issue #265 lacks the field recording the
+    # commit the merge creates on main (the squash commit). It is deliberately
+    # separate from every PR HEAD field, because the SHAs are never the same.
+    if (-not $state.ContainsKey("MainCommitSha")) {
+        $state.MainCommitSha = $null
     }
 
     Write-Host "Current State: $($state.State)" -ForegroundColor Yellow
@@ -509,16 +527,24 @@ function Invoke-MergeOrchestration {
                 }
 
                 Write-Host "Final HEAD revalidation passed: $($state.ApprovedCommitSha)" -ForegroundColor Green
-                Write-Host "=== Standard Merge ===" -ForegroundColor Cyan
-                Write-Host "Executing standard merge (no --admin)..." -ForegroundColor Cyan
+                if ($MergeMethod -eq "--squash") {
+                    Write-Host "=== Squash Merge ===" -ForegroundColor Cyan
+                    Write-Host "Executing Squash and merge (no --admin)..." -ForegroundColor Cyan
+                } else {
+                    Write-Host "=== Merge (explicit method exception: $MergeMethod) ===" -ForegroundColor Yellow
+                    Write-Host "Executing an explicitly requested non-squash merge (no --admin)..." -ForegroundColor Yellow
+                }
+                # The approval binds to this final PR HEAD. The commit the merge
+                # creates on main is a separate SHA read back after the merge.
+                Write-Host "Final PR HEAD (approved merge candidate): $($state.ApprovedCommitSha)" -ForegroundColor Gray
 
-                $mergeResult = Invoke-NormalMerge -PrNumber $PrNumber -Repository $Repository
+                $mergeResult = Invoke-MergePr -PrNumber $PrNumber -Repository $Repository -MergeMethod $MergeMethod
 
                 if ($mergeResult.Success) {
-                    Write-Host "Standard merge succeeded" -ForegroundColor Green
+                    Write-Host "Merge succeeded ($MergeMethod)" -ForegroundColor Green
                     $state.State = "MERGED"
                 } else {
-                    Write-Host "Standard merge failed: $($mergeResult.Message)" -ForegroundColor Red
+                    Write-Host "Merge failed: $($mergeResult.Message)" -ForegroundColor Red
                     $state.State = "FAILED"
                     $state.FailureReason = "Merge failed: $($mergeResult.Message)"
                 }
@@ -541,7 +567,16 @@ function Invoke-MergeOrchestration {
                 }
 
                 Write-Host "PR is merged on GitHub" -ForegroundColor Green
-                Write-Host "Merge commit: $($mergeStatus.MergeCommit)" -ForegroundColor Gray
+                # Report the two SHAs apart. Under Squash and merge the commit
+                # on main is a NEW commit, so differing from the final PR HEAD
+                # is the expected, passing result -- never an anomaly.
+                $prHeadSha = if ($mergeStatus.PrHeadSha) { $mergeStatus.PrHeadSha } else { $state.ApprovedCommitSha }
+                Write-Host "Final PR HEAD (approved merge candidate): $prHeadSha" -ForegroundColor Gray
+                Write-Host "Commit created on main by the merge:      $($mergeStatus.MainCommitSha)" -ForegroundColor Gray
+                if ($mergeStatus.MainCommitSha -and $prHeadSha -and $mergeStatus.MainCommitSha -ne $prHeadSha) {
+                    Write-Host "PR HEAD and the main-side commit SHA differ. This is the expected, normal result of a squash merge, not an anomaly." -ForegroundColor Gray
+                }
+                $state.MainCommitSha = $mergeStatus.MainCommitSha
 
                 $state.State = "CLEANUP"
                 $state.UpdatedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")

@@ -45,7 +45,9 @@
     "require_no_conflicts": true,
     "require_tests": true,
     "require_validation": true,
-    "strategy": "--merge",
+    "strategy": "--squash",
+    "exception_strategies": ["--merge", "--rebase"],
+    "require_explicit_exception_strategy": true,
     "forbid_admin_bypass": true,
     "forbid_force_push": true,
     "allow_rebase_force_with_lease": true,
@@ -72,6 +74,8 @@
       "current_commit_sha",
       "approved_commit_sha",
       "main_head_sha",
+      "rebased_onto_main_sha",
+      "main_commit_sha",
       "created_at",
       "updated_at"
     ]
