@@ -49,7 +49,6 @@ Decisions
 | GitHub Issue | Work tracking, implementation tasks, acceptance criteria, dependencies |
 | Pull Request | Concrete code/documentation change and review |
 | `docs/` | Current architecture, constraints, terminology, and stable project knowledge |
-| `README_AI` | Concise bootstrap path for AI development agents |
 | Code comments | Local implementation context |
 
 Closed Issues are historical records. They are not the primary source of current architecture.
@@ -58,7 +57,7 @@ Closed Issues are historical records. They are not the primary source of current
 
 A development agent should normally follow this order:
 
-1. Read the repository README and `README_AI` when present.
+1. Read the repository README.
 2. Read the relevant architecture/SSOT documentation.
 3. Identify the applicable subsystem SSOT.
 4. Inspect related open Issues and PRs.
@@ -96,14 +95,23 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)
 - [Recompiler Host Code Generation](development/recompiler-host-codegen.md)
 - [References and Prior Art](REFERENCES.md)
-- CPU / R3000A — planned
+- CPU / R3000A
+  - [R3000A Overview](cpu/r3000a.md)
+  - [Registers](cpu/registers.md)
+  - [Instruction Set](cpu/instruction-set.md)
+  - [Instruction Format](cpu/instruction-format.md)
+  - [Pipeline](cpu/pipeline.md)
+  - [COP0](cpu/cop0.md)
+  - [Exceptions](cpu/exceptions.md)
+  - [Memory](cpu/memory.md)
+  - [Test Specification](cpu/test-specification.md)
 - Decoder — planned
 - Analyzer — planned
 - Diagnostics — planned
 - AI Analysis — planned
 - Harness — planned
 - Testing — planned
-- Runtime — planned
+- [Runtime](runtime/architecture.md)
 
 ## Maintenance rule
 
