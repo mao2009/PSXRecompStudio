@@ -105,6 +105,66 @@ jobs:
           path: ${{ runner.temp }}/recompiler-differential-artifacts
           if-no-files-found: ignore
 
+  native-windows:
+    name: Native Core Build and Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S src/PSXRecomp.Native -B build/native -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/native --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/native --build-config Release --output-on-failure
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: psxrecomp-native-windows-x64
+          path: build/native/Release/PSXRecomp.Native.dll
+          if-no-files-found: error
+
+  dotnet-windows:
+    name: .NET Build and Test (Windows)
+    needs: native-windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.slnx
+
+      - name: Build
+        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: psxrecomp-native-windows-x64
+          path: native
+
+      - name: Install native library for .NET tests
+        shell: pwsh
+        run: |
+          if (!(Test-Path native/PSXRecomp.Native.dll)) { throw "native/PSXRecomp.Native.dll artifact is missing" }
+          Copy-Item native/PSXRecomp.Native.dll src/PSXRecomp.Tests/bin/Release/net10.0/PSXRecomp.Native.dll -Force
+          Get-Item src/PSXRecomp.Tests/bin/Release/net10.0/PSXRecomp.Native.dll
+
+      - name: Test
+        run: |
+          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
+          dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
+
   gui-tests:
     name: GUI Headless Tests
     runs-on: ubuntu-latest
