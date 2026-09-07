@@ -137,3 +137,7 @@ load, rather than a redundant local rebuild performed by the `dotnet build`
 step's own `BuildNative` target (which still runs on the CI runner too, as a
 side effect of building `PSXRecomp.Core`, but is superseded by this explicit
 copy for the Tests project's output).
+
+The same `native*` → `dotnet*` job pair is repeated on `windows-latest` and
+`macos-latest` under OS-scoped artifact names, so each OS's managed tests load
+that OS's own ctest-verified library rather than another platform's.
