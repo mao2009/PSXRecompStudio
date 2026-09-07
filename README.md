@@ -238,6 +238,12 @@ Merge to main
 
 A CI-driven bot may also propose a minimal `README.md` update on a pull request when the PR materially changes what the README documents; see [`docs/development/readme-autoupdate.md`](docs/development/readme-autoupdate.md). It currently manages `README.md` only — `README.ja.md` is maintained manually until that automation is extended to multiple languages.
 
+## Support
+
+If you find this project useful, you are welcome to support its development via [GitHub Sponsors](https://github.com/sponsors/mao2009).
+
+There are no obligations and no special perks. Sponsorship does not include ROM files, game data, or BIOS images — those are not part of this project. No promises are made about how contributions are allocated.
+
 ## License / Legal
 
 PSXRecompStudio is released under the [MIT License](LICENSE).
