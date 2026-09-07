@@ -14,6 +14,7 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// <see cref="DeterministicArtifactTests"/>, which always runs.
 /// </summary>
 [Test]
+[Collection("RealRom")]
 public class RealRomAnalysisTests
 {
     private static IReadOnlyList<RealRomFixture> Fixtures => RealRomFixtures.Discover();

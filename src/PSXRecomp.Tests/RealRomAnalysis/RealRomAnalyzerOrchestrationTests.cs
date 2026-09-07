@@ -16,6 +16,7 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// <see cref="RealRomAnalysisTests"/>. Tests needing no disc image always run.
 /// </summary>
 [Test]
+[Collection("RealRom")]
 public class RealRomAnalyzerOrchestrationTests
 {
     private static IReadOnlyList<RealRomFixture> Fixtures => RealRomFixtures.Discover();
