@@ -156,10 +156,17 @@ notify_has_marker() {
     return
   fi
   [[ -n "${GITHUB_TOKEN:-}" ]] || die "GITHUB_TOKEN is required to check existing PR comments"
-  local api headers body next
+  local api headers body next found
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
+  # No RETURN trap for the cleanup: a RETURN trap armed inside a function is not
+  # disarmed when that function returns, so it fires again when the *caller*
+  # returns, by which time `tmpdir` is out of scope. Under `set -u` that aborted
+  # `readme-sync.sh notify` with "tmpdir: unbound variable" *after* the candidate
+  # comment had already been posted, failing the job on a successful run
+  # (Issue #268). The temporary directory is removed explicitly instead; the
+  # `die` paths leave it behind on the ephemeral runner, as they already did.
+  found=1
   api="https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100"
   while [[ -n "$api" ]]; do
     headers="$tmpdir/headers"
@@ -182,12 +189,14 @@ sys.exit(0 if any(
 ) else 1)
 PY
     then
-      return 0
+      found=0
+      break
     fi
     next="$(awk -F'[<>]' '/^[Ll]ink:/ && /rel="next"/ {print $2; exit}' "$headers")"
     api="$next"
   done
-  return 1
+  rm -rf "$tmpdir"
+  return "$found"
 }
 
 # notify_post <body> - posts an issue comment to the PR. Uses a local file log

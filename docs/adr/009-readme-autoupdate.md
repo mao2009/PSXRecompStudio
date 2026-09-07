@@ -1,8 +1,8 @@
 # ADR-009: PR-Triggered README Auto-Update via OpenCode
 
-- **Status**: Accepted (amended 2026-09-03 by Issue #244)
+- **Status**: Accepted (amended 2026-09-03 by Issue #244, 2026-09-07 by Issue #268)
 - **Date**: 2026-08-28
-- **Issue**: #180 (amendment: #244)
+- **Issue**: #180 (amendments: #244, #268)
 
 ## Context
 
@@ -155,6 +155,71 @@ so nothing can select a different model or version outside the trusted review
 path. The former publish keys (`pushRefPrefix`, `forbiddenPushBranches`,
 `commitMessage`) are removed: nothing is pushed, so nothing to refuse to push.
 
+### 10. Advisory Checks: README Maintenance Never Gates a Pull Request
+
+**Issue #268 amendment.** README Auto-Update is maintenance automation, not a
+merge gate, and it must be impossible for it to affect whether a pull request
+can be merged.
+
+Observed on PR #267: all four required checks (`Artifact Contamination Gate`,
+`CI Gate`, `.NET Build and Test`, `Native Core Build and Test`) succeeded and
+the PR was conflict-free, yet GitHub reported `mergeable_state: unstable`
+because the `notify-readme` job published a `failure` check run on the head SHA.
+GitHub's `UNSTABLE` merge state means "Mergeable with non-passing commit
+status": it is produced by *any* non-passing check run on the head commit,
+including check runs that are not in the `main-protection` ruleset's required
+list — as this workflow's never were. The merge itself stays permitted, but the
+pull request is presented as broken and the normal merge flow is disrupted.
+
+Decision: **every step in this workflow carries step-level
+`continue-on-error: true`**, so each job's check run always concludes `success`
+and can never contribute to `unstable`.
+
+- Step-level `continue-on-error` is documented to "allow a job to pass when this
+  step fails": the step's `outcome` stays `failure` while its `conclusion` — and
+  therefore the job's conclusion and the job's check run — becomes `success`.
+- **Job-level `continue-on-error` is rejected.** It only prevents the *workflow
+  run* from failing; the job's own check run is still reported as `failure`,
+  which is exactly the condition that produces `unstable`. It also reports
+  `needs.<job>.result == 'success'` for a job that actually failed, which would
+  silently defeat the `notify-readme` job's dependency gating.
+- Moving the mutation to `push` on `main` or to `workflow_run` was rejected as
+  disproportionate: it would discard the pre-merge candidate handoff that
+  Decision 4 and the #244 amendment exist to provide, and it would rebuild the
+  trust boundary for a problem that is purely about check-run reporting.
+
+Fail-closed behavior (Decisions 3, 4, 5, 7) is **preserved, not weakened**. Each
+step is gated on the previous step's `outcome == 'success'`, so the first
+failure still stops the chain and no later step runs against a half-built state;
+the token-backed notify steps additionally keep their explicit
+`bootstrap == '0'` guard. A failure is not swallowed either: a final
+`if: always()` step in each job emits a `::warning::` annotation and a job
+summary naming the failing step.
+
+Residual, accepted: a job that is cancelled or killed at the infrastructure
+level (job-level timeout, runner loss, `concurrency` cancellation) still
+concludes `cancelled`/`failure`, because no workflow-level setting can override
+a conclusion the runner sets outside step execution. Concurrency cancellation
+targets superseded head SHAs, and the model step carries its own
+`timeout-minutes`, so this path is not the failure class Issue #268 describes.
+
+### 11. README Maintenance Must Not Be Silently Green
+
+Because Decision 10 makes the check runs unconditionally green, a genuine
+failure must never be left in place unfixed and unnoticed: the warning
+annotation and job summary are the observability contract, and a recurring
+warning is treated as a defect to fix, not as accepted noise.
+
+The failure that produced PR #267's `unstable` state was itself a real defect in
+`readme-sync.sh`: `notify_has_marker` armed a `RETURN` trap for its temporary
+directory, and a `RETURN` trap armed inside a function stays armed after that
+function returns. It fired again when `cmd_notify` returned, when the trap's
+`tmpdir` was out of scope, so `set -u` aborted `readme-sync.sh notify` with
+`tmpdir: unbound variable` **after** the candidate comment had already been
+posted successfully. The cleanup is now explicit rather than trap-driven, and
+the scenario suite covers the real REST path (previously bypassed entirely by
+the `GITHUB_API_ROOT` test seam).
+
 ## Consequences
 
 ### Positive
@@ -171,6 +236,10 @@ path. The former publish keys (`pushRefPrefix`, `forbiddenPushBranches`,
   head) keeps all `pull_request`-triggered CI runnable on every human/authored
   head, so required CI can never be left in `action_required` (0 jobs) by the
   README bot.
+- README maintenance is fully decoupled from mergeability (Issue #268): a
+  failure in this workflow can no longer publish a failing check run, so it
+  cannot put an otherwise merge-ready pull request into `unstable`, and the four
+  required checks are untouched and still enforced.
 
 ### Negative
 
@@ -184,6 +253,11 @@ path. The former publish keys (`pushRefPrefix`, `forbiddenPushBranches`,
   free period collects data to improve the model.
 - CI depends on OpenCode install location/behavior; version is pinned in the
   trusted SSOT config.
+- The workflow's PR checks are green even when README maintenance failed, so
+  the green tick no longer certifies that the automation worked. Diagnosis moves
+  to the warning annotation and job summary (Decisions 10 and 11), which is a
+  weaker signal than a red check and requires the maintenance warnings to be
+  actually read.
 
 ## Alternatives Considered
 

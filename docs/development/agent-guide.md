@@ -114,6 +114,13 @@ SHA. Before merging such a PR, either apply the candidate README to the PR head
 or approved automation performs the apply step; the bot never writes a commit.
 This is an operational expectation and is not a hard-failing CI check.
 
+The README Auto-Update checks are advisory and always report success, so they
+can never make a pull request `unstable` (Issue #268). A green tick therefore
+does **not** mean README maintenance succeeded: check the job summary or the
+`::warning::` annotation on that workflow run for the real outcome, and treat a
+recurring warning as a defect to fix. Merge eligibility is decided only by the
+four required checks in `.github/workflows/ci.yml`.
+
 ## Authority hierarchy
 
 Prefer information in this order when determining current intent:

@@ -31,6 +31,44 @@ validation remain in the workflow. The notify job holds `pull-requests: write`
 (comment-only) and `contents: read`; it never holds `contents: write` and never
 pushes.
 
+### Advisory checks: this workflow never blocks a merge (Issue #268)
+
+Both jobs are **advisory**. Every step sets `continue-on-error: true`, so each
+job's check run always concludes `success` and the workflow can never affect
+whether a pull request is mergeable.
+
+This matters because GitHub reports a pull request as
+`mergeable_state: unstable` — "Mergeable with non-passing commit status" —
+whenever *any* check run on the head SHA is failing, including check runs that
+are not in the `main-protection` ruleset's required list. On PR #267 all four
+required checks passed and the PR was conflict-free, yet a failure in
+`notify-readme` alone was enough to present the PR as broken.
+
+Design notes:
+
+- **Step-level** `continue-on-error` is used, never job-level. Job-level only
+  keeps the *workflow run* green; the job's own check run is still reported as
+  `failure`, which is the exact condition that produces `unstable`, and it also
+  makes `needs.<job>.result` report `success` for a job that failed.
+- Fail-closed behavior is preserved: each step is gated on the previous step's
+  `outcome == 'success'`, so the first failure still stops the chain, and the
+  token-backed notify steps keep their explicit `bootstrap == '0'` guard.
+- Failures stay observable: a final `if: always()` step in each job prints the
+  per-step outcomes, writes them to the job summary, and emits a `::warning::`
+  annotation when any step failed.
+- A green check therefore means "this workflow did not block you", **not**
+  "README maintenance succeeded". Read the job summary or the warning
+  annotation to see the real outcome, and treat a recurring warning as a defect
+  to fix rather than as accepted noise.
+- Not covered: a job cancelled or killed outside step execution (job-level
+  timeout, runner loss, `concurrency` cancellation) still concludes
+  `cancelled`/`failure`, because no workflow setting can override a conclusion
+  the runner sets there.
+
+The four required checks (`Artifact Contamination Gate`, `CI Gate`,
+`.NET Build and Test`, `Native Core Build and Test`) live in
+`.github/workflows/ci.yml` and are unaffected by any of this.
+
 CodeRabbit runs outside this workflow as a GitHub App. It is enabled in
 `.coderabbit.yaml` and may automatically review the PR on open and on pushes.
 There is no workflow trigger, marker, evidence polling, timeout, or completion
@@ -149,8 +187,10 @@ notify refusal, Big Pickle pin enforcement for the SSOT config and the opencode
 config, invalid/forged version rejection, extraction functional checks
 (trusted vs bootstrap), artifact validation (extra file / symlink rejection),
 workflow YAML structure and the two-job least-privilege token boundary, the
-bootstrap gating on notify steps, the no-bot-push invariant (Issue #244), and
-the `.coderabbit.yaml` automatic/incremental review configuration.
+bootstrap gating on notify steps, the no-bot-push invariant (Issue #244), the
+advisory-check invariant and fail-closed step chain (Issue #268), the notify
+REST path exiting 0 after posting (Issue #268), and the `.coderabbit.yaml`
+automatic/incremental review configuration.
 
 ## Operational notes
 

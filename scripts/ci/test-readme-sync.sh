@@ -38,6 +38,12 @@
 #  23. opencode permission rules: catch-all first, specifics last
 #  24. workflow: does NOT push a bot commit to the PR head branch (Issue #244);
 #      no git push / no commit authoring in the workflow
+#  25. workflow: no step can fail a job, so no failing check run is ever
+#      published on the PR head SHA (Issue #268 mergeability decoupling);
+#      failures stay observable through an always()-guarded warning step
+#  26. notify: the real REST path (no GITHUB_API_ROOT) exits 0 after posting -
+#      regression guard for the leaked RETURN trap that failed the job with
+#      "tmpdir: unbound variable" after a successful comment (Issue #268)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -711,6 +717,142 @@ assert "CodeRabbit" not in workflow
 PY
 }
 
+# --- 25. workflow: README maintenance can never publish a failing PR check ----
+# GitHub reports a PR as mergeable_state=unstable ("Mergeable with non-passing
+# commit status") when ANY check run on the head SHA fails, including check runs
+# that are not in the ruleset's required list - which is exactly what happened on
+# PR #267 (Issue #268). Step-level `continue-on-error` is documented to "allow a
+# job to pass when this step fails", so the job's check run concludes success.
+# Job-level `continue-on-error` must NOT be used: it only keeps the workflow RUN
+# green while the job's own check run is still reported as failure, and it
+# additionally masks the result behind needs.<job>.result == 'success'.
+test_workflow_advisory_never_blocks_pr() {
+  python3 - "$WORKFLOW" <<'PY' || fail "README Auto-Update must never publish a failing PR check (Issue #268)"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+for job_id, job in d["jobs"].items():
+    assert "continue-on-error" not in job, (
+        "%s: job-level continue-on-error still publishes a failing check run; "
+        "use step-level continue-on-error on every step instead" % job_id)
+    steps = job["steps"]
+    for step in steps:
+        assert step.get("continue-on-error") is True, (
+            "%s: step %r must set continue-on-error: true so a README "
+            "maintenance failure cannot make the PR unstable"
+            % (job_id, step.get("name")))
+    last = steps[-1]
+    assert last.get("if") == "always()", (
+        "%s: the final step must run with if: always() so failures stay "
+        "observable" % job_id)
+    run = last.get("run") or ""
+    assert "::warning::" in run, (
+        "%s: the final step must surface a failure as a workflow warning" % job_id)
+    assert "GITHUB_STEP_SUMMARY" in run, (
+        "%s: the final step must record the outcome in the job summary" % job_id)
+PY
+  # Fail-closed is preserved, not weakened: each step is gated on the previous
+  # step's outcome, so the first failure still stops the chain.
+  local cond
+  for cond in \
+    "update-readme|Extract trusted assets|steps.checkout.outcome == 'success'" \
+    "update-readme|Verify Big Pickle pin|steps.extract.outcome == 'success'" \
+    "update-readme|Preflight|steps.verify.outcome == 'success'" \
+    "update-readme|Install OpenCode|steps.preflight.outcome == 'success'" \
+    "update-readme|Run OpenCode|steps.install.outcome == 'success'" \
+    "update-readme|Validate model output|steps.model.outcome == 'success'" \
+    "update-readme|Upload candidate README artifact|steps.validate.outcome == 'success'" \
+    "notify-readme|Extract trusted assets|steps.checkout.outcome == 'success'" \
+    "notify-readme|Download candidate README artifact|steps.extract.outcome == 'success'" \
+    "notify-readme|Validate artifact|steps.download.outcome == 'success'" \
+    "notify-readme|Notify README candidate|steps.validate.outcome == 'success'"
+  do
+    local job name want got
+    job="${cond%%|*}"
+    name="${cond#*|}"; name="${name%%|*}"
+    want="${cond##*|}"
+    got="$(wf_step_if "$job" "$name")"
+    if [[ "$got" != *"$want"* ]]; then
+      fail "$job step '$name' must be gated on [$want] (fail-closed chain); got [$got]"
+    fi
+  done
+  # The token-backed steps keep their explicit bootstrap gate as well.
+  for cond in "Download candidate README artifact" "Validate artifact" "Notify README candidate"; do
+    got="$(wf_step_if notify-readme "$cond")"
+    if [[ "$got" != *"steps.extract.outputs.bootstrap == '0'"* ]]; then
+      fail "notify-readme step '$cond' must keep its explicit bootstrap gate"
+    fi
+  done
+  # The model job can now finish "successfully" with a failed output gate, so
+  # the credentialed notify job must additionally require a published candidate.
+  python3 - "$WORKFLOW" <<'PY' || fail "notify job must require a published candidate (Issue #268)"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+jobs = d["jobs"]
+assert jobs["update-readme"]["outputs"]["candidate"] == "${{ steps.upload.outcome }}", \
+    "the model job must export whether the candidate artifact was published"
+job_if = jobs["notify-readme"]["if"]
+assert "needs.update-readme.outputs.candidate == 'success'" in job_if, \
+    "the token-backed notify job must not run without a published candidate"
+PY
+  return 0
+}
+
+# --- 26. notify: real REST path exits 0 after posting (Issue #268) ------------
+# The GITHUB_API_ROOT seam used by the other notify scenarios bypasses curl
+# entirely, so it never covered the path that actually runs in CI. This scenario
+# stubs curl to exercise the real REST path: listing comments (no existing
+# marker) and then posting one. Before the fix, notify_has_marker armed a RETURN
+# trap that stayed armed after it returned and fired again when cmd_notify
+# returned, aborting under `set -u` with "tmpdir: unbound variable" *after* the
+# comment had been posted - failing the notify job on a successful run.
+test_notify_rest_path_succeeds() {
+  setup_repo t26
+  local d headsha stub log ec
+  d="$ROOT_DIR/t26/api"; mkdir -p "$d"
+  printf '# Demo\n\nREST パス用の候補。\n' > "$d/candidate.md"
+  headsha="$(git -C "$WORK" rev-parse HEAD)"
+  stub="$ROOT_DIR/t26/stub"; mkdir -p "$stub"
+  cat > "$stub/curl" <<'EOF'
+#!/usr/bin/env bash
+# Minimal curl stub: GET (with -D) lists zero comments; POST reports HTTP 201.
+out=""
+dump=""
+post=0
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -o) out="${args[i + 1]}" ;;
+    -D) dump="${args[i + 1]}" ;;
+    -X) [[ "${args[i + 1]}" == "POST" ]] && post=1 ;;
+  esac
+done
+if [[ "$post" -eq 1 ]]; then
+  [[ -n "$out" ]] && printf '{"id":1}\n' > "$out"
+  printf '201'
+  exit 0
+fi
+[[ -n "$dump" ]] && printf 'HTTP/2 200\r\ncontent-type: application/json\r\n\r\n' > "$dump"
+[[ -n "$out" ]] && printf '[]\n' > "$out"
+exit 0
+EOF
+  chmod +x "$stub/curl"
+  log="$ROOT_DIR/t26/notify.log"
+  ( cd "$WORK" && PATH="$stub:$PATH" README_SYNC_CONFIG="$CONFIG" \
+      GITHUB_REPOSITORY=owner/repo PR_NUMBER=26 PR_HEAD_SHA="$headsha" \
+      GITHUB_RUN_ID=2626 CANDIDATE_README="$d/candidate.md" \
+      GITHUB_TOKEN=stub-token \
+      bash "$SYNC" notify ) > "$log" 2>&1
+  ec=$?
+  assert_eq 0 "$ec" "notify must exit 0 on the real REST path after posting"
+  if ! grep -q 'posted README candidate notification' "$log"; then
+    fail "notify must report the posted candidate notification"
+  fi
+  if grep -q 'unbound variable' "$log"; then
+    fail "notify must not leave a RETURN trap armed (tmpdir unbound variable)"
+  fi
+  return 0
+}
+
 main() {
   bash -n "$SYNC" || { echo "syntax error in readme-sync.sh"; exit 1; }
   tests=(test_preflight_proceed test_preflight_fork test_preflight_bot_loop \
@@ -724,7 +866,8 @@ main() {
          test_workflow_bootstrap_gating test_workflow_run_scripts \
          test_workflow_no_bot_push \
          test_workflow_extract_functional test_model_exporter_gate test_artifact_validation \
-         test_opencode_permission_rules test_coderabbit_config)
+         test_opencode_permission_rules test_coderabbit_config \
+         test_workflow_advisory_never_blocks_pr test_notify_rest_path_succeeds)
   for t in "${tests[@]}"; do
     printf '%s ...\n' "$t"
     if "$t"; then
