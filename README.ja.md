@@ -232,6 +232,12 @@ main へマージ
 
 CI 駆動の Bot が、PR の変更内容が README の記述と実質的に食い違う場合に限り、最小限の `README.md` 更新を同一 PR 上へ提案することがあります。詳細は [`docs/development/readme-autoupdate.md`](docs/development/readme-autoupdate.md) を参照してください。現時点でこの自動化が管理するのは `README.md` のみです。多言語対応へ拡張されるまで、`README.ja.md`（本ファイル）は手動で保守します。
 
+## サポート
+
+このプロジェクトが役に立つと感じた場合は、[GitHub Sponsors](https://github.com/sponsors/mao2009) から支援できます。
+
+義務も特典もありません。ROM ファイル・ゲームデータ・BIOS イメージは本プロジェクトの対象外であり、スポンサーシップの特典にも含まれません。資金の用途についても特別な約束はありません。
+
 ## ライセンス / 法的事項
 
 PSXRecompStudio は [MIT License](LICENSE) の下で公開されています。
