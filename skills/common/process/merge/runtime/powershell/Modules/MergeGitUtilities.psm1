@@ -209,18 +209,31 @@ function Stop-MergeRebase {
     }
 }
 
-function Invoke-NormalMerge {
+function Invoke-MergePr {
     <#
     .SYNOPSIS
-        Merges a PR using standard GitHub CLI.
+        Merges a PR using the standard GitHub CLI path, Squash and merge by
+        default.
+    .DESCRIPTION
+        The standard merge method is Squash and merge (Issue #265). It creates a
+        NEW commit on the base branch whose SHA is not the PR HEAD SHA; see
+        Test-MergePrMerged for how the two are reported apart.
+
+        A merge commit (--merge) or a rebase merge (--rebase) is performed only
+        when the caller names it explicitly via -MergeMethod. An unrecognized
+        method fails closed without invoking gh.
     .PARAMETER PrNumber
         The PR number to merge.
     .PARAMETER Repository
         Optional repository (owner/repo).
+    .PARAMETER MergeMethod
+        Merge method. Defaults to --squash (the standard path). --merge and
+        --rebase are caller-requested exceptions only.
     .OUTPUTS
         Hashtable with success status.
     .NOTES
-        NEVER use --admin flag. This function enforces standard merge only.
+        NEVER use --admin flag. This function enforces the standard merge path
+        only.
     #>
     [CmdletBinding()]
     param(
@@ -228,17 +241,25 @@ function Invoke-NormalMerge {
         [int]$PrNumber,
 
         [Parameter(Mandatory = $false)]
-        [string]$Repository
+        [string]$Repository,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("--squash", "--merge", "--rebase")]
+        [string]$MergeMethod = "--squash"
     )
 
-    # Build merge command - STANDARD MERGE ONLY
-    $mergeArgs = @("pr", "merge", $PrNumber, "--merge")
+    # Build merge command - STANDARD PATH IS --squash, NEVER --admin
+    $mergeArgs = @("pr", "merge", $PrNumber, $MergeMethod)
     if ($Repository) {
         $mergeArgs += "--repo"
         $mergeArgs += $Repository
     }
 
-    Write-Host "Merging PR #$PrNumber using standard merge..." -ForegroundColor Cyan
+    if ($MergeMethod -eq "--squash") {
+        Write-Host "Merging PR #$PrNumber using Squash and merge..." -ForegroundColor Cyan
+    } else {
+        Write-Host "Merging PR #$PrNumber using an explicitly requested method ($MergeMethod)..." -ForegroundColor Yellow
+    }
     Write-Host "Command: gh $($mergeArgs -join ' ')" -ForegroundColor Gray
     Write-Host "IMPORTANT: Using standard merge path (no --admin)" -ForegroundColor Yellow
 
@@ -247,13 +268,15 @@ function Invoke-NormalMerge {
     if ($LASTEXITCODE -eq 0) {
         return @{
             Success = $true
-            Message = "Standard merge succeeded"
+            MergeMethod = $MergeMethod
+            Message = "Merge succeeded ($MergeMethod)"
         }
     }
 
     return @{
         Success = $false
-        Message = "Standard merge failed"
+        MergeMethod = $MergeMethod
+        Message = "Merge failed ($MergeMethod)"
     }
 }
 
@@ -261,6 +284,12 @@ function Test-MergePrMerged {
     <#
     .SYNOPSIS
         Tests if a PR has been merged.
+    .DESCRIPTION
+        Returns the commit the merge created on the base branch as
+        MainCommitSha, and the PR HEAD GitHub reports as PrHeadSha. Under the
+        standard Squash and merge method these are necessarily DIFFERENT SHAs:
+        the squash commit is new. They are returned as separate properties so no
+        caller can conflate the merged candidate with the commit on main.
     .PARAMETER PrNumber
         The PR number.
     .PARAMETER Repository
@@ -275,7 +304,7 @@ function Test-MergePrMerged {
         [string]$Repository
     )
 
-    $prArgs = @("pr", "view", $PrNumber, "--json", "state,mergeCommit")
+    $prArgs = @("pr", "view", $PrNumber, "--json", "state,headRefOid,mergeCommit")
     if ($Repository) {
         $prArgs += "--repo"
         $prArgs += $Repository
@@ -292,7 +321,8 @@ function Test-MergePrMerged {
     $pr = $result | ConvertFrom-Json
     return @{
         IsMerged = $pr.state -eq "MERGED"
-        MergeCommit = $pr.mergeCommit.oid
+        MainCommitSha = $pr.mergeCommit.oid
+        PrHeadSha = $pr.headRefOid
         State = $pr.state
     }
 }
@@ -498,7 +528,7 @@ Export-ModuleMember -Function @(
     'Invoke-MergeFastForwardToRemote',
     'Invoke-MergeRebase',
     'Stop-MergeRebase',
-    'Invoke-NormalMerge',
+    'Invoke-MergePr',
     'Test-MergePrMerged',
     'Test-MergePrMergeable',
     'Get-MergePrInfo',

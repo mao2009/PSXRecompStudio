@@ -2,7 +2,9 @@
 # PR Merge Skill: Shell Entry Point
 # Cross-platform CLI for the safe, standalone PR Merge Skill.
 # Enforces: rebase -> validation -> final SHA-bound human approval ->
-#           final HEAD revalidation -> normal merge -> cleanup.
+#           final HEAD revalidation -> squash merge -> post-merge verification
+#           -> cleanup.
+# The standard merge method is Squash and merge (Issue #265).
 # Version: 1.0.0
 #
 # Dependencies: git (required)
@@ -36,7 +38,9 @@ Commands:
             where it left off (TRIGGER_CHECK -> MAIN_HEAD_REFRESH -> REBASE ->
             VALIDATING -> APPROVAL_VALIDATION -> MERGING -> MERGED -> CLEANUP
             -> COMPLETED). The approval gate runs after the mandatory rebase,
-            so approval binds to the commit that is actually merged.
+            so approval binds to the final PR HEAD that is actually merged.
+            The merge itself uses Squash and merge, which creates a NEW commit
+            on main whose SHA differs from that PR HEAD.
   approve   Records an Explicit Human Approval for a PR. The approval is bound
             to the current PR HEAD SHA and the current main HEAD SHA, and is
             attributed to the operator's authenticated GitHub identity (gh api
@@ -55,13 +59,26 @@ Options:
   --repo <owner/repo>      GitHub repository (auto-detected if omitted)
   --state-file <path>      Path to the state file (default: .merge-state-<pr>.json)
   --main-dir <path>        Git repository root used for origin/main (default: cwd)
+  --merge-method <method>  EXCEPTION ONLY. Overrides the standard Squash and
+                           merge for this invocation. Accepts --squash (the
+                           standard method), --merge (merge commit) or
+                           --rebase (rebase merge). A merge commit or rebase
+                           merge is performed only when named here explicitly;
+                           the override is never persisted, so a resumed run
+                           returns to Squash and merge.
+
+Merge method:
+  The standard method is Squash and merge (`gh pr merge <pr> --squash`).
+  It creates a NEW commit on main whose SHA is NOT the PR HEAD SHA. Approval
+  binds to the final PR HEAD (the merge candidate), never to the squash commit,
+  which does not exist until after the merge.
 
 Safety guarantees:
   - Never uses `gh pr merge --admin`, force push, or protection bypass
   - Multi-step flow split into a definitely-rebaseable, resumable state machine
   - Explicit Human Approval uses a real authenticated identity and is bound to
     the PR HEAD and main HEAD SHAs; it never fakes a GitHub APPROVED review
-  - The merged commit always equals the approved commit: a final HEAD
+  - The merged candidate always equals the approved final PR HEAD: a final HEAD
     revalidation runs immediately before the merge and fails closed
   - Confidential, project-neutral: only git + optional gh are required
   - No pwsh / powershell dependency
@@ -69,6 +86,9 @@ Safety guarantees:
 Examples:
   # Advance the merge for PR 149 (resumes from current persisted state)
   merge.sh merge --pr 149
+
+  # Merge PR 149 with a merge commit instead (explicit exception only)
+  merge.sh merge --pr 149 --merge-method --merge
 
   # Record an explicit human approval for PR 149, once `merge` reports the
   # final merge candidate awaiting approval
@@ -99,6 +119,7 @@ _parse_merge_options() {
     _OPT_REPO=""
     _OPT_STATE_FILE=""
     _OPT_MAIN_DIR=""
+    _OPT_MERGE_METHOD=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -156,6 +177,14 @@ _parse_merge_options() {
                     return 1
                 fi
                 _OPT_MAIN_DIR="$2"
+                shift 2
+                ;;
+            --merge-method)
+                if [ $# -lt 2 ]; then
+                    printf 'Error: option %s requires a value\n' "$1" >&2
+                    return 1
+                fi
+                _OPT_MERGE_METHOD="$2"
                 shift 2
                 ;;
             -*)
@@ -222,6 +251,18 @@ _cmd_merge() {
     MERGE_STATE_FILE="$_OPT_STATE_FILE"
     if [ -n "$_OPT_MAIN_DIR" ]; then
         MERGE_MAIN_DIR="$_OPT_MAIN_DIR"
+    fi
+
+    # Explicit, per-invocation merge-method exception. Rejected up front so an
+    # operator learns immediately, rather than the flow silently falling back to
+    # the standard method at the merge step.
+    if [ -n "$_OPT_MERGE_METHOD" ]; then
+        if ! merge_merge_method_known "$_OPT_MERGE_METHOD"; then
+            printf 'Error: invalid --merge-method: %s (expected %s)\n' \
+                "$_OPT_MERGE_METHOD" "$(merge_merge_methods)" >&2
+            return 1
+        fi
+        MERGE_MERGE_METHOD="$_OPT_MERGE_METHOD"
     fi
 
     merge_orchestrate_one
@@ -363,9 +404,13 @@ _cmd_status() {
     echo "Branch: $(merge_state_get "$MERGE_STATE_FILE" BranchName)"
     echo "Worktree: $(merge_state_get "$MERGE_STATE_FILE" WorktreePath)"
     echo "State: $(merge_state_get "$MERGE_STATE_FILE" State)"
-    echo "Current commit: $(merge_state_get "$MERGE_STATE_FILE" CurrentCommitSha)"
-    echo "Approved commit: $(merge_state_get "$MERGE_STATE_FILE" ApprovedCommitSha)"
+    echo "Current PR HEAD: $(merge_state_get "$MERGE_STATE_FILE" CurrentCommitSha)"
+    echo "Approved PR HEAD: $(merge_state_get "$MERGE_STATE_FILE" ApprovedCommitSha)"
     echo "Main HEAD: $(merge_state_get "$MERGE_STATE_FILE" MainHeadSha)"
+    echo "Rebased onto main: $(merge_state_get "$MERGE_STATE_FILE" RebasedOntoMainSha)"
+    # The commit the merge created on main (a squash commit on the standard
+    # path). Never the same value as any PR HEAD field above.
+    echo "Main commit created by merge: $(merge_state_get "$MERGE_STATE_FILE" MainCommitSha)"
     echo "Failure reason: $(merge_state_get "$MERGE_STATE_FILE" FailureReason)"
     return 0
 }

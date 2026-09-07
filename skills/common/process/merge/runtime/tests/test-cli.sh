@@ -42,7 +42,7 @@ grep -q "Unknown option" "$ERR" && _pass || _fail "unknown option reported on st
 # --- Missing option value for every value-taking option ---
 echo ""
 echo "--- Missing Option Values ---"
-for opt in --pr --issue --worktree --branch --repo --state-file --main-dir; do
+for opt in --pr --issue --worktree --branch --repo --state-file --main-dir --merge-method; do
     run_cli merge "$opt"
     _rc=$?
     [ "$_rc" -ne 0 ] && _pass || _fail "merge $opt (missing value) exits non-zero"
@@ -90,6 +90,26 @@ for bad_issue in abc 0 0001; do
     _rc=$?
     [ "$_rc" -ne 0 ] && _pass || _fail "merge --issue '$bad_issue' rejected"
     grep -q "invalid integer" "$ERR" && _pass || _fail "merge --issue '$bad_issue' reports invalid on stderr"
+done
+
+# --- Merge-method exception flag validation (Issue #265) ---
+# The standard method is Squash and merge; --merge-method is the explicit
+# exception. An unrecognized method must be rejected before any merge step, so
+# an operator never silently gets a different method than the one they named.
+echo ""
+echo "--- Merge Method Validation ---"
+for bad_method in merge squash --admin --ff bogus; do
+    run_cli merge --pr 149 --merge-method "$bad_method"
+    _rc=$?
+    [ "$_rc" -ne 0 ] && _pass || _fail "merge --merge-method '$bad_method' rejected"
+    grep -q "invalid --merge-method" "$ERR" && _pass || _fail "merge --merge-method '$bad_method' reports invalid on stderr"
+done
+
+# The three accepted methods pass validation. They fail later for lack of a
+# usable repository/state, not on the merge-method guard.
+for good_method in --squash --merge --rebase; do
+    run_cli merge --pr 149 --merge-method "$good_method" --state-file "$WORK/mm-$$.json"
+    grep -q "invalid --merge-method" "$ERR" && _fail "merge --merge-method '$good_method' wrongly rejected" || _pass
 done
 
 # --- Terminal FAILED is surfaced with non-zero exit via the CLI ---
