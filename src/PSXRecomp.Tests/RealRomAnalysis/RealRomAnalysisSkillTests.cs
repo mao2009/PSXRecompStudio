@@ -17,6 +17,7 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// artifact schema or second flow exists here.
 /// </summary>
 [Test]
+[Collection("RealRom")]
 public class RealRomAnalysisSkillTests
 {
     /// <summary>Instructions decoded per fixture; enough for basic blocks, small enough to stay quick.</summary>
