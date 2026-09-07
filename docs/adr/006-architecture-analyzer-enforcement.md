@@ -1,4 +1,4 @@
-# ADR-006: アーキテクチャ属性と依存方向のビルドエラーによる強制
+# ADR-006: Architecture Attributes and Dependency Direction Enforced via Build Errors
 
 - **Status**: Accepted
 - **Date**: 2026-08-21
@@ -6,50 +6,84 @@
 
 ## Context
 
-docs/architecture-matrix.md（SSOT）はレイヤー属性、依存方向、Forbidden APIを文書化しているが、手動レビューのみでは遵守が保証されない。ドキュメントと実コードの乖離は時間とともに必ず発生する。SSOTを機械的に強制する仕組みが必要だった。
+`docs/architecture-matrix.md` (SSOT) documents layer attributes, dependency
+direction, and the Forbidden API list, but manual review alone cannot
+guarantee compliance. Drift between the documentation and the actual code is
+inevitable over time. A mechanism to enforce the SSOT mechanically was
+needed.
 
 ## Decision
 
-Roslyn Analyzer（`PSXRecomp.Analyzer`）を導入し、SSOTのルールをコンパイル時にエラーとして強制する。
+Introduce a Roslyn Analyzer (`PSXRecomp.Analyzer`) that enforces the SSOT's
+rules as compile-time errors.
 
-### 診断ルール
+### Diagnostic rules
 
-| ID | ルール |
-|----|--------|
-| `PSXR001` | クラスにアーキテクチャ属性がない |
-| `PSXR002` | 1つの型に複数のアーキテクチャ属性が付いている |
-| `PSXR003` | 属性のレイヤーと名前空間マッピングが不一致 |
-| `PSXR004` | 禁止された依存方向（内側→外側、Production → Test） |
-| `PSXR005` | レイヤーごとのForbidden API使用 |
-| `PSXR006` | `PSXRecomp.Core` 以外でのP/Invoke（`DllImport` / `LibraryImport`） |
+| ID | Rule |
+|----|------|
+| `PSXR001` | Class has no architecture attribute |
+| `PSXR002` | A type has more than one architecture attribute |
+| `PSXR003` | Attribute layer does not match the namespace mapping |
+| `PSXR004` | Forbidden dependency direction (inner → outer, Production → Test) |
+| `PSXR005` | Forbidden API usage for the layer |
+| `PSXR006` | P/Invoke (`DllImport` / `LibraryImport`) outside `PSXRecomp.Core` |
 
-すべて Error 重大度で、CIは違反時に失敗する。
+All are Error severity; CI fails on any violation.
 
-### 属性の配布方式
+### Attribute distribution
 
-6つの属性（`[Domain]` `[Application]` `[Infrastructure]` `[Analyzer]` `[Test]` `[Generated]`）は `PSXRecomp.Architecture` 名前空間の internal 属性として、リポジトリ直下の `Directory.Build.props` が配布するリンクされたソースファイル（`<Compile Include="..." Link="..." />`）で各プロジェクトに取り込む。消費プロジェクトは `<CompileArchitectureAttributes>true</CompileArchitectureAttributes>` でオプトインする。新しいアセンブリやプロジェクト参照グラフを作らない。属性は完全修飾名で照合する。
+The six attributes (`[Domain]` `[Application]` `[Infrastructure]`
+`[Analyzer]` `[Test]` `[Generated]`) are internal attributes in the
+`PSXRecomp.Architecture` namespace, distributed to each project as a linked
+source file (`<Compile Include="..." Link="..." />`) from the repository
+root `Directory.Build.props`. Consuming projects opt in with
+`<CompileArchitectureAttributes>true</CompileArchitectureAttributes>`. This
+introduces no new assembly and no new project-reference graph. Attributes
+are matched by fully qualified name.
 
-### 適用スコープと除外
+### Enforcement scope and exclusions
 
-- 強制対象は **クラス**（record を含む）。struct / interface / enum / delegate は本イテレーションでは認識のみで必須としない（Issue #8 の文言に基づく）
-- partial 型はどれか1部分に属性があれば満たす
-- 入れ子クラスは外側の属性付き型のレイヤーを継承する（`ResolveLayer` の ContainingType チェーンと PSXR001 を一致させた）
-- `PSXRecomp.Architecture.*` 名前空間は PSXR001 対象外（マーカー名前空間）
-- 生成コードはパス規約（`.g.cs` / `.designer.cs` / `obj/` 等）と `IsImplicitlyDeclared` で除外
-- 名前空間→レイヤー解決はルート接頭辞一致（`PSXRecomp.Analyzer.Tests` → Analyzer 等）。`PSXRecomp.Infrastructure` → Infrastructure も将来のプロジェクト用に予約済み
+- The enforced targets are **classes** (including records). struct /
+  interface / enum / delegate are recognized but not required in this
+  iteration (per Issue #8's wording).
+- A partial type satisfies the rule if any one of its parts carries the
+  attribute.
+- A nested class inherits the layer of its enclosing attributed type (the
+  `ContainingType` chain used by `ResolveLayer` is kept consistent with
+  PSXR001).
+- The `PSXRecomp.Architecture.*` namespace is exempt from PSXR001 (marker
+  namespace).
+- Generated code is excluded by path convention (`.g.cs` / `.designer.cs` /
+  `obj/`, etc.) and by `IsImplicitlyDeclared`.
+- Namespace-to-layer resolution matches on the root prefix (e.g.
+  `PSXRecomp.Analyzer.Tests` → Analyzer). `PSXRecomp.Infrastructure` →
+  Infrastructure is also reserved for a future project.
 
-### Forbidden API の補足
+### Forbidden API notes
 
-- Domain は SSOT の行（`Random.Shared`）に加え **`System.Random` 全体**（`new Random()` 含む）を禁止する。行の理由欄（非決定的ランダム性の禁止）を型全体に適用したもの
-- Test / Analyzer / Generated レイヤーで正当な用途（テストの一時ファイル等）がある場合は `#pragma warning disable PSXR005` または `.editorconfig` / `NoWarn` で抑制でき、レビューで根拠を示す
+- In addition to the SSOT's row (`Random.Shared`), Domain forbids
+  **`System.Random` entirely** (including `new Random()`) — the row's
+  rationale (prohibiting non-deterministic randomness) applied to the whole
+  type.
+- Where the Test / Analyzer / Generated layers have a legitimate use (e.g. a
+  test's temporary file), the violation can be suppressed with `#pragma
+  warning disable PSXR005` or via `.editorconfig` / `NoWarn`, with the
+  rationale shown in review.
 
-### 未強制の依存エッジ
+### Unenforced dependency edges
 
-Production → Analyzer / Generated は SSOT が明示していないため本ADRでは強制しない。将来 `PSXRecomp.Generated` プロジェクト定義と合わせて要整理（architecture-matrix.md の Missing Items に記載）。
+Production → Analyzer / Generated is not enforced by this ADR because the
+SSOT does not state it explicitly. This needs revisiting once the
+`PSXRecomp.Generated` project is defined (tracked in architecture-matrix.md's
+Missing Items).
 
 ## Consequences
 
-- SSOT違反はビルドで即座に検出され、レビューに依存しない
-- 新しいクラスには必ずレイヤー属性が必要になる（移行済み: 既存12クラスは全て注釈済み）
-- アナライザー自体もソリューションに含まれ、自己適用の対象となる
-- ルール変更時は architecture-matrix.md（SSOT）→ アナライザー実装 → テスト の順で同期する
+- SSOT violations are caught immediately at build time, independent of
+  review.
+- Every new class now requires a layer attribute (migration complete: all
+  12 existing classes are annotated).
+- The analyzer itself is part of the solution and is subject to
+  self-application.
+- Rule changes are synchronized in this order: architecture-matrix.md
+  (SSOT) → analyzer implementation → tests.
