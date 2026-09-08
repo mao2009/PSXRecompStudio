@@ -59,9 +59,9 @@ public class RealRomAnalyzerOrchestrationTests
             },
         ]);
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var text = File.ReadAllText(path);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         text.Should().Contain("redacted", "the JSON escapes angle brackets, so match the unescaped word");
         text.Should().NotContain(leaked, "absolute paths must never be persisted into the execution log");
     }
@@ -84,9 +84,9 @@ public class RealRomAnalyzerOrchestrationTests
             },
         ]);
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var text = File.ReadAllText(path);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         text.Should().Contain("redacted", "the JSON escapes angle brackets, so match the unescaped word");
         text.Should().NotContain("/home/someone", "POSIX roots must never be persisted into the execution log");
     }
@@ -103,9 +103,9 @@ public class RealRomAnalyzerOrchestrationTests
             new ExecutionLogEntry { Stage = "INPUT", Status = "PASS", Message = message, ElapsedMs = 0 },
         ]);
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var text = File.ReadAllText(path);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         text.Should().Contain(message,
             "a message that needs no redaction must be persisted verbatim, without rewriting it");
     }
@@ -123,9 +123,9 @@ public class RealRomAnalyzerOrchestrationTests
             new ExecutionLogEntry { Stage = "MIPS_DECODE", Status = "PASS", Message = "Decoded 16 instruction(s)", ElapsedMs = 0 },
         ]);
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var lines = File.ReadAllLines(path);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         lines.Should().HaveCount(3);
         foreach (var line in lines)
         {

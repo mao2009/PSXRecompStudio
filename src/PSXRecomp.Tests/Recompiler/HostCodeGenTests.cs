@@ -999,13 +999,13 @@ int main() {
             return;
         }
 
-        #pragma warning disable PSXR005
+        #pragma warning disable PSXR005, AARC003
         Action act = () => RunHostProcess("sleep", "30", 500);
-        #pragma warning restore PSXR005
+        #pragma warning restore PSXR005, AARC003
         act.Should().Throw<TimeoutException>();
     }
 
-    #pragma warning disable PSXR005
+    #pragma warning disable PSXR005, AARC003
     private static int CompileWithHostCompiler(string source)
     {
         var tempDir = CreateTempDir();
@@ -1029,9 +1029,9 @@ int main() {
                 Directory.Delete(tempDir, true);
         }
     }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
     private static int CompileAndRun(string generatedSource, string mainSource)
     {
         var tempDir = CreateTempDir();
@@ -1103,14 +1103,14 @@ int main() {
         {
         }
     }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
 
     private static string CreateTempDir()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-host-codegen", Path.GetRandomFileName());
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         Directory.CreateDirectory(tempDir);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         return tempDir;
     }
 

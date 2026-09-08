@@ -23,4 +23,19 @@
              Link="Architecture/PSXRecompArchitectureAttributes.cs" />
   </ItemGroup>
 
+  <!--
+    ArchitectureAnalyzer (AARC) adoption — shadow mode (Refs #293):
+    The generic ArchitectureAnalyzer is wired for the same consumer projects that already
+    opt in to architectural enforcement via CompileArchitectureAttributes. The architecture
+    contract (src/architecture.contract.json, #291) is supplied as an AdditionalFiles item,
+    and the analyzer package is added in shadow mode alongside the existing PSXRecomp.Analyzer.
+    Shadow mode keeps both analyzers active so PSXR↔AARC parity can be verified before the old
+    analyzer is removed in #294. PSXRecompStudio.Tests does not set CompileArchitectureAttributes
+    and therefore does not consume the architecture contract, preserving its current build.
+  -->
+  <ItemGroup Condition="'$(CompileArchitectureAttributes)' == 'true'">
+    <PackageReference Include="loach.ArchitectureAnalyzer" Version="0.1.0" PrivateAssets="all" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)src/architecture.contract.json" />
+  </ItemGroup>
+
 </Project>

@@ -96,13 +96,13 @@ public static class RealRomAnalyzer
         string sha256 = string.Empty;
         try
         {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
             sizeBytes = new FileInfo(discImagePath).Length;
             using (var hashStream = File.OpenRead(discImagePath))
             {
                 sha256 = ComputeSha256(hashStream);
             }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
 
             Record("INPUT", "PASS", $"Read {sizeBytes} bytes; SHA-256 {sha256}");
         }
@@ -114,9 +114,9 @@ public static class RealRomAnalyzer
         }
 
         RomAnalysisOutcome outcome;
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         using (var runStream = File.OpenRead(discImagePath))
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         {
             outcome = RomAnalysisPipeline.RunFromChd(runStream, sha256, instructionCount, recorder);
         }
@@ -301,9 +301,9 @@ public static class RealRomAnalyzer
     /// </summary>
     internal static (ChdMapStatistics Chd, IsoVolumeStatistics Iso) CaptureChdMetadata(string discImagePath)
     {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         using var statsStream = File.OpenRead(discImagePath);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         using var chd = ChdReader.Open(statsStream);
         var iso = DiscImageAnalyzer.CreateIsoReader(chd);
         iso.Initialize();

@@ -14,9 +14,9 @@ public class DiscImageAnalyzerIntegrationTests
     private static readonly string ChdPath = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..", "rom", "PERSONA.chd");
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
     private static bool FixtureExists() => File.Exists(ChdPath);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
 
     private static string ComputeSha256(byte[] data)
     {
@@ -27,9 +27,9 @@ public class DiscImageAnalyzerIntegrationTests
 
     private static (byte[] Bytes, string Sha256) LoadChd()
     {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var bytes = File.ReadAllBytes(ChdPath);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         return (bytes, ComputeSha256(bytes));
     }
 

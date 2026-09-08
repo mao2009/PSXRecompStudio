@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
 
 [Test]
 // Issue #209 Stage B vertical slice: memory. The fixtures prove the whole
@@ -150,4 +150,4 @@ public sealed class RecompilerStageBEndToEndTests
         return bytes;
     }
 }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003

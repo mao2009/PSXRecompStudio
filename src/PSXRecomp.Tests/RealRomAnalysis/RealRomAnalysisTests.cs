@@ -86,10 +86,10 @@ public class RealRomAnalysisTests
                         $"fixture '{fixture.FixtureId}': '{file.FileName}' must be persisted verbatim");
             }
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
             File.Exists(Path.Combine(RealRomFixtures.LogRoot, fixture.FixtureId, "analysis.log.jsonl"))
                 .Should().BeTrue("the execution log is written alongside, but separately from, the artifacts");
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         }
     }
 
@@ -123,9 +123,9 @@ public class RealRomAnalysisTests
 
         foreach (var fixture in fixtures)
         {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
             var bytes = File.ReadAllBytes(fixture.DiscImagePath);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
             var sha256 = RealRomAnalyzer.ComputeSha256ForTest(bytes);
             var report = DiscImageAnalyzer.Analyze(bytes, sha256);
 
