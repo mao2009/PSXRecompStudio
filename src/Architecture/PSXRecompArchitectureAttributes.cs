@@ -18,11 +18,6 @@ namespace PSXRecomp.Architecture
     }
 
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-    internal sealed class AnalyzerAttribute : Attribute
-    {
-    }
-
-    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Enum | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
     internal sealed class TestAttribute : Attribute
     {
     }
