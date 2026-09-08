@@ -183,6 +183,18 @@ public static class RealRomCandidateSelector
                 consumed = 2;
             }
 
+            // A control-transfer instruction's delay slot is never split off on its
+            // own (MissingDelaySlot already rejects that), so a two-instruction unit
+            // that would push the window past its cap must be excluded whole, before
+            // either instruction is committed — never included partway.
+            if (accepted.Count + consumed > maxWindowInstructions)
+            {
+                reason = RealRomCandidateStopReason.MaxWindowReached;
+                stopAddress = current.Address;
+                detail = "Maximum candidate window reached.";
+                break;
+            }
+
             try
             {
                 _ = MipsToIrLowerer.LowerProgram(candidate);

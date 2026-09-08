@@ -65,6 +65,53 @@ public sealed class RealRomRecompilerBridgeTests
     }
 
     [Fact]
+    public void TryExtend_StopsAtMaxWindow_WhenNextIsASingleInstruction()
+    {
+        // Pre-existing behavior: the cap is hit cleanly on a plain instruction boundary.
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1), // ADDIU $t0, $zero, 1
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2), // ADDIU $t1, $zero, 2
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 3), // never reached
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base, maxWindowInstructions: 2);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(2, candidate!.InstructionCount);
+        Assert.Equal(RealRomCandidateStopReason.MaxWindowReached, candidate.StopReason);
+    }
+
+    /// <summary>
+    /// CodeRabbit finding on PR #302: with accepted.Count == maxWindowInstructions - 1,
+    /// a control-transfer instruction needing its delay slot must not push the window
+    /// to maxWindowInstructions + 1. Neither instruction of the pair may be included.
+    /// </summary>
+    [Fact]
+    public void TryExtend_StopsAtMaxWindow_BeforeAddingAFusedPairThatWouldExceedIt()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),  // 0x00 ADDIU $t0, $zero, 1
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),  // 0x04 ADDIU $t1, $zero, 2 (accepted.Count reaches maxWindow-1)
+            MipsEncoding.Jump(Base + 0x10),                    // 0x08 J — fused with its delay slot would be 2 more
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 3), // 0x0C delay slot — must not be included on its own either
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 4), // 0x10 never reached
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base, maxWindowInstructions: 3);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(2, candidate!.InstructionCount); // only the two leading ADDIUs — never 4
+        Assert.True(candidate.InstructionCount <= 3, "InstructionCount must never exceed maxWindowInstructions.");
+        Assert.Equal(RealRomCandidateStopReason.MaxWindowReached, candidate.StopReason);
+        Assert.Equal(Base + 0x08, candidate.StopAddress);
+        Assert.Equal(new[] { "Addiu" }, candidate.RequiredInstructionSubset);
+    }
+
+    [Fact]
     public void TryExtend_StopsAtUnsupportedInstruction_WithoutIncludingIt()
     {
         var words = new[]
