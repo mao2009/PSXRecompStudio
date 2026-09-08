@@ -39,7 +39,7 @@ public static class RealRomArtifactWriter
 
         var fixtureId = artifacts.Manifest.Fixture.FixtureId;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         var fixtureReportDirectory = Path.Combine(reportRoot, fixtureId);
         Directory.CreateDirectory(fixtureReportDirectory);
 
@@ -56,7 +56,7 @@ public static class RealRomArtifactWriter
             Directory.CreateDirectory(fixtureLogDirectory);
             ExecutionLogWriter.Write(Path.Combine(fixtureLogDirectory, "analysis.log.jsonl"), log);
         }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
 
         return fixtureReportDirectory;
     }
@@ -84,9 +84,9 @@ public static class RealRomArtifactWriter
     /// </summary>
     public static byte[] ReadArtifactBytes(string fixtureReportDirectory, string fileName)
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         return File.ReadAllBytes(Path.Combine(fixtureReportDirectory, fileName));
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
     }
 
     /// <summary>UTF-8 text of a previously written artifact file.</summary>

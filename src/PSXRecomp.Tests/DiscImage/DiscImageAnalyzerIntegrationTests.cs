@@ -5,7 +5,7 @@ using PSXRecomp.Core.DiscImage;
 namespace PSXRecomp.Tests.DiscImageTests;
 
 /// <summary>
-/// Integration tests that run the full CHD → SYSTEM.CNF → PS-X EXE → MIPS decode pipeline
+/// Integration tests that run the full CHD ↁESYSTEM.CNF ↁEPS-X EXE ↁEMIPS decode pipeline
 /// using the real PERSONA.chd disc image. Tests skip when the fixture is absent (CI).
 /// </summary>
 [Test]
@@ -14,9 +14,9 @@ public class DiscImageAnalyzerIntegrationTests
     private static readonly string ChdPath = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..", "rom", "PERSONA.chd");
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
     private static bool FixtureExists() => File.Exists(ChdPath);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
 
     private static string ComputeSha256(byte[] data)
     {
@@ -27,9 +27,9 @@ public class DiscImageAnalyzerIntegrationTests
 
     private static (byte[] Bytes, string Sha256) LoadChd()
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         var bytes = File.ReadAllBytes(ChdPath);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         return (bytes, ComputeSha256(bytes));
     }
 

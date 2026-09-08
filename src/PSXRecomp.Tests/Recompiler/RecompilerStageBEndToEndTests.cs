@@ -3,14 +3,14 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
 
 [Test]
 // Issue #209 Stage B vertical slice: memory. The fixtures prove the whole
 // recompiler pipeline (decode -> lower -> validate -> host codegen -> gcc -> run)
 // agrees with the native interpreter on store/load widths, little-endian byte
 // order, sign vs zero extending loads, pre-populated guest RAM, and the R3000A
-// load-delay slot — verified through registers AND a memory window sample.
+// load-delay slot  Everified through registers AND a memory window sample.
 public sealed class RecompilerStageBEndToEndTests
 {
     [Fact]
@@ -150,4 +150,4 @@ public sealed class RecompilerStageBEndToEndTests
         return bytes;
     }
 }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003

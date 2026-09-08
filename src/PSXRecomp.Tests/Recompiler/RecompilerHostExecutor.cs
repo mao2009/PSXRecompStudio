@@ -5,7 +5,7 @@ using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
 
 [Test]
 // Host-side build/run executor for the differential harness (Issue #211).
@@ -16,7 +16,7 @@ namespace PSXRecomp.Tests.Recompiler;
 // This class intentionally lives in the Test assembly rather than the Domain
 // layer (PSXRecomp.Core/Recompiler): compiler invocation and file I/O are
 // forbidden in the Domain layer by the architecture analyzer, and the existing
-// host-compilation tests already follow this pattern (pragma-disable PSXR005).
+// host-compilation tests already follow this pattern (pragma-disable AARC003).
 public sealed class RecompilerHostExecutor : IRecompilerExecutor
 {
     public const string ExecutorName = "recompiled-host-gcc";
@@ -465,4 +465,4 @@ int main(int argc, char** argv) {
 }
 ";
 }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003

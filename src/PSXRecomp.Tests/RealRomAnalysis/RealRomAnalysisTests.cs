@@ -8,7 +8,7 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 ///
 /// No title is named here: every test iterates the discovered fixtures, so adding or
 /// removing a disc image changes coverage without changing code. Disc images are never
-/// committed, so on CI — and on any machine without fixtures — these tests skip
+/// committed, so on CI  Eand on any machine without fixtures  Ethese tests skip
 /// explicitly with a reason rather than passing vacuously. The format-level guarantees
 /// they exercise are additionally covered on synthetic input by
 /// <see cref="DeterministicArtifactTests"/>, which always runs.
@@ -22,7 +22,7 @@ public class RealRomAnalysisTests
     /// <summary>
     /// The core requirement of Issue #215: analyzing the same disc image twice must
     /// produce byte-for-byte identical deterministic artifacts. The execution log is
-    /// deliberately excluded — it carries timing and is expected to differ.
+    /// deliberately excluded  Eit carries timing and is expected to differ.
     /// </summary>
     [SkippableFact]
     public void RepeatedAnalysis_ProducesByteIdenticalArtifacts()
@@ -86,10 +86,10 @@ public class RealRomAnalysisTests
                         $"fixture '{fixture.FixtureId}': '{file.FileName}' must be persisted verbatim");
             }
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
             File.Exists(Path.Combine(RealRomFixtures.LogRoot, fixture.FixtureId, "analysis.log.jsonl"))
                 .Should().BeTrue("the execution log is written alongside, but separately from, the artifacts");
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         }
     }
 
@@ -123,9 +123,9 @@ public class RealRomAnalysisTests
 
         foreach (var fixture in fixtures)
         {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
             var bytes = File.ReadAllBytes(fixture.DiscImagePath);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
             var sha256 = RealRomAnalyzer.ComputeSha256ForTest(bytes);
             var report = DiscImageAnalyzer.Analyze(bytes, sha256);
 

@@ -9,9 +9,9 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// <summary>
 /// Contract tests for the deterministic real-ROM analysis artifact format.
 ///
-/// Every test here runs on synthetic input, so the guarantees the format claims —
+/// Every test here runs on synthetic input, so the guarantees the format claims  E
 /// stable schema, byte-for-byte reproducibility, canonical ordering, SHA-256 identity,
-/// multi-fixture support, and freedom from environment contamination — are verified on
+/// multi-fixture support, and freedom from environment contamination  Eare verified on
 /// every CI run rather than only on a machine that happens to own a disc image.
 /// </summary>
 [Test]
@@ -123,10 +123,10 @@ public class DeterministicArtifactTests
     {
         var artifacts = BuildArtifacts(FixtureA, "disc-a");
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         var machineName = Environment.MachineName;
         var userName = Environment.UserName;
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         var repositoryRoot = RealRomFixtures.RepositoryRoot;
 
         foreach (var file in artifacts.Files)
@@ -643,18 +643,18 @@ public class DeterministicArtifactTests
 
     private static string CreateTemporaryDirectory()
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         return Directory.CreateTempSubdirectory("psxr-artifacts-").FullName;
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
     }
 
     private static void DeleteDirectory(string path)
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         if (Directory.Exists(path))
         {
             Directory.Delete(path, recursive: true);
         }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
     }
 }

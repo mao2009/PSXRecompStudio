@@ -24,12 +24,6 @@
     <ProjectReference Include="../PSXRecomp.Core/PSXRecomp.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\PSXRecomp.Analyzer\PSXRecomp.Analyzer.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
-  </ItemGroup>
-
   <!--
     PSXRecomp.Core's own BuildNative target copies the native library into
     Core's *own* output directory as a build side effect, and .NET SDK's
