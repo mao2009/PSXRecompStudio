@@ -248,10 +248,11 @@ iteration. The host fuses a branch and its delay slot into one block, so it reti
 fewer budget units per iteration than the interpreter does instructions, and the
 two drift apart in iteration count. That is a harness artifact, not a lowering
 divergence: every comparable prefix matches in order and all behavioral state
-agrees. The ordering requirement is essential — the classification is checked by
-`RecompilerStateDiff.IsBudgetTailContinuation`, which compares the traces
-positionally (the interpreter trace is first projected to the PCs the host block
-entries can emit, e.g. dropping delay-slot nops that are never host checkpoints).
+agrees. The ordering requirement is essential — `RecompilerStateDiff` proves it
+with an ordered trace comparison (the interpreter trace is first projected to
+the PCs the host block entries can emit, e.g. dropping delay-slot nops that are
+never host checkpoints, then required to match the host trace as an exact
+prefix).
 Two runs over the *same* PC set in a *different* order, or a host that runs no
 further than the interpreter, leave no tail to excuse and stay hard `Mismatch`s —
 a set-membership test alone cannot detect an ordering divergence.
