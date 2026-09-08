@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio Architecture | C#, Avalonia, C++, MIPS Analysis</title>
+  <meta name="description" content="Architecture overview for PSXRecompStudio: C# and Avalonia application layers, C++ native core, C ABI and P/Invoke interop, MIPS R3000A analysis, and validation.">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/architecture.html">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="architecture.html" aria-current="page">Architecture</a>
+        <a href="roadmap.html">Roadmap</a>
+        <a href="legal.html">Legal</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">System overview</p>
+      <h1>PSXRecompStudio architecture</h1>
+      <p class="lead">The project separates managed analysis and application logic from native execution components, with explicit validation boundaries between each stage.</p>
+    </section>
+
+    <section>
+      <h2>Managed application and analysis</h2>
+      <p>C# and .NET contain the domain model, binary-analysis workflows, recompiler IR and lowering logic, validation code, and tests. Avalonia provides the cross-platform desktop shell. The UI is intentionally kept separate from the core analysis model so research and validation can run without depending on a graphical interface.</p>
+    </section>
+
+    <section>
+      <h2>Native core</h2>
+      <p>C++ and CMake are used for the native core, including CPU and hardware-oriented components. Native implementation details are not exposed directly to managed code.</p>
+    </section>
+
+    <section>
+      <h2>C ABI and P/Invoke boundary</h2>
+      <p>The managed/native boundary is a stable C ABI. C# reaches that ABI through P/Invoke, while C++ types remain private to the native implementation. This makes the interop contract explicit and independently testable.</p>
+      <pre><code>C# / .NET / Avalonia
+        |
+        | P/Invoke
+        v
+Stable C ABI
+        |
+        v
+C++ native core</code></pre>
+    </section>
+
+    <section>
+      <h2>MIPS R3000A analysis</h2>
+      <p>PlayStation 1 code analysis centers on the R3000A and MIPS I execution model. Current work includes instruction decoding, memory behavior, branch and load delay semantics, exception behavior, PS-X EXE analysis, basic-block extraction, and control-flow graph construction.</p>
+    </section>
+
+    <section>
+      <h2>Recompiler research path</h2>
+      <p>The current static recompilation path is validated on synthetic MIPS fixtures. MIPS instructions are lowered into a backend-agnostic IR, host C is generated deterministically, execution is bounded, and the result is compared against interpreter state. This validates the recompiler architecture without claiming complete PlayStation 1 game recompilation.</p>
+    </section>
+
+    <section>
+      <h2>Validation and architecture enforcement</h2>
+      <p>Golden Trace and differential validation are used to detect semantic divergence. Separately, compiler-enforced architecture rules constrain layering, dependency direction, forbidden API use, and the interop boundary. Together, these mechanisms are intended to keep both execution behavior and repository structure verifiable as the project grows.</p>
+    </section>
+
+    <section>
+      <h2>Source documentation</h2>
+      <p>The detailed system design remains in the repository documentation, including <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>, the <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/architecture-matrix.md">architecture matrix</a>, and the project ADRs.</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">PSXRecompStudio home</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a></p></footer>
+</body>
+</html>

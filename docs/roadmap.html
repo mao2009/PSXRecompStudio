@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio Roadmap | PlayStation 1 Recompilation Research</title>
+  <meta name="description" content="A milestone-based roadmap for PSXRecompStudio covering PS1 analysis, MIPS R3000A validation, real-ROM function recompilation, runtime integration, and native porting research.">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/roadmap.html">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="architecture.html">Architecture</a>
+        <a href="roadmap.html" aria-current="page">Roadmap</a>
+        <a href="legal.html">Legal</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">Milestone-based research plan</p>
+      <h1>PSXRecompStudio roadmap</h1>
+      <p class="lead">The roadmap is organized by technical dependency, not by promised release dates. Priorities may change as validation reveals new constraints.</p>
+    </section>
+
+    <section>
+      <h2>1. Strengthen the execution foundation</h2>
+      <p>Continue validating R3000A behavior, memory semantics, exceptions, interrupts, and hardware-facing interfaces so later recompiler results can be compared against a trustworthy reference.</p>
+    </section>
+
+    <section>
+      <h2>2. Expand PlayStation binary analysis</h2>
+      <p>Improve PS-X EXE and disc-image analysis, function discovery, basic-block and control-flow graph extraction, and metadata needed to select recompilation candidates from user-supplied game images.</p>
+    </section>
+
+    <section>
+      <h2>3. Recompile real-ROM-derived functions</h2>
+      <p>Connect analyzed functions from real PlayStation software to the existing IR, host-code generation, bounded execution, and differential-validation path. This is a function-level milestone, not complete-game native porting.</p>
+    </section>
+
+    <section>
+      <h2>4. Grow recompiler coverage</h2>
+      <p>Extend instruction, memory, control-flow, calling-convention, and state-model coverage while preserving deterministic validation. The goal is to increase the range of functions that can be recompiled safely.</p>
+    </section>
+
+    <section>
+      <h2>5. Build runtime and hardware integration</h2>
+      <p>Introduce the runtime services required by recompiled code, including executable loading, I/O coordination, and progressively broader PlayStation hardware support such as GPU, SPU, CD-ROM, MDEC, and GTE behavior.</p>
+    </section>
+
+    <section>
+      <h2>6. Explore full-title native porting</h2>
+      <p>Only after function-level recompilation and runtime integration are sufficiently validated can the project explore end-to-end static recompilation of complete titles. This remains a research objective rather than a current capability or completion guarantee.</p>
+    </section>
+
+    <section>
+      <h2>Contributing</h2>
+      <p>Current issues, pull requests, tests, and implementation details are tracked in the <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a>. Contributors interested in PS1 static recompilation, PSX reverse engineering, MIPS R3000A analysis, validation, C#/.NET, Avalonia, C++, or CMake are welcome to inspect the active work.</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">PSXRecompStudio home</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a></p></footer>
+</body>
+</html>
