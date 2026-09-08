@@ -80,7 +80,7 @@ public sealed record RealRomFunctionCandidate
 public static class RealRomCandidateSelector
 {
     /// <summary>
-    /// ponytail: a fixed cap on how many source instructions one candidate window may
+    /// A fixed cap on how many source instructions one candidate window may
     /// span. Large enough for a real subroutine, small enough that selection over a
     /// whole executable stays fast. Raise if a real candidate is found to need more.
     /// </summary>
