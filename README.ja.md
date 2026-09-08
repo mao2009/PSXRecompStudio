@@ -48,7 +48,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | GPU / SPU / CD-ROM / MDEC / GTE | 予定（インターフェース定義のみ） |
 | Runtime（BIOS/EXE ロード、I/O ループ） | 予定 |
 | Synthetic MIPS Recompiler vertical slice（IR/lowering、メモリ、制御フロー、host codegen、differential validation） | 実装済み・差分検証済み |
-| 実 ROM 関数の再コンパイル | 次のマイルストーン・未完了（#225） |
+| 実 ROM 関数の再コンパイル | 最初の1関数を実装・差分検証済み（#225）。汎用対応は未完了 |
 | フルタイトルの静的再コンパイル | 未実装 |
 | Debugger | 予定 |
 | MCP / AI 連携 | 予定 |
@@ -58,7 +58,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 
 **Recompiler について**: PSXRecompStudio の最終目標は静的再コンパイルです。backend-agnostic な Recompiler IR と共有 state contract、MIPS→IR lowering、決定論的な host C 生成、メモリバックエンド（各幅の load/store、unaligned access、load-delay セマンティクス）、制御フローバックエンド（branch、jump、link、delay slot、bounded/budget 付きループ）、interpreter-vs-recompiled の differential validator が `PSXRecomp.Core.Recompiler` に実装済みです（`PSXRecomp.Recompiler` という独立プロジェクトはまだ存在しません。[ディレクトリ構成](#ディレクトリ構成) を参照）。これらにより、**synthetic な MIPS fixture** に対する MIPS → IR → 生成された host C → build → bounded execution → interpreter diff → MATCH という end-to-end vertical slice が実装・差分検証済みです（#207、#208、#209、#211。#266 の統合スモークテストで再確認済み）。
 
-これはまだ実ゲームコードの静的再コンパイルではありません。実 ROM 由来の関数は解析済みですが（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）、まだ Recompiler の実行・差分検証パスへは接続されておらず、最初の実 ROM 関数を接続することが次のマイルストーンです（#225）。フルタイトルの再コンパイル、完全な Runtime 統合、完全なハードウェアサポートは未実装です。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
+最初の実 ROM 関数についても、同じ仕組みで再コンパイル・差分検証済みです（#225）。`RealRomCandidateSelector`（`PSXRecomp.Core.Recompiler`）が、既存のディスク/EXE 解析出力（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）から、変更を加えていない `MipsToIrLowerer` で実際に lowering を試みて成功し、かつ indirect jump を含まない bounded な命令ウィンドウだけを候補として選定します。実 ROM 専用の第二の semantics 実装は存在しません。これはまだ汎用的な実 ROM 関数の再コンパイルではありません。候補選定は意図的に保守的であり、フルタイトルの再コンパイル、完全な Runtime 統合、完全なハードウェアサポートは未実装です。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
 
 ## Core Capabilities
 
@@ -66,7 +66,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 - 実行エンジンから独立してテスト可能な R3000A/MIPS I 命令デコード・ドメインモデル。
 - Delay Slot・例外処理のセマンティクスを正しく扱いながら実際の命令列を実行する Native CPU + Memory Bus。
 - 将来の Recompiler バックエンドを interpreter と比較検証するための、決定論的で再生可能な実行トレース（Golden Trace）。
-- 決定論的な MIPS→IR→host-C の Recompiler パイプライン。bounded execution と interpreter differential validation を備え、synthetic fixture 上で end-to-end に証明済み（実 ROM コードではまだ未証明）。
+- 決定論的な MIPS→IR→host-C の Recompiler パイプライン。bounded execution と interpreter differential validation を備え、synthetic fixture と最初の実 ROM 関数（#225）の両方で end-to-end に証明済み（汎用的な実 ROM 対応はまだ未実装）。
 - Native 実装の詳細を管理層へ漏らさない C# ⇄ C++ の相互運用境界（C ABI + P/Invoke）。
 
 ## アーキテクチャ
@@ -101,7 +101,7 @@ C++ Native Core（PSXRecomp.Native）
 
 ## 再コンパイルワークフロー
 
-現在、2 つのパスがあります。**synthetic パス**は実装済みで、interpreter に対して差分検証済みです。
+現在、2 つのパスがあります。どちらも同じ Recompiler contract（変更なし）を通じて実装済みで、interpreter に対して差分検証済みです。**synthetic パス**:
 
 ```text
 MIPS fixture
@@ -117,19 +117,19 @@ Interpreter reference execution
 Differential validation → MATCH
 ```
 
-**実 ROM パス**は同じ disc/EXE 解析（関数・命令境界、CFG/basic blocks — 実装済み）を再利用しますが、まだ上記の Recompiler 実行・差分検証パスへは接続されていません。最初の実 ROM 関数を接続することが次のマイルストーンで、#225 で追跡しています。
+**実 ROM パス**は同じ disc/EXE 解析（関数・命令境界、CFG/basic blocks）と、上と同じ Recompiler IR/lowering/codegen/differential の各段階を再利用します。入力が異なるだけです。`RealRomCandidateSelector` が実 ROM の関数/ウィンドウを選定し、それが正しく lowering でき indirect jump を含まないことそのものが「有効な入力」の条件になっているため、実 ROM 専用の semantics や実行パスは別途存在しません（#225）。
 
 ```text
 PSX タイトル（ROM/EXE、ユーザーが用意）
         ↓  逆アセンブル・解析（実装済み。Ghidra 連携：予定）
 関数・命令境界、MMIO の発見事項、CFG/basic blocks
-        ↓  候補となる実 ROM 関数
-Recompiler 実行 / differential validation   ← 次のマイルストーン（#225）
-        ↓
-ネイティブ実行ファイル（interpreter と比較検証）
+        ↓  RealRomCandidateSelector: bounded かつ indirect-jump を含まない候補ウィンドウ
+Recompiler IR（lowering + validation）   — synthetic パスと同じ段階
+        ↓  ... 以降は上記と同じパイプライン ...
+Differential validation → MATCH   （最初の1関数で証明済み；#225）
 ```
 
-フルタイトルの静的再コンパイル（実タイトルの全関数、および Runtime・ハードウェア統合）は未実装です。「synthetic な Recompiler vertical slice が実装済み」であることを「実 ROM またはフルタイトルの再コンパイルが実装済み」と読み替えないでください。両者は別のマイルストーンです。
+候補選定は意図的に保守的です。`MipsToIrLowerer` が実際に lowering できる場合のみ、かつ JR/JALR を含まない場合のみウィンドウを採用し、非対応命令や indirect jump は迂回せず除外します。汎用的な実 ROM 関数対応（任意の関数、全 MIPS I 命令のカバレッジ）と、フルタイトルの静的再コンパイル（実タイトルの全関数、および Runtime・ハードウェア統合）は未実装です。「最初の実 ROM 関数を証明済み」であることを「汎用的な実 ROM またはフルタイトルの再コンパイルが実装済み」と読み替えないでください。両者は別のマイルストーンです。
 
 ## 技術スタック
 

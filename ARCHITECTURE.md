@@ -152,6 +152,10 @@ PSX ランタイムは、BIOS ロード、EXE ロード、メモリマッピン�
   vertical slice remain separate responsibilities of Issues #207, #208, #211,
   and #209. Memory and control-flow expansion is deferred until the GPR-only
   gate is green.
+- Real-ROM function candidates are a projection over the existing disc/EXE
+  analysis output, selected only when they already lower under the contract
+  above — no second, real-ROM-specific semantics implementation exists
+  (ADR-013, Issue #225).
 
 ## Debugger (将来)
 

@@ -5,7 +5,7 @@
 
 PSXRecompStudio is an open-source PlayStation 1 (PS1 / PSX) research and development environment for static recompilation, PSX reverse engineering, MIPS R3000A analysis, binary analysis, and native porting research.
 
-It currently focuses on a validated CPU execution foundation, disc and PS-X EXE analysis, control-flow discovery, Golden Trace validation, and a synthetic MIPS recompiler vertical slice. Complete commercial PS1 game recompilation is **not yet implemented**.
+It currently focuses on a validated CPU execution foundation, disc and PS-X EXE analysis, control-flow discovery, Golden Trace validation, and a MIPS recompiler vertical slice validated on both a synthetic fixture and a first real-ROM function. Complete commercial PS1 game recompilation is **not yet implemented**.
 
 *[日本語版 README はこちら / Japanese README](README.ja.md)* · [Project website](https://mao2009.github.io/PSXRecompStudio/)
 
@@ -13,14 +13,14 @@ It currently focuses on a validated CPU execution foundation, disc and PS-X EXE 
 
 - R3000A / MIPS I instruction modeling and decoding, memory translation, branch and load delay behavior, COP0 exceptions, interrupts, and deterministic Golden Trace validation.
 - Disc image analysis from CHD through ISO 9660 and PS-X EXE parsing into MIPS instruction analysis, basic blocks, and control-flow graphs.
-- A synthetic MIPS static recompiler validation path: MIPS → IR/lowering → deterministic host C → bounded execution → interpreter differential comparison.
+- A MIPS static recompiler validation path — MIPS → IR/lowering → deterministic host C → bounded execution → interpreter differential comparison — proven on a synthetic fixture and, from the same unmodified pipeline, on a first bounded real-ROM function (#225).
 - A C# / .NET analysis core, Avalonia application shell, and C++ native core connected through a stable C ABI and P/Invoke boundary.
 - Compiler-enforced architecture rules for layering, dependency direction, forbidden APIs, and interop boundaries.
 
 ## Not yet implemented
 
 - End-to-end static recompilation of a complete commercial PlayStation 1 title.
-- General real-ROM function recompilation wired into the validated recompiler execution path.
+- General-purpose real-ROM function recompilation: only a first, deliberately conservative real-ROM function is proven end to end so far (#225); arbitrary functions, full MIPS I coverage, and BIOS/HLE dependencies remain unimplemented.
 - A finished native runtime for complete PS1 native ports.
 - Complete GPU, SPU, CD-ROM, MDEC, and GTE hardware support.
 
@@ -66,7 +66,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
 | Runtime (BIOS/EXE loading, I/O loop) | Planned |
 | Synthetic MIPS recompiler vertical slice (IR/lowering, memory, control flow, host codegen, differential validation) | Implemented and differentially validated |
-| Real-ROM function recompilation | Next milestone — not yet complete (#225) |
+| Real-ROM function recompilation | First function implemented and differentially validated (#225); general coverage not yet complete |
 | Full-title static recompilation | Not implemented |
 | Debugger | Planned |
 | MCP / AI integration | Planned |
@@ -76,7 +76,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 
 **Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. A backend-agnostic Recompiler IR and shared state contract, MIPS→IR lowering, deterministic host C generation, a memory backend (load/store at every width, unaligned access, load-delay semantics), a control-flow backend (branches, jumps, links, delay slots, bounded/budgeted loops), and an interpreter-vs-recompiled differential validator are all implemented in `PSXRecomp.Core.Recompiler` (there is no standalone `PSXRecomp.Recompiler` project yet — see [Repository Structure](#repository-structure)). Together these prove an executable, differentially-validated **synthetic MIPS fixture** vertical slice: MIPS → IR → generated host C → build → bounded execution → interpreter diff → match (#207, #208, #209, #211; re-verified end-to-end by the integration smoke test, #266).
 
-This is not yet static recompilation of real game code: real-ROM-derived functions are analyzed (see [Disc image analysis](#current-status) above) but not yet wired into the Recompiler execution/differential path — connecting the first real-ROM function is the next milestone (#225). Full-title recompilation, complete runtime integration, and complete hardware support remain unimplemented. The CPU/decoder work above is foundational to it, not a substitute for it.
+A first real-ROM function is now recompiled and differentially validated the same way (#225): `RealRomCandidateSelector` (`PSXRecomp.Core.Recompiler`) selects a bounded, contiguous instruction window from the existing disc/EXE analysis output (see [Disc image analysis](#current-status) above) by actually attempting to lower it through the unmodified `MipsToIrLowerer` contract and excluding any indirect jump, so only a window the Recompiler already supports is ever selected — no second, real-ROM-specific semantics implementation exists. This is not yet general real-ROM function recompilation: candidate selection is deliberately conservative, and full-title recompilation, complete runtime integration, and complete hardware support remain unimplemented. The CPU/decoder work above is foundational to it, not a substitute for it.
 
 ## Core Capabilities
 
@@ -84,7 +84,7 @@ This is not yet static recompilation of real game code: real-ROM-derived functio
 - R3000A/MIPS I instruction decoding and domain modeling, independently testable from the execution engine.
 - A native CPU + memory bus that executes real instruction sequences with correct delay-slot and exception semantics.
 - Deterministic, replayable execution traces (Golden Trace) intended to validate future recompiler backends against the interpreter.
-- A deterministic MIPS→IR→host-C Recompiler pipeline with bounded execution and interpreter differential validation, proven end-to-end on a synthetic fixture (not yet on real-ROM code).
+- A deterministic MIPS→IR→host-C Recompiler pipeline with bounded execution and interpreter differential validation, proven end-to-end on both a synthetic fixture and a first real-ROM function (#225); general real-ROM coverage is not yet implemented.
 - A C# ⇄ C++ interop boundary (C ABI + P/Invoke) that keeps native implementation details out of the managed layer.
 
 ## Architecture
@@ -119,8 +119,9 @@ Layering and dependency direction (Domain / Application / Infrastructure / Inter
 
 ## Recompilation Workflow
 
-Two paths exist today. The **synthetic path** is implemented end to end and
-differentially validated against the interpreter:
+Two paths exist today, both implemented end to end and differentially
+validated against the interpreter through the same, unmodified Recompiler
+contract. The **synthetic path**:
 
 ```text
 MIPS fixture
@@ -137,23 +138,29 @@ Differential validation → MATCH
 ```
 
 The **real-ROM path** reuses the same disc/EXE analysis (function/instruction
-boundaries, CFG/basic blocks — implemented) but is not yet connected to the
-Recompiler execution/differential path above; connecting the first real-ROM
-function is the next milestone, tracked in #225:
+boundaries, CFG/basic blocks) and the same Recompiler IR/lowering/codegen/
+differential stages above — only the input is different. `RealRomCandidateSelector`
+picks the real-ROM function/window; the very fact it lowers cleanly and excludes
+any indirect jump is what makes it a valid input, so no separate real-ROM
+semantics or execution path exists (#225):
 
 ```text
 PSX title (ROM/EXE, user-supplied)
         ↓  disassembly / analysis (implemented; Ghidra integration: planned)
 Function/instruction boundaries, MMIO findings, CFG/basic blocks
-        ↓  candidate real-ROM function
-Recompiler execution / differential validation   ← next milestone (#225)
-        ↓
-Native executable, validated against the interpreter
+        ↓  RealRomCandidateSelector: bounded, indirect-jump-free candidate window
+Recompiler IR (lowering + validation)   — the same stage as the synthetic path
+        ↓  ... same pipeline as above ...
+Differential validation → MATCH   (first function proven; #225)
 ```
 
-Full-title static recompilation (every function of a real title, plus runtime
-and hardware integration) is not implemented. Do not read "synthetic
-Recompiler vertical slice implemented" as "real-ROM or full-title
+Candidate selection is deliberately conservative: it accepts a window only when
+`MipsToIrLowerer` actually lowers it and no JR/JALR appears in it, so an
+unsupported instruction or an indirect jump is excluded rather than
+worked around. General real-ROM function coverage (arbitrary functions, full
+MIPS I coverage) and full-title static recompilation (every function of a real
+title, plus runtime and hardware integration) are not implemented. Do not read
+"a first real-ROM function proven" as "general real-ROM or full-title
 recompilation implemented" — they are separate milestones.
 
 ## Technology Stack
