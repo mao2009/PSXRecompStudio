@@ -39,7 +39,7 @@ The GUI must not become the source of truth for architecture or analysis semanti
 | Harness | Reproducible function/instruction validation | Planned / evolving |
 | Testing | Automated and compatibility validation | Planned / evolving |
 | GUI / UX | Modern developer-tool workspace | Defined by Issue #75 |
-| Runtime | Execution and runtime inspection | Planned |
+| Runtime | BIOS-less execution boundary and runtime inspection | Phase 1 contract |
 
 ## Authority rule
 
