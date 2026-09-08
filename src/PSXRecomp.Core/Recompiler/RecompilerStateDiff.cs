@@ -144,12 +144,13 @@ public static class RecompilerStateDiff
     /// <item>Both executors exhausted the same bounded budget
     /// (<see cref="RecompilerIrTerminationReason.ExecutionBudgetExceeded"/>). A run
     /// that completed, or that stopped for any other reason, is never inconclusive.</item>
-    /// <item>Checkpoint divergence is purely tail-only: either the checkpoint traces
-    /// agree entirely, or the only checkpoint difference is the host having run past
-    /// the end of the interpreter trace (that tail marker — the host trace being a
-    /// proper extension of the interpreter's — is a loop continuation, not a new
-    /// code path). This guarantees every comparable checkpoint/state prefix before
-    /// the cut agrees, so no real divergence precedes the cut.</item>
+    /// <item>Checkpoint divergence is purely tail-only. The interpreter trace,
+    /// projected to the host's block-entry PCs, must be an ordered prefix of the host
+    /// trace, and the host's remaining tail may only revisit PCs the interpreter
+    /// actually visited. This guarantees every comparable checkpoint prefix agrees in
+    /// order before the cut, and the only divergence is the host having run past the
+    /// end of the interpreter trace mid-loop — a loop continuation, not a new code
+    /// path and not a reordered existing path.</item>
     /// <item>The residual differences are confined to <c>pc</c> and <c>gpr[i]</c>,
     /// the natural variables of a mid-loop cut. Any difference in
     /// <c>hi</c>/<c>lo</c>/<c>memory.*</c>/<c>loadDelay.*</c>/<c>exception.*</c> is a
@@ -202,22 +203,58 @@ public static class RecompilerStateDiff
             }
         }
 
-        // (2) checkpoint divergence must be purely tail-only. When no checkpoint
-        // diff exists, the host trace is a valid ordered subsequence of the
-        // interpreter trace (the interpreter ran at least as far) — every
-        // comparable prefix agrees, so the cut, not a divergence, explains the
-        // difference. When a tail marker exists the host ran past the interpreter
-        // trace; that is only benign if the host never executed a PC the
-        // interpreter never visited — i.e. it only revisited loop-body locations
-        // (a loop continuation), not a brand-new code path. Any host-only PC is a
-        // real divergence before or at the cut and must stay a mismatch.
-        if (hasTailMarker)
+        // (2) checkpoint divergence must be purely tail-only. The host trace is a
+        // continuation of the interpreter's comparable prefix: every block-entry PC
+        // the host emits must appear in the interpreter trace, in the same order, at
+        // the same position (the interpreter trace projected to the host's PCs is a
+        // prefix of the host trace); the host's remaining tail must only revisit PCs
+        // the interpreter actually visited — a loop continuation after the budget
+        // cut, never a new or reordered path. An ordering divergence, even over the
+        // same PC set, stays a real mismatch.
+        return IsBudgetTailContinuation(reference.PcTrace, actual.PcTrace);
+    }
+
+    /// <summary>
+    /// True when <paramref name="hostTrace"/> is a pure tail continuation of the
+    /// interpreter's comparable prefix (<paramref name="interpreterTrace"/>), the
+    /// budget-cut shape of Issue #304. A host block retires whole interpreter
+    /// instructions, so the host only emits block-entry PCs. Projecting the
+    /// interpreter trace down to the PCs the host emits (dropping interior block PCs
+    /// such as delay-slot nops) must yield exactly a prefix of the host trace; the
+    /// host then exhibits an artificial tail running past the end of the interpreter
+    /// trace that only revisits interpreter-visited PCs (a loop continuation). Order
+    /// preservation is essential: a run over the same PC set in a different order
+    /// fails the prefix check and must remain a real divergence.
+    /// </summary>
+    private static bool IsBudgetTailContinuation(
+        IReadOnlyList<uint> interpreterTrace,
+        IReadOnlyList<uint> hostTrace)
+    {
+        var hostPcs = new HashSet<uint>(hostTrace);
+        var projected = new List<uint>(interpreterTrace.Count);
+        foreach (var pc in interpreterTrace)
         {
-            var interpreterPcs = new HashSet<uint>(reference.PcTrace);
-            foreach (var hostPc in actual.PcTrace)
-            {
-                if (!interpreterPcs.Contains(hostPc)) return false;
-            }
+            if (hostPcs.Contains(pc)) projected.Add(pc);
+        }
+
+        // Inconclusive requires an actual tail: the host must have run past the end
+        // of the interpreter's comparable prefix. An equal-length host trace (even
+        // over an identical PC set) leaves no budget-cut tail to excuse and must
+        // stay a mismatch.
+        if (hostTrace.Count <= projected.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < projected.Count; i++)
+        {
+            if (hostTrace[i] != projected[i]) return false;
+        }
+
+        var interpreterPcs = new HashSet<uint>(interpreterTrace);
+        for (var i = projected.Count; i < hostTrace.Count; i++)
+        {
+            if (!interpreterPcs.Contains(hostTrace[i])) return false;
         }
 
         return true;

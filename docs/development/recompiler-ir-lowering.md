@@ -233,9 +233,12 @@ concludes in one of three ways (Issue #304):
   `lo`, `memory.*`, `loadDelay.*`, `exception.*`) differs, a checkpoint diverges
   before the cut, or one side completes while the other exhausts its budget.
 - **BudgetInconclusive** — the narrow middle case. Both executors exhaust the
-  *same* bounded budget, agree on every comparable checkpoint/state prefix before
-  the cut (the host's extended tail only revisits interpreter-visited loop
-  locations, never a new code path), and differ only on the fields the budget cut
+  *same* bounded budget, the interpreter trace projected to the host's
+  block-entry PCs is an *ordered prefix* of the host trace (the comparable
+  checkpoint prefixes agree in order before the cut), and the host's tail beyond
+  the interpreter trace only revisits interpreter-visited loop locations — a
+  loop continuation after the cut, never a new code path and never a reordered
+  existing path. The residual differences are only the fields the budget cut
   itself leaves mid-iteration (`pc` and the iterating GPRs).
 
 `BudgetInconclusive` exists because a long multi-loop function — now reachable
@@ -244,7 +247,14 @@ fixed static-instruction budget cut each executor off mid-loop at a different
 iteration. The host fuses a branch and its delay slot into one block, so it retires
 fewer budget units per iteration than the interpreter does instructions, and the
 two drift apart in iteration count. That is a harness artifact, not a lowering
-divergence: every comparable prefix matches and all behavioral state agrees.
+divergence: every comparable prefix matches in order and all behavioral state
+agrees. The ordering requirement is essential — the classification is checked by
+`RecompilerStateDiff.IsBudgetTailContinuation`, which compares the traces
+positionally (the interpreter trace is first projected to the PCs the host block
+entries can emit, e.g. dropping delay-slot nops that are never host checkpoints).
+Two runs over the *same* PC set in a *different* order, or a host that runs no
+further than the interpreter, leave no tail to excuse and stay hard `Mismatch`s —
+a set-membership test alone cannot detect an ordering divergence.
 It stays distinct from `Match` (a match was not proven) yet is never reported as
 the failure a genuine divergence would be. `RecompilerDifferentialResult.IsMatch`
 remains false for it, while the new `IsBudgetInconclusive` lets a caller treat it

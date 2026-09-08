@@ -141,6 +141,53 @@ public sealed class RecompilerDifferentialTests
     }
 
     [Fact]
+    public void BudgetCutOff_SamePcSetButDifferentOrder_IsAMismatch()
+    {
+        // Regression for the ordering blind spot in the budget-inconclusive
+        // check: a superset/set membership test cannot distinguish ordering. Both
+        // sides exhaust the budget and visit exactly the same PCs, but the host
+        // executes the same two-loop body in a different order (A→C→B rather than
+        // A→B→C). That is a real control-flow divergence, not a loop continuation
+        // past the cut, and must remain a hard mismatch even though the PC sets are
+        // identical.
+        var reference = Snapshot(
+            gpr8: 18, pc: 0x80000008u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x80000000u, 0x80000004u, 0x80000008u });
+        var actual = Snapshot(
+            gpr8: 20, pc: 0x80000004u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000008u, 0x80000004u, 0x80000000u, 0x80000008u, 0x80000004u });
+
+        var diff = RecompilerStateDiff.Compare(reference, actual);
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsBudgetInconclusive);
+    }
+
+    [Fact]
+    public void BudgetCutOff_TailRunsPastInterpreterEnd_InDifferentOrder_IsAMismatch()
+    {
+        // Same-PC-set reordering where the host additionally runs past the end of
+        // the interpreter trace: the comparable prefix must still agree in order
+        // (A→B→C), so a host that loops in a different order before running ahead is
+        // a divergence before the cut and stays a hard mismatch, not a tail.
+        var reference = Snapshot(
+            gpr8: 18, pc: 0x80000004u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x80000000u, 0x80000004u, 0x80000008u });
+        var actual = Snapshot(
+            gpr8: 20, pc: 0x80000008u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x80000000u, 0x80000008u, 0x80000004u, 0x80000000u });
+
+        var diff = RecompilerStateDiff.Compare(reference, actual);
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsBudgetInconclusive);
+    }
+
+    [Fact]
     public void BudgetCutOff_BehavioralFieldDivergence_IsAMismatch()
     {
         // Even with both sides exhausting the budget, a behavioral-field
