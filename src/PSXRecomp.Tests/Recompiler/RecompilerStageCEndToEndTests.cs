@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
 
 [Test]
 // Issue #209 Stage C vertical slice: control flow. BEQ (taken and not taken),
@@ -190,4 +190,4 @@ public sealed class RecompilerStageCEndToEndTests
         return result;
     }
 }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003

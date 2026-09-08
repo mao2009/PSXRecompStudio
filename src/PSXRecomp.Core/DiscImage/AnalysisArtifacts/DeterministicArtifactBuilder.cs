@@ -46,7 +46,7 @@ public sealed record DeterministicArtifactInput
 ///   left in discovery order.</item>
 ///   <item>Every scalar is rendered culture-invariantly (addresses as <c>0xXXXXXXXX</c>).</item>
 ///   <item>No environment-derived value is read. The Domain layer's forbidden-API rule
-///   (PSXR005) makes that a compile-time property of this namespace rather than a
+///   (AARC003) makes that a compile-time property of this namespace rather than a
 ///   convention.</item>
 /// </list>
 /// </summary>

@@ -11,9 +11,9 @@ public sealed class TempDirectory : IDisposable
     public TempDirectory()
     {
         FullPath = Path.Combine(Path.GetTempPath(), "psxrecomp-real-rom-tests", Path.GetRandomFileName());
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         Directory.CreateDirectory(FullPath);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
     }
 
     /// <summary>Absolute path of the temporary directory.</summary>
@@ -26,9 +26,9 @@ public sealed class TempDirectory : IDisposable
     public string CreateSubdirectory(string name)
     {
         var path = Combine(name);
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         Directory.CreateDirectory(path);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         return path;
     }
 
@@ -37,19 +37,19 @@ public sealed class TempDirectory : IDisposable
     {
         var path = Combine(relativePath);
         var directory = Path.GetDirectoryName(path);
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
         File.WriteAllBytes(path, content);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         return path;
     }
 
     public void Dispose()
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         try
         {
             Directory.Delete(FullPath, recursive: true);
@@ -62,6 +62,6 @@ public sealed class TempDirectory : IDisposable
         {
             // Ditto.
         }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
     }
 }

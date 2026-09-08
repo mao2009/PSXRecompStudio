@@ -7,7 +7,7 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// The CI-facing entry point of the real-ROM analysis skill.
 ///
 /// It analyzes whatever the user has placed under <c>rom/</c> and asserts each run
-/// reaches COMPLETE. When no fixture is present — the normal case in CI — the test
+/// reaches COMPLETE. When no fixture is present  Ethe normal case in CI  Ethe test
 /// skips explicitly with a reason instead of failing, so the disc-image requirement
 /// never breaks the existing pipeline.
 ///
@@ -23,10 +23,10 @@ public class RealRomAnalysisSkillTests
     /// <summary>Instructions decoded per fixture; enough for basic blocks, small enough to stay quick.</summary>
     private const int InstructionCount = 128;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
     private static string ReadRepositoryFile(string relativePath) =>
         File.ReadAllText(Path.Combine(RealRomFixtures.RepositoryRoot, relativePath));
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
 
     [SkippableFact]
     public void EveryLocalFixture_CompletesTheAnalysisFlow()

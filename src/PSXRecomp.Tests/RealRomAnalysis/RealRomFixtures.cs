@@ -21,7 +21,7 @@ public sealed record RealRomFixture
 ///
 /// Fixtures are user-supplied disc images under <c>rom/</c>, which is git-ignored: no
 /// ROM, ISO, EXE or CHD content is ever committed. Any number of titles may be present
-/// and none is named in code — a fixture is whatever <c>rom/*.chd</c> finds, keyed by a
+/// and none is named in code  Ea fixture is whatever <c>rom/*.chd</c> finds, keyed by a
 /// normalized form of its file name. On a machine (or CI runner) with no fixtures,
 /// <see cref="Discover"/> returns an empty list and the real-ROM tests skip explicitly.
 /// </summary>
@@ -56,14 +56,14 @@ public static class RealRomFixtures
     /// </summary>
     public static IReadOnlyList<RealRomFixture> Discover()
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         if (!Directory.Exists(RomDirectory))
         {
             return Array.Empty<RealRomFixture>();
         }
 
         var discImages = Directory.GetFiles(RomDirectory, "*.chd", SearchOption.TopDirectoryOnly);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
 
         var labels = discImages
             .Select(static path => Path.GetFileNameWithoutExtension(path))

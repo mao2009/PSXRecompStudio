@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
 
 [Test]
 // Issue #209 Stage A vertical slice: straight-line integer arithmetic, plus the
@@ -101,4 +101,4 @@ public sealed class RecompilerStageAEndToEndTests
         return decoded;
     }
 }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003

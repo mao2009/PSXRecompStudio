@@ -95,7 +95,6 @@ jobs:
           RECOMPILER_ARTIFACT_ROOT: ${{ runner.temp }}/recompiler-differential-artifacts
         run: |
           dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
-          dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
 
       - name: Upload differential harness failure artifacts
         if: failure()
@@ -163,7 +162,6 @@ jobs:
       - name: Test
         run: |
           dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
-          dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
 
   native-macos:
     name: Native Core Build and Test (macOS)
@@ -222,7 +220,6 @@ jobs:
       - name: Test
         run: |
           dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
-          dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release --no-build --verbosity normal
 
   gui-tests:
     name: GUI Headless Tests

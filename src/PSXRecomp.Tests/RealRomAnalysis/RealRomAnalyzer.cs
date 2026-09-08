@@ -10,17 +10,17 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// the deterministic serialization layer, producing two clearly separated outputs:
 ///
 /// <list type="bullet">
-///   <item><b>Deterministic artifacts</b> (<see cref="RealRomAnalysisArtifacts"/>) —
+///   <item><b>Deterministic artifacts</b> (<see cref="RealRomAnalysisArtifacts"/>)  E
 ///   identical byte-for-byte for identical input. Safe to persist and diff.</item>
-///   <item><b>Execution log</b> (<see cref="ExecutionLogEntry"/>) — stage/progress
+///   <item><b>Execution log</b> (<see cref="ExecutionLogEntry"/>)  Estage/progress
 ///   records that intentionally carry elapsed time and are therefore local-only.</item>
 /// </list>
 ///
 /// The two must never mix: nothing from the log reaches an artifact, and the artifact
-/// builder cannot read the clock even if asked to (Domain-layer PSXR005).
+/// builder cannot read the clock even if asked to (Domain-layer AARC003).
 ///
 /// Analysis itself is <em>not</em> re-implemented here: <see cref="RomAnalysisPipeline"/>
-/// owns the stage sequence (START → … → REPORT) and returns a classified
+/// owns the stage sequence (START ↁE… ↁEREPORT) and returns a classified
 /// <see cref="RomAnalysisOutcome"/>, and <see cref="DiscImageAnalyzer.CreateIsoReader"/>
 /// remains the single CHD→ISO reader. This type only reads the file, records the I/O-side
 /// MANIFEST / COMPLETE stages, and serializes.
@@ -96,13 +96,13 @@ public static class RealRomAnalyzer
         string sha256 = string.Empty;
         try
         {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
             sizeBytes = new FileInfo(discImagePath).Length;
             using (var hashStream = File.OpenRead(discImagePath))
             {
                 sha256 = ComputeSha256(hashStream);
             }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
 
             Record("INPUT", "PASS", $"Read {sizeBytes} bytes; SHA-256 {sha256}");
         }
@@ -114,9 +114,9 @@ public static class RealRomAnalyzer
         }
 
         RomAnalysisOutcome outcome;
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         using (var runStream = File.OpenRead(discImagePath))
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         {
             outcome = RomAnalysisPipeline.RunFromChd(runStream, sha256, instructionCount, recorder);
         }
@@ -145,7 +145,7 @@ public static class RealRomAnalyzer
         {
             // REPORT already passed; the failure is at MANIFEST (the CHD/ISO metadata could
             // not be read to build the deterministic artifacts). It is classified and
-            // returned — never thrown — so a single fixture's read failure cannot stop
+            // returned  Enever thrown  Eso a single fixture's read failure cannot stop
             // RunAll from processing the remaining fixtures, and COMPLETE is not reached.
             if (!recorder.HasFailed)
             {
@@ -301,9 +301,9 @@ public static class RealRomAnalyzer
     /// </summary>
     internal static (ChdMapStatistics Chd, IsoVolumeStatistics Iso) CaptureChdMetadata(string discImagePath)
     {
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
         using var statsStream = File.OpenRead(discImagePath);
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003
         using var chd = ChdReader.Open(statsStream);
         var iso = DiscImageAnalyzer.CreateIsoReader(chd);
         iso.Initialize();

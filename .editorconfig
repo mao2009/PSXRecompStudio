@@ -25,31 +25,21 @@ dotnet_diagnostic.FIF0001.severity = error
 
 # Microsoft .NET Analyzers (CA) - standard .NET quality gate (Issue #102)
 # General .NET API usage / reliability rules delegated to official analyzers,
-# complementing PureSharp (project-specific purity) and PSXR (architecture).
+# complementing PureSharp (project-specific purity) and ArchitectureAnalyzer (AARC).
 # Severity pinned explicitly per the #105 gate-contract convention.
 dotnet_diagnostic.CA2201.severity = error
 dotnet_diagnostic.CA2200.severity = error
 dotnet_diagnostic.CA1069.severity = error
 dotnet_diagnostic.CA1816.severity = error
 
-# PSXRecomp Architecture Analyzer (PSXR) - architecture quality gate
-# Severity is pinned explicitly so the gate contract does not rely on
-# descriptor defaults and cannot be weakened silently. See docs/architecture-matrix.md.
-# Verified end-to-end (build + CI failure on violation) in Issue #105 / PR #107.
-dotnet_diagnostic.PSXR001.severity = error
-dotnet_diagnostic.PSXR002.severity = error
-dotnet_diagnostic.PSXR003.severity = error
-dotnet_diagnostic.PSXR004.severity = error
-dotnet_diagnostic.PSXR005.severity = error
-dotnet_diagnostic.PSXR006.severity = error
-
 # ArchitectureAnalyzer (AARC) — generic contract-enforced architecture diagnostics.
-# Severity pins prepare for the new analyzer (PSXR → AARC migration, #292/#293).
-# Until the analyzer is wired, these are inert (no-op).
-# The old PSXR pins remain until the old analyzer is removed in #294.
-dotnet_diagnostic.AARC002.severity = error   # maps PSXR004: forbidden dependency
-dotnet_diagnostic.AARC003.severity = error   # maps PSXR005: forbidden API
-dotnet_diagnostic.AARC004.severity = error   # maps PSXR001: missing layer declaration
-dotnet_diagnostic.AARC005.severity = error   # maps PSXR002: multiple layer declarations
-dotnet_diagnostic.AARC006.severity = error   # maps PSXR003: namespace/layer mismatch (Warning default, pin to Error for parity)
-dotnet_diagnostic.AARC007.severity = error   # maps PSXR006: interop boundary violation
+# Severity is pinned explicitly so the gate contract does not rely on descriptor
+# defaults and cannot be weakened silently. The enforcement contract and rule
+# mapping live in src/architecture.contract.json (SSOT); see docs/architecture-matrix.md.
+# The legacy PSXR001–PSXR006 pins were removed in #294.
+dotnet_diagnostic.AARC004.severity = error   # missing layer declaration
+dotnet_diagnostic.AARC005.severity = error   # multiple layer declarations
+dotnet_diagnostic.AARC006.severity = error   # namespace/layer mismatch (Warning default, pin to Error)
+dotnet_diagnostic.AARC002.severity = error   # forbidden dependency
+dotnet_diagnostic.AARC003.severity = error   # forbidden API
+dotnet_diagnostic.AARC007.severity = error   # interop boundary violation

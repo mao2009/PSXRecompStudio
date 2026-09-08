@@ -26,7 +26,7 @@ namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 ///
 /// Serialization is pure: no timestamp, path, host, user or environment value can
 /// enter an artifact through this type. The Domain-layer architecture rules
-/// (PSXR005) enforce that mechanically for the whole namespace.
+/// (AARC003) enforce that mechanically for the whole namespace.
 /// </summary>
 [Domain]
 public static class ArtifactJson

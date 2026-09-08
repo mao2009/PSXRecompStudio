@@ -3,13 +3,13 @@ using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
 
 [Test]
 // Failure artifacts for the differential harness (Issue #211, B6). Everything
 // in this class is pure test-side file I/O; the Domain layer stays I/O-free.
 // File/Directory/DateTime/Random I/O lives here for the same reason as
-// RecompilerHostExecutor (pragma-disable PSXR005): artifact capture is a test
+// RecompilerHostExecutor (pragma-disable AARC003): artifact capture is a test
 // concern, not a Domain one.
 //
 // Artifact layout per failing run (one directory per run):
@@ -191,4 +191,4 @@ public static class RecompilerDifferentialArtifacts
         }
     }
 }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003

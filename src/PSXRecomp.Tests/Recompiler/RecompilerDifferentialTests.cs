@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005, AARC003
+#pragma warning disable AARC003
 
 [Test]
 public sealed class RecompilerDifferentialTests
@@ -206,4 +206,4 @@ public sealed class RecompilerDifferentialTests
             => RecompilerExecutionResult.Failed(RecompilerExecutionStatus.GenerationFailed, "LOWER_FAILED", "boom");
     }
 }
-#pragma warning restore PSXR005, AARC003
+#pragma warning restore AARC003

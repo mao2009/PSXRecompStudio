@@ -3,7 +3,6 @@
     { "name": "Domain", "namespaceRoots": [ "PSXRecomp.Core" ] },
     { "name": "Application", "namespaceRoots": [ "PSXRecompStudio" ] },
     { "name": "Infrastructure", "namespaceRoots": [ "PSXRecomp.Infrastructure" ] },
-    { "name": "Analyzer", "namespaceRoots": [ "PSXRecomp.Analyzer" ] },
     { "name": "Test", "namespaceRoots": [ "PSXRecomp.Tests" ] },
     { "name": "Generated", "namespaceRoots": [ "PSXRecomp.Generated" ] }
   ],
@@ -45,17 +44,6 @@
     { "layer": "Test", "type": "System.Guid", "member": "NewGuid", "reason": "non-deterministic randomness is forbidden" },
     { "layer": "Test", "type": "System.Random", "wholeType": true, "reason": "non-deterministic randomness is forbidden" },
     { "layer": "Test", "type": "System.Threading.Tasks.Task", "member": "Delay", "reason": "asynchronous timing must use controlled schedulers" },
-    { "layer": "Analyzer", "type": "System.Console", "reason": "standard output must be abstracted behind an Infrastructure adapter" },
-    { "layer": "Analyzer", "type": "System.IO.File", "reason": "external I/O is an Infrastructure responsibility" },
-    { "layer": "Analyzer", "type": "System.IO.Directory", "reason": "external I/O is an Infrastructure responsibility" },
-    { "layer": "Analyzer", "type": "System.Environment", "reason": "execution environment dependencies break determinism" },
-    { "layer": "Analyzer", "type": "System.Diagnostics.Process", "reason": "process control is an Infrastructure responsibility" },
-    { "layer": "Analyzer", "type": "System.Threading.Thread", "reason": "manual thread management breaks deterministic execution" },
-    { "layer": "Analyzer", "type": "System.DateTime", "member": "Now", "reason": "non-deterministic time sources break determinism" },
-    { "layer": "Analyzer", "type": "System.DateTime", "member": "UtcNow", "reason": "non-deterministic time sources break determinism" },
-    { "layer": "Analyzer", "type": "System.Guid", "member": "NewGuid", "reason": "non-deterministic randomness is forbidden" },
-    { "layer": "Analyzer", "type": "System.Random", "wholeType": true, "reason": "non-deterministic randomness is forbidden" },
-    { "layer": "Analyzer", "type": "System.Threading.Tasks.Task", "member": "Delay", "reason": "asynchronous timing must use controlled schedulers" },
     { "layer": "Generated", "type": "System.Console", "reason": "standard output must be abstracted behind an Infrastructure adapter" },
     { "layer": "Generated", "type": "System.IO.File", "reason": "external I/O is an Infrastructure responsibility" },
     { "layer": "Generated", "type": "System.IO.Directory", "reason": "external I/O is an Infrastructure responsibility" },
@@ -76,7 +64,6 @@
       { "attributeFqn": "PSXRecomp.Architecture.DomainAttribute", "layer": "Domain" },
       { "attributeFqn": "PSXRecomp.Architecture.ApplicationAttribute", "layer": "Application" },
       { "attributeFqn": "PSXRecomp.Architecture.InfrastructureAttribute", "layer": "Infrastructure" },
-      { "attributeFqn": "PSXRecomp.Architecture.AnalyzerAttribute", "layer": "Analyzer" },
       { "attributeFqn": "PSXRecomp.Architecture.TestAttribute", "layer": "Test" },
       { "attributeFqn": "PSXRecomp.Architecture.GeneratedAttribute", "layer": "Generated" }
     ]
