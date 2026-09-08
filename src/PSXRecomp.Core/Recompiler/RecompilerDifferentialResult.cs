@@ -21,6 +21,14 @@ public sealed record RecompilerDifferentialResult(
 
     /// <summary>True when both completed and the state snapshots match.</summary>
     public bool IsMatch => BothCompleted && Diff!.IsMatch;
+
+    /// <summary>
+    /// True when both completed and the comparison was inconclusive: the executors
+    /// agree up to the bounded budget cut and differ only on the fields the cut
+    /// leaves mid-iteration, so neither a match nor a real divergence was proven
+    /// (Issue #304).
+    /// </summary>
+    public bool IsBudgetInconclusive => BothCompleted && Diff!.IsBudgetInconclusive;
 }
 
 /// <summary>

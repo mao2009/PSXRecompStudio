@@ -11,14 +11,15 @@ public sealed class RecompilerDifferentialTests
     private static RecompilerStateSnapshot Snapshot(
         uint gpr8 = 0, uint gpr9 = 0, uint gpr11 = 0,
         uint hi = 0, uint lo = 0, uint pc = 0x80000000u,
-        RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success)
+        RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success,
+        IEnumerable<uint>? pcTrace = null)
     {
         var gpr = new uint[32];
         gpr[0] = 0;
         gpr[8] = gpr8;
         gpr[9] = gpr9;
         gpr[11] = gpr11;
-        return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination);
+        return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination, pcTrace: pcTrace);
     }
 
     [Fact]
@@ -64,6 +65,100 @@ public sealed class RecompilerDifferentialTests
         var diffWithPcTerm = RecompilerStateDiff.Compare(reference, oddTerm);
         Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "pc");
         Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "termination");
+    }
+
+    [Fact]
+    public void BudgetCutOff_BothExhausted_TailOnlyDivergence_IsBudgetInconclusive()
+    {
+        // Issue #304: a long loop cut off by the shared budget on both executors at
+        // different iterations. Both exhausted; the host ran further through the
+        // same loop body (the loop runs 0x08→0x0C→0x10→0x08), so its trace is a
+        // continuation of the interpreter's — the only checkpoint difference is the
+        // tail marker and the residual diffs are confined to pc/gpr (the parked
+        // iteration counter and PC). The state is inconclusive, not a mismatch.
+        var reference = Snapshot(
+            gpr8: 18, pc: 0x8000000Cu,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu });
+        var actual = Snapshot(
+            gpr8: 20, pc: 0x80000010u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u });
+
+        var diff = RecompilerStateDiff.Compare(reference, actual);
+
+        Assert.Equal(RecompilerComparisonClassification.BudgetInconclusive, diff.Classification);
+        Assert.True(diff.IsBudgetInconclusive);
+        Assert.False(diff.IsMatch);
+        Assert.DoesNotContain(diff.Differences, d => d.FieldPath == "hi" || d.FieldPath == "lo" ||
+            d.FieldPath.StartsWith("memory", StringComparison.Ordinal) ||
+            d.FieldPath.StartsWith("loadDelay", StringComparison.Ordinal) ||
+            d.FieldPath.StartsWith("exception", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BudgetCutOff_OneSidedExhaustion_IsAMismatch()
+    {
+        // Only the reference exhausted the budget; the recompiled side ran to
+        // completion. The difference is not attributable to a shared budget cut, so
+        // it must remain a hard mismatch.
+        var reference = Snapshot(
+            gpr8: 18, pc: 0x80000014u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000014u });
+        var actual = Snapshot(
+            gpr8: 20, pc: 0x80000018u,
+            termination: RecompilerIrTerminationReason.Success,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000014u, 0x80000018u });
+
+        var diff = RecompilerStateDiff.Compare(reference, actual);
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsBudgetInconclusive);
+    }
+
+    [Fact]
+    public void BudgetCutOff_CheckpointDivergenceBeforeCut_IsAMismatch()
+    {
+        // A real divergence before the cut: the host executes a code path — PC
+        // 0x80000014 — the interpreter never visited in its whole trace (the
+        // interpreter only looped between 0x04 and 0x08). That is a brand-new path,
+        // not a loop continuation past the interpreter trace, and must stay a hard
+        // mismatch even though both sides exhausted the budget.
+        var reference = Snapshot(
+            gpr8: 18, pc: 0x80000008u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x80000004u, 0x80000008u });
+        var actual = Snapshot(
+            gpr8: 20, pc: 0x80000014u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000014u, 0x80000004u, 0x80000014u });
+
+        var diff = RecompilerStateDiff.Compare(reference, actual);
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsBudgetInconclusive);
+    }
+
+    [Fact]
+    public void BudgetCutOff_BehavioralFieldDivergence_IsAMismatch()
+    {
+        // Even with both sides exhausting the budget, a behavioral-field
+        // divergence (here a different HI value) proves the executors are not
+        // behaviorally equivalent and must never be downgraded to inconclusive.
+        var reference = Snapshot(
+            gpr8: 18, hi: 0x1234, pc: 0x80000014u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000014u });
+        var actual = Snapshot(
+            gpr8: 20, hi: 0x5678, pc: 0x80000018u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000014u, 0x80000018u });
+
+        var diff = RecompilerStateDiff.Compare(reference, actual);
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsBudgetInconclusive);
     }
 
     [Fact]

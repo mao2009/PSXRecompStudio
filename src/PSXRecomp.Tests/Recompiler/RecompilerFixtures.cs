@@ -317,6 +317,36 @@ internal static class RecompilerFixtures
             referenceStepBudget: 15);
 
     /// <summary>
+    /// A bounded multi-instruction loop whose host and interpreter budgets both cut
+    /// it off mid-loop (Issue #304). The host fuses the BNE and its delay slot into
+    /// one block, so each iteration retires 3 host blocks but 4 interpreter
+    /// instructions — the host therefore drifts ahead of the interpreter across
+    /// iterations. Both sides exhaust the same numeric budget (set far below the
+    /// 1000-iteration loop bound) at different loop iterations, park the counter at
+    /// different values, and agree on every comparable checkpoint and on all
+    /// behavioral state (the loop only touches registers, so memory/HI/LO never
+    /// diverge). The differential harness must classify this as BudgetInconclusive:
+    /// a match was not proven, but neither was a real divergence — the only
+    /// difference is where the artificial budget cut left each side mid-loop.
+    /// </summary>
+    public static RecompilerDifferentialFixture Issue304BudgetCutOffLoop() =>
+        new(
+            "issue-304-budget-cut-off-loop",
+            encodedInstructions: new[]
+            {
+                MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1000),                     // 0x00 $t0 = 1000 (loop bound)
+                MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0),                        // 0x04 $t1 = 0 (counter)
+                MipsEncoding.I(0x09, rt: 9, rs: 9, immediate: 1),                        // 0x08 loop: $t1 += 1
+                MipsEncoding.I(0x09, rt: 10, rs: 10, immediate: 7),                      // 0x0C $t2 += 7
+                MipsEncoding.Branch(0x05, rs: 9, rt: 8, pc: EntryPc + 0x10, target: EntryPc + 8), // 0x10 BNE $t1, $t0, loop
+                MipsEncoding.Nop,                                                        // 0x14 delay slot
+                MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 99),                      // 0x18 (not reached before budget)
+            },
+            entryPc: EntryPc,
+            stepBudget: 100,
+            referenceStepBudget: 100);
+
+    /// <summary>
     /// An unbounded BEQ loop that never exits. Both sides must stop on their budget
     /// with the identical state (termination ExecutionBudgetExceeded, PC parked at
     /// the loop body) rather than spin or fall through. The host retires four

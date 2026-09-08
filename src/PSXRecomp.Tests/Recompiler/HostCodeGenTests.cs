@@ -333,6 +333,38 @@ public class HostCodeGenTests
         result.Source.Should().Contain("uint32_t v2 = (v0 != v1) ? 1u : 0u;");
     }
 
+    [Fact]
+    public void Generation_CompareLessThanSigned_Op_Renders_Correctly()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanSigned, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 10),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("uint32_t v2 = ((int32_t)v0 < (int32_t)v1) ? 1u : 0u;");
+    }
+
+    [Fact]
+    public void Generation_CompareLessThanUnsigned_Op_Renders_Correctly()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 0, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 1, register: 9),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanUnsigned, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 10),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("uint32_t v2 = (v0 < v1) ? 1u : 0u;");
+    }
+
     // --- Phase 3C: Control-flow operations ---
 
     [Fact]
@@ -714,6 +746,71 @@ int main() {
     return (state.gpr[8] == 1u) ? 0 : 1;
 }");
         testResult.Should().Be(0, "CompareNotEqual must produce 1 when inputs differ");
+    }
+
+    [Fact]
+    public void Runtime_CompareLessThanSigned_EndToEnd()
+    {
+        // The two inputs are numerically identical as raw bits; only the signed
+        // view orders them differently. 0x80000000 is INT32_MIN, which is less
+        // than 0 as a signed value.
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80000000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanSigned, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 3, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanSigned, resultValueId: 4, inputValueA: 3, inputValueB: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 4, register: 9),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    recompiler_block_0x00000000(&state);
+    int ok = 1;
+    if (state.gpr[8] != 1u) { ok = 0; } /* INT32_MIN < 0 */
+    if (state.gpr[9] != 0u) { ok = 0; } /* 1 < INT32_MIN */
+    return ok ? 0 : 1;
+}");
+        testResult.Should().Be(0, "CompareLessThanSigned must compare as 32-bit two's-complement");
+    }
+
+    [Fact]
+    public void Runtime_CompareLessThanUnsigned_EndToEnd()
+    {
+        // The same bit patterns order differently unsigned: 0x80000000 is huge,
+        // so neither 0x80000000 < 0 nor 0x80000000 < 1 holds.
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80000000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 0),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanUnsigned, resultValueId: 2, inputValueA: 0, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 3, immediate: 0x10000000),
+            new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanUnsigned, resultValueId: 4, inputValueA: 3, inputValueB: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 2, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 4, register: 9),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var testResult = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.gpr[0] = 0;
+    recompiler_block_0x00000000(&state);
+    int ok = 1;
+    if (state.gpr[8] != 0u) { ok = 0; } /* 0x80000000 < 0 is false unsigned */
+    if (state.gpr[9] != 0u) { ok = 0; } /* 0x10000000 < 0 is false unsigned */
+    return ok ? 0 : 1;
+}");
+        testResult.Should().Be(0, "CompareLessThanUnsigned must compare as raw unsigned 32-bit values");
     }
 
     [Fact]
@@ -1189,6 +1286,10 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
                 new RecompilerIrOperation(RecompilerIrOperationKind.ReadGpr, resultValueId: 3, register: 9),
                 new RecompilerIrOperation(RecompilerIrOperationKind.Add, resultValueId: 4, inputValueA: 2, inputValueB: 3),
                 new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 4, register: 10),
+                new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanSigned, resultValueId: 5, inputValueA: 2, inputValueB: 3),
+                new RecompilerIrOperation(RecompilerIrOperationKind.CompareLessThanUnsigned, resultValueId: 6, inputValueA: 3, inputValueB: 2),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 5, register: 11),
+                new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 6, register: 23),
             }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4)),
         });
     }

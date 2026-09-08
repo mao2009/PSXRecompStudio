@@ -132,6 +132,8 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.ShiftRightArithmetic => true,
         RecompilerIrOperationKind.CompareEqual => true,
         RecompilerIrOperationKind.CompareNotEqual => true,
+        RecompilerIrOperationKind.CompareLessThanSigned => true,
+        RecompilerIrOperationKind.CompareLessThanUnsigned => true,
         RecompilerIrOperationKind.Load8 => true,
         RecompilerIrOperationKind.Load16 => true,
         RecompilerIrOperationKind.Load32 => true,
@@ -326,6 +328,16 @@ public static class RecompilerHostCodeGen
                 if (result == null) return null;
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
                 return $"{result} = ({ResolveValue(op.InputValueA, valueNames)} != {ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
+
+            case RecompilerIrOperationKind.CompareLessThanSigned:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = ((int32_t){ResolveValue(op.InputValueA, valueNames)} < (int32_t){ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
+
+            case RecompilerIrOperationKind.CompareLessThanUnsigned:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = ({ResolveValue(op.InputValueA, valueNames)} < {ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
 
             case RecompilerIrOperationKind.Load8:
                 if (result == null) return null;

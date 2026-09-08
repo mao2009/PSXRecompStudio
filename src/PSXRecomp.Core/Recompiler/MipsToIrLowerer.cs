@@ -612,9 +612,16 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Or:
             case R3000aOpcode.Xor:
             case R3000aOpcode.Nor:
+            case R3000aOpcode.Slt:
+            case R3000aOpcode.Sltu:
                 sources = new[] { instruction.Operand1.Register, instruction.Operand2.Register };
                 return true;
             case R3000aOpcode.Addiu:
+            case R3000aOpcode.Andi:
+            case R3000aOpcode.Ori:
+            case R3000aOpcode.Xori:
+            case R3000aOpcode.Slti:
+            case R3000aOpcode.Sltiu:
                 sources = new[] { instruction.Operand1.Register };
                 return true;
             case R3000aOpcode.Lb:
@@ -674,7 +681,14 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Or:
             case R3000aOpcode.Xor:
             case R3000aOpcode.Nor:
+            case R3000aOpcode.Slt:
+            case R3000aOpcode.Sltu:
             case R3000aOpcode.Addiu:
+            case R3000aOpcode.Andi:
+            case R3000aOpcode.Ori:
+            case R3000aOpcode.Xori:
+            case R3000aOpcode.Slti:
+            case R3000aOpcode.Sltiu:
             case R3000aOpcode.Lui:
             case R3000aOpcode.Lb:
             case R3000aOpcode.Lbu:
@@ -732,6 +746,27 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Nor:
                 EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.Nor);
                 return null;
+            case R3000aOpcode.Andi:
+                EmitImmediateArithmetic(builder, instruction, RecompilerIrOperationKind.And);
+                return null;
+            case R3000aOpcode.Ori:
+                EmitImmediateArithmetic(builder, instruction, RecompilerIrOperationKind.Or);
+                return null;
+            case R3000aOpcode.Xori:
+                EmitImmediateArithmetic(builder, instruction, RecompilerIrOperationKind.Xor);
+                return null;
+            case R3000aOpcode.Slt:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.CompareLessThanSigned);
+                return null;
+            case R3000aOpcode.Sltu:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.CompareLessThanUnsigned);
+                return null;
+            case R3000aOpcode.Slti:
+                EmitSlti(builder, instruction, compareSigned: true);
+                return null;
+            case R3000aOpcode.Sltiu:
+                EmitSlti(builder, instruction, compareSigned: false);
+                return null;
             case R3000aOpcode.Addiu:
                 EmitAddiu(builder, instruction);
                 return null;
@@ -769,6 +804,25 @@ public static class MipsToIrLowerer
         var left = builder.ReadGpr(instruction.Operand1.Register);
         var right = builder.ReadGpr(instruction.Operand2.Register);
         var result = builder.Binary(operationKind, left, right);
+        builder.WriteGpr(instruction.Operand0.Register, result);
+    }
+
+    private static void EmitImmediateArithmetic(
+        BlockBuilder builder, R3000aInstruction instruction, RecompilerIrOperationKind operationKind)
+    {
+        var left = builder.ReadGpr(instruction.Operand1.Register);
+        var immediate = builder.Constant((uint)(ushort)instruction.Operand2.Value);
+        var result = builder.Binary(operationKind, left, immediate);
+        builder.WriteGpr(instruction.Operand0.Register, result);
+    }
+
+    private static void EmitSlti(BlockBuilder builder, R3000aInstruction instruction, bool compareSigned)
+    {
+        var left = builder.ReadGpr(instruction.Operand1.Register);
+        var immediate = builder.Constant(SignExtend16To32((ushort)instruction.Operand2.Value));
+        var result = builder.Binary(
+            compareSigned ? RecompilerIrOperationKind.CompareLessThanSigned : RecompilerIrOperationKind.CompareLessThanUnsigned,
+            left, immediate);
         builder.WriteGpr(instruction.Operand0.Register, result);
     }
 

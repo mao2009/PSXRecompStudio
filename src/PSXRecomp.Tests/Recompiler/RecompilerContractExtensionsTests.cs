@@ -51,10 +51,15 @@ public class RecompilerContractExtensionsTests
     [InlineData(RecompilerIrOperationKind.Store32)]
     [InlineData(RecompilerIrOperationKind.CompareEqual)]
     [InlineData(RecompilerIrOperationKind.CompareNotEqual)]
+    [InlineData(RecompilerIrOperationKind.CompareLessThanSigned)]
+    [InlineData(RecompilerIrOperationKind.CompareLessThanUnsigned)]
     public void AllNewOperationKinds_AreDefinedAndProduceValidProgram(RecompilerIrOperationKind kind)
     {
         var isStore = kind is RecompilerIrOperationKind.Store8 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32;
-        var isCompare = kind is RecompilerIrOperationKind.CompareEqual or RecompilerIrOperationKind.CompareNotEqual;
+        var isCompare = kind is RecompilerIrOperationKind.CompareEqual
+            or RecompilerIrOperationKind.CompareNotEqual
+            or RecompilerIrOperationKind.CompareLessThanSigned
+            or RecompilerIrOperationKind.CompareLessThanUnsigned;
         var hasResult = !isStore;
         var hasB = isStore || isCompare;
 
