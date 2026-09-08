@@ -42,3 +42,14 @@ dotnet_diagnostic.PSXR003.severity = error
 dotnet_diagnostic.PSXR004.severity = error
 dotnet_diagnostic.PSXR005.severity = error
 dotnet_diagnostic.PSXR006.severity = error
+
+# ArchitectureAnalyzer (AARC) — generic contract-enforced architecture diagnostics.
+# Severity pins prepare for the new analyzer (PSXR → AARC migration, #292/#293).
+# Until the analyzer is wired, these are inert (no-op).
+# The old PSXR pins remain until the old analyzer is removed in #294.
+dotnet_diagnostic.AARC002.severity = error   # maps PSXR004: forbidden dependency
+dotnet_diagnostic.AARC003.severity = error   # maps PSXR005: forbidden API
+dotnet_diagnostic.AARC004.severity = error   # maps PSXR001: missing layer declaration
+dotnet_diagnostic.AARC005.severity = error   # maps PSXR002: multiple layer declarations
+dotnet_diagnostic.AARC006.severity = error   # maps PSXR003: namespace/layer mismatch (Warning default, pin to Error for parity)
+dotnet_diagnostic.AARC007.severity = error   # maps PSXR006: interop boundary violation
