@@ -3,7 +3,7 @@ using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
 
 [Test]
 // Failure artifacts for the differential harness (Issue #211, B6). Everything
@@ -191,4 +191,4 @@ public static class RecompilerDifferentialArtifacts
         }
     }
 }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003

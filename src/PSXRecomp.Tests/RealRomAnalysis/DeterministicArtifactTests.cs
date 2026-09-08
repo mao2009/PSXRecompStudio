@@ -123,10 +123,10 @@ public class DeterministicArtifactTests
     {
         var artifacts = BuildArtifacts(FixtureA, "disc-a");
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var machineName = Environment.MachineName;
         var userName = Environment.UserName;
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
         var repositoryRoot = RealRomFixtures.RepositoryRoot;
 
         foreach (var file in artifacts.Files)
@@ -643,18 +643,18 @@ public class DeterministicArtifactTests
 
     private static string CreateTemporaryDirectory()
     {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         return Directory.CreateTempSubdirectory("psxr-artifacts-").FullName;
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
     }
 
     private static void DeleteDirectory(string path)
     {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         if (Directory.Exists(path))
         {
             Directory.Delete(path, recursive: true);
         }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
     }
 }

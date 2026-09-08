@@ -5,7 +5,7 @@ using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
 
 [Test]
 // Host-side build/run executor for the differential harness (Issue #211).
@@ -465,4 +465,4 @@ int main(int argc, char** argv) {
 }
 ";
 }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003

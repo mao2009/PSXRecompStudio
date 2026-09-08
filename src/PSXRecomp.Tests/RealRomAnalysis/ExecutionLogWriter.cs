@@ -38,7 +38,7 @@ public static class ExecutionLogWriter
     /// </summary>
     public static void Write(string path, IReadOnlyList<ExecutionLogEntry> entries)
     {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
         {
@@ -50,7 +50,7 @@ public static class ExecutionLogWriter
         {
             writer.WriteLine(JsonSerializer.Serialize(Sanitize(entry), Options));
         }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
     }
 
     private static ExecutionLogEntry Sanitize(ExecutionLogEntry entry)

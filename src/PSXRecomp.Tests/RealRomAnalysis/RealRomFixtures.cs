@@ -56,14 +56,14 @@ public static class RealRomFixtures
     /// </summary>
     public static IReadOnlyList<RealRomFixture> Discover()
     {
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
         if (!Directory.Exists(RomDirectory))
         {
             return Array.Empty<RealRomFixture>();
         }
 
         var discImages = Directory.GetFiles(RomDirectory, "*.chd", SearchOption.TopDirectoryOnly);
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
 
         var labels = discImages
             .Select(static path => Path.GetFileNameWithoutExtension(path))

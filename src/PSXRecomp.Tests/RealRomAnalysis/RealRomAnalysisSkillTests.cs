@@ -23,10 +23,10 @@ public class RealRomAnalysisSkillTests
     /// <summary>Instructions decoded per fixture; enough for basic blocks, small enough to stay quick.</summary>
     private const int InstructionCount = 128;
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
     private static string ReadRepositoryFile(string relativePath) =>
         File.ReadAllText(Path.Combine(RealRomFixtures.RepositoryRoot, relativePath));
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
 
     [SkippableFact]
     public void EveryLocalFixture_CompletesTheAnalysisFlow()

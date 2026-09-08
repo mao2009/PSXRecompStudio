@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
 
-#pragma warning disable PSXR005
+#pragma warning disable PSXR005, AARC003
 
 [Test]
 // Issue #209 Stage A vertical slice: the end-to-end ADDIU/ADDU fixture proves the
@@ -81,4 +81,4 @@ public sealed class RecompilerVerticalSliceTests
         }
     }
 }
-#pragma warning restore PSXR005
+#pragma warning restore PSXR005, AARC003
