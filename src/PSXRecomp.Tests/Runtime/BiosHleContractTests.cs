@@ -69,13 +69,18 @@ public sealed class BiosHleContractTests
         first.Diagnostic!.ToStableString().Should().Be(second.Diagnostic!.ToStableString());
     }
 
-    [Fact]
-    public void InvalidPutCharCall_Remains_An_Explicit_Diagnostic()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void InvalidPutCharArgumentCounts_Are_Rejected_Explicitly(int argumentCount)
     {
+        var arguments = Enumerable.Range(0, argumentCount).Select(static value => (uint)value).ToArray();
         var result = new BiosHleRuntime().Invoke(new BiosCallIdentity(
-            BiosCallFamily.A0, BiosHleRuntime.PutCharFunction));
+            BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: arguments));
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.ReturnValue.Should().BeNull();
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
+        result.Diagnostic.Message.Should().Be("A0:3C putchar requires one character argument.");
     }
 }

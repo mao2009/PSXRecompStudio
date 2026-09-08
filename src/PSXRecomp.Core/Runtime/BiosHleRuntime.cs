@@ -35,7 +35,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
 
     private static BiosServiceResult InvokePutChar(BiosCallIdentity identity)
     {
-        if (identity.Arguments.Count == 0)
+        if (identity.Arguments.Count != 1)
         {
             return new BiosServiceResult(
                 BiosServiceStatus.Unsupported,
