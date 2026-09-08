@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://mao2009.github.io/PSXRecompStudio/sitemap.xml
