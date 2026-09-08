@@ -3,13 +3,32 @@
 [![CI](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-An open-source PlayStation 1 (PS1 / PSX) development environment for static recompilation, binary analysis, reverse engineering, MIPS code analysis, and native porting.
+PSXRecompStudio is an open-source PlayStation 1 (PS1 / PSX) research and development environment for static recompilation, PSX reverse engineering, MIPS R3000A analysis, binary analysis, and native porting research.
 
-*[日本語版 README はこちら / Japanese README](README.ja.md)*
+It currently focuses on a validated CPU execution foundation, disc and PS-X EXE analysis, control-flow discovery, Golden Trace validation, and a synthetic MIPS recompiler vertical slice. Complete commercial PS1 game recompilation is **not yet implemented**.
+
+*[日本語版 README はこちら / Japanese README](README.ja.md)* · [Project website](https://mao2009.github.io/PSXRecompStudio/)
+
+## What works today
+
+- R3000A / MIPS I instruction modeling and decoding, memory translation, branch and load delay behavior, COP0 exceptions, interrupts, and deterministic Golden Trace validation.
+- Disc image analysis from CHD through ISO 9660 and PS-X EXE parsing into MIPS instruction analysis, basic blocks, and control-flow graphs.
+- A synthetic MIPS static recompiler validation path: MIPS → IR/lowering → deterministic host C → bounded execution → interpreter differential comparison.
+- A C# / .NET analysis core, Avalonia application shell, and C++ native core connected through a stable C ABI and P/Invoke boundary.
+- Compiler-enforced architecture rules for layering, dependency direction, forbidden APIs, and interop boundaries.
+
+## Not yet implemented
+
+- End-to-end static recompilation of a complete commercial PlayStation 1 title.
+- General real-ROM function recompilation wired into the validated recompiler execution path.
+- A finished native runtime for complete PS1 native ports.
+- Complete GPU, SPU, CD-ROM, MDEC, and GTE hardware support.
+
+> **Asset policy:** ROM, ISO, CHD, BIOS, firmware images, and commercial game assets are not included in this repository. Any user-supplied files must be obtained and used legally.
 
 ## What is PSXRecompStudio?
 
-PSXRecompStudio is a from-scratch development environment for analyzing and reverse engineering PlayStation 1 software: disassembling PS-X executables, analyzing R3000A / MIPS I code, modeling CPU behavior with byte-for-byte fidelity, and — eventually — statically recompiling title code into native programs that run directly on modern Windows, Linux, and macOS without emulation.
+PSXRecompStudio is a from-scratch development environment for analyzing and reverse engineering PlayStation 1 software: disassembling PS-X executables, analyzing R3000A / MIPS I code, modeling CPU behavior with byte-for-byte fidelity, and researching how title code can eventually be statically recompiled into native programs for modern systems.
 
 It combines an Avalonia-based desktop UI, a C# domain/application core, and a C++ native core connected through a stable C ABI, with AI development agents as an optional, evidence-first assistance layer rather than the product itself.
 
