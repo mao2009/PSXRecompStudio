@@ -342,6 +342,35 @@ public sealed class RealRomRecompilerBridgeTests
         Assert.True(provenance.HasUnresolvedDependencies);
     }
 
+    /// <summary>
+    /// TryExtend never returns a candidate containing JR/JALR, but RealRomFunctionCandidate
+    /// and BuildProvenance are both public — a hand-crafted candidate (as if built some
+    /// other way) that still contains one must not be reported as dependency-free.
+    /// </summary>
+    [Fact]
+    public void BuildProvenance_DetectsIndirectJump_OnAHandCraftedCandidate()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1), // ADDIU $t0, $zero, 1
+            MipsEncoding.JumpRegister(rs: 31),                // JR $ra
+            MipsEncoding.Nop,                                 // delay slot
+        };
+        var handCrafted = new RealRomFunctionCandidate
+        {
+            StartAddress = Base,
+            EncodedInstructions = words,
+            StopReason = RealRomCandidateStopReason.EndOfDecodedInstructions,
+            StopAddress = null,
+            StopDetail = "hand-crafted for this test; does not come from TryExtend's own exclusion",
+            RequiredInstructionSubset = new[] { "Addiu", "Jr" },
+        };
+
+        var provenance = RealRomFixtureAdapter.BuildProvenance(handCrafted, MakeExecutableIdentity(), "unit test");
+
+        Assert.True(provenance.HasUnresolvedDependencies);
+    }
+
     [Fact]
     public void SelectBest_PicksTheLongestCandidate_Deterministically()
     {

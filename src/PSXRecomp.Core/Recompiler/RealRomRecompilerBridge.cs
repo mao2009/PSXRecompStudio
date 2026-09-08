@@ -317,6 +317,36 @@ public static class RealRomCandidateSelector
     }
 
     /// <summary>
+    /// The full provenance contract this selector actually validates: an external
+    /// static control-flow target (see <see cref="HasExternalStaticControlFlowTarget"/>)
+    /// <em>or</em> an indirect jump (JR/JALR) anywhere in the window. <see cref="TryExtend"/>
+    /// never returns a candidate containing either, so this only differs from
+    /// <see langword="false"/> for a candidate built some other way — e.g. by hand, or
+    /// by future code constructing <see cref="RealRomFunctionCandidate"/> directly —
+    /// which is exactly why <see cref="RealRomFixtureAdapter.BuildProvenance"/> checks it
+    /// rather than assuming a candidate the selector "would" have accepted.
+    /// </summary>
+    public static bool HasUnresolvedControlFlowDependency(uint startAddress, IReadOnlyList<uint> encodedInstructions)
+    {
+        ArgumentNullException.ThrowIfNull(encodedInstructions);
+        if (HasExternalStaticControlFlowTarget(startAddress, encodedInstructions))
+        {
+            return true;
+        }
+
+        foreach (var word in encodedInstructions)
+        {
+            var opcode = R3000aDecoder.Decode(word).Opcode;
+            if (opcode is R3000aOpcode.Jr or R3000aOpcode.Jalr)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Selects the longest candidate reachable from the executable's entry point or
     /// any discovered basic-block start (deterministic tie-break: lowest start
     /// address wins), or <see langword="null"/> when no non-empty candidate exists.
@@ -482,7 +512,7 @@ public static class RealRomFixtureAdapter
             RequiredInstructionSubset = candidate.RequiredInstructionSubset,
             ExtractionMethod = extractionMethod,
             SelectionIdentitySha256 = identityHash,
-            HasUnresolvedDependencies = RealRomCandidateSelector.HasExternalStaticControlFlowTarget(
+            HasUnresolvedDependencies = RealRomCandidateSelector.HasUnresolvedControlFlowDependency(
                 candidate.StartAddress, candidate.EncodedInstructions),
         };
     }
