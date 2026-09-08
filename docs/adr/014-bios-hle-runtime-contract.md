@@ -24,7 +24,7 @@ BIOS_HLE_UNSUPPORTED_CALL.
 HLE implementations are registered by family and function number. They must not
 select behavior from title identity, guest address hacks, generated C, or
 duplicated CPU semantics. The Phase 1 registry implements only the deterministic
-A0:09 putchar contract. The real BIOS image remains neither distributed nor a
+A0:3C putchar contract. The real BIOS image remains neither distributed nor a
 normal-runtime prerequisite.
 
 ## Consequences

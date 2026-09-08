@@ -10,8 +10,8 @@ namespace PSXRecomp.Core.Runtime;
 [Domain]
 public sealed class BiosHleRuntime : IBiosRuntime
 {
-    /// <summary>A0 putchar, the first deterministic service in this vertical slice.</summary>
-    public const byte PutCharFunction = 0x09;
+    /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
+    public const byte PutCharFunction = 0x3C;
 
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
 
@@ -43,7 +43,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
                 new BiosDiagnostic(
                     "BIOS_HLE_INVALID_ARGUMENTS",
                     identity,
-                    "A0:09 putchar requires one character argument."));
+                    "A0:3C putchar requires one character argument."));
         }
 
         // The service is intentionally modeled as a pure contract in Phase 1:

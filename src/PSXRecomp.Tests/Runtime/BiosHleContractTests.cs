@@ -21,12 +21,27 @@ public sealed class BiosHleContractTests
     {
         IBiosRuntime runtime = new BiosHleRuntime();
 
+        BiosHleRuntime.PutCharFunction.Should().Be(0x3C);
+
         var result = runtime.Invoke(new BiosCallIdentity(
             BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, 0x80001234, new[] { 0x141u }));
 
         result.Status.Should().Be(BiosServiceStatus.Supported);
         result.ReturnValue.Should().Be(0x41u);
         result.Diagnostic.Should().BeNull();
+    }
+
+    [Fact]
+    public void A0_09_Remains_Unsupported_In_Phase_1()
+    {
+        var identity = new BiosCallIdentity(BiosCallFamily.A0, 0x09);
+
+        var result = new BiosHleRuntime().Invoke(identity);
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.ReturnValue.Should().BeNull();
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+        result.Diagnostic.Identity.Should().BeSameAs(identity);
     }
 
     [Theory]
@@ -55,9 +70,10 @@ public sealed class BiosHleContractTests
     }
 
     [Fact]
-    public void InvalidSupportedCall_Remains_An_Explicit_Diagnostic()
+    public void InvalidPutCharCall_Remains_An_Explicit_Diagnostic()
     {
-        var result = new BiosHleRuntime().Invoke(new BiosCallIdentity(BiosCallFamily.A0, 0x09));
+        var result = new BiosHleRuntime().Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutCharFunction));
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");

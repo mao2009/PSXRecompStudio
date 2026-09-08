@@ -147,7 +147,7 @@ guest PC、引数を保持し、結果は BiosServiceResult として supported 
 unsupported を構造化する。未実装 call は BIOS_HLE_UNSUPPORTED_CALL などの
 明示的 diagnostic を返し、黙って成功扱いにしない。Recompiler や CPU core に
 title-specific BIOS workaround を追加せず、実 BIOS image を配布または必須化しない。
-Phase 1 では決定的な A0:09 putchar 契約だけを HLE registry に接続している。
+Phase 1 では決定的な A0:3C putchar 契約だけを HLE registry に接続している。
 
 ## Recompiler
 
