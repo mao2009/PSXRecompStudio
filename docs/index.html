@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio | PlayStation 1 Static Recompilation and MIPS Analysis</title>
+  <meta name="description" content="PSXRecompStudio is an open-source PlayStation 1 research project for PS1 static recompilation, PSX reverse engineering, MIPS R3000A analysis, and native porting research.">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="architecture.html">Architecture</a>
+        <a href="roadmap.html">Roadmap</a>
+        <a href="legal.html">Legal</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Open-source PlayStation 1 research</p>
+      <h1>PSXRecompStudio</h1>
+      <p class="lead">A development environment for PlayStation 1 (PS1 / PSX) binary analysis, MIPS R3000A analysis, static recompilation research, reverse engineering, and native porting experiments.</p>
+      <p>PSXRecompStudio focuses on building and validating the technical foundations needed for reliable PlayStation 1 recompilation. It does not yet recompile complete commercial PS1 games into native ports.</p>
+      <p class="actions"><a class="button" href="https://github.com/mao2009/PSXRecompStudio">View the repository on GitHub</a></p>
+    </section>
+
+    <section>
+      <h2>What works today</h2>
+      <ul>
+        <li>R3000A / MIPS I instruction modeling, decoding, memory behavior, delay-slot behavior, exceptions, interrupts, and deterministic Golden Trace validation.</li>
+        <li>Disc-analysis flow covering CHD input, ISO 9660 structures, PS-X EXE extraction, MIPS analysis, basic blocks, and control-flow graph extraction.</li>
+        <li>A synthetic MIPS recompiler vertical slice: MIPS to IR lowering, host C generation, bounded execution, and differential validation against the interpreter.</li>
+        <li>Compiler-enforced architecture boundaries and a stable C# to C++ interop boundary.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Not yet implemented</h2>
+      <ul>
+        <li>End-to-end recompilation of complete commercial PlayStation 1 titles.</li>
+        <li>A finished runtime for native PS1 game ports.</li>
+        <li>Complete GPU, SPU, CD-ROM, MDEC, and GTE support.</li>
+        <li>General real-ROM function recompilation integrated with the validated recompiler path.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Technology stack</h2>
+      <div class="grid">
+        <article class="card"><h3>C# and .NET</h3><p>Domain logic, analysis, validation, tests, and managed interop code.</p></article>
+        <article class="card"><h3>Avalonia</h3><p>Cross-platform desktop application shell and future analysis workflows.</p></article>
+        <article class="card"><h3>C++ and CMake</h3><p>Native CPU and hardware-oriented components built behind a stable C ABI.</p></article>
+        <article class="card"><h3>C ABI and P/Invoke</h3><p>A narrow managed/native boundary keeps C++ implementation details out of C#.</p></article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Explore the project</h2>
+      <p>Read the <a href="architecture.html">architecture overview</a>, see the <a href="roadmap.html">research roadmap</a>, or review the <a href="legal.html">legal and asset policy</a>. For source code, issues, tests, and contribution history, use the <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a>.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>PSXRecompStudio is an independent open-source research project and is not affiliated with or endorsed by Sony Interactive Entertainment.</p>
+  </footer>
+</body>
+</html>
