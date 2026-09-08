@@ -46,7 +46,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | 最小 MIPS プログラム実行パス | 実装済み |
 | Golden Trace（決定論的実行トレース） | 実装済み |
 | GPU / SPU / CD-ROM / MDEC / GTE | 予定（インターフェース定義のみ） |
-| Runtime（BIOS/EXE ロード、I/O ループ） | 予定 |
+| Runtime（BIOS-less BIOS service 境界、EXE ロード、I/O ループ） | Phase 1 契約 |
 | Synthetic MIPS Recompiler vertical slice（IR/lowering、メモリ、制御フロー、host codegen、differential validation） | 実装済み・差分検証済み |
 | 実 ROM 関数の再コンパイル | 最初の1関数を実装・差分検証済み（#225）。汎用対応は未完了 |
 | フルタイトルの静的再コンパイル | 未実装 |

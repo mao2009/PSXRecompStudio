@@ -138,9 +138,16 @@ uint32_t PSXCore_GetRAMSize(void);
 
 Interrupt Controller はレジスタモデル、C ABI、C# アダプタ、ネイティブテストに加え、CPU の Step/Run 毎に集約ペンディングを CAUSE.IP2 へ反映する CPU 割り込み統合まで実装済み（詳細: [docs/cpu/exceptions.md](docs/cpu/exceptions.md)）。DMA / Timers はレジスタレベルモデルまでが実装されており、C# 側 `MemoryBus` の MMIO ルーティング（アダプタ群）とネイティブテストは存在するが、ネイティブ実行パス（`PSXMemory` の hw_regs 領域）から各コントローラへの完全な結線は進行中。GPU / SPU / CD-ROM / MDEC / GTE は `PSXRecomp.Core/Runtime` のインターフェース契約のみで、ネイティブ実装は存在しない。
 
-## Runtime (将来)
+## Runtime
 
 PSX ランタイムは、BIOS ロード、EXE ロード、メモリマッピング、I/O ループを管理する。
+通常の実行は BIOS-less を目標とし、BIOS call は PSXRecomp.Core.Runtime の
+IBiosRuntime 境界を通る。BiosCallIdentity は A0/B0/C0 family、function number、
+guest PC、引数を保持し、結果は BiosServiceResult として supported /
+unsupported を構造化する。未実装 call は BIOS_HLE_UNSUPPORTED_CALL などの
+明示的 diagnostic を返し、黙って成功扱いにしない。Recompiler や CPU core に
+title-specific BIOS workaround を追加せず、実 BIOS image を配布または必須化しない。
+Phase 1 では決定的な A0:3C putchar 契約だけを HLE registry に接続している。
 
 ## Recompiler
 

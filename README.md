@@ -20,7 +20,7 @@ It currently focuses on a validated CPU execution foundation, disc and PS-X EXE 
 ## Not yet implemented
 
 - End-to-end static recompilation of a complete commercial PlayStation 1 title.
-- General-purpose real-ROM function recompilation: only a first, deliberately conservative real-ROM function is proven end to end so far (#225); arbitrary functions, full MIPS I coverage, and BIOS/HLE dependencies remain unimplemented.
+- General-purpose real-ROM function recompilation: only a first, deliberately conservative real-ROM function is proven end to end so far (#225); arbitrary functions and full MIPS I coverage remain unimplemented. BIOS-less execution now has a Phase 1 HLE service contract; broad BIOS/HLE coverage remains future work (#279).
 - A finished native runtime for complete PS1 native ports.
 - Complete GPU, SPU, CD-ROM, MDEC, and GTE hardware support.
 
@@ -64,7 +64,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Golden Trace (deterministic execution tracing) | Implemented |
 | Disc image analysis (CHD → ISO 9660 → PS-X EXE → MIPS analysis, basic blocks / CFG) | Implemented |
 | GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
-| Runtime (BIOS/EXE loading, I/O loop) | Planned |
+| Runtime (BIOS-less BIOS service boundary; EXE loading and I/O loop) | Phase 1 contract |
 | Synthetic MIPS recompiler vertical slice (IR/lowering, memory, control flow, host codegen, differential validation) | Implemented and differentially validated |
 | Real-ROM function recompilation | First function implemented and differentially validated (#225); general coverage not yet complete |
 | Full-title static recompilation | Not implemented |
