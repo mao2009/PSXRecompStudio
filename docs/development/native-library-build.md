@@ -111,7 +111,6 @@ dotnet build src/PSXRecompStudio.slnx -c Release
 
 # 3. .NET tests — no native-dependent DllNotFoundException expected
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj -c Release --no-build
-dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj -c Release --no-build
 ```
 
 Step 1 builds into `build/native` (the ad hoc verification directory); step

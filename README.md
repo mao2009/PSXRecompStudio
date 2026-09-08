@@ -16,7 +16,7 @@ It combines an Avalonia-based desktop UI, a C# domain/application core, and a C+
 ## Why PSXRecompStudio?
 
 - **SSOT-driven architecture.** Architecture, CPU semantics, and development process are documented as living Single Sources of Truth in [`docs/`](docs/) and [Architecture Decision Records](docs/adr/), not left to tribal knowledge.
-- **Mechanically enforced boundaries.** A Roslyn analyzer ([`PSXRecomp.Analyzer`](src/PSXRecomp.Analyzer)) fails the build on layering, dependency-direction, and forbidden-API violations — the architecture matrix is a compiler-checked contract, not just a diagram.
+- **Mechanically enforced boundaries.** `loach.ArchitectureAnalyzer`, configured by [`src/architecture.contract.json`](src/architecture.contract.json), fails the build on layering, dependency-direction, and forbidden-API violations — the architecture matrix is a compiler-checked contract, not just a diagram.
 - **Deterministic CPU foundation.** The R3000A model is validated with a per-instruction Golden Trace: every register write is captured in retirement order and replayed to catch divergence, laying the groundwork for comparing future recompiler backends against the interpreter.
 - **A stable C#/Native boundary.** All communication with the native core crosses a single C ABI (`psx_core.h`) via P/Invoke — no C++ types leak into C#.
 - **Evidence-first, human-in-the-loop AI collaboration.** AI development agents are a replaceable tool, not the product's identity: user-driven analysis, verifiable evidence, and human review remain central, and the workflow is agent-agnostic (Claude Code, OpenCode, Codex, or others).
@@ -75,8 +75,7 @@ PSXRecompStudio
 ├── PSXRecompStudio        # Avalonia UI (Application layer)
 ├── PSXRecomp.Core         # C# Domain model + C ABI interop wrappers
 ├── PSXRecomp.Native       # C++ native core (CPU, memory, DMA, timers, interrupts)
-├── PSXRecomp.Analyzer     # Roslyn architecture-enforcement analyzer
-├── PSXRecomp.Analyzer.Tests
+├── architecture.contract.json  # Architecture SSOT, enforced by loach.ArchitectureAnalyzer (NuGet)
 ├── PSXRecomp.Tests
 ├── PSXRecompStudio.Tests  # Headless GUI tests
 ├── PSXRecomp.Runtime      # Planned
@@ -162,8 +161,7 @@ PSXRecompStudio/
 │   ├── PSXRecompStudio.Tests/         # Headless GUI tests
 │   ├── PSXRecomp.Core/                # C# Domain model + P/Invoke interop
 │   ├── PSXRecomp.Native/              # C++ native core (CMake project)
-│   ├── PSXRecomp.Analyzer/            # Roslyn architecture analyzer
-│   ├── PSXRecomp.Analyzer.Tests/
+│   ├── architecture.contract.json     # Architecture SSOT (loach.ArchitectureAnalyzer)
 │   └── PSXRecomp.Tests/               # xUnit tests (Core + Native via P/Invoke)
 ├── config/                            # SSOT configuration (artifact policy, CPU instruction data, README automation)
 ├── scripts/                           # CI and development scripts
@@ -198,7 +196,6 @@ ctest --test-dir src/PSXRecomp.Native/build --output-on-failure
 
 # C# test suites
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
-dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release
 
 # Headless GUI tests (Avalonia, no display server required)
 dotnet test src/PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj --configuration Release

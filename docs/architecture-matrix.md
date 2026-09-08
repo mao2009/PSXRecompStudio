@@ -1,45 +1,49 @@
 # Architecture Matrix - SSOT
 
+## SSOT split
+
+Two documents together form the architecture SSOT, and they own different things:
+
+- **[`src/architecture.contract.json`](../src/architecture.contract.json)** — the
+  machine-enforced SSOT. Every layer, forbidden dependency, forbidden API, marker
+  attribute, and interop-boundary rule is authored there exactly once, and
+  `loach.ArchitectureAnalyzer` (AARC diagnostics) reads it directly at compile
+  time. This document does not duplicate its row-by-row content.
+- **This document** — rationale, layer intent, a high-level view of the rules,
+  and the mapping from contract entries to diagnostics. When the two disagree,
+  the contract governs; treat a mismatch here as a doc-drift finding to fix.
+
 ## Layer Definitions
 
-| Layer | Responsibility | Projects |
-|-------|----------------|----------|
-| **Domain** | Pure business logic, PSX concept model, deterministic computation | `PSXRecomp.Core` (Domain + C ABI interop wrappers) |
-| **Application** | Avalonia UI, user interface, presentation | `PSXRecompStudio` |
-| **Infrastructure** | CPU emulation, memory management, hardware abstraction (C ABI) | `PSXRecomp.Native` |
-| **Interop** | C ABI boundary, native library loading, P/Invoke wrappers | `PSXRecomp.Core` (native-handle & NativeInterop residency) |
-| **Special** | Analyzer, Tests, Generated code | `PSXRecomp.Analyzer`, `PSXRecomp.Tests`, `PSXRecomp.Generated` |
+| Layer | Responsibility | Namespace root | Projects |
+|-------|----------------|-----------------|----------|
+| **Domain** | Pure business logic, PSX concept model, deterministic computation, and the C ABI interop boundary | `PSXRecomp.Core` | `PSXRecomp.Core` |
+| **Application** | Avalonia UI, user interface, presentation | `PSXRecompStudio` | `PSXRecompStudio` |
+| **Infrastructure** | Managed hardware-abstraction / adapter code (reserved; no project occupies this layer yet) | `PSXRecomp.Infrastructure` | *(planned)* |
+| **Test** | Unit/integration tests | `PSXRecomp.Tests` | `PSXRecomp.Tests` |
+| **Generated** | Auto-generated code | `PSXRecomp.Generated` | *(planned)* |
 
-## Dependency Matrix
+`PSXRecomp.Native` (the C++ emulation core) has no managed namespace and sits
+outside the analyzer's reach entirely; it is reached only through the Domain
+layer's C ABI boundary (see below).
+
+Namespace resolution matches by **root prefix**: a namespace equal to a root or
+any descendant (`Root` / `Root.*`) maps to that root's layer — e.g.
+`PSXRecomp.Core.Interop` resolves to Domain.
+
+## Dependency Matrix (high-level)
+
+The exhaustive edge list is `architecture.contract.json`'s `forbiddenDependencies`
+array. Read at a glance:
 
 | From | To | Allowed | Reason |
 |------|-----|---------|---------|
-| **Domain** | Domain | ✅ YES | Same layer, internal dependencies |
-| **Domain** | Application | ❌ NO | Domain should not depend on Application (UI layer is outer layer) |
-| **Domain** | Infrastructure | ✅ YES | Via C ABI (P/Invoke); Domain defines wrapper contract |
-| **Application** | Domain | ✅ YES | Application → Domain via NativeInterop in PSXRecomp.Core (P/Invoke wrappers) |
-| **Application** | Infrastructure | ❌ NO | Application should not depend on Infrastructure directly (cross-layer dependency) |
-| **Infrastructure** | Domain | ✅ YES | Infrastructure → Domain (C ABI boundary) |
-| **Infrastructure** | Application | ❌ NO | Infrastructure should not depend on Application directly |
-| **Infrastructure** | Special | ✅ YES | Infrastructure → Analyzer, Tests, Generated code |
-| **Special** | Domain | ✅ YES | Special → Domain (analysis, testing) |
-| **Special** | Application | ✅ YES | Special → Application (testing, validation) |
-| **Special** | Infrastructure | ✅ YES | Special → Infrastructure (generation, debugging) |
-| **Production** | Domain | ✅ YES | Production → Domain (specification) |
-| **Production** | Application | ✅ YES | Production → Application (integration) |
-| **Production** | Infrastructure | ✅ YES | Production → Infrastructure (deployment) |
-| **Production** | Tests | ❌ NO | Production → Tests (tests depend on production, not vice versa) |
-| **Tests** | Production | ✅ YES | Test → Production (verification) |
-| **Tests** | Domain | ✅ YES | Test → Domain (validation) |
-| **Tests** | Infrastructure | ✅ YES | Test → Infrastructure (fixtures) |
-| **Tests** | Application | ✅ YES | Test → Application (UI testing) |
-| **Analyzer** | Domain | ✅ YES | Analyzer → Domain (enforcement) |
-| **Analyzer** | Application | ✅ YES | Analyzer → Application (enforcement) |
-| **Analyzer** | Infrastructure | ✅ YES | Analyzer → Infrastructure (enforcement) |
-| **Analyzer** | Special | ✅ YES | Analyzer → Special (self) |
-| **Generated code** | Production | ✅ YES | Generated → Production (deployment) |
-| **Generated code** | Domain | ✅ YES | Generated → Domain (usage) |
-| **Generated code** | Application | ✅ YES | Generated → Application (usage) |
+| Domain | Application | ❌ NO | Domain must not depend on the outer Application layer |
+| Application | Infrastructure | ❌ NO | Application reaches Infrastructure only through the Domain interop boundary |
+| Infrastructure | Application | ❌ NO | Infrastructure must not depend on Application |
+| Domain / Application / Infrastructure | Test | ❌ NO | Production code must not depend on test code |
+| Application | Domain | ✅ YES | Application → Domain via `PSXRecomp.Core` (P/Invoke wrappers); not a forbidden edge |
+| Test | Domain / Application / Infrastructure | ✅ YES | Tests depend on production code, not vice versa |
 
 ## C ABI / P/Invoke Boundary
 
@@ -58,44 +62,55 @@ PSXRecomp.Native (Infrastructure/C++)
 - **Boundary**: `PSXRecomp.Core` ↔ `PSXRecomp.Native` (P/Invoke contract)
 - **No direct dependency** from `PSXRecomp.Native` → `PSXRecomp.Core` (reverse prohibited)
 - **No direct dependency** from `PSXRecompStudio` → `PSXRecomp.Native` (UI layer must not bypass Core interop)
+- Mechanically enforced by `interopBoundaryRules` in the contract (`DllImport`/`LibraryImport` must be declared inside the Domain layer) — see [Mechanical Enforcement](#mechanical-enforcement).
 
-## Forbidden API Matrix
+## Forbidden API Matrix (high-level)
 
-| Layer | API Type | Allowed | Forbidden | Reason |
-|-------|----------|---------|-----------|---------|
-| **Domain** | `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.*` | ❌ NO | ✅ YES | Loss of determinism |
-| **Domain** | `Guid.NewGuid()`, `Random.Shared` | ❌ NO | ✅ YES | Non-deterministic randomness |
-| **Domain** | `Environment.*` | ❌ NO | ✅ YES | Execution environment dependency |
-| **Domain** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (Infrastructure/Adapter responsibility) |
-| **Domain** | `Console.*` | ❌ NO | ✅ YES | Standard output (Infrastructure/Adapter responsibility) |
-| **Domain** | `Process.*` | ❌ NO | ✅ YES | Process control (Infrastructure/Adapter responsibility) |
-| **Domain** | `HttpClient`, `Socket` | ❌ NO | ✅ YES | Network (Infrastructure/Adapter responsibility) |
-| **Application** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (UI layer orchestrates via Infrastructure adapters) |
-| **Application** | `Console.*` | ❌ NO | ✅ YES | Standard output (UI layer orchestrates via Infrastructure adapters) |
-| **Infrastructure** | All external I/O | ❌ NO | ✅ YES | Emulator purity requirement; must abstract for testability |
-| **Infrastructure** | `File.*`, `Directory.*` | ❌ NO | ✅ YES | External I/O (should be abstracted behind adapter interface) |
-| **Infrastructure** | `Console.*` | ❌ NO | ✅ YES | Standard output (should be abstracted behind adapter interface) |
-| **Special** | `DateTime.Now`, `DateTime.UtcNow` | ❌ NO | ✅ YES | Determinism requirement (Tests must use frozen clocks) |
-| **Special** | `Guid.NewGuid()` | ❌ NO | ✅ YES | Non-deterministic randomness (Tests should use deterministic IDs) |
-| **Special** | `Environment.*` | ❌ NO | ✅ YES | Execution environment dependency (Tests mock/isolate) |
-| **Special** | `Console.*` | ❌ NO | ✅ YES | Standard output (Tests capture / suppress output) |
-| **Special** | `File.*` | ❌ NO | ✅ YES | External I/O (Tests use temporary isolated paths) |
-| **Special** | `Directory.*` | ❌ NO | ✅ YES | External I/O (Tests use isolated temp directories) |
-| **Special** | `Process.*` | ❌ NO | ✅ YES | Process control (Tests spawn subprocess with resource limits) |
-| **Special** | `Thread.*` | ❌ NO | ✅ YES | Thread safety concerns (Tests run in isolated contexts) |
-| **Special** | `Task.Delay` | ❌ NO | ✅ YES | Asynchronous timing (Tests use controlled schedulers) |
-| **Special** | `Random` | ❌ NO | ✅ YES | Non-deterministic randomness (Tests use deterministic PRNGs) |
+The exhaustive per-layer list (including specific members like `DateTime.Now`
+vs `DateTime.UtcNow`) is `architecture.contract.json`'s `forbiddenApis` array.
+Every layer forbids the same non-determinism / external-I/O categories, with
+the underlying reason varying by layer intent:
+
+| Category | Domain | Application | Infrastructure | Test | Generated | Reason |
+|----------|:---:|:---:|:---:|:---:|:---:|---|
+| `Console.*` | ❌ | ❌ | ❌ | ❌ | ❌ | standard output must be abstracted behind an adapter |
+| `File.*` / `Directory.*` | ❌ | ❌ | ❌ | ❌ | ❌ | external I/O is an Infrastructure responsibility |
+| `Environment.*` | ❌ | | | ❌ | ❌ | execution environment dependencies break determinism |
+| `Process.*` | ❌ | | | ❌ | ❌ | process control is an Infrastructure responsibility |
+| `DateTime.Now` / `.UtcNow` | ❌ | | | ❌ | ❌ | non-deterministic time sources break determinism |
+| `Guid.NewGuid()` | ❌ | | | ❌ | ❌ | non-deterministic randomness is forbidden |
+| `Random` (whole type) | ❌ | | | ❌ | ❌ | non-deterministic randomness is forbidden |
+| `Thread.*` | | | | ❌ | ❌ | manual thread management breaks deterministic execution |
+| `Task.Delay` | | | | ❌ | ❌ | asynchronous timing must use controlled schedulers |
+| `HttpClient` / `Socket` | ❌ | | | | | network access is an Infrastructure responsibility |
+
+Blank cells are not currently declared forbidden for that layer in the
+contract (this table only records what the contract actually declares — it is
+not a design claim that the blank combination is safe).
 
 ## Architecture Attribute Contract
 
-| Attribute | Scope | Applicability | Class | Notes |
-|-----------|-------|---------------|-------|-------|
-| `[Domain]` | Domain layer | ✅ | All classes | Pure business logic, no side effects |
-| `[Application]` | Application layer | ✅ | UI components, ViewModels | UI-specific logic |
-| `[Infrastructure]` | Infrastructure layer | ✅ | CPU emulation code | C ABI boundary, no UI/domain coupling |
-| `[Analyzer]` | Special | ✅ | Analyzer classes | Enforcement of architecture rules |
-| `[Test]` | Special | ✅ | Test classes | Unit/integration tests |
-| `[Generated]` | Special | ✅ | Generated code | Auto-generated artifacts |
+| Attribute | Layer | Notes |
+|-----------|-------|-------|
+| `[Domain]` | Domain | Pure business logic, no side effects |
+| `[Application]` | Application | UI components, ViewModels |
+| `[Infrastructure]` | Infrastructure | Reserved for the future Infrastructure project |
+| `[Test]` | Test | Test classes |
+| `[Generated]` | Generated | Auto-generated artifacts |
+
+All five are `internal` types in the `PSXRecomp.Architecture` namespace
+(`src/Architecture/PSXRecompArchitectureAttributes.cs`), distributed to each
+consumer project as a linked source file from `Directory.Build.props`.
+Consuming projects opt in with
+`<CompileArchitectureAttributes>true</CompileArchitectureAttributes>`.
+Attributes are matched by fully qualified name in the contract's
+`layerDeclaration.markerAttributes`.
+
+An `[Analyzer]` attribute and an "Analyzer" layer existed while
+`PSXRecomp.Analyzer` was itself a project the contract had to classify; both
+were retired in #294 along with that project — the generic
+`loach.ArchitectureAnalyzer` package carries no PSX-specific layer and needs
+none, since no project occupies it.
 
 ### Applicability by Type
 
@@ -107,15 +122,7 @@ PSXRecomp.Native (Infrastructure/C++)
 - **delegate**: `[Domain]` applicable (pure function pointers)
 - **partial type**: Attributes split across partial parts
 
-### Layer/Boundary Classification
-
-- **Tests**: Attributes used for test categorization; Analyzer may exclude test projects
-- **Analyzer**: `[Analyzer]` attribute used on enforcement classes; Analyzer itself may have exceptions
-- **Generated Code**: `[Generated]` attribute applied; Namespace validation and Forbidden API checks may be relaxed
-
 ## Namespace Matrix
-
-Namespace resolution matches by **root prefix**: a namespace equal to the root or any descendant (`Root` / `Root.*`) maps to that root's layer. For example, `PSXRecomp.Analyzer.Tests` resolves to the Analyzer layer and `PSXRecomp.Core.Interop` resolves to Domain.
 
 | Project | Namespace | Responsibility |
 |---------|-----------|----------------|
@@ -124,34 +131,77 @@ Namespace resolution matches by **root prefix**: a namespace equal to the root o
 | `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic) + Interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | (C++ - no managed namespace) | Infrastructure (CPU emulation) |
 | `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Infrastructure (reserved; managed adapters, project planned) |
-| `PSXRecomp.Tests` | `PSXRecomp.Tests` | Special (test infrastructure) |
-| `PSXRecomp.Analyzer` | `PSXRecomp.Analyzer` | Special (architecture enforcement) |
+| `PSXRecomp.Tests` | `PSXRecomp.Tests` | Test infrastructure |
 
-## Mechanical Enforcement (Roslyn Analyzer)
+## Mechanical Enforcement
 
-The rules in this matrix are enforced at compile time by `PSXRecomp.Analyzer` (see ADR-006). All diagnostics are reported as **errors** and fail the build.
+Compile-time enforcement of this matrix is provided by the
+[`loach.ArchitectureAnalyzer`](https://github.com/mao2009/ArchitectureAnalyzer)
+NuGet package (`AARC` diagnostics), configured entirely by
+`src/architecture.contract.json` (rule data) and `.editorconfig` (severity /
+gate contract — see ADR-006). There is no PSX-specific analyzer implementation
+in this repository; the enforcement engine is externally maintained.
 
-| ID | Rule | Scope |
-|----|------|-------|
-| `PSXR001` | Missing architecture attribute on class | All classes (marker namespace and generated code exempt) |
-| `PSXR002` | Multiple architecture attributes on one type | All classes |
-| `PSXR003` | Attribute layer does not match namespace mapping | All classes |
-| `PSXR004` | Forbidden dependency edge (inner → outer, Production → Test) | All classes |
-| `PSXR005` | Forbidden API usage per layer (Forbidden API Matrix) | All classes |
-| `PSXR006` | P/Invoke (`DllImport` / `LibraryImport`) outside `PSXRecomp.Core` | All classes |
+| ID | Rule | Severity |
+|----|------|----------|
+| `AARC002` | Forbidden dependency edge | error |
+| `AARC003` | Forbidden API usage per layer | error |
+| `AARC004` | Missing architecture layer declaration | error |
+| `AARC005` | Multiple layer declarations on one type | error |
+| `AARC006` | Attribute layer does not match namespace mapping | error |
+| `AARC007` | P/Invoke (`DllImport` / `LibraryImport`) outside the Domain interop boundary | error |
 
-Enforcement notes:
+Severity is pinned explicitly in `.editorconfig` so the gate contract does not
+rely on descriptor defaults and cannot be weakened silently.
 
-- **Exemptions from PSXR001**: types in the marker namespace `PSXRecomp.Architecture.*`; generated code (`.g.cs`, `.g.i.cs`, `.designer.cs`, `.generated.cs`, `TemporaryGeneratedFile*`, anything under `obj/` or `bin/`); nested classes inherit the layer of an enclosing attributed type; partial classes are satisfied by any attributed part.
-- Production → Analyzer / Generated dependencies are **not** enforced yet; the SSOT does not declare these edges explicitly (tracked for clarification).
-- Enforcement scope is **classes** (including records); structs, interfaces, enums, and delegates are recognized but not required to be annotated in this iteration.
-- Domain additionally forbids **all uses of `System.Random`** (including `new Random()`); the Forbidden API Matrix row lists `Random.Shared` as the canonical example — the analyzer enforces the row's non-determinism rationale on the whole type.
-- Escape hatch for legitimate Special-layer usage (e.g., temp files in tests): suppress per site with `#pragma warning disable PSXR005` or per project via `.editorconfig` (`dotnet_diagnostic.PSXR005.severity = none`) / `NoWarn`. Suppressions must be justified in review.
-- CI fails on any violation because all diagnostics have error severity.
+### Migration history (PSXR → AARC)
+
+Through #294, these rules were enforced by an in-repo hardcoded analyzer
+(`PSXRecomp.Analyzer`, `PSXR001`–`PSXR006`, see ADR-006). The rule identity
+mapping, kept for anyone tracing an old `PSXR`-era finding, suppression, or
+test forward:
+
+| Old (PSXR) | New (AARC) |
+|---|---|
+| `PSXR001` (missing declaration) | `AARC004` |
+| `PSXR002` (multiple attributes) | `AARC005` |
+| `PSXR003` (namespace/layer mismatch) | `AARC006` |
+| `PSXR004` (forbidden dependency) | `AARC002` |
+| `PSXR005` (forbidden API) | `AARC003` |
+| `PSXR006` (interop boundary) | `AARC007` |
+
+Enforcement notes (unchanged in substance from the PSXR era):
+
+- Enforcement scope is **classes** (including records); structs, interfaces,
+  enums, and delegates are recognized but not required to be annotated.
+- A partial type is satisfied by any attributed part; a nested class inherits
+  the layer of its enclosing attributed type.
+- The `PSXRecomp.Architecture.*` marker namespace and generated code are
+  exempt from the missing-declaration rule.
+- Escape hatch for legitimate per-site usage (e.g., temp files in tests):
+  suppress with `#pragma warning disable AARC003` or via `.editorconfig` /
+  `NoWarn`, justified in review. Suppression scope must never be widened
+  beyond the violating site to make a gate pass.
+- CI fails on any violation because every AARC diagnostic listed above is
+  pinned to error.
 
 ### Quality Gate Verification Record
 
-- **2026-08-24 (Issue #105, PR #107)**: The gate was verified end-to-end with a temporary fixture project (`verification/PSXRecomp.ArchitectureGateVerification`). A deliberate Domain → Application reference produced exactly one `error PSXR004` at the reference site, failed `dotnet build` (exit code 1), and failed the CI `.NET Build and Test` job plus the `CI Gate` job (run 32725699731). Removing only the violating files returned CI to fully green (run 32725880786). The clean fixture produced no diagnostics. Severity for PSXR001–006 is pinned in `.editorconfig`. To re-run: recreate a fixture project that references `PSXRecomp.Analyzer` via `OutputItemType="Analyzer"` and compiles the architecture attributes (`CompileArchitectureAttributes=true`), add one forbidden dependency, and build.
+- **2026-08-24 (Issue #105, PR #107)**: The `PSXR`-era gate was verified
+  end-to-end with a temporary fixture project. A deliberate Domain →
+  Application reference produced exactly one `error PSXR004` at the reference
+  site, failed `dotnet build` (exit code 1), and failed CI. Removing only the
+  violating files returned CI to fully green. Superseded by the entry below —
+  kept here as history, not re-run.
+- **2026-09-08 (Issue #294, PR #299)**: With `PSXRecomp.Analyzer` fully
+  removed, `loach.ArchitectureAnalyzer` verified as the sole gate. `dotnet
+  build` / `dotnet test` passed clean (0 errors, 1264 tests). A temporary,
+  uncommitted fixture then forced one violation per surviving rule family —
+  `AARC002` (Domain → Application dependency), `AARC003` (`Console.WriteLine`
+  in Domain), `AARC004` (undeclared type), and `AARC007` (`DllImport` outside
+  Domain) — and each surfaced as a build error with no legacy PSXR analyzer
+  present. The fixture was reverted; the tree returned to a clean, fully
+  green state.
 
 ## Consistency Checks
 
@@ -160,53 +210,29 @@ Enforcement notes:
    - `PSXRecomp.Core` → `PSXRecomp.Native` (P/Invoke contract confirmed)
    - `PSXRecomp.Tests` → `PSXRecomp.Core` (Test dependency confirmed)
 
-2. **Architecture Matrix** DOCUMENTED
-   - Domain → Application: ❌ NO (Domain should not depend on Application (UI layer is outer layer))
-   - Application → Domain: ✅ YES (Application → Domain via NativeInterop in PSXRecomp.Core (P/Invoke))
-   - Infrastructure → Domain: ✅ YES (Infrastructure → Domain (C ABI))
-   - Infrastructure → Application: **Forbidden** (no such ProjectReference exists; enforced by Roslyn Analyzer, PSXR004)
-   - Tests → Production: Allowed (verification)
-   - Production → Tests: **Forbidden** (tests depend on production)
+2. **Dependency Matrix** ENFORCED — mechanically enforced by `AARC002`; see contract for the full edge list.
 
-3. **Forbidden API** ENFORCED
-   - All listed APIs correctly classified as forbidden for respective layers
-   - Layer-specific restrictions respected
-   - *Mechanically enforced by Roslyn Analyzer (PSXR005)*
+3. **Forbidden API** ENFORCED — mechanically enforced by `AARC003`; see contract for the full per-layer list.
 
-4. **C ABI Boundary** NOT YET VERIFIED
-   - Clear separation: `PSXRecomp.Core` ↔ `PSXRecomp.Native` via `NativeInterop.cs`
-   - No reverse dependency allowed
-   - P/Invoke contracts properly documented
-   - *Note: Runtime verification requires native build and integration tests*
+4. **C ABI Boundary** — clear separation via `NativeInterop.cs` and `LibraryImport`; P/Invoke location enforced (`AARC007`). Runtime verification requires native build and integration tests (tracked separately from this matrix).
 
-5. **Special Tools** ENFORCED
-   - Analyzer treated as Special layer
-   - Tests and Generated code as Special layers
-   - Excluded from main dependency chains
-   - *Analyzer rules implemented (Issue #8); Production → Analyzer / Generated edges pending clarification*
+5. **Layer Declaration** ENFORCED — presence, uniqueness, and namespace mapping enforced (`AARC004`–`AARC006`).
 
 ## Issues Identified
 
-1. **Missing Analyzer Project** - RESOLVED: `PSXRecomp.Analyzer` project exists and enforces this matrix (Issue #8)
-2. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (generated code is exempted by path convention until then)
-3. **Incomplete Special Layer Declaration** - RESOLVED for `PSXRecomp.Analyzer`; `PSXRecomp.Generated` project remains absent
-4. **C ABI Contract** - Runtime integration verification remains pending (native build passes locally; CI-level integration tests pending)
+1. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (generated code is exempted by path convention until then).
+2. **Missing Infrastructure Project** - `PSXRecomp.Infrastructure` namespace root is reserved in the contract; no project occupies it yet.
+3. **C ABI Contract** - Runtime integration verification remains pending (native build passes locally; CI-level integration tests pending).
 
 ## Recommendations
 
-- Define the `PSXRecomp.Generated` project and decide on Production → Generated dependency policy
-- Verify the native build and integration tests for the documented `NativeInterop` boundary
-- Document the C ABI boundary clearly in the codebase
+- Define the `PSXRecomp.Generated` and `PSXRecomp.Infrastructure` projects and decide their dependency policy once they exist.
+- Verify the native build and integration tests for the documented `NativeInterop` boundary.
 
 ---
 
 **SSOT Status**
 
-- Architecture Matrix: ✅ ESTABLISHED - Dependency and namespace matrices defined; entries cross-checked against actual project structure (manual)
-- Dependency Matrix: ✅ ENFORCED - Entries cross-checked against actual `.csproj` ProjectReferences; Domain → Application corrected to ❌ NO; contradictory edges resolved; Production explicitly defined; *mechanically enforced by Roslyn Analyzer (PSXR004)*
-- Forbidden API Matrix: ✅ ENFORCED - Layer-specific API restrictions documented; *mechanically enforced by Roslyn Analyzer (PSXR005)*
-- Architecture Attribute Contract: ✅ ENFORCED - Attribute types and scopes defined; *presence, uniqueness, and namespace mapping enforced (PSXR001-003)*
-- Namespace Matrix: ✅ DOCUMENTED - Project-to-namespace mappings assigned
-- C ABI Boundary: ✅ DEFINED - Clear separation via NativeInterop.cs and LibraryImport; P/Invoke location enforced (PSXR006); *Note: Runtime verification requires native build and integration tests*
-- **Missing Items**: PSXRecomp.Generated project not yet created; Production → Analyzer / Generated dependency policy pending clarification
-- Status: ✅ ESTABLISHED AND MECHANICALLY ENFORCED - see "Mechanical Enforcement" section and ADR-006
+- Architecture Matrix: ✅ ESTABLISHED - rationale and high-level tables here; the executable rule set is `src/architecture.contract.json`.
+- Mechanical enforcement: ✅ ACTIVE - `loach.ArchitectureAnalyzer` (AARC002–AARC007) via `src/architecture.contract.json` + `.editorconfig`; see ADR-006 (amended).
+- **Missing Items**: `PSXRecomp.Generated` and `PSXRecomp.Infrastructure` projects not yet created.

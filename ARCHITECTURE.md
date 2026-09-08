@@ -21,8 +21,7 @@ src/
 ├── PSXRecompStudio/           # Avalonia UI アプリケーション
 ├── PSXRecomp.Core/            # C# Core: P/Invoke バインディング + ラッパー
 ├── PSXRecomp.Native/          # C++ Core: PSX エミュレーション核 (C ABI)
-├── PSXRecomp.Analyzer/        # Roslyn Analyzer: アーキテクチャ強制
-├── PSXRecomp.Analyzer.Tests/  # アナライザーのテスト
+├── architecture.contract.json # アーキテクチャ強制の SSOT (loach.ArchitectureAnalyzer が読む)
 ├── PSXRecomp.Runtime/         # 将来: PSX ランタイム管理
 ├── PSXRecomp.Recompiler/      # 将来: 再コンパイラ
 ├── PSXRecomp.Debugger/        # 将来: デバッガー
@@ -33,10 +32,10 @@ mcp/                           # MCP Server (Node.js / TypeScript)
 
 ## アーキテクチャ強制
 
-レイヤー属性（`[Domain]` `[Application]` `[Infrastructure]` 等）と依存方向は `PSXRecomp.Analyzer` によりコンパイル時に強制される（PSXR001-006、すべて Error）。
+レイヤー属性（`[Domain]` `[Application]` `[Infrastructure]` 等）と依存方向は NuGet パッケージ `loach.ArchitectureAnalyzer` によりコンパイル時に強制される（AARC002-007、すべて Error）。ルールデータは `src/architecture.contract.json`、ゲート severity は `.editorconfig` が保持する。旧内蔵 `PSXRecomp.Analyzer`（PSXR001-006）は #294 で削除済み。
 
 - SSOT: [docs/architecture-matrix.md](docs/architecture-matrix.md)
-- 設計判断: [docs/adr/006-architecture-analyzer-enforcement.md](docs/adr/006-architecture-analyzer-enforcement.md)
+- 設計判断: [docs/adr/006-architecture-analyzer-enforcement.md](docs/adr/006-architecture-analyzer-enforcement.md)（#295 で移行を追記）
 
 すべてのクラスにレイヤー属性が必要（マーカー名前空間 `PSXRecomp.Architecture.*`、生成コード、属性済み型の入れ子クラスは除外）。違反はビルドエラーとなり CI も失敗する。
 

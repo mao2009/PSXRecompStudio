@@ -166,12 +166,13 @@ practical levers available. This policy document remains the authority
 for *what* must be documented -- reviewers and authors should reference it
 directly rather than treating the CodeRabbit percentage as the standard.
 
-No build-breaking Roslyn analyzer rule is added by this change. The
-existing `PSXR001`-`PSXR006` rules (`src/PSXRecomp.Analyzer`) enforce
-structural architecture constraints (layering, dependency direction,
-forbidden APIs); a documentation-presence rule is a different kind of
-check and is left as potential future work under a new `PSXR0xx` rule
-(see ADR-011).
+No build-breaking analyzer rule is added by this change. The existing
+`AARC002`-`AARC007` rules (`loach.ArchitectureAnalyzer`, configured by
+`src/architecture.contract.json`; formerly `PSXR001`-`PSXR006` in the
+now-removed `src/PSXRecomp.Analyzer`, see ADR-006) enforce structural
+architecture constraints (layering, dependency direction, forbidden APIs);
+a documentation-presence rule is a different kind of check and is left as
+potential future work (see ADR-011).
 
 ## Prioritization for incremental documentation
 

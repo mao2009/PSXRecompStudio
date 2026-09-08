@@ -54,7 +54,7 @@ logs stay out of the repository entirely.
 ### How determinism is enforced, not just intended
 
 The serialization layer lives in `PSXRecomp.Core.DiscImage.AnalysisArtifacts`, which is a
-**Domain** layer namespace. The architecture analyzer's forbidden-API rule (PSXR005)
+**Domain** layer namespace. The architecture analyzer's forbidden-API rule (AARC003)
 already bans `System.DateTime.Now`/`UtcNow`, `System.DateTimeOffset`, `System.Guid.NewGuid`,
 `System.Random`, `System.Environment`, `System.IO.File` and `System.IO.Directory` in that
 layer. Contaminating an artifact with a timestamp, a path or a random id is therefore a

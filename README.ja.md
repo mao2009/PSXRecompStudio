@@ -18,7 +18,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 ## PSXRecompStudio が目指すもの
 
 - **SSOT 駆動のアーキテクチャ**: アーキテクチャ、CPU 仕様、開発プロセスは [`docs/`](docs/) と [Architecture Decision Records](docs/adr/) に生きた Single Source of Truth として文書化されており、暗黙知に頼りません。
-- **機械的に強制される境界**: Roslyn Analyzer（[`PSXRecomp.Analyzer`](src/PSXRecomp.Analyzer)）がレイヤー違反・依存方向違反・禁止 API 使用をビルドエラーとして検出します。Architecture Matrix は図面ではなく、コンパイラが検証する契約です。
+- **機械的に強制される境界**: [`src/architecture.contract.json`](src/architecture.contract.json) で構成された `loach.ArchitectureAnalyzer` がレイヤー違反・依存方向違反・禁止 API 使用をビルドエラーとして検出します。Architecture Matrix は図面ではなく、コンパイラが検証する契約です。
 - **決定論的な CPU 基盤**: R3000A モデルは命令単位の Golden Trace で検証されています。すべてのレジスタ書き込みをリタイア順に記録・再生して差異を検出する仕組みは、将来の Recompiler バックエンドを interpreter と比較検証するための土台でもあります。
 - **安定した C# / Native 境界**: Native Core とのやり取りはすべて単一の C ABI（`psx_core.h`）経由の P/Invoke で行い、C++ の型を C# 側へ漏らしません。
 - **Evidence-first・Human-in-the-loop な AI 協働**: AI 開発エージェントはプロジェクトのアイデンティティではなく交換可能な支援手段です。User-driven analysis・検証可能な根拠・人間によるレビューを中心に据え、ワークフローは Agent-agnostic（Claude Code、OpenCode、Codex 等を問わない）です。
@@ -76,8 +76,7 @@ PSXRecompStudio
 ├── PSXRecompStudio        # Avalonia UI（Application 層）
 ├── PSXRecomp.Core         # C# ドメインモデル + C ABI Interop ラッパー
 ├── PSXRecomp.Native       # C++ Native Core（CPU, Memory, DMA, Timer, Interrupt）
-├── PSXRecomp.Analyzer     # アーキテクチャ強制 Roslyn Analyzer
-├── PSXRecomp.Analyzer.Tests
+├── architecture.contract.json  # アーキテクチャ SSOT（loach.ArchitectureAnalyzer が NuGet で強制）
 ├── PSXRecomp.Tests
 ├── PSXRecompStudio.Tests  # Headless GUI テスト
 ├── PSXRecomp.Runtime      # 予定
@@ -156,8 +155,7 @@ PSXRecompStudio/
 │   ├── PSXRecompStudio.Tests/         # Headless GUI テスト
 │   ├── PSXRecomp.Core/                # C# ドメインモデル + P/Invoke Interop
 │   ├── PSXRecomp.Native/              # C++ Native Core（CMake プロジェクト）
-│   ├── PSXRecomp.Analyzer/            # Roslyn アーキテクチャ Analyzer
-│   ├── PSXRecomp.Analyzer.Tests/
+│   ├── architecture.contract.json     # アーキテクチャ SSOT（loach.ArchitectureAnalyzer）
 │   └── PSXRecomp.Tests/               # xUnit テスト（Core + Native、P/Invoke 経由）
 ├── config/                            # SSOT 設定（Artifact Policy、CPU 命令データ、README 自動化）
 ├── scripts/                           # CI・開発用スクリプト
@@ -192,7 +190,6 @@ ctest --test-dir src/PSXRecomp.Native/build --output-on-failure
 
 # C# テストスイート
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
-dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj --configuration Release
 
 # Headless GUI テスト（Avalonia、ディスプレイサーバー不要）
 dotnet test src/PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj --configuration Release

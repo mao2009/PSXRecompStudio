@@ -103,11 +103,15 @@ gate by itself.
 No Roslyn analyzer rule is added in this change (the issue allows either a
 coverage script or an analyzer rule): a build-breaking analyzer over
 free-text documentation quality is not practical, and the existing
-`PSXR001`-`PSXR006` architecture rules are structural, not documentation
-rules. Should the project later want a build-breaking presence check (e.g.
-"every public type in `PSXRecomp.Core` must have a `<summary>`"), it can be
-added as a new `PSXR0xx` rule against this ADR without revisiting the
-policy itself.
+`AARC002`-`AARC007` architecture rules (formerly `PSXR001`-`PSXR006`; see
+ADR-006) are structural, not documentation rules. Should the project later
+want a build-breaking presence check (e.g. "every public type in
+`PSXRecomp.Core` must have a `<summary>`"), it is no longer a rule this
+repository can mint on its own — architecture enforcement moved to the
+externally maintained `loach.ArchitectureAnalyzer` package (ADR-006,
+amended), so a new structural rule would need either an upstream capability
+in that project or a separate repository-owned tool; it can still be added
+against this ADR without revisiting the policy itself.
 
 ### 5. Incremental application
 
@@ -165,13 +169,15 @@ threshold.
 
 Rejected for this change: documentation-quality checks (presence of a
 `<summary>`, non-triviality of its content) are a different kind of rule
-from the existing structural `PSXR001`-`PSXR006` rules and deserve their
-own design pass; a script-based, non-blocking measurement is lower-risk to
-land first and does not preclude adding an analyzer rule later.
+from the existing structural `AARC002`-`AARC007` rules (formerly
+`PSXR001`-`PSXR006`; see ADR-006) and deserve their own design pass; a
+script-based, non-blocking measurement is lower-risk to land first and does
+not preclude adding a structural check later.
 
 ## Related ADRs
 
-- ADR-006: Architecture Enforcement via Analyzer (the `PSXR0xx` rule family
-  a future documentation-presence rule would join)
+- ADR-006: Architecture Enforcement via Analyzer (the `AARC` diagnostic
+  family, formerly `PSXR0xx`, a future documentation-presence rule would
+  join)
 - ADR-010: CodeRabbit Review Runs After README Auto-Update (the other
   `.coderabbit.yaml`-governing ADR)
