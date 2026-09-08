@@ -83,7 +83,13 @@ public sealed class RealRomRecompilerBridgeTests
         Assert.Equal(Base + 4, candidate.StopAddress);
     }
 
-    /// <summary>The window this and the two tests below share: shaped like a tiny real function body.</summary>
+    /// <summary>
+    /// The window this and the tests below share: shaped like a tiny real function
+    /// body, with its BEQ target landing on real code inside the eventual window
+    /// (0x14) rather than on the excluded JR — a self-contained window, per #225's
+    /// requirement that a static control-flow target may not silently exit the
+    /// candidate (ADR-013).
+    /// </summary>
     private static uint[] FunctionShapedWords() => new[]
     {
         MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 5),                        // 0x00 ADDIU $t0, $zero, 5
@@ -91,8 +97,9 @@ public sealed class RealRomRecompilerBridgeTests
         MipsEncoding.Branch(0x04, rs: 8, rt: 8, pc: Base + 8, target: Base + 0x14), // 0x08 BEQ $t0,$t0 (always taken)
         MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 1),                       // 0x0C delay slot: ADDIU $t3, $zero, 1
         MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),                   // 0x10 dead code (branch skips it)
-        MipsEncoding.JumpRegister(rs: 31),                                       // 0x14 JR $ra — excluded
-        MipsEncoding.Nop,                                                        // 0x18 delay slot (never reached)
+        MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 9),                       // 0x14 BEQ target: ADDIU $t5, $zero, 9
+        MipsEncoding.JumpRegister(rs: 31),                                       // 0x18 JR $ra — excluded
+        MipsEncoding.Nop,                                                        // 0x1C delay slot (never reached)
     };
 
     [Fact]
@@ -103,10 +110,129 @@ public sealed class RealRomRecompilerBridgeTests
         var candidate = RealRomCandidateSelector.TryExtend(instructions, Base);
 
         Assert.NotNull(candidate);
+        Assert.Equal(6, candidate!.InstructionCount);
+        Assert.Equal(RealRomCandidateStopReason.IndirectJumpExcluded, candidate.StopReason);
+        Assert.Equal(Base + 0x18, candidate.StopAddress);
+        Assert.Contains("Beq", candidate.RequiredInstructionSubset);
+        Assert.False(RealRomCandidateSelector.HasExternalStaticControlFlowTarget(
+            candidate.StartAddress, candidate.EncodedInstructions));
+    }
+
+    [Fact]
+    public void TryExtend_AcceptsBeqTarget_WhenInsideTheWindow()
+    {
+        // Same shape as FunctionShapedWords but isolated: proves a BEQ whose target
+        // lands on the window's own last instruction (not past it) is accepted.
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),                        // 0x00 ADDIU $t0, $zero, 1
+            MipsEncoding.Branch(0x04, rs: 8, rt: 8, pc: Base + 4, target: Base + 0x10), // 0x04 BEQ (taken)
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),                         // 0x08 delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD),                    // 0x0C dead code
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 3),                        // 0x10 BEQ target
+            MipsEncoding.JumpRegister(rs: 31),                                        // 0x14 JR $ra — excluded
+            MipsEncoding.Nop,
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base);
+
+        Assert.NotNull(candidate);
         Assert.Equal(5, candidate!.InstructionCount);
         Assert.Equal(RealRomCandidateStopReason.IndirectJumpExcluded, candidate.StopReason);
-        Assert.Equal(Base + 0x14, candidate.StopAddress);
-        Assert.Contains("Beq", candidate.RequiredInstructionSubset);
+    }
+
+    [Theory]
+    [InlineData(0x04u)] // BEQ opcode field
+    [InlineData(0x05u)] // BNE opcode field
+    public void TryExtend_RejectsBranch_WhenTargetLandsOutsideTheWindow(uint branchOpcodeField)
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),                                       // 0x00 ADDIU $t0, $zero, 1
+            MipsEncoding.Branch((byte)branchOpcodeField, rs: 8, rt: 0, pc: Base + 4, target: Base + 0x10), // 0x04 branch to the (excluded) JR
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),                                        // 0x08 delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD),                                    // 0x0C dead code
+            MipsEncoding.JumpRegister(rs: 31),                                                        // 0x10 JR $ra — the branch's own target
+            MipsEncoding.Nop,
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(1, candidate!.InstructionCount); // only the leading ADDIU survives the trim
+        Assert.Equal(RealRomCandidateStopReason.StaticTargetOutsideCandidate, candidate.StopReason);
+        Assert.Equal(Base + 4, candidate.StopAddress);
+    }
+
+    [Fact]
+    public void TryExtend_RejectsJump_WhenTargetLandsOutsideTheWindow()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1), // 0x00 ADDIU $t0, $zero, 1
+            MipsEncoding.Jump(Base + 0x0C),                   // 0x04 J targets the (excluded) JR
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2), // 0x08 delay slot
+            MipsEncoding.JumpRegister(rs: 31),                // 0x0C JR $ra — the jump's own target
+            MipsEncoding.Nop,
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(1, candidate!.InstructionCount);
+        Assert.Equal(RealRomCandidateStopReason.StaticTargetOutsideCandidate, candidate.StopReason);
+        Assert.Equal(Base + 4, candidate.StopAddress);
+    }
+
+    [Fact]
+    public void TryExtend_AcceptsJal_WhenCalleeIsInsideTheWindow()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),  // 0x00 ADDIU $t0, $zero, 1
+            MipsEncoding.JumpAndLink(Base + 0x10),              // 0x04 JAL callee@0x10
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),   // 0x08 delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD), // 0x0C never reached
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 3),  // 0x10 callee, inside the window
+            MipsEncoding.JumpRegister(rs: 31),                  // 0x14 JR $ra — excluded
+            MipsEncoding.Nop,
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(5, candidate!.InstructionCount);
+        Assert.Equal(RealRomCandidateStopReason.IndirectJumpExcluded, candidate.StopReason);
+        Assert.Contains("Jal", candidate.RequiredInstructionSubset);
+        Assert.False(RealRomCandidateSelector.HasExternalStaticControlFlowTarget(
+            candidate.StartAddress, candidate.EncodedInstructions));
+    }
+
+    [Fact]
+    public void TryExtend_RejectsJal_WhenCalleeIsOutsideTheWindow()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),  // 0x00 ADDIU $t0, $zero, 1
+            MipsEncoding.JumpAndLink(Base + 0x14),              // 0x04 JAL callee@0x14 — the (excluded) JR
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),   // 0x08 delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD), // 0x0C never reached
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 3),  // 0x10 never reached either
+            MipsEncoding.JumpRegister(rs: 31),                  // 0x14 JR $ra — the call's own target
+            MipsEncoding.Nop,
+        };
+        var instructions = MakeInstructions(Base, words);
+
+        var candidate = RealRomCandidateSelector.TryExtend(instructions, Base);
+
+        Assert.NotNull(candidate);
+        Assert.Equal(1, candidate!.InstructionCount); // only the leading ADDIU survives the trim
+        Assert.Equal(RealRomCandidateStopReason.ExternalCallExcluded, candidate.StopReason);
+        Assert.Equal(Base + 4, candidate.StopAddress);
     }
 
     [Fact]
@@ -127,11 +253,12 @@ public sealed class RealRomRecompilerBridgeTests
         Assert.True(result.IsMatch, result.Diff?.Describe());
 
         Assert.Equal(RecompilerIrTerminationReason.Success, result.Reference.Snapshot!.Termination);
-        Assert.Equal(Base + 0x14, result.Reference.Snapshot.PC);
+        Assert.Equal(Base + 0x18, result.Reference.Snapshot.PC);
         Assert.Equal(5u, result.Reference.Snapshot.Gpr[8]);   // $t0
         Assert.Equal(7u, result.Reference.Snapshot.Gpr[9]);   // $t1
         Assert.Equal(1u, result.Reference.Snapshot.Gpr[11]);  // $t3 (delay slot)
         Assert.Equal(0u, result.Reference.Snapshot.Gpr[12]);  // $t4: dead code, never executed
+        Assert.Equal(9u, result.Reference.Snapshot.Gpr[13]);  // $t5: the branch's (in-window) target
     }
 
     [Fact]
@@ -154,34 +281,65 @@ public sealed class RealRomRecompilerBridgeTests
         Assert.Contains(diff.Differences, d => d.FieldPath == "gpr[11]");
     }
 
+    private static ArtifactFixtureIdentity MakeExecutableIdentity() => new()
+    {
+        FixtureId = "synthetic",
+        DiscImageFormat = "CHD",
+        DiscImageSha256 = new string('a', 64),
+        DiscImageSizeBytes = 1,
+        ExecutableFileName = "TEST_000.01",
+        ExecutableSerial = "TEST-00001",
+        ExecutableSizeBytes = 1,
+        ExecutableSha256 = new string('b', 64),
+    };
+
     [Fact]
     public void BuildProvenance_IsDeterministic_AndChangesWithTheWindow()
     {
         var instructions = MakeInstructions(Base, FunctionShapedWords());
         var candidate = RealRomCandidateSelector.TryExtend(instructions, Base)!;
-        var executable = new ArtifactFixtureIdentity
-        {
-            FixtureId = "synthetic",
-            DiscImageFormat = "CHD",
-            DiscImageSha256 = new string('a', 64),
-            DiscImageSizeBytes = 1,
-            ExecutableFileName = "TEST_000.01",
-            ExecutableSerial = "TEST-00001",
-            ExecutableSizeBytes = 1,
-            ExecutableSha256 = new string('b', 64),
-        };
+        var executable = MakeExecutableIdentity();
 
         var first = RealRomFixtureAdapter.BuildProvenance(candidate, executable, "unit test");
         var second = RealRomFixtureAdapter.BuildProvenance(candidate, executable, "unit test");
 
         Assert.Equal(first.SelectionIdentitySha256, second.SelectionIdentitySha256);
-        Assert.False(first.HasUnresolvedDependencies);
+        Assert.False(first.HasUnresolvedDependencies); // this candidate is genuinely self-contained
         Assert.Equal(candidate.InstructionCount, first.InstructionCount);
         Assert.Equal(candidate.RequiredInstructionSubset, first.RequiredInstructionSubset);
 
         var otherStartCandidate = RealRomCandidateSelector.TryExtend(instructions, Base)! with { StartAddress = Base + 4 };
         var third = RealRomFixtureAdapter.BuildProvenance(otherStartCandidate, executable, "unit test");
         Assert.NotEqual(first.SelectionIdentitySha256, third.SelectionIdentitySha256);
+    }
+
+    /// <summary>
+    /// Proves HasUnresolvedDependencies is actually computed, not a hardcoded constant:
+    /// a hand-crafted candidate that bypasses the selector's own trimming (as if a
+    /// future caller constructed one directly) is still correctly classified as having
+    /// an unresolved static control-flow dependency.
+    /// </summary>
+    [Fact]
+    public void BuildProvenance_DetectsExternalStaticControlFlowTarget_OnAHandCraftedCandidate()
+    {
+        var words = new[]
+        {
+            MipsEncoding.JumpAndLink(Base + 0x100), // JAL far outside this 2-word window
+            MipsEncoding.Nop,                       // delay slot
+        };
+        var handCrafted = new RealRomFunctionCandidate
+        {
+            StartAddress = Base,
+            EncodedInstructions = words,
+            StopReason = RealRomCandidateStopReason.EndOfDecodedInstructions,
+            StopAddress = null,
+            StopDetail = "hand-crafted for this test; does not come from TryExtend's own trimming",
+            RequiredInstructionSubset = new[] { "Jal", "Sll" },
+        };
+
+        var provenance = RealRomFixtureAdapter.BuildProvenance(handCrafted, MakeExecutableIdentity(), "unit test");
+
+        Assert.True(provenance.HasUnresolvedDependencies);
     }
 
     [Fact]
