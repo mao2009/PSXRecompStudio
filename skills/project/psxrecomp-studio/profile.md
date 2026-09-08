@@ -55,17 +55,19 @@ its project-specific inputs.
 
 ## 3. Architecture enforcement
 
-`PSXRecomp.Analyzer` enforces `docs/architecture-matrix.md` at compile time
-(ADR-006). Rules **PSXR001–PSXR006**, all build-breaking:
+`loach.ArchitectureAnalyzer` (NuGet), configured by
+`src/architecture.contract.json`, enforces `docs/architecture-matrix.md` at
+compile time (ADR-006, amended). Rules **AARC002–AARC007**, all
+build-breaking:
 
 | ID | Rule |
 |---|---|
-| PSXR001 | Class missing architecture layer attribute |
-| PSXR002 | Multiple layer attributes on one type |
-| PSXR003 | Namespace ↔ layer mapping mismatch |
-| PSXR004 | Forbidden dependency direction |
-| PSXR005 | Forbidden API per layer (e.g. non-deterministic randomness in Domain) |
-| PSXR006 | P/Invoke outside `PSXRecomp.Core` |
+| AARC002 | Forbidden dependency direction |
+| AARC003 | Forbidden API per layer (e.g. non-deterministic randomness in Domain) |
+| AARC004 | Class missing architecture layer attribute |
+| AARC005 | Multiple layer attributes on one type |
+| AARC006 | Namespace ↔ layer mapping mismatch |
+| AARC007 | P/Invoke outside the Domain interop boundary |
 
 Analyzer violations fail the build; treat them as blockers, not warnings.
 
@@ -79,7 +81,6 @@ dotnet test src/PSXRecomp.Tests --filter "<FullyQualifiedName~ChangedArea>"
 
 # 2. Full .NET test suite (Release)
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj -c Release
-dotnet test src/PSXRecomp.Analyzer.Tests/PSXRecomp.Analyzer.Tests.csproj -c Release
 
 # 3. Native core (C ABI)
 cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
