@@ -28,7 +28,7 @@ public sealed class RecompilerDifferentialTests
         var a = Snapshot(gpr8: 5, gpr9: 7, gpr11: 12);
         var b = Snapshot(gpr8: 5, gpr9: 7, gpr11: 12);
 
-        var diff = RecompilerStateDiff.Compare(a, b);
+        var diff = RecompilerStateDiff.Compare(a, b, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(b.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Match, diff.Classification);
         Assert.True(diff.IsMatch);
@@ -41,7 +41,7 @@ public sealed class RecompilerDifferentialTests
         var a = Snapshot(gpr8: 2, gpr9: 3);
         var b = Snapshot(gpr8: 99, gpr9: 3);
 
-        var diff = RecompilerStateDiff.Compare(a, b);
+        var diff = RecompilerStateDiff.Compare(a, b, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(b.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsMatch);
@@ -57,12 +57,12 @@ public sealed class RecompilerDifferentialTests
         var reference = Snapshot(gpr8: 5, gpr9: 7, gpr11: 12);
 
         var oddHi = Snapshot(gpr8: 5, gpr9: 7, gpr11: 12, hi: 0x1111);
-        var diffWithHi = RecompilerStateDiff.Compare(reference, oddHi);
+        var diffWithHi = RecompilerStateDiff.Compare(reference, oddHi, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(oddHi.PcTrace));
         Assert.Single(diffWithHi.Differences);
         Assert.Equal("hi", diffWithHi.Differences[0].FieldPath);
 
         var oddTerm = Snapshot(gpr8: 5, gpr9: 7, gpr11: 12, pc: 0x80000004u, termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded);
-        var diffWithPcTerm = RecompilerStateDiff.Compare(reference, oddTerm);
+        var diffWithPcTerm = RecompilerStateDiff.Compare(reference, oddTerm, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(oddTerm.PcTrace));
         Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "pc");
         Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "termination");
     }
@@ -85,7 +85,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.BudgetInconclusive, diff.Classification);
         Assert.True(diff.IsBudgetInconclusive);
@@ -111,7 +111,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.Success,
             pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000014u, 0x80000018u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -134,7 +134,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000014u, 0x80000004u, 0x80000014u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -159,7 +159,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new uint[] { 0x80000000u, 0x80000008u, 0x80000004u, 0x80000000u, 0x80000008u, 0x80000004u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -181,7 +181,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x80000000u, 0x80000008u, 0x80000004u, 0x80000000u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -202,7 +202,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000014u, 0x80000018u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -226,7 +226,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: false);
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: false, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -252,7 +252,7 @@ public sealed class RecompilerDifferentialTests
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new[] { a, c, a, c, a });
 
-        var diff = RecompilerStateDiff.Compare(reference, actual, staticBlockEntryPcs: new HashSet<uint> { a, b, c });
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint> { a, b, c });
 
         Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
         Assert.False(diff.IsBudgetInconclusive);
@@ -264,8 +264,8 @@ public sealed class RecompilerDifferentialTests
         var a = Snapshot(gpr8: 2);
         var b = Snapshot(gpr8: 3);
 
-        var first = RecompilerStateDiff.Compare(a, b);
-        var second = RecompilerStateDiff.Compare(a, b);
+        var first = RecompilerStateDiff.Compare(a, b, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(b.PcTrace));
+        var second = RecompilerStateDiff.Compare(a, b, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(b.PcTrace));
 
         Assert.Equal(first.Describe(), second.Describe());
         Assert.Equal(first.ToMachineReadable(), second.ToMachineReadable());
@@ -301,7 +301,8 @@ public sealed class RecompilerDifferentialTests
             },
             entryPc: 0x80000000u,
             stepBudget: 5,
-            referenceStepBudget: 5);
+            referenceStepBudget: 5,
+            budgetsAreShared: true);
 
         const uint a = 0x80000000u, b = 0x80000004u, c = 0x80000008u;
         var reference = new ScriptedExecutor(Snapshot(
@@ -312,6 +313,51 @@ public sealed class RecompilerDifferentialTests
             gpr8: 1, pc: a,
             termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
             pcTrace: new[] { a, c, a, c, a }));
+
+        var result = RecompilerDifferentialRunner.Run(fixture, reference, actual);
+
+        Assert.True(result.BothCompleted);
+        Assert.False(result.IsMatch);
+        Assert.False(result.IsBudgetInconclusive, result.Diff!.Describe());
+    }
+
+    [Fact]
+    public void Run_EqualNumericBudgets_AcrossFusedControlTransfer_DoNotImplyASharedBudget()
+    {
+        // Regression (CodeRabbit, #305): StepBudget counts host blocks,
+        // ReferenceStepBudget counts guest instructions; a control transfer fused
+        // with its delay slot retires one host block per two guest instructions, so
+        // equal numeric budgets do not by themselves prove the same work counter.
+        // This fixture has a BNE+delay-slot control transfer, equal StepBudget and
+        // ReferenceStepBudget (100/100, mirroring RecompilerFixtures.Issue304BudgetCutOffLoop),
+        // but — unlike that fixture — does not opt into BudgetsAreShared. The exact
+        // tail-shaped divergence that fixture earns BudgetInconclusive with must stay
+        // a mismatch here, because nothing has proven the equal numbers actually mean
+        // a shared cut point.
+        var fixture = new RecompilerDifferentialFixture(
+            "equal-numeric-budgets-fused-control-transfer",
+            encodedInstructions: new[]
+            {
+                MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1000),                     // 0x00 $t0 = 1000 (loop bound)
+                MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0),                        // 0x04 $t1 = 0 (counter)
+                MipsEncoding.I(0x09, rt: 9, rs: 9, immediate: 1),                        // 0x08 loop: $t1 += 1
+                MipsEncoding.I(0x09, rt: 10, rs: 10, immediate: 7),                      // 0x0C $t2 += 7
+                MipsEncoding.Branch(0x05, rs: 9, rt: 8, pc: 0x80000010u, target: 0x80000008u), // 0x10 BNE $t1, $t0, loop
+                MipsEncoding.Nop,                                                        // 0x14 delay slot
+            },
+            entryPc: 0x80000000u,
+            stepBudget: 100,
+            referenceStepBudget: 100);
+        // budgetsAreShared intentionally omitted — defaults to false.
+
+        var reference = new ScriptedExecutor(Snapshot(
+            gpr8: 18, pc: 0x8000000Cu,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu }));
+        var actual = new ScriptedExecutor(Snapshot(
+            gpr8: 20, pc: 0x80000010u,
+            termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded,
+            pcTrace: new uint[] { 0x80000000u, 0x80000004u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u, 0x80000008u, 0x8000000Cu, 0x80000010u }));
 
         var result = RecompilerDifferentialRunner.Run(fixture, reference, actual);
 

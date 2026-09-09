@@ -323,7 +323,7 @@ public sealed class RealRomRecompilerBridgeTests
             corruptedGpr, reference.HI, reference.LO, reference.PC, reference.LoadDelay,
             reference.Exception, reference.Termination, reference.Memory, reference.PcTrace);
 
-        var diff = RecompilerStateDiff.Compare(reference, corrupted);
+        var diff = RecompilerStateDiff.Compare(reference, corrupted, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(corrupted.PcTrace));
 
         Assert.False(diff.IsMatch);
         Assert.Contains(diff.Differences, d => d.FieldPath == "gpr[11]");

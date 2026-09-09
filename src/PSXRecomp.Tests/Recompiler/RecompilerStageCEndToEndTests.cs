@@ -204,7 +204,7 @@ public sealed class RecompilerStageCEndToEndTests
                 $"[{fixture.Name}] host executor failed: [{first.DiagnosticCode}] {first.DiagnosticMessage}");
             Assert.True(first.Status == RecompilerExecutionStatus.Completed
                         && second.Status == RecompilerExecutionStatus.Completed);
-            var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!);
+            var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(second.Snapshot!.PcTrace));
             Assert.True(diff.IsMatch, $"[{fixture.Name}]: {diff.Describe()}");
         }
     }

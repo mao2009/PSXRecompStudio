@@ -70,7 +70,7 @@ public sealed class RecompilerStageAEndToEndTests
         Assert.Equal(RecompilerExecutionStatus.Completed, second.Status);
         Assert.True(first.Snapshot is not null && second.Snapshot is not null);
 
-        var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!);
+        var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(second.Snapshot!.PcTrace));
         Assert.True(diff.IsMatch, diff.Describe());
         Assert.Equal(first.Snapshot!.Termination, second.Snapshot!.Termination);
         Assert.Equal(first.Snapshot!.PC, second.Snapshot!.PC);

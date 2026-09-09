@@ -107,22 +107,29 @@ public static class RecompilerStateDiff
     /// Compares the interpreter/reference snapshot against the recompiled/actual
     /// snapshot. <paramref name="budgetsAreShared"/> and
     /// <paramref name="staticBlockEntryPcs"/> give the classifier the fixture-level
-    /// facts a pair of snapshots alone cannot prove (CodeRabbit findings on #305):
+    /// facts a pair of snapshots alone cannot prove (CodeRabbit findings on #305) —
     /// whether the two executors were actually bounded by the same budget, and the
     /// lowered program's authoritative static block-entry PCs to project the
-    /// interpreter trace onto — instead of guessing "same budget" from two
-    /// <see cref="RecompilerIrTerminationReason.ExecutionBudgetExceeded"/> snapshots,
-    /// or deriving the projection PC set from the host trace it is itself validating
-    /// (which would silently drop a block the host skipped). Both default to the
-    /// permissive case (a shared budget, host-observed PCs) for callers that compare
-    /// snapshots directly without a fixture; <see cref="RecompilerDifferentialRunner"/>
-    /// is the only caller with fixture/program context and always passes both explicitly.
+    /// interpreter trace onto — and both are deliberately non-optional: there is no
+    /// permissive default. A caller with no fixture/program context (and therefore no
+    /// way to prove either fact) must pass <c>false</c> / <c>null</c> explicitly,
+    /// which makes <see cref="RecompilerComparisonClassification.BudgetInconclusive"/>
+    /// unreachable for that call — the safe outcome, since neither guessing "same
+    /// budget" from two matching termination reasons nor deriving the projection set
+    /// from the host trace it is itself being checked against is sound.
+    /// <see cref="RecompilerDifferentialRunner"/> is the only caller that can prove
+    /// both: it reads the fixture's own <see cref="RecompilerDifferentialFixture.BudgetsAreShared"/>
+    /// fact (an author-asserted property of the fixture, not inferred from
+    /// <see cref="RecompilerDifferentialFixture.StepBudget"/> == <see cref="RecompilerDifferentialFixture.ReferenceStepBudget"/>
+    /// — those count different units, host blocks vs. guest instructions, so equal
+    /// numbers do not by themselves prove the same work counter) and rebuilds the
+    /// lowered program's static block-entry PCs.
     /// </summary>
     public static RecompilerStateDiffResult Compare(
         RecompilerStateSnapshot reference,
         RecompilerStateSnapshot actual,
-        bool budgetsAreShared = true,
-        IReadOnlySet<uint>? staticBlockEntryPcs = null)
+        bool budgetsAreShared,
+        IReadOnlySet<uint>? staticBlockEntryPcs)
     {
         ArgumentNullException.ThrowIfNull(reference);
         ArgumentNullException.ThrowIfNull(actual);
@@ -255,19 +262,25 @@ public static class RecompilerStateDiff
     /// trace that only revisits interpreter-visited PCs (a loop continuation). Order
     /// preservation is essential: a run over the same PC set in a different order
     /// fails the prefix check and must remain a real divergence.
-    /// <paramref name="staticBlockEntryPcs"/>, when supplied, is the lowered
-    /// program's authoritative static block-entry PC set. Deriving that set from the
-    /// observed <paramref name="hostTrace"/> instead (the fallback when it is null)
-    /// is unsound: a host that skips a real static block entry would silently drop
-    /// it from the set it is itself being checked against, letting a genuine
-    /// control-flow skip look like a valid projection.
+    /// <paramref name="staticBlockEntryPcs"/> must be the lowered program's
+    /// authoritative static block-entry PC set; when it is <c>null</c> (no caller has
+    /// proven one) this returns false rather than falling back to a set derived from
+    /// <paramref name="hostTrace"/> — that fallback is unsound: a host that skips a
+    /// real static block entry would silently drop it from the set it is itself being
+    /// checked against, letting a genuine control-flow skip look like a valid
+    /// projection.
     /// </summary>
     private static bool IsBudgetTailContinuation(
         IReadOnlyList<uint> interpreterTrace,
         IReadOnlyList<uint> hostTrace,
         IReadOnlySet<uint>? staticBlockEntryPcs)
     {
-        var hostPcs = staticBlockEntryPcs ?? new HashSet<uint>(hostTrace);
+        if (staticBlockEntryPcs is null)
+        {
+            return false;
+        }
+
+        var hostPcs = staticBlockEntryPcs;
         var projected = new List<uint>(interpreterTrace.Count);
         foreach (var pc in interpreterTrace)
         {

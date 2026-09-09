@@ -53,15 +53,17 @@ public static class RecompilerDifferentialRunner
         var referenceResult = reference.Execute(fixture);
         var actualResult = actual.Execute(fixture);
 
-        // The runner is the one caller that actually knows whether the two
-        // executors ran under the same budget, and can rebuild the lowered
-        // program's authoritative static block-entry PCs — a pair of snapshots
-        // alone cannot prove either fact (CodeRabbit findings on #305).
+        // The runner is the one caller that can supply both facts a pair of
+        // snapshots alone cannot prove (CodeRabbit findings on #305): it reads the
+        // fixture's own author-asserted BudgetsAreShared fact — StepBudget (host
+        // blocks) and ReferenceStepBudget (guest instructions) count different
+        // units, so equal numbers alone never prove the same work counter — and it
+        // rebuilds the lowered program's authoritative static block-entry PCs.
         RecompilerStateDiffResult? diff = referenceResult.Snapshot is not null && actualResult.Snapshot is not null
             ? RecompilerStateDiff.Compare(
                 referenceResult.Snapshot,
                 actualResult.Snapshot,
-                budgetsAreShared: fixture.StepBudget == fixture.ReferenceStepBudget,
+                budgetsAreShared: fixture.BudgetsAreShared,
                 staticBlockEntryPcs: StaticBlockEntryPcs(fixture))
             : null;
 

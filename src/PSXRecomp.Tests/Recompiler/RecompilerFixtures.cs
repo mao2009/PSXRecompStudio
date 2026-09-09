@@ -328,6 +328,11 @@ internal static class RecompilerFixtures
     /// diverge). The differential harness must classify this as BudgetInconclusive:
     /// a match was not proven, but neither was a real divergence — the only
     /// difference is where the artificial budget cut left each side mid-loop.
+    /// <c>budgetsAreShared: true</c> is this fixture's own explicit assertion (not
+    /// inferred from the equal 100/100 numbers, which count different units — host
+    /// blocks vs. guest instructions — and would not otherwise prove equivalence)
+    /// that the two budgets represent the same intended cut point for this program
+    /// (CodeRabbit finding on #305).
     /// </summary>
     public static RecompilerDifferentialFixture Issue304BudgetCutOffLoop() =>
         new(
@@ -344,7 +349,8 @@ internal static class RecompilerFixtures
             },
             entryPc: EntryPc,
             stepBudget: 100,
-            referenceStepBudget: 100);
+            referenceStepBudget: 100,
+            budgetsAreShared: true);
 
     /// <summary>
     /// An unbounded BEQ loop that never exits. Both sides must stop on their budget
