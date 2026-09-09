@@ -4,7 +4,7 @@
 
 **Authority:** SSOT
 
-**Related Issues:** #183
+**Related Issues:** #183, #343
 
 **Related Components:** `.coderabbit.yaml`, `scripts/docs/measure-docstring-coverage.ps1`, `src/PSXRecomp.Core/NativeInterop.cs`, `src/PSXRecomp.Core/PSXCoreWrapper.cs`, `src/PSXRecomp.Native/include/psx_core.h`
 
@@ -18,6 +18,78 @@ project-wide documentation policy, not a defect in either change. This
 document is the SSOT for what source-code documentation this project
 requires, to what standard, and how that requirement is measured and
 enforced. See ADR-011 for the decision record.
+
+This document also defines the maintenance contract for English Canonical
+documentation and translated convenience copies. Unless a more specific
+SSOT says otherwise, English is the Canonical language for maintained
+project documentation.
+
+## Canonical and translation maintenance policy
+
+### Authority
+
+- **English Canonical documents are the source of truth.** A translated copy
+  is a convenience document and never overrides its Canonical source.
+- A translation must not introduce a requirement, behavior, architecture
+  decision, constant, API contract, implementation-status claim, or normative
+  wording that is absent from the Canonical source.
+- If a translation and its Canonical source disagree, the Canonical document
+  governs and the translation is treated as stale documentation to be fixed.
+- Translation work must not be used to silently correct or redesign an SSOT.
+  Suspected factual or architectural problems are handled separately through
+  the appropriate Issue, ADR, or SSOT change.
+
+### Update responsibility
+
+- Changes to normative documentation are authored against the English
+  Canonical document first.
+- When a maintained translation exists, the author or automation preparing the
+  Canonical change should identify whether that translation is affected.
+- A translation may be updated in the same PR only when the relationship is
+  straightforward and the review remains easy to verify. Otherwise, update it
+  in a directly associated follow-up PR.
+- A Canonical change is not blocked solely because a convenience translation
+  cannot be updated safely in the same change; the translation must instead be
+  marked or reported as stale and tracked for follow-up.
+
+### Automated vs. human-reviewed translation
+
+Human review is required for translation of normative or high-risk material,
+including:
+
+- top-level and subsystem architecture SSOTs;
+- ADRs;
+- CPU, runtime, recompiler, BIOS/HLE, hardware, and other behavioral contracts;
+- security, repository policy, process policy, and compliance text;
+- public API/interop contracts and text containing addresses, opcodes, bit
+  layouts, timing, ownership, or other values where mistranslation can alter
+  behavior.
+
+Automation may prepare translation PRs for low-risk convenience material such
+as navigation, indexes, short explanatory prose, or non-normative release/
+community text. Automated output is still reviewed before merge.
+
+**Generated or AI-assisted translations are never auto-merged.** Tooling may
+create a candidate or PR, but a reviewer remains responsible for checking that
+meaning and authority are preserved.
+
+### Review requirements
+
+Review of a translation change checks at least:
+
+1. the Canonical source is identified;
+2. all normative meaning remains subordinate to the Canonical source;
+3. identifiers, paths, links, code, API names, constants, addresses, opcodes,
+   bit fields, test IDs, and expected values are preserved unless the driving
+   Canonical change intentionally changed them;
+4. no design or implementation-status change was introduced as a translation
+   side effect;
+5. any disagreement discovered during translation is reported separately
+   rather than silently resolved in translated prose.
+
+Automation may check source relationships, file presence, structural markers,
+or freshness metadata. It must not claim to prove semantic translation
+correctness.
 
 ## Scope: what must be documented
 
@@ -202,3 +274,9 @@ update its documentation in the same change. When a change alters an
 architectural invariant this document or ADR-011 assumes, update both in
 the same change or an immediately following one, per
 `docs/README.md`'s maintenance rule.
+
+When a maintained translation exists, apply the Canonical/translation
+maintenance policy above: update the English Canonical source first, identify
+any affected translation, and either update it in a reviewable same-PR change
+or track a directly associated follow-up. Do not allow a translated convenience
+copy to become an independent source of truth.
