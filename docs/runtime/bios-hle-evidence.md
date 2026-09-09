@@ -90,31 +90,39 @@ place a `syscall` can surface. The relevant records carry:
   `AnalysisArtifacts/InstructionListDocument.cs`).
 
 **Does any stage detect syscall instructions or record guest call-sites into
-the BIOS jump tables? No.** The decoder classifies `syscall`/`break` as
-`R3000aControlFlowKind.Trap` (`R3000aDecoder.DecodeTrap`, `R3000aDecoder.cs:369-380`)
-but **drops the trap code field entirely** — the constructed instruction has
-`operandCount: 0` and all-default operands. Consequence, each verified in code:
+the BIOS jump tables? No.** PS1 BIOS A0/B0/C0 dispatch uses `jr $t9` (an
+indirect jump through the jump table at `0xA0`/`0xB0`/`0xC0`), with the function
+number loaded into `$t1`/R9 via `li`/`addiu`/`ori`/`lui` *before* the jump. The
+MIPS `syscall` instruction is a separate kernel-trap interface, unrelated to
+A0/B0/C0 dispatch, and its trap code bits `[25:6]` do **not** map to A0/B0/C0
+function numbers. So trap-code extraction cannot yield BIOS call identity.
 
-- **No call-site PC list.** No stage emits the guest PC of a `syscall` as a
-  first-class record. `instructions.json` happens to carry `address` + `mnemonic`,
-  so sites are *recoverable* by re-scanning, but nothing aggregates or names them.
-- **No identity frequency.** `DecodeTrap` discards the 20-bit code that the PS1
-  ABI uses to select the A0/B0/C0 entry, so **no A0/B0/C0 + function number is
-  ever derived**. `CountCallReturnCandidates` counts only `LinkInfo.WritesLink`
-  and `JR $ra` (`RomAnalysisPipeline.cs:536-558`); a syscall writes no link, so
-  it is counted as neither a call nor a return. `FunctionDiscovery.IsCall` is
-  likewise `LinkInfo.WritesLink` (`FunctionDiscovery.cs:179`), so a syscall is
-  not a `DirectCallTarget`, not a `ReturnAddress`, and not an
-  `UnresolvedIndirectSource` (only `JumpRegister` qualifies,
-  `FunctionDiscovery.cs:139`). The `report.json`/`manifest.json` schemas have no
-  syscall count field at all.
+What the decoder and CFG builder actually record, each verified in code:
+
+- `DecodeTrap` classifies `syscall`/`break` as `R3000aControlFlowKind.Trap`
+  (`R3000aDecoder.DecodeTrap`, `R3000aDecoder.cs:369-380`), constructs the
+  instruction with `operandCount: 0` and all-default operands, and drops the trap
+  code field — but the encoded word is preserved in `R3000aInstruction`. This is
+  factually true yet irrelevant to A0/B0/C0 identity, because BIOS dispatch does
+  not go through `syscall`.
+- **Direct jump resolution exists.** The CFG builder (`BasicBlockBuilder`)
+  resolves direct jump/branch targets, so a direct `j 0xA00000B0` *would* be
+  resolved; an indirect `jr $t9` creates an unresolved edge (`cfg.json` records
+  the target as `0x00000000`).
+- **No BIOS call is a `call`.** `FunctionDiscovery.IsCall` is
+  `LinkInfo.WritesLink` (`FunctionDiscovery.cs:179`), i.e. JAL/JALR only; a
+  `jr $t9` writes no link, so A0/B0/C0 sites are neither `DirectCallTarget`,
+  `ReturnAddress`, nor `UnresolvedIndirectSource` (only `JumpRegister` qualifies,
+  `FunctionDiscovery.cs:139`). `CountCallReturnCandidates` counts only
+  `LinkInfo.WritesLink` and `JR $ra` (`RomAnalysisPipeline.cs:536-558`).
+- **No constant propagation / register tracking.** Nothing tracks what value was
+  loaded into `$t1`/R9 before the jump, so the A0/B0/C0 function number is not
+  resolved anywhere.
 - **No lowerer handling.** `MipsToIrLowerer` has no `Syscall`/`Break` case in
   either `TryEmitInstruction` or `TryGetSourceRegisters`; both fall to their
   `default` and return unsupported ("Opcode 'Syscall' is not supported by this
-  lowering stage.", `MipsToIrLowerer.cs:715-793`).
-- **No jump-table tracking.** Nothing resolves the A0/B0/C0 table base or maps a
-  trap code to a table entry; `cfg.json` records an unresolved indirect edge
-  target as `0x00000000` and nothing more.
+  lowering stage.", `MipsToIrLowerer.cs:715-793`). The candidate selector treats
+  syscall/break as `UnsupportedInstruction`.
 
 `R3000aOpcode.Syscall = 58` and `R3000aOpcode.Break = 59` do exist
 (`R3000aOpcode.cs:66-67`), and the candidate survey already treats them as
@@ -124,40 +132,58 @@ BIOS-call identity.
 
 ### 3.2 What information is missing
 
-1. **Call-site PC list** — the guest PCs of every decoded `syscall`, as a
-   structured artifact.
-2. **Identity frequency** — the A0/B0/C0 function number derived from each trap
-   code, aggregated per function (what #279 calls "syscall/function identity").
-3. **Lowerer visibility** — `syscall`/`break` are currently opaque-to-unsupported
-   in `MipsToIrLowerer`; a future HLE interception point needs them either lowered
-   to a Runtime call or explicitly classified as external (BIOS) dependencies.
-4. **Jump-table target tracking** — for real code that dispatches through the
-   A0/B0/C0 tables *indirectly*, which call-site analysis cannot see at all
-   without runtime/emulation data.
+1. **A0/B0/C0 target recognition** — recognizing direct jumps/calls in the CFG
+   whose target is the BIOS jump-table base `0xA0`/`0xB0`/`0xC0`. The
+   `BasicBlockBuilder` already resolves direct jump targets, so this is reachable.
+2. **R9/t1 function-number resolution** — tracking what constant was loaded into
+   `$t1`/R9 before a BIOS-table jump, i.e. the function number for the A0/B0/C0
+   entry being dispatched. No constant propagation or register tracking exists
+   anywhere today.
+3. **Call-site aggregation** — linking a BIOS-table jump (direct or via `$t9`)
+   with its function number from R9/t1, so a site becomes a
+   `(Family, FunctionNumber)` identity.
+4. **Indirect dispatch tracking** — for real code that loads the A0/B0/C0 table
+   entry into a register and jumps indirectly (`jr $t9`); this needs resolution
+   through the preceding load, not just recognition of the jump itself.
+5. **Lowerer visibility** — `syscall`/`break` are currently opaque-to-unsupported
+   in `MipsToIrLowerer`; BIOS-touching code stops at the lowerer boundary, and a
+   future HLE interception point needs A0/B0/C0 sites either lowered to a Runtime
+   call or explicitly classified as external (BIOS) dependencies.
 
 ### 3.3 Minimal addition that would collect it
 
-The smallest evidence-collecting change is inside the existing decode stage:
-when the decoder classifies `R3000aControlFlowKind.Trap`, extract the trap code
-from the raw word (bits `[25:6]`, i.e. `(raw >> 6) & 0xFFFFF`) and record
-`(GuestPc, TrapCode)` per site. Concretely:
+The first-priority evidence is **A0/B0/C0 target recognition**: direct jumps in
+the CFG whose target is `0xA0`/`0xB0`/`0xC0`. The `BasicBlockBuilder` already
+resolves direct jump targets, so recognizing these jumps is a small, pure-CFG
+addition. For indirect dispatch through `$t9`, a lightweight constant-propagation
+or pattern-match on the preceding `li`/`addiu`/`ori`/`lui` into `$t1`/R9 resolves
+the function number locally.
 
-- add a `MIPS_DECODE` / `BASIC_BLOCK` extension that emits a small
-  `DecodedSyscall { Address, TrapCode }` list into `DiscImageAnalysisReport`;
-- first-class it in the #215 artifact schema (`report.json` count + a
-  `syscallSites.json`-style document), which is a **schema version bump** per the
-  artifact-policy rules in `docs/development/real-rom-analysis-artifacts.md`;
-- optionally aggregate it in `RealRomCandidateSurvey` (which already lists
-  `Syscall`/`Break` as control-flow opcodes and could report
-  syscall-frequency stop-details without any selector change).
+Proposed evidence model:
 
-Because the PS1 ABI maps a `syscall` trap code to an A0/B0/C0 table entry, this
-one field turns the existing decode stream into a **bios-call candidate list**
-without running anything: every site's identity becomes knowable at analysis
-time. That directly serves the lowered Runtime boundary: an identified call site
-is either (a) satisfied by a registered HLE service, or (b) asserted to be
-BIOS-independent and safe to recompile — per #225 the candidate must have **no
-BIOS dependency**, and today exclusion is the only option.
+```
+BiosCallSiteEvidence
+- GuestPc
+- Family: A0 / B0 / C0
+- FunctionNumber (resolved or unresolved)
+- Confidence / ResolutionKind
+```
+
+ResolutionKind values:
+
+- `DirectJump` — direct `j`/`jal` to a known A0/B0/C0 address
+- `LocalConstant` — function number resolved from an adjacent load into R9/t1
+- `Unresolved` — indirect jump to A0/B0/C0 but function number not statically
+  resolvable
+
+This turns the existing CFG + decoded-instruction stream into a **bios-call
+candidate list** without running anything: each site's family is knowable from
+its target, and its function number becomes knowable at analysis time when the
+preceding constant load is resolved. That directly serves the lowered Runtime
+boundary: an identified call site is either (a) satisfied by a registered HLE
+service, or (b) asserted to be BIOS-independent and safe to recompile — per #225
+the candidate must have **no BIOS dependency**, and today exclusion is the only
+option.
 
 ### 3.4 Connection to #225 and future bring-up
 
@@ -165,18 +191,24 @@ ADR-013 defines the current contract: candidate selection accepts only
 instruction windows the existing `MipsToIrLowerer` lowers, and *explicitly*
 excludes unresolved indirect flow and anything that does not lower
 (`RealRomCandidateSelector`, `RealRomCandidateStopReason`). A real-ROM function
-containing a `syscall` therefore stops at
-`UnsupportedInstruction`/an indirect-external boundary today, so:
+that touches BIOS — via `jr $t9` to `0xA0`/`0xB0`/`0xC0`, an indirect edge the
+CFG leaves unresolved — stops at an indirect-external boundary today, and a
+`syscall`/`break` likewise stops at `UnsupportedInstruction`. So:
 
 - **BIOS-independent candidates succeed today** — which is exactly what #225's
-  first real-ROM function is: a bounded window that never touches a syscall.
+  first real-ROM function is: a bounded window that never touches a BIOS A0/B0/C0
+  site.
 - **BIOS-touching code is excluded until HLE exists** — no silent workaround, no
   title-specific carve-out, per the #225 policy ("BIOS/syscall… 対象関数が以下へ
   依存する場合は、黙ってworkaroundを埋め込まない").
-- The moment call-site recording (3.3) lands, #225 gains a *machine-readable
-  reason* for every rejection and future bring-up can prioritise HLE services by
-  counting which trap codes actually appear — the evidence loop Issue #279 asks
-  for ("Initial BIOS HLE subset is selected from real usage evidence").
+- The real blocker for #225 is not "recording syscalls" but the inability to
+  distinguish **"this function touches BIOS"** from **"this function is
+  self-contained"**. Once A0/B0/C0 recognition (3.3) lands, the candidate
+  selector can know which BIOS services a function uses, giving #225 a
+  *machine-readable reason* for every rejection and letting future bring-up
+  prioritise HLE services by counting which function numbers actually appear —
+  the evidence loop Issue #279 asks for ("Initial BIOS HLE subset is selected
+  from real usage evidence").
 
 ## 4. Next-service recommendation (evidence-based)
 
@@ -185,15 +217,20 @@ capability or host I/O is required to honour the documented effect), `guest`
 (the service only touches guest registers/state), or both. **Testability** is
 the ease of building a deterministic, fixture-free differential/contract test.
 **Real-ROM evidence availability** is whether the site can be proven from
-analysis artifacts today (before 3.3 lands, no syscall identity is recorded at
-all, so everything is currently inferred). Identities for putchar/puts are
-verified and cited in `docs/REFERENCES.md`; getchar/gets are used in
-`BiosHleContractTests` with A0:3B/A0:3D but are **not yet re-verified** against
-the documentation, so they carry a "verify before register" marker.
+analysis artifacts today (before 3.3 lands, no A0/B0/C0 identity is resolved —
+no target recognition or R9/t1 function-number resolution — so everything is
+currently inferred). The **function numbers themselves come from verified
+documentation**: they are known from published PS1 BIOS documentation and
+recorded in `docs/REFERENCES.md`. Real-ROM evidence means recognizing A0/B0/C0
+call sites in the decoded instruction stream and correlating them with those
+documented function numbers. Identities for putchar/puts are verified and cited
+in `docs/REFERENCES.md`; getchar/gets are used in `BiosHleContractTests` with
+A0:3B/A0:3D but are **not yet re-verified** against the documentation, so they
+carry a "verify before register" marker.
 
 | Service | Documented identity | Arguments | Return | Side effects | External dependency (host/guest) | Testability | Real-ROM evidence availability | Implementation difficulty |
 |---|---|---|---|---|---|---|---|---|
-| putchar TTY completion (completes A0:3C) | A0:3C `std_out_putchar(char)` (B0:3D alias) | 1 char word (`arg & 0xFF`) | the character | write char to TTY output sink | **host** — output sink only | High (deterministic sink assertable) | High — scalar call, static-site detectable once trap codes are recorded | Low |
+| putchar TTY completion (completes A0:3C) | A0:3C `std_out_putchar(char)` (B0:3D alias) | 1 char word (`arg & 0xFF`) | the character | write char to TTY output sink | **host** — output sink only | High (deterministic sink assertable) | High — scalar call, static-site detectable once A0/B0/C0 call sites are recognized | Low |
 | puts | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — guest-memory read boundary + output sink | High once read+sink exist (differential: stub reads, compare output + R2) | High — identity already verified (ADR-014) | Low–medium |
 | getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | Medium — call-site detectable, **but** real titles rarely use TTY input | Medium–high |
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
@@ -257,17 +294,21 @@ Two explicit guarantees:
 
 ## 6. Open questions / next steps
 
-1. **Add syscall recording to the analysis artifacts** — implement 3.3 (trap-code
-   extraction + a first-class artifact field), schema-bumping per the #215 rules.
-2. **Pick the first real-ROM function that exercises an A0 call** — once call
+1. **Add A0/B0/C0 target recognition to the analysis pipeline** — recognize
+   direct jumps in the CFG to the BIOS table addresses `0xA0`/`0xB0`/`0xC0`
+   (the `BasicBlockBuilder` already resolves direct jump targets); implement 3.3.
+2. **Add R9/t1 function-number resolution for indirect BIOS dispatch** — resolve
+   the constant loaded into `$t1`/R9 before the jump via pattern-matching or
+   lightweight constant propagation, for sites that dispatch through `$t9`.
+3. **Pick the first real-ROM function that exercises an A0 call** — once call
    sites are recorded, select a title-local function for puts/putchar to drive
    the next HLE registration from evidence rather than from the synthetic
    fixtures alone.
-3. **Decide the input sink design for getchar/gets** — blocking semantics,
+4. **Decide the input sink design for getchar/gets** — blocking semantics,
    host-provided input source, and how the Domain layer receives it without I/O.
-4. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
+5. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
    std_io behavior and record it in `docs/REFERENCES.md` before any register work,
    per the no-guessing rule of ADR-014.
-5. **Re-audit `Supported` against the strict reading once the output sink lands**
+6. **Re-audit `Supported` against the strict reading once the output sink lands**
    — ADR-014's open item: every registered service must satisfy full documented
    behavior (including host-visible output), not just the ABI return contract.
