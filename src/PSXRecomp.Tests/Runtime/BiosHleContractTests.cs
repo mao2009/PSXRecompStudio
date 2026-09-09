@@ -83,4 +83,28 @@ public sealed class BiosHleContractTests
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
         result.Diagnostic.Message.Should().Be("A0:3C putchar requires one character argument.");
     }
+
+    [Theory]
+    [InlineData(BiosCallFamily.A0, 0x3B)] // getchar, adjacent to putchar
+    [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
+    [InlineData(BiosCallFamily.A0, 0x3E)] // puts: identity verified (ADR-014, docs/REFERENCES.md) but
+                                           // deliberately NOT registered — echoing its string-pointer
+                                           // argument would satisfy the ABI's return convention while
+                                           // implementing none of the documented behavior (reading guest
+                                           // memory, writing to TTY), so it must not be Supported until
+                                           // guest-memory access and an output sink exist.
+    [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
+    [InlineData(BiosCallFamily.B0, 0x3D)] // the B0 putchar alias, deliberately unregistered
+    [InlineData(BiosCallFamily.B0, 0x3F)] // the B0 puts alias, deliberately unregistered
+    public void NeighbouringFunctionNumbers_Are_Not_Caught_By_The_Registry(
+        BiosCallFamily family, byte functionNumber)
+    {
+        var identity = new BiosCallIdentity(family, functionNumber, 0x80002000, new[] { 0x80010000u });
+
+        var result = new BiosHleRuntime().Invoke(identity);
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.ReturnValue.Should().BeNull();
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+    }
 }

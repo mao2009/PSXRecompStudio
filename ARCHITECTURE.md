@@ -154,8 +154,18 @@ the A0/B0/C0 family, function number, guest PC, and arguments, while
 Unimplemented calls return explicit diagnostics such as
 `BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
-image must not be distributed or made mandatory. Phase 1 wires only the
-deterministic A0:3C `putchar` contract into the HLE registry.
+image must not be distributed or made mandatory. The HLE registry currently
+wires only A0:3C `putchar`, modeling its register-visible return-value
+contract; TTY output is not yet implemented and remains open work under Issue
+#279. This narrower Phase-1 `Supported` is accepted because putchar's argument
+is a plain scalar, so no guest-memory access is skipped and nothing about its
+CPU-observable outcome can silently diverge from real hardware — the missing
+side effect is a tracked limitation, not a hidden correctness gap. A0:3E
+`puts`'s identity is verified but deliberately left unregistered: unlike
+putchar, its argument is a guest-memory pointer, so skipping the read would
+hide a real correctness gap rather than merely omit a host-visible side
+channel. Every other function number reports `BIOS_HLE_UNSUPPORTED_CALL`
+(ADR-014).
 
 ## Recompiler
 
