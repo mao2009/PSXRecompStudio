@@ -2,7 +2,7 @@
 
 ## Pipeline
 
-PSXのR3000Aは5段パイプラインを使用。
+The PSX R3000A uses a five-stage pipeline.
 
 ```
 IF (Instruction Fetch)
@@ -18,109 +18,109 @@ WB (Write Back)
 
 ## Branch Delay Slot
 
-分岐命令の直後1命令は、分岐の有無に関わらず常に実行される。
+The instruction immediately following a branch instruction always executes, regardless of whether the branch is taken.
 
-### 動作
+### Behavior
 
 ```
 1000: BEQ $1, $2, target
-1004: ADD $3, $4, $5    ← Delay Slot (常に実行)
-1008: ...               ← Branch not taken場合
-100C: target: ...       ← Branch taken場合
+1004: ADD $3, $4, $5    ← Delay Slot (always executes)
+1008: ...               ← If branch is not taken
+100C: target: ...       ← If branch is taken
 ```
 
-### 分岐命令一覧
+### Branch Instructions
 
-| 命令 | 条件 | Delay Slot |
-|------|------|------------|
-| J | 無条件 | あり |
-| JAL | 無条件 | あり |
-| JR | 無条件 | あり |
-| JALR | 無条件 | あり |
-| BEQ | rs == rt | あり |
-| BNE | rs != rt | あり |
-| BLEZ | rs <= 0 | あり |
-| BGTZ | rs > 0 | あり |
-| BLTZ | rs < 0 | あり |
-| BGEZ | rs >= 0 | あり |
-| BLTZAL | rs < 0, ra=PC+8 | あり |
-| BGEZAL | rs >= 0, ra=PC+8 | あり |
+| Instruction | Condition | Delay Slot |
+|-------------|-----------|------------|
+| J | Unconditional | Yes |
+| JAL | Unconditional | Yes |
+| JR | Unconditional | Yes |
+| JALR | Unconditional | Yes |
+| BEQ | rs == rt | Yes |
+| BNE | rs != rt | Yes |
+| BLEZ | rs <= 0 | Yes |
+| BGTZ | rs > 0 | Yes |
+| BLTZ | rs < 0 | Yes |
+| BGEZ | rs >= 0 | Yes |
+| BLTZAL | rs < 0, ra=PC+8 | Yes |
+| BGEZAL | rs >= 0, ra=PC+8 | Yes |
 
-### Delay Slot内の分岐
+### Branch in a Delay Slot
 
-遅延スロット内に分岐命令を配置した場合の挙動は **UNPREDICTABLE**。PSX実機では以下の挙動を示す:
+Behavior when a branch instruction is placed in a delay slot is **UNPREDICTABLE**. On real PSX hardware, the following behavior is observed:
 
 ```
 BEQ $1, $2, target1
 BEQ $3, $4, target2    ← Delay Slot (branch in delay slot)
 ```
 
-この場合、内側の分岐が先に実行され、その後に外側の分岐が適用される。
+In this case, the inner branch executes first, after which the outer branch is applied.
 
-本リポジトリの実装（ADR-005のPCモデル）では、内側の分岐は自身の遅延スロットも実行した後に、外側の分岐を適用する:
+In this repository's implementation (the ADR-005 PC model), the inner branch executes its own delay slot before the outer branch is applied:
 
 ```asm
 1000: BEQ $1, $2, target1
-1004: BEQ $3, $4, target2    ← 外側の遅延スロット + 内側の分岐
-1008: NOP                    ← 内側の分岐の遅延スロット（常に実行）
+1004: BEQ $3, $4, target2    ← Outer delay slot + inner branch
+1008: NOP                    ← Inner branch delay slot (always executes)
 100C: ...
-1010: target1: ...           ← 外側の分岐ターゲット
+1010: target1: ...           ← Outer branch target
 ```
 
-1004の内側の分岐と、その遅延スロット1008が実行された後に外側の分岐が適用される:
+After the inner branch at 1004 and its delay slot at 1008 execute, the outer branch is applied:
 
-- 外側が成立: PC = target1
-- 外側が不成立: PC = 1008 + 4 = 100C（内側の分岐の遅延スロット直後の命令）
+- Outer branch taken: PC = target1
+- Outer branch not taken: PC = 1008 + 4 = 100C (the instruction immediately after the inner branch's delay slot)
 
-内側の分岐のターゲット（target2）は無視される。
+The inner branch target (`target2`) is ignored.
 
 ### Exception in Delay Slot
 
-遅延スロット内で例外が発生した場合:
+If an exception occurs in a delay slot:
 
 1. CAUSE.BD = 1
-2. EPC = 分岐命令のアドレス（遅延スロットではなく）
-3. 例外ハンドラはBDを確認し、EPC+8にリターンする
+2. EPC = address of the branch instruction, not the delay-slot instruction
+3. The exception handler checks BD and returns to EPC+8
 
 ## Load Delay Slot
 
-ロード命令の直後1命令は、ロード結果を見ない。
+The instruction immediately following a load does not observe the loaded value.
 
-### 動作
+### Behavior
 
 ```
 LW $1, 0($2)      ← Load $1 from memory
-ADD $3, $1, $4    ← Delay Slot: $1はまだ古い値
-NOP                ← $1に新しい値が反映される
-ADD $5, $1, $6    ← $1は新しい値を使用
+ADD $3, $1, $4    ← Delay Slot: $1 still has the old value
+NOP                ← The new value becomes visible in $1
+ADD $5, $1, $6    ← Uses the new value of $1
 ```
 
-### LWL/LWRの特殊動作
+### Special LWL/LWR Behavior
 
-LWL/LWRは **連続するLWL/LWRペア** でのみ直前のロード結果を読むことができる:
+LWL/LWR can read the preceding load result only when they form a **consecutive LWL/LWR pair**:
 
 ```
-# 正しいペア（LWR → LWL の順序）
-LWR $1, 3($2)     ← Load delay内
-LWL $1, 0($2)     ← $1のLWR結果を読むことができる
+# Valid pair (LWR → LWL order)
+LWR $1, 3($2)     ← In load delay
+LWL $1, 0($2)     ← Can read the LWR result in $1
 
-# 正しいペア（LWL → LWR の順序）
-LWL $1, 0($2)     ← Load delay内
-LWR $1, 3($2)     ← $1のLWL結果を読むことができる
+# Valid pair (LWL → LWR order)
+LWL $1, 0($2)     ← In load delay
+LWR $1, 3($2)     ← Can read the LWL result in $1
 ```
 
-2番目の命令の後に通常のload delayが残る。連続するペアでない場合、通常のload delay規則が適用される。
+A normal load delay remains after the second instruction. If the instructions are not a consecutive pair, the normal load-delay rule applies.
 
-### テストでの重要性
+### Importance for Testing
 
-PSXのBIOSコードはload delayに依存している。特に:
+PSX BIOS code relies on load-delay behavior. In particular:
 
 ```asm
 lw   $31, 0($sp)    # Load return address
-jal  function        # Delay slot: $31はまだ古い値
+jal  function        # Delay slot: $31 still has the old value
 ```
 
-この場合、jalは$31に正しいリターンアドレス（PC+8）を格納する。
+In this case, `jal` stores the correct return address (PC+8) in $31.
 
 ## Pipeline Hazards
 
@@ -128,28 +128,28 @@ jal  function        # Delay slot: $31はまだ古い値
 
 ```asm
 ADD $1, $2, $3
-SUB $4, $1, $5    ← $1の結果がまだ利用可能でない
+SUB $4, $1, $5    ← The result in $1 is not yet available
 ```
 
-R3000Aはハードウェアによるハザード解決を持たない。アセンブラがNOPを挿入する。
+The R3000A does not provide hardware hazard resolution. The assembler inserts NOPs.
 
 ### Control Hazard
 
-分岐命令によるハザード。遅延スロットで解決。
+Hazards caused by branch instructions. Resolved through delay slots.
 
 ## Cache
 
 ### Instruction Cache (4 KB)
 
 - 1 line = 16 bytes
-- 物理アドレスタグ
-- 80%ヒット率
+- Physical-address tags
+- 80% hit rate
 
 ### Data Cache (1 KB)
 
 - 1 line = 4 bytes (1 word)
 - Write-through
-- 物理アドレスタグ
+- Physical-address tags
 - 4-deep write buffer
 
-PSXでは通常、データキャッシュをスクラッチパッドとして使用する。
+On PSX, the data cache is normally used as scratchpad memory.
