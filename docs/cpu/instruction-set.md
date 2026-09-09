@@ -1,6 +1,6 @@
 # R3000A Instruction Set
 
-PSX R3000A で使用可能な全命令の一覧。
+Complete list of instructions available on the PSX R3000A.
 
 ## Instruction Categories
 
@@ -109,8 +109,8 @@ PSX R3000A で使用可能な全命令の一覧。
 
 | Mnemonic | Format | Opcode/Funct | Description |
 |----------|--------|--------------|-------------|
-| SYSCALL | R | 0x00/0x0C | システムコール例外 |
-| BREAK | R | 0x00/0x0D | ブレークポイント例外 |
+| SYSCALL | R | 0x00/0x0C | System call exception |
+| BREAK | R | 0x00/0x0D | Breakpoint exception |
 
 ### Coprocessor Instructions
 
@@ -118,9 +118,9 @@ PSX R3000A で使用可能な全命令の一覧。
 |----------|--------|--------|-------------|
 | MFC0 | COP | 0x10/0x00 | rt = COP0[rd] |
 | MTC0 | COP | 0x10/0x04 | COP0[rd] = rt |
-| RFE | COP | 0x10/0x10 | 例外から復帰 |
-| LWC2 | I | 0x32 | CP2レジスタにロード (GTE) |
-| SWC2 | I | 0x3A | CP2レジスタからストア (GTE) |
+| RFE | COP | 0x10/0x10 | Return from exception |
+| LWC2 | I | 0x32 | Load into a CP2 register (GTE) |
+| SWC2 | I | 0x3A | Store from a CP2 register (GTE) |
 
 ## Instruction Encoding Table
 
