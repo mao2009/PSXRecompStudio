@@ -103,10 +103,26 @@ public sealed record RecompilerStateDiffResult(
 [Domain]
 public static class RecompilerStateDiff
 {
-    /// <summary>Compares the interpreter/reference snapshot against the recompiled/actual snapshot.</summary>
+    /// <summary>
+    /// Compares the interpreter/reference snapshot against the recompiled/actual
+    /// snapshot. <paramref name="budgetsAreShared"/> and
+    /// <paramref name="staticBlockEntryPcs"/> give the classifier the fixture-level
+    /// facts a pair of snapshots alone cannot prove (CodeRabbit findings on #305):
+    /// whether the two executors were actually bounded by the same budget, and the
+    /// lowered program's authoritative static block-entry PCs to project the
+    /// interpreter trace onto — instead of guessing "same budget" from two
+    /// <see cref="RecompilerIrTerminationReason.ExecutionBudgetExceeded"/> snapshots,
+    /// or deriving the projection PC set from the host trace it is itself validating
+    /// (which would silently drop a block the host skipped). Both default to the
+    /// permissive case (a shared budget, host-observed PCs) for callers that compare
+    /// snapshots directly without a fixture; <see cref="RecompilerDifferentialRunner"/>
+    /// is the only caller with fixture/program context and always passes both explicitly.
+    /// </summary>
     public static RecompilerStateDiffResult Compare(
         RecompilerStateSnapshot reference,
-        RecompilerStateSnapshot actual)
+        RecompilerStateSnapshot actual,
+        bool budgetsAreShared = true,
+        IReadOnlySet<uint>? staticBlockEntryPcs = null)
     {
         ArgumentNullException.ThrowIfNull(reference);
         ArgumentNullException.ThrowIfNull(actual);
@@ -129,7 +145,7 @@ public static class RecompilerStateDiff
 
         var classification = diffs.Count == 0
             ? RecompilerComparisonClassification.Match
-            : IsBudgetInconclusive(reference, actual, diffs)
+            : IsBudgetInconclusive(reference, actual, diffs, budgetsAreShared, staticBlockEntryPcs)
                 ? RecompilerComparisonClassification.BudgetInconclusive
                 : RecompilerComparisonClassification.Mismatch;
         return new RecompilerStateDiffResult(classification, new ReadOnlyCollection<RecompilerStateDifference>(diffs));
@@ -141,16 +157,21 @@ public static class RecompilerStateDiff
     /// as inconclusive — not a match, but neither a real lowering divergence —
     /// only when all of these hold:
     /// <list type="number">
+    /// <item><paramref name="budgetsAreShared"/> is true — the caller has proven the
+    /// two executors were actually bounded by the same budget, not merely that both
+    /// happened to terminate with the same reason. Two snapshots that each independently
+    /// exhausted an unrelated budget prove nothing about a shared cut point.</item>
     /// <item>Both executors exhausted the same bounded budget
     /// (<see cref="RecompilerIrTerminationReason.ExecutionBudgetExceeded"/>). A run
     /// that completed, or that stopped for any other reason, is never inconclusive.</item>
     /// <item>Checkpoint divergence is purely tail-only. The interpreter trace,
-    /// projected to the host's block-entry PCs, must be an ordered prefix of the host
-    /// trace, and the host's remaining tail may only revisit PCs the interpreter
-    /// actually visited. This guarantees every comparable checkpoint prefix agrees in
-    /// order before the cut, and the only divergence is the host having run past the
-    /// end of the interpreter trace mid-loop — a loop continuation, not a new code
-    /// path and not a reordered existing path.</item>
+    /// projected to the host's static block-entry PCs (<paramref name="staticBlockEntryPcs"/>
+    /// when known), must be an ordered prefix of the host trace, and the host's
+    /// remaining tail may only revisit PCs the interpreter actually visited. This
+    /// guarantees every comparable checkpoint prefix agrees in order before the cut,
+    /// and the only divergence is the host having run past the end of the interpreter
+    /// trace mid-loop — a loop continuation, not a new code path, not a reordered
+    /// existing path, and not a static block the host silently skipped.</item>
     /// <item>The residual differences are confined to <c>pc</c> and <c>gpr[i]</c>,
     /// the natural variables of a mid-loop cut. Any difference in
     /// <c>hi</c>/<c>lo</c>/<c>memory.*</c>/<c>loadDelay.*</c>/<c>exception.*</c> is a
@@ -161,9 +182,18 @@ public static class RecompilerStateDiff
     private static bool IsBudgetInconclusive(
         RecompilerStateSnapshot reference,
         RecompilerStateSnapshot actual,
-        IReadOnlyList<RecompilerStateDifference> diffs)
+        IReadOnlyList<RecompilerStateDifference> diffs,
+        bool budgetsAreShared,
+        IReadOnlySet<uint>? staticBlockEntryPcs)
     {
-        // (1) both executors must have been cut off by the same bounded budget.
+        // (1) the two executors must have actually run under the same budget — not
+        // merely both happen to report the same termination reason.
+        if (!budgetsAreShared)
+        {
+            return false;
+        }
+
+        // (2) both executors must have been cut off by the same bounded budget.
         if (reference.Termination != RecompilerIrTerminationReason.ExecutionBudgetExceeded ||
             actual.Termination != RecompilerIrTerminationReason.ExecutionBudgetExceeded)
         {
@@ -211,7 +241,7 @@ public static class RecompilerStateDiff
         // the interpreter actually visited — a loop continuation after the budget
         // cut, never a new or reordered path. An ordering divergence, even over the
         // same PC set, stays a real mismatch.
-        return IsBudgetTailContinuation(reference.PcTrace, actual.PcTrace);
+        return IsBudgetTailContinuation(reference.PcTrace, actual.PcTrace, staticBlockEntryPcs);
     }
 
     /// <summary>
@@ -219,18 +249,25 @@ public static class RecompilerStateDiff
     /// interpreter's comparable prefix (<paramref name="interpreterTrace"/>), the
     /// budget-cut shape of Issue #304. A host block retires whole interpreter
     /// instructions, so the host only emits block-entry PCs. Projecting the
-    /// interpreter trace down to the PCs the host emits (dropping interior block PCs
+    /// interpreter trace down to those block-entry PCs (dropping interior block PCs
     /// such as delay-slot nops) must yield exactly a prefix of the host trace; the
     /// host then exhibits an artificial tail running past the end of the interpreter
     /// trace that only revisits interpreter-visited PCs (a loop continuation). Order
     /// preservation is essential: a run over the same PC set in a different order
     /// fails the prefix check and must remain a real divergence.
+    /// <paramref name="staticBlockEntryPcs"/>, when supplied, is the lowered
+    /// program's authoritative static block-entry PC set. Deriving that set from the
+    /// observed <paramref name="hostTrace"/> instead (the fallback when it is null)
+    /// is unsound: a host that skips a real static block entry would silently drop
+    /// it from the set it is itself being checked against, letting a genuine
+    /// control-flow skip look like a valid projection.
     /// </summary>
     private static bool IsBudgetTailContinuation(
         IReadOnlyList<uint> interpreterTrace,
-        IReadOnlyList<uint> hostTrace)
+        IReadOnlyList<uint> hostTrace,
+        IReadOnlySet<uint>? staticBlockEntryPcs)
     {
-        var hostPcs = new HashSet<uint>(hostTrace);
+        var hostPcs = staticBlockEntryPcs ?? new HashSet<uint>(hostTrace);
         var projected = new List<uint>(interpreterTrace.Count);
         foreach (var pc in interpreterTrace)
         {

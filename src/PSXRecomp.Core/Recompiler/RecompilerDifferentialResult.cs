@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Cpu;
 
 namespace PSXRecomp.Core.Recompiler;
 
@@ -52,10 +53,36 @@ public static class RecompilerDifferentialRunner
         var referenceResult = reference.Execute(fixture);
         var actualResult = actual.Execute(fixture);
 
+        // The runner is the one caller that actually knows whether the two
+        // executors ran under the same budget, and can rebuild the lowered
+        // program's authoritative static block-entry PCs — a pair of snapshots
+        // alone cannot prove either fact (CodeRabbit findings on #305).
         RecompilerStateDiffResult? diff = referenceResult.Snapshot is not null && actualResult.Snapshot is not null
-            ? RecompilerStateDiff.Compare(referenceResult.Snapshot, actualResult.Snapshot)
+            ? RecompilerStateDiff.Compare(
+                referenceResult.Snapshot,
+                actualResult.Snapshot,
+                budgetsAreShared: fixture.StepBudget == fixture.ReferenceStepBudget,
+                staticBlockEntryPcs: StaticBlockEntryPcs(fixture))
             : null;
 
         return new RecompilerDifferentialResult(fixture, referenceResult, actualResult, diff);
+    }
+
+    /// <summary>
+    /// The lowered program's static block-entry PCs for the fixture's instructions —
+    /// the authoritative projection target for <see cref="RecompilerStateDiff"/>'s
+    /// budget-tail check, independent of whichever PCs a given host run happened to
+    /// observe.
+    /// </summary>
+    private static IReadOnlySet<uint> StaticBlockEntryPcs(RecompilerDifferentialFixture fixture)
+    {
+        var instructions = new List<(R3000aInstruction Instruction, uint EntryPc)>(fixture.Instructions.Count);
+        for (var i = 0; i < fixture.Instructions.Count; i++)
+        {
+            instructions.Add((R3000aDecoder.Decode(fixture.Instructions[i]), fixture.PcOfInstruction(i)));
+        }
+
+        var program = MipsToIrLowerer.LowerProgram(instructions);
+        return program.Blocks.Select(block => block.EntryPc).ToHashSet();
     }
 }
