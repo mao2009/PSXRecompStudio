@@ -2,7 +2,7 @@
 
 Status: Stable
 Authority: Reference
-Related Issues: #248, #249, #250
+Related Issues: #248, #249, #250, #279
 
 PSXRecompStudio is informed by publicly available research and reference implementations. A project appearing in this document does not by itself mean that its source code has been copied, incorporated, or redistributed by PSXRecompStudio.
 
@@ -80,6 +80,45 @@ Usage in PSXRecompStudio:
 - any future direct source reuse must explicitly preserve the applicable MIT copyright and permission notice requirements.
 
 Related work: #248.
+
+## psx-spx / Nocash PlayStation Specifications
+
+Project: psx-spx (PlayStation Specifications), originally authored by Martin
+Korth (Nocash).
+
+Repository: https://github.com/psx-spx/psx-spx.github.io
+
+Reference date: 2026-09-09.
+
+Upstream revision observed: not pinned; the documentation was consulted through
+its published renderings at
+`https://psx-spx.consoledev.net/kernelbios/` and
+`https://problemkaputt.de/psxspx-bios-tty-console-std-io.htm`.
+
+License observed when referenced: the published document does not state a
+license grant for its prose; it is treated here as behavioral documentation
+consulted for reading only.
+
+Referenced areas include:
+
+- BIOS kernel A0/B0/C0 jump-table function identity and numbering;
+- the TTY console (`std_io`) function ABIs — `A(3Ch) or B(3Dh)
+  std_out_putchar(char)` and `A(3Eh) or B(3Fh) std_out_puts(src)`, including the
+  documented behavior that `std_out_puts` returns its incoming string-pointer
+  argument.
+
+Usage in PSXRecompStudio:
+
+- Direct source reuse: No.
+- behavioral documentation only; no code, tables, or text were copied;
+- BIOS HLE services are implemented independently against PSXRecompStudio's own
+  Runtime contracts and tests from the documented behavior, not by porting any
+  reference implementation;
+- the documentation is used to establish BIOS function identity so that function
+  numbers are verified rather than guessed; no BIOS ROM image is obtained,
+  distributed, or required by this repository.
+
+Related work: #279, [ADR-014](adr/014-bios-hle-runtime-contract.md).
 
 ## Prior art vs. incorporated third-party material
 
