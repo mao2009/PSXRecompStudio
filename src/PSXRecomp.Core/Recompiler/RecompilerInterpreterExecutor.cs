@@ -1,5 +1,6 @@
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Core.Runtime;
 
 namespace PSXRecomp.Core.Recompiler;
 
@@ -125,12 +126,13 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         return pc >= programStart && pc < programEnd;
     }
 
-    // Mirrors PSXCpu::TranslateAddress for the KUSEG/KSEG0/KSEG1 ranges used by
-    // test fixtures; see src/PSXRecomp.Native/src/psx_cpu.cpp.
+    // Delegates to the shared Ps1AddressTranslation helper.
     private static uint TranslateAddress(uint virtualAddress)
     {
-        if (virtualAddress <= 0x7FFFFFFF) return virtualAddress;
-        if (virtualAddress <= 0xBFFFFFFF) return virtualAddress & 0x1FFFFFFF;
-        throw new ArgumentOutOfRangeException(nameof(virtualAddress), "Fixture entry PC must fall in KUSEG/KSEG0/KSEG1.");
+        if (!Ps1AddressTranslation.TryTranslate(virtualAddress, out var physical))
+        {
+            throw new ArgumentOutOfRangeException(nameof(virtualAddress), "Fixture entry PC must fall in KUSEG/KSEG0/KSEG1.");
+        }
+        return physical;
     }
 }

@@ -170,4 +170,115 @@ public sealed class GuestMemoryReaderTests
 
         first.Should().Be(second);
     }
+
+    [Fact]
+    public void TryTranslate_Kseg1_MasksRegionBits()
+    {
+        Ps1AddressTranslation.TryTranslate(0xA0000100, out var physical).Should().BeTrue();
+        physical.Should().Be(0x00000100);
+    }
+
+    [Fact]
+    public void TryTranslate_Kseg2_ReturnsFalse()
+    {
+        Ps1AddressTranslation.TryTranslate(0xC0000000, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryTranslate_Kuseg_Identity()
+    {
+        Ps1AddressTranslation.TryTranslate(0x00000100, out var physical).Should().BeTrue();
+        physical.Should().Be(0x00000100);
+    }
+
+    [Fact]
+    public void TryTranslate_Kseg0_MasksRegionBits()
+    {
+        Ps1AddressTranslation.TryTranslate(0x80000100, out var physical).Should().BeTrue();
+        physical.Should().Be(0x00000100);
+    }
+
+    [Fact]
+    public void TryRead_Failure_LeavesBufferUntouched()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(0x00000000, 0xAA);
+        ram.Write8(0x00000001, 0xBB);
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> buffer = stackalloc byte[2] { 0xFF, 0xFF };
+
+        var result = reader.TryRead(0xC0000000, buffer);
+
+        result.Should().BeFalse();
+        buffer[0].Should().Be(0xFF, "buffer must not be modified on failure");
+        buffer[1].Should().Be(0xFF, "buffer must not be modified on failure");
+    }
+
+    [Fact]
+    public void TryRead_PartialFailure_LeavesBufferUntouched()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(0x001FFFFF, 0xAA);
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> buffer = stackalloc byte[2] { 0xFF, 0xFF };
+
+        var result = reader.TryRead(0x001FFFFF, buffer);
+
+        result.Should().BeFalse();
+        buffer[0].Should().Be(0xFF, "buffer must not be modified on partial failure");
+        buffer[1].Should().Be(0xFF, "buffer must not be modified on partial failure");
+    }
+
+    [Fact]
+    public void TryRead_AddressNearMaxUint_OverflowIsRejected()
+    {
+        var ram = new RecompilerGuestMemory();
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> buffer = stackalloc byte[4];
+
+        var result = reader.TryRead(0xFFFFFFFF, buffer);
+
+        result.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0xFFFFFFFFu, 2)]
+    [InlineData(0xFFFFFFFEu, 3)]
+    public void TryRead_AddressPlusLengthOverflows_IsRejected(uint address, int length)
+    {
+        var ram = new RecompilerGuestMemory();
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> buffer = stackalloc byte[length];
+
+        var result = reader.TryRead(address, buffer);
+
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryReadCString_AddressPlusMaxLengthOverflows_IsRejected()
+    {
+        var ram = new RecompilerGuestMemory();
+        var reader = new GuestMemoryReader(ram.Read8);
+
+        var result = GuestMemoryStringReader.TryReadCString(reader, 0xFFFFFFFF, maxLength: 2);
+
+        result.Success.Should().BeFalse();
+        result.Length.Should().Be(0);
+        result.Error.Should().Be("invalid address");
+    }
+
+    [Fact]
+    public void TryReadCString_ValidAddressNearMaxUint_ButNotOverflow_Succeeds()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(0x001FFFFE, (byte)'A');
+        ram.Write8(0x001FFFFF, 0);
+        var reader = new GuestMemoryReader(ram.Read8);
+
+        var result = GuestMemoryStringReader.TryReadCString(reader, 0x801FFFFE, maxLength: 2);
+
+        result.Success.Should().BeTrue();
+        result.Length.Should().Be(1);
+    }
 }

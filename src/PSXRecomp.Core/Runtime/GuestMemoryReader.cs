@@ -30,31 +30,14 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
 
     /// <summary>
     /// Translates a guest virtual address to a physical address using the
-    /// canonical KUSEG/KSEG0/KSEG1 rule, mirroring native PSXCpu::TranslateAddress
-    /// (src/PSXRecomp.Native/src/psx_cpu.cpp):
-    /// KUSEG (≤ 0x7FFFFFFF) maps to itself; KSEG0/KSEG1 (≤ 0xBFFFFFFF) mask off
-    /// the region bits. Anything else is not translatable.
+    /// canonical KUSEG/KSEG0/KSEG1 rule. Delegates to the shared
+    /// <see cref="Ps1AddressTranslation.TryTranslate"/> helper.
     /// </summary>
     /// <param name="address">Guest virtual address.</param>
     /// <param name="physical">Translated physical address when the method returns true.</param>
     /// <returns>True if the address falls in a translatable region.</returns>
     public static bool TryTranslate(uint address, out uint physical)
-    {
-        if (address <= 0x7FFFFFFF)
-        {
-            physical = address;
-            return true;
-        }
-
-        if (address <= 0xBFFFFFFF)
-        {
-            physical = address & 0x1FFFFFFF;
-            return true;
-        }
-
-        physical = 0;
-        return false;
-    }
+        => Ps1AddressTranslation.TryTranslate(address, out physical);
 
     /// <summary>
     /// Reads a single byte from guest memory. Untranslatable addresses and
@@ -92,17 +75,25 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
     /// <returns>True if every byte was read; false if any byte failed.</returns>
     public bool TryRead(uint address, Span<byte> buffer)
     {
+        var length = (uint)buffer.Length;
+        if (length > 0 && address + length < address)
+        {
+            return false;
+        }
+
+        Span<byte> temp = stackalloc byte[buffer.Length];
+
         for (var i = 0; i < buffer.Length; i++)
         {
             if (!TryReadByte(address + (uint)i, out var value))
             {
-                buffer.Clear();
                 return false;
             }
 
-            buffer[i] = value;
+            temp[i] = value;
         }
 
+        temp.CopyTo(buffer);
         return true;
     }
 }

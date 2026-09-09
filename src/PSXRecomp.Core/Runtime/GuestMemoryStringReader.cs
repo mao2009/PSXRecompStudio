@@ -42,6 +42,12 @@ public static class GuestMemoryStringReader
 
         ArgumentNullException.ThrowIfNull(reader);
 
+        var maxLen = (uint)maxLength;
+        if (address + maxLen < address)
+        {
+            return new GuestStringReadResult(false, 0, "invalid address");
+        }
+
         for (var length = 0; length < maxLength; length++)
         {
             if (!reader.TryReadByte(address + (uint)length, out var value))
