@@ -6,7 +6,7 @@ namespace PSXRecomp.Core.Runtime;
 /// Outcome of reading a NUL-terminated guest string.
 /// </summary>
 /// <param name="Success">True when a terminator was found within the bound.</param>
-/// <param name="Length">Number of bytes before the NUL terminator; zero on failure.</param>
+/// <param name="Length">Number of bytes before the NUL terminator on success; zero for an "invalid address" failure; <c>maxLength</c> for an "unterminated" bounded scan.</param>
 /// <param name="Error">Stable failure reason when <paramref name="Success"/> is false; null on success.</param>
 [Domain]
 public sealed record GuestStringReadResult(bool Success, int Length, string? Error);
@@ -29,8 +29,10 @@ public static class GuestMemoryStringReader
     /// A result whose <see cref="GuestStringReadResult.Success"/> is true with
     /// <see cref="GuestStringReadResult.Length"/> set to the number of characters
     /// before the NUL when a terminator is found, or false with a stable error
-    /// when the first byte is unreadable ("invalid address") or no NUL is found
-    /// within the bound ("unterminated").
+    /// when the first byte is unreadable ("invalid address", with
+    /// <see cref="GuestStringReadResult.Length"/> zero) or no NUL is found within
+    /// the bound ("unterminated", with <see cref="GuestStringReadResult.Length"/>
+    /// equal to <paramref name="maxLength"/>).
     /// </returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxLength"/> is not positive.</exception>
     public static GuestStringReadResult TryReadCString(IGuestMemoryReader reader, uint address, int maxLength)
