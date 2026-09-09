@@ -17,6 +17,14 @@ public sealed record BiosServiceResult(
     public static BiosServiceResult Unsupported(BiosCallIdentity identity) =>
         CreateUnsupported(identity);
 
+    /// <summary>
+    /// Creates the explicit result for a registered service invoked with an ABI
+    /// shape it does not accept. Shared by every service so argument rejection
+    /// is never hand-rolled per implementation.
+    /// </summary>
+    public static BiosServiceResult InvalidArguments(BiosCallIdentity identity, string message) =>
+        CreateInvalidArguments(identity, message);
+
     private static BiosServiceResult CreateSupported(BiosCallIdentity identity, uint? returnValue)
     {
         ArgumentNullException.ThrowIfNull(identity);
@@ -33,6 +41,16 @@ public sealed record BiosServiceResult(
                 "BIOS_HLE_UNSUPPORTED_CALL",
                 identity,
                 $"No HLE implementation is registered for {identity.StableKey}."));
+    }
+
+    private static BiosServiceResult CreateInvalidArguments(BiosCallIdentity identity, string message)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentException.ThrowIfNullOrEmpty(message);
+        return new(
+            BiosServiceStatus.Unsupported,
+            null,
+            new BiosDiagnostic("BIOS_HLE_INVALID_ARGUMENTS", identity, message));
     }
 }
 
