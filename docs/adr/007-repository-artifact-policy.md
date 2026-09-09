@@ -6,29 +6,29 @@
 
 ## Context
 
-PSXRecompStudio は将来的にユーザー提供の ROM / ISO / BIOS を取り扱う。これらは著作物であり、リポジトリへの混入が絶対に許されない。`.gitignore` による除外だけでは、一度 stage / commit されたファイルや、拡張子を改名したバイナリを防止できない。
+PSXRecompStudio will eventually handle user-provided ROMs, ISOs, and BIOS images. These are copyrighted materials and must never be committed to the repository. `.gitignore` alone is insufficient because it cannot stop files that have already been staged or committed, nor can it detect binaries that have simply been renamed with a different extension.
 
-また、ビルド成果物 (`bin/`, `obj/`, `build/` 等) や巨大ファイルの誤コミットも、現状ではレビューの目視に依存している。Golden Tests (Issue #39) 以降、テストデータが増えるにつれ、正当な fixture と実機由来データの境界を機械的に保証する仕組みが必要になる。
+Build outputs such as `bin/`, `obj/`, and `build/`, as well as accidentally committed large files, are also currently dependent on manual review. As test data grows after the Golden Tests work (Issue #39), the project needs a machine-enforced boundary between legitimate fixtures and data derived from real hardware or copyrighted media.
 
 ## Decision
 
-1. **ポリシー SSOT**: 禁止拡張子・禁止パスセグメント・サイズ上限・コンテンツ署名・allowlist を `config/artifact-policy.json` に一元定義する。閾値やリストをスクリプト側に重複させない。
-2. **CI 品質ゲート**: `scripts/ci/check-artifact-policy.ps1` (pwsh, CI/local 共通) を GitHub Actions の `Artifact Contamination Gate` ジョブとして実行し、集約 `ci` ジョブの必須条件に含める。
-3. **全体走査**: PR 差分ではなく追跡対象ツリー全体を毎回走査する。現規模ではコストが無視でき、diff 走査の上限集合となる。
-4. **改名バイナリ対策**: 拡張子に依存せず、PS-X EXE / ISO 9660 / CHD / CSO / PBP / MDS のオフセット固定シグネチャで内容を検査する。
-5. **allowlist**: 正当な例外は `allowedPaths` の明示的な exact-path 登録のみとし、実機由来データの allowlist は禁止する。
+1. **Policy SSOT**: Define forbidden extensions, forbidden path segments, size limits, content signatures, and the allowlist centrally in `config/artifact-policy.json`. Do not duplicate thresholds or lists in the checking script.
+2. **CI quality gate**: Run `scripts/ci/check-artifact-policy.ps1` (pwsh, shared by CI and local validation) as the GitHub Actions `Artifact Contamination Gate` job, and make it a required dependency of the aggregate `ci` job.
+3. **Full-tree scan**: Scan the entire tracked repository tree on every run rather than only the PR diff. At the current repository size, the cost is negligible, and the full-tree scan is a strict superset of diff-only scanning.
+4. **Renamed-binary detection**: Inspect file contents using fixed-offset signatures for PS-X EXE, ISO 9660, CHD, CSO, PBP, and MDS rather than relying only on extensions.
+5. **Allowlist**: Legitimate exceptions must be registered explicitly as exact paths in `allowedPaths`. Data derived from real hardware or copyrighted media must never be allowlisted.
 
 ## Alternatives Considered
 
-- **`.gitignore` 強化のみ**: stage 後の検出不可のため不十分。補完としては維持する。
-- **PR diff のみ走査**: 実装は軽いが、既存混入やマージ後の変化を見逃す。全体走査に対して優位性がない。
-- **bash + jq 実装**: runner 依存を増やすより、runner 標準の pwsh + ConvertFrom-Json が Windows ローカル検証とも一致する。
-- **専用 Roslyn Analyzer への即時昇格**: Analyzer はコンパイル単位の強制であり、バイナリ走査とは対象が異なる。将来の昇格候補としつつ、まずは CI スクリプトで足場を固める。
+- **Strengthen `.gitignore` only**: Insufficient because it cannot detect files after they have been staged. Keep `.gitignore` only as a complementary safeguard.
+- **Scan only the PR diff**: Simpler, but it can miss pre-existing contamination or changes after merge. It has no meaningful advantage over a full-tree scan at the current repository size.
+- **Implement with bash + jq**: Prefer runner-standard pwsh + `ConvertFrom-Json`, which also matches local Windows validation, rather than adding runner-specific dependencies.
+- **Immediately promote this into a dedicated Roslyn Analyzer**: Analyzers enforce rules at compilation scope, while binary artifact scanning is a different concern. A future promotion remains possible, but the CI script is the appropriate initial enforcement layer.
 
 ## Consequences
 
-- ROM/BIOS/生成物/巨大ファイル/改名バイナリの混入が merge 前に機械的に阻止される。
-- ポリシー変更は JSON 1 ファイルの diff として review 可能であり、判断履歴が残る。
-- 閾値超過の正当アセットは allowlist 登録の手続きコストを生む (意図された摩擦)。
-- 履歴監査・hash denylist 等は本 ADR の範囲外 (#91 の将来拡張)。
-- 詳細な運用規約は [docs/development/artifact-policy.md](../development/artifact-policy.md) を SSOT とする。
+- ROMs, BIOS images, generated artifacts, oversized files, and renamed binaries are mechanically blocked before merge.
+- Policy changes are reviewable as a diff to a single JSON file, preserving the decision history.
+- Legitimate assets that exceed configured thresholds incur the deliberate friction of an explicit allowlist entry.
+- Historical repository auditing, hash denylists, and similar extensions remain outside this ADR's scope and may be addressed later under #91.
+- Detailed operational rules use [docs/development/artifact-policy.md](../development/artifact-policy.md) as the SSOT.
