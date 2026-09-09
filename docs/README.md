@@ -12,11 +12,18 @@ It is intended to be readable by both humans and AI development agents.
 - **Draft**: proposed or experimental information.
 - **Deprecated**: retained for historical context only.
 
+English is the Canonical language for maintained SSOT documentation. When a
+translated convenience copy exists, it must remain subordinate to its Canonical
+source. See [API Documentation & Docstring Policy](development/documentation-policy.md)
+for the Canonical/translation maintenance and review policy.
+
 ## Documentation hierarchy
 
 ```text
 Architecture
-├── SSOT
+├── Top-level Architecture SSOT
+├── Architecture Index
+├── Managed Architecture Matrix
 ├── CPU / R3000A
 ├── Decoder
 ├── Analyzer
@@ -58,8 +65,8 @@ Closed Issues are historical records. They are not the primary source of current
 A development agent should normally follow this order:
 
 1. Read the repository README.
-2. Read the relevant architecture/SSOT documentation.
-3. Identify the applicable subsystem SSOT.
+2. Read the [Top-level Architecture SSOT](../ARCHITECTURE.md).
+3. Read the [Architecture Index](architecture/README.md) and identify the applicable subsystem SSOT.
 4. Inspect related open Issues and PRs.
 5. Inspect the implementation code.
 6. Verify that the proposed change does not violate documented constraints.
@@ -80,9 +87,9 @@ Constraints:
 
 ## Current subsystem documentation
 
-Detailed subsystem pages will be added as the corresponding architecture becomes established.
-
-- [Architecture SSOT](architecture/README.md)
+- [Top-level Architecture SSOT](../ARCHITECTURE.md)
+- [Architecture Index](architecture/README.md)
+- [Managed Architecture Matrix](architecture-matrix.md)
 - [GUI / UX](architecture/gui-ux.md)
 - [Development Agent Guide](development/agent-guide.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
@@ -113,6 +120,17 @@ Detailed subsystem pages will be added as the corresponding architecture becomes
 - Harness — planned
 - Testing — planned
 - [Runtime](runtime/architecture.md)
+
+## Translation relationship checks
+
+Registered translation pairs are declared in
+`config/docs/translations.json`. The documentation translation workflow checks
+that registered Canonical and translated files exist, that the required
+Canonical marker is present in the translation, and whether the Canonical file
+has changed more recently than its translation.
+
+Freshness findings are warnings for human review; they do not claim semantic
+divergence or authorize automatic translation/merge.
 
 ## Maintenance rule
 
