@@ -1,0 +1,36 @@
+name: Documentation Translation Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README*.md'
+      - 'docs/**'
+      - 'config/docs/translations.json'
+      - 'scripts/ci/check-documentation-translations.ps1'
+      - '.github/workflows/documentation-translations.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'README*.md'
+      - 'docs/**'
+      - 'config/docs/translations.json'
+      - 'scripts/ci/check-documentation-translations.ps1'
+      - '.github/workflows/documentation-translations.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  translation-relationships:
+    name: Canonical Translation Relationships
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check translation relationships and freshness
+        shell: pwsh
+        run: ./scripts/ci/check-documentation-translations.ps1

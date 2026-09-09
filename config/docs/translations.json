@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "pairs": [
+    {
+      "canonical": "README.md",
+      "translation": "README.ja.md",
+      "language": "ja",
+      "canonicalMarker": "[English README (Canonical / SSOT)](README.md)"
+    }
+  ]
+}
