@@ -4,19 +4,19 @@
 
 | ExcCode | Mnemonic | Description |
 |---------|----------|-------------|
-| 0x00 | INT | 外部割り込み |
-| 0x01 | MOD | TLB変更（PSXでは未使用） |
-| 0x02 | TLBL | TLBロード（PSXでは未使用） |
-| 0x03 | TLBS | TLBストア（PSXでは未使用） |
-| 0x04 | AdEL | アドレスエラー（ロード/命令フェッチ） |
-| 0x05 | AdES | アドレスエラー（ストア） |
-| 0x06 | IBE | 命令フェッチバスエラー |
-| 0x07 | DBE | データロード/ストアバスエラー |
-| 0x08 | Sys | SYSCALL命令 |
-| 0x09 | Bp | BREAK命令 |
-| 0x0A | RI | 予約命令 |
-| 0x0B | CpU | コプロセッサ使用不可 |
-| 0x0C | Ov | 算術オーバーフロー |
+| 0x00 | INT | External interrupt |
+| 0x01 | MOD | TLB modification (unused on PSX) |
+| 0x02 | TLBL | TLB load (unused on PSX) |
+| 0x03 | TLBS | TLB store (unused on PSX) |
+| 0x04 | AdEL | Address error (load/instruction fetch) |
+| 0x05 | AdES | Address error (store) |
+| 0x06 | IBE | Instruction fetch bus error |
+| 0x07 | DBE | Data load/store bus error |
+| 0x08 | Sys | SYSCALL instruction |
+| 0x09 | Bp | BREAK instruction |
+| 0x0A | RI | Reserved instruction |
+| 0x0B | CpU | Coprocessor unusable |
+| 0x0C | Ov | Arithmetic overflow |
 
 ## Exception Vectors
 
@@ -27,36 +27,34 @@
 | COP0 Break | 80000040h | BFC00140h |
 | General | 80000080h | BFC00180h |
 
-PSXでは通常BEV=1（BIOS起動時）からBEV=0（BIOSが変更）に切り替わる。
+On PSX, execution normally starts with BEV=1 during BIOS startup and later switches to BEV=0 when the BIOS changes it.
 
 ## Exception Processing
 
-### 発生時
+### On Exception
 
-1. **EPC保存**: EPC = 遅延スロット内なら分岐命令のアドレス、それ以外なら現在のPC
-2. **BD設定**: CAUSE.BD = 1（遅延スロット内なら）
-3. **CAUSE設定**: CAUSE.Excode = 例外コード
-4. **SRスタック退避**: 3レベルスタックを右にシフト
+1. **Save EPC**: EPC = address of the branch instruction when in a delay slot; otherwise the current PC
+2. **Set BD**: CAUSE.BD = 1 when the exception occurred in a delay slot
+3. **Set CAUSE**: CAUSE.Excode = exception code
+4. **Push SR stack**: shift the 3-level stack toward the older levels
    - KUo ← KUp, IEo ← IEp
    - KUp ← KUc, IEp ← IEc
-5. **割り込み無効化**: KUc ← 0（カーネル）, IEc ← 0（割り込み無効）
-6. **PC転送**: PC = 例外ベクトルアドレス
+5. **Disable interrupts**: KUc ← 0 (kernel), IEc ← 0 (interrupts disabled)
+6. **Transfer PC**: PC = exception vector address
 
 ### RFE (Return From Exception)
 
-1. SRの3レベルスタックをポップ
+1. Pop the 3-level SR stack
    - KUc ← KUp, IEc ← IEp
    - KUp ← KUo, IEp ← IEo
-   - KUo/IEo（SR bit 4-5）はRFEでは変更しない
-2. RFE自体はPCを変更しない。PC復元はソフトウェアの責務であり、通常はEPCを
-   MFC0でGPRに読み出した上でJRにより行う（遅延スロット内で例外が発生した
-   場合は分岐命令のアドレスからリターンする）。詳細: ADR-005。
+   - KUo/IEo (SR bits 4-5) are not modified by RFE
+2. RFE itself does not change the PC. Restoring the PC is software's responsibility and is normally done by reading EPC into a GPR with MFC0 and then jumping with JR. If the exception occurred in a delay slot, execution returns from the branch instruction address. See ADR-005 for details.
 
 ## Interrupt Handling
 
 ### I_STAT (1F801070h)
 
-割り込みステータスレジスタ。Edge-triggered。
+Interrupt status register. Edge-triggered.
 
 | Bit | Source |
 |-----|--------|
@@ -73,13 +71,13 @@ PSXでは通常BEV=1（BIOS起動時）からBEV=0（BIOSが変更）に切り�
 
 ### I_MASK (1F801074h)
 
-割り込みマスクレジスタ。R/W。
+Interrupt mask register. R/W.
 
 ## Interrupt Processing
 
-1. I_STAT & I_MASK が非ゼロなら割り込み発生（Interrupt Controllerの集約ペンディング状態、`PSXInterruptController::GetInterruptPending()`）
-2. CPUのStep()毎に、その集約ペンディング状態をCOP0 CAUSE.IP2（bit 10, `docs/cpu/cop0.md` IP参照）へ反映
-3. `(CAUSE.IP & SR.IM) != 0 && SR.IEc == 1` の場合、INT例外（Excode 0x00）として処理（SRの3レベルスタックへ退避、EPC/CAUSE.BD設定は他の例外と同じ#141モデルに従う）。分岐の遅延スロット実行中はチェックを行わず、分岐＋遅延スロットのペアが完了してから判定する（Issue #144, ADR-004/ADR-005）。
+1. If I_STAT & I_MASK is non-zero, an interrupt is pending at the Interrupt Controller aggregate line (`PSXInterruptController::GetInterruptPending()`).
+2. On every CPU `Step()`, that aggregate pending state is reflected into COP0 CAUSE.IP2 (bit 10; see IP in `docs/cpu/cop0.md`).
+3. If `(CAUSE.IP & SR.IM) != 0 && SR.IEc == 1`, process an INT exception (Excode 0x00). The SR 3-level stack is pushed, and EPC/CAUSE.BD are set according to the same #141 model used for other exceptions. Interrupts are not checked while executing a branch delay slot; they are evaluated only after the branch + delay-slot pair completes (Issue #144, ADR-004/ADR-005).
 
 ## Exception Priority
 
@@ -96,18 +94,18 @@ lowest:   ...
 
 ## Nested Exceptions
 
-例外ハンドラ内でSRを退避/復元しないと、ネストされた例外で問題が生じる。
+If SR is not saved/restored inside the exception handler, nested exceptions can cause problems.
 
 ```asm
-# 例外ハンドラ例（R3000A 3-level stack）
-mfc0 k0, C0_SR     # SR退避
+# Example exception handler (R3000A 3-level stack)
+mfc0 k0, C0_SR     # Save SR
 sw   k0, saved_sr
-ori  k0, k0, 0x3   # KUc=0, IEc=0 (カーネル、割り込み無効)
-mtc0 k0, C0_SR     # スタック退避完了
-# ... 処理 ...
+ori  k0, k0, 0x3   # KUc=0, IEc=0 (kernel, interrupts disabled)
+mtc0 k0, C0_SR     # Stack save complete
+# ... handling ...
 lw   k0, saved_sr
-mtc0 k0, C0_SR     # SR復元
-mfc0 k1, C0_EPC    # 復帰先アドレスをEPCから読み出す
-jr   k1            # PCへジャンプ
-rfe                # 遅延スロットで実行し、3-levelスタックをポップ
+mtc0 k0, C0_SR     # Restore SR
+mfc0 k1, C0_EPC    # Read return address from EPC
+jr   k1            # Jump back to PC
+rfe                # Execute in the delay slot and pop the 3-level stack
 ```
