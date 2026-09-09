@@ -1,65 +1,71 @@
 # Architecture
 
-PSXRecompStudio のシステムアーキテクチャ。
+**Status:** Stable
 
-## プロジェクト目的
+**Authority:** Top-level Architecture SSOT
 
-PlayStation 1 (PSX) タイトルを解析・再コンパイルし、Windows / Linux / macOS でネイティブ実行可能にするための統合開発環境。
+**Document Type:** Architecture Overview
 
-将来的な目標:
+This document defines the repository-wide system architecture for PSXRecompStudio. More-specific subsystem SSOTs are authoritative within their own scope. The managed layer/dependency model is defined by [docs/architecture-matrix.md](docs/architecture-matrix.md), while [docs/architecture/README.md](docs/architecture/README.md) serves as the architecture index.
 
-- PSX タイトルの再コンパイル
-- タイトル固有差分の YAML 定義
-- 逆アセンブル・解析・デバッグ
-- MCP サーバーによる外部 AI からのゲーム状態取得・操作
-- 権利者が公式移植・保存用途に利用できる汎用基盤
+## Project Goals
 
-## コンポーネント構成
+An integrated development environment for analyzing and recompiling PlayStation 1 (PSX) titles so they can run natively on Windows, Linux, and macOS.
+
+Future goals:
+
+- Recompile PSX titles
+- Define title-specific differences in YAML
+- Disassembly, analysis, and debugging
+- Retrieve and manipulate game state from external AI through an MCP server
+- Provide a general-purpose foundation that rights holders can use for official ports and preservation
+
+## Component Structure
 
 ```text
 src/
-├── PSXRecompStudio/           # Avalonia UI アプリケーション
-├── PSXRecomp.Core/            # C# Core: P/Invoke バインディング + ラッパー
-├── PSXRecomp.Native/          # C++ Core: PSX エミュレーション核 (C ABI)
-├── architecture.contract.json # アーキテクチャ強制の SSOT (loach.ArchitectureAnalyzer が読む)
-├── PSXRecomp.Runtime/         # 将来: PSX ランタイム管理
-├── PSXRecomp.Recompiler/      # 将来: 再コンパイラ
-├── PSXRecomp.Debugger/        # 将来: デバッガー
-├── PSXRecomp.Infrastructure/  # 将来: 共通インフラ
-└── PSXRecomp.Tests/           # xUnit テスト
+├── PSXRecompStudio/           # Avalonia UI application
+├── PSXRecomp.Core/            # C# Core: P/Invoke bindings + wrappers
+├── PSXRecomp.Native/          # C++ Core: PSX emulation core (C ABI)
+├── architecture.contract.json # SSOT for enforced architecture rules (read by loach.ArchitectureAnalyzer)
+├── PSXRecomp.Runtime/         # Future: PSX runtime management
+├── PSXRecomp.Recompiler/      # Future: recompiler
+├── PSXRecomp.Debugger/        # Future: debugger
+├── PSXRecomp.Infrastructure/  # Future: shared infrastructure
+└── PSXRecomp.Tests/           # xUnit tests
 mcp/                           # MCP Server (Node.js / TypeScript)
 ```
 
-## アーキテクチャ強制
+## Architecture Enforcement
 
-レイヤー属性（`[Domain]` `[Application]` `[Infrastructure]` 等）と依存方向は NuGet パッケージ `loach.ArchitectureAnalyzer` によりコンパイル時に強制される（AARC002-007、すべて Error）。ルールデータは `src/architecture.contract.json`、ゲート severity は `.editorconfig` が保持する。旧内蔵 `PSXRecomp.Analyzer`（PSXR001-006）は #294 で削除済み。
+Layer attributes (`[Domain]`, `[Application]`, `[Infrastructure]`, etc.) and dependency directions are enforced at compile time by the `loach.ArchitectureAnalyzer` NuGet package (AARC002-007, all Errors). Rule data lives in `src/architecture.contract.json`, while `.editorconfig` owns gate severity. The former in-repository `PSXRecomp.Analyzer` (PSXR001-006) was removed in #294.
 
-- SSOT: [docs/architecture-matrix.md](docs/architecture-matrix.md)
-- 設計判断: [docs/adr/006-architecture-analyzer-enforcement.md](docs/adr/006-architecture-analyzer-enforcement.md)（#295 で移行を追記）
+- Managed architecture subsystem SSOT: [docs/architecture-matrix.md](docs/architecture-matrix.md)
+- Design decision: [docs/adr/006-architecture-analyzer-enforcement.md](docs/adr/006-architecture-analyzer-enforcement.md) (migration added in #295)
 
-すべてのクラスにレイヤー属性が必要（マーカー名前空間 `PSXRecomp.Architecture.*`、生成コード、属性済み型の入れ子クラスは除外）。違反はビルドエラーとなり CI も失敗する。
+Every class requires a layer attribute (marker namespace `PSXRecomp.Architecture.*`), except generated code and nested classes whose enclosing type is already attributed. Violations are build errors and also fail CI.
 
-## C# / Native 責務分担
+## C# / Native Responsibility Split
 
-### C# 側 (PSXRecompStudio, PSXRecomp.Core)
+### C# side (PSXRecompStudio, PSXRecomp.Core)
 
-- Avalonia UI / MVVM パターン
-- プロジェクト管理 (YAML)
-- ロギング
+- Avalonia UI / MVVM pattern
+- Project management (YAML)
+- Logging
 - Debugger UI
-- Native Core との P/Invoke 連携
-- リソース管理 (IDisposable)
+- P/Invoke integration with the Native Core
+- Resource management (`IDisposable`)
 
-### Native 側 (PSXRecomp.Native)
+### Native side (PSXRecomp.Native)
 
-- PSX CPU (R3000A) エミュレーション
+- PSX CPU (R3000A) emulation
 - PSX Memory (RAM, BIOS, Hardware Registers)
-- PSX Hardware (GPU, SPU, DMA, CD-ROM, Timers, Interrupt Controller — 実装状況は下記「Hardware」節参照)
-- 性能が重要な計算全般
+- PSX Hardware (GPU, SPU, DMA, CD-ROM, Timers, Interrupt Controller — see the Hardware section below for implementation status)
+- Performance-critical computation in general
 
-### 境界
+### Boundary
 
-C# から Native への呼び出しは **C ABI** 経由のみ。
+Calls from C# to Native go through the **C ABI only**.
 
 ```text
 C# (PSXRecomp.Core)
@@ -69,18 +75,18 @@ C ABI (psx_core.h)
 C++ (PSXRecomp.Native)
 ```
 
-C++ クラスを直接 C# に公開する設計は採用しない。
+C++ classes are not exposed directly to C#.
 
 ## C ABI
 
-### 設計方針
+### Design Policy
 
-- 不透明ポインタ (`PSXCore*`) で状態を隠蔽
-- C linkage でエクスポート
-- エラーコードではなく戻り値で状態を返す
-- メモリ所有権は Create/Destroy で明示
+- Hide state behind an opaque pointer (`PSXCore*`)
+- Export with C linkage
+- Return state through return values rather than error codes
+- Make memory ownership explicit through Create/Destroy
 
-### 最小 API
+### Minimal API
 
 ```c
 // Lifecycle
@@ -107,12 +113,12 @@ uint32_t PSXCore_GetRAMSize(void);
 
 ### CPU
 
-- R3000A 互換 (MIPS I)
-- 32 GPR (General Purpose Registers)
+- R3000A-compatible (MIPS I)
+- 32 GPRs (General Purpose Registers)
 - PC (Program Counter)
-- HI / LO (乗除算結果レジスタ)
-- CP0 (System Control Coprocessor) の基本抽象化
-- ハードウェア割り込みサンプリング: Step/Run 毎に Interrupt Controller の集約ペンディングを CAUSE.IP2 (bit 10) へ反映（詳細: [docs/cpu/exceptions.md](docs/cpu/exceptions.md)）
+- HI / LO (multiply/divide result registers)
+- Basic abstraction of CP0 (System Control Coprocessor)
+- Hardware interrupt sampling: on each Step/Run, reflect the Interrupt Controller's aggregate pending state into CAUSE.IP2 (bit 10); see [docs/cpu/exceptions.md](docs/cpu/exceptions.md)
 
 ### Memory
 
@@ -120,34 +126,36 @@ uint32_t PSXCore_GetRAMSize(void);
 - BIOS: 512 KB
 - Hardware Register Space
 
-### Hardware (実装状況)
+### Hardware (Implementation Status)
 
-状態は現在のリポジトリ状態（実装・テスト・CI）を反映したものであり、オープン中の Issue や設計上の予定・意図を表すものではない（README の Current Status と同一の基準）。
+Status reflects the current repository state (implementation, tests, and CI), not open Issues or planned/design intent. This uses the same basis as README Current Status.
 
-| コンポーネント | 状態 |
+| Component | Status |
 |---------------|------|
 | Interrupt Controller | Implemented |
 | CPU interrupt integration | Implemented |
-| DMA | Partially implemented (register-level model + IRQ + C# MMIO adapter + tests; transfer engine / native 実行パスの MemoryBus 配線は未実装) |
-| Timers | Partially implemented (register-level model + tick + IRQ + C# MMIO adapter + tests; GPU 由来 dotclock / HBlank 信号の結線は未実装) |
+| DMA | Partially implemented (register-level model + IRQ + C# MMIO adapter + tests; transfer engine / MemoryBus wiring on the native execution path is not implemented) |
+| Timers | Partially implemented (register-level model + tick + IRQ + C# MMIO adapter + tests; GPU-derived dotclock / HBlank signal wiring is not implemented) |
 | GPU | Planned (interface contract only) |
 | SPU | Planned (interface contract only) |
 | CD-ROM | Planned (interface contract only) |
 | MDEC | Planned (interface contract only) |
 | GTE | Planned (interface contract only) |
 
-Interrupt Controller はレジスタモデル、C ABI、C# アダプタ、ネイティブテストに加え、CPU の Step/Run 毎に集約ペンディングを CAUSE.IP2 へ反映する CPU 割り込み統合まで実装済み（詳細: [docs/cpu/exceptions.md](docs/cpu/exceptions.md)）。DMA / Timers はレジスタレベルモデルまでが実装されており、C# 側 `MemoryBus` の MMIO ルーティング（アダプタ群）とネイティブテストは存在するが、ネイティブ実行パス（`PSXMemory` の hw_regs 領域）から各コントローラへの完全な結線は進行中。GPU / SPU / CD-ROM / MDEC / GTE は `PSXRecomp.Core/Runtime` のインターフェース契約のみで、ネイティブ実装は存在しない。
+The Interrupt Controller has its register model, C ABI, C# adapter, and native tests implemented, as well as CPU interrupt integration that reflects the aggregate pending state into CAUSE.IP2 on every CPU Step/Run; see [docs/cpu/exceptions.md](docs/cpu/exceptions.md). DMA / Timers are implemented through their register-level models, with C# `MemoryBus` MMIO routing adapters and native tests, while complete wiring from the native execution path (`PSXMemory`'s `hw_regs` region) to each controller remains in progress. GPU / SPU / CD-ROM / MDEC / GTE have interface contracts in `PSXRecomp.Core/Runtime` only; no native implementations exist.
 
 ## Runtime
 
-PSX ランタイムは、BIOS ロード、EXE ロード、メモリマッピング、I/O ループを管理する。
-通常の実行は BIOS-less を目標とし、BIOS call は PSXRecomp.Core.Runtime の
-IBiosRuntime 境界を通る。BiosCallIdentity は A0/B0/C0 family、function number、
-guest PC、引数を保持し、結果は BiosServiceResult として supported /
-unsupported を構造化する。未実装 call は BIOS_HLE_UNSUPPORTED_CALL などの
-明示的 diagnostic を返し、黙って成功扱いにしない。Recompiler や CPU core に
-title-specific BIOS workaround を追加せず、実 BIOS image を配布または必須化しない。
-Phase 1 では決定的な A0:3C putchar 契約だけを HLE registry に接続している。
+The PSX runtime manages BIOS loading, EXE loading, memory mapping, and the I/O loop.
+Normal execution targets BIOS-less operation, and BIOS calls pass through the
+`IBiosRuntime` boundary in `PSXRecomp.Core.Runtime`. `BiosCallIdentity` carries
+the A0/B0/C0 family, function number, guest PC, and arguments, while
+`BiosServiceResult` represents supported / unsupported outcomes structurally.
+Unimplemented calls return explicit diagnostics such as
+`BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
+workarounds must not be added to the Recompiler or CPU core, and a real BIOS
+image must not be distributed or made mandatory. Phase 1 wires only the
+deterministic A0:3C `putchar` contract into the HLE registry.
 
 ## Recompiler
 
@@ -164,85 +172,85 @@ Phase 1 では決定的な A0:3C putchar 契約だけを HLE registry に接続�
   above — no second, real-ROM-specific semantics implementation exists
   (ADR-013, Issue #225).
 
-## Debugger (将来)
+## Debugger (Future)
 
-- ブレークポイント
-- ステップ実行
-- レジスタ / メモリビュー
-- デザッサンブルビュー
-- GPU レンダリングビュー
+- Breakpoints
+- Step execution
+- Register / memory views
+- Disassembly view
+- GPU rendering view
 
-## MCP (将来)
+## MCP (Future)
 
-- Model Context Protocol サーバー
-- ゲーム状態の取得・操作
-- AI によるプレイ・自動テスト
-- Node.js / TypeScript 実装
+- Model Context Protocol server
+- Retrieve and manipulate game state
+- AI-driven play and automated testing
+- Node.js / TypeScript implementation
 
 ## YAML
 
-タイトル固有の差分定義に YAML を使用:
+YAML is used to define title-specific differences:
 
-- メモリマッピング差分
-- 命令別の特殊処理
-- GPU レジスタ差分
-- リジャイルム定義
+- Memory mapping differences
+- Instruction-specific special handling
+- GPU register differences
+- Region definitions
 
-## Ghidra (将来)
+## Ghidra (Future)
 
-- 逆アセンブル結果のインポート
-- 関数解析結果の活用
-- Ghidra スクリプト連携
+- Import disassembly results
+- Use function-analysis results
+- Ghidra script integration
 
 ## Host Platform
 
-### 第一級対応
+### First-Class Support
 
-| OS | アーキテクチャ | 状態 |
+| OS | Architecture | Status |
 |----|---------------|------|
-| Windows 10/11 | x64 | 将来対応 |
-| Linux | x64 | 開発環境 |
-| macOS 12+ | x64 | 将来対応 |
-| macOS 12+ | ARM64 | 将来対応 |
+| Windows 10/11 | x64 | Future support |
+| Linux | x64 | Development environment |
+| macOS 12+ | x64 | Future support |
+| macOS 12+ | ARM64 | Future support |
 
-### マルチ OS 方針
+### Multi-OS Policy
 
-- PSX 固有処理と Host OS 依存処理を分離
-- Wine / Proton を前提としない
-- Native Core は CMake でクロスビルド
-- C# は .NET のクロスプラットフォームで対応
+- Separate PSX-specific processing from Host OS-specific processing
+- Do not assume Wine / Proton
+- Cross-build the Native Core with CMake
+- Use .NET cross-platform support for C#
 
-## C++ 採用理由
+## Why C++
 
-| 要件 | 判断 |
+| Requirement | Decision |
 |------|------|
-| 性能 | PSX CPU エミュレーションは tight loop。C++ は最適化が効く |
-| 制御 | メモリレイアウト、命令実行を直接制御する必要がある |
-| 既存知見 | PSX エミュレータの多くは C/C++ (DuckStation, PCSX-Redux 等) |
-| C ABI | C++ でも `extern "C"` で C ABI を提供可能 |
-| 将来性 | JIT リコンパイラ等の実装にも適する |
-| Clang | 現環境では GCC のみだが、C++ 自体は標準的 |
+| Performance | PSX CPU emulation is a tight loop; C++ optimizes well |
+| Control | Direct control over memory layout and instruction execution is required |
+| Existing knowledge | Many PSX emulators are written in C/C++ (DuckStation, PCSX-Redux, etc.) |
+| C ABI | C++ can provide a C ABI with `extern "C"` |
+| Future potential | Suitable for future JIT recompiler implementation |
+| Clang | The current environment uses GCC only, but C++ itself is standard |
 
-Rust も検討したが、既存 PSX エミュレータの知見や C# P/Invoke の親和性から C++ を第一候補とした。
+Rust was also considered, but C++ was chosen as the primary option because of existing PSX-emulator knowledge and its compatibility with C# P/Invoke.
 
-## ビルド構成
+## Build Structure
 
 ```text
 Native Core:    CMake + Ninja → .so / .dll / .dylib
 C# Core:        dotnet build → .dll
-UI:             dotnet build → 実行ファイル
-テスト:         dotnet test (C#) + ctest (C++)
+UI:             dotnet build → executable
+Tests:          dotnet test (C#) + ctest (C++)
 ```
 
-## 将来コンポーネント
+## Future Components
 
 ```text
 PSXRecompStudio       → UI (Avalonia)
-PSXRecomp.Core        → P/Invoke + ラッパー
-PSXRecomp.Native      → PSX エミュレーション核
-PSXRecomp.Runtime     → ランタイム管理
-PSXRecomp.Recompiler  → 再コンパイラ
-PSXRecomp.Debugger    → デバッガー
-PSXRecomp.Infrastructure → 共通インフラ
+PSXRecomp.Core        → P/Invoke + wrappers
+PSXRecomp.Native      → PSX emulation core
+PSXRecomp.Runtime     → runtime management
+PSXRecomp.Recompiler  → recompiler
+PSXRecomp.Debugger    → debugger
+PSXRecomp.Infrastructure → shared infrastructure
 mcp/                  → MCP Server
 ```

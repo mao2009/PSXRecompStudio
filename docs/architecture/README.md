@@ -2,11 +2,11 @@
 
 **Status:** Stable
 
-**Authority:** SSOT
+**Authority:** Reference
 
 **Document Type:** Architecture Index
 
-This section describes the intended architecture of PSXRecompStudio. Subsystem pages are authoritative for their respective responsibilities and constraints.
+This section routes readers to the intended architecture of PSXRecompStudio. [`ARCHITECTURE.md`](../../ARCHITECTURE.md) is the Top-level Architecture SSOT. More-specific subsystem pages are authoritative for their respective responsibilities and constraints.
 
 ## System direction
 
@@ -30,7 +30,8 @@ The GUI must not become the source of truth for architecture or analysis semanti
 
 | Area | Responsibility | Status |
 |---|---|---|
-| Architecture SSOT | Cross-cutting architectural rules | Stable |
+| Top-level Architecture SSOT | Repository-wide system direction and cross-cutting architecture | Stable |
+| Managed Architecture Matrix | Managed layer/dependency rules and analyzer mapping | Stable |
 | CPU / R3000A | CPU domain model and architectural semantics | Established / evolving |
 | Decoder | Instruction decoding | Established / evolving |
 | Analyzer | Static and architectural analysis | In development |
@@ -43,7 +44,15 @@ The GUI must not become the source of truth for architecture or analysis semanti
 
 ## Authority rule
 
-When documentation conflicts, the more specific authoritative subsystem SSOT should be consulted together with the top-level Architecture SSOT. Issues and PRs describe changes; once a decision becomes current architecture, the appropriate SSOT should be updated.
+Use the following hierarchy when documentation overlaps:
+
+1. A more-specific authoritative subsystem SSOT governs within its declared scope.
+2. [`ARCHITECTURE.md`](../../ARCHITECTURE.md) governs repository-wide system direction and cross-cutting architecture.
+3. This file is a routing index/reference and does not override either of the above.
+
+For managed C# layer/dependency rules, [`docs/architecture-matrix.md`](../architecture-matrix.md) is the subsystem SSOT; for its machine-enforced rule data, `src/architecture.contract.json` governs exactly as documented there.
+
+Issues and PRs describe changes; once a decision becomes current architecture, the appropriate SSOT should be updated.
 
 ## Related work
 
