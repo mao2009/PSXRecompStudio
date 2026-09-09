@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09 — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10 — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -162,3 +162,49 @@ records only that boundary and its contract; it does not register any service.
 - (d) A0:3E puts remains unregistered until BOTH this guest-memory read
   boundary and a Runtime output sink exist. The output sink is a separate
   concurrent boundary and is deliberately not part of this amendment or Track A.
+
+## Amendment (2026-09-10): Runtime output sink boundary
+
+Track B of Issue #279 adds the generic Runtime output boundary this ADR has
+referred to since the guest-memory amendment above: `IRuntimeOutputSink`, with
+a `CapturedOutputSink` test double. It was implemented directly against this
+ADR's existing description (PR #349, merged 2026-09-09) without an ADR update
+at the time; this amendment is that update, recording the boundary and its
+contract now that a second dependent (this document) needs it stated
+explicitly.
+
+- (a) The boundary is deliberately separate from the guest-memory read
+  boundary (previous amendment): reading guest memory and emitting host
+  output are distinct responsibilities with distinct failure modes (an
+  invalid address vs. nothing to observe the write). A0:3E puts needs both —
+  neither boundary substitutes for the other.
+- (b) `IRuntimeOutputSink` is a single-member, byte-level contract
+  (`WriteByte(byte)`): the receiver owns buffering and encoding, and no
+  Unicode/string decoding policy is fixed at this boundary. This is
+  intentional: PS1 BIOS TTY output (putchar, and later puts) is a raw guest
+  byte stream, and deciding its text encoding is a host/presentation concern,
+  not a Runtime/Domain one. A future host adapter (GUI console, CLI stdout,
+  headless capture) decodes or forwards bytes as it sees fit; the Domain layer
+  never assumes an encoding.
+- (c) The Domain layer (`PSXRecomp.Core`) does not depend on `System.Console`
+  or any other I/O primitive to satisfy this boundary — enforced by the
+  architecture analyzer (`src/architecture.contract.json`) rejecting
+  `System.Console` in the Domain layer. `IRuntimeOutputSink` is the only
+  output-side effect a BIOS HLE service may observe.
+- (d) No dependency-injection point is added to `BiosHleRuntime` or
+  `IBiosRuntime` by this amendment. Consistent with the guest-memory
+  boundary's precedent (also unwired into any runtime host at this stage),
+  wiring a sink parameter through to a registry with no service that writes
+  to it would be speculative: the injection point belongs to whichever change
+  actually completes putchar's TTY side effect or registers puts, where the
+  concrete call site decides the shape (e.g. constructor injection into
+  `BiosHleRuntime`, or a per-call parameter on `IBiosRuntime.Invoke`). The
+  `CapturedOutputSink` test double already demonstrates the boundary is
+  trivially substitutable once a consumer exists.
+- (e) Introducing this sink does **not** by itself change any service's
+  registration status. Putchar's TTY output and puts's write-to-TTY effect
+  remain unimplemented; both are still tracked as separate follow-up work
+  under Issue #279 (see `docs/runtime/bios-hle-evidence.md`). Re-auditing
+  `Supported` against the stricter reading (noted as an open item in the base
+  decision above) happens when a service is actually wired to this sink, not
+  when the sink boundary alone lands.
