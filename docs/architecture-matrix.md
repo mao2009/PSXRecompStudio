@@ -1,8 +1,16 @@
 # Architecture Matrix - SSOT
 
+**Status:** Stable
+
+**Authority:** Subsystem SSOT
+
+**Document Type:** Managed Architecture Matrix
+
+This document is authoritative for the managed C# architecture layer model, dependency and forbidden-API rationale, analyzer mapping, and the C ABI/P/Invoke boundary documentation. [`ARCHITECTURE.md`](../ARCHITECTURE.md) remains the Top-level Architecture SSOT for repository-wide system direction. For machine-enforced rule data within this subsystem, `src/architecture.contract.json` governs exactly as described below.
+
 ## SSOT split
 
-Two documents together form the architecture SSOT, and they own different things:
+Two documents together form the managed architecture SSOT, and they own different things:
 
 - **[`src/architecture.contract.json`](../src/architecture.contract.json)** — the
   machine-enforced SSOT. Every layer, forbidden dependency, forbidden API, marker
@@ -233,6 +241,7 @@ Enforcement notes (unchanged in substance from the PSXR era):
 
 **SSOT Status**
 
-- Architecture Matrix: ✅ ESTABLISHED - rationale and high-level tables here; the executable rule set is `src/architecture.contract.json`.
+- Architecture Matrix: ✅ ESTABLISHED - subsystem SSOT for managed architecture rationale and high-level tables; the executable rule set is `src/architecture.contract.json`.
+- Top-level architecture: [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-wide system direction and cross-cutting architecture.
 - Mechanical enforcement: ✅ ACTIVE - `loach.ArchitectureAnalyzer` (AARC002–AARC007) via `src/architecture.contract.json` + `.editorconfig`; see ADR-006 (amended).
 - **Missing Items**: `PSXRecomp.Generated` and `PSXRecomp.Infrastructure` projects not yet created.
