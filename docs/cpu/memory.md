@@ -2,17 +2,17 @@
 
 ## Address Space
 
-PSXは32ビットアドレス空間を持ち、リトルエンディアン。
+The PSX has a 32-bit address space and uses little-endian byte order.
 
 ## Physical Memory Map
 
-PSXの物理アドレス空間:
+PSX physical address space:
 
 | Address Range | Size | Description |
 |---------------|------|-------------|
 | 0x00000000 - 0x001FFFFF | 2 MB | PSX RAM |
 | 0x1F000000 - 0x1F7FFFFF | 8 MB | Expansion Region 1 |
-| 0x1F800000 - 0x1F8003FF | 1 KB | Scratchpad (CPU内部SRAM) |
+| 0x1F800000 - 0x1F8003FF | 1 KB | Scratchpad (CPU-internal SRAM) |
 | 0x1F801000 - 0x1FBFFFFF | - | I/O Ports (Hardware Registers) |
 | 0x1FC00000 - 0x1FC7FFFF | 512 KB | BIOS ROM |
 
@@ -20,46 +20,46 @@ PSXの物理アドレス空間:
 
 | Segment | Address Range | Cache | Physical Mapping |
 |---------|---------------|-------|------------------|
-| KUSEG | 0x00000000 - 0x7FFFFFFF | Yes | TLB使用（PSXでは固定マッピング） |
-| KSEG0 | 0x80000000 - 0x9FFFFFFF | Yes | 物理アドレス & 0x1FFFFFFF |
-| KSEG1 | 0xA0000000 - 0xBFFFFFFF | No | 物理アドレス & 0x1FFFFFFF |
-| KSEG2 | 0xC0000000 - 0xFFFDFFFF | - | TLB使用（PSXでは基本的に未使用） |
-| KSEG2 | 0xFFFE0000 - 0xFFFFFFFF | - | キャッシュ制御レジスタ |
+| KUSEG | 0x00000000 - 0x7FFFFFFF | Yes | Uses TLB (fixed mapping on PSX) |
+| KSEG0 | 0x80000000 - 0x9FFFFFFF | Yes | physical address & 0x1FFFFFFF |
+| KSEG1 | 0xA0000000 - 0xBFFFFFFF | No | physical address & 0x1FFFFFFF |
+| KSEG2 | 0xC0000000 - 0xFFFDFFFF | - | Uses TLB (generally unused on PSX) |
+| KSEG2 | 0xFFFE0000 - 0xFFFFFFFF | - | Cache control registers |
 
-### PSX固有マッピング
+### PSX-Specific Mapping
 
-PSXは固定マッピングを使用し、TLBは基本的に未使用。
+The PSX uses fixed mappings and generally does not use the TLB.
 
 ```text
-KSEG0 (0x80000000): 物理 0x00000000 (RAM, キャッシュ対象)
-KSEG1 (0xA0000000): 物理 0x00000000 (RAM, 非キャッシュ)
-KSEG1 (0xBF800000): 物理 0x1F800000 (Scratchpad)
-KSEG1 (0xBF801000): 物理 0x1F801000 (Hardware Registers)
-KSEG1 (0xBFC00000): 物理 0x1FC00000 (BIOS ROM)
-KSEG2 (0xFFFE0000): キャッシュ制御レジスタ
+KSEG0 (0x80000000): physical 0x00000000 (RAM, cached)
+KSEG1 (0xA0000000): physical 0x00000000 (RAM, uncached)
+KSEG1 (0xBF800000): physical 0x1F800000 (Scratchpad)
+KSEG1 (0xBF801000): physical 0x1F801000 (Hardware Registers)
+KSEG1 (0xBFC00000): physical 0x1FC00000 (BIOS ROM)
+KSEG2 (0xFFFE0000): cache control registers
 ```
 
-BIOSは起動時にKSEG1経由でアクセスされ、後にKSEG0にリミラーリングされる。
+The BIOS is accessed through KSEG1 at startup and is later remirrored into KSEG0.
 
 ## Scratchpad (1 KB)
 
 ```text
-物理: 0x1F800000 - 0x1F8003FF
-KSEG1: 0xBF800000 - 0xBF8003FF
+Physical: 0x1F800000 - 0x1F8003FF
+KSEG1:    0xBF800000 - 0xBF8003FF
 ```
 
-- CPU内部の高速SRAM
-- データキャッシュとして使用
-- 開発者が明示的に操作する
+- Fast CPU-internal SRAM
+- Used as data cache
+- Explicitly managed by software
 
 ## Hardware Registers
 
 ```text
-KSEG1: 0xBF801000 - 0xBFBFFFFF
-物理: 0x1F801000 - 0x1FBFFFFF
+KSEG1:   0xBF801000 - 0xBFBFFFFF
+Physical: 0x1F801000 - 0x1FBFFFFF
 ```
 
-主なレジスタ:
+Major registers:
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -98,21 +98,21 @@ KSEG1: 0xBF801000 - 0xBFBFFFFF
 ## BIOS ROM
 
 ```text
-物理: 0x1FC00000 - 0x1FC7FFFF
-KSEG1: 0xBFC00000 - 0xBFC7FFFF
+Physical: 0x1FC00000 - 0x1FC7FFFF
+KSEG1:    0xBFC00000 - 0xBFC7FFFF
 ```
 
-- BIOSコードとデータ
-- 例外ベクトル（BEV=1時: 0xBFC00180）
-- システムコール
+- BIOS code and data
+- Exception vector (when BEV=1: 0xBFC00180)
+- System calls
 
 ## Endianness
 
-PSXはリトルエンディアン。
+The PSX is little-endian.
 
 ```text
 Memory address:  A+0  A+1  A+2  A+3
 Value:           LSB  ...  ...  MSB
 ```
 
-LWは4バイトアラインメントが必要（アドレスの下位2ビットが0）。アンラインアクセスはLWL/LWRで対応。
+LW requires 4-byte alignment (the low 2 address bits must be 0). Unaligned accesses are handled with LWL/LWR.
