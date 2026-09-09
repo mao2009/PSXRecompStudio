@@ -81,7 +81,12 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
             return false;
         }
 
-        Span<byte> temp = stackalloc byte[buffer.Length];
+        if (length > Ps1MemoryMap.RamSize)
+        {
+            return false;
+        }
+
+        var temp = new byte[buffer.Length];
 
         for (var i = 0; i < buffer.Length; i++)
         {
@@ -93,7 +98,7 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
             temp[i] = value;
         }
 
-        temp.CopyTo(buffer);
+        temp.AsSpan().CopyTo(buffer);
         return true;
     }
 }

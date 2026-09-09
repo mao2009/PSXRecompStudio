@@ -256,6 +256,40 @@ public sealed class GuestMemoryReaderTests
     }
 
     [Fact]
+    public void TryRead_LengthGreaterThanRamSize_IsRejectedWithoutPhysicalAccess()
+    {
+        var physicalReads = 0;
+        var reader = new GuestMemoryReader(_ =>
+        {
+            physicalReads++;
+            return 0;
+        });
+        var buffer = new byte[RecompilerGuestMemory.RamSize + 1];
+        buffer.AsSpan().Fill(0xFF);
+
+        var result = reader.TryRead(0x00000000, buffer);
+
+        result.Should().BeFalse();
+        physicalReads.Should().Be(0, "oversized requests must be rejected before touching the physical reader");
+        buffer.Should().OnlyContain(b => b == 0xFF, "caller buffer must not be modified on failure");
+    }
+
+    [Fact]
+    public void TryRead_LengthAtRamLimitFromNonZeroStart_FailsAtomically()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(RecompilerGuestMemory.RamSize - 1, 0xAA);
+        var reader = new GuestMemoryReader(ram.Read8);
+        var buffer = new byte[RecompilerGuestMemory.RamSize];
+        buffer.AsSpan().Fill(0xFF);
+
+        var result = reader.TryRead(RecompilerGuestMemory.RamSize - 1, buffer);
+
+        result.Should().BeFalse();
+        buffer.Should().OnlyContain(b => b == 0xFF, "buffer must not be modified on partial failure");
+    }
+
+    [Fact]
     public void TryReadCString_AddressPlusMaxLengthOverflows_IsRejected()
     {
         var ram = new RecompilerGuestMemory();
