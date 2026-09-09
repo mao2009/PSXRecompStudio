@@ -46,21 +46,43 @@ an argument shape its ABI does not accept returns BIOS_HLE_INVALID_ARGUMENTS
 through the shared BiosServiceResult factory, so argument rejection is never
 re-implemented per service.
 
-The registry currently holds one service: A(3Ch) std_out_putchar. Its entire
-documented contract is returning the low byte of its character argument — a
-register-only effect with no guest memory or host output involved, so the pure
-model fully satisfies it. A(3Eh) std_out_puts's family/function/ABI has been
-verified against the same documentation ([docs/REFERENCES.md](../REFERENCES.md))
-for future use, but it is deliberately **not** registered: its documented
-behavior is reading a NUL-terminated string from guest memory and writing it to
-the TTY, and neither guest-memory access nor a deterministic output sink exists
-in the Runtime yet. Echoing its string-pointer argument back through R2 would
-satisfy the return convention while implementing none of the behavior a caller
-or a differential test depends on, so `puts` remains unregistered until that
-Runtime capability lands. The B0-table aliases of both functions (B(3Dh),
-B(3Fh)) are likewise not registered: no evidence selects them, and an
-unregistered call fails loudly through BIOS_HLE_UNSUPPORTED_CALL rather than
-diverging silently.
+The registry currently holds one service: A(3Ch)/B(3Dh) std_out_putchar. Its
+full documented behavior is writing the character to the TTY *and* returning
+it; the current implementation models only the register-visible return-value
+contract (the low byte of the argument) and does **not** yet emit TTY output.
+This is accepted as a **Phase-1-scoped** `Supported` — not a claim that
+putchar is fully implemented — because putchar's argument is a plain scalar:
+no guest-memory access is skipped to compute the return value, so nothing
+about the call's CPU/register-observable outcome can silently diverge from
+real hardware. The missing TTY side effect is an explicitly tracked
+limitation (Issue #279: "putchar TTY side effect implementation"), not a
+hidden correctness gap.
+
+This differs from A(3Eh)/B(3Fh) std_out_puts, whose family/function/ABI has
+been verified against the same documentation
+([docs/REFERENCES.md](../REFERENCES.md)) for future use but which is
+deliberately **not** registered at all. Its documented behavior is reading a
+NUL-terminated string from guest memory and writing it to the TTY; unlike
+putchar's scalar argument, skipping the guest-memory read there would let an
+invalid or unmapped pointer silently return success where real hardware would
+fault — hiding a genuine correctness gap, not merely omitting a host-visible
+side channel. That distinction, not just "no output sink yet," is why `puts`
+stays unregistered while putchar's narrower contract is accepted as
+`Supported`. The B0-table aliases of both functions (B(3Dh), B(3Fh)) are
+likewise not registered: no evidence selects them, and an unregistered call
+fails loudly through BIOS_HLE_UNSUPPORTED_CALL rather than diverging silently.
+
+**On the meaning of `Supported` (open item):** as used in this ADR, `Supported`
+currently means "the documented ABI/return-register contract is modeled, and
+no guest-memory access needed to compute that contract is skipped" — it does
+**not** mean "every documented effect, including host-visible output, is
+implemented." This is a deliberate but narrow Phase-1 reading, and it needs to
+be revisited once a Runtime output sink exists: at that point every
+currently-registered service (today, only putchar) must be re-audited against
+the stricter reading (full documented behavior, including host-visible side
+effects) before Issue #279 can consider TTY-class services complete. Recorded
+here explicitly so `Supported` does not silently drift into meaning "fully
+compatible with real hardware."
 
 ## Consequences
 
@@ -75,10 +97,15 @@ diverging silently.
 - `puts`'s identity is pre-verified and cited, so implementing it later is a
   Runtime-capability change (guest-memory read, output sink), not a fresh
   identity-research task.
-- Because no service emits host output yet, recompiled code that depends on
-  observable console text is not satisfied by the current registry; the
-  Runtime output sink and guest-memory access remain open work under Issue
-  #279.
+- Because no service emits host output yet — including the registered
+  putchar, whose TTY side effect is explicitly deferred — recompiled code
+  that depends on observable console text is not satisfied by the current
+  registry; the Runtime output sink and guest-memory access remain open work
+  under Issue #279.
+- `Supported`'s current meaning (ABI/return-register contract modeled, no
+  guest-memory access skipped) is narrower than "fully compatible with real
+  hardware" and must be re-audited once TTY output exists (see above); this is
+  tracked as an explicit open item rather than left implicit.
 
 ## Alternatives Considered
 

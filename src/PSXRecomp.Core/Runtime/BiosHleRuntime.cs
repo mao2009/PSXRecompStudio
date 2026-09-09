@@ -16,12 +16,16 @@ public sealed class BiosHleRuntime : IBiosRuntime
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
 
     /// <summary>
-    /// Creates the registry. Only a service whose full guest-observable behavior
-    /// can be modeled today is registered as <c>Supported</c> (ADR-014); a
-    /// service whose documented effect needs Runtime capability that does not
-    /// exist yet (e.g. A0:3E puts, which needs guest-memory access and an
-    /// output sink) is deliberately left unregistered rather than registered
-    /// with only its return value modeled.
+    /// Creates the registry. A service is registered as <c>Supported</c> only
+    /// when no guest-memory access needed to compute its documented contract
+    /// is skipped (ADR-014); a service whose documented effect depends on
+    /// guest memory it cannot yet read (e.g. A0:3E puts) is deliberately left
+    /// unregistered rather than registered with only its return value
+    /// modeled. A0:3C putchar is accepted as a narrower Phase-1 <c>Supported</c>:
+    /// its argument is a plain scalar, so nothing about its CPU-observable
+    /// outcome is skipped, but its TTY output side effect is not yet
+    /// implemented (tracked under Issue #279) — this is not a claim that
+    /// putchar is fully implemented.
     /// </summary>
     public BiosHleRuntime()
     {
@@ -48,9 +52,10 @@ public sealed class BiosHleRuntime : IBiosRuntime
                 identity, "A0:3C putchar requires one character argument.");
         }
 
-        // The service is intentionally modeled as a pure contract in Phase 1:
-        // return the guest character and leave host output policy to a later
-        // Runtime sink. This keeps the result deterministic and side-effect free.
+        // Phase-1-limited: this models only the register-visible return-value
+        // contract. The documented TTY output side effect is NOT implemented
+        // yet (tracked under Issue #279) and this must not be read as "putchar
+        // is fully implemented" — see ADR-014's note on what Supported means.
         return BiosServiceResult.Supported(identity, identity.Arguments[0] & 0xFFu);
     }
 }
