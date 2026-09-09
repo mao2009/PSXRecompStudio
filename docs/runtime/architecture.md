@@ -1,37 +1,37 @@
 # PS1 Hardware Runtime Architecture
 
-Issue #44: R3000A CPU以外のPS1ハードウェアをRecompiled Codeから利用するためのRuntime/Hardware Abstraction Architecture
+Issue #44: Runtime/Hardware Abstraction Architecture for allowing Recompiled Code to use PS1 hardware other than the R3000A CPU.
 
-## 概要
+## Overview
 
-PSXRecompStudioのRuntimeは、Recompiled CodeがPS1ハードウェアにアクセスするためのAbstraction Layerを提供する。ゲーム固有コードにハードウェア実装を直接埋め込まず、Domainインターフェースを通してアクセスする。
+The PSXRecompStudio Runtime provides an abstraction layer through which Recompiled Code accesses PS1 hardware. Hardware implementations are not embedded directly into game-specific code; access goes through Domain interfaces.
 
-### 前提
+### Prerequisites
 
-- Issue #39 (R3000A CPU Domain) が完了済み
-- `R3000aDecoder` / `R3000aInstruction` 等のCPU Domain Modelが存在
-- `PSXRecomp.Core` (Domain層) と `PSXRecomp.Native` (Infrastructure層) のC ABI境界が確立
+- Issue #39 (R3000A CPU Domain) is complete.
+- CPU Domain Models such as `R3000aDecoder` / `R3000aInstruction` exist.
+- The C ABI boundary between `PSXRecomp.Core` (Domain layer) and `PSXRecomp.Native` (Infrastructure layer) is established.
 
-## アーキテクチャ方針
+## Architecture Policy
 
 ```text
-Recompiled Code (生成されたC#コード)
-    ↓ Domain インターフェース呼び出し
-PSXRecomp.Core (Domain層: Hardware インターフェース定義)
+Recompiled Code (generated C# code)
+    ↓ Domain interface calls
+PSXRecomp.Core (Domain layer: Hardware interface definitions)
     ↓ P/Invoke / C ABI
-PSXRecomp.Native (Infrastructure層: 実際のハードウェア実装)
+PSXRecomp.Native (Infrastructure layer: actual hardware implementations)
 ```
 
-### 境界原則
+### Boundary Principles
 
-1. **Recompiled Code は IHardwareComponent インターフェースのみを参照**
-2. **Domain層は Pure である** (File I/O, Console, DateTime.Now, Environment 不可)
-3. **Infrastructure層が実際の状態変更・I/Oを担当**
-4. **C ABI境界で不透明ポインタ (IntPtr) を使用**
+1. **Recompiled Code references only IHardwareComponent interfaces.**
+2. **The Domain layer is Pure.** (No File I/O, Console, DateTime.Now, or Environment.)
+3. **The Infrastructure layer handles actual state changes and I/O.**
+4. **Opaque pointers (IntPtr) are used across the C ABI boundary.**
 
 ## Hardware Component Model
 
-全PS1ハードウェアコンポーネントは `IHardwareComponent` を実装する。
+All PS1 hardware components implement `IHardwareComponent`.
 
 ```csharp
 [Domain]
@@ -48,33 +48,33 @@ public interface IHardwareComponent
 }
 ```
 
-### コンポーネント一覧
+### Component List
 
-| コンポーネント | インターフェース | アドレス範囲 | 割り込み |
-|---------------|----------------|-------------|---------|
-| RAM | IMemoryBus (直接) | 0x00000000-0x007FFFFF (2MB, 8MBミラー) | なし |
-| Scratchpad | IMemoryBus | 0x1F800000-0x1F8003FF (1KB) | なし |
-| BIOS | IBios | 0x1FC00000-0x1FC7FFFF (512KB) | なし |
-| Interrupt Controller | IInterruptController | 0x1F801070-0x1F801074 | 中枢 |
+| Component | Interface | Address Range | Interrupt |
+|-----------|-----------|---------------|-----------|
+| RAM | IMemoryBus (direct) | 0x00000000-0x007FFFFF (2MB, 8MB mirror) | None |
+| Scratchpad | IMemoryBus | 0x1F800000-0x1F8003FF (1KB) | None |
+| BIOS | IBios | 0x1FC00000-0x1FC7FFFF (512KB) | None |
+| Interrupt Controller | IInterruptController | 0x1F801070-0x1F801074 | Central |
 | DMA Controller | IDmaController | 0x1F801080-0x1F8010FF | IRQ3 |
 | Timer 0-2 | ITimer | 0x1F801100-0x1F801128 | IRQ4-6 |
-| Controller/MemCard | (将来追加) | 0x1F801040-0x1F80105E | IRQ7 |
+| Controller/MemCard | (future) | 0x1F801040-0x1F80105E | IRQ7 |
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
-| MDEC | IMdec | 0x1F801820-0x1F801824 | なし |
+| MDEC | IMdec | 0x1F801820-0x1F801824 | None |
 | SPU | ISpu | 0x1F801C00-0x1F801DFF | IRQ9 |
-| GTE | IGte (COP2) | Coprocessor | なし |
-| Cache Control | IMemoryBus | 0xFFFE0130 | なし |
+| GTE | IGte (COP2) | Coprocessor | None |
+| Cache Control | IMemoryBus | 0xFFFE0130 | None |
 
 ## Memory / Bus Model
 
-`IMemoryBus` が物理アドレスから適切なコンポーネントにルーティングする。
+`IMemoryBus` routes physical addresses to the appropriate component.
 
 ```text
 Physical Address
     ↓ Address Decode
 ┌─────────────────────────────────────────────────────┐
-│ 0x00000000-0x007FFFFF: RAM (2MB, 8MBミラー)       │
+│ 0x00000000-0x007FFFFF: RAM (2MB, 8MB mirror)       │
 │ 0x1F000000-0x1F07FFFF: Expansion Region 1          │
 │ 0x1F800000-0x1F8003FF: Scratchpad (1KB Fast RAM)  │
 │ 0x1F801000-0x1F801FFF: I/O Ports                   │
@@ -90,100 +90,100 @@ Physical Address
 └─────────────────────────────────────────────────────┘
 ```
 
-### アクセスルール
+### Access Rules
 
-- **未マッピングアドレス**: 読み: 0, 書き: 無視 (open bus)
-- **RAM 16-bit/8-bit アクセス**: バイト単位/ハーフワード単位で直接アクセス可能
-- **HW Register 16-bit/8-bit アクセス**: 32-bit レジスタへの部分書き込み
-- **BIOS**: 書き込み不可 (ROM)
-- **GetRamPointer()**: Recompiled Code の高速メモリアクセス用
+- **Unmapped addresses**: reads return 0; writes are ignored (open bus).
+- **RAM 16-bit/8-bit access**: direct byte/halfword access is allowed.
+- **HW Register 16-bit/8-bit access**: partial writes to 32-bit registers.
+- **BIOS**: read-only (ROM).
+- **GetRamPointer()**: used for fast memory access from Recompiled Code.
 
 ## MMIO Model
 
-各ハードウェアコンポーネントは固有のレジスタオフセット空間を持つ。
+Each hardware component owns its own register-offset address space.
 
-1. `IMemoryBus.Read32(address)` が物理アドレスを受け取る
-2. `Ps1MemoryMap` の静的判定でコンポーネントを特定
-3. 対応する `IHardwareComponent.Read32(offset)` を呼び出す
-4. offset = `address - component_base_address`
+1. `IMemoryBus.Read32(address)` receives a physical address.
+2. Static checks in `Ps1MemoryMap` identify the component.
+3. The corresponding `IHardwareComponent.Read32(offset)` is called.
+4. offset = `address - component_base_address`.
 
 ## DMA Model
 
-7チャンネルのDMA転送を管理する。
+Manages seven DMA channels.
 
-| チャンネル | 用途 | 方向 | 同期モード |
-|-----------|------|------|-----------|
-| 0: MDECin | MDEC入力 | FromRam (RAM→MDEC) | Slice (CHCR sync=1) |
-| 1: MDECout | MDEC出力 | ToRam (MDEC→RAM) | Slice (CHCR sync=1) |
-| 2: GPU | 描画 | 双方向 | Burst/Slice/LinkedList |
-| 3: CD-ROM | セクタ読み取り | FromRam (CD→RAM) | Burst (CHCR sync=0) |
-| 4: SPU | 音声データ | 双方向 | Slice (CHCR sync=1) |
-| 5: PIO | 拡張ポート | 双方向 | Burst (CHCR sync=0) |
-| 6: OTC | リバースクリア | ToRam (OTC→RAM) | Burst (CHCR sync=0) |
+| Channel | Purpose | Direction | Sync Mode |
+|---------|---------|-----------|-----------|
+| 0: MDECin | MDEC input | FromRam (RAM→MDEC) | Slice (CHCR sync=1) |
+| 1: MDECout | MDEC output | ToRam (MDEC→RAM) | Slice (CHCR sync=1) |
+| 2: GPU | Rendering | Bidirectional | Burst/Slice/LinkedList |
+| 3: CD-ROM | Sector read | FromRam (CD→RAM) | Burst (CHCR sync=0) |
+| 4: SPU | Audio data | Bidirectional | Slice (CHCR sync=1) |
+| 5: PIO | Expansion port | Bidirectional | Burst (CHCR sync=0) |
+| 6: OTC | Reverse clear | ToRam (OTC→RAM) | Burst (CHCR sync=0) |
 
-- DMA完了時に IInterruptController.Raise(IRQ3) を呼ぶ
-- OTC は連結リストのリバースクリア専用 (GPU OT用)
-- チャンネル 2 (GPU) は linked list モードをサポート
+- On DMA completion, call `IInterruptController.Raise(IRQ3)`.
+- OTC is dedicated to reverse clearing linked lists (for GPU OT).
+- Channel 2 (GPU) supports linked-list mode.
 
 ## GTE (Geometry Transformation Engine) Model
 
-COP2コプロセッサとして実装される。
+Implemented as the COP2 coprocessor.
 
-- **データレジスタ (32個)**: ベクトル (V0-V2), 中間値 (IR0-3), 画面座標 (SXY0-2), Z値 (SZ0-3), MAC累算器 (MAC0-3), 色 (RGBC, RGB0-2)
-- **コントロールレジスタ (32個)**: 回転行列, ライトベクトル/カラー, プロジェクション平面距離, クリッピング値
-- **コマンド**: COP2 指令で発行 (sf=shift fraction, lm=saturate)
-- **主なコマンド群**: RTPS, NCLIP, AVSZ3, AVSZ4, SQR, NCCT, NCS, NCT, NCDS, NCDT, DPCL, DPCT, DPCS, DCT, INTPL, MVMVA, DCPL, DPCS, GPF, GPL, NCCT
+- **Data registers (32)**: vectors (V0-V2), intermediate values (IR0-3), screen coordinates (SXY0-2), Z values (SZ0-3), MAC accumulators (MAC0-3), colors (RGBC, RGB0-2).
+- **Control registers (32)**: rotation matrix, light vector/color, projection-plane distance, clipping values.
+- **Commands**: issued through COP2 instructions (`sf=shift fraction`, `lm=saturate`).
+- **Major commands**: RTPS, NCLIP, AVSZ3, AVSZ4, SQR, NCCT, NCS, NCT, NCDS, NCDT, DPCL, DPCT, DPCS, DCT, INTPL, MVMVA, DCPL, DPCS, GPF, GPL, NCCT.
 
 ## GPU Model
 
-GP0/GP1 の2つのレジスタで制御する。
+Controlled through the two GP0/GP1 registers.
 
-- **GP0 (0x1F801810)**: 描画コマンド, VRAM転送, 表示領域設定
-- **GP1 (0x1F801814)**: ディスプレイ制御, リセット, DMA方向設定
-- **GPUREAD (0x1F801810)**: GP0/GP1 の結果読み取り
-- **GPUSTAT (0x1F801814)**: GPUステータスレジスタ (読み取り専用)
-- **VBlank**: 垂直帰線時に IRQ0 を発火
-- **GPU IRQ1**: GP0(1Fh) コマンドで要求, GP1(02h) で Acknowledge
+- **GP0 (0x1F801810)**: drawing commands, VRAM transfers, display-area configuration.
+- **GP1 (0x1F801814)**: display control, reset, DMA-direction configuration.
+- **GPUREAD (0x1F801810)**: reads GP0/GP1 results.
+- **GPUSTAT (0x1F801814)**: GPU status register (read-only).
+- **VBlank**: raises IRQ0 on vertical blank.
+- **GPU IRQ1**: requested by GP0(1Fh), acknowledged by GP1(02h).
 
 ## SPU Model
 
-24ボイスの音声合成エンジン。
+A 24-voice audio synthesis engine.
 
-- **レジスタ空間**: 0x1F801C00-0x1F801DFF
-- **ボイス**: ADPCMデコード, ADSRエンベロープ, ピッチ制御
-- **メインボリューム/リバーブ**: ステレオ出力制御
-- **CDオーディオ入力**: CD-ROMから直接音声データを受信
-- **IRQ9**: サウンドバッファがIRQアドレスをクロスした時に発火
+- **Register space**: 0x1F801C00-0x1F801DFF.
+- **Voices**: ADPCM decoding, ADSR envelope, pitch control.
+- **Main volume/reverb**: stereo output control.
+- **CD audio input**: receives audio data directly from the CD-ROM.
+- **IRQ9**: raised when the sound buffer crosses the IRQ address.
 
 ## CD-ROM Model
 
-CD-ROMコントローラーを制御する。
+Controls the CD-ROM controller.
 
-- **レジスタ**: 0x1F801800-0x1F801803 (インデックス0-3)
-- **コマンド**: セクタ読み取り, シーク, パケット読み取り, CDオーディオ
-- **IRQ2**: コマンド完了, データレディ, エラー時に発火
-- **モード**: Normal/Double speed, DMA/PIO
+- **Registers**: 0x1F801800-0x1F801803 (indexes 0-3).
+- **Commands**: sector reads, seek, packet reads, CD audio.
+- **IRQ2**: raised on command completion, data ready, or errors.
+- **Modes**: Normal/Double speed, DMA/PIO.
 
 ## BIOS Model
 
-512KBのROMBIOS。
+A 512KB ROM BIOS.
 
-- **アドレス**: 0x1FC00000-0x1FC7FFFF
-- **システムコール**: GPU, SPU, CD-ROM, メモリカード, コントローラI/O
-- **オーバーレイ**: メモリ上的に関数を配置
-- **イベントハンドリング**: タイマー, DMA, 割り込みのコールバック
+- **Address**: 0x1FC00000-0x1FC7FFFF.
+- **System calls**: GPU, SPU, CD-ROM, memory card, controller I/O.
+- **Overlay**: functions are placed in memory.
+- **Event handling**: callbacks for timers, DMA, and interrupts.
 
 ## MDEC (Motion Decoder)
 
-JPEGデコードとモーションビデオ復号。
+JPEG decoding and motion-video decoding.
 
-- **レジスタ**: 0x1F801820-0x1F801824
-- **DMA**: MDECin (ch0), MDECout (ch1)
-- **状態**: Busy, FIFOワード数
+- **Registers**: 0x1F801820-0x1F801824.
+- **DMA**: MDECin (ch0), MDECout (ch1).
+- **State**: Busy, FIFO word count.
 
 ## Interrupt Model
 
-中央割り込みコントローラー。
+Central interrupt controller.
 
 ```text
 IRQ0: VBlank      (GPU vertical blank)
@@ -199,50 +199,50 @@ IRQ9: SPU          (Sound Processing)
 IRQ10: PIO         (Expansion / Controller lightpen)
 ```
 
-- **I_STAT (0x1F801070)**: 割り込みステータス (write-0-to-clear)
-- **I_MASK (0x1F801074)**: 割り込みマスク
-- **判定**: `(I_STAT & I_MASK) != 0` → 割り込み発生
-- **Edge-triggered**: 各ビットは割り込みソースが false→true に変化した時にセットされる
-- **IRQ Acknowledge**: I_STAT に 0 を書くことで該当ビットをクリア
+- **I_STAT (0x1F801070)**: interrupt status (write-0-to-clear).
+- **I_MASK (0x1F801074)**: interrupt mask.
+- **Condition**: `(I_STAT & I_MASK) != 0` → interrupt asserted.
+- **Edge-triggered**: each bit is set when its interrupt source transitions from false to true.
+- **IRQ Acknowledge**: clear the corresponding bit by writing 0 to I_STAT.
 
 ## Timer Model
 
-3つのハードウェアタイマー。
+Three hardware timers.
 
-| Timer | ベース | クロック源 | 主な用途 |
-|-------|-------|-----------|---------|
-| Timer 0 | 0x1F801100 | ドットクロック/スキャンライン | GPU VBlank検出 |
-| Timer 1 | 0x1F801110 | 水平リトレース | ディスプレイ同期 |
-| Timer 2 | 0x1F801120 | システムクロック/8 | 一般的なタイマー |
+| Timer | Base | Clock Source | Primary Use |
+|-------|------|--------------|-------------|
+| Timer 0 | 0x1F801100 | Dot clock/scanline | GPU VBlank detection |
+| Timer 1 | 0x1F801110 | Horizontal retrace | Display synchronization |
+| Timer 2 | 0x1F801120 | System clock/8 | General-purpose timer |
 
-- **MODE レジスタ**: 
-  - Bit 0: 同期有効 (0=Free Run, 1=Synchronize)
-  - Bit 1-2: 同期モード (カウンタリセット/一時停止条件)
-  - Bit 3: リセット条件 (0=FFFFh到達時, 1=Target到達時)
-  - Bit 4: Target到達時IRQ (0=無効, 1=有効)
-  - Bit 5: FFFFh到達時IRQ (0=無効, 1=有効)
-  - Bit 6: One-shot/Repeat (0=One-shot, 1=Repeat)
-  - Bit 7: Pulse/Toggle (0=Pulse, 1=Toggle)
-  - Bit 8-9: クロック源
-- **COUNT レジスタ**: 16ビットカウンタ値 (0-FFFFh)
-- **TARGET レジスタ**: 16ビットターゲット値
+- **MODE register**:
+  - Bit 0: synchronization enable (0=Free Run, 1=Synchronize).
+  - Bit 1-2: synchronization mode (counter reset/pause condition).
+  - Bit 3: reset condition (0=when FFFFh is reached, 1=when Target is reached).
+  - Bit 4: IRQ on Target reached (0=disabled, 1=enabled).
+  - Bit 5: IRQ on FFFFh reached (0=disabled, 1=enabled).
+  - Bit 6: One-shot/Repeat (0=One-shot, 1=Repeat).
+  - Bit 7: Pulse/Toggle (0=Pulse, 1=Toggle).
+  - Bit 8-9: clock source.
+- **COUNT register**: 16-bit counter value (0-FFFFh).
+- **TARGET register**: 16-bit target value.
 
 ## Timing Model
 
-- **CPUクロック**: 33.8688 MHz
-- **1 CPU cycle**: 1 クロック (約29.5ns)
-- **HBlank**: 15.734 kHz (63.5μs per scanline)
-- **VBlank**: 59.94 Hz (16.68ms per frame)
-- **DMA転送**: 1ワードあたり1-2サイクル消費
-- **GTEコマンド**: 概ね1イテレーションで数クロック
-- **SIO (Controller/Memory Card)**: ボーレート依存
+- **CPU clock**: 33.8688 MHz.
+- **1 CPU cycle**: 1 clock (approximately 29.5ns).
+- **HBlank**: 15.734 kHz (63.5μs per scanline).
+- **VBlank**: 59.94 Hz (16.68ms per frame).
+- **DMA transfer**: consumes 1-2 cycles per word.
+- **GTE commands**: generally several clocks per iteration.
+- **SIO (Controller/Memory Card)**: baud-rate dependent.
 
-### 同期方針
+### Synchronization Policy
 
-- CPU実行はサイクルカウントで同期
-- ハードウェアイベントはサイクル境界で処理
-- DMAはCPU実行と並列だが、バス競合時にストール
-- タイマーはCPUサイクルに同期してカウント
+- CPU execution is synchronized by cycle count.
+- Hardware events are processed at cycle boundaries.
+- DMA runs in parallel with CPU execution but stalls on bus contention.
+- Timers count in synchronization with CPU cycles.
 
 ## Recompiled Code ↔ Runtime ABI
 
@@ -251,38 +251,38 @@ Recompiled Code
     │
     ├── Load/Store → IMemoryBus.Read32/Write32
     ├── COP2 (GTE) → IGte.ExecuteCommand
-    ├── System Call → IBios (BIOS経由)
-    └── I/O Check → メモリアクセス時にアドレス判定
+    ├── System Call → IBios (via BIOS)
+    └── I/O Check → address check on memory access
                       │
-                      ├── RAM → ポインタ直接アクセス
+                      ├── RAM → direct pointer access
                       └── MMIO → IHardwareComponent.Read/Write
 ```
 
-### パフォーマンス最適化
+### Performance Optimization
 
-- **RAM直接アクセス**: `GetRamPointer()` でポインタを取得し、Unsafeコードで直接アクセス
-- **MMIO遅延判定**: RAMアドレス範囲チェックを最短パスで実行
-- **Hardware Inlining**: 頻繁にアクセスするレジスタはインライン化
+- **Direct RAM access**: obtain a pointer with `GetRamPointer()` and access memory directly using Unsafe code.
+- **MMIO delayed check**: execute the RAM address-range check on the shortest path.
+- **Hardware Inlining**: inline frequently accessed registers.
 
-## 複数 Platform Runtime 拡張方針
+## Multi-Platform Runtime Extension Policy
 
-- `IHardwareComponent` / `IMemoryBus` 等のインターフェースはプラットフォーム非依存
-- Infrastructure層 (`PSXRecomp.Native`) がプラットフォーム固有実装を提供
-- C# 側は Domain インターフェースのみに依存
-- 将来の拡張:
-  - GPU バックエンド (Vulkan, OpenGL, DirectX)
-  - オーディオバックエンド (SDL2, CoreAudio)
-  - タイミングバックエンド (高精度タイマー, フレーム pacing)
-  - ネットワーク (マルチプレイ)
+- Interfaces such as `IHardwareComponent` / `IMemoryBus` are platform-independent.
+- The Infrastructure layer (`PSXRecomp.Native`) provides platform-specific implementations.
+- The C# side depends only on Domain interfaces.
+- Future extensions:
+  - GPU backends (Vulkan, OpenGL, DirectX).
+  - Audio backends (SDL2, CoreAudio).
+  - Timing backends (high-precision timers, frame pacing).
+  - Networking (multiplayer).
 
-## Acceptance Criteria 達成状況
+## Acceptance Criteria Status
 
 | Criteria | Status |
 |----------|--------|
-| Hardware component model を定義 | ✅ IHardwareComponent + 全インターフェース |
-| Recompiled Code と Runtime の境界を定義 | ✅ Section: Recompiled Code ↔ Runtime ABI |
-| MMIO / memory access 方針を定義 | ✅ Section: MMIO Model, Memory / Bus Model |
-| Timing / synchronization 方針を定義 | ✅ Section: Timing Model |
-| BIOS interaction 方針を定義 | ✅ Section: BIOS Model |
-| GTE/GPU/SPU/CD/DMA等の責務を整理 | ✅ 各Sectionで定義 |
-| 将来の複数 platform Runtime を考慮 | ✅ Section: 複数 Platform Runtime 拡張方針 |
+| Define the hardware component model | ✅ IHardwareComponent + all interfaces |
+| Define the boundary between Recompiled Code and Runtime | ✅ Section: Recompiled Code ↔ Runtime ABI |
+| Define the MMIO / memory-access policy | ✅ Section: MMIO Model, Memory / Bus Model |
+| Define the timing / synchronization policy | ✅ Section: Timing Model |
+| Define the BIOS interaction policy | ✅ Section: BIOS Model |
+| Organize responsibilities for GTE/GPU/SPU/CD/DMA, etc. | ✅ Defined in each section |
+| Consider future multi-platform Runtime support | ✅ Section: Multi-Platform Runtime Extension Policy |
