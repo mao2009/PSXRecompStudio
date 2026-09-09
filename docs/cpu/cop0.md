@@ -4,26 +4,26 @@
 
 | Reg | Name | R/W | Description |
 |-----|------|-----|-------------|
-| r0 | * | - | 未使用 |
-| r1 | * | - | 未使用 |
-| r2 | * | - | 未使用 |
+| r0 | * | - | Unused |
+| r1 | * | - | Unused |
+| r2 | * | - | Unused |
 | r3 | BPC | R/W | Breakpoint Program Counter |
-| r4 | * | - | 未使用 |
+| r4 | * | - | Unused |
 | r5 | BDA | R/W | Breakpoint Data Address |
 | r6 | TAR | R | Jump Target Address |
 | r7 | DCIC | R/W | Debug and Cache Invalidate Control |
 | r8 | BadVaddr | R | Bad Virtual Address |
 | r9 | BDAM | R/W | Breakpoint Data Address Mask |
-| r10 | * | - | 未使用 |
+| r10 | * | - | Unused |
 | r11 | BPCM | R/W | Breakpoint Program Counter Mask |
 | r12 | SR | R/W | System Status Register |
-| r13 | CAUSE | R/W* | Exception Cause (* bit 8-9 R/W) |
+| r13 | CAUSE | R/W* | Exception Cause (* bits 8-9 R/W) |
 | r14 | EPC | R | Exception Program Counter |
 | r15 | PRID | R | Processor Revision Identifier |
 
 ## SR (System Status Register) - cop0r12
 
-R3000Aは3レベルのステータススタックを使用する。
+The R3000A uses a three-level status stack.
 
 ```text
 Bit  Name    Description
@@ -33,61 +33,61 @@ Bit  Name    Description
 3    IEp     Previous Interrupt Enable
 4    KUo     Oldest Kernel/User mode
 5    IEo     Oldest Interrupt Enable
-6    CU0     Coprocessor 0 Usability (未使用, always 1 on PSX)
-7    CU1     Coprocessor 1 Usability (FPU, 未使用 on PSX)
+6    CU0     Coprocessor 0 Usability (unused, always 1 on PSX)
+7    CU1     Coprocessor 1 Usability (FPU, unused on PSX)
 8-15 IM[7:0] Interrupt Mask (hardware)
 16-17 SW     Software Interrupt (R/W)
 18-25 IM[9:8] Interrupt Mask (software)
-26-27 *      未使用
+26-27 *      Unused
 28    CU2     Coprocessor 2 Usability (GTE)
 29    CU3     Coprocessor 3 Usability
-30-31 *      未使用
+30-31 *      Unused
 ```
 
 ### KUc (Kernel/User Current)
 
-- 0: カーネルモード
-- 1: ユーザーモード
+- 0: Kernel mode
+- 1: User mode
 
 ### IEc (Interrupt Enable Current)
 
-- 0: 割り込み無効
-- 1: 割り込み有効
+- 0: Interrupts disabled
+- 1: Interrupts enabled
 
 ### 3-Level Stack
 
-例外発生時に:
+On exception entry:
 ```text
 KUo ← KUp, IEo ← IEp
 KUp ← KUc, IEp ← IEc
-KUc ← 0 (カーネル), IEc ← 0 (割り込み無効)
+KUc ← 0 (kernel), IEc ← 0 (interrupts disabled)
 ```
 
-RFE時に:
+On RFE:
 ```text
 KUc ← KUp, IEc ← IEp
 KUp ← KUo, IEp ← IEo
 ```
 
-KUo/IEo（bit 4-5）はRFEでは変更しない（実機仕様。詳細: ADR-005）。
+KUo/IEo (bits 4-5) are not modified by RFE (real-hardware behavior; see ADR-005).
 
 ### BEV (Bootstrap Exception Vector)
 
-- 0: 例外ベクトル 80000080h
-- 1: 例外ベクトル BFC00180h
+- 0: exception vector 80000080h
+- 1: exception vector BFC00180h
 
 ## CAUSE (Exception Cause) - cop0r13
 
 ```
 Bit  Name    Description
-0-1  *       未使用（ゼロ）
-2-6  Excode  例外コード
-7    *       未使用（ゼロ）
-8-9  IP[1:0] 割り込みペンディング（R/W）
-10-15 IP[7:2] 割り込みペンディング（hardware, R only）
-16-27 *      未使用（ゼロ）
-28-29 CE     Coprocessor Error（opcode bit 26-27）
-30    *      未使用（PSX固有: branch condition when BD=1）
+0-1  *       Unused (zero)
+2-6  Excode  Exception code
+7    *       Unused (zero)
+8-9  IP[1:0] Interrupt pending (R/W)
+10-15 IP[7:2] Interrupt pending (hardware, R only)
+16-27 *      Unused (zero)
+28-29 CE     Coprocessor Error (opcode bits 26-27)
+30    *      Unused (PSX-specific: branch condition when BD=1)
 31    BD     Branch Delay
 ```
 
@@ -98,28 +98,21 @@ Bit  Name    Description
 | IP[0] | Software interrupt 0 (R/W via MTC0) |
 | IP[1] | Software interrupt 1 (R/W via MTC0) |
 | IP[2] | Hardware: Interrupt Controller aggregate line (R only) |
-| IP[3]-IP[7] | Hardware: unused (未接続, always 0) in this emulator's model |
+| IP[3]-IP[7] | Hardware: unused (unconnected, always 0) in this emulator's model |
 
-実機のR3000A/PSXは、VBlank/GPU/CD-ROM/DMA/TMR0-2等の全周辺機器割り込みが
-Interrupt Controller (I_STAT/I_MASK, `docs/cpu/exceptions.md`) で集約され、
-単一のハードウェア割り込み線（CPU IRQ2 = CAUSE.IP2, bit 10）としてCPUへ配信される
-（個別の周辺機器ごとに専用のCAUSE.IPビットは存在しない）。Interrupt Controllerの
-`GetInterruptPending()`（`I_STAT & I_MASK != 0`）がこの集約ペンディング状態であり、
-CPUのStep()毎にCAUSE.IP2へ反映される（Issue #144）。ソフトウェアはSR.IM2
-(bit 10) を有効化することでこの集約割り込み線を許可する。
+On real R3000A/PSX hardware, all peripheral interrupts such as VBlank/GPU/CD-ROM/DMA/TMR0-2 are aggregated by the Interrupt Controller (I_STAT/I_MASK; see `docs/cpu/exceptions.md`) and delivered to the CPU through a single hardware interrupt line (CPU IRQ2 = CAUSE.IP2, bit 10). There is no dedicated CAUSE.IP bit for each individual peripheral. The Interrupt Controller's `GetInterruptPending()` result (`I_STAT & I_MASK != 0`) is this aggregate pending state and is reflected into CAUSE.IP2 on every CPU `Step()` (Issue #144). Software enables this aggregate interrupt line by enabling SR.IM2 (bit 10).
 
 ## EPC (Exception Program Counter) - cop0r14
 
-- 例外発生時のPCを保存
-- 遅延スロット内なら分岐命令のアドレス
-- PC復元はRFE命令自体では行われない。ソフトウェアがEPCをMFC0でGPRに読み出し、
-  JR等でPCへ復帰させる（詳細: ADR-005, docs/cpu/exceptions.md）
+- Stores the PC at which an exception occurred
+- If the exception occurred in a delay slot, stores the address of the branch instruction
+- RFE itself does not restore the PC. Software reads EPC into a GPR with MFC0 and returns to the PC with JR or equivalent (see ADR-005 and `docs/cpu/exceptions.md`)
 
 ## BadVaddr (Bad Virtual Address) - cop0r8
 
-- アドレスエラー発生時のアドレスを保存
-- AdEL (ExcCode 0x04) と AdES (ExcCode 0x05) のみ更新
-- それ以外の例外では更新されない
+- Stores the address that caused an address error
+- Updated only for AdEL (ExcCode 0x04) and AdES (ExcCode 0x05)
+- Not updated for other exceptions
 
 ## DCIC (Debug and Cache Invalidate Control) - cop0r7
 
@@ -127,10 +120,10 @@ CPUのStep()毎にCAUSE.IP2へ反映される（Issue #144）。ソフトウェ�
 Bit  Name    Description
 0    DB      Debug breakpoint occurred (R/W)
 1    PC      Program Counter break match (R/W)
-2-11 *       未使用
+2-11 *       Unused
 12   BCA     Breakpoint Context Active (R/W)
 13   BCO     Breakpoint Condition met (R/W)
-14-29 *      未使用
+14-29 *      Unused
 30    UD      User Debug Enable (R/W)
 31    TR      Trap Enable (R/W)
 ```
@@ -141,11 +134,11 @@ Bit  Name    Description
 |-------------|--------|-------------|
 | MFC0 rt, rd | 0x10, rs=0x00 | rt = COP0[rd] |
 | MTC0 rt, rd | 0x10, rs=0x04 | COP0[rd] = rt |
-| RFE | 0x10, rs=0x10 | 例外から復帰 |
+| RFE | 0x10, rs=0x10 | Return from exception |
 
-## PSX固有メモ
+## PSX-Specific Notes
 
-- TLB関連命令（TLBR, TLBWI, TLBWR, TLBP）はPSXでは基本的に未使用
-- PSXは固定マッピングを使用
-- GTE命令はCOP2として実行（COP0ではない）
-- COP2へのアクセスはSR.CU2ビットで制御
+- TLB-related instructions (TLBR, TLBWI, TLBWR, TLBP) are generally unused on PSX
+- PSX uses fixed mappings
+- GTE instructions execute as COP2, not COP0
+- Access to COP2 is controlled by the SR.CU2 bit
