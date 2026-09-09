@@ -1,0 +1,61 @@
+name: Native Architecture
+
+on:
+  pull_request:
+    paths:
+      - 'src/PSXRecomp.Native/**'
+      - 'config/archlintcpp.yml'
+      - '.github/workflows/native-architecture.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/PSXRecomp.Native/**'
+      - 'config/archlintcpp.yml'
+      - '.github/workflows/native-architecture.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  archlintcpp:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout PSXRecompStudio
+        uses: actions/checkout@v4
+
+      - name: Checkout ArchLintCpp
+        uses: actions/checkout@v4
+        with:
+          repository: mao2009/ArchLintCpp
+          ref: e2c12d00d4780a9fab55839ef69c3314010cae23
+          path: .tools/ArchLintCpp
+          persist-credentials: false
+
+      - name: Install LLVM and Clang 18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18 ninja-build
+
+      - name: Build ArchLintCpp
+        run: |
+          cmake -S .tools/ArchLintCpp -B .tools/ArchLintCpp/build -G Ninja \
+            -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
+            -DClang_DIR=/usr/lib/llvm-18/lib/cmake/clang \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF
+          cmake --build .tools/ArchLintCpp/build --parallel
+
+      - name: Generate native compilation database
+        run: |
+          cmake -S src/PSXRecomp.Native -B build/native-archlint -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_CXX_COMPILER=clang++-18
+
+      - name: Run ArchLintCpp
+        run: |
+          .tools/ArchLintCpp/build/archlint-cpp \
+            --config config/archlintcpp.yml \
+            --compile-db build/native-archlint \
+            --format text
