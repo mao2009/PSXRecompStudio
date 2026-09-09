@@ -601,11 +601,10 @@ public class MipsToIrLoweringDifferentialTests
     public void Sltiu_PositiveImmediate_UnsignedCompare_MatchTheInterpreter()
     {
         // SLTIU compare is unsigned. Only positive immediates (sign-extension
-        // equals zero-extension) are exercised here: the native interpreter's
-        // ExecSltiu zero-extends the immediate, which contradicts MIPS I's
-        // sign-extension and is tracked as a separate issue. The discriminating
-        // negative-immediate case is pinned by Sltiu_NegativeImmediate_SignExtendedUnsignedCompare
-        // in MipsToIrLoweringTests, which checks the IR shape directly.
+        // equals zero-extension) are exercised here as a baseline; the
+        // discriminating negative-immediate case (Issue #306) is pinned by
+        // Sltiu_NegativeImmediate_SignExtendedUnsignedCompare_MatchesTheInterpreter
+        // below.
         var words = new[]
         {
             MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),            // LUI   $t0, 0x8000   ($t0 = 0x80000000)
@@ -624,6 +623,29 @@ public class MipsToIrLoweringDifferentialTests
         run.Ir.Gpr[12].Should().Be(1u, "5 < 0x7FFF unsigned");
         run.Ir.Gpr[13].Should().Be(0u, "0 < 0 unsigned");
         run.Ir.Gpr[14].Should().Be(0u, "5 < 0 unsigned");
+    }
+
+    [Fact]
+    public void Sltiu_NegativeImmediate_SignExtendedUnsignedCompare_MatchesTheInterpreter()
+    {
+        // Issue #306: with the native ExecSltiu fixed to sign-extend its
+        // immediate, a high-bit immediate now discriminates sign-extension from
+        // zero-extension, and the lowered IR must agree with the interpreter here
+        // too — not only on the positive-immediate cases above.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x0001),               // LUI   $t0, 1          ($t0 = 0x00010000)
+            MipsEncoding.I(0x0B, rt: 9, rs: 8, immediate: 0xFFFF),               // SLTIU $t1, $t0, 0xFFFF (sign-ext -> 0xFFFFFFFF)
+            MipsEncoding.I(0x0D, rt: 10, rs: 0, immediate: 0xFFFF),              // ORI   $t2, $zero, 0xFFFF (zero-ext -> $t2 = 0x0000FFFF)
+            MipsEncoding.I(0x0B, rt: 11, rs: 10, immediate: 0xFFFF),             // SLTIU $t3, $t2, 0xFFFF (boundary)
+            MipsEncoding.I(0x0B, rt: 12, rs: 10, immediate: 0x8000),             // SLTIU $t4, $t2, 0x8000 (sign-ext -> 0xFFFF8000)
+        };
+
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        run.Ir.Gpr[9].Should().Be(1u, "0x00010000 < sign-extended 0xFFFF (0xFFFFFFFF) unsigned");
+        run.Ir.Gpr[11].Should().Be(1u, "0x0000FFFF < sign-extended 0xFFFF (0xFFFFFFFF) unsigned");
+        run.Ir.Gpr[12].Should().Be(1u, "0x0000FFFF < sign-extended 0x8000 (0xFFFF8000) unsigned");
     }
 
     /// <summary>

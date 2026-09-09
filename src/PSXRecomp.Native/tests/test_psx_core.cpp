@@ -271,6 +271,40 @@ static void test_step_slt_sltu() {
     PASS();
 }
 
+static void test_step_sltiu() {
+    // Issue #306: SLTIU sign-extends its 16-bit immediate to 32 bits, then
+    // compares unsigned — it must not zero-extend.
+    TEST("SLTIU sign-extends its immediate before the unsigned comparison");
+    PSXCore* core = PSXCore_Create();
+
+    // SLTIU $3, $1, 0xFFFF ($1 = 0x00010000): sign-extended imm = 0xFFFFFFFF,
+    // so 0x00010000 < 0xFFFFFFFF (unsigned) is true.
+    PSXCore_SetGPR(core, 1, 0x00010000u);
+    PSXCore_WriteMemory32(core, 0, 0x2C23FFFFu); // SLTIU $3, $1, 0xFFFF
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 1u);
+
+    // Boundary: SLTIU $4, $2, 0xFFFF ($2 = 0x0000FFFF): still compares against
+    // the sign-extended 0xFFFFFFFF, so 0x0000FFFF < 0xFFFFFFFF is true.
+    PSXCore_SetGPR(core, 2, 0x0000FFFFu);
+    PSXCore_WriteMemory32(core, 4, 0x2C44FFFFu); // SLTIU $4, $2, 0xFFFF
+    PSXCore_SetPC(core, 4);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 1u);
+
+    // Positive-immediate regression: no sign extension in play, must remain
+    // unaffected by the fix. SLTIU $6, $5, 5 ($5 = 3) -> 3 < 5 is true.
+    PSXCore_SetGPR(core, 5, 3u);
+    PSXCore_WriteMemory32(core, 8, 0x2CA60005u); // SLTIU $6, $5, 5
+    PSXCore_SetPC(core, 8);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 1u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_step_shift() {
     TEST("SLL/SRL/SRA/SLLV/SRLV/SRAV instructions");
     PSXCore* core = PSXCore_Create();
@@ -2147,6 +2181,7 @@ int main() {
     test_step_sub_subu();
     test_step_logic();
     test_step_slt_sltu();
+    test_step_sltiu();
     test_step_shift();
     test_step_branch();
     test_step_jump();
