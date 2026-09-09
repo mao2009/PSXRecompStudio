@@ -2,85 +2,85 @@
 
 ## General Purpose Registers (GPR)
 
-32個の32ビット汎用レジスタ（$0 - $31）。
+32 32-bit general-purpose registers ($0 - $31).
 
 | Register | ABI Name | Usage | Initial Value |
 |----------|----------|-------|---------------|
-| $0 | $zero | 定数0（ハードウェア的に常に0） | 0 |
-| $1 | $at | アセンブラ一時変数 | 0 |
-| $2-$3 | $v0-$v1 | 関数戻り値 | 0 |
-| $4-$7 | $a0-$a3 | 関数引数 | 0 |
-| $8-$15 | $t0-$t7 | 一時変数（呼び出し規約なし） | 0 |
-| $16-$23 | $s0-$s7 | 保存された一時変数 | 0 |
-| $24-$25 | $t8-$t9 | 一時変数（呼び出し規約なし） | 0 |
-| $26-$27 | $k0-$k1 | カーネル用（例外ハンドラのみ） | 0 |
-| $28 | $gp | グローバルポインタ | 0 |
-| $29 | $sp | スタックポインタ | 0 |
-| $30 | $fp | フレームポインタ | 0 |
-| $31 | $ra | リターンアドレス | 0 |
+| $0 | $zero | Constant 0 (always 0 in hardware) | 0 |
+| $1 | $at | Assembler temporary | 0 |
+| $2-$3 | $v0-$v1 | Function return values | 0 |
+| $4-$7 | $a0-$a3 | Function arguments | 0 |
+| $8-$15 | $t0-$t7 | Temporaries (not preserved by calling convention) | 0 |
+| $16-$23 | $s0-$s7 | Saved temporaries | 0 |
+| $24-$25 | $t8-$t9 | Temporaries (not preserved by calling convention) | 0 |
+| $26-$27 | $k0-$k1 | Reserved for kernel use (exception handlers only) | 0 |
+| $28 | $gp | Global pointer | 0 |
+| $29 | $sp | Stack pointer | 0 |
+| $30 | $fp | Frame pointer | 0 |
+| $31 | $ra | Return address | 0 |
 
-### $zero ($0) の特殊動作
+### Special behavior of $zero ($0)
 
-- ハードウェア的に常に0を返す
-- 書き込みは無視される
-- MIPS ISAの要件
+- Always returns 0 in hardware
+- Writes are ignored
+- Required by the MIPS ISA
 
-### $31 ($ra) の特殊動作
+### Special behavior of $31 ($ra)
 
-- JAL, JALR, BLTZAL, BGEZAL命令でリターンアドレスが自動格納される
-- 通常のレジスタとして読み書き可能
+- JAL, JALR, BLTZAL, and BGEZAL automatically store the return address
+- Can otherwise be read and written as a normal register
 
 ## Program Counter (PC)
 
-32ビットのプログラムカウンタ。
+32-bit program counter.
 
-- 現在実行中の命令のアドレス
-- 命令は4ビットアラインメント必須（下2ビットは常に0）
-- 初期値: 0x00000000
+- Address of the currently executing instruction
+- Instructions must be 4-byte aligned (the low 2 bits are always 0)
+- Initial value: 0x00000000
 
-## HI / LO レジスタ
+## HI / LO Registers
 
-乗算・除算命令の結果を格納する特殊レジスタ。
+Special registers that store multiplication and division results.
 
 | Register | Usage | Initial Value |
 |----------|-------|---------------|
-| HI | 乗算の上位32ビット、除算の余り | 0 |
-| LO | 乗算の下位32ビット、除算の商 | 0 |
+| HI | Upper 32 bits of multiplication result; division remainder | 0 |
+| LO | Lower 32 bits of multiplication result; division quotient | 0 |
 
-### 乗算命令 (MULT, MULTU)
-
-```
-HI:LO = GPR[rs] * GPR[rt]  (64ビット結果)
-```
-
-- MULT: 符号付き乗算
-- MULTU: 符号なし乗算
-- 結果はHI（上位32ビット）とLO（下位32ビット）に格納
-
-### 除算命令 (DIV, DIVU)
+### Multiply Instructions (MULT, MULTU)
 
 ```
-LO = GPR[rs] / GPR[rt]  (商)
-HI = GPR[rs] % GPR[rt]  (余り)
+HI:LO = GPR[rs] * GPR[rt]  (64-bit result)
 ```
 
-- DIV: 符号付き除算
-- DIVU: 符号なし除算
+- MULT: signed multiplication
+- MULTU: unsigned multiplication
+- The result is stored in HI (upper 32 bits) and LO (lower 32 bits)
 
-### 除算ゼロの挙動 (PSX固有)
+### Divide Instructions (DIV, DIVU)
 
-| 命令 | Divisor=0時の商 | Divisor=0時の余り |
-|------|----------------|------------------|
-| DIV (被除数 >= 0) | 0xFFFFFFFF (-1) | 被除数 |
-| DIV (被除数 < 0) | 0x00000001 (+1) | 被除数 |
-| DIVU | 0xFFFFFFFF (-1) | 被除数 |
+```
+LO = GPR[rs] / GPR[rt]  (quotient)
+HI = GPR[rs] % GPR[rt]  (remainder)
+```
+
+- DIV: signed division
+- DIVU: unsigned division
+
+### Division by Zero Behavior (PSX-specific)
+
+| Instruction | Quotient when Divisor=0 | Remainder when Divisor=0 |
+|-------------|--------------------------|---------------------------|
+| DIV (dividend >= 0) | 0xFFFFFFFF (-1) | dividend |
+| DIV (dividend < 0) | 0x00000001 (+1) | dividend |
+| DIVU | 0xFFFFFFFF (-1) | dividend |
 
 ## Coprocessor Registers
 
 ### CP0 (System Control Coprocessor)
 
-16個の32ビットコプロセッサレジスタ。詳細は [cop0.md](cop0.md) を参照。
+16 32-bit coprocessor registers. See [cop0.md](cop0.md) for details.
 
 ### CP2 (GTE - Geometry Transformation Engine)
 
-詳細は将来のドキュメントで扱う。
+Details will be covered in a future document.
