@@ -332,7 +332,11 @@ public static class RecompilerHostCodeGen
             case RecompilerIrOperationKind.CompareLessThanSigned:
                 if (result == null) return null;
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
-                return $"{result} = ((int32_t){ResolveValue(op.InputValueA, valueNames)} < (int32_t){ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
+                // Portable 32-bit signed ordering via unsigned comparison: flipping the
+                // sign bit maps two's-complement signed order onto unsigned order without
+                // the implementation-defined uint32_t -> int32_t conversion C11 would
+                // require for out-of-range values (e.g. 0x80000000).
+                return $"{result} = (({ResolveValue(op.InputValueA, valueNames)} ^ 0x80000000u) < ({ResolveValue(op.InputValueB, valueNames)} ^ 0x80000000u)) ? 1u : 0u;";
 
             case RecompilerIrOperationKind.CompareLessThanUnsigned:
                 if (result == null) return null;
