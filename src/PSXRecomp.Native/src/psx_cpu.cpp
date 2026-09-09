@@ -644,7 +644,9 @@ void PSXCpu::ExecSlti(uint32_t rt, uint32_t rs, int16_t imm) {
 }
 
 void PSXCpu::ExecSltiu(uint32_t rt, uint32_t rs, int16_t imm) {
-    SetGPR(rt, gpr_[rs] < ZeroExtend16(imm) ? 1 : 0);
+    // SLTIU sign-extends the 16-bit immediate to 32 bits, then compares unsigned
+    // (MIPS I semantics) — it does not zero-extend.
+    SetGPR(rt, gpr_[rs] < SignExtend16(imm) ? 1 : 0);
 }
 
 // Shift

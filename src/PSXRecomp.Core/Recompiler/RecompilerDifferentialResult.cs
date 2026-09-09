@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Cpu;
 
 namespace PSXRecomp.Core.Recompiler;
 
@@ -21,6 +22,14 @@ public sealed record RecompilerDifferentialResult(
 
     /// <summary>True when both completed and the state snapshots match.</summary>
     public bool IsMatch => BothCompleted && Diff!.IsMatch;
+
+    /// <summary>
+    /// True when both completed and the comparison was inconclusive: the executors
+    /// agree up to the bounded budget cut and differ only on the fields the cut
+    /// leaves mid-iteration, so neither a match nor a real divergence was proven
+    /// (Issue #304).
+    /// </summary>
+    public bool IsBudgetInconclusive => BothCompleted && Diff!.IsBudgetInconclusive;
 }
 
 /// <summary>
@@ -44,10 +53,38 @@ public static class RecompilerDifferentialRunner
         var referenceResult = reference.Execute(fixture);
         var actualResult = actual.Execute(fixture);
 
+        // The runner is the one caller that can supply both facts a pair of
+        // snapshots alone cannot prove (CodeRabbit findings on #305): it reads the
+        // fixture's own author-asserted BudgetsAreShared fact — StepBudget (host
+        // blocks) and ReferenceStepBudget (guest instructions) count different
+        // units, so equal numbers alone never prove the same work counter — and it
+        // rebuilds the lowered program's authoritative static block-entry PCs.
         RecompilerStateDiffResult? diff = referenceResult.Snapshot is not null && actualResult.Snapshot is not null
-            ? RecompilerStateDiff.Compare(referenceResult.Snapshot, actualResult.Snapshot)
+            ? RecompilerStateDiff.Compare(
+                referenceResult.Snapshot,
+                actualResult.Snapshot,
+                budgetsAreShared: fixture.BudgetsAreShared,
+                staticBlockEntryPcs: StaticBlockEntryPcs(fixture))
             : null;
 
         return new RecompilerDifferentialResult(fixture, referenceResult, actualResult, diff);
+    }
+
+    /// <summary>
+    /// The lowered program's static block-entry PCs for the fixture's instructions —
+    /// the authoritative projection target for <see cref="RecompilerStateDiff"/>'s
+    /// budget-tail check, independent of whichever PCs a given host run happened to
+    /// observe.
+    /// </summary>
+    private static IReadOnlySet<uint> StaticBlockEntryPcs(RecompilerDifferentialFixture fixture)
+    {
+        var instructions = new List<(R3000aInstruction Instruction, uint EntryPc)>(fixture.Instructions.Count);
+        for (var i = 0; i < fixture.Instructions.Count; i++)
+        {
+            instructions.Add((R3000aDecoder.Decode(fixture.Instructions[i]), fixture.PcOfInstruction(i)));
+        }
+
+        var program = MipsToIrLowerer.LowerProgram(instructions);
+        return program.Blocks.Select(block => block.EntryPc).ToHashSet();
     }
 }

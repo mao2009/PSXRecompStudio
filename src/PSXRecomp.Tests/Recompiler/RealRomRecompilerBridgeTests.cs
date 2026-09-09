@@ -19,10 +19,11 @@ public sealed class RealRomRecompilerBridgeTests
 {
     private const uint Base = 0x80100000u;
 
-    // A real SLTU encoding captured from an actual PS1 executable during Issue #225
-    // candidate exploration (SLTU $at, $v0, $v1) — MipsToIrLowerer does not lower it,
-    // so it is a stable "unsupported instruction" probe without hand-rolling an encoding.
-    private const uint UnsupportedSltuWord = 0x0043082Bu;
+    // A real MULT encoding as found in MIPS object code (MULT $v0, $v1) —
+    // MipsToIrLowerer does not lower it, so it is a stable "unsupported instruction"
+    // probe without hand-rolling an encoding. Issue #304 lowered SLTU, so the older
+    // SLTU probe (0x0043082B) is no longer unsupported.
+    private const uint UnsupportedMultWord = 0x00430018u;
 
     private static DecodedInstruction[] MakeInstructions(uint start, params uint[] words)
     {
@@ -117,7 +118,7 @@ public sealed class RealRomRecompilerBridgeTests
         var words = new[]
         {
             MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 5), // ADDIU $t0, $zero, 5
-            UnsupportedSltuWord,
+            UnsupportedMultWord,
             MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 7), // never reached
         };
         var instructions = MakeInstructions(Base, words);
@@ -322,7 +323,7 @@ public sealed class RealRomRecompilerBridgeTests
             corruptedGpr, reference.HI, reference.LO, reference.PC, reference.LoadDelay,
             reference.Exception, reference.Termination, reference.Memory, reference.PcTrace);
 
-        var diff = RecompilerStateDiff.Compare(reference, corrupted);
+        var diff = RecompilerStateDiff.Compare(reference, corrupted, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(corrupted.PcTrace));
 
         Assert.False(diff.IsMatch);
         Assert.Contains(diff.Differences, d => d.FieldPath == "gpr[11]");

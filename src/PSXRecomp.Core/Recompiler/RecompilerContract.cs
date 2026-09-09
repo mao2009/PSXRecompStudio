@@ -51,6 +51,14 @@ public enum RecompilerIrOperationKind : byte
 
     /// <summary>Produces 1 when inputs A and B differ, otherwise 0.</summary>
     CompareNotEqual,
+
+    /// <summary>Produces 1 when the signed (32-bit two's-complement) value of input A
+    /// is less than the signed value of input B, otherwise 0.</summary>
+    CompareLessThanSigned,
+
+    /// <summary>Produces 1 when the unsigned value of input A is less than the
+    /// unsigned value of input B, otherwise 0.</summary>
+    CompareLessThanUnsigned,
 }
 
 [Domain]
@@ -535,6 +543,8 @@ public static class RecompilerIrValidator
                 break;
             case RecompilerIrOperationKind.CompareEqual:
             case RecompilerIrOperationKind.CompareNotEqual:
+            case RecompilerIrOperationKind.CompareLessThanSigned:
+            case RecompilerIrOperationKind.CompareLessThanUnsigned:
                 Require(hasResult && hasA && hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
                 break;
             case RecompilerIrOperationKind.ShiftLeftLogical:

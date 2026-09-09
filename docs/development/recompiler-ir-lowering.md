@@ -24,6 +24,10 @@ relies on (see [Load width and signedness](#load-width-and-signedness)).
 | ADDIU rt,rs,imm | `ReadGpr` + `Constant(sign-ext imm)` → `Add` → `WriteGpr` | 16-bit imm sign-extended |
 | LUI rt,imm | `Constant(imm << 16)` → `WriteGpr` | Direct constant mapping |
 | AND / OR / XOR / NOR rd,rs,rt | `ReadGpr`×2 → op → `WriteGpr` | |
+| ANDI / ORI / XORI rt,rs,imm | `ReadGpr` + `Constant(zero-ext imm)` → `And` / `Or` / `Xor` → `WriteGpr` | 16-bit imm zero-extended |
+| SLT rd,rs,rt | `ReadGpr`×2 → `CompareLessThanSigned` → `WriteGpr` | `1` when (signed) rs &lt; (signed) rt, else `0` |
+| SLTU rd,rs,rt | `ReadGpr`×2 → `CompareLessThanUnsigned` → `WriteGpr` | `1` when (unsigned) rs &lt; rt, else `0` |
+| SLTI / SLTIU rt,rs,imm | `ReadGpr` + `Constant(sign-ext imm)` → `CompareLessThanSigned` / `CompareLessThanUnsigned` → `WriteGpr` | The 16-bit imm is **sign-extended** even for SLTIU; only the comparison signedness differs |
 | SLL / SRL / SRA rd,rt,shamt | `ReadGpr` → shift → `WriteGpr` | shamt 0..31 |
 
 ### Memory
@@ -219,14 +223,53 @@ boundary (see `MipsToIrLoweringDifferentialTests.JalThenJrRa_ReturnsToTheLinkedA
 Resolving a register-held target — and with it `Return` — needs a contract change
 this stage deliberately does not make; see [Deferred](#deferred).
 
+## Bounded differential execution classification
+
+The differential harness runs both executors under a numeric budget, so a run
+concludes in one of three ways (Issue #304):
+
+- **Match** — both sides complete and every compared state field agrees.
+- **Mismatch** — the executors genuinely diverge: a behavioral field (`hi`,
+  `lo`, `memory.*`, `loadDelay.*`, `exception.*`) differs, a checkpoint diverges
+  before the cut, or one side completes while the other exhausts its budget.
+- **BudgetInconclusive** — the narrow middle case. Both executors exhaust the
+  *same* bounded budget, the interpreter trace projected to the host's
+  block-entry PCs is an *ordered prefix* of the host trace (the comparable
+  checkpoint prefixes agree in order before the cut), and the host's tail beyond
+  the interpreter trace only revisits interpreter-visited loop locations — a
+  loop continuation after the cut, never a new code path and never a reordered
+  existing path. The residual differences are only the fields the budget cut
+  itself leaves mid-iteration (`pc` and the iterating GPRs).
+
+`BudgetInconclusive` exists because a long multi-loop function — now reachable
+after #304's immediate-opcode support widened the candidate set — can have its
+fixed static-instruction budget cut each executor off mid-loop at a different
+iteration. The host fuses a branch and its delay slot into one block, so it retires
+fewer budget units per iteration than the interpreter does instructions, and the
+two drift apart in iteration count. That is a harness artifact, not a lowering
+divergence: every comparable prefix matches in order and all behavioral state
+agrees. The ordering requirement is essential — `RecompilerStateDiff` proves it
+with an ordered trace comparison (the interpreter trace is first projected to
+the PCs the host block entries can emit, e.g. dropping delay-slot nops that are
+never host checkpoints, then required to match the host trace as an exact
+prefix).
+Two runs over the *same* PC set in a *different* order, or a host that runs no
+further than the interpreter, leave no tail to excuse and stay hard `Mismatch`s —
+a set-membership test alone cannot detect an ordering divergence.
+It stays distinct from `Match` (a match was not proven) yet is never reported as
+the failure a genuine divergence would be. `RecompilerDifferentialResult.IsMatch`
+remains false for it, while the new `IsBudgetInconclusive` lets a caller treat it
+explicitly; `RecompilerStateDiffResult.Describe()` and `ToMachineReadable()`
+report it as such.
+
 ## Deferred
 
 | Deferred | Reason |
 |---|---|
 | Register-held control-flow targets (JR / JALR resolution, `Return` flow) | `RecompilerIrFlow.Target` is a static address and has no value-id form. Expressing a runtime target needs a #206 contract change, which this stage deliberately does not make; the frontier stays explicit as `UnresolvedIndirectFlow`. |
-| BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branches need signed comparison operations the contract does not have yet. |
+| BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branch encodings (`0x06`-`0x07`, `0x01`) have no decoder entry yet; the signed comparison IR now exists (`CompareLessThanSigned`), so lowering them is a decoder + lowering extension. |
 | LWL / LWR, SWL / SWR | Unaligned pair access with the special ADR-004 load-delay pairing. |
-| ADDI / SUB / ADD, SLT / SLTI / SLTU / SLTIU, ANDI / ORI / XORI, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
+| ADDI / SUB / ADD, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
 | COP0 / COP2, SYSCALL / BREAK | Coprocessor and exception semantics. |
 | Chained load delay, and a load in a branch delay slot | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
 | Pending load delay across a program boundary | `RecompilerStateSnapshot.LoadDelay` can carry it, but no IR operation queues one. |

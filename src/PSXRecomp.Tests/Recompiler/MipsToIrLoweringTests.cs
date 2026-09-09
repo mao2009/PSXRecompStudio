@@ -177,6 +177,155 @@ public class MipsToIrLoweringTests
     }
 
     [Fact]
+    public void Slt_ProducesReadReadCompareLessThanSignedWrite()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeR(0x2A, 10, 8, 9, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Slt);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[1].Register.Should().Be(9);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanSigned);
+        block.Operations[2].InputValueA.Should().Be(0);
+        block.Operations[2].InputValueB.Should().Be(1);
+        block.Operations[2].ResultValueId.Should().Be(2);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(10);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Sltu_ProducesReadReadCompareLessThanUnsignedWrite()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeR(0x2B, 10, 8, 9, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Sltu);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanUnsigned);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Andi_HighBitImmediate_ZeroExtended()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x0C, 10, 8, 0x8000));
+        instruction.Opcode.Should().Be(R3000aOpcode.Andi);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0x00008000u);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.And);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(10);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Ori_HighBitImmediate_ZeroExtended()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x0D, 10, 8, 0xFFFF));
+        instruction.Opcode.Should().Be(R3000aOpcode.Ori);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0x0000FFFFu);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.Or);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Xori_ProducesReadConstantXorWrite()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x0E, 10, 8, 0x00FF));
+        instruction.Opcode.Should().Be(R3000aOpcode.Xori);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0x000000FFu);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.Xor);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(10);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Slti_NegativeImmediate_SignExtendedSignedCompare()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x0A, 10, 8, 0x8000));
+        instruction.Opcode.Should().Be(R3000aOpcode.Slti);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0xFFFF8000u);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanSigned);
+        block.Operations[2].InputValueA.Should().Be(0);
+        block.Operations[2].InputValueB.Should().Be(1);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(10);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Sltiu_NegativeImmediate_SignExtendedUnsignedCompare()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x0B, 10, 8, 0x8000));
+        instruction.Opcode.Should().Be(R3000aOpcode.Sltiu);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80008000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0xFFFF8000u);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanUnsigned);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(10);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
     public void Lui_ProducesConstantWrite()
     {
         var instruction = R3000aDecoder.Decode(EncodeI(0x0F, 8, 0, 0x1234));
@@ -459,7 +608,14 @@ public class MipsToIrLoweringTests
             (R3000aOpcode.Or, EncodeR(0x25, 10, 8, 9, 0)),
             (R3000aOpcode.Xor, EncodeR(0x26, 10, 8, 9, 0)),
             (R3000aOpcode.Nor, EncodeR(0x27, 10, 8, 9, 0)),
+            (R3000aOpcode.Slt, EncodeR(0x2A, 10, 8, 9, 0)),
+            (R3000aOpcode.Sltu, EncodeR(0x2B, 10, 8, 9, 0)),
             (R3000aOpcode.Addiu, EncodeI(0x09, 8, 0, 42)),
+            (R3000aOpcode.Slti, EncodeI(0x0A, 8, 0, 1)),
+            (R3000aOpcode.Sltiu, EncodeI(0x0B, 8, 0, 1)),
+            (R3000aOpcode.Andi, EncodeI(0x0C, 8, 0, 1)),
+            (R3000aOpcode.Ori, EncodeI(0x0D, 8, 0, 1)),
+            (R3000aOpcode.Xori, EncodeI(0x0E, 8, 0, 1)),
             (R3000aOpcode.Lui, EncodeI(0x0F, 8, 0, 0x1234)),
         };
 
@@ -536,7 +692,14 @@ public class MipsToIrLoweringTests
             (EncodeR(0x25, 10, 8, 9, 0), "OR"),
             (EncodeR(0x26, 10, 8, 9, 0), "XOR"),
             (EncodeR(0x27, 10, 8, 9, 0), "NOR"),
+            (EncodeR(0x2A, 10, 8, 9, 0), "SLT"),
+            (EncodeR(0x2B, 10, 8, 9, 0), "SLTU"),
             (EncodeI(0x09, 8, 0, 42), "ADDIU"),
+            (EncodeI(0x0A, 8, 0, 1), "SLTI"),
+            (EncodeI(0x0B, 8, 0, 1), "SLTIU"),
+            (EncodeI(0x0C, 8, 0, 1), "ANDI"),
+            (EncodeI(0x0D, 8, 0, 1), "ORI"),
+            (EncodeI(0x0E, 8, 0, 1), "XORI"),
             (EncodeI(0x0F, 8, 0, 0x1234), "LUI"),
         };
 

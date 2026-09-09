@@ -522,6 +522,132 @@ public class MipsToIrLoweringDifferentialTests
         ir.Gpr[8].Should().Be(2u);
     }
 
+    [Fact]
+    public void SltAndSltu_DistinguishSignedFromUnsigned_MatchTheInterpreter()
+    {
+        // t0 = 0x80000000 (signed INT32_MIN, unsigned 0x80000000), t1 = 0.
+        // SLT is the signed view, SLTU the unsigned view: the same pair of
+        // operands must disagree about the comparison.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),            // LUI  $t0, 0x8000
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 0),                 // ADDIU $t1, $zero, 0
+            MipsEncoding.R(0x2A, rd: 10, rs: 8, rt: 9, shamt: 0),             // SLT  $t2, $t0, $t1
+            MipsEncoding.R(0x2B, rd: 11, rs: 8, rt: 9, shamt: 0),             // SLTU $t3, $t0, $t1
+            MipsEncoding.R(0x2A, rd: 12, rs: 9, rt: 8, shamt: 0),             // SLT  $t4, $t1, $t0
+            MipsEncoding.R(0x2B, rd: 13, rs: 9, rt: 8, shamt: 0),             // SLTU $t5, $t1, $t0
+        };
+
+        var run = RunBoth(words, retiredInstructions: 6, dataWindowBytes: 0);
+
+        run.Ir.Gpr[10].Should().Be(1u, "SLT: INT32_MIN < 0");
+        run.Ir.Gpr[11].Should().Be(0u, "SLTU: 0x80000000 is not less than 0 unsigned");
+        run.Ir.Gpr[12].Should().Be(0u, "SLT: 0 < INT32_MIN is false");
+        run.Ir.Gpr[13].Should().Be(1u, "SLTU: 0 < 0x80000000 unsigned");
+    }
+
+    [Fact]
+    public void AndiOriXori_ZeroExtendTheImmediate_MatchTheInterpreter()
+    {
+        // The 0x8000 / 0xFFFF immediates discriminate zero- vs sign-extension:
+        // a sign-extending lowering would get a different result, and the native
+        // interpreter zero-extends (ExecAndi/ExecOri/ExecXori).
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0xF0F0),            // LUI  $t0, 0xF0F0
+            MipsEncoding.I(0x0D, rt: 8, rs: 8, immediate: 0xF0F0),            // ORI  $t0, $t0, 0xF0F0   ($t0 = 0xF0F0F0F0)
+            MipsEncoding.I(0x0D, rt: 9, rs: 8, immediate: 0xFFFF),            // ORI  $t1, $t0, 0xFFFF
+            MipsEncoding.I(0x0C, rt: 10, rs: 8, immediate: 0x8000),           // ANDI $t2, $t0, 0x8000
+            MipsEncoding.I(0x0E, rt: 11, rs: 8, immediate: 0xFFFF),           // XORI $t3, $t0, 0xFFFF
+            MipsEncoding.I(0x0E, rt: 12, rs: 8, immediate: 0x00FF),           // XORI $t4, $t0, 0x00FF
+        };
+
+        var run = RunBoth(words, retiredInstructions: 6, dataWindowBytes: 0);
+
+        run.Ir.Gpr[9].Should().Be(0xF0F0FFFFu, "ORI zero-extends 0xFFFF");
+        run.Ir.Gpr[10].Should().Be(0x00008000u, "ANDI zero-extends 0x8000");
+        run.Ir.Gpr[11].Should().Be(0xF0F00F0Fu, "XORI zero-extends 0xFFFF");
+        run.Ir.Gpr[12].Should().Be(0xF0F0F00Fu, "XORI zero-extends 0x00FF");
+    }
+
+    [Fact]
+    public void Slti_NegativeImmediates_SignExtendedSignedCompare_MatchTheInterpreter()
+    {
+        // imm 0x8000 / 0xFFFF sign-extend to -32768 / -1 and the comparison is
+        // signed: INT32_MIN produces every negative immediate set, +5 none.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),            // LUI  $t0, 0x8000   ($t0 = INT32_MIN)
+            MipsEncoding.I(0x0A, rt: 9, rs: 8, immediate: 1),                 // SLTI $t1, $t0, 1
+            MipsEncoding.I(0x0A, rt: 10, rs: 8, immediate: 0xFFFF),           // SLTI $t2, $t0, -1
+            MipsEncoding.I(0x0A, rt: 11, rs: 8, immediate: 0x8000),           // SLTI $t3, $t0, -32768
+            MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 5),                // ADDIU $t4, $zero, 5
+            MipsEncoding.I(0x0A, rt: 13, rs: 12, immediate: 0xFFFF),          // SLTI $t5, $t4, -1
+            MipsEncoding.I(0x0A, rt: 14, rs: 12, immediate: 0x8000),          // SLTI $t6, $t4, -32768
+            MipsEncoding.I(0x0A, rt: 15, rs: 12, immediate: 7),               // SLTI $t7, $t4, 7
+        };
+
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 0);
+
+        run.Ir.Gpr[9].Should().Be(1u, "INT32_MIN < 1");
+        run.Ir.Gpr[10].Should().Be(1u, "INT32_MIN < -1");
+        run.Ir.Gpr[11].Should().Be(1u, "INT32_MIN < -32768");
+        run.Ir.Gpr[13].Should().Be(0u, "5 < -1 is false");
+        run.Ir.Gpr[14].Should().Be(0u, "5 < -32768 is false");
+        run.Ir.Gpr[15].Should().Be(1u, "5 < 7");
+    }
+
+    [Fact]
+    public void Sltiu_PositiveImmediate_UnsignedCompare_MatchTheInterpreter()
+    {
+        // SLTIU compare is unsigned. Only positive immediates (sign-extension
+        // equals zero-extension) are exercised here as a baseline; the
+        // discriminating negative-immediate case (Issue #306) is pinned by
+        // Sltiu_NegativeImmediate_SignExtendedUnsignedCompare_MatchesTheInterpreter
+        // below.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),            // LUI   $t0, 0x8000   ($t0 = 0x80000000)
+            MipsEncoding.I(0x0B, rt: 9, rs: 8, immediate: 0x7FFF),            // SLTIU $t1, $t0, 0x7FFF
+            MipsEncoding.I(0x0B, rt: 10, rs: 8, immediate: 1),                // SLTIU $t2, $t0, 1
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 5),                // ADDIU $t3, $zero, 5
+            MipsEncoding.I(0x0B, rt: 12, rs: 11, immediate: 0x7FFF),          // SLTIU $t4, $t3, 0x7FFF
+            MipsEncoding.I(0x0B, rt: 13, rs: 0, immediate: 0),                // SLTIU $t5, $zero, 0
+            MipsEncoding.I(0x0B, rt: 14, rs: 11, immediate: 0),               // SLTIU $t6, $t3, 0
+        };
+
+        var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 0);
+
+        run.Ir.Gpr[9].Should().Be(0u, "0x80000000 < 0x7FFF is false unsigned");
+        run.Ir.Gpr[10].Should().Be(0u, "0x80000000 < 1 is false unsigned");
+        run.Ir.Gpr[12].Should().Be(1u, "5 < 0x7FFF unsigned");
+        run.Ir.Gpr[13].Should().Be(0u, "0 < 0 unsigned");
+        run.Ir.Gpr[14].Should().Be(0u, "5 < 0 unsigned");
+    }
+
+    [Fact]
+    public void Sltiu_NegativeImmediate_SignExtendedUnsignedCompare_MatchesTheInterpreter()
+    {
+        // Issue #306: with the native ExecSltiu fixed to sign-extend its
+        // immediate, a high-bit immediate now discriminates sign-extension from
+        // zero-extension, and the lowered IR must agree with the interpreter here
+        // too — not only on the positive-immediate cases above.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x0001),               // LUI   $t0, 1          ($t0 = 0x00010000)
+            MipsEncoding.I(0x0B, rt: 9, rs: 8, immediate: 0xFFFF),               // SLTIU $t1, $t0, 0xFFFF (sign-ext -> 0xFFFFFFFF)
+            MipsEncoding.I(0x0D, rt: 10, rs: 0, immediate: 0xFFFF),              // ORI   $t2, $zero, 0xFFFF (zero-ext -> $t2 = 0x0000FFFF)
+            MipsEncoding.I(0x0B, rt: 11, rs: 10, immediate: 0xFFFF),             // SLTIU $t3, $t2, 0xFFFF (boundary)
+            MipsEncoding.I(0x0B, rt: 12, rs: 10, immediate: 0x8000),             // SLTIU $t4, $t2, 0x8000 (sign-ext -> 0xFFFF8000)
+        };
+
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        run.Ir.Gpr[9].Should().Be(1u, "0x00010000 < sign-extended 0xFFFF (0xFFFFFFFF) unsigned");
+        run.Ir.Gpr[11].Should().Be(1u, "0x0000FFFF < sign-extended 0xFFFF (0xFFFFFFFF) unsigned");
+        run.Ir.Gpr[12].Should().Be(1u, "0x0000FFFF < sign-extended 0x8000 (0xFFFF8000) unsigned");
+    }
+
     /// <summary>
     /// LW into $t2 followed by a BEQ in its load-delay slot, comparing against
     /// <paramref name="compareValue"/> in $t3. Layout: the load at 0x18, the branch

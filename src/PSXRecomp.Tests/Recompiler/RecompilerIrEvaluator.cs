@@ -214,6 +214,8 @@ internal static class RecompilerIrEvaluator
             RecompilerIrOperationKind.Load32 => memory.Read32(a),
             RecompilerIrOperationKind.CompareEqual => a == b ? 1u : 0u,
             RecompilerIrOperationKind.CompareNotEqual => a != b ? 1u : 0u,
+            RecompilerIrOperationKind.CompareLessThanSigned => unchecked((uint)((int)a < (int)b ? 1 : 0)),
+            RecompilerIrOperationKind.CompareLessThanUnsigned => a < b ? 1u : 0u,
             _ => throw new NotSupportedException($"Operation kind '{operation.Kind}' has no evaluation."),
         };
     }

@@ -121,6 +121,37 @@ public sealed class RecompilerStageCEndToEndTests
     }
 
     [Fact]
+    public void BudgetCutOffMultiLoop_IsClassified_Inconclusive_NotMismatch()
+    {
+        // Issue #304 regression: the real-ROM vertical slice surfaced a latent
+        // harness limitation — a fixed static-instruction budget fed to both
+        // executors cuts a long loop off mid-iteration on each side, at different
+        // iteration counts (the host fuses BNE+delay into one block and drifts
+        // ahead). That is not a lowering bug: every comparable checkpoint and all
+        // behavioral state agree; only the counter/PC reflect the different cut
+        // points. The harness must classify this BudgetInconclusive (not a hard
+        // Mismatch).
+        var fixture = RecompilerFixtures.Issue304BudgetCutOffLoop();
+        var result = RunDifferential(fixture);
+
+        Assert.True(result.BothCompleted);
+        Assert.False(result.IsMatch, "a budget-cut-off loop is not a clean match");
+        Assert.True(result.IsBudgetInconclusive, result.Diff!.Describe());
+
+        // Both sides were cut off mid-loop by the shared budget.
+        Assert.Equal(RecompilerIrTerminationReason.ExecutionBudgetExceeded, result.Reference.Snapshot!.Termination);
+        Assert.Equal(RecompilerIrTerminationReason.ExecutionBudgetExceeded, result.Actual.Snapshot!.Termination);
+
+        // Neither side ran to the loop bound; no behavioral (memory/HI/LO) field
+        // may differ — only the counter/PC reflect the different cut points.
+        Assert.DoesNotContain(result.Diff!.Differences, d =>
+            d.FieldPath == "hi" || d.FieldPath == "lo" ||
+            d.FieldPath.StartsWith("memory", StringComparison.Ordinal) ||
+            d.FieldPath.StartsWith("loadDelay", StringComparison.Ordinal) ||
+            d.FieldPath.StartsWith("exception", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void IndirectJump_FailsClosed_AsUnresolvedIndirectFlow_OnTheHost()
     {
         // The recompiled host cannot statically resolve a register-held target:
@@ -173,7 +204,7 @@ public sealed class RecompilerStageCEndToEndTests
                 $"[{fixture.Name}] host executor failed: [{first.DiagnosticCode}] {first.DiagnosticMessage}");
             Assert.True(first.Status == RecompilerExecutionStatus.Completed
                         && second.Status == RecompilerExecutionStatus.Completed);
-            var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!);
+            var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(second.Snapshot!.PcTrace));
             Assert.True(diff.IsMatch, $"[{fixture.Name}]: {diff.Describe()}");
         }
     }

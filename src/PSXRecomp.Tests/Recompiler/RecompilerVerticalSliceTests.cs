@@ -45,7 +45,7 @@ public sealed class RecompilerVerticalSliceTests
         Assert.Equal(RecompilerExecutionStatus.Completed, first.Status);
         Assert.Equal(RecompilerExecutionStatus.Completed, second.Status);
 
-        var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!);
+        var diff = RecompilerStateDiff.Compare(first.Snapshot!, second.Snapshot!, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(second.Snapshot!.PcTrace));
         Assert.True(diff.IsMatch, diff.Describe());
     }
 

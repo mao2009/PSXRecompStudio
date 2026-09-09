@@ -132,6 +132,8 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.ShiftRightArithmetic => true,
         RecompilerIrOperationKind.CompareEqual => true,
         RecompilerIrOperationKind.CompareNotEqual => true,
+        RecompilerIrOperationKind.CompareLessThanSigned => true,
+        RecompilerIrOperationKind.CompareLessThanUnsigned => true,
         RecompilerIrOperationKind.Load8 => true,
         RecompilerIrOperationKind.Load16 => true,
         RecompilerIrOperationKind.Load32 => true,
@@ -326,6 +328,20 @@ public static class RecompilerHostCodeGen
                 if (result == null) return null;
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
                 return $"{result} = ({ResolveValue(op.InputValueA, valueNames)} != {ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
+
+            case RecompilerIrOperationKind.CompareLessThanSigned:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                // Portable 32-bit signed ordering via unsigned comparison: flipping the
+                // sign bit maps two's-complement signed order onto unsigned order without
+                // the implementation-defined uint32_t -> int32_t conversion C11 would
+                // require for out-of-range values (e.g. 0x80000000).
+                return $"{result} = (({ResolveValue(op.InputValueA, valueNames)} ^ 0x80000000u) < ({ResolveValue(op.InputValueB, valueNames)} ^ 0x80000000u)) ? 1u : 0u;";
+
+            case RecompilerIrOperationKind.CompareLessThanUnsigned:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = ({ResolveValue(op.InputValueA, valueNames)} < {ResolveValue(op.InputValueB, valueNames)}) ? 1u : 0u;";
 
             case RecompilerIrOperationKind.Load8:
                 if (result == null) return null;

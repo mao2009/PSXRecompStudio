@@ -54,7 +54,8 @@ public sealed record RecompilerDifferentialFixture
         uint initialLo = 0,
         IEnumerable<RecompilerInitialMemoryItem>? initialMemory = null,
         IEnumerable<uint>? memoryWindow = null,
-        uint? referenceStepBudget = null)
+        uint? referenceStepBudget = null,
+        bool budgetsAreShared = false)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A fixture needs a name.", nameof(name));
         Name = name;
@@ -75,6 +76,7 @@ public sealed record RecompilerDifferentialFixture
             (initialMemory ?? Array.Empty<RecompilerInitialMemoryItem>()).ToArray());
         MemoryWindow = new ReadOnlyCollection<uint>((memoryWindow ?? Array.Empty<uint>()).ToArray());
         ReferenceStepBudget = referenceStepBudget ?? stepBudget;
+        BudgetsAreShared = budgetsAreShared;
     }
 
     public string Name { get; }
@@ -93,6 +95,20 @@ public sealed record RecompilerDifferentialFixture
     /// transfer fuses an instruction with its delay slot.
     /// </summary>
     public uint ReferenceStepBudget { get; }
+
+    /// <summary>
+    /// An explicit, author-asserted fact (CodeRabbit finding on #305): true only when
+    /// whoever built this fixture has verified that <see cref="StepBudget"/> (host
+    /// blocks) and <see cref="ReferenceStepBudget"/> (guest instructions) represent
+    /// the same real execution window for this specific program, despite counting
+    /// different units. Equal numeric values do <b>not</b> imply this on their own —
+    /// a control transfer fused with its delay slot retires one host block per two
+    /// guest instructions, so two independently-chosen equal budgets can still stop
+    /// the executors at different points. Defaults to <c>false</c>; only a fixture
+    /// deliberately built to exercise <see cref="RecompilerComparisonClassification.BudgetInconclusive"/>
+    /// through <see cref="RecompilerDifferentialRunner"/> should set this true.
+    /// </summary>
+    public bool BudgetsAreShared { get; }
 
     /// <summary>Returns the guest PC of the <paramref name="index"/>-th instruction.</summary>
     public uint PcOfInstruction(int index) => EntryPc + unchecked((uint)index * 4u);
