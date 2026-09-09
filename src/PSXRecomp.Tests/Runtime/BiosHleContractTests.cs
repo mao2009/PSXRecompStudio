@@ -84,56 +84,15 @@ public sealed class BiosHleContractTests
         result.Diagnostic.Message.Should().Be("A0:3C putchar requires one character argument.");
     }
 
-    [Fact]
-    public void Puts_Dispatches_On_Its_Documented_A0_Identity()
-    {
-        IBiosRuntime runtime = new BiosHleRuntime();
-
-        BiosHleRuntime.PutsFunction.Should().Be(0x3E);
-
-        var identity = new BiosCallIdentity(
-            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, 0x80002000, new[] { 0x80010000u });
-        var result = runtime.Invoke(identity);
-
-        // Documented ABI: R2 returns the incoming R4 string pointer unchanged.
-        result.Status.Should().Be(BiosServiceStatus.Supported);
-        result.ReturnValue.Should().Be(0x80010000u);
-        result.Diagnostic.Should().BeNull();
-    }
-
-    [Fact]
-    public void Puts_Is_Pure_And_Deterministic_Across_Repeated_Invocations()
-    {
-        var runtime = new BiosHleRuntime();
-        var identity = new BiosCallIdentity(
-            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, 0x80002000, new[] { 0x80010000u });
-
-        var first = runtime.Invoke(identity);
-        var second = runtime.Invoke(identity);
-
-        // No host output sink exists yet, so repeated calls on the same instance
-        // must be indistinguishable: no accumulated state, no side effect.
-        second.Should().Be(first);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(2)]
-    public void InvalidPutsArgumentCounts_Are_Rejected_Explicitly(int argumentCount)
-    {
-        var arguments = Enumerable.Range(0, argumentCount).Select(static value => (uint)value).ToArray();
-        var result = new BiosHleRuntime().Invoke(new BiosCallIdentity(
-            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, arguments: arguments));
-
-        result.Status.Should().Be(BiosServiceStatus.Unsupported);
-        result.ReturnValue.Should().BeNull();
-        result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
-        result.Diagnostic.Message.Should().Be("A0:3E puts requires one string-pointer argument.");
-    }
-
     [Theory]
     [InlineData(BiosCallFamily.A0, 0x3B)] // getchar, adjacent to putchar
     [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
+    [InlineData(BiosCallFamily.A0, 0x3E)] // puts: identity verified (ADR-014, docs/REFERENCES.md) but
+                                           // deliberately NOT registered — echoing its string-pointer
+                                           // argument would satisfy the ABI's return convention while
+                                           // implementing none of the documented behavior (reading guest
+                                           // memory, writing to TTY), so it must not be Supported until
+                                           // guest-memory access and an output sink exist.
     [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
     [InlineData(BiosCallFamily.B0, 0x3D)] // the B0 putchar alias, deliberately unregistered
     [InlineData(BiosCallFamily.B0, 0x3F)] // the B0 puts alias, deliberately unregistered

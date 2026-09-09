@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted
+- **Status**: Accepted (amended 2026-09-09 — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -32,20 +32,35 @@ select behavior from title identity, guest address hacks, generated C, or
 duplicated CPU semantics. The real BIOS image remains neither distributed nor a
 normal-runtime prerequisite.
 
-Registered services are deterministic and side-effect free until a Runtime
-output sink and guest-memory access exist. A service therefore models the
-documented ABI (accepted argument shape and returned register value) and nothing
-else; it never performs host I/O or reads guest memory to produce its result.
-A service invoked with an argument shape its ABI does not accept returns
-BIOS_HLE_INVALID_ARGUMENTS through the shared BiosServiceResult factory, so
-argument rejection is never re-implemented per service.
+`Supported` may be returned only when a service's guest-observable semantics are
+actually satisfied — not merely when its ABI's return register is echoed back.
+A service whose documented behavior requires reading guest memory, producing
+host-visible output, or mutating state must implement that behavior before it
+is registered. A service that would only reproduce its return-value contract
+while skipping the effect a caller actually depends on must not be marked
+Supported; it stays absent from the registry (falling through to
+BIOS_HLE_UNSUPPORTED_CALL) instead. Marking an unimplemented side effect
+Supported would let a differential/compatibility test report a false green and
+would understate the Runtime's real compatibility gap. A service invoked with
+an argument shape its ABI does not accept returns BIOS_HLE_INVALID_ARGUMENTS
+through the shared BiosServiceResult factory, so argument rejection is never
+re-implemented per service.
 
-The registry currently holds the TTY-output services documented as
-A(3Ch) std_out_putchar (returns the low byte of the character argument) and
-A(3Eh) std_out_puts (returns its incoming string-pointer argument). The B0-table
-aliases of the same functions (B(3Dh), B(3Fh)) are deliberately not registered
-yet: no evidence selects them, and an unregistered alias fails loudly through
-BIOS_HLE_UNSUPPORTED_CALL rather than diverging silently.
+The registry currently holds one service: A(3Ch) std_out_putchar. Its entire
+documented contract is returning the low byte of its character argument — a
+register-only effect with no guest memory or host output involved, so the pure
+model fully satisfies it. A(3Eh) std_out_puts's family/function/ABI has been
+verified against the same documentation ([docs/REFERENCES.md](../REFERENCES.md))
+for future use, but it is deliberately **not** registered: its documented
+behavior is reading a NUL-terminated string from guest memory and writing it to
+the TTY, and neither guest-memory access nor a deterministic output sink exists
+in the Runtime yet. Echoing its string-pointer argument back through R2 would
+satisfy the return convention while implementing none of the behavior a caller
+or a differential test depends on, so `puts` remains unregistered until that
+Runtime capability lands. The B0-table aliases of both functions (B(3Dh),
+B(3Fh)) are likewise not registered: no evidence selects them, and an
+unregistered call fails loudly through BIOS_HLE_UNSUPPORTED_CALL rather than
+diverging silently.
 
 ## Consequences
 
@@ -57,9 +72,13 @@ BIOS_HLE_UNSUPPORTED_CALL rather than diverging silently.
   kernel RAM, boot sequence, and hardware services remain follow-up work.
 - Real-ROM evidence can later select the next service without changing the
   identity or dispatch contract.
-- Because the TTY services emit no host output, recompiled code that depends on
-  observable console text is not yet satisfied by them; the Runtime output sink
-  and guest-memory access remain open work under Issue #279.
+- `puts`'s identity is pre-verified and cited, so implementing it later is a
+  Runtime-capability change (guest-memory read, output sink), not a fresh
+  identity-research task.
+- Because no service emits host output yet, recompiled code that depends on
+  observable console text is not satisfied by the current registry; the
+  Runtime output sink and guest-memory access remain open work under Issue
+  #279.
 
 ## Alternatives Considered
 
@@ -70,6 +89,22 @@ BIOS_HLE_UNSUPPORTED_CALL rather than diverging silently.
   compatibility gaps and cannot support deterministic differential diagnostics.
 - **Implement a complete BIOS routine table first** — rejected because Phase 1
   needs a generic contract before evidence-driven service expansion.
+- **Register `puts` as `Supported` with only its return value modeled** — this
+  ADR originally did exactly this; rejected on review. Echoing the string
+  pointer through R2 without reading guest memory or producing output
+  satisfies the ABI's return convention but none of `puts`'s actual observable
+  behavior, which would let a differential test pass without exercising
+  anything the service is meant to do. Withdrawn in favor of leaving `puts`
+  unregistered until the underlying Runtime capability exists.
+- **Add a `Partial`/`UnsupportedState` status for an ABI-correct but
+  effect-incomplete service** — considered, since that describes exactly the
+  withdrawn `puts` registration, but rejected for now: no currently registered
+  service needs it, and simply not registering an incomplete service resolves
+  the concern without growing the status vocabulary ahead of a concrete need.
+  The `BIOS_HLE_UNSUPPORTED_STATE` / `BIOS_HLE_SEMANTIC_MISMATCH` diagnostics
+  named in Issue #279 remain available for a future case where a *registered*
+  service reaches a state its HLE implementation cannot represent — a
+  different situation from a service that was never registered.
 
 ## Related ADRs
 

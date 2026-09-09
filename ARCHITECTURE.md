@@ -155,10 +155,11 @@ Unimplemented calls return explicit diagnostics such as
 `BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
-wires only the deterministic TTY-output contracts A0:3C `putchar` and A0:3E
-`puts`; both model the documented ABI without host output or guest-memory
-access, and every other function number — including the B0-table aliases of the
-same two functions — still reports `BIOS_HLE_UNSUPPORTED_CALL` (ADR-014).
+wires only the deterministic A0:3C `putchar` contract, whose documented effect
+is fully captured by its return value. A0:3E `puts`'s identity is verified but
+deliberately left unregistered until guest-memory access and an output sink
+exist to implement its actual side effect, and every other function number
+reports `BIOS_HLE_UNSUPPORTED_CALL` (ADR-014).
 
 ## Recompiler
 
