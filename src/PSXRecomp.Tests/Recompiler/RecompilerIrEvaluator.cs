@@ -1,4 +1,5 @@
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Core.Runtime;
 
 namespace PSXRecomp.Tests.Recompiler;
 
@@ -16,10 +17,12 @@ internal sealed class RecompilerGuestMemory
 
     public static uint Translate(uint virtualAddress)
     {
-        if (virtualAddress <= 0x7FFFFFFF) return virtualAddress;
-        if (virtualAddress <= 0xBFFFFFFF) return virtualAddress & 0x1FFFFFFF;
-        throw new ArgumentOutOfRangeException(
-            nameof(virtualAddress), virtualAddress, "The test memory model maps KUSEG/KSEG0/KSEG1 only.");
+        if (!Ps1AddressTranslation.TryTranslate(virtualAddress, out var physical))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(virtualAddress), virtualAddress, "The test memory model maps KUSEG/KSEG0/KSEG1 only.");
+        }
+        return physical;
     }
 
     public byte Read8(uint virtualAddress)

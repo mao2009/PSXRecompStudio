@@ -137,3 +137,28 @@ compatible with real hardware."
 
 - [ADR-013](013-real-rom-candidate-selection.md) — preserves the shared
   Recompiler contract when selecting real-ROM candidates.
+
+## Amendment (2026-09-09): Runtime guest-memory read boundary
+
+Track A of Issue #279 adds a generic Runtime guest-memory read boundary —
+`IGuestMemoryReader` with a default `GuestMemoryReader` and a bounded
+`GuestMemoryStringReader` for NUL-terminated guest strings — so a future
+service (notably A0:3E puts) can read guest memory safely. This amendment
+records only that boundary and its contract; it does not register any service.
+
+- (a) The boundary exists so a service can distinguish a stored zero byte from
+  an invalid or unmapped address: reads are Try-style and never report silent
+  success for an address that cannot be read, so a caller cannot confuse a
+  syntactically successful zero byte with a real stored zero.
+- (b) The reader delegates virtual-to-physical translation to a shared
+  `Ps1AddressTranslation` helper (KUSEG/KSEG0/KSEG1, mirroring native
+  `PSXCpu::TranslateAddress`) and reads physical bytes from the injected memory
+  path via a delegate. The reader is bounded to RAM only: BIOS ROM, scratchpad,
+  and hardware registers are not accessible through this reader. It is a bounded
+  read boundary, not a second memory-semantics implementation: no RAM window,
+  mirroring, or caching is built here.
+- (c) Reads are always bounded: the string helper is capped at `maxLength`
+  bytes, so no caller can trigger an unbounded scan.
+- (d) A0:3E puts remains unregistered until BOTH this guest-memory read
+  boundary and a Runtime output sink exist. The output sink is a separate
+  concurrent boundary and is deliberately not part of this amendment or Track A.
