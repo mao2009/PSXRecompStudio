@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mao2009/ArchLintCpp
-          ref: e2c12d00d4780a9fab55839ef69c3314010cae23
+          ref: 393919ec7182a513444ef38d45778e22707a2bd6
           path: .tools/ArchLintCpp
           persist-credentials: false
 
