@@ -1,10 +1,10 @@
 # R3000A Instruction Formats
 
-MIPS I ISAは3つの命令フォーマットを持つ。全ての命令は32ビット固定長。
+The MIPS I ISA has three instruction formats. All instructions are fixed-length 32-bit words.
 
 ## R-Type (Register)
 
-レジスタ間演算に使用。
+Used for register-to-register operations.
 
 ```
  31  26 25  21 20  16 15  11 10   6 5    0
@@ -17,15 +17,15 @@ MIPS I ISAは3つの命令フォーマットを持つ。全ての命令は32ビ�
 | Field | Bits | Description |
 |-------|------|-------------|
 | opcode | 31:26 | 0x00 (SPECIAL) |
-| rs | 25:21 | ソースレジスタ1 |
-| rt | 20:16 | ソースレジスタ2 / ターゲット |
-| rd | 15:11 | デスティネーションレジスタ |
-| shamt | 10:6 | シフト量 |
-| funct | 5:0 | 機能コード（命令を特定） |
+| rs | 25:21 | Source register 1 |
+| rt | 20:16 | Source register 2 / target |
+| rd | 15:11 | Destination register |
+| shamt | 10:6 | Shift amount |
+| funct | 5:0 | Function code (identifies the instruction) |
 
 ## I-Type (Immediate)
 
-即値演算、ロード/ストア、分岐に使用。
+Used for immediate operations, loads/stores, and branches.
 
 ```
  31  26 25  21 20  16 15                0
@@ -37,21 +37,21 @@ MIPS I ISAは3つの命令フォーマットを持つ。全ての命令は32ビ�
 
 | Field | Bits | Description |
 |-------|------|-------------|
-| opcode | 31:26 | オペコード |
-| rs | 25:21 | ベースレジスタ（ソース） |
-| rt | 20:16 | ターゲットレジスタ（デスティネーション） |
-| immediate | 15:0 | 符号拡張された16ビット即値 |
+| opcode | 31:26 | Opcode |
+| rs | 25:21 | Base register (source) |
+| rt | 20:16 | Target register (destination) |
+| immediate | 15:0 | 16-bit immediate |
 
-### 即値の扱い
+### Immediate Handling
 
-- **算術演算** (ADDI, ADDIU, SLTI, SLTIU): 符号拡張
-- **論理演算** (ANDI, ORI, XORI): 0拡張
-- **ロード/ストア**: 符号拡gmt（オフセット）
-- **分岐**: 符号拡張 + 2ビット左シフト（相対アドレス）
+- **Arithmetic operations** (ADDI, ADDIU, SLTI, SLTIU): sign-extended
+- **Logical operations** (ANDI, ORI, XORI): zero-extended
+- **Loads/stores**: sign-extended offset
+- **Branches**: sign-extended, then shifted left by 2 bits (relative address)
 
 ## J-Type (Jump)
 
-ジャンプ命令に使用。
+Used for jump instructions.
 
 ```
  31  26 25                               0
@@ -63,22 +63,22 @@ MIPS I ISAは3つの命令フォーマットを持つ。全ての命令は32ビ�
 
 | Field | Bits | Description |
 |-------|------|-------------|
-| opcode | 31:26 | オペコード |
-| instr_index | 25:0 | 26ビットジャンプインデックス |
+| opcode | 31:26 | Opcode |
+| instr_index | 25:0 | 26-bit jump index |
 
-### ターゲットアドレスの計算
+### Target Address Calculation
 
 ```
 target = ((PC + 4) & 0xF0000000) | (instr_index << 2)
 ```
 
-- (PC + 4): 遅延スロットのアドレス（次のPC）
-- 上位4ビット: 遅延スロットアドレスの上位4ビットを使用
-- instr_index: 26ビットインデックスを2ビット左シフト
+- (PC + 4): address of the delay-slot instruction (next PC)
+- Upper 4 bits: taken from the upper 4 bits of the delay-slot address
+- instr_index: 26-bit index shifted left by 2 bits
 
 ## Coprocessor Format
 
-COP命令（COP0, COP2等）に使用。
+Used for COP instructions (COP0, COP2, etc.).
 
 ```
  31  26 25  21 20  16 15               0
@@ -90,14 +90,14 @@ COP命令（COP0, COP2等）に使用。
 
 | Field | Bits | Description |
 |-------|------|-------------|
-| opcode | 31:26 | COP番号（01-11） |
-| rs | 25:21 | 機能フィールド（COPz内） |
-| rt | 20:16 | レジスタ指定 |
-| cofun | 15:0 | コプロセッサ固有機能 |
+| opcode | 31:26 | COP number (01-11) |
+| rs | 25:21 | Function field within COPz |
+| rt | 20:16 | Register selector |
+| cofun | 15:0 | Coprocessor-specific function |
 
 ## Encoding Note
 
-PSXのR3000Aはリトルエンディアン。バイトオーダーの扱いに注意。
+The PSX R3000A is little-endian. Take care when handling byte order.
 
 ```
 Memory address:  A+0  A+1  A+2  A+3
