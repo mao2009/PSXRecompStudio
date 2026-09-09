@@ -404,14 +404,15 @@ public static class RealRomCandidateSurvey
             };
         }
 
-        var probe = new List<(R3000aInstruction Instruction, uint EntryPc)>();
+        // MipsToIrLowerer.LowerProgram consumes the entry right after a
+        // control-transfer instruction as its delay slot, so the instruction must
+        // come first in program order with the NOP following it.
+        var probe = new List<(R3000aInstruction Instruction, uint EntryPc)> { (instruction, basePc) };
         if (instruction.DelaySlot != R3000aDelaySlotKind.None)
         {
             var nop = R3000aDecoder.Decode(0x00000000);
             probe.Add((nop, basePc + 4));
         }
-
-        probe.Add((instruction, basePc));
 
         try
         {

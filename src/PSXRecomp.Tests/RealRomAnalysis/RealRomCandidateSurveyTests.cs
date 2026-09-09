@@ -109,6 +109,51 @@ public class RealRomCandidateSurveyTests
         snapshot.Candidates.Should().Contain(c => c.InstructionCount == 0 && c.StopOpcode == "jr");
     }
 
+    [Fact]
+    public void Run_DirectControlTransferWithDelaySlot_ProbesAsLowered()
+    {
+        // Regression: MipsToIrLowerer.LowerProgram consumes the entry right after a
+        // control-transfer instruction as its delay slot. The probe must place the
+        // branch/jump before its NOP delay slot in program order; putting the NOP
+        // first left the branch with no following entry and misclassified it as
+        // "unsupported".
+        var instructions = MakeInstructions(
+            Base,
+            MipsEncoding.Branch(0x04, rs: 0, rt: 0, pc: Base, target: Base + 12), // BEQ $zero,$zero,+12
+            MipsEncoding.Nop,                                                     // delay slot
+            MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1));                    // branch target
+
+        var report = new DiscImageAnalysisReport
+        {
+            DiscImageSha256 = new string('a', 64),
+            SystemCnfBootPath = "cdrom:\\TEST.01;1",
+            ExecutableFileName = "TEST.01",
+            EntryPoint = Base,
+            TextStart = Base,
+            TextSize = 0x200,
+            SpInitial = 0,
+            GpInitial = 0,
+            ExecutableFileSize = 1,
+            ExecutableFileHash = new string('b', 64),
+            DecodeStartAddress = Base,
+            DecodedInstructionCount = instructions.Length,
+            DecodedInstructions = instructions,
+            DecodeFailures = Array.Empty<DecodeFailure>(),
+            BasicBlocks = new[]
+            {
+                new BasicBlock { StartAddress = Base, EndAddress = Base, InstructionCount = 1 },
+            },
+            CfgEdges = Array.Empty<CfgEdge>(),
+            CallCandidateCount = 0,
+            ReturnCandidateCount = 0,
+        };
+
+        var snapshot = RealRomCandidateSurvey.Run(report);
+
+        snapshot.SupportProbes.Should().Contain(p => p.Opcode == "beq" && p.Status == "lowered",
+            "a direct branch with a valid static target and its delay slot must lower, not report unsupported");
+    }
+
     private const uint Base = 0x80100000u;
 
     private static DecodedInstruction[] MakeInstructions(uint start, params uint[] words)
