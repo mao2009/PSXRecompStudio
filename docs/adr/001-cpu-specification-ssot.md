@@ -6,61 +6,61 @@
 
 ## Context
 
-PSX R3000A CPUの仕様は、将来のCPU実装、Recompiler、Debugger、MCPの基盤となる。複数の情報源（MIPS ISAマニュアル、PSX-SX、PSX開発者ドキュメント、テスト結果）を参照する必要があるが、各情報源の精度や詳細度が異なる。
+The PSX R3000A CPU specification forms the foundation for future CPU implementation, the Recompiler, the Debugger, and MCP integrations. Multiple sources must be consulted, including MIPS ISA manuals, PSX-SPX, PlayStation developer documentation, and test results, but these sources differ in accuracy and level of detail.
 
 ## Decision
 
-CPU仕様をSSOTとして `docs/cpu/` に管理し、以下の構造で分離する。
+Manage the CPU specification as the SSOT under `docs/cpu/`, separated using the following structure.
 
-### ファイル構成
+### File Structure
 
 ```text
 docs/cpu/
-├── r3000a.md              # R3000A全体の概要
-├── registers.md           # レジスタセット
-├── instruction-format.md  # 命令フォーマット（R/I/J）
-├── instruction-set.md     # 命令セット（全命令一覧）
-├── exceptions.md          # 例外処理
-├── cop0.md                # COP0 レジスタ
-├── memory.md              # メモリマップ
-├── pipeline.md            # パイプラインとデレイスロット
-└── test-specification.md  # テスト仕様
+├── r3000a.md              # R3000A overview
+├── registers.md           # Register set
+├── instruction-format.md  # Instruction formats (R/I/J)
+├── instruction-set.md     # Instruction set (complete instruction list)
+├── exceptions.md          # Exception handling
+├── cop0.md                # COP0 registers
+├── memory.md              # Memory map
+├── pipeline.md            # Pipeline and delay slots
+└── test-specification.md  # Test specification
 ```
 
-### 機械可読な命令定義
+### Machine-Readable Instruction Definitions
 
 ```text
 config/cpu/
-└── r3000a-instructions.yaml  # 全命令のYAML定義
+└── r3000a-instructions.yaml  # YAML definitions for all instructions
 ```
 
-### ADR
+### ADRs
 
 ```text
 docs/adr/
-├── 001-cpu-specification-ssot.md       # このADR
-├── 002-instruction-definition-yaml.md   # 命令定義のYAML形式
-├── 003-mips-isa-r3000a-psx-layering.md  # 仕様のレイヤー分離
-├── 004-branch-load-delay-modeling.md    # デレイスロットのモデル化
-└── 005-pc-model.md                     # PC更新のモデル化
+├── 001-cpu-specification-ssot.md        # This ADR
+├── 002-instruction-definition-yaml.md   # YAML format for instruction definitions
+├── 003-mips-isa-r3000a-psx-layering.md # Specification layering
+├── 004-branch-load-delay-modeling.md    # Delay-slot modeling
+└── 005-pc-model.md                      # PC update modeling
 ```
 
-### 分離原則
+### Separation Principles
 
-1. **MIPS ISA**: 一般的なMIPS I ISAの仕様
-2. **R3000A**: R3000A固有の実装仕様
-3. **PSX**: PSXでの実際の挙動（COP0仕様、メモリマップ、例外ベクトル等）
+1. **MIPS ISA**: General MIPS I ISA specification
+2. **R3000A**: R3000A-specific implementation specification
+3. **PSX**: Actual behavior on PlayStation hardware, including COP0 behavior, memory map, and exception vectors
 
-### 参照優先度
+### Reference Priority
 
-1. 本プロジェクトの `docs/cpu/` （SSOT）
-2. PSX-SX (psx-spx.consoledev.net)
+1. This project's `docs/cpu/` documentation (SSOT)
+2. PSX-SPX (`psx-spx.consoledev.net`)
 3. MIPS R3000 Hardware Manual
 4. IDT R30xx Family Software Reference Manual
-5. 他エミュレータの実装（参考のみ）
+5. Other emulator implementations (reference only)
 
 ## Consequences
 
-- 仕様の変更はSSOTを優先的に更新する
-- 外部資料との矛盾がある場合は、PSX実機での検証結果を優先する
-- MCP/AIはSSOTを参照元として利用する
+- Changes to the specification must update the SSOT first.
+- When external documentation conflicts with observed behavior, verified behavior on real PlayStation hardware takes precedence.
+- MCP and AI tooling use the SSOT as their reference source.
