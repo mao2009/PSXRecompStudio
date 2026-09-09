@@ -1,0 +1,58 @@
+layers:
+  - name: PublicApi
+    paths:
+      - /src/PSXRecomp.Native/include/
+
+  - name: ApiBridge
+    paths:
+      - /src/PSXRecomp.Native/src/psx_api.cpp
+
+  - name: Cpu
+    paths:
+      - /src/PSXRecomp.Native/src/psx_cpu
+
+  - name: Memory
+    paths:
+      - /src/PSXRecomp.Native/src/psx_memory
+
+  - name: Dma
+    paths:
+      - /src/PSXRecomp.Native/src/psx_dma
+
+  - name: Timer
+    paths:
+      - /src/PSXRecomp.Native/src/psx_timer
+
+  - name: Interrupt
+    paths:
+      - /src/PSXRecomp.Native/src/psx_interrupt
+
+rules:
+  - from: PublicApi
+    must_not_depend_on:
+      - ApiBridge
+      - Cpu
+      - Memory
+      - Dma
+      - Timer
+      - Interrupt
+
+  - from: Cpu
+    must_not_depend_on:
+      - ApiBridge
+
+  - from: Memory
+    must_not_depend_on:
+      - ApiBridge
+
+  - from: Dma
+    must_not_depend_on:
+      - ApiBridge
+
+  - from: Timer
+    must_not_depend_on:
+      - ApiBridge
+
+  - from: Interrupt
+    must_not_depend_on:
+      - ApiBridge
