@@ -6,25 +6,25 @@
 
 ## Context
 
-PSX R3000A CPU命令を将来的にDecoder、Interpreter、Recompiler、Test generator、Debugger、MCPから利用する必要がある。人間が読める仕様と機械可読な定義を分離する必要がある。
+PSX R3000A CPU instructions must eventually be consumed by the Decoder, Interpreter, Recompiler, test generator, Debugger, and MCP integrations. Human-readable specifications and machine-readable definitions therefore need to be separated.
 
 ## Decision
 
-命令定義をYAML形式で `config/cpu/r3000a-instructions.yaml` に管理する。
+Manage instruction definitions in YAML format at `config/cpu/r3000a-instructions.yaml`.
 
-### YAML構造
+### YAML Structure
 
 ```yaml
-# メタ情報
+# Metadata
 meta:
   version: "1.0"
   description: "PSX R3000A CPU Instruction Set Definitions"
   references:
     - "MIPS R3000 Hardware Manual"
-    - "PSX-SX (psx-spx.consoledev.net)"
+    - "PSX-SPX (psx-spx.consoledev.net)"
     - "IDT R30xx Family Software Reference Manual"
 
-# 命令定義
+# Instruction definitions
 instructions:
   - name: ADD
     opcode: 0x00
@@ -57,23 +57,23 @@ instructions:
       - "MIPS R3000A, ADD instruction"
 ```
 
-### 設計方針
+### Design Policy
 
-1. **Decoder**: opcode + funct + format から命令を特定
-2. **Interpreter**: semantics から実行ロジックを生成
-3. **Recompiler**: operands + semantics からIR生成
-4. **Test generator**: test_cases からテストコードを生成
-5. **Debugger**: name + operands から逆アセンブル
-6. **MCP**: 全フィールドを参照可能
+1. **Decoder**: Identify instructions from opcode + funct + format.
+2. **Interpreter**: Generate execution logic from semantics.
+3. **Recompiler**: Generate IR from operands + semantics.
+4. **Test generator**: Generate test code from test_cases.
+5. **Debugger**: Disassemble from name + operands.
+6. **MCP**: Make all fields available for reference.
 
-### 拡張性
+### Extensibility
 
-- 将来の命令追加に対応
-- PSX固有の命令（COP2/GTE）への拡張
-- タイトル固有の命令差分への対応
+- Support future instruction additions.
+- Support PSX-specific instructions such as COP2/GTE.
+- Support title-specific instruction differences if required.
 
 ## Consequences
 
-- YAMLのスキーマは将来的にJSON Schemaで検証可能
-- テスト生成はYAMLから自動生成
-- MCPサーバーはYAMLを直接参照可能
+- The YAML schema can later be validated with JSON Schema.
+- Tests can be generated automatically from YAML.
+- The MCP server can consume the YAML directly.
