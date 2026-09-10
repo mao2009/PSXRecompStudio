@@ -278,12 +278,15 @@ identities from the recognizer; this repository has **not** verified what they a
 Verifying an identity against the documentation cited in `docs/REFERENCES.md` is a
 prerequisite for any registration work, per ADR-014's no-guessing rule.
 
-| Identity | Observed in |
-|---|---|
-| `A0:39` | every distinct executable examined |
-| `B0:57` | every executable that reached the relevant text region, 4 sites each |
-| `B0:56` | same, 2–3 sites each |
-| `A0:AB`, `A0:AC`, `B0:4E`, `B0:50` | most executables examined |
+| Identity | Observed in (of the 5 distinct executables) | Sites per executable |
+|---|---|---|
+| `A0:39` | 5 | 1 |
+| `A0:AB`, `A0:AC`, `B0:4E`, `B0:50` | 4 | 1 |
+| `B0:57` | 3 | 4 |
+| `B0:56` | 3 | 2–3 |
+
+`B0:56` and `B0:57` are the only identities observed with more than one call site in a
+single executable.
 
 These are reported as call-frequency observations only. None is proposed as a service
 until its identity is verified.
