@@ -249,8 +249,72 @@ public static class DeterministicArtifactBuilder
                 ReturnCandidateCount = report.ReturnCandidateCount,
                 EdgeKindMix = Distribution(report.CfgEdges, static edge => edge.Kind ?? string.Empty),
             },
+            BiosCalls = BuildBiosCalls(report.BiosCalls),
         };
     }
+
+    /// <summary>
+    /// Projects recognized BIOS call evidence into the persisted section. The recognizer
+    /// already emits both arrays in canonical order; they are re-sorted here anyway so the
+    /// artifact's ordering contract holds for any caller-supplied report, not only for one
+    /// the pipeline produced.
+    /// </summary>
+    private static BiosCallReportSection BuildBiosCalls(BiosCallEvidence? evidence)
+    {
+        var sites = (evidence?.Sites ?? Array.Empty<BiosCallSite>())
+            .OrderBy(static site => site.GuestPc)
+            .Select(static site => new BiosCallSiteRecord
+            {
+                GuestPc = AnalysisArtifactSchema.FormatWord32(site.GuestPc),
+                Family = site.Family.ToString(),
+                FunctionNumber = FormatFunctionNumber(site.FunctionNumber),
+                ServiceName = site.ServiceName,
+                Resolution = site.Resolution.ToString(),
+                BasicBlockStartAddress = AnalysisArtifactSchema.FormatWord32(site.BasicBlockStartAddress),
+                ContainingFunctionAddress = site.ContainingFunctionAddress is uint owner
+                    ? AnalysisArtifactSchema.FormatWord32(owner)
+                    : null,
+            })
+            .ToList();
+
+        var summary = (evidence?.Summary ?? Array.Empty<BiosCallSummaryEntry>())
+            .OrderBy(static entry => (byte)entry.Family)
+            .ThenBy(static entry => entry.FunctionNumber ?? int.MaxValue)
+            .Select(static entry => new BiosCallSummaryRecord
+            {
+                Family = entry.Family.ToString(),
+                FunctionNumber = FormatFunctionNumber(entry.FunctionNumber),
+                ServiceName = entry.ServiceName,
+                StableKey = entry.Family.ToString() + ":" + (FormatFunctionNumber(entry.FunctionNumber) ?? "unresolved"),
+                CallSiteCount = entry.CallSiteCount,
+            })
+            .ToList();
+
+        var resolved = 0;
+        for (var index = 0; index < sites.Count; index++)
+        {
+            if (sites[index].FunctionNumber is not null)
+            {
+                resolved++;
+            }
+        }
+
+        return new BiosCallReportSection
+        {
+            SiteOrdering = AnalysisArtifactSchema.BiosCallSiteOrdering,
+            SummaryOrdering = AnalysisArtifactSchema.BiosCallSummaryOrdering,
+            SiteCount = sites.Count,
+            ResolvedSiteCount = resolved,
+            UnresolvedSiteCount = sites.Count - resolved,
+            Sites = sites,
+            Summary = summary,
+        };
+    }
+
+    private static string? FormatFunctionNumber(byte? functionNumber) =>
+        functionNumber is byte number
+            ? number.ToString("X2", System.Globalization.CultureInfo.InvariantCulture)
+            : null;
 
     private static InstructionListDocument BuildInstructions(DiscImageAnalysisReport report, ArtifactFixtureIdentity identity)
     {

@@ -401,6 +401,13 @@ public static class RomAnalysisPipeline
         try
         {
             var (callCandidates, returnCandidates) = CountCallReturnCandidates(instructions);
+            var functionDiscovery = FunctionDiscovery.Build(
+                header.EntryPoint,
+                header.TextStart,
+                header.TextSize,
+                instructions,
+                basicBlocks,
+                cfgEdges);
             report = new DiscImageAnalysisReport
             {
                 DiscImageSha256 = discImageSha256,
@@ -421,13 +428,8 @@ public static class RomAnalysisPipeline
                 CfgEdges = cfgEdges,
                 CallCandidateCount = callCandidates,
                 ReturnCandidateCount = returnCandidates,
-                FunctionDiscovery = FunctionDiscovery.Build(
-                    header.EntryPoint,
-                    header.TextStart,
-                    header.TextSize,
-                    instructions,
-                    basicBlocks,
-                    cfgEdges),
+                FunctionDiscovery = functionDiscovery,
+                BiosCalls = BiosCallRecognizer.Recognize(instructions, basicBlocks, functionDiscovery),
             };
         }
         catch (Exception ex) when (IsClassifiableFailure(ex))

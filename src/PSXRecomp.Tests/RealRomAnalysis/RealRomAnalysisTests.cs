@@ -1,5 +1,6 @@
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
+using PSXRecomp.Core.Runtime;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 
@@ -92,6 +93,86 @@ public class RealRomAnalysisTests
 #pragma warning restore AARC003
         }
     }
+
+    /// <summary>
+    /// Issue #11 / #279: real-ROM analysis must yield BIOS call evidence, so the next HLE
+    /// service is chosen from what titles actually request rather than from a static
+    /// candidate table.
+    ///
+    /// The assertion is deliberately shaped as "at least one local fixture requests the
+    /// BIOS, and every fixture's evidence is internally consistent". Pinning exact call
+    /// counts would bind the test to one particular disc image, which is precisely the
+    /// title-specific coupling this repository forbids.
+    /// </summary>
+    [SkippableFact]
+    public void RealRomAnalysis_ProducesBiosCallEvidence()
+    {
+        var fixtures = Fixtures;
+        Skip.If(fixtures.Count == 0, RealRomFixtures.NoFixtureSkipReason);
+
+        var fixturesWithBiosCalls = 0;
+
+        foreach (var fixture in fixtures)
+        {
+#pragma warning disable AARC003
+            var bytes = File.ReadAllBytes(fixture.DiscImagePath);
+#pragma warning restore AARC003
+            var report = DiscImageAnalyzer.Analyze(
+                bytes,
+                RealRomAnalyzer.ComputeSha256ForTest(bytes),
+                BiosEvidenceInstructionCount);
+
+            var evidence = report.BiosCalls;
+            var because = $"fixture '{fixture.FixtureId}'";
+
+            evidence.Should().NotBeNull(because);
+            evidence!.Sites.Select(site => site.GuestPc).Should().BeInAscendingOrder(because);
+            evidence.Sites.Should().OnlyHaveUniqueItems(because);
+
+            foreach (var site in evidence.Sites)
+            {
+                Enum.IsDefined(site.Family).Should().BeTrue(because);
+
+                // A service name is only ever attached to a resolved function number, and
+                // only when the identity table verifies it — never guessed from proximity.
+                if (site.ServiceName is not null)
+                {
+                    site.FunctionNumber.Should().NotBeNull(because);
+                    BiosCallNames.TryResolve(site.Family, site.FunctionNumber!.Value, out var documented)
+                        .Should().BeTrue(because);
+                    site.ServiceName.Should().Be(documented, because);
+                }
+
+                if (site.FunctionNumber is null)
+                {
+                    site.Resolution.Should().Be(BiosCallResolution.Unresolved, because);
+                }
+            }
+
+            // The aggregation must account for every site exactly once.
+            evidence.Summary.Sum(entry => entry.CallSiteCount).Should().Be(evidence.Sites.Count, because);
+            evidence.Summary.Select(entry => (entry.Family, entry.FunctionNumber))
+                .Should().OnlyHaveUniqueItems(because);
+
+            if (evidence.Sites.Count > 0)
+            {
+                fixturesWithBiosCalls++;
+            }
+        }
+
+        fixturesWithBiosCalls.Should().BePositive(
+            "at least one local disc image must request the BIOS, otherwise the recognizer "
+            + "produces no evidence to drive HLE service selection from");
+    }
+
+    /// <summary>
+    /// Decode window used for BIOS evidence. The pipeline's own default
+    /// (<see cref="RomAnalysisPipeline.DefaultInstructionCount"/>) is a small probe around
+    /// the entry point; BIOS stubs live throughout the text segment, so this test asks for
+    /// a window wide enough to cover it. Decoding stops at the end of the text segment, so
+    /// a fixture smaller than this simply decodes less.
+    /// </summary>
+    private const int BiosEvidenceInstructionCount = 200_000;
 
     /// <summary>
     /// Distinct disc images must be independently identifiable by their SHA-256, so

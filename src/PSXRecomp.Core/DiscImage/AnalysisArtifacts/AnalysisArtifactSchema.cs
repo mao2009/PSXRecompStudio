@@ -21,8 +21,11 @@ public static class AnalysisArtifactSchema
     /// <summary>Schema version of <c>manifest.json</c>.</summary>
     public const int ManifestSchemaVersion = 1;
 
-    /// <summary>Schema version of <c>report.json</c>.</summary>
-    public const int ReportSchemaVersion = 1;
+    /// <summary>
+    /// Schema version of <c>report.json</c>. Version 2 added the <c>biosCalls</c> section
+    /// (Issue #11 / #279): recognized BIOS jump-table call sites and their aggregation.
+    /// </summary>
+    public const int ReportSchemaVersion = 2;
 
     /// <summary>Schema version of <c>instructions.json</c>.</summary>
     public const int InstructionsSchemaVersion = 1;
@@ -58,6 +61,15 @@ public static class AnalysisArtifactSchema
 
     /// <summary>Canonical ordering of every <c>*Mix</c> distribution array.</summary>
     public const string DistributionOrdering = "name-ordinal-ascending";
+
+    /// <summary>Canonical ordering of the <c>biosCalls.sites</c> array, recorded in the artifact itself.</summary>
+    public const string BiosCallSiteOrdering = "guest-pc-ascending";
+
+    /// <summary>
+    /// Canonical ordering of the <c>biosCalls.summary</c> array, recorded in the artifact
+    /// itself. Each family's unresolved bucket sorts after its resolved function numbers.
+    /// </summary>
+    public const string BiosCallSummaryOrdering = "family-ordinal-ascending,function-number-ascending,unresolved-last";
 
     /// <summary>Maximum length of a fixture identifier.</summary>
     public const int MaxFixtureIdLength = 64;
