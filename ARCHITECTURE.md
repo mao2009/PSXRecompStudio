@@ -175,6 +175,24 @@ proven fully readable, so an invalid or unmapped pointer reports
 output. Every other function number reports `BIOS_HLE_UNSUPPORTED_CALL`
 (ADR-014).
 
+Analysis and Runtime hold **two different facts about the same call**, and the
+separation is deliberate. `BiosCallRecognizer`
+(`PSXRecomp.Core.DiscImage`) recognizes A0/B0/C0 jump-table call sites in an
+analyzed executable and records what the ROM *requests*; the HLE registry records
+what the Runtime can *provide*. Analysis therefore never filters its evidence to
+the currently registered services — doing so would make a title's BIOS surface
+appear to shrink and grow with implementation progress, and would destroy the
+evidence loop Issue #279 requires. The two share only `BiosCallFamily` and the
+verified identity table `BiosCallNames`, never the registry: a function number
+whose identity this repository has not verified is recorded and counted without a
+name rather than with a guessed one. Recognized sites, including those whose
+function number is not statically resolvable, are persisted in the deterministic
+analysis artifact (`report.json`, `biosCalls`; see
+[docs/development/real-rom-analysis-artifacts.md](docs/development/real-rom-analysis-artifacts.md)).
+The evidence covers whatever instruction window the analysis decoded, so a report
+produced with the pipeline's default entry-point window records only the sites
+within it, not the executable's whole BIOS surface.
+
 ## Recompiler
 
 - `PSXRecomp.Core.Recompiler` owns the backend-agnostic IR and shared

@@ -24,6 +24,77 @@ public sealed record AnalysisReportDocument
     public required ExecutableReportSection Executable { get; init; }
     public required DecodeReportSection Decode { get; init; }
     public required ControlFlowReportSection ControlFlow { get; init; }
+
+    /// <summary>BIOS jump-table call evidence recognized in the decoded stream (schema version 2+).</summary>
+    public required BiosCallReportSection BiosCalls { get; init; }
+}
+
+/// <summary>
+/// Recognized PS1 BIOS jump-table call sites and their per-identity aggregation.
+///
+/// This section reports what the analyzed executable *asks* the BIOS for. It is
+/// deliberately independent of which services the Runtime's HLE registry currently
+/// implements: filtering it to supported services would make a ROM's BIOS surface appear
+/// to shrink and grow with implementation progress, destroying its value as evidence
+/// (Issue #279).
+/// </summary>
+[Domain]
+public sealed record BiosCallReportSection
+{
+    /// <summary>Ordering label for <see cref="Sites"/>, recorded so a consumer never has to guess.</summary>
+    public required string SiteOrdering { get; init; }
+
+    /// <summary>Ordering label for <see cref="Summary"/>.</summary>
+    public required string SummaryOrdering { get; init; }
+
+    /// <summary>Total recognized call sites.</summary>
+    public required int SiteCount { get; init; }
+
+    /// <summary>Sites whose function number was statically resolved.</summary>
+    public required int ResolvedSiteCount { get; init; }
+
+    /// <summary>
+    /// Sites whose vector was recognized but whose function number was not resolvable.
+    /// These are recorded rather than dropped: an unresolved call is evidence.
+    /// </summary>
+    public required int UnresolvedSiteCount { get; init; }
+
+    /// <summary>Every recognized call site, ordered per <see cref="SiteOrdering"/>.</summary>
+    public required IReadOnlyList<BiosCallSiteRecord> Sites { get; init; }
+
+    /// <summary>Per-identity aggregation, ordered per <see cref="SummaryOrdering"/>.</summary>
+    public required IReadOnlyList<BiosCallSummaryRecord> Summary { get; init; }
+}
+
+/// <summary>
+/// One recognized BIOS call site. Addresses use the canonical <c>0xXXXXXXXX</c> literal
+/// form; <c>functionNumber</c> is a two-digit uppercase hex string, or <c>null</c> when
+/// the number could not be resolved.
+/// </summary>
+[Domain]
+public sealed record BiosCallSiteRecord
+{
+    public required string GuestPc { get; init; }
+    public required string Family { get; init; }
+    public required string? FunctionNumber { get; init; }
+    public required string? ServiceName { get; init; }
+    public required string Resolution { get; init; }
+    public required string BasicBlockStartAddress { get; init; }
+    public required string? ContainingFunctionAddress { get; init; }
+}
+
+/// <summary>One aggregated BIOS identity and the number of sites calling it.</summary>
+[Domain]
+public sealed record BiosCallSummaryRecord
+{
+    public required string Family { get; init; }
+    public required string? FunctionNumber { get; init; }
+    public required string? ServiceName { get; init; }
+
+    /// <summary>Stable <c>Family:FunctionNumber</c> identity, or <c>Family:unresolved</c>.</summary>
+    public required string StableKey { get; init; }
+
+    public required int CallSiteCount { get; init; }
 }
 
 /// <summary>CHD container format and structural statistics.</summary>

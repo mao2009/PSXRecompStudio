@@ -297,4 +297,44 @@ the earlier amendments are unchanged.
 - (f) **No other service's status changes.** The registry holds `(A0, 0x3C)` and
   `(A0, 0x3E)`. getchar (A0:3B) and gets (A0:3D) stay unregistered pending an
   input-sink design, and the B0 aliases (B0:3D, B0:3F) stay unselected by
-  evidence. Issue #279 remains open for those.
+  evidence. Issue #279 remains open for those. (Superseded for `B0:3F` by the
+  2026-09-10 real-ROM evidence amendment below.)
+
+## Amendment (2026-09-10): B0:3F selected by real-ROM evidence
+
+Analysis can now recognize A0/B0/C0 call sites in a real executable
+(`BiosCallRecognizer`, Issue #11), and the resulting evidence changes one fact
+this ADR asserted in its base Decision and in both registration amendments.
+
+- (a) **"The B0 aliases stay unselected by evidence" no longer holds for
+  `B0:3F`.** A real title calls it: guest PC `0x800D0FF8`, executable serial
+  `SLPM_869.24`, executable SHA-256
+  `831a6cceb94c88c9736f6df88a7fd9e08ff1261ca781b40b7e6ff449cf0fd24e`. The
+  evidence and its provenance are recorded in
+  [`docs/runtime/bios-hle-evidence.md`](../runtime/bios-hle-evidence.md) §3.4.
+  `B0:3D` remains unselected: no call site was observed for it.
+- (b) **This amendment selects a service; it does not register one.** The bar the
+  base Decision sets is unchanged — a service is registered only when it
+  satisfies its full documented behavior, host-visible effects included. `B0:3F`
+  now clears the *evidence* precondition, and it already has a verified identity
+  and both required Runtime capabilities, which makes registering it an
+  implementation task rather than a research or capability one. The registry is
+  unchanged by this amendment and still holds `(A0, 0x3C)` and `(A0, 0x3E)`.
+- (c) **Analysis evidence is not filtered by registration state.** The recognizer
+  records what a ROM requests; the registry records what the Runtime provides.
+  Filtering the former by the latter would make a title's BIOS surface shrink
+  and grow with implementation progress, destroying the evidence loop Issue #279
+  asks for. The two share only `BiosCallFamily` and the verified identity table
+  `BiosCallNames`, never the registry.
+- (d) **Identity verification remains a precondition for registration.** The
+  recognizer reports every function number it resolves, including the many this
+  repository has not verified. Those are call-frequency observations, not service
+  candidates: the no-guessing rule in the base Decision applies unchanged, and an
+  unverified number is recorded without a name rather than with a guessed one.
+- (e) **Recognition prefers an unresolved record to a guessed one.** Where the
+  vector is certain but the function number is not statically resolvable, the
+  site is recorded as unresolved rather than omitted or inferred. An
+  understated BIOS surface and a fabricated identity are both failures; the
+  latter is worse, because it would be acted on.
+- (f) **No other service's status changes.** getchar (A0:3B) and gets (A0:3D)
+  stay unregistered pending an input-sink design. Issue #279 remains open.

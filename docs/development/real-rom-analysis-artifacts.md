@@ -4,7 +4,7 @@
 
 **Authority:** SSOT
 
-**Related Issues:** #212, #215
+**Related Issues:** #212, #215, #11, #279
 
 **Related Components:** `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
 
@@ -111,7 +111,8 @@ hash.
 ## Schema versioning
 
 Each document carries its own `schemaVersion` and an `artifactKind` discriminator. The
-versions are constants in `AnalysisArtifactSchema` and are currently all `1`.
+versions are constants in `AnalysisArtifactSchema`: `report.json` is at version `2`
+(version 2 added the `biosCalls` section), the other three are at version `1`.
 
 **Any change to the shape or meaning of a field requires bumping that document's
 version.** Consumers diff artifacts across analyzer revisions, and must be able to tell
@@ -164,9 +165,52 @@ The per-fixture summary — everything except per-instruction data, so it stays 
 - `controlFlow` — basic-block and edge counts, branch/jump counts, call/return candidate
   counts, and `edgeKindMix`
 
+- `biosCalls` — recognized BIOS jump-table call sites and their aggregation (schema
+  version 2+, see below)
+
 The `*Mix` distributions are what make cross-title comparison practical: they are
 histograms in fixed ordinal name order, so instruction distributions and control-flow
 shape can be compared between two titles with an ordinary diff.
+
+#### The `biosCalls` section (Issue #11 / #279)
+
+PS1 software reaches the BIOS by jumping to the jump-table vector at physical `0xA0`,
+`0xB0` or `0xC0` with the function number in R9 (`$t1`) — not through the MIPS `syscall`
+instruction. `BiosCallRecognizer` recognizes those transfers in the decoded stream and
+records them here, so the next BIOS HLE service can be chosen from what titles actually
+request instead of from a static candidate table.
+
+- `siteOrdering`, `summaryOrdering` — the ordering contracts, recorded in the document
+- `siteCount`, `resolvedSiteCount`, `unresolvedSiteCount`
+- `sites[]` — `guestPc`, `family` (`A0`/`B0`/`C0`), `functionNumber` (two uppercase hex
+  digits, or `null`), `serviceName` (or `null`), `resolution`,
+  `basicBlockStartAddress`, `containingFunctionAddress` (or `null`)
+- `summary[]` — `family`, `functionNumber`, `serviceName`, `stableKey`, `callSiteCount`
+
+Three rules make this evidence rather than a guess:
+
+1. **What the ROM asks for, not what the Runtime provides.** The section is never
+   filtered to the services `BiosHleRuntime` happens to implement. Filtering it would make
+   a title's BIOS surface appear to shrink and grow with implementation progress.
+2. **An unresolved call is recorded, not dropped.** When the vector is certain but the
+   function number is not statically resolvable, the site is emitted with
+   `functionNumber: null` and `resolution: "Unresolved"`, and the summary carries a
+   per-family unresolved bucket keyed `A0:unresolved`. Silently omitting it would
+   understate the surface.
+3. **`serviceName` is only set for a verified identity.** Names come from
+   `BiosCallNames`, which holds only the identities `docs/REFERENCES.md` verifies. An
+   unverified function number is counted and reported without a name rather than with a
+   guessed one (ADR-014's no-guessing rule).
+
+`resolution` records how the function number was established: `DelaySlotConstant` (the
+canonical stub, where the constant is materialized in the jump's delay slot and therefore
+executes before control reaches the vector), `BlockConstant` (earlier in the same basic
+block, with nothing in between that could clobber R9), or `Unresolved`.
+
+Constant tracking is deliberately block-local and forward-only, and any instruction that
+*might* write a tracked register without materializing a known constant makes it unknown
+again. A load into R9 — whose R3000A write is architecturally delayed — therefore yields
+`Unresolved` rather than a stale constant.
 
 ### `instructions.json`
 

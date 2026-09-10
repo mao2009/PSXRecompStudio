@@ -24,10 +24,15 @@ that can now be built on top of them.
 It records three things and registers nothing:
 
 1. the **actual** current support state of the HLE registry (section 2);
-2. the **gap** between what real-ROM analysis can prove today and what it must
-   record to prioritize HLE services from evidence (section 3);
+2. what real-ROM analysis can prove about BIOS usage — originally a **gap**, now
+   closed on the Analysis side, together with the **evidence actually obtained**
+   (section 3);
 3. a **candidate ranking** for the next services, grounded in the identities
    recorded in [docs/REFERENCES.md](../REFERENCES.md) (section 4).
+
+The evidence loop Issue #279 asks for is now closed end to end: analysis recognizes
+A0/B0/C0 call sites, records them deterministically in `report.json`, and the resulting
+call frequencies — not a static candidate table — are what section 4 reasons from.
 
 This document implements no service and changes no contract. It exists so the
 next implementation task picks its service from evidence rather than from
@@ -52,7 +57,7 @@ deliberately unregistered neighbours and aliases below — falls through to
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink; guest-memory **write** |
 | puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
-| puts alias | B0:3F | **Unregistered** — no evidence selects the B0 entry | Same as A0:3E | B0 usage evidence (guest-memory read and output sink already exist) |
+| puts alias | B0:3F | **Unregistered** — selected by real-ROM evidence per the ADR-014 amendment *B0:3F selected by real-ROM evidence* ([3.4](#34-real-rom-evidence-obtained)) | Same as A0:3E | Nothing — evidence, identity and both Runtime capabilities are in place; only the registration work remains |
 | all other A0/B0/C0 | — | **Unregistered** — any call not in the registry fails loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
@@ -88,7 +93,15 @@ Notes verified against the code:
   Both currently registered services clear that bar; the services still absent
   (getchar, gets, the B0 aliases) are absent for exactly that reason.
 
-## 3. Evidence gap (real-ROM → BIOS usage)
+## 3. Evidence (real-ROM → BIOS usage)
+
+> **Status of this section (updated).** The gap described below has been closed on the
+> Analysis side. `BiosCallRecognizer`
+> (`src/PSXRecomp.Core/DiscImage/BiosCallRecognition.cs`) now recognizes A0/B0/C0 call
+> sites and resolves the R9/`$t1` function number, and the result is persisted in
+> `report.json`'s `biosCalls` section (`report.json` schema version 2). Real-ROM evidence
+> has been obtained — see [3.4](#34-real-rom-evidence-obtained). The text of 3.1–3.3 is
+> kept as the record of what was missing and why, with the resolved items marked.
 
 ### 3.1 What the analysis pipeline records today (verified, not assumed)
 
@@ -110,10 +123,14 @@ place a `syscall` can surface. The relevant records carry:
   (`AnalysisArtifacts/AnalysisReportDocument.cs`,
   `AnalysisArtifacts/InstructionListDocument.cs`).
 
-**Does any stage detect syscall instructions or record guest call-sites into
-the BIOS jump tables? No.** PS1 BIOS A0/B0/C0 dispatch uses `jr $t9` (an
-indirect jump through the jump table at `0xA0`/`0xB0`/`0xC0`), with the function
-number loaded into `$t1`/R9 via `li`/`addiu`/`ori`/`lui` *before* the jump. The
+**Did any stage detect guest call-sites into the BIOS jump tables? Not when this
+section was written — it does now** (`BiosCallRecognizer`, 3.4). PS1 BIOS A0/B0/C0
+dispatch is an indirect jump through the jump table at `0xA0`/`0xB0`/`0xC0` — real code
+materializes the vector into a register (typically `$t2`/R10) and uses `jr`/`jalr`
+(a direct `j`/`jal` can reach only the KSEG0 alias `0x800000A0`, since J preserves the
+top four PC bits; the recognizer accepts both forms) — with the function
+number loaded into `$t1`/R9 via `li`/`addiu`/`ori`/`lui`, most often **in the jump's
+delay slot**, which executes before control reaches the vector. The
 MIPS `syscall` instruction is a separate kernel-trap interface, unrelated to
 A0/B0/C0 dispatch, and its trap code bits `[25:6]` do **not** map to A0/B0/C0
 function numbers. So trap-code extraction cannot yield BIOS call identity.
@@ -136,9 +153,12 @@ What the decoder and CFG builder actually record, each verified in code:
   `ReturnAddress`, nor `UnresolvedIndirectSource` (only `JumpRegister` qualifies,
   `FunctionDiscovery.cs:139`). `CountCallReturnCandidates` counts only
   `LinkInfo.WritesLink` and `JR $ra` (`RomAnalysisPipeline.cs:536-558`).
-- **No constant propagation / register tracking.** Nothing tracks what value was
-  loaded into `$t1`/R9 before the jump, so the A0/B0/C0 function number is not
-  resolved anywhere.
+- ~~**No constant propagation / register tracking.**~~ — **resolved.**
+  `BiosCallRecognizer` carries block-local, forward-only known-constant GPR values, which
+  is what resolves both the vector register and the R9/`$t1` function number. It is not a
+  general constant propagator and is not offered as one: it models only the immediate
+  materialization forms a BIOS stub uses, and any other possible write to a tracked
+  register makes it unknown again.
 - **No lowerer handling.** `MipsToIrLowerer` has no `Syscall`/`Break` case in
   either `TryEmitInstruction` or `TryGetSourceRegisters`; both fall to their
   `default` and return unsupported ("Opcode 'Syscall' is not supported by this
@@ -206,7 +226,78 @@ service, or (b) asserted to be BIOS-independent and safe to recompile — per #2
 the candidate must have **no BIOS dependency**, and today exclusion is the only
 option.
 
-### 3.4 Connection to #225 and future bring-up
+### 3.4 Real-ROM evidence obtained
+
+This section records **observed** results, not projections. They come from running the
+analysis pipeline over the disc images present on one developer machine under the
+git-ignored `rom/` directory, with a decode window wide enough to cover the text segment
+(the pipeline's own default window of 128 instructions is an entry-point probe and reaches
+only the earliest stubs). No ROM, ISO or executable content is reproduced here; only the
+metadata `docs/development/real-rom-analysis-artifacts.md` marks as safe to quote.
+
+**A0/B0/C0 call sites are recognized in every locally available title.** Across five
+distinct executables: 158 sites in total, 8 to 61 per executable, spanning all three
+families. Every one resolved to a function number — 138 through the canonical stub shape
+(`resolution: "DelaySlotConstant"`) and 20 from an earlier constant in the same basic
+block (`BlockConstant`), with **zero** `Unresolved`. The dispatch idiom is evidently
+uniform enough that block-local constant tracking is sufficient in practice; that is an
+observation about these five executables, not a guarantee, which is why unresolved sites
+remain a first-class part of the schema.
+
+**The one verified identity observed, in full:**
+
+| Field | Value |
+|---|---|
+| Identity | `B0:3F` — `std_out_puts(src)`, the B0-table alias of `puts` |
+| Guest PC | `0x800D0FF8` |
+| Resolution | `DelaySlotConstant` |
+| Executable serial | `SLPM_869.24` |
+| Executable SHA-256 | `831a6cceb94c88c9736f6df88a7fd9e08ff1261ca781b40b7e6ff449cf0fd24e` |
+
+The recognized stub is the textbook shape, and is quoted here because it is the pattern
+the recognizer models:
+
+```text
+0x800D0FF4  240A00B0  addiu $t2, $zero, 0x00B0   # the B0 vector
+0x800D0FF8  01400008  jr    $t2                  # the call site
+0x800D0FFC  2409003F  addiu $t1, $zero, 0x003F   # delay slot: function 0x3F
+```
+
+**Two findings that matter for registration, stated plainly:**
+
+1. **No A0:3C and no A0:3E call site was observed in any locally available title.** The
+   two services the registry implements today are not requested by any of them. This does
+   not make the registrations wrong — they are correct, verified and tested — but it does
+   mean the local fixture set does not exercise them.
+2. **A B0-table call site does exist.** ADR-014 asserted in its base Decision and both
+   registration amendments that the B0 aliases "stay unselected by evidence". That fact
+   no longer holds for `B0:3F`, so it was corrected where it was decided, not here: see
+   the ADR-014 amendment
+   [*B0:3F selected by real-ROM evidence*](../adr/014-bios-hle-runtime-contract.md).
+   `B0:3D` remains unselected. Registering the alias is still gated by ADR-014's bar (a
+   service is registered only when it satisfies its full documented behavior); this
+   document registers nothing, and the amendment registers nothing either — only the
+   evidence precondition has changed.
+
+**What was *not* established.** The frequently observed function numbers below are raw
+identities from the recognizer; this repository has **not** verified what they are.
+Verifying an identity against the documentation cited in `docs/REFERENCES.md` is a
+prerequisite for any registration work, per ADR-014's no-guessing rule.
+
+| Identity | Observed in (of the 5 distinct executables) | Sites per executable |
+|---|---|---|
+| `A0:39` | 5 | 1 |
+| `A0:AB`, `A0:AC`, `B0:0A`, `B0:4E`, `B0:4F`, `B0:50` | 4 | 1 |
+| `B0:57` | 3 | 4 |
+| `B0:56` | 3 | 2–3 |
+
+`B0:56` and `B0:57` are the only identities observed with more than one call site in a
+single executable.
+
+These are reported as call-frequency observations only. None is proposed as a service
+until its identity is verified.
+
+### 3.5 Connection to #225 and future bring-up
 
 ADR-013 defines the current contract: candidate selection accepts only
 instruction windows the existing `MipsToIrLowerer` lowers, and *explicitly*
@@ -238,9 +329,10 @@ capability or host I/O is required to honour the documented effect), `guest`
 (the service only touches guest registers/state), or both. **Testability** is
 the ease of building a deterministic, fixture-free differential/contract test.
 **Real-ROM evidence availability** is whether the site can be proven from
-analysis artifacts today (before 3.3 lands, no A0/B0/C0 identity is resolved —
-no target recognition or R9/t1 function-number resolution — so everything is
-currently inferred). The **function numbers themselves come from verified
+analysis artifacts. This column is no longer a projection: A0/B0/C0 recognition and
+R9/`$t1` resolution have landed, so it now reports what was actually observed across the
+locally available fixtures ([3.4](#34-real-rom-evidence-obtained)). The
+**function numbers themselves come from verified
 documentation**: they are known from published PS1 BIOS documentation and
 recorded in `docs/REFERENCES.md`. Real-ROM evidence means recognizing A0/B0/C0
 call sites in the decoded instruction stream and correlating them with those
@@ -251,11 +343,11 @@ carry a "verify before register" marker.
 
 | Service | Documented identity | Arguments | Return | Side effects | External dependency (host/guest) | Testability | Real-ROM evidence availability | Implementation difficulty |
 |---|---|---|---|---|---|---|---|---|
-| ~~putchar TTY completion (completes A0:3C)~~ — **done**, registered with full documented behavior | A0:3C `std_out_putchar(char)` (B0:3D alias) | 1 char word (`arg & 0xFF`) | the character | write char to TTY output sink | **host** — output sink (`IRuntimeOutputSink`) | High (deterministic sink assertable) | High — scalar call, static-site detectable once A0/B0/C0 call sites are recognized | Low |
-| ~~puts~~ — **done**, registered with full documented behavior | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High (differential: stub reads, compare output + R2) | High — identity verified (ADR-014) | Low–medium |
-| getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | Medium — call-site detectable, **but** real titles rarely use TTY input | Medium–high |
+| ~~putchar TTY completion (completes A0:3C)~~ — **done**, registered with full documented behavior | A0:3C `std_out_putchar(char)` (B0:3D alias) | 1 char word (`arg & 0xFF`) | the character | write char to TTY output sink | **host** — output sink (`IRuntimeOutputSink`) | High (deterministic sink assertable) | **None observed** — no locally available title calls A0:3C (3.4) | Low |
+| ~~puts~~ — **done**, registered with full documented behavior | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High (differential: stub reads, compare output + R2) | **None observed for A0:3E**; the B0:3F alias *is* called (3.4). Identity verified (ADR-014) | Low–medium |
+| getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | **None observed** — consistent with the expectation that real titles rarely use TTY input | Medium–high |
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
-| B0 putchar/puts aliases | B0:3D / B0:3F | same as A0 counterparts | same | same, through the B0 table | host (+ guest read for puts) | High (once the capability exists) | **Low** — no evidence selects the B0 entries; keep unregistered | Low (capability-gated) |
+| B0 putchar/puts aliases | B0:3D / B0:3F | same as A0 counterparts | same | same, through the B0 table | host (+ guest read for puts) | High (once the capability exists) | **B0:3F — confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)), recorded in the ADR-014 amendment *B0:3F selected by real-ROM evidence*. **B0:3D — still none.** | Low (capability-gated) |
 
 ### Recommendation
 
@@ -278,8 +370,14 @@ they unblocked have since been implemented:
    guest-memory write. Neither is on the critical path for a first
    BIOS-touching real-ROM function (games overwhelmingly *write* to TTY via
    putchar/puts; TTY input is rare).
-4. **B0:3D/B0:3F** — register only when real-ROM evidence shows a B0-table call
-   site; no evidence selects them today (ADR-014).
+4. **B0:3F** — the condition this item set has been met, and the change of fact is
+   recorded in the ADR-014 amendment *B0:3F selected by real-ROM evidence*: a real title
+   calls the B0-table `puts` entry ([3.4](#34-real-rom-evidence-obtained)). Both Runtime
+   capabilities it needs already exist, and its identity is verified in
+   `docs/REFERENCES.md`, so registering it is an implementation task rather than a
+   capability or research one. **B0:3D** stays unregistered: no call site selects it.
+   Note that no locally available title calls A0:3C or A0:3E, so the B0 alias is at
+   present the *only* observed call to a service this repository has verified.
 
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
@@ -324,23 +422,33 @@ Two explicit guarantees:
 
 ## 6. Open questions / next steps
 
-1. **Add A0/B0/C0 target recognition to the analysis pipeline** — recognize
-   direct jumps in the CFG to the BIOS table addresses `0xA0`/`0xB0`/`0xC0`
-   (the `BasicBlockBuilder` already resolves direct jump targets); implement 3.3.
-2. **Add R9/t1 function-number resolution for indirect BIOS dispatch** — resolve
-   the constant loaded into `$t1`/R9 before the jump via pattern-matching or
-   lightweight constant propagation, for sites that dispatch through `$t9`.
-3. **Pick the first real-ROM function that exercises an A0 call** — once call
-   sites are recorded, select a title-local function driving putchar/puts, so
-   the two registered services are exercised against real evidence rather than
-   the synthetic fixtures alone, and so the *next* registration is chosen from
-   evidence.
-4. **Decide the input sink design for getchar/gets** — blocking semantics,
+1. ~~**Add A0/B0/C0 target recognition to the analysis pipeline**~~ — ✅ **done.**
+   `BiosCallRecognizer` recognizes both direct jumps to a vector and the indirect
+   `jr`/`jalr` dispatch real code actually uses.
+2. ~~**Add R9/t1 function-number resolution for indirect BIOS dispatch**~~ — ✅ **done.**
+   Resolved from a block-local constant, including the delay-slot case that the canonical
+   stub relies on. Sites whose number cannot be resolved are recorded as
+   `Unresolved` rather than dropped or guessed.
+3. **Widen the evidence decode window.** The pipeline's default window
+   (`RomAnalysisPipeline.DefaultInstructionCount`, 128 instructions from the entry point)
+   is an entry-point probe: it reaches only the earliest stubs, so the `biosCalls` section
+   of a default-window `report.json` understates a title's BIOS surface. The real-ROM
+   evidence test asks for a text-wide window explicitly. Deciding the persisted artifact's
+   own window is a separate change with an artifact-churn cost, and is deliberately not
+   made here.
+4. **Verify the identities the evidence surfaces most often** (`A0:39`, `B0:56`,
+   `B0:57`, `A0:AB`, `A0:AC`, `B0:4E`, `B0:50`) against the documentation cited in
+   `docs/REFERENCES.md`, and record them there. Until that is done they are call-frequency
+   observations, not service candidates — ADR-014 forbids registering a guessed identity.
+5. **Decide whether to register `B0:3F`**, now that the ADR-014 amendment records a real
+   call site selecting it ([3.4](#34-real-rom-evidence-obtained)) and both required
+   Runtime capabilities exist.
+6. **Decide the input sink design for getchar/gets** — blocking semantics,
    host-provided input source, and how the Domain layer receives it without I/O.
-5. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
+7. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
    std_io behavior and record it in `docs/REFERENCES.md` before any register work,
    per the no-guessing rule of ADR-014.
-6. ~~**Re-audit `Supported` against the strict reading once a service is
+8. ~~**Re-audit `Supported` against the strict reading once a service is
    actually wired to the output sink**~~ — ✅ **resolved.** Both registered
    services now consume the sink: putchar writes its character (ADR-014
    amendment "A0:3C putchar wired to the output sink") and puts writes its

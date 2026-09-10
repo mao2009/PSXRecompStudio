@@ -591,7 +591,128 @@ public class DeterministicArtifactTests
         }
     }
 
+    // ------------------------------------------------------------- bios calls
+
+    [Fact]
+    public void BiosCallSection_IsPresentAndEmptyWhenNoCallWasRecognized()
+    {
+        // The synthetic baseline analysis contains no BIOS stub. The section must still be
+        // written: a document's key set depends only on its schema version, never on
+        // whether a particular finding happened to occur.
+        var section = BuildArtifacts(FixtureA, "disc-a").Report.BiosCalls;
+
+        section.Should().NotBeNull();
+        section.SiteCount.Should().Be(0);
+        section.ResolvedSiteCount.Should().Be(0);
+        section.UnresolvedSiteCount.Should().Be(0);
+        section.Sites.Should().BeEmpty();
+        section.Summary.Should().BeEmpty();
+        section.SiteOrdering.Should().Be(AnalysisArtifactSchema.BiosCallSiteOrdering);
+        section.SummaryOrdering.Should().Be(AnalysisArtifactSchema.BiosCallSummaryOrdering);
+    }
+
+    [Fact]
+    public void BiosCallSection_CarriesEverySiteWithItsIdentityAndProvenance()
+    {
+        var section = BuildBiosCallArtifacts().Report.BiosCalls;
+
+        section.SiteCount.Should().Be(5);
+        section.ResolvedSiteCount.Should().Be(4);
+        section.UnresolvedSiteCount.Should().Be(1);
+
+        section.Sites.Select(site => site.GuestPc).Should().BeInAscendingOrder(StringComparer.Ordinal);
+        section.Sites.Should().AllSatisfy(site =>
+        {
+            site.GuestPc.Should().MatchRegex("^0x[0-9A-F]{8}$");
+            site.BasicBlockStartAddress.Should().MatchRegex("^0x[0-9A-F]{8}$");
+        });
+
+        // Function attribution follows existing function discovery rather than inventing
+        // its own: a block reachable from a discovered entry is attributed, and a block
+        // beyond an unresolved indirect jump — where discovery's traversal stops — is
+        // left unattributed instead of being guessed onto the nearest function.
+        section.Sites.Should().Contain(site => site.ContainingFunctionAddress != null);
+        section.Sites
+            .Where(site => site.ContainingFunctionAddress != null)
+            .Should().AllSatisfy(site =>
+                site.ContainingFunctionAddress.Should().MatchRegex("^0x[0-9A-F]{8}$"));
+
+        var first = section.Sites[0];
+        first.Family.Should().Be("A0");
+        first.FunctionNumber.Should().Be("3C");
+        first.ServiceName.Should().Be("putchar");
+        first.Resolution.Should().Be(nameof(BiosCallResolution.DelaySlotConstant));
+
+        // The dynamic site keeps its family but reports no function number, rather than
+        // being dropped from the evidence.
+        var unresolved = section.Sites.Should().ContainSingle(site => site.FunctionNumber == null).Subject;
+        unresolved.Family.Should().Be("A0");
+        unresolved.ServiceName.Should().BeNull();
+        unresolved.Resolution.Should().Be(nameof(BiosCallResolution.Unresolved));
+    }
+
+    [Fact]
+    public void BiosCallSummary_AggregatesByIdentityInCanonicalOrder()
+    {
+        var summary = BuildBiosCallArtifacts().Report.BiosCalls.Summary;
+
+        summary.Select(entry => entry.StableKey).Should().Equal(
+            "A0:3C", "A0:3E", "A0:unresolved", "B0:17");
+
+        summary.Single(entry => entry.StableKey == "A0:3C").CallSiteCount.Should().Be(2);
+        summary.Single(entry => entry.StableKey == "A0:3C").ServiceName.Should().Be("putchar");
+        summary.Single(entry => entry.StableKey == "A0:3E").ServiceName.Should().Be("puts");
+
+        // B0:17 is not a verified identity, so it is counted but deliberately unnamed.
+        summary.Single(entry => entry.StableKey == "B0:17").ServiceName.Should().BeNull();
+    }
+
+    [Fact]
+    public void BiosCallEvidence_IsByteForByteIdenticalAcrossRepeatedRuns()
+    {
+        var first = BuildBiosCallArtifacts();
+        var second = BuildBiosCallArtifacts();
+
+        ConcatenatedContent(first).Should().Be(ConcatenatedContent(second));
+    }
+
+    [Fact]
+    public void BiosCallEvidence_IsIndependentOfInputCollectionOrder()
+    {
+        var canonical = ConcatenatedContent(BuildBiosCallArtifacts());
+
+        for (uint seed = 1; seed <= 25; seed++)
+        {
+            var report = SyntheticAnalysisReports.CreateBiosCallReport(
+                SyntheticAnalysisReports.Sha256Of("bios-disc"));
+
+            // Only the recognizer's own output is permuted here: the section must be
+            // sorted by the serializer, not inherited from the order it was handed.
+            var shuffled = report with
+            {
+                BiosCalls = new BiosCallEvidence
+                {
+                    Sites = Shuffle(report.BiosCalls!.Sites, seed),
+                    Summary = Shuffle(report.BiosCalls.Summary, seed * 7),
+                },
+            };
+
+            var artifacts = DeterministicArtifactBuilder.Build(
+                SyntheticAnalysisReports.CreateInput(FixtureA, shuffled));
+
+            ConcatenatedContent(artifacts).Should().Be(canonical,
+                $"permutation {seed} of the same BIOS call evidence must serialize identically");
+        }
+    }
+
     // --------------------------------------------------------------- helpers
+
+    private static RealRomAnalysisArtifacts BuildBiosCallArtifacts()
+    {
+        var report = SyntheticAnalysisReports.CreateBiosCallReport(
+            SyntheticAnalysisReports.Sha256Of("bios-disc"));
+        return DeterministicArtifactBuilder.Build(SyntheticAnalysisReports.CreateInput(FixtureA, report));
+    }
 
     private static RealRomAnalysisArtifacts BuildArtifacts(string fixtureId, string discSeed)
     {

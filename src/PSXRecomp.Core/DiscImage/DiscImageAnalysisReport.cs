@@ -41,6 +41,15 @@ public sealed record DiscImageAnalysisReport
     /// </summary>
     public FunctionDiscoveryArtifact? FunctionDiscovery { get; init; }
 
+    /// <summary>
+    /// BIOS jump-table call sites recognized in this report's decoded instructions, with
+    /// their per-identity aggregation. Like <see cref="FunctionDiscovery"/> it is a
+    /// projection of the existing analysis and is optional for backward-compatible report
+    /// construction. It records what the executable *asks* the BIOS for, independently of
+    /// which services the Runtime currently implements (Issue #279).
+    /// </summary>
+    public BiosCallEvidence? BiosCalls { get; init; }
+
     public string ToJson()
     {
         return JsonSerializer.Serialize(this, new JsonSerializerOptions

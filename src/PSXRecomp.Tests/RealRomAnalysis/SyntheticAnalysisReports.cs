@@ -144,6 +144,75 @@ public static class SyntheticAnalysisReports
         DirectoryCount = 7,
     };
 
+    /// <summary>
+    /// An analysis whose instruction stream contains PS1 BIOS call stubs, so the
+    /// <c>biosCalls</c> artifact section has real recognizer output to serialize.
+    ///
+    /// The stubs are the canonical shape — the vector materialized into a register, an
+    /// indirect jump, and the function number in the delay slot — assembled from raw MIPS
+    /// words and run through the real <see cref="BasicBlockBuilder"/> and
+    /// <see cref="BiosCallRecognizer"/>. It imitates the shape of compiled PS1 code
+    /// without reproducing any real title's data.
+    /// </summary>
+    public static DiscImageAnalysisReport CreateBiosCallReport(
+        string discSha256,
+        uint entryPoint = 0x80010000)
+    {
+        // li $t2, <vector> ; jr $t2 ; li/ori $t1, <function>   (three A0 calls, one B0,
+        // and one A0 whose function number is loaded from memory and stays unresolved).
+        uint[] words =
+        [
+            0x240A00A0, 0x01400008, 0x2409003C,   // A0:3C putchar
+            0x240A00A0, 0x01400008, 0x2409003C,   // A0:3C putchar again
+            0x240A00A0, 0x01400008, 0x3409003E,   // A0:3E puts
+            0x240A00B0, 0x01400008, 0x24090017,   // B0:17 (identity unverified, unnamed)
+            0x240A00A0, 0x01400008, 0x8E090000,   // A0 with a dynamic function number
+            0x0C00048D, 0x00000000,               // an ordinary jal, which is not a BIOS call
+            0x03E00008, 0x00000000,               // jr $ra
+        ];
+
+        var instructions = new List<DecodedInstruction>(words.Length);
+        for (var index = 0; index < words.Length; index++)
+        {
+            var raw = R3000aDecoder.Decode(words[index]);
+            instructions.Add(Instruction(
+                unchecked(entryPoint + (uint)(index * 4)),
+                words[index],
+                MipsInstructionFormatter.FormatMnemonic(raw.Opcode),
+                MipsInstructionFormatter.FormatOperands(raw),
+                raw.Format.ToString(),
+                raw.ControlFlow.ToString()));
+        }
+
+        var (basicBlocks, cfgEdges) = BasicBlockBuilder.Build(instructions, entryPoint, instructions.Count);
+        var functionDiscovery = FunctionDiscovery.Build(
+            entryPoint, entryPoint, (uint)(words.Length * 4), instructions, basicBlocks, cfgEdges);
+
+        return new DiscImageAnalysisReport
+        {
+            DiscImageSha256 = discSha256,
+            SystemCnfBootPath = @"cdrom:\SLPS_012.34;1",
+            ExecutableFileName = "SLPS_012.34;1",
+            EntryPoint = entryPoint,
+            TextStart = entryPoint,
+            TextSize = (uint)(words.Length * 4),
+            SpInitial = 0x801FFF00,
+            GpInitial = 0x80050000,
+            ExecutableFileSize = 0x00000900,
+            ExecutableFileHash = Sha256Of("bios-call-fixture"),
+            DecodeStartAddress = entryPoint,
+            DecodedInstructionCount = instructions.Count,
+            DecodedInstructions = instructions,
+            DecodeFailures = Array.Empty<DecodeFailure>(),
+            BasicBlocks = basicBlocks,
+            CfgEdges = cfgEdges,
+            CallCandidateCount = 1,
+            ReturnCandidateCount = 1,
+            FunctionDiscovery = functionDiscovery,
+            BiosCalls = BiosCallRecognizer.Recognize(instructions, basicBlocks, functionDiscovery),
+        };
+    }
+
     /// <summary>Assembles a complete artifact-builder input around a report.</summary>
     public static DeterministicArtifactInput CreateInput(
         string fixtureId,
