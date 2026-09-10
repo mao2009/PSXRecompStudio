@@ -208,3 +208,46 @@ explicitly.
   `Supported` against the stricter reading (noted as an open item in the base
   decision above) happens when a service is actually wired to this sink, not
   when the sink boundary alone lands.
+
+## Amendment (2026-09-10): A0:3C putchar wired to the output sink
+
+A0:3C putchar's documented TTY side effect is now implemented: `BiosHleRuntime`
+takes an `IRuntimeOutputSink` by constructor injection and `InvokePutChar`
+writes the low byte of its character argument to that sink before returning it.
+This closes the "putchar TTY side effect implementation" item Issue #279
+tracked, and supersedes the Phase-1-limited framing the base Decision section
+and the preceding amendment's item (e) recorded for putchar.
+
+- (a) **`Supported` now holds for putchar under the stricter reading.** The
+  open item in the base Decision — that `Supported` meant only "the ABI/return
+  register contract is modeled, and no guest-memory access needed to compute it
+  is skipped" — is resolved for the sole registered service: putchar satisfies
+  its **full** documented behavior (write the character to the TTY *and* return
+  it). The re-audit that item required is therefore done for A0:3C. The stricter
+  reading is what a newly registered service must meet from here on; the
+  narrower Phase-1 reading is retired, not carried forward.
+- (b) **The sink is a required constructor dependency, not an option.**
+  `new BiosHleRuntime(outputSink)` throws `ArgumentNullException` on a null
+  sink. A "no sink configured" mode would be a silent no-op that reintroduces
+  exactly the false-green failure this ADR rejects — a host could run the
+  registry while putchar's documented effect is quietly discarded, and a
+  differential test would report success. Construction fails loudly instead. No
+  parameterless overload exists.
+- (c) **This settles the injection-point question left open** by the output-sink
+  amendment's item (d): the shape is constructor injection into
+  `BiosHleRuntime`, not a per-call parameter on `IBiosRuntime.Invoke`. The
+  dispatch contract (`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`)
+  is unchanged, so recompiled code, the interpreter, and diagnostics still see
+  one identical boundary; only the registry's construction gained a dependency.
+- (d) **Argument rejection stays side-effect-free.** An argument count ≠ 1 is
+  still rejected with `BIOS_HLE_INVALID_ARGUMENTS` through the shared factory,
+  and nothing is written to the sink on that path — a rejected call must not be
+  observable as output. The return-value contract (`arg & 0xFF`) is unchanged.
+- (e) **The byte is written raw.** Per the output-sink amendment's item (b), no
+  encoding or Unicode conversion happens in the Domain layer; the low 8 bits of
+  the argument reach the sink verbatim and the receiver decides how to interpret
+  them. No `System.Console` or other I/O primitive is used, as the architecture
+  analyzer enforces.
+- (f) **No other service's status changes.** The registry still holds exactly
+  `(A0, 0x3C)`. A0:3E puts remains unregistered, and the B0 aliases (B0:3D,
+  B0:3F) remain unselected by evidence; Issue #279 stays open for those.
