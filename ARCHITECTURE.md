@@ -155,12 +155,15 @@ Unimplemented calls return explicit diagnostics such as
 `BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
-wires only A0:3C `putchar`, modeling its register-visible return-value
-contract; TTY output is not yet implemented and remains open work under Issue
-#279. This narrower Phase-1 `Supported` is accepted because putchar's argument
-is a plain scalar, so no guest-memory access is skipped and nothing about its
-CPU-observable outcome can silently diverge from real hardware — the missing
-side effect is a tracked limitation, not a hidden correctness gap. A0:3E
+wires only A0:3C `putchar`, and implements its full documented behavior: it
+writes the low byte of the character argument to the `IRuntimeOutputSink`
+injected into `BiosHleRuntime` and returns that same byte, so `Supported` here
+means the host-visible TTY effect too, not just the return-register contract.
+The sink is a required constructor dependency — a missing sink is a
+construction error, never a silently discarded side effect — and the Domain
+layer reaches host output only through that boundary, never `System.Console`
+(ADR-014). An argument shape the ABI does not accept is still rejected with
+`BIOS_HLE_INVALID_ARGUMENTS` and writes nothing to the sink. A0:3E
 `puts`'s identity is verified but deliberately left unregistered: unlike
 putchar, its argument is a guest-memory pointer, so skipping the read would
 hide a real correctness gap rather than merely omit a host-visible side

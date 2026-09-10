@@ -14,21 +14,29 @@ public sealed class BiosHleRuntime : IBiosRuntime
     public const byte PutCharFunction = 0x3C;
 
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
+    private readonly IRuntimeOutputSink _outputSink;
 
     /// <summary>
-    /// Creates the registry. A service is registered as <c>Supported</c> only
-    /// when no guest-memory access needed to compute its documented contract
-    /// is skipped (ADR-014); a service whose documented effect depends on
-    /// guest memory it cannot yet read (e.g. A0:3E puts) is deliberately left
-    /// unregistered rather than registered with only its return value
-    /// modeled. A0:3C putchar is accepted as a narrower Phase-1 <c>Supported</c>:
-    /// its argument is a plain scalar, so nothing about its CPU-observable
-    /// outcome is skipped, but its TTY output side effect is not yet
-    /// implemented (tracked under Issue #279) — this is not a claim that
-    /// putchar is fully implemented.
+    /// Creates the registry over the Runtime output boundary every TTY-class
+    /// service writes through. A service is registered as <c>Supported</c> only
+    /// when its full documented behavior — including host-visible output — is
+    /// implemented (ADR-014); a service whose documented effect depends on
+    /// guest memory or output the Runtime does not honour (e.g. A0:3E puts) is
+    /// deliberately left unregistered rather than registered with only its
+    /// return value modeled.
     /// </summary>
-    public BiosHleRuntime()
+    /// <param name="outputSink">
+    /// Receives the bytes registered services emit, such as A0:3C putchar's TTY
+    /// character. Required: a missing sink is a construction error, never a
+    /// silent no-op, so a host can never run the registry with putchar's
+    /// documented side effect quietly discarded.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="outputSink"/> is null.</exception>
+    public BiosHleRuntime(IRuntimeOutputSink outputSink)
     {
+        ArgumentNullException.ThrowIfNull(outputSink);
+        _outputSink = outputSink;
+
         services = new Dictionary<(BiosCallFamily, byte), Func<BiosCallIdentity, BiosServiceResult>>
         {
             [(BiosCallFamily.A0, PutCharFunction)] = InvokePutChar,
@@ -44,7 +52,15 @@ public sealed class BiosHleRuntime : IBiosRuntime
             : BiosServiceResult.Unsupported(identity);
     }
 
-    private static BiosServiceResult InvokePutChar(BiosCallIdentity identity)
+    /// <summary>
+    /// A0:3C putchar. Writes the low byte of the character argument to the
+    /// injected output sink and returns that same byte, which is putchar's full
+    /// documented behavior (ADR-014). An argument shape the ABI does not accept
+    /// is rejected before anything is written, so a rejected call has no side
+    /// effect. The byte is emitted raw: encoding is the sink receiver's concern,
+    /// never the Domain layer's.
+    /// </summary>
+    private BiosServiceResult InvokePutChar(BiosCallIdentity identity)
     {
         if (identity.Arguments.Count != 1)
         {
@@ -52,10 +68,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
                 identity, "A0:3C putchar requires one character argument.");
         }
 
-        // Phase-1-limited: this models only the register-visible return-value
-        // contract. The documented TTY output side effect is NOT implemented
-        // yet (tracked under Issue #279) and this must not be read as "putchar
-        // is fully implemented" — see ADR-014's note on what Supported means.
+        _outputSink.WriteByte((byte)(identity.Arguments[0] & 0xFFu));
         return BiosServiceResult.Supported(identity, identity.Arguments[0] & 0xFFu);
     }
 }

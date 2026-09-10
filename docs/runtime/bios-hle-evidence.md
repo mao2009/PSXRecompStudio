@@ -39,13 +39,13 @@ registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly one
 entry**: `(A0, 0x3C)` → `InvokePutChar`. Every other call — including the
 deliberately unregistered neighbours and aliases below — falls through to
 `BiosServiceResult.Unsupported`, producing the stable diagnostic
-`BIOS_HLE_UNSUPPORTED_CALL` (verified in `BiosHleRuntime.cs:30-45` and
+`BIOS_HLE_UNSUPPORTED_CALL` (verified in `BiosHleRuntime.cs:35-53` and
 `BiosServiceResult.cs:34-44`).
 
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
 | getchar | A0:3B | **Unregistered** — falls through to `BIOS_HLE_UNSUPPORTED_CALL` | TTY input read/consume; blocking wait for input | Input sink (no design yet) |
-| putchar | A0:3C | **Registered `Supported` (Phase-1 limited)** — `InvokePutChar` models only the register-visible return-value contract (`arg & 0xFF`) | Documented TTY output side effect not implemented (Issue #279 "putchar TTY side effect implementation") | Output sink exists (`IRuntimeOutputSink`); wiring `InvokePutChar` to it is the remaining work |
+| putchar | A0:3C | **Registered `Supported` (full documented behavior)** — `InvokePutChar` writes `arg & 0xFF` to the injected `IRuntimeOutputSink` *and* returns it | None — TTY output is now emitted (ADR-014 amendment 2026-09-10) | None; `BiosHleRuntime` takes the sink by constructor injection |
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink; guest-memory **write** |
 | puts | A0:3E | **Unregistered** — identity verified and cited (ADR-014, REFERENCES.md) but deliberately not registered | Reading a NUL-terminated string from guest memory; writing it to the TTY; returning the incoming pointer | Guest-memory read (`IGuestMemoryReader`) and output sink (`IRuntimeOutputSink`) both exist; registering the service is the remaining work |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
@@ -55,15 +55,22 @@ deliberately unregistered neighbours and aliases below — falls through to
 Notes verified against the code:
 
 - `BiosHleRuntime.PutCharFunction == 0x3C`; the only registration is
-  `(BiosCallFamily.A0, PutCharFunction)` (`BiosHleRuntime.cs:13-35`).
+  `(BiosCallFamily.A0, PutCharFunction)` (`BiosHleRuntime.cs:13-43`).
 - `InvokePutChar` rejects any argument count ≠ 1 with
-  `BIOS_HLE_INVALID_ARGUMENTS` and otherwise returns
-  `Supported(identity, identity.Arguments[0] & 0xFFu)` (`BiosHleRuntime.cs:47-60`).
-  No TTY output is emitted.
+  `BIOS_HLE_INVALID_ARGUMENTS`; otherwise it writes the low byte
+  (`identity.Arguments[0] & 0xFFu`) to the injected `IRuntimeOutputSink` and
+  returns that same byte via
+  `Supported(identity, identity.Arguments[0] & 0xFFu)` (`BiosHleRuntime.cs:63-73`).
+  The TTY output side effect is emitted; the rejection path writes nothing to
+  the sink. The sink is a required constructor dependency
+  (`ArgumentNullException` on null), so it can never be a silent no-op.
 - `BiosHleContractTests` pins A0:3B / A0:3D / A0:3E / A0:3F / B0:3D / B0:3F and a
   non-contiguous A0:09 as `BIOS_HLE_UNSUPPORTED_CALL`, guarding against any
   accidental widening of the registry
-  (`BiosHleContractTests.cs:36-110`).
+  (`BiosHleContractTests.cs:90-172`), and pins putchar's emitted byte, its
+  call ordering, its determinism across fresh runtimes, the required sink, and
+  the untouched sink on the invalid-argument path
+  (`BiosHleContractTests.cs:19-88`, `:130-147`).
 - ADR-014 explains the *why*: a service whose documented effect depends on guest
   memory the Runtime cannot yet read (or output it cannot yet emit) must stay
   **absent** from the registry rather than be registered with only its return
