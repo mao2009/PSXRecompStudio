@@ -189,6 +189,9 @@ name rather than with a guessed one. Recognized sites, including those whose
 function number is not statically resolvable, are persisted in the deterministic
 analysis artifact (`report.json`, `biosCalls`; see
 [docs/development/real-rom-analysis-artifacts.md](docs/development/real-rom-analysis-artifacts.md)).
+The evidence covers whatever instruction window the analysis decoded, so a report
+produced with the pipeline's default entry-point window records only the sites
+within it, not the executable's whole BIOS surface.
 
 ## Recompiler
 

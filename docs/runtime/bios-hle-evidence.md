@@ -57,7 +57,7 @@ deliberately unregistered neighbours and aliases below — falls through to
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink; guest-memory **write** |
 | puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
-| puts alias | B0:3F | **Unregistered** — but a real-ROM call site now selects it ([3.4](#34-real-rom-evidence-obtained)) | Same as A0:3E | Nothing — evidence, identity and both Runtime capabilities are now in place; only the registration work remains |
+| puts alias | B0:3F | **Unregistered** — selected by real-ROM evidence per the ADR-014 amendment *B0:3F selected by real-ROM evidence* ([3.4](#34-real-rom-evidence-obtained)) | Same as A0:3E | Nothing — evidence, identity and both Runtime capabilities are in place; only the registration work remains |
 | all other A0/B0/C0 | — | **Unregistered** — any call not in the registry fails loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
@@ -126,8 +126,9 @@ place a `syscall` can surface. The relevant records carry:
 **Did any stage detect guest call-sites into the BIOS jump tables? Not when this
 section was written — it does now** (`BiosCallRecognizer`, 3.4). PS1 BIOS A0/B0/C0
 dispatch is an indirect jump through the jump table at `0xA0`/`0xB0`/`0xC0` — real code
-materializes the vector into a register (typically `$t2`/R10) and uses `jr`/`jalr`,
-because `j` cannot reach those addresses from kernel-segment code — with the function
+materializes the vector into a register (typically `$t2`/R10) and uses `jr`/`jalr`
+(a direct `j`/`jal` can reach only the KSEG0 alias `0x800000A0`, since J preserves the
+top four PC bits; the recognizer accepts both forms) — with the function
 number loaded into `$t1`/R9 via `li`/`addiu`/`ori`/`lui`, most often **in the jump's
 delay slot**, which executes before control reaches the vector. The
 MIPS `syscall` instruction is a separate kernel-trap interface, unrelated to
@@ -234,11 +235,14 @@ git-ignored `rom/` directory, with a decode window wide enough to cover the text
 only the earliest stubs). No ROM, ISO or executable content is reproduced here; only the
 metadata `docs/development/real-rom-analysis-artifacts.md` marks as safe to quote.
 
-**A0/B0/C0 call sites are recognized in every locally available title.** Recognized site
-counts ranged from 8 to 61 per executable across five distinct executables, spanning all
-three families. Almost every site resolved through the canonical stub shape
-(`resolution: "DelaySlotConstant"`), with a small number resolving from an earlier
-constant in the same block (`BlockConstant`).
+**A0/B0/C0 call sites are recognized in every locally available title.** Across five
+distinct executables: 158 sites in total, 8 to 61 per executable, spanning all three
+families. Every one resolved to a function number — 138 through the canonical stub shape
+(`resolution: "DelaySlotConstant"`) and 20 from an earlier constant in the same basic
+block (`BlockConstant`), with **zero** `Unresolved`. The dispatch idiom is evidently
+uniform enough that block-local constant tracking is sufficient in practice; that is an
+observation about these five executables, not a guarantee, which is why unresolved sites
+remain a first-class part of the schema.
 
 **The one verified identity observed, in full:**
 
@@ -265,13 +269,15 @@ the recognizer models:
    two services the registry implements today are not requested by any of them. This does
    not make the registrations wrong — they are correct, verified and tested — but it does
    mean the local fixture set does not exercise them.
-2. **A B0-table call site does exist.** Section 4 previously recorded "no evidence
-   selects the B0 entries" as the reason to keep `B0:3D`/`B0:3F` unregistered. For
-   `B0:3F` that statement is now **superseded by the evidence above**: one real title
-   calls it. Whether to register the alias remains an implementation decision under
-   ADR-014's bar (a service is registered only when it satisfies its full documented
-   behavior), and this document still registers nothing — but the decision is no longer
-   blocked on missing evidence.
+2. **A B0-table call site does exist.** ADR-014 asserted in its base Decision and both
+   registration amendments that the B0 aliases "stay unselected by evidence". That fact
+   no longer holds for `B0:3F`, so it was corrected where it was decided, not here: see
+   the ADR-014 amendment
+   [*B0:3F selected by real-ROM evidence*](../adr/014-bios-hle-runtime-contract.md).
+   `B0:3D` remains unselected. Registering the alias is still gated by ADR-014's bar (a
+   service is registered only when it satisfies its full documented behavior); this
+   document registers nothing, and the amendment registers nothing either — only the
+   evidence precondition has changed.
 
 **What was *not* established.** The frequently observed function numbers below are raw
 identities from the recognizer; this repository has **not** verified what they are.
@@ -281,7 +287,7 @@ prerequisite for any registration work, per ADR-014's no-guessing rule.
 | Identity | Observed in (of the 5 distinct executables) | Sites per executable |
 |---|---|---|
 | `A0:39` | 5 | 1 |
-| `A0:AB`, `A0:AC`, `B0:4E`, `B0:50` | 4 | 1 |
+| `A0:AB`, `A0:AC`, `B0:0A`, `B0:4E`, `B0:4F`, `B0:50` | 4 | 1 |
 | `B0:57` | 3 | 4 |
 | `B0:56` | 3 | 2–3 |
 
@@ -341,7 +347,7 @@ carry a "verify before register" marker.
 | ~~puts~~ — **done**, registered with full documented behavior | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High (differential: stub reads, compare output + R2) | **None observed for A0:3E**; the B0:3F alias *is* called (3.4). Identity verified (ADR-014) | Low–medium |
 | getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | **None observed** — consistent with the expectation that real titles rarely use TTY input | Medium–high |
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
-| B0 putchar/puts aliases | B0:3D / B0:3F | same as A0 counterparts | same | same, through the B0 table | host (+ guest read for puts) | High (once the capability exists) | **B0:3F — confirmed.** A real title calls it at guest PC `0x800D0FF8` (see [3.4](#34-real-rom-evidence-obtained)); the earlier "no evidence selects the B0 entries" reading is superseded for `B0:3F`. **B0:3D — still none.** | Low (capability-gated) |
+| B0 putchar/puts aliases | B0:3D / B0:3F | same as A0 counterparts | same | same, through the B0 table | host (+ guest read for puts) | High (once the capability exists) | **B0:3F — confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)), recorded in the ADR-014 amendment *B0:3F selected by real-ROM evidence*. **B0:3D — still none.** | Low (capability-gated) |
 
 ### Recommendation
 
@@ -364,8 +370,9 @@ they unblocked have since been implemented:
    guest-memory write. Neither is on the critical path for a first
    BIOS-touching real-ROM function (games overwhelmingly *write* to TTY via
    putchar/puts; TTY input is rare).
-4. **B0:3F** — the condition this item set has now been met: real-ROM evidence shows a
-   B0-table `puts` call site ([3.4](#34-real-rom-evidence-obtained)). Both Runtime
+4. **B0:3F** — the condition this item set has been met, and the change of fact is
+   recorded in the ADR-014 amendment *B0:3F selected by real-ROM evidence*: a real title
+   calls the B0-table `puts` entry ([3.4](#34-real-rom-evidence-obtained)). Both Runtime
    capabilities it needs already exist, and its identity is verified in
    `docs/REFERENCES.md`, so registering it is an implementation task rather than a
    capability or research one. **B0:3D** stays unregistered: no call site selects it.
@@ -433,14 +440,15 @@ Two explicit guarantees:
    `B0:57`, `A0:AB`, `A0:AC`, `B0:4E`, `B0:50`) against the documentation cited in
    `docs/REFERENCES.md`, and record them there. Until that is done they are call-frequency
    observations, not service candidates — ADR-014 forbids registering a guessed identity.
-5. **Decide whether to register `B0:3F`** now that a real call site selects it
-   ([3.4](#34-real-rom-evidence-obtained)) and both required Runtime capabilities exist.
-4. **Decide the input sink design for getchar/gets** — blocking semantics,
+5. **Decide whether to register `B0:3F`**, now that the ADR-014 amendment records a real
+   call site selecting it ([3.4](#34-real-rom-evidence-obtained)) and both required
+   Runtime capabilities exist.
+6. **Decide the input sink design for getchar/gets** — blocking semantics,
    host-provided input source, and how the Domain layer receives it without I/O.
-5. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
+7. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
    std_io behavior and record it in `docs/REFERENCES.md` before any register work,
    per the no-guessing rule of ADR-014.
-6. ~~**Re-audit `Supported` against the strict reading once a service is
+8. ~~**Re-audit `Supported` against the strict reading once a service is
    actually wired to the output sink**~~ — ✅ **resolved.** Both registered
    services now consume the sink: putchar writes its character (ADR-014
    amendment "A0:3C putchar wired to the output sink") and puts writes its
