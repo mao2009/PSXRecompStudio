@@ -457,7 +457,6 @@ public static class BiosCallRecognizer
             case R3000aOpcode.Lw:
             case R3000aOpcode.Lwl:
             case R3000aOpcode.Lwr:
-            case R3000aOpcode.Mfc0:
                 if (instruction.OperandCount > 0 && instruction.Operand0.Kind == R3000aOperandKind.Register)
                 {
                     register = instruction.Operand0.Register;
@@ -492,8 +491,6 @@ public static class BiosCallRecognizer
             case R3000aOpcode.Divu:
             case R3000aOpcode.Mthi:
             case R3000aOpcode.Mtlo:
-            case R3000aOpcode.Mtc0:
-            case R3000aOpcode.Cop2Command:
             case R3000aOpcode.J:
             case R3000aOpcode.Jr:
             case R3000aOpcode.Beq:
@@ -504,6 +501,28 @@ public static class BiosCallRecognizer
             case R3000aOpcode.Bgez:
                 register = 0;
                 return false;
+
+            // Every coprocessor move shares one opcode per coprocessor, so the operation
+            // kind — not the opcode — decides whether a GPR is written. A move *from* a
+            // coprocessor writes GPR rt, which the operand model does not expose (the
+            // decoder builds these with no operands and records only the coprocessor
+            // register), so it is reported as unmodeled and invalidates everything. Moves
+            // *to* a coprocessor, GTE commands and rfe write no GPR.
+            case R3000aOpcode.Mfc0:
+            case R3000aOpcode.Mtc0:
+            case R3000aOpcode.Rfe:
+            case R3000aOpcode.Cop2Command:
+                switch (instruction.CopInfo.Operation)
+                {
+                    case R3000aCopOperationKind.MoveToCoprocessor:
+                    case R3000aCopOperationKind.MoveControlToCoprocessor:
+                    case R3000aCopOperationKind.ExecuteCommand:
+                    case R3000aCopOperationKind.ReturnFromException:
+                        register = 0;
+                        return false;
+                }
+
+                break;
 
             // Traps, coprocessor-unusable and reserved encodings transfer to an exception
             // handler whose register effects this analysis does not model.

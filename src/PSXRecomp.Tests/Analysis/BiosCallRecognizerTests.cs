@@ -42,6 +42,12 @@ public class BiosCallRecognizerTests
     private const uint LwT1FromS0 = 0x8E090000;    // lw    $t1, 0($s0)
     private const uint MultT1T2 = 0x012A0018;      // mult  $t1, $t2   (writes no GPR)
 
+    // Coprocessor moves: mfc0/mfc2 write GPR rt; a GTE command writes no GPR, yet mfc2
+    // and the GTE command share the Cop2Command opcode.
+    private const uint Mfc0T1 = 0x40096000;        // mfc0  $t1, $12
+    private const uint Mfc2T1 = 0x48096000;        // mfc2  $t1, $12
+    private const uint GteRtps = 0x4A180001;       // rtps  (COP2 command)
+
     // lui $t2, 0x8000 ; ori $t2, $t2, 0xA0  -> KSEG0 alias of the A0 vector.
     private const uint LuiT2Kseg0 = 0x3C0A8000;
     private const uint OriT2VectorA0 = 0x354A00A0;
@@ -225,6 +231,40 @@ public class BiosCallRecognizerTests
 
         var site = Assert.Single(evidence.Sites);
         Assert.Equal((byte)0x3C, site.FunctionNumber);
+    }
+
+    [Fact]
+    public void Recognize_MoveFromCoprocessorTwo_InvalidatesTheFunctionNumber()
+    {
+        // mfc2 writes a GPR but shares the Cop2Command opcode with the GTE commands and
+        // the moves *to* COP2, which write none. Treating the whole opcode as
+        // GPR-preserving would let `mfc2 $t1, $12` leave a stale 0x3C in R9 and report a
+        // BIOS identity the code never asked for.
+        var evidence = Recognize(LiT1PutChar, Mfc2T1, LiT2VectorA0, JrT2, Nop, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Null(site.FunctionNumber);
+        Assert.Equal(BiosCallResolution.Unresolved, site.Resolution);
+    }
+
+    [Fact]
+    public void Recognize_GteCommand_DoesNotInvalidateTheFunctionNumber()
+    {
+        // The counterpart: a GTE command writes no GPR, so it must not force a resolved
+        // call site to become unresolved. Real PS1 code is full of these.
+        var evidence = Recognize(LiT1PutChar, GteRtps, LiT2VectorA0, JrT2, Nop, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal((byte)0x3C, site.FunctionNumber);
+    }
+
+    [Fact]
+    public void Recognize_MoveFromCoprocessorZero_InvalidatesTheFunctionNumber()
+    {
+        var evidence = Recognize(LiT1PutChar, Mfc0T1, LiT2VectorA0, JrT2, Nop, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Null(site.FunctionNumber);
     }
 
     [Fact]
