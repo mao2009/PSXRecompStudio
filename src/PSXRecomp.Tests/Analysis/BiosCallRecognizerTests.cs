@@ -122,6 +122,32 @@ public class BiosCallRecognizerTests
     }
 
     [Fact]
+    public void Recognize_DelaySlotRewritingTheSameValue_IsStillDelaySlotResolved()
+    {
+        // R9 already carries 0x3C from earlier in the *same block* when the delay slot
+        // materializes 0x3C again. Resolution records *where the number came from*, so
+        // comparing the value before and after misreports this as BlockConstant even
+        // though the delay slot is what set it.
+        var evidence = Recognize(LiT1PutChar, LiT2VectorA0, JrT2, LiT1PutChar, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal((byte)0x3C, site.FunctionNumber);
+        Assert.Equal(BiosCallResolution.DelaySlotConstant, site.Resolution);
+    }
+
+    [Fact]
+    public void Recognize_DelaySlotLeavingTheFunctionNumberAlone_StaysBlockResolved()
+    {
+        // The counterpart: a delay slot that does not touch R9 must not claim provenance
+        // for a constant the block established.
+        var evidence = Recognize(LiT1PutChar, LiT2VectorA0, JrT2, Nop, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal((byte)0x3C, site.FunctionNumber);
+        Assert.Equal(BiosCallResolution.BlockConstant, site.Resolution);
+    }
+
+    [Fact]
     public void Recognize_JalrDispatch_IsRecognized()
     {
         // Some code keeps a return address, dispatching with jalr instead of jr.

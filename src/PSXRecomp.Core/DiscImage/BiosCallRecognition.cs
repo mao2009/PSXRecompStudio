@@ -198,11 +198,15 @@ public static class BiosCallRecognizer
                     && unchecked(address.Address + 4u) == ordered[index + 1].Address)
                 {
                     var delaySlot = R3000aDecoder.Decode(ordered[index + 1].RawWord);
-                    var beforeDelaySlot = atEntry.TryGet(FunctionNumberRegister, out var carried);
+
+                    // Provenance, not value: a delay slot that re-materializes the value
+                    // the block already carried is still where the number came from, so
+                    // comparing values before and after would misreport it as BlockConstant.
+                    var delaySlotWritesFunctionNumber = MayWrite(delaySlot, FunctionNumberRegister);
                     Apply(atEntry, delaySlot);
 
-                    var afterDelaySlot = atEntry.TryGet(FunctionNumberRegister, out var settled);
-                    if (afterDelaySlot && (!beforeDelaySlot || settled != carried))
+                    if (delaySlotWritesFunctionNumber
+                        && atEntry.TryGet(FunctionNumberRegister, out _))
                     {
                         resolution = BiosCallResolution.DelaySlotConstant;
                     }
@@ -427,6 +431,31 @@ public static class BiosCallRecognizer
                 }
 
                 return;
+        }
+    }
+
+    /// <summary>
+    /// True when the instruction may write <paramref name="register"/>, either by
+    /// materializing a constant into it or by clobbering it. An instruction whose effect is
+    /// not modeled counts as a possible write, so this is safe to use as write provenance.
+    /// </summary>
+    private static bool MayWrite(in R3000aInstruction instruction, byte register)
+    {
+        switch (instruction.Opcode)
+        {
+            // The constant-materializing forms Apply handles before the clobber oracle.
+            case R3000aOpcode.Addi:
+            case R3000aOpcode.Addiu:
+            case R3000aOpcode.Ori:
+            case R3000aOpcode.Lui:
+                return instruction.OperandCount > 0
+                    && instruction.Operand0.Kind == R3000aOperandKind.Register
+                    && instruction.Operand0.Register == register;
+
+            default:
+                return TryGetWrittenRegister(instruction, out var written, out var known)
+                    ? written == register
+                    : !known;
         }
     }
 
