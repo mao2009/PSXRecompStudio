@@ -251,3 +251,50 @@ and the preceding amendment's item (e) recorded for putchar.
 - (f) **No other service's status changes.** The registry still holds exactly
   `(A0, 0x3C)`. A0:3E puts remains unregistered, and the B0 aliases (B0:3D,
   B0:3F) remain unselected by evidence; Issue #279 stays open for those.
+
+## Amendment (2026-09-10): A0:3E puts registered
+
+Issue #279's puts track completes here. `PutsService` implements the service
+and `BiosHleRuntime` registers it under `(A0, 0x3E)`, dispatching to it. This
+amendment records the registration and what it settles; the base Decision and
+the earlier amendments are unchanged.
+
+- (a) **The "not until both effects are exercised" guarantee is now met, not
+  waived.** The guest-memory amendment's item (d) and the evidence inventory
+  both required that puts stay unregistered until it *actually* reads guest
+  memory and writes to the sink. Both now happen: the registered service reads
+  the NUL-terminated string through `IGuestMemoryReader` and writes every byte
+  to `IRuntimeOutputSink`. The condition was satisfied before registration, not
+  relaxed to permit it — which is the distinction the original rejection of a
+  return-value-only puts turned on.
+- (b) **`BiosHleRuntime` takes a second required dependency.**
+  `new BiosHleRuntime(outputSink, guestMemoryReader)` throws
+  `ArgumentNullException` on either null, following the sink's precedent from
+  the previous amendment for the same reason: a missing reader would leave a
+  registered service unable to perform the access its documented behavior
+  depends on. Constructor injection remains the injection point settled by that
+  amendment's item (c); `IBiosRuntime.Invoke`'s signature is untouched, so every
+  execution path still sees one identical dispatch contract.
+- (c) **Output is atomic with respect to the sink.** The string is collected
+  into a bounded buffer and nothing is written until the whole string is proven
+  readable, so a failure emits zero bytes. Partial TTY output would be a
+  narrower form of the same false green this ADR rejects — a caller observing
+  half a line while the call reports failure — so the all-or-nothing shape is
+  part of the contract, not an implementation detail.
+- (d) **Unreadable pointers and unterminated strings report
+  `BIOS_HLE_UNSUPPORTED_STATE`.** This is the diagnostic the base Decision's
+  Alternatives section reserved for "a *registered* service reaching a state its
+  HLE implementation cannot represent", used here for exactly that case. It is
+  a `Status = Unsupported` result carrying a distinct code, mirroring
+  `BIOS_HLE_INVALID_ARGUMENTS`: the two-value `BiosServiceStatus` is unchanged,
+  so the rejection of a third status stands. The scan is bounded (4096 bytes),
+  honouring the guest-memory amendment's item (c).
+- (e) **The stricter reading of `Supported` now has two data points.** Both
+  registered services satisfy their full documented behavior including
+  host-visible output, and puts additionally exercises the guest-memory access
+  its return value depends on. The re-audit the base Decision's open item
+  demanded is complete for the whole registry, not just for putchar.
+- (f) **No other service's status changes.** The registry holds `(A0, 0x3C)` and
+  `(A0, 0x3E)`. getchar (A0:3B) and gets (A0:3D) stay unregistered pending an
+  input-sink design, and the B0 aliases (B0:3D, B0:3F) stay unselected by
+  evidence. Issue #279 remains open for those.

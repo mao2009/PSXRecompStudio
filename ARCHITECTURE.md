@@ -155,7 +155,8 @@ Unimplemented calls return explicit diagnostics such as
 `BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
-wires only A0:3C `putchar`, and implements its full documented behavior: it
+wires A0:3C `putchar` and A0:3E `puts`, and implements the full documented
+behavior of both. `putchar`
 writes the low byte of the character argument to the `IRuntimeOutputSink`
 injected into `BiosHleRuntime` and returns that same byte, so `Supported` here
 means the host-visible TTY effect too, not just the return-register contract.
@@ -163,11 +164,15 @@ The sink is a required constructor dependency — a missing sink is a
 construction error, never a silently discarded side effect — and the Domain
 layer reaches host output only through that boundary, never `System.Console`
 (ADR-014). An argument shape the ABI does not accept is still rejected with
-`BIOS_HLE_INVALID_ARGUMENTS` and writes nothing to the sink. A0:3E
-`puts`'s identity is verified but deliberately left unregistered: unlike
-putchar, its argument is a guest-memory pointer, so skipping the read would
-hide a real correctness gap rather than merely omit a host-visible side
-channel. Every other function number reports `BIOS_HLE_UNSUPPORTED_CALL`
+`BIOS_HLE_INVALID_ARGUMENTS` and writes nothing to the sink. A0:3E `puts`
+reads its NUL-terminated string argument through the `IGuestMemoryReader` also
+injected into `BiosHleRuntime`, writes those bytes to the same sink, and
+returns the incoming string pointer. Because its argument is a guest-memory
+pointer rather than a scalar, the read is what makes `Supported` honest here:
+the string is collected into a bounded buffer first and emitted only once it is
+proven fully readable, so an invalid or unmapped pointer reports
+`BIOS_HLE_UNSUPPORTED_STATE` and writes nothing rather than producing partial
+output. Every other function number reports `BIOS_HLE_UNSUPPORTED_CALL`
 (ADR-014).
 
 ## Recompiler

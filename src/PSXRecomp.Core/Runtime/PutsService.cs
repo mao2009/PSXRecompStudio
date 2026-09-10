@@ -11,8 +11,9 @@ namespace PSXRecomp.Core.Runtime;
 /// <remarks>
 /// The service is deliberately a pure function over its injected boundaries —
 /// it never reaches host I/O directly and never branches on title identity.
-/// It is not yet registered in <see cref="BiosHleRuntime"/>; registration is a
-/// separate, tracked integration step under Issue #279.
+/// <see cref="BiosHleRuntime"/> registers it under A0:3E and dispatches to it;
+/// keeping the behavior here rather than in the registry is what lets it be
+/// tested directly, without constructing a runtime.
 /// </remarks>
 [Domain]
 public static class PutsService

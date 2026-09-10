@@ -13,33 +13,49 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
+    /// <summary>A0:3E puts, the first service that reads guest memory.</summary>
+    public const byte PutsFunction = 0x3E;
+
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
     private readonly IRuntimeOutputSink _outputSink;
+    private readonly IGuestMemoryReader _guestMemoryReader;
 
     /// <summary>
-    /// Creates the registry over the Runtime output boundary every TTY-class
-    /// service writes through. A service is registered as <c>Supported</c> only
-    /// when its full documented behavior — including host-visible output — is
-    /// implemented (ADR-014); a service whose documented effect depends on
-    /// guest memory or output the Runtime does not honour (e.g. A0:3E puts) is
-    /// deliberately left unregistered rather than registered with only its
-    /// return value modeled.
+    /// Creates the registry over the two Runtime boundaries its services need:
+    /// the output boundary every TTY-class service writes through, and the
+    /// guest-memory boundary the string-reading services scan through. A service
+    /// is registered as <c>Supported</c> only when its full documented behavior —
+    /// including host-visible output and any guest-memory access the behavior
+    /// depends on — is implemented (ADR-014); a service whose documented effect
+    /// the Runtime cannot yet honour is left unregistered rather than registered
+    /// with only its return value modeled.
     /// </summary>
     /// <param name="outputSink">
     /// Receives the bytes registered services emit, such as A0:3C putchar's TTY
-    /// character. Required: a missing sink is a construction error, never a
-    /// silent no-op, so a host can never run the registry with putchar's
-    /// documented side effect quietly discarded.
+    /// character and A0:3E puts's string. Required: a missing sink is a
+    /// construction error, never a silent no-op, so a host can never run the
+    /// registry with a documented side effect quietly discarded.
     /// </param>
-    /// <exception cref="ArgumentNullException"><paramref name="outputSink"/> is null.</exception>
-    public BiosHleRuntime(IRuntimeOutputSink outputSink)
+    /// <param name="guestMemoryReader">
+    /// Reads the guest bytes pointer-taking services dereference, such as A0:3E
+    /// puts's string. Required for the same reason as the sink: a missing reader
+    /// would leave a registered service unable to perform the guest-memory access
+    /// its documented behavior depends on.
+    /// </param>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="outputSink"/> or <paramref name="guestMemoryReader"/> is null.
+    /// </exception>
+    public BiosHleRuntime(IRuntimeOutputSink outputSink, IGuestMemoryReader guestMemoryReader)
     {
         ArgumentNullException.ThrowIfNull(outputSink);
+        ArgumentNullException.ThrowIfNull(guestMemoryReader);
         _outputSink = outputSink;
+        _guestMemoryReader = guestMemoryReader;
 
         services = new Dictionary<(BiosCallFamily, byte), Func<BiosCallIdentity, BiosServiceResult>>
         {
             [(BiosCallFamily.A0, PutCharFunction)] = InvokePutChar,
+            [(BiosCallFamily.A0, PutsFunction)] = InvokePuts,
         };
     }
 
@@ -71,4 +87,14 @@ public sealed class BiosHleRuntime : IBiosRuntime
         _outputSink.WriteByte((byte)(identity.Arguments[0] & 0xFFu));
         return BiosServiceResult.Supported(identity, identity.Arguments[0] & 0xFFu);
     }
+
+    /// <summary>
+    /// A0:3E puts. Delegates to <see cref="PutsService"/>, which reads the
+    /// NUL-terminated guest string through the injected reader, writes it to the
+    /// injected sink, and returns the incoming string pointer (ADR-014). The
+    /// behavior lives in the service, not here: this registry entry only binds
+    /// the identity to it.
+    /// </summary>
+    private BiosServiceResult InvokePuts(BiosCallIdentity identity) =>
+        PutsService.Invoke(identity, _guestMemoryReader, _outputSink);
 }
