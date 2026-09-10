@@ -136,13 +136,6 @@ public static class BiosCallRecognizer
     private const uint VectorB0 = 0x000000B0;
     private const uint VectorC0 = 0x000000C0;
 
-    /// <summary>Recognizes BIOS call sites in an analysis report's decoded instruction stream.</summary>
-    public static BiosCallEvidence Recognize(DiscImageAnalysisReport report)
-    {
-        ArgumentNullException.ThrowIfNull(report);
-        return Recognize(report.DecodedInstructions, report.BasicBlocks, report.FunctionDiscovery);
-    }
-
     /// <summary>
     /// Recognizes BIOS call sites in a decoded instruction stream partitioned into basic
     /// blocks. <paramref name="functions"/> is optional; when supplied, each site is
