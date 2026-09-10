@@ -3,8 +3,9 @@ using PSXRecomp.Tests.Recompiler;
 
 namespace PSXRecomp.Tests.Runtime;
 
-// PutsService is invoked directly: A0:3E is deliberately not registered in
-// BiosHleRuntime yet (ADR-014), so the contract is proven at the service itself.
+// PutsService is tested directly for service semantics, while
+// BiosHleContractTests covers A0:3E registration and dispatch through
+// BiosHleRuntime.
 [Test]
 public sealed class PutsServiceTests
 {
