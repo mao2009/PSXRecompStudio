@@ -11,8 +11,10 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds one narrow
-Phase-1 registration (ADR-014). Both parallel Runtime capabilities this
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds two
+registrations — A0:3C `putchar` and A0:3E `puts` — each implementing its full
+documented behavior, host-visible output included (ADR-014). Both parallel
+Runtime capabilities this
 document originally awaited have since landed: the **guest-memory read
 boundary** (`IGuestMemoryReader`, PR #350) and the **deterministic output
 sink** (`IRuntimeOutputSink`, PR #349, ADR-014 amendment 2026-09-10). This
@@ -35,46 +37,56 @@ evidence-driven from #225 and later full-title bring-up").
 ## 2. Current support matrix
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
-registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly one
-entry**: `(A0, 0x3C)` → `InvokePutChar`. Every other call — including the
+registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly two
+entries**: `(A0, 0x3C)` → `InvokePutChar` and `(A0, 0x3E)` → `InvokePuts`, the
+latter a thin delegation to `PutsService.Invoke`. Every other call — including the
 deliberately unregistered neighbours and aliases below — falls through to
 `BiosServiceResult.Unsupported`, producing the stable diagnostic
-`BIOS_HLE_UNSUPPORTED_CALL` (verified in `BiosHleRuntime.cs:35-53` and
-`BiosServiceResult.cs:34-44`).
+`BIOS_HLE_UNSUPPORTED_CALL` (verified in `BiosHleRuntime.Invoke` and
+`BiosServiceResult.CreateUnsupported`).
 
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
 | getchar | A0:3B | **Unregistered** — falls through to `BIOS_HLE_UNSUPPORTED_CALL` | TTY input read/consume; blocking wait for input | Input sink (no design yet) |
 | putchar | A0:3C | **Registered `Supported` (full documented behavior)** — `InvokePutChar` writes `arg & 0xFF` to the injected `IRuntimeOutputSink` *and* returns it | None — TTY output is now emitted (ADR-014 amendment 2026-09-10) | None; `BiosHleRuntime` takes the sink by constructor injection |
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink; guest-memory **write** |
-| puts | A0:3E | **Unregistered** — identity verified and cited (ADR-014, REFERENCES.md) but deliberately not registered | Reading a NUL-terminated string from guest memory; writing it to the TTY; returning the incoming pointer | Guest-memory read (`IGuestMemoryReader`) and output sink (`IRuntimeOutputSink`) both exist; registering the service is the remaining work |
+| puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
 | puts alias | B0:3F | **Unregistered** — no evidence selects the B0 entry | Same as A0:3E | B0 usage evidence (guest-memory read and output sink already exist) |
 | all other A0/B0/C0 | — | **Unregistered** — any call not in the registry fails loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 
-- `BiosHleRuntime.PutCharFunction == 0x3C`; the only registration is
-  `(BiosCallFamily.A0, PutCharFunction)` (`BiosHleRuntime.cs:13-43`).
+- `BiosHleRuntime.PutCharFunction == 0x3C` and `PutsFunction == 0x3E`; the
+  registrations are `(BiosCallFamily.A0, PutCharFunction)` and
+  `(BiosCallFamily.A0, PutsFunction)`.
 - `InvokePutChar` rejects any argument count ≠ 1 with
   `BIOS_HLE_INVALID_ARGUMENTS`; otherwise it writes the low byte
   (`identity.Arguments[0] & 0xFFu`) to the injected `IRuntimeOutputSink` and
   returns that same byte via
-  `Supported(identity, identity.Arguments[0] & 0xFFu)` (`BiosHleRuntime.cs:63-73`).
+  `Supported(identity, identity.Arguments[0] & 0xFFu)` (`BiosHleRuntime.InvokePutChar`).
   The TTY output side effect is emitted; the rejection path writes nothing to
   the sink. The sink is a required constructor dependency
   (`ArgumentNullException` on null), so it can never be a silent no-op.
-- `BiosHleContractTests` pins A0:3B / A0:3D / A0:3E / A0:3F / B0:3D / B0:3F and a
+- `BiosHleContractTests` pins A0:3B / A0:3D / A0:3F / B0:3D / B0:3F and a
   non-contiguous A0:09 as `BIOS_HLE_UNSUPPORTED_CALL`, guarding against any
-  accidental widening of the registry
-  (`BiosHleContractTests.cs:90-172`), and pins putchar's emitted byte, its
-  call ordering, its determinism across fresh runtimes, the required sink, and
-  the untouched sink on the invalid-argument path
-  (`BiosHleContractTests.cs:19-88`, `:130-147`).
+  accidental widening of the registry; it pins putchar's emitted byte, its call
+  ordering, its determinism across fresh runtimes, both required constructor
+  dependencies, and the untouched sink on the invalid-argument path; and it pins
+  puts's dispatch end to end — the guest string reaching the sink, the returned
+  pointer, an unmapped pointer failing loudly with zero bytes written, and both
+  services sharing one sink in call order. A0:3E is no longer in the
+  unsupported-neighbour set because it is now registered.
+- `PutsServiceTests` covers `PutsService` itself exhaustively (bounded scan,
+  atomicity on every failure path, KUSEG/KSEG0/KSEG1 aliasing, uint-overflow
+  rejection, determinism); the contract tests deliberately prove only the wiring
+  rather than duplicating that coverage.
 - ADR-014 explains the *why*: a service whose documented effect depends on guest
   memory the Runtime cannot yet read (or output it cannot yet emit) must stay
   **absent** from the registry rather than be registered with only its return
   value modeled, because a differential test would then report a false green.
+  Both currently registered services clear that bar; the services still absent
+  (getchar, gets, the B0 aliases) are absent for exactly that reason.
 
 ## 3. Evidence gap (real-ROM → BIOS usage)
 
@@ -239,8 +251,8 @@ carry a "verify before register" marker.
 
 | Service | Documented identity | Arguments | Return | Side effects | External dependency (host/guest) | Testability | Real-ROM evidence availability | Implementation difficulty |
 |---|---|---|---|---|---|---|---|---|
-| putchar TTY completion (completes A0:3C) | A0:3C `std_out_putchar(char)` (B0:3D alias) | 1 char word (`arg & 0xFF`) | the character | write char to TTY output sink | **host** — output sink only (already exists: `IRuntimeOutputSink`) | High (deterministic sink assertable) | High — scalar call, static-site detectable once A0/B0/C0 call sites are recognized | Low |
-| puts | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — both `IGuestMemoryReader` and `IRuntimeOutputSink` already exist | High (differential: stub reads, compare output + R2) | High — identity already verified (ADR-014) | Low–medium |
+| ~~putchar TTY completion (completes A0:3C)~~ — **done**, registered with full documented behavior | A0:3C `std_out_putchar(char)` (B0:3D alias) | 1 char word (`arg & 0xFF`) | the character | write char to TTY output sink | **host** — output sink (`IRuntimeOutputSink`) | High (deterministic sink assertable) | High — scalar call, static-site detectable once A0/B0/C0 call sites are recognized | Low |
+| ~~puts~~ — **done**, registered with full documented behavior | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High (differential: stub reads, compare output + R2) | High — identity verified (ADR-014) | Low–medium |
 | getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | Medium — call-site detectable, **but** real titles rarely use TTY input | Medium–high |
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
 | B0 putchar/puts aliases | B0:3D / B0:3F | same as A0 counterparts | same | same, through the B0 table | host (+ guest read for puts) | High (once the capability exists) | **Low** — no evidence selects the B0 entries; keep unregistered | Low (capability-gated) |
@@ -248,31 +260,31 @@ carry a "verify before register" marker.
 ### Recommendation
 
 **Track A (guest-memory read boundary)** and **Track B (deterministic output
-sink)** have both landed (PR #350, PR #349). With no remaining Runtime
-capability blocking them, implement in this order:
+sink)** have both landed (PR #350, PR #349), and the two TTY-output services
+they unblocked have since been implemented:
 
-1. **putchar TTY completion (A0:3C)** — needs *only* the output sink, which
-   already exists. It is the smallest possible completion of the one
-   registered service, it stays on a scalar contract (no guest read), and it
-   upgrades `Supported` to the stricter ADR-014 reading (full documented
-   behavior including host-visible output).
-2. **puts (A0:3E)** — needs guest-memory **read** + output sink, both of which
-   already exist; its identity is already verified, so registration is now a
-   pure implementation/wiring task rather than a Runtime-capability change or
-   fresh identity research (ADR-014's stated intent). Registering it also
-   retires the one documented "deliberately unregistered" neighbour, shrinking
-   the loud-but-incomplete surface for TTY output.
-3. **getchar/gets** — deferred until the **input sink design is decided**.
-   getchar adds blocking semantics; gets additionally needs guest-memory write.
-   Neither is on the critical path for a first BIOS-touching real-ROM function
-   (games overwhelmingly *write* to TTY via putchar/puts; TTY input is rare).
+1. **putchar TTY completion (A0:3C)** — ✅ **done.** It needed *only* the output
+   sink. It stays on a scalar contract (no guest read) and upgraded `Supported`
+   to the stricter ADR-014 reading (full documented behavior including
+   host-visible output).
+2. **puts (A0:3E)** — ✅ **done.** It needed guest-memory **read** + output sink;
+   with its identity already verified, registration was a pure
+   implementation/wiring task rather than a Runtime-capability change or fresh
+   identity research (ADR-014's stated intent). It retired the one documented
+   "deliberately unregistered" neighbour, shrinking the loud-but-incomplete
+   surface for TTY output.
+3. **getchar/gets** — the remaining candidates, deferred until the **input sink
+   design is decided**. getchar adds blocking semantics; gets additionally needs
+   guest-memory write. Neither is on the critical path for a first
+   BIOS-touching real-ROM function (games overwhelmingly *write* to TTY via
+   putchar/puts; TTY input is rare).
 4. **B0:3D/B0:3F** — register only when real-ROM evidence shows a B0-table call
    site; no evidence selects them today (ADR-014).
 
-Rationale in one line: both output-side boundaries now exist, so putchar
-completion and puts are wiring/registration tasks, not capability work; only
-input (getchar/gets) still needs a Runtime capability (an input sink) that
-does not exist yet.
+Rationale in one line: both output-side boundaries existed, so putchar
+completion and puts were wiring/registration tasks rather than capability work
+and are now complete; only input (getchar/gets) still needs a Runtime
+capability (an input sink) that does not exist yet.
 
 ## 5. Dependency map
 
@@ -294,16 +306,21 @@ and the adapters live on the host side the Domain layer cannot see.
 
 Two explicit guarantees:
 
-- **`puts` must NOT be registered as `Supported` until it actually reads guest
-  memory and writes to the sink.** Both boundaries now exist, but registering
-  `puts` with only its return value modeled would still let an invalid/unmapped
-  pointer silently succeed where real hardware faults, hiding a correctness
-  gap — the exact rejection rationale recorded in ADR-014. Boundary existence
-  is a precondition, not a substitute, for exercising both effects.
+- **`puts` was not registered as `Supported` until it actually read guest memory
+  and wrote to the sink** — the condition this section previously stated as a
+  prohibition, now satisfied rather than waived. Registering it with only its
+  return value modeled would have let an invalid/unmapped pointer silently
+  succeed where real hardware faults, hiding a correctness gap (the rejection
+  rationale in ADR-014). Boundary existence was a precondition, not a
+  substitute, for exercising both effects; the registered service exercises
+  both, and an unreadable pointer reports `BIOS_HLE_UNSUPPORTED_STATE` with zero
+  bytes written. The same bar applies unchanged to every service registered from
+  here on.
 - **This document registers nothing.** It is an inventory; the registry in
-  `BiosHleRuntime` remains `(A0, 0x3C)` only, and any service added later is a
-  separate implementation task that adds code and updates ADR-014/ARCHITECTURE.md
-  as appropriate.
+  `BiosHleRuntime` is `(A0, 0x3C)` and `(A0, 0x3E)`, changed by the
+  implementation tasks that added those services, not by this document. Any
+  service added later is likewise a separate implementation task that adds code
+  and updates ADR-014/ARCHITECTURE.md as appropriate.
 
 ## 6. Open questions / next steps
 
@@ -314,16 +331,21 @@ Two explicit guarantees:
    the constant loaded into `$t1`/R9 before the jump via pattern-matching or
    lightweight constant propagation, for sites that dispatch through `$t9`.
 3. **Pick the first real-ROM function that exercises an A0 call** — once call
-   sites are recorded, select a title-local function for puts/putchar to drive
-   the next HLE registration from evidence rather than from the synthetic
-   fixtures alone.
+   sites are recorded, select a title-local function driving putchar/puts, so
+   the two registered services are exercised against real evidence rather than
+   the synthetic fixtures alone, and so the *next* registration is chosen from
+   evidence.
 4. **Decide the input sink design for getchar/gets** — blocking semantics,
    host-provided input source, and how the Domain layer receives it without I/O.
 5. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
    std_io behavior and record it in `docs/REFERENCES.md` before any register work,
    per the no-guessing rule of ADR-014.
-6. **Re-audit `Supported` against the strict reading once a service is actually
-   wired to the output sink** (the sink itself has landed; no registered
-   service consumes it yet) — ADR-014's open item: every registered service
-   must satisfy full documented behavior (including host-visible output), not
-   just the ABI return contract.
+6. ~~**Re-audit `Supported` against the strict reading once a service is
+   actually wired to the output sink**~~ — ✅ **resolved.** Both registered
+   services now consume the sink: putchar writes its character (ADR-014
+   amendment "A0:3C putchar wired to the output sink") and puts writes its
+   string (amendment "A0:3E puts registered"), the latter also exercising the
+   guest-memory read its return value depends on. ADR-014's open item is
+   discharged for the whole registry, and the strict reading — full documented
+   behavior including host-visible output, not just the ABI return contract —
+   is the bar every future registration must meet.

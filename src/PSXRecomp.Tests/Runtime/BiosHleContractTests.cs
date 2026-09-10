@@ -1,5 +1,6 @@
 using FluentAssertions;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Tests.Recompiler;
 
 namespace PSXRecomp.Tests.Runtime;
 
@@ -19,9 +20,17 @@ public sealed class BiosHleContractTests
     [Fact]
     public void Constructor_Rejects_A_Missing_Output_Sink()
     {
-        var act = static () => new BiosHleRuntime(null!);
+        var act = static () => new BiosHleRuntime(null!, NewReader());
 
         act.Should().Throw<ArgumentNullException>().WithParameterName("outputSink");
+    }
+
+    [Fact]
+    public void Constructor_Rejects_A_Missing_Guest_Memory_Reader()
+    {
+        var act = static () => new BiosHleRuntime(new CapturedOutputSink(), null!);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("guestMemoryReader");
     }
 
     // A0:3C putchar's documented behavior is writing the character to the TTY
@@ -31,7 +40,7 @@ public sealed class BiosHleContractTests
     public void SupportedDispatch_Uses_The_Generic_Runtime_Boundary()
     {
         var sink = new CapturedOutputSink();
-        IBiosRuntime runtime = new BiosHleRuntime(sink);
+        IBiosRuntime runtime = CreateRuntime(sink);
 
         BiosHleRuntime.PutCharFunction.Should().Be(0x3C);
 
@@ -50,7 +59,7 @@ public sealed class BiosHleContractTests
     public void PutChar_Writes_Every_Invocation_To_The_Sink_In_Call_Order()
     {
         var sink = new CapturedOutputSink();
-        IBiosRuntime runtime = new BiosHleRuntime(sink);
+        IBiosRuntime runtime = CreateRuntime(sink);
 
         foreach (uint character in new[] { 'P', 'S', 'X' })
         {
@@ -69,7 +78,7 @@ public sealed class BiosHleContractTests
         static IReadOnlyList<byte> Emit()
         {
             var sink = new CapturedOutputSink();
-            IBiosRuntime runtime = new BiosHleRuntime(sink);
+            IBiosRuntime runtime = CreateRuntime(sink);
 
             foreach (var argument in new[] { 0x141u, 0x0Au, 0xFFu })
             {
@@ -92,7 +101,7 @@ public sealed class BiosHleContractTests
     {
         var identity = new BiosCallIdentity(BiosCallFamily.A0, 0x09);
 
-        var result = new BiosHleRuntime(new CapturedOutputSink()).Invoke(identity);
+        var result = CreateRuntime(new CapturedOutputSink()).Invoke(identity);
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
         result.ReturnValue.Should().BeNull();
@@ -108,7 +117,7 @@ public sealed class BiosHleContractTests
         BiosCallFamily family, byte functionNumber)
     {
         var identity = new BiosCallIdentity(family, functionNumber, 0x80005678);
-        var result = new BiosHleRuntime(new CapturedOutputSink()).Invoke(identity);
+        var result = CreateRuntime(new CapturedOutputSink()).Invoke(identity);
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
         result.ReturnValue.Should().BeNull();
@@ -119,9 +128,9 @@ public sealed class BiosHleContractTests
     [Fact]
     public void Diagnostics_Are_Deterministic_For_Identical_Input()
     {
-        var first = new BiosHleRuntime(new CapturedOutputSink())
+        var first = CreateRuntime(new CapturedOutputSink())
             .Invoke(new BiosCallIdentity(BiosCallFamily.B0, 0x7E, 0x80000000));
-        var second = new BiosHleRuntime(new CapturedOutputSink())
+        var second = CreateRuntime(new CapturedOutputSink())
             .Invoke(new BiosCallIdentity(BiosCallFamily.B0, 0x7E, 0x80000000));
 
         first.Diagnostic!.ToStableString().Should().Be(second.Diagnostic!.ToStableString());
@@ -134,7 +143,7 @@ public sealed class BiosHleContractTests
     {
         var arguments = Enumerable.Range(0, argumentCount).Select(static value => (uint)value).ToArray();
         var sink = new CapturedOutputSink();
-        var result = new BiosHleRuntime(sink).Invoke(new BiosCallIdentity(
+        var result = CreateRuntime(sink).Invoke(new BiosCallIdentity(
             BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: arguments));
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
@@ -149,12 +158,6 @@ public sealed class BiosHleContractTests
     [Theory]
     [InlineData(BiosCallFamily.A0, 0x3B)] // getchar, adjacent to putchar
     [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
-    [InlineData(BiosCallFamily.A0, 0x3E)] // puts: identity verified (ADR-014, docs/REFERENCES.md) but
-                                           // deliberately NOT registered — echoing its string-pointer
-                                           // argument would satisfy the ABI's return convention while
-                                           // implementing none of the documented behavior (reading guest
-                                           // memory, writing to TTY), so it must not be Supported until
-                                           // guest-memory access and an output sink exist.
     [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
     [InlineData(BiosCallFamily.B0, 0x3D)] // the B0 putchar alias, deliberately unregistered
     [InlineData(BiosCallFamily.B0, 0x3F)] // the B0 puts alias, deliberately unregistered
@@ -163,10 +166,75 @@ public sealed class BiosHleContractTests
     {
         var identity = new BiosCallIdentity(family, functionNumber, 0x80002000, new[] { 0x80010000u });
 
-        var result = new BiosHleRuntime(new CapturedOutputSink()).Invoke(identity);
+        var result = CreateRuntime(new CapturedOutputSink()).Invoke(identity);
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
         result.ReturnValue.Should().BeNull();
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
     }
+
+    // A0:3E puts is dispatched through the registry to PutsService. These prove
+    // the wiring — that the registry reaches the service with both injected
+    // boundaries attached. PutsService's own behavior is covered exhaustively by
+    // PutsServiceTests and is deliberately not re-tested here.
+    [Fact]
+    public void Puts_Is_Dispatched_Through_The_Registry_To_The_Guest_String()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(0x00000100, (byte)'h');
+        ram.Write8(0x00000101, (byte)'i');
+        ram.Write8(0x00000102, 0);
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8));
+
+        BiosHleRuntime.PutsFunction.Should().Be(0x3E);
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, 0x80001234, [0x00000100u]));
+
+        result.Status.Should().Be(BiosServiceStatus.Supported);
+        result.ReturnValue.Should().Be(0x00000100u, "puts returns its incoming string pointer");
+        result.Diagnostic.Should().BeNull();
+        sink.Bytes.Should().BeEquivalentTo(
+            new byte[] { (byte)'h', (byte)'i' }, static o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void Puts_Unmapped_Pointer_Fails_Loudly_Through_The_Registry()
+    {
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = CreateRuntime(sink);
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, arguments: [0xC0000000u]));
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.ReturnValue.Should().BeNull();
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+        sink.Bytes.Should().BeEmpty("a failed puts must not emit partial output");
+    }
+
+    [Fact]
+    public void PutChar_And_Puts_Share_One_Sink_In_Call_Order()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(0x00000200, (byte)'i');
+        ram.Write8(0x00000201, 0);
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8));
+
+        runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'h']));
+        runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, arguments: [0x00000200u]));
+
+        sink.Bytes.Should().BeEquivalentTo(
+            new byte[] { (byte)'h', (byte)'i' }, static o => o.WithStrictOrdering());
+    }
+
+    private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => new(sink, NewReader());
+
+    // Any valid reader satisfies call sites that never dispatch to a
+    // pointer-taking service; puts's own cases build a reader over known bytes.
+    private static GuestMemoryReader NewReader() => new(new RecompilerGuestMemory().Read8);
 }

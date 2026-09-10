@@ -25,6 +25,16 @@ public sealed record BiosServiceResult(
     public static BiosServiceResult InvalidArguments(BiosCallIdentity identity, string message) =>
         CreateInvalidArguments(identity, message);
 
+    /// <summary>
+    /// Creates the explicit result for a registered service that reached a state
+    /// its HLE implementation cannot represent (for example an unmapped guest
+    /// pointer). Status stays <see cref="BiosServiceStatus.Unsupported"/> — the
+    /// status vocabulary is unchanged; only the diagnostic code distinguishes
+    /// this from an unregistered call or a rejected argument shape.
+    /// </summary>
+    public static BiosServiceResult UnsupportedState(BiosCallIdentity identity, string message) =>
+        CreateUnsupportedState(identity, message);
+
     private static BiosServiceResult CreateSupported(BiosCallIdentity identity, uint? returnValue)
     {
         ArgumentNullException.ThrowIfNull(identity);
@@ -51,6 +61,16 @@ public sealed record BiosServiceResult(
             BiosServiceStatus.Unsupported,
             null,
             new BiosDiagnostic("BIOS_HLE_INVALID_ARGUMENTS", identity, message));
+    }
+
+    private static BiosServiceResult CreateUnsupportedState(BiosCallIdentity identity, string message)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentException.ThrowIfNullOrEmpty(message);
+        return new(
+            BiosServiceStatus.Unsupported,
+            null,
+            new BiosDiagnostic("BIOS_HLE_UNSUPPORTED_STATE", identity, message));
     }
 }
 
