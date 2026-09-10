@@ -144,7 +144,6 @@ public static class SyntheticAnalysisReports
         DirectoryCount = 7,
     };
 
-    /// <summary>Assembles a complete artifact-builder input around a report.</summary>
     /// <summary>
     /// An analysis whose instruction stream contains PS1 BIOS call stubs, so the
     /// <c>biosCalls</c> artifact section has real recognizer output to serialize.
@@ -214,6 +213,7 @@ public static class SyntheticAnalysisReports
         };
     }
 
+    /// <summary>Assembles a complete artifact-builder input around a report.</summary>
     public static DeterministicArtifactInput CreateInput(
         string fixtureId,
         DiscImageAnalysisReport report,

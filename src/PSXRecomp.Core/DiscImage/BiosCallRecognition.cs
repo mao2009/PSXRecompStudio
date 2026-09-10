@@ -102,9 +102,10 @@ public sealed record BiosCallEvidence
 ///
 /// PS1 software does not reach the BIOS through the MIPS <c>syscall</c> instruction: it
 /// transfers control to the jump-table vector at physical <c>0xA0</c>, <c>0xB0</c> or
-/// <c>0xC0</c> with the function number in R9 (<c>$t1</c>). A <c>j</c> cannot reach those
-/// addresses from kernel-segment code (J preserves the top four PC bits), so real stubs
-/// materialize the vector into a register and use <c>jr</c>/<c>jalr</c>:
+/// <c>0xC0</c> with the function number in R9 (<c>$t1</c>). Because J preserves the top
+/// four PC bits, a direct <c>j</c>/<c>jal</c> from kernel-segment code can only reach the
+/// vector through its KSEG0 alias (<c>0x800000A0</c>); both forms are recognized, but real
+/// stubs materialize the vector into a register and use <c>jr</c>/<c>jalr</c>:
 ///
 /// <code>
 ///     addiu $t2, $zero, 0xA0
@@ -186,6 +187,13 @@ public static class BiosCallRecognizer
                 var atEntry = state.Clone();
                 var resolution = BiosCallResolution.BlockConstant;
 
+                // The transfer writes its own link register before the target runs, so a
+                // jalr that links into R9 destroys the function number.
+                if (raw.LinkInfo.WritesLink)
+                {
+                    atEntry.Invalidate(raw.LinkInfo.LinkRegister);
+                }
+
                 if (index + 1 < ordered.Length
                     && unchecked(address.Address + 4u) == ordered[index + 1].Address)
                 {
@@ -198,6 +206,15 @@ public static class BiosCallRecognizer
                     {
                         resolution = BiosCallResolution.DelaySlotConstant;
                     }
+                }
+                else
+                {
+                    // The delay slot is not in the decoded stream — the window ended, or a
+                    // decode failure left a gap. It still executes before the jump-table
+                    // entry and could set R9 to anything, so whatever was known before it
+                    // is not knowledge about the call. Reporting it would fabricate an
+                    // identity the analysis never observed.
+                    atEntry.Invalidate(FunctionNumberRegister);
                 }
 
                 sites.Add(CreateSite(
@@ -272,7 +289,12 @@ public static class BiosCallRecognizer
         uint target;
         switch (instruction.ControlFlow)
         {
+            // Jal is classified LinkBranch, not JumpAbsolute, so both kinds are needed to
+            // cover direct jumps. TryGetJumpTarget accepts only J and Jal, which is what
+            // excludes the conditional link branches (bltzal/bgezal) that also carry
+            // LinkBranch.
             case R3000aControlFlowKind.JumpAbsolute:
+            case R3000aControlFlowKind.LinkBranch:
                 if (!R3000aJumpSemantics.TryGetJumpTarget(instruction, address, out target))
                 {
                     family = default;
@@ -355,19 +377,21 @@ public static class BiosCallRecognizer
                     var destination = instruction.Operand0.Register;
                     var source = instruction.Operand1.Register;
 
+                    // li rt, imm
                     if (source == (byte)R3000aRegister.Zero)
                     {
                         state.Set(destination, unchecked((uint)immediate));
                         return;
                     }
 
-                    // ori rt, rt, imm completes the lui/ori pair that materializes a
-                    // 32-bit constant such as a KSEG0-aliased vector.
-                    if (instruction.Opcode == R3000aOpcode.Ori
-                        && source == destination
-                        && state.TryGet(source, out var upper))
+                    // Completes the lui/ori or lui/addiu pair that materializes a 32-bit
+                    // constant such as a KSEG0-aliased vector. Both idioms are common, and
+                    // arithmetic on a known constant is itself exact.
+                    if (state.TryGet(source, out var upper))
                     {
-                        state.Set(destination, upper | unchecked((uint)immediate));
+                        state.Set(destination, instruction.Opcode == R3000aOpcode.Ori
+                            ? upper | unchecked((uint)immediate)
+                            : unchecked(upper + (uint)immediate));
                         return;
                     }
 

@@ -52,8 +52,15 @@ public class BiosCallRecognizerTests
     private const uint LuiT2Kseg0 = 0x3C0A8000;
     private const uint OriT2VectorA0 = 0x354A00A0;
 
-    // j 0x800000A0 — a direct jump that lands on the KSEG0-aliased A0 vector.
+    // lui $t2, 0x8000 ; addiu $t2, $t2, 0xA0 — the other common 32-bit constant idiom.
+    private const uint AddiuT2VectorA0 = 0x254A00A0;
+
+    // j / jal 0x800000A0 — direct transfers that land on the KSEG0-aliased A0 vector.
     private const uint JDirectKseg0A0 = 0x08000028;
+    private const uint JalDirectKseg0A0 = 0x0C000028;
+
+    private const uint BgezalS0 = 0x06110002;      // bgezal $s0, +8  (LinkBranch, not a jump)
+    private const uint JalrT1T2 = 0x01404809;      // jalr   $t1, $t2 (links into R9)
 
     // === Recognition ================================================================
 
@@ -169,7 +176,7 @@ public class BiosCallRecognizerTests
     [Fact]
     public void Recognize_IndirectJumpWithUnknownRegister_IsNotABiosCall()
     {
-        // $t2 is loaded from memory, so the jump target is unknown. It must not be
+        // $t2 is never given a value, so the jump target is unknown. It must not be
         // attributed to a BIOS family on the strength of the nearby function number.
         var evidence = Recognize(LwT1FromS0, JrT2, LiT1PutChar, JrRa, Nop);
 
@@ -231,6 +238,67 @@ public class BiosCallRecognizerTests
 
         var site = Assert.Single(evidence.Sites);
         Assert.Equal((byte)0x3C, site.FunctionNumber);
+    }
+
+    [Fact]
+    public void Recognize_DelaySlotOutsideTheDecodedWindow_IsNotResolved()
+    {
+        // The decoded window ends at the jump, so the delay slot was never seen. It still
+        // executes before the jump-table entry and could set R9 to anything, so the
+        // constant from earlier in the block is not knowledge about this call. Reachable
+        // in production: the pipeline decodes a bounded window from the entry point.
+        var evidence = Recognize(LiT1PutChar, LiT2VectorA0, JrT2);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal(BiosCallFamily.A0, site.Family);
+        Assert.Null(site.FunctionNumber);
+        Assert.Null(site.ServiceName);
+        Assert.Equal(BiosCallResolution.Unresolved, site.Resolution);
+    }
+
+    [Fact]
+    public void Recognize_JalToAVector_IsRecognized()
+    {
+        // Jal is classified LinkBranch rather than JumpAbsolute, so it needs its own path.
+        var evidence = Recognize(LiT1PutChar, JalDirectKseg0A0, Nop, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal(BiosCallFamily.A0, site.Family);
+        Assert.Equal((byte)0x3C, site.FunctionNumber);
+    }
+
+    [Fact]
+    public void Recognize_ConditionalLinkBranch_IsNotABiosCall()
+    {
+        // bltzal/bgezal also carry LinkBranch but are PC-relative conditional branches,
+        // not absolute jumps, and must not be mistaken for a vector transfer.
+        var evidence = Recognize(LiT1PutChar, BgezalS0, Nop, JrRa, Nop);
+
+        Assert.Empty(evidence.Sites);
+    }
+
+    [Fact]
+    public void Recognize_VectorFromLuiAddiuPair_IsRecognized()
+    {
+        // lui/addiu is as common as lui/ori for materializing a 32-bit constant; missing
+        // it would silently understate a title's BIOS surface.
+        var evidence = Recognize(LuiT2Kseg0, AddiuT2VectorA0, JrT2, LiT1PutChar, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal(BiosCallFamily.A0, site.Family);
+        Assert.Equal((byte)0x3C, site.FunctionNumber);
+    }
+
+    [Fact]
+    public void Recognize_JalrLinkingIntoTheFunctionNumberRegister_IsNotResolved()
+    {
+        // jalr $t1, $t2 writes the return address into R9 before the target runs, so the
+        // function number the block set up is gone by the time the BIOS reads it.
+        var evidence = Recognize(LiT1PutChar, LiT2VectorA0, JalrT1T2, Nop, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Null(site.FunctionNumber);
+        Assert.Equal(BiosCallResolution.Unresolved, site.Resolution);
     }
 
     [Fact]
@@ -301,6 +369,27 @@ public class BiosCallRecognizerTests
             site.GuestPc >= block.StartAddress && site.GuestPc <= block.EndAddress);
         Assert.Equal(owningBlock.StartAddress, site.BasicBlockStartAddress);
         Assert.Equal(EntryPoint, site.ContainingFunctionAddress);
+    }
+
+    [Fact]
+    public void Recognize_FunctionAttributionDoesNotDependOnFunctionOrder()
+    {
+        // A block reachable from several functions is attributed to the lowest entry
+        // address, so the mapping must not inherit the artifact's enumeration order.
+        var words = new[] { LiT2VectorA0, JrT2, LiT1PutChar, JrRa, Nop };
+        var instructions = Decode(words);
+        var (blocks, edges) = BasicBlockBuilder.Build(instructions, EntryPoint, instructions.Count);
+        var functions = FunctionDiscovery.Build(
+            EntryPoint, EntryPoint, (uint)(words.Length * 4), instructions, blocks, edges);
+
+        var reversed = functions with
+        {
+            Functions = functions.Functions.Reverse().ToArray(),
+        };
+
+        Assert.Equal(
+            BiosCallRecognizer.Recognize(instructions, blocks, functions).Sites,
+            BiosCallRecognizer.Recognize(instructions, blocks, reversed).Sites);
     }
 
     [Fact]
