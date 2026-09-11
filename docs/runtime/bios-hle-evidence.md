@@ -44,14 +44,21 @@ evidence-driven from #225 and later full-title bring-up").
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
 registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
-three entries**: `(A0, 0x3C)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
-and `(B0, 0x3F)` → `InvokePuts` — the last two a thin delegation to the same
+five entries**: `(A0, 0x3C)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
+`(B0, 0x3F)` → `InvokePuts`, `(B0, 0x56)` → `InvokeGetC0Table`, and
+`(B0, 0x57)` → `InvokeGetB0Table`. The first three are a thin delegation to the same
 `PutsService.Invoke`, registered under distinct identities rather than a
 per-family copy of the service. Every other call — including the deliberately
 unregistered neighbours and aliases below — falls through to
 `BiosServiceResult.Unsupported`, producing the stable diagnostic
 `BIOS_HLE_UNSUPPORTED_CALL` (verified in `BiosHleRuntime.Invoke` and
 `BiosServiceResult.CreateUnsupported`).
+
+Additionally, `BiosHleRuntime.Invoke` now consults guest-visible jump-table
+state before reaching the registry. If the 4-byte slot at
+`BiosJumpTables.EntryAddress(family, functionNumber)` holds a non-zero value,
+`BiosServiceResult.PatchedTarget` is returned instead — carrying the raw patched
+guest address in `ReturnValue` (ADR-014 amendment 2026-09-11 for #360).
 
 **Observed / Verified / Implemented, kept distinct:**
 
@@ -65,25 +72,24 @@ Verified (docs/REFERENCES.md, BiosCallNames):
   B0:4E _card_write, B0:50 _new_card, B0:56 GetC0Table, B0:57 GetB0Table
 
 Implemented (BiosHleRuntime registry):
-  A0:3C putchar, A0:3E puts, B0:3F puts
+  A0:3C putchar, A0:3E puts, B0:3F puts, B0:56 GetC0Table, B0:57 GetB0Table
 
-Blocked (evaluated, not registered — ADR-014 amendment 2026-09-11
-"B0:56 GetC0Table / B0:57 GetB0Table evaluated, not registered"):
-  B0:56 GetC0Table — guest-visible BIOS kernel table state not modeled
-  B0:57 GetB0Table — guest-visible BIOS kernel table state not modeled
+Previously Blocked, now Implemented (ADR-014 amendment 2026-09-11 for #360):
+  B0:56 GetC0Table — now registered; returns BiosJumpTables.C0TableAddress,
+    backed by guest-visible RAM connected to dispatch
+  B0:57 GetB0Table — now registered; returns BiosJumpTables.B0TableAddress,
+    backed by guest-visible RAM connected to dispatch
 ```
 
 The four lists answer different questions and do not imply each other: an
 identity can be Verified without ever being Observed in a local fixture (the
 seven newly verified identities above), Observed without being Verified until
-checked, or Verified and Observed without being Implemented (the six
-card/table identities above have no registered service — identifying them is
-not a decision to build them, per ADR-014), or Verified, Observed, and
-explicitly evaluated but still not Implemented (`B0:56`/`B0:57` — unlike the
-other four card/table identities, which simply have not been evaluated for
-registration yet, these two were evaluated and found to need a Runtime
-capability that does not exist; see the per-service table in §4 and the
-ADR-014 amendment it cites).
+checked, or Verified and Observed without being Implemented (the four
+remaining card identities above have no registered service — identifying them is
+not a decision to build them, per ADR-014). `B0:56`/`B0:57` were previously
+Blocked (evaluated and found to need a Runtime capability that did not exist);
+that capability now exists — the guest-visible, dispatch-connected jump-table
+state — so both are now Implemented (ADR-014 amendment 2026-09-11 for #360).
 
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
@@ -93,15 +99,20 @@ ADR-014 amendment it cites).
 | puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
 | puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11) | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
+| GetC0Table | B0:56 | **Registered `Supported`** — returns `BiosJumpTables.C0TableAddress` (`0x674`); that address is backed by guest-visible RAM connected to dispatch (ADR-014 amendment 2026-09-11 for #360) | None for the documented behavior (return table base; base is now real and patchable) | None; registered. Note: `0x674` is this Runtime's design choice, not a primary-source-confirmed real-hardware fact — see ADR-014 amendment for #360 |
+| GetB0Table | B0:57 | **Registered `Supported`** — returns `BiosJumpTables.B0TableAddress` (`0x874`); same backing guarantee as GetC0Table | None | None; registered. Same caveat on `0x874` |
 | all other A0/B0/C0 | — | **Unregistered** — any call not in the registry fails loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 
-- `BiosHleRuntime.PutCharFunction == 0x3C`, `PutsFunction == 0x3E`, and
-  `PutsAliasFunction == 0x3F`; the registrations are
+- `BiosHleRuntime.PutCharFunction == 0x3C`, `PutsFunction == 0x3E`,
+  `PutsAliasFunction == 0x3F`, `GetC0TableFunction == 0x56`, and
+  `GetB0TableFunction == 0x57`; the five registrations are
   `(BiosCallFamily.A0, PutCharFunction)`, `(BiosCallFamily.A0, PutsFunction)`,
-  and `(BiosCallFamily.B0, PutsAliasFunction)`, the latter two both bound to
-  `InvokePuts`/`PutsService.Invoke`.
+  `(BiosCallFamily.B0, PutsAliasFunction)`, `(BiosCallFamily.B0, GetC0TableFunction)`,
+  and `(BiosCallFamily.B0, GetB0TableFunction)`; the first three bind to
+  `InvokePuts`/`PutsService.Invoke`; the last two bind to `InvokeGetC0Table`/
+  `InvokeGetB0Table` respectively.
 - `InvokePutChar` rejects any argument count ≠ 1 with
   `BIOS_HLE_INVALID_ARGUMENTS`; otherwise it writes the low byte
   (`identity.Arguments[0] & 0xFFu`) to the injected `IRuntimeOutputSink` and
@@ -428,15 +439,14 @@ they unblocked have since been implemented:
    implementation. **B0:3D** stays unregistered: no call site selects it. Note that no
    locally available title calls A0:3C or A0:3E directly, so the B0 alias was, until this
    registration, the *only* observed call to a service this repository had verified.
-5. **B0:56 GetC0Table / B0:57 GetB0Table** — ⛔ **evaluated, blocked.** Despite being
-   the two most frequently observed verified identities, their documented behavior
-   (returning the address of a real, patchable jump-table list) requires guest-visible,
-   dispatch-connected kernel table state this Runtime does not model at all — unlike
-   `puts`/`putchar`, which needed only boundaries (a reader, a sink) this Runtime already
-   had. Registering either with a bare constant return would repeat the exact
-   effect-incomplete pattern ADR-014 already rejected once for `puts` (base Decision's
-   Alternatives). See the ADR-014 amendment *B0:56 GetC0Table / B0:57 GetB0Table
-   evaluated, not registered* (2026-09-11) and open question 9 below.
+5. **B0:56 GetC0Table / B0:57 GetB0Table** — ✅ **done (#360).** Both registered
+   2026-09-11 (ADR-014 amendment for #360). The jump-table state abstraction
+   (`BiosJumpTables`, guest-RAM-backed dispatch in `BiosHleRuntime.Invoke`) was
+   the required capability; once it existed, registration was equivalent to
+   `puts`'s wiring task — the effect is now genuine, not a bare constant return.
+   See open question 9 (resolved) and the §4 next-service table above for the
+   updated status. The remaining open item — executing patched targets — is tracked
+   as follow-up Issue #TBD (item 11).
 
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
@@ -516,19 +526,26 @@ Two explicit guarantees:
    discharged for the whole registry, and the strict reading — full documented
    behavior including host-visible output, not just the ABI return contract —
    is the bar every future registration must meet.
-9. **Decide whether to build a guest-visible BIOS kernel jump-table (A0/B0/C0) state
-   abstraction.** This is required before `B0:56 GetC0Table` / `B0:57 GetB0Table` (and
-   any future service whose documented contract is "the address of a patchable table",
-   not just a scalar or a string) can be honestly registered under ADR-014's bar.
-   ✅ **Filed as #360** (2026-09-11), alongside its prerequisite generic capability,
-   filed separately as **#359** (the guest-memory write boundary — landed, see item 10).
-   #360 itself remains open: the table's canonical address, entry format, and initial
-   contents are unconfirmed in this repository's authoritative sources (ADR-014
-   amendment "Runtime guest-memory write boundary").
+9. ~~**Decide whether to build a guest-visible BIOS kernel jump-table (A0/B0/C0) state
+   abstraction.**~~ ✅ **Done (#360, ADR-014 amendment 2026-09-11 for #360).**
+   `BiosJumpTables` provides the table base addresses and entry-slot arithmetic.
+   `BiosHleRuntime.Invoke` consults guest-visible RAM before the registry; a non-zero
+   slot value returns `BiosServiceResult.PatchedTarget`. `B0:56 GetC0Table` and
+   `B0:57 GetB0Table` are now registered and backed by guest-visible RAM connected to
+   dispatch. The patched-target *execution* gap (jumping to arbitrary guest code) is
+   tracked as a new follow-up Issue (see §6 item 11 below).
 10. ~~**Add a generic Runtime guest-memory write boundary**~~ — ✅ **done** (#359,
     ADR-014 amendment 2026-09-11 "Runtime guest-memory write boundary").
     `IGuestMemoryWriter`/`GuestMemoryWriter` mirror the read boundary (translation,
-    RAM bound, Try-style contract) and are deliberately unwired into `BiosHleRuntime`
-    pending a consumer, following the same precedent the read boundary and output
-    sink set. This is a prerequisite building block for #360, not a resolution of it:
-    the jump-table's own address/format/initial-contents questions remain open.
+    RAM bound, Try-style contract). The consumer that was pending has now landed:
+    `BiosHleContractTests` patches jump-table slots through `GuestMemoryWriter`
+    end-to-end, and `IGuestMemoryWriter.TryWrite` was promoted with the writer
+    widening that accompanied #360.
+11. **Execute patched BIOS jump-table targets (guest-code / interpreter dispatch
+    trap).** `BiosHleRuntime.Invoke` now returns `BiosServiceResult.PatchedTarget`
+    carrying the raw guest target address when a slot has been patched, but this
+    Runtime has no capability to actually execute that target. Requires (a) a
+    guest-jump-to-`0xA0`/`0xB0`/`0xC0` recognition/trap mechanism in the
+    interpreter and/or recompiled-code path, and (b) a decision for how a
+    `PatchedTarget` result falls back to raw guest-code execution. Filed as
+    follow-up Issue #TBD (filed alongside PR for #360).

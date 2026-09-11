@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x2) — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x3) — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -467,3 +467,136 @@ register any service and does not by itself unblock `GetC0Table`/`GetB0Table`.
   here.
 - (e) **No other service's status changes.** The registry is unchanged:
   `(A0, 0x3C)`, `(A0, 0x3E)`, `(B0, 0x3F)`. Issue #279 remains open.
+
+## Amendment (2026-09-11): Guest-visible BIOS kernel jump-table (A0/B0/C0) state abstraction (#360)
+
+Issue #360 asked for a guest-visible, dispatch-connected representation of the
+A0/B0/C0 kernel jump tables. This amendment records the design decisions made
+and the Runtime changes delivered; it resolves the open item the previous
+amendment identified.
+
+### Confirmed facts (primary source: psx-spx, pinned commit ecd6f794f459ab5f72feb88d46df8d23b3c413e0)
+
+- (a) **A0 table base address `0x00000200`, size `0x300` bytes (192 entries × 4 bytes).**
+  Explicitly stated in the BIOS memory map ("00000200h 300h A(nnh) Jump Table").
+  This is a primary-source-confirmed real-hardware fact. Real software has no
+  `GetA0Table` equivalent and is known to reference `0x200` directly, so this
+  Runtime must match it exactly as a compatibility requirement. Recorded as
+  `BiosJumpTables.A0TableAddress`.
+- (b) **Entry width: 4 bytes (32-bit raw guest address) for all three tables.**
+  Confirmed from primary source (A-table size/count arithmetic; B/C stride
+  cross-checked via `[r2 + n*4]` access pattern in secondary sources).
+- (c) **Dispatch trampoline: guest code loads the function number into R9 and
+  branches to physical `0xA0`/`0xB0`/`0xC0`; a RAM-resident stub computes
+  `table_base + R9*4`, loads the 32-bit word there, and jumps to it.** Confirmed
+  from the same primary source.
+- (d) **Patch semantics: writing a new 32-bit address into `table_base + n*4`
+  redirects all subsequent dispatch through that slot on the very next call.**
+  Confirmed (same primary source + secondary load-then-jump pattern cross-check).
+- (e) **`GetC0Table` (B0:56) / `GetB0Table` (B0:57):** no arguments; return value
+  is the table base address; documented purpose is to let the caller patch
+  entries. Confirmed; already cited in `docs/REFERENCES.md:128-134`.
+
+### B0/C0 table addresses: Runtime design choice, not a confirmed real-hardware fact
+
+- (f) **`BiosJumpTables.B0TableAddress` (`0x00000874`) and
+  `BiosJumpTables.C0TableAddress` (`0x00000674`) are NOT primary-source-confirmed
+  real-hardware facts in this repository.** Only secondary sources (an emudev.org
+  walkthrough and the Nocash BIOS-patches page's `[r2+n*4]` offsets) place the
+  real BIOS's tables at these values. The pinned primary source does not state
+  them explicitly.
+- (g) **This Runtime is free to choose its own B0/C0 addresses.** This Runtime
+  never loads a real BIOS ROM (base Decision non-goal). `GetB0Table`/`GetC0Table`
+  exist precisely so correct software discovers these addresses dynamically, never
+  by hardcoding them. Any non-colliding in-RAM address would have been equally
+  valid for a BIOS-less HLE Runtime; correct software always calls the Get-functions
+  rather than hardcoding B0/C0 bases, unlike A0 (which has no Get-function
+  equivalent and for which some real software is known to hardcode `0x200`).
+- (h) **The values `0x874`/`0x674` were chosen as this Runtime's own design
+  decision** — purely for plausibility and least-surprise if real-BIOS-ROM support
+  is ever added later — not as a claim about real hardware. Any future reader must
+  not mistake these constants for primary-source-confirmed facts.
+
+### Dispatch design: guest RAM is the single source of truth
+
+- (i) **`BiosHleRuntime.Invoke` now consults guest-visible table state before the
+  registry.** For each call, it reads the 4 bytes at
+  `BiosJumpTables.EntryAddress(family, functionNumber)` through
+  `IGuestMemoryReader`. If the little-endian `uint32` value is non-zero, the entry
+  has been patched by guest code: `BiosServiceResult.PatchedTarget` is returned —
+  carrying the raw patched guest address in `ReturnValue` — regardless of whether
+  a host-side handler is also registered for that slot. Zero falls through to the
+  registry exactly as before.
+- (j) **No explicit table initialisation exists.** Guest RAM is zero-initialised by
+  construction (`RecompilerGuestMemory`'s backing is `new byte[RamSize]`, C# zero-
+  initialises; production memory paths are assumed to behave equivalently — this
+  assumption is noted in code comments, because production wiring does not exist
+  yet). "Unpatched" is therefore `0x00000000`, consistent with the secondary-source
+  convention that unused real-hardware slots trap to `0`. This is the deterministic
+  initial table state without any explicit init step; fresh instances over fresh RAM
+  dispatch identically.
+- (k) **A `PatchedTarget` result carries the raw target address and nothing more.**
+  This Runtime does not execute or validate a patched target — jumping to arbitrary
+  guest code requires an interpreter or recompiled-code dispatch trap that does not
+  exist in this repository (see follow-up Issue #TBD, filed alongside this PR).
+  Execution of patched targets is intentionally out of scope here.
+- (l) **The behavioral superset guarantee holds.** Every existing registered service
+  (`A0:3C`, `A0:3E`, `B0:3F`) and every "stays Unsupported" case is unaffected as
+  long as nothing has written a non-zero value at that service's own table slot.
+  Verified: existing tests write only at `0x100`, `0x200`–`0x201`, `0x210`, `0x300`
+  — none overlaps `A0:3C`→`0x2F0`–`0x2F3`, `A0:3E`→`0x2F8`–`0x2FB`,
+  `B0:3F`→`0x970`–`0x973`.
+
+### `IGuestMemoryReader.TryRead` / `IGuestMemoryWriter.TryWrite` interface widenings
+
+- (m) **`IGuestMemoryReader.TryRead(uint, Span<byte>)` is now declared on the
+  interface.** The concrete `GuestMemoryReader` already implemented this method;
+  only the interface declaration was missing. This allows callers typed as
+  `IGuestMemoryReader` — including `BiosHleRuntime.Invoke`'s stackalloc-based
+  4-byte read — to use it without casting.
+- (n) **`IGuestMemoryWriter.TryWrite(uint, ReadOnlySpan<byte>)` is a new method**
+  on both the interface and `GuestMemoryWriter`. It is all-or-nothing: every address
+  is validated before any byte is written, mirroring `GuestMemoryReader.TryRead`.
+  It is non-speculative: `BiosHleContractTests` exercises it end-to-end to patch
+  jump-table slots, so the boundary widening has a concrete consumer.
+
+### `B0:56 GetC0Table` and `B0:57 GetB0Table` are now registered
+
+- (o) **Both services are registered in `BiosHleRuntime`.** They return
+  `BiosJumpTables.C0TableAddress` and `BiosJumpTables.B0TableAddress` respectively
+  and reject any call with arguments (`BIOS_HLE_INVALID_ARGUMENTS`).
+- (p) **This satisfies the "effect-incomplete" bar** the previous amendment invoked
+  to withhold registration. The bar was: returning a constant address would be
+  effect-incomplete if the content at that address were not backed by guest-visible
+  content connected to dispatch (analogous to puts's return-value-only rejection).
+  Now reads and writes at the returned address affect actual dispatch outcomes
+  through `BiosHleRuntime.Invoke` — the returned address is not an inert constant.
+- (q) **Reconciliation with Issue #279's "OpenBIOS-preference / demonstrated
+  technical justification" comments.** `B0:56`/`B0:57` are the two most frequently
+  observed real-ROM identities to date
+  (`docs/runtime/bios-hle-evidence.md` §3.4: 3 of 5 executables each, up to 4
+  sites in one). This change does not reimplement any BIOS kernel function body;
+  it only makes the existing three registered services' dispatch hardware-faithful
+  and adds two functions whose entire documented behavior is "return a table
+  address" — which is now genuinely modeled rather than a bare constant, because
+  the table is now backed by guest-visible RAM connected to dispatch.
+
+### Executing patched targets: intentionally out of scope
+
+- (r) **No interpreter or recompiled-code dispatch trap for patched targets exists.**
+  `BiosHleRuntime.Invoke` returns `BiosServiceResult.PatchedTarget` with the raw
+  guest address, but this Runtime cannot actually jump to / execute that target.
+  This is a separately-scoped gap: (a) a guest-jump-to-`0xA0`/`0xB0`/`0xC0`
+  recognition/trap mechanism in the interpreter and/or recompiled-code path is
+  confirmed absent from `src/PSXRecomp.Native/src/psx_cpu.cpp` and
+  `RecompilerInterpreterExecutor.cs` as of this amendment, and (b) how a
+  `PatchedTarget` result falls back to raw guest-code execution versus staying
+  diagnosable is an open design question. Both are tracked in follow-up
+  Issue #TBD (to be filled in once filed alongside this PR). This is a pre-existing
+  gap, not something this amendment introduces or resolves.
+
+### Registry after this amendment
+
+- (s) **The registry now holds five entries:** `(A0, 0x3C)`, `(A0, 0x3E)`,
+  `(B0, 0x3F)`, `(B0, 0x56)`, `(B0, 0x57)`. Issue #279 remains open for getchar,
+  gets, B0:3D, and the patched-target execution gap above.
