@@ -127,11 +127,27 @@ Referenced areas include:
     next read/write operation. No arguments.
   - `B(56h) GetC0Table` and `B(57h) GetB0Table` — retrieve the address of the
     jump list for the `C(NNh)` and `B(NNh)` functions respectively, allowing
-    entries in those lists to be patched. No arguments; the address is the return
+    entries in those lists to be patched (the source adds: "the BIOS does often
+    jump directly to the function addresses, rather than indirectly via the
+    list, so patching may have little effect in such cases" — a fact about real
+    hardware's internal call graph, not a statement that the returned list is
+    unused). No arguments; the address is the return
     value. The source documents both under one shared description, which does not
     restate per-function which list each returns; the split above follows the two
     function names it gives them. There is no equivalent function for the
     `A(NNh)` list.
+  - The "BIOS Patches" section documents reading an *existing* jump-list entry
+    as ordinary, common practice, not merely a write target: real commercial
+    titles (e.g. Ridge Racer, Metal Gear Solid) call `B(56h) GetC0Table`, then
+    read table entry `C(06h)` (annotated in the source as
+    `;=00000C80h = exception_handler = C(06h)`) and inspect the bytes at that
+    address before conditionally patching them.
+  - Function-number range documentation for B0/C0 (`docs/kernelbios.md`'s
+    B-Functions/C-Functions tables): `B(5Eh..FFh) N/A ;jump_to_00000000h` and
+    `B(100h....) N/A ;garbage`; `C(1Eh..7Fh) N/A ;jump_to_00000000h` and
+    `C(80h.....) N/A ;mirrors to B(00h.....)` — i.e. C-function numbers 0x80 and
+    up are documented as dispatching through the same jump-list memory as
+    B-function numbers 0x00 and up.
 
 Verifying an identity records what a title asks the BIOS for. It is not a
 decision to implement any of these as an HLE service, which ADR-014 gates
