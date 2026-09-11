@@ -88,12 +88,14 @@ Korth (Nocash).
 
 Repository: https://github.com/psx-spx/psx-spx.github.io
 
-Reference date: 2026-09-09.
+Reference date: 2026-09-09; re-consulted 2026-09-11.
 
-Upstream revision observed: not pinned; the documentation was consulted through
-its published renderings at
+Upstream revision observed: not pinned for the 2026-09-09 consultation, which
+used the published renderings at
 `https://psx-spx.consoledev.net/kernelbios/` and
-`https://problemkaputt.de/psxspx-bios-tty-console-std-io.htm`.
+`https://problemkaputt.de/psxspx-bios-tty-console-std-io.htm`. The 2026-09-11
+identity verification below read the source of the same document,
+`docs/kernelbios.md`, at commit `ecd6f794f459ab5f72feb88d46df8d23b3c413e0`.
 
 License observed when referenced: the published document does not state a
 license grant for its prose; it is treated here as behavioral documentation
@@ -105,7 +107,35 @@ Referenced areas include:
 - the TTY console (`std_io`) function ABIs — `A(3Ch) or B(3Dh)
   std_out_putchar(char)` and `A(3Eh) or B(3Fh) std_out_puts(src)`, including the
   documented behavior that `std_out_puts` returns its incoming string-pointer
-  argument.
+  argument;
+- the identities of the jump-table function numbers real-ROM analysis observed
+  most frequently (Issue #11). Each is documented for exactly one family, and is
+  not an alias of any other entry:
+  - `A(39h) InitHeap(addr, size)` — initializes the address and size of the heap
+    used by `malloc`/`realloc`/`calloc`/`free` and `qsort`; also deallocates all
+    memory handles. The BIOS never calls it automatically, so software must.
+  - `A(ABh) _card_info(port)` — checks whether the most recent `_card_write`
+    completed, by issuing an incomplete dummy read command that is aborted once
+    the memory card's status byte arrives. `B(4Dh) _card_info_subfunc(port)` is
+    documented as its subfunction, not as an alias of it.
+  - `A(ACh) _card_load(port)` — invokes asynchronous reading of the memory card
+    directory.
+  - `B(4Eh) _card_write(port, sector, src)` — invokes asynchronous writing of a
+    single memory card sector; returns 1 on success, 0 on an invalid sector
+    number. The actual I/O completes later, on IRQ level.
+  - `B(50h) _new_card()` — tells the BIOS to ignore the card-changed flag on the
+    next read/write operation. No arguments.
+  - `B(56h) GetC0Table` and `B(57h) GetB0Table` — retrieve the address of the
+    jump list for the `C(NNh)` and `B(NNh)` functions respectively, allowing
+    entries in those lists to be patched. No arguments; the address is the return
+    value. The source documents both under one shared description, which does not
+    restate per-function which list each returns; the split above follows the two
+    function names it gives them. There is no equivalent function for the
+    `A(NNh)` list.
+
+Verifying an identity records what a title asks the BIOS for. It is not a
+decision to implement any of these as an HLE service, which ADR-014 gates
+separately on evidence, criticality and Runtime prerequisites.
 
 Usage in PSXRecompStudio:
 
@@ -118,7 +148,7 @@ Usage in PSXRecompStudio:
   numbers are verified rather than guessed; no BIOS ROM image is obtained,
   distributed, or required by this repository.
 
-Related work: #279, [ADR-014](adr/014-bios-hle-runtime-contract.md).
+Related work: #11, #279, [ADR-014](adr/014-bios-hle-runtime-contract.md).
 
 ## Prior art vs. incorporated third-party material
 
