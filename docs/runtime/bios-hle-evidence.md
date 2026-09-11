@@ -56,9 +56,16 @@ unregistered neighbours and aliases below — falls through to
 
 Additionally, `BiosHleRuntime.Invoke` now consults guest-visible jump-table
 state before reaching the registry. If the 4-byte slot at
-`BiosJumpTables.EntryAddress(family, functionNumber)` holds a non-zero value,
+`BiosJumpTables.EntryAddress(family, functionNumber)` holds a non-zero value
+that is not that exact slot's own HLE sentinel (`BiosJumpTables.HleSentinelTarget`),
 `BiosServiceResult.PatchedTarget` is returned instead — carrying the raw patched
-guest address in `ReturnValue` (ADR-014 amendment 2026-09-11 for #360).
+guest address in `ReturnValue` (ADR-014 amendment 2026-09-11 for #360). Each of
+the five registered slots is seeded with that sentinel at construction time (a
+new required `IGuestMemoryWriter` constructor dependency), so a guest reading
+one of these slots' *existing* entry observes a real, non-zero, deterministic
+value rather than 0 — and can save/patch/restore it with dispatch correctly
+following each state (ADR-014's #360 pre-merge-fix amendment, 2026-09-11).
+Slots with no registered service are unaffected and remain zero by default.
 
 **Observed / Verified / Implemented, kept distinct:**
 
@@ -124,15 +131,20 @@ Notes verified against the code:
 - `BiosHleContractTests` pins A0:3B / A0:3D / A0:3F / B0:3D / B0:3E / B0:40 and a
   non-contiguous A0:09 as `BIOS_HLE_UNSUPPORTED_CALL`, guarding against any
   accidental widening of the registry; it pins putchar's emitted byte, its call
-  ordering, its determinism across fresh runtimes, both required constructor
-  dependencies, and the untouched sink on the invalid-argument path; and it pins
+  ordering, its determinism across fresh runtimes, all three required constructor
+  dependencies (sink, reader, writer), and the untouched sink on the invalid-argument path; and it pins
   puts's dispatch end to end for both A0:3E and its B0:3F alias — the guest
   string reaching the sink, the returned pointer, an unmapped pointer failing
   loudly with zero bytes written, the two identities producing observably
   equivalent output while a failure diagnostic still names the identity that
   was actually invoked (not a hard-coded one), and all three services sharing
   one sink in call order. Neither A0:3E nor B0:3F is in the unsupported-neighbour
-  set because both are now registered.
+  set because both are now registered. It additionally pins (#360's Blocker 1
+  fix): every registered slot reads as its own HLE sentinel — not zero —
+  immediately after construction; an unregistered slot still reads as zero; the
+  full read/save/patch/restore round trip re-enables the original handler; and
+  (#360's Blocker 2 fix) the C0-high/B0 alias is live through dispatch in both
+  directions, not just in address arithmetic.
 - `PutsServiceTests` covers `PutsService` itself exhaustively (bounded scan,
   atomicity on every failure path, KUSEG/KSEG0/KSEG1 aliasing, uint-overflow
   rejection, determinism); the contract tests deliberately prove only the wiring

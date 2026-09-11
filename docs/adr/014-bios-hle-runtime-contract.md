@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x3) — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x4) — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -620,3 +620,199 @@ amendment identified.
   hardware behavior, and does not establish a usable upper bound. This
   limitation is deliberate and documented; it may be revisited only when a
   primary source is located.
+
+## Amendment (2026-09-11): #360 pre-merge fixes — guest-visible existing entries, and correcting the C0/B0 range comment against primary source
+
+PR #363 (implementing this amendment's own predecessor above) carried two
+pre-merge blockers. Both are resolved here, against the same pinned primary
+source (psx-spx, commit `ecd6f794f459ab5f72feb88d46df8d23b3c413e0`,
+`docs/kernelbios.md`) already cited throughout this ADR. This amendment does
+not reopen #362 (executing a patched target); the two remain distinct, per
+this amendment's own item (h) below.
+
+### Blocker 1: a registered service's own slot read as zero, not as a real existing entry
+
+**The problem, restated precisely.** The previous amendment made guest RAM the
+dispatch source of truth, but every slot — registered or not — was left at
+RAM's zero default. `GetB0Table`/`GetC0Table` return an address whose content
+a guest is documented to read before conditionally patching it (see the next
+finding), yet that content was always zero for a slot this Runtime already
+implements. A guest reading an "existing" A0:3C/A0:3E/B0:3F/B0:56/B0:57 entry,
+saving it, and later restoring it could not actually round-trip: the "saved"
+value was always 0, indistinguishable from "never patched" and from "not a
+real function".
+
+**Primary-source evidence found (`docs/kernelbios.md`, §"BIOS Patches" and the
+GetB0Table/GetC0Table entry):**
+
+- `B(56h) - GetC0Table()` / `B(57h) - GetB0Table()`: "Retrieves the address of
+  the jump lists for B(NNh) and C(NNh) functions, allowing to patch entries in
+  that lists (however, the BIOS does often jump directly to the function
+  addresses, rather than indirectly via the list, so patching may have little
+  effect in such cases)." This confirms patching is a real, documented use of
+  the returned address, while also confirming that on *real* hardware not
+  every function is actually dispatched through the table (the BIOS's own
+  internal calls often bypass it) — a fact about real hardware's internal
+  call graph, not about this Runtime, which (per the previous amendment's item
+  (i)) always dispatches A0/B0/C0 through the table.
+- The "BIOS Patches" section is explicit that reading an *existing* entry is
+  the normal, common case, not a hypothetical one: "all known patches are
+  invoked by a B(56h) or B(57h) function call. In the nocash PSX bios, these
+  two functions are examining the following opcodes, if the opcodes are a
+  known patch, then the BIOS reproduces the desired behaviour... If the
+  opcodes are unknown, then the BIOS simply locks up." The worked example
+  (`patch_missing_cop0r13_in_exception_handler`, used by real commercial
+  titles including Ridge Racer and Metal Gear Solid) calls `B(56h) GetC0Table`
+  and then reads `[r2 + 06h*4]` — table entry `C(06h)`, annotated in the same
+  source as `;=00000C80h = exception_handler = C(06h)` — before comparing
+  bytes at that address. This is read-existing-entry, not merely
+  read-then-immediately-overwrite.
+- This confirms the *pattern* (read an existing, real, non-zero entry before
+  acting on it) as common documented practice. It does **not** hand this
+  Runtime a real numeric value to reproduce for any of its five *own*
+  registered slots (A0:3C, A0:3E, B0:3F, B0:56, B0:57) — the quoted example is
+  a different slot (C0:06, the exception handler), which this Runtime does not
+  implement, and no BIOS ROM is loaded here to source real values from
+  (base Decision, unchanged). Inventing a "real-looking" address for a slot
+  this Runtime does not model would itself be a no-guessing violation.
+
+**Design candidates evaluated** (as the investigation required, before any
+code change):
+
+- **Candidate A — guest RAM as a fully-populated SSOT for every known slot.**
+  Rejected: this Runtime has no real BIOS ROM and does not know the real
+  target address for any function it has not implemented; populating every
+  documented slot would mean inventing addresses for functions with no HLE
+  behavior behind them — a direct no-guessing violation, and worse than the
+  current zero (a dereference would appear to succeed against content that
+  does nothing).
+- **Candidate B — a synthetic HLE-trampoline address space, initialised only
+  for slots this Runtime actually registers; patched slots hold the raw guest
+  target; dispatch tells the two apart by exact value.** **Adopted.** It
+  requires no real BIOS ROM, invents nothing for slots this Runtime does not
+  implement (they stay at the pre-existing, still-honest zero), and gives a
+  real, non-zero, deterministic value specifically for the five slots this
+  Runtime already claims to implement — the only slots where "what should a
+  guest read here" has an actual, defensible answer.
+- **Candidate C — keep host registry state authoritative; project a virtual
+  value only at guest-read time, without writing real RAM content.** Rejected:
+  a raw guest `lw` instruction never goes through this Runtime's dispatch
+  logic — only `Invoke` does — so any value that exists only in `Invoke`'s
+  reasoning is invisible to ordinary guest memory reads. This would not
+  actually satisfy "a guest can read an existing entry"; it would only make
+  `Invoke` itself more permissive while leaving the guest-observable RAM
+  content unchanged (still zero). Candidate C does not solve the problem it
+  was proposed for.
+
+**Decision: Candidate B, implemented as follows.**
+
+- (a) `BiosJumpTables.HleSentinelTarget(family, functionNumber)` computes a
+  per-slot constant: `0xFFFF0000 | (family << 8) | functionNumber`. The high
+  half-word `0xFFFF0000` falls inside the KSEG2 window (any address above
+  `0xBFFFFFFF`), which `Ps1AddressTranslation.TryTranslate` already rejects
+  unconditionally — this is an existing, code-verified guarantee, not a new
+  assumption, so the sentinel can never collide with a real RAM, BIOS, or
+  relocated-kernel-code address, and it does not resemble a genuine PS1 code
+  pointer (`0x00xxxxxx`/`0x80xxxxxx`/`0xA0xxxxxx`) on inspection — it is never
+  mistakable for a claim about real hardware.
+- (b) `BiosHleRuntime`'s constructor now also takes an `IGuestMemoryWriter`
+  (a required dependency, `ArgumentNullException` on null — the same pattern
+  the sink and reader already established) and, immediately after building the
+  registry, writes each registered `(family, function)`'s sentinel into its
+  own guest RAM slot via `TryWrite`. This is the actual production-behavior
+  fix: the value a guest reads via an ordinary load instruction, with no
+  Runtime involvement, is now real and non-zero for every slot this Runtime
+  implements.
+- (c) `Invoke`'s patch-check is widened: a non-zero entry is treated as
+  `PatchedTarget` only when it is *not* that exact slot's own sentinel. A
+  freshly-constructed registered slot (sentinel present), and a slot restored
+  to its saved sentinel value after a patch, both fall through to the
+  registry exactly as before. An unregistered slot is untouched by
+  construction and stays at zero, matching the pre-existing (and
+  primary-source-consistent, see Blocker 2) convention unchanged.
+- (d) This gives the full guest-visible lifecycle: **read** an existing,
+  real, non-zero entry (the sentinel) → **save** it → **patch** (write any
+  other value; observed on the very next call as `PatchedTarget`, exactly as
+  the prior amendment already guaranteed) → **restore** the saved value →
+  dispatch reaches the original HLE handler again. `BiosHleContractTests`
+  exercises this end to end
+  (`RegisteredServiceSlot_Read_Save_Patch_Restore_RoundTrips_To_OriginalHandler`).
+- (e) **Deterministic and snapshot-safe by construction, without new
+  bookkeeping.** The sentinel is a pure function of `(family, function)`, and
+  it is written into ordinary guest RAM at construction — a Runtime lifecycle
+  event that happens identically every time. No new host-side shadow state
+  exists: everything a save-state needs is already inside guest RAM, exactly
+  like a real patched target's raw address already was.
+- (f) **No dual source of truth.** Guest RAM remains the single dispatch
+  source of truth introduced by the previous amendment; this change only
+  makes that RAM's *initial* content for this Runtime's own services
+  meaningful instead of leaving it at RAM's incidental zero default. The host
+  registry is still consulted only as the *behavior* a recognised value
+  dispatches to, never as a second address authority.
+- (g) **Interpreter/recompiled parity is unaffected.** Both consume the same
+  guest RAM and the same `BiosHleRuntime.Invoke`; nothing in this change is
+  specific to either execution path.
+- (h) **This does not touch #362.** Executing an arbitrary patched guest
+  target still requires a dispatch trap this repository does not have; that
+  gap, and its own tracking Issue, are unchanged. This amendment only makes
+  the guest-visible *state* — what a read returns before any patch trap would
+  ever run — honest; it does not make a patched target executable.
+- (i) **Registry membership is unchanged.** Still exactly `(A0, 0x3C)`,
+  `(A0, 0x3E)`, `(B0, 0x3F)`, `(B0, 0x56)`, `(B0, 0x57)`.
+
+### Blocker 2: the C0/B0 range comment contradicted primary source
+
+The previous amendment's item (u) and `BiosJumpTables`' comments described
+the B0/C0 address relationship (`EntryAddress(C0, fn>=0x80) ==
+EntryAddress(B0, fn-0x80)`) as an unconfirmed Runtime-only quirk, and claimed
+no primary source gives B0/C0 range information. Both claims are wrong; the
+pinned primary source documents the exact ranges:
+
+- `C(1Eh..7Fh) N/A ;jump_to_00000000h` — real, present C0 slots that dispatch
+  to guest address 0 (consistent with this Runtime's existing all-zero
+  convention for a slot with no registered service).
+- `C(80h.....) N/A ;mirrors to B(00h.....)` — **confirmed real-hardware
+  fact**: C-function numbers 0x80 and up dispatch through the very same
+  jump-list memory as B-function numbers 0x00 and up. This is exactly the
+  relationship `BiosJumpTables`' 0x200 base-address separation reproduces
+  arithmetically; it is not a coincidental Runtime artifact to excuse as
+  "harmless", it is the documented behavior, faithfully reproduced given the
+  (still secondary-source-cited, not primary-source-confirmed as exact
+  values) base addresses this Runtime chose.
+- `B(5Eh..FFh) N/A ;jump_to_00000000h` and `B(100h....) N/A ;garbage` — B0's
+  full byte domain (0x00-0xFF) is documented (0x00-0x5D real, 0x5E-0xFF
+  jump-to-0); the undocumented "garbage" region starts at 0x100, already
+  outside `byte FunctionNumber`'s representable range, so this Runtime cannot
+  reach it without a type change nobody is proposing.
+
+**Correction applied:** `BiosJumpTables.cs`'s class and `C0TableAddress`
+remarks are rewritten to state the above as confirmed primary-source facts
+with direct quotes, replacing "C0's real documented range never reaches
+0x80" and "no confirmed upper bound for B0 or C0 exists" (both false) with
+the actual documented domains. `Invoke`'s inline comment is corrected the
+same way. No behavior changes: no additional upper-bound guard is added for
+B0 or C0, because — unlike the situation the previous wording implied — there
+is no undocumented range left inside the byte domain to guess a bound for;
+A0 keeps its own primary-source-confirmed 192-entry bound
+(`A0MaxFunctionNumber`) unchanged, for the different reason that A0's table
+is smaller than its full byte domain.
+
+**Regression tests added** (`BiosHleContractTests`):
+`EntryAddress_C0HighFunctionNumbers_Alias_DocumentedB0Entries` (pure
+arithmetic, C0:0x80↔B0:0x00, C0:0xFF↔B0:0x7F, C0:0xC0↔B0:0x40),
+`PatchWrittenViaC0HighAlias_IsObservedThroughB0Dispatch` and
+`PatchWrittenViaB0Slot_IsObservedThroughC0HighAliasDispatch` (the alias is
+live through dispatch, both directions, not just address arithmetic),
+`C0_DocumentedJumpToZeroRange_RemainsUnsupported_NotContradicted` (0x1E and
+0x7F), and the existing A0 upper-bound regression
+(`A0_FunctionNumber_AboveTableBound_SkipsPatchCheck_And_IsUnsupported`) is
+unchanged and still passes.
+
+### Registry and constructor after this amendment
+
+- (j) The registry is still exactly `(A0, 0x3C)`, `(A0, 0x3E)`, `(B0, 0x3F)`,
+  `(B0, 0x56)`, `(B0, 0x57)`.
+- (k) `BiosHleRuntime`'s constructor now requires three dependencies:
+  `IRuntimeOutputSink`, `IGuestMemoryReader`, `IGuestMemoryWriter` — all
+  `ArgumentNullException`-guarded, none with a parameterless fallback,
+  consistent with every prior boundary this ADR has added.

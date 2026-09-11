@@ -32,11 +32,14 @@ public sealed class BiosHleRuntime : IBiosRuntime
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
     private readonly IRuntimeOutputSink _outputSink;
     private readonly IGuestMemoryReader _guestMemoryReader;
+    private readonly IGuestMemoryWriter _guestMemoryWriter;
 
     /// <summary>
-    /// Creates the registry over the two Runtime boundaries its services need:
-    /// the output boundary every TTY-class service writes through, and the
-    /// guest-memory boundary the string-reading services scan through. A service
+    /// Creates the registry over the three Runtime boundaries its services need:
+    /// the output boundary every TTY-class service writes through, the
+    /// guest-memory read boundary the string-reading services scan through, and
+    /// the guest-memory write boundary used here to seed every registered
+    /// service's own jump-table slot with a real value (see below). A service
     /// is registered as <c>Supported</c> only when its full documented behavior —
     /// including host-visible output and any guest-memory access the behavior
     /// depends on — is implemented (ADR-014); a service whose documented effect
@@ -55,15 +58,30 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// would leave a registered service unable to perform the guest-memory access
     /// its documented behavior depends on.
     /// </param>
+    /// <param name="guestMemoryWriter">
+    /// Writes each registered service's own jump-table slot with its HLE sentinel
+    /// (<see cref="BiosJumpTables.HleSentinelTarget"/>) so a guest read of an
+    /// *existing* entry observes real, non-zero content rather than 0 — the
+    /// read/save/patch/restore pattern psx-spx documents for GetB0Table/GetC0Table
+    /// (ADR-014's amendment for #360's Blocker 1 fix). Required for the same
+    /// reason as the sink and reader: a missing writer would leave every
+    /// registered slot's guest-visible content silently unmodeled.
+    /// </param>
     /// <exception cref="ArgumentNullException">
-    /// <paramref name="outputSink"/> or <paramref name="guestMemoryReader"/> is null.
+    /// <paramref name="outputSink"/>, <paramref name="guestMemoryReader"/>, or
+    /// <paramref name="guestMemoryWriter"/> is null.
     /// </exception>
-    public BiosHleRuntime(IRuntimeOutputSink outputSink, IGuestMemoryReader guestMemoryReader)
+    public BiosHleRuntime(
+        IRuntimeOutputSink outputSink,
+        IGuestMemoryReader guestMemoryReader,
+        IGuestMemoryWriter guestMemoryWriter)
     {
         ArgumentNullException.ThrowIfNull(outputSink);
         ArgumentNullException.ThrowIfNull(guestMemoryReader);
+        ArgumentNullException.ThrowIfNull(guestMemoryWriter);
         _outputSink = outputSink;
         _guestMemoryReader = guestMemoryReader;
+        _guestMemoryWriter = guestMemoryWriter;
 
         services = new Dictionary<(BiosCallFamily, byte), Func<BiosCallIdentity, BiosServiceResult>>
         {
@@ -73,20 +91,42 @@ public sealed class BiosHleRuntime : IBiosRuntime
             [(BiosCallFamily.B0, GetC0TableFunction)] = InvokeGetC0Table,
             [(BiosCallFamily.B0, GetB0TableFunction)] = InvokeGetB0Table,
         };
+
+        // Seed every registered slot's own guest-visible table entry with its HLE
+        // sentinel, so a guest that reads (and later saves/restores) an existing
+        // entry sees a real, deterministic, non-zero value instead of 0 — this is
+        // the actual production-behavior fix for #360's Blocker 1. Best-effort: a
+        // rejected write here only leaves that one slot at its pre-existing
+        // all-zero default (Invoke still dispatches it through the registry
+        // exactly as before), never a hard construction failure, because a
+        // memory-bound rejection at these fixed, always-in-range low addresses
+        // would indicate a degenerate memory implementation, not guest state.
+        foreach (var (family, function) in services.Keys)
+        {
+            var sentinel = BiosJumpTables.HleSentinelTarget(family, function);
+            _guestMemoryWriter.TryWrite(BiosJumpTables.EntryAddress(family, function), BitConverter.GetBytes(sentinel));
+        }
     }
 
     /// <inheritdoc />
     /// <remarks>
     /// Dispatch now consults guest-visible jump-table state before falling back
     /// to the registry. If the table entry for this call's
-    /// <c>(Family, FunctionNumber)</c> holds a non-zero 32-bit value, the entry
-    /// has been patched by guest code and <see cref="BiosServiceResult.PatchedTarget"/>
-    /// is returned — regardless of whether a host-side handler is also registered for
-    /// that slot. The raw patched address is carried in
+    /// <c>(Family, FunctionNumber)</c> holds a non-zero 32-bit value that is
+    /// <em>not</em> this Runtime's own HLE sentinel for that exact slot
+    /// (<see cref="BiosJumpTables.HleSentinelTarget"/>), the entry has been
+    /// patched by guest code and <see cref="BiosServiceResult.PatchedTarget"/>
+    /// is returned — regardless of whether a host-side handler is also registered
+    /// for that slot. The raw patched address is carried in
     /// <see cref="BiosServiceResult.ReturnValue"/> for the caller to inspect;
     /// this Runtime does not execute or validate it (ADR-014 amendment for #360).
-    /// Guest RAM backing is zero-initialised by construction, so an unpatched slot
-    /// reads as zero and falls through to the registry exactly as before.
+    /// A slot with no registered service is zero-initialised by construction and
+    /// stays that way, falling through to the registry exactly as before. A
+    /// registered service's own slot is seeded with its sentinel at construction
+    /// (see the constructor), so reading it, saving the read value, patching it,
+    /// and later restoring the exact saved value all round-trip correctly: the
+    /// restored sentinel is recognised again and dispatch resumes reaching the
+    /// registered service (#360's Blocker 1 fix).
     /// </remarks>
     public BiosServiceResult Invoke(BiosCallIdentity identity)
     {
@@ -97,7 +137,8 @@ public sealed class BiosHleRuntime : IBiosRuntime
         // read unrelated content and could falsely report PatchedTarget. Skip the
         // patch-check for those and fall through directly to the registry (which
         // correctly returns Unsupported for anything unregistered).
-        // B0/C0 have no primary-source-confirmed upper bound — no guard is applied.
+        // B0/C0 need no such guard: primary source documents their full byte domain
+        // (0x00-0xFF) already — see BiosJumpTables' remarks.
         var inTableRange = identity.Family != BiosCallFamily.A0 ||
                            identity.FunctionNumber <= BiosJumpTables.A0MaxFunctionNumber;
 
@@ -109,7 +150,8 @@ public sealed class BiosHleRuntime : IBiosRuntime
             if (_guestMemoryReader.TryRead(entryAddress, entryBytes))
             {
                 var entryValue = (uint)(entryBytes[0] | (entryBytes[1] << 8) | (entryBytes[2] << 16) | (entryBytes[3] << 24));
-                if (entryValue != 0)
+                var isOwnHleSentinel = entryValue == BiosJumpTables.HleSentinelTarget(identity.Family, identity.FunctionNumber);
+                if (entryValue != 0 && !isOwnHleSentinel)
                 {
                     return BiosServiceResult.PatchedTarget(identity, entryValue);
                 }

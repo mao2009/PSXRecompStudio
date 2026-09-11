@@ -20,7 +20,7 @@ public sealed class BiosHleContractTests
     [Fact]
     public void Constructor_Rejects_A_Missing_Output_Sink()
     {
-        var act = static () => new BiosHleRuntime(null!, NewReader());
+        var act = static () => new BiosHleRuntime(null!, NewReader(), NewWriter());
 
         act.Should().Throw<ArgumentNullException>().WithParameterName("outputSink");
     }
@@ -28,9 +28,17 @@ public sealed class BiosHleContractTests
     [Fact]
     public void Constructor_Rejects_A_Missing_Guest_Memory_Reader()
     {
-        var act = static () => new BiosHleRuntime(new CapturedOutputSink(), null!);
+        var act = static () => new BiosHleRuntime(new CapturedOutputSink(), null!, NewWriter());
 
         act.Should().Throw<ArgumentNullException>().WithParameterName("guestMemoryReader");
+    }
+
+    [Fact]
+    public void Constructor_Rejects_A_Missing_Guest_Memory_Writer()
+    {
+        var act = static () => new BiosHleRuntime(new CapturedOutputSink(), NewReader(), null!);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("guestMemoryWriter");
     }
 
     // A0:3C putchar's documented behavior is writing the character to the TTY
@@ -186,7 +194,7 @@ public sealed class BiosHleContractTests
         ram.Write8(0x00000101, (byte)'i');
         ram.Write8(0x00000102, 0);
         var sink = new CapturedOutputSink();
-        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = CreateRuntime(sink, ram);
 
         BiosHleRuntime.PutsFunction.Should().Be(0x3E);
 
@@ -367,7 +375,7 @@ public sealed class BiosHleContractTests
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
         var sink = new CapturedOutputSink();
-        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8), writer);
 
         // Patch the slot for A0:3C putchar (slot address = 0x200 + 0x3C * 4 = 0x2F0).
         var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction);
@@ -391,7 +399,7 @@ public sealed class BiosHleContractTests
     {
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
-        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
 
         // Patch slot for C0:0x00 (slot address = C0TableAddress + 0 = 0x674).
         var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.C0, 0x00);
@@ -426,7 +434,7 @@ public sealed class BiosHleContractTests
     {
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
-        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
 
         var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutsFunction);
         slotAddress.Should().Be(0x2F8u, "sanity-check: A0:3E slot address");
@@ -449,7 +457,7 @@ public sealed class BiosHleContractTests
     {
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
-        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
 
         var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction);
         slotAddress.Should().Be(0x970u, "sanity-check: B0:3F slot address");
@@ -465,9 +473,11 @@ public sealed class BiosHleContractTests
     }
 
     // Fresh-instance determinism: two runtimes over fresh RAM dispatch identically.
-    // Because RAM is zero-initialised by construction, the table state is
-    // deterministic without an explicit initialisation step — zero IS the
-    // "unpatched" state, and both runtimes must observe the same initial behavior.
+    // A registered slot's table entry is now seeded with its HLE sentinel at
+    // construction (#360 Blocker 1 fix) rather than left at RAM's zero default,
+    // but the seeding itself is a pure function of (family, function), so two
+    // fresh instances still compute the identical sentinel and dispatch
+    // identically.
     [Theory]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
@@ -480,11 +490,11 @@ public sealed class BiosHleContractTests
         // already covered; here we only confirm status determinism).
         var identity = new BiosCallIdentity(family, function);
 
-        var result1 = new BiosHleRuntime(new CapturedOutputSink(), NewReader()).Invoke(identity);
-        var result2 = new BiosHleRuntime(new CapturedOutputSink(), NewReader()).Invoke(identity);
+        var result1 = CreateRuntime(new CapturedOutputSink()).Invoke(identity);
+        var result2 = CreateRuntime(new CapturedOutputSink()).Invoke(identity);
 
         result1.Status.Should().Be(result2.Status,
-            "fresh instances over zero-initialised RAM must dispatch identically");
+            "fresh instances must dispatch identically over their own fresh RAM");
         result1.ReturnValue.Should().Be(result2.ReturnValue);
     }
 
@@ -498,7 +508,7 @@ public sealed class BiosHleContractTests
     {
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
-        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
 
         // 0xC0 is the first out-of-range A0 function number; its computed slot
         // address would be 0x200 + 0xC0 * 4 = 0x500 — past the A0 table.
@@ -517,10 +527,160 @@ public sealed class BiosHleContractTests
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
     }
 
-    private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => new(sink, NewReader());
+    // #360 Blocker 1: a registered service's own jump-table slot must hold a
+    // real, non-zero value a guest can read as an "existing entry" — not the
+    // table's shared zero default — so read/save/patch/restore round-trips
+    // correctly (psx-spx's documented GetB0Table/GetC0Table "BIOS Patches" use:
+    // games read a table entry before conditionally patching it).
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetB0TableFunction)]
+    public void RegisteredServiceSlot_ReadsAsItsOwnSentinel_NotZero(BiosCallFamily family, byte function)
+    {
+        var ram = new RecompilerGuestMemory();
+        _ = CreateRuntime(new CapturedOutputSink(), ram);
 
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> entryBytes = stackalloc byte[4];
+        reader.TryRead(BiosJumpTables.EntryAddress(family, function), entryBytes).Should().BeTrue();
+        var entryValue = (uint)(entryBytes[0] | (entryBytes[1] << 8) | (entryBytes[2] << 16) | (entryBytes[3] << 24));
+
+        entryValue.Should().NotBe(0u, "a registered slot's existing entry must not read as unpatched-zero");
+        entryValue.Should().Be(BiosJumpTables.HleSentinelTarget(family, function));
+    }
+
+    // The counterpart of the above: a slot with no registered service still
+    // reads as zero. This Runtime has no real BIOS ROM and no-guessing forbids
+    // inventing a plausible-looking address for a function it does not
+    // implement, so zero (matching the documented real-hardware convention for
+    // N/A slots) remains the only honest value here.
+    [Theory]
+    [InlineData(BiosCallFamily.A0, (byte)0x3B)] // getchar, unregistered
+    [InlineData(BiosCallFamily.C0, (byte)0x05)] // an ordinary unregistered C0 slot
+    public void UnregisteredSlot_StillReadsAsZero(BiosCallFamily family, byte function)
+    {
+        var ram = new RecompilerGuestMemory();
+        _ = CreateRuntime(new CapturedOutputSink(), ram);
+
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> entryBytes = stackalloc byte[4];
+        reader.TryRead(BiosJumpTables.EntryAddress(family, function), entryBytes).Should().BeTrue();
+        entryBytes.ToArray().Should().BeEquivalentTo(new byte[4]);
+    }
+
+    // The full documented lifecycle: a guest reads a registered slot's existing
+    // entry (save), overwrites it with its own target (patch), then writes the
+    // saved value back (restore) — dispatch must resume reaching the original
+    // HLE handler, not stay stuck on PatchedTarget or fall back to Unsupported.
+    [Fact]
+    public void RegisteredServiceSlot_Read_Save_Patch_Restore_RoundTrips_To_OriginalHandler()
+    {
+        var ram = new RecompilerGuestMemory();
+        var reader = new GuestMemoryReader(ram.Read8);
+        var writer = new GuestMemoryWriter(ram.Write8);
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = new BiosHleRuntime(sink, reader, writer);
+
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction);
+
+        // Save the existing entry.
+        Span<byte> savedBytes = stackalloc byte[4];
+        reader.TryRead(slotAddress, savedBytes).Should().BeTrue();
+        var savedEntry = savedBytes.ToArray();
+        BitConverter.ToUInt32(savedEntry).Should().Be(BiosJumpTables.HleSentinelTarget(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction));
+
+        // Patch: guest code takes over the slot.
+        const uint guestTarget = 0x00080000u;
+        writer.TryWrite(slotAddress, BitConverter.GetBytes(guestTarget)).Should().BeTrue();
+        var patched = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'Z']));
+        patched.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        patched.ReturnValue.Should().Be(guestTarget);
+        sink.Bytes.Should().BeEmpty("the original putchar handler must not run while the slot is patched");
+
+        // Restore the saved original entry.
+        writer.TryWrite(slotAddress, savedEntry).Should().BeTrue();
+        var restored = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'Z']));
+
+        restored.Status.Should().Be(BiosServiceStatus.Supported, "restoring the saved entry must re-enable the original HLE handler");
+        restored.ReturnValue.Should().Be((uint)'Z');
+        sink.Bytes.Should().BeEquivalentTo(new byte[] { (byte)'Z' }, static o => o.WithStrictOrdering());
+    }
+
+    // #360 Blocker 2: psx-spx documents "C(80h.....) N/A ;mirrors to B(00h.....)"
+    // as real-hardware behavior, not a Runtime-only coincidence. This Runtime's
+    // chosen C0/B0 base addresses (0x200 apart) reproduce that exact aliasing.
+    [Theory]
+    [InlineData((byte)0x80, (byte)0x00)]
+    [InlineData((byte)0xFF, (byte)0x7F)]
+    [InlineData((byte)0xC0, (byte)0x40)]
+    public void EntryAddress_C0HighFunctionNumbers_Alias_DocumentedB0Entries(byte c0Function, byte b0Function)
+    {
+        BiosJumpTables.EntryAddress(BiosCallFamily.C0, c0Function)
+            .Should().Be(BiosJumpTables.EntryAddress(BiosCallFamily.B0, b0Function));
+    }
+
+    // The alias is live through dispatch, not just address arithmetic: a patch
+    // written via the C0 high-range slot is observed when dispatching through
+    // the corresponding B0 slot, and vice versa, because both compute the same
+    // guest address.
+    [Fact]
+    public void PatchWrittenViaC0HighAlias_IsObservedThroughB0Dispatch()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
+
+        var c0SlotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.C0, 0x80);
+        const uint patchedTarget = 0x00090000u;
+        writer.TryWrite(c0SlotAddress, BitConverter.GetBytes(patchedTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.B0, 0x00));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(patchedTarget);
+    }
+
+    [Fact]
+    public void PatchWrittenViaB0Slot_IsObservedThroughC0HighAliasDispatch()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
+
+        var b0SlotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.B0, 0x7F);
+        const uint patchedTarget = 0x000A0000u;
+        writer.TryWrite(b0SlotAddress, BitConverter.GetBytes(patchedTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.C0, 0xFF));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(patchedTarget);
+    }
+
+    // C0's documented N/A range (0x1E..0x7F, jump_to_00000000h) must still
+    // dispatch as an ordinary unregistered slot: real, present, but zero.
+    [Theory]
+    [InlineData((byte)0x1E)]
+    [InlineData((byte)0x7F)]
+    public void C0_DocumentedJumpToZeroRange_RemainsUnsupported_NotContradicted(byte function)
+    {
+        var result = CreateRuntime(new CapturedOutputSink()).Invoke(new BiosCallIdentity(BiosCallFamily.C0, function));
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+    }
+
+    private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => CreateRuntime(sink, new RecompilerGuestMemory());
+
+    // Reader and writer must share the same backing RAM: the constructor writes
+    // each registered slot's HLE sentinel through the writer, and Invoke reads it
+    // back through the reader (#360 Blocker 1 fix) — two independent RAM
+    // instances would silently defeat that round trip.
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink, RecompilerGuestMemory ram) =>
-        new(sink, new GuestMemoryReader(ram.Read8));
+        new(sink, new GuestMemoryReader(ram.Read8), new GuestMemoryWriter(ram.Write8));
 
     private static void WriteCString(RecompilerGuestMemory ram, uint address, string value)
     {
@@ -532,7 +692,8 @@ public sealed class BiosHleContractTests
         ram.Write8(address + (uint)value.Length, 0);
     }
 
-    // Any valid reader satisfies call sites that never dispatch to a
-    // pointer-taking service; puts's own cases build a reader over known bytes.
+    // Any valid reader/writer satisfies call sites that only need to prove a
+    // constructor argument was null-checked; no dispatch happens against them.
     private static GuestMemoryReader NewReader() => new(new RecompilerGuestMemory().Read8);
+    private static GuestMemoryWriter NewWriter() => new(new RecompilerGuestMemory().Write8);
 }
