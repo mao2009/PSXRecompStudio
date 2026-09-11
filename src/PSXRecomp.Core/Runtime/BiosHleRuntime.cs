@@ -16,6 +16,13 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>A0:3E puts, the first service that reads guest memory.</summary>
     public const byte PutsFunction = 0x3E;
 
+    /// <summary>
+    /// B0:3F puts, the B0-table alias of the same service — a distinct function
+    /// number, not A0's, selected by real-ROM evidence (ADR-014 amendment
+    /// "B0:3F selected by real-ROM evidence").
+    /// </summary>
+    public const byte PutsAliasFunction = 0x3F;
+
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
     private readonly IRuntimeOutputSink _outputSink;
     private readonly IGuestMemoryReader _guestMemoryReader;
@@ -32,13 +39,13 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </summary>
     /// <param name="outputSink">
     /// Receives the bytes registered services emit, such as A0:3C putchar's TTY
-    /// character and A0:3E puts's string. Required: a missing sink is a
+    /// character and puts's string. Required: a missing sink is a
     /// construction error, never a silent no-op, so a host can never run the
     /// registry with a documented side effect quietly discarded.
     /// </param>
     /// <param name="guestMemoryReader">
-    /// Reads the guest bytes pointer-taking services dereference, such as A0:3E
-    /// puts's string. Required for the same reason as the sink: a missing reader
+    /// Reads the guest bytes pointer-taking services dereference, such as puts's
+    /// string. Required for the same reason as the sink: a missing reader
     /// would leave a registered service unable to perform the guest-memory access
     /// its documented behavior depends on.
     /// </param>
@@ -56,6 +63,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
         {
             [(BiosCallFamily.A0, PutCharFunction)] = InvokePutChar,
             [(BiosCallFamily.A0, PutsFunction)] = InvokePuts,
+            [(BiosCallFamily.B0, PutsAliasFunction)] = InvokePuts,
         };
     }
 
@@ -89,11 +97,14 @@ public sealed class BiosHleRuntime : IBiosRuntime
     }
 
     /// <summary>
-    /// A0:3E puts. Delegates to <see cref="PutsService"/>, which reads the
-    /// NUL-terminated guest string through the injected reader, writes it to the
-    /// injected sink, and returns the incoming string pointer (ADR-014). The
-    /// behavior lives in the service, not here: this registry entry only binds
-    /// the identity to it.
+    /// puts, reached through A0:3E and through its B0:3F alias. Delegates to
+    /// <see cref="PutsService"/>, which reads the NUL-terminated guest string
+    /// through the injected reader, writes it to the injected sink, and returns
+    /// the incoming string pointer (ADR-014). The behavior lives in the service,
+    /// not here: both registry entries only bind an identity to it, so the two
+    /// tables reach one implementation rather than a per-family copy of it. The
+    /// identity the caller used is carried through unchanged, so a diagnostic
+    /// names the table that was actually called.
     /// </summary>
     private BiosServiceResult InvokePuts(BiosCallIdentity identity) =>
         PutsService.Invoke(identity, _guestMemoryReader, _outputSink);

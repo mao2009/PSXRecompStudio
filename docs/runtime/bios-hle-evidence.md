@@ -11,9 +11,10 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds two
-registrations — A0:3C `putchar` and A0:3E `puts` — each implementing its full
-documented behavior, host-visible output included (ADR-014). Both parallel
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds three
+registrations — A0:3C `putchar`, A0:3E `puts`, and its real-ROM-evidence-selected
+B0:3F alias — each implementing its full documented behavior, host-visible
+output included (ADR-014). Both parallel
 Runtime capabilities this
 document originally awaited have since landed: the **guest-memory read
 boundary** (`IGuestMemoryReader`, PR #350) and the **deterministic output
@@ -42,13 +43,37 @@ evidence-driven from #225 and later full-title bring-up").
 ## 2. Current support matrix
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
-registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly two
-entries**: `(A0, 0x3C)` → `InvokePutChar` and `(A0, 0x3E)` → `InvokePuts`, the
-latter a thin delegation to `PutsService.Invoke`. Every other call — including the
-deliberately unregistered neighbours and aliases below — falls through to
+registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
+three entries**: `(A0, 0x3C)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
+and `(B0, 0x3F)` → `InvokePuts` — the last two a thin delegation to the same
+`PutsService.Invoke`, registered under distinct identities rather than a
+per-family copy of the service. Every other call — including the deliberately
+unregistered neighbours and aliases below — falls through to
 `BiosServiceResult.Unsupported`, producing the stable diagnostic
 `BIOS_HLE_UNSUPPORTED_CALL` (verified in `BiosHleRuntime.Invoke` and
 `BiosServiceResult.CreateUnsupported`).
+
+**Observed / Verified / Implemented, kept distinct:**
+
+```text
+Observed (Analysis, §3.4):
+  B0:3F puts — real-ROM call site, guest PC 0x800D0FF8, SLPM_869.24
+
+Verified (docs/REFERENCES.md, BiosCallNames):
+  A0:3C/B0:3D putchar, A0:3E/B0:3F puts,
+  A0:39 InitHeap, A0:AB _card_info, A0:AC _card_load,
+  B0:4E _card_write, B0:50 _new_card, B0:56 GetC0Table, B0:57 GetB0Table
+
+Implemented (BiosHleRuntime registry):
+  A0:3C putchar, A0:3E puts, B0:3F puts
+```
+
+The three lists answer different questions and do not imply each other: an
+identity can be Verified without ever being Observed in a local fixture (the
+seven newly verified identities above), Observed without being Verified until
+checked, or Verified and Observed without being Implemented (the six
+card/table identities above have no registered service — identifying them is
+not a decision to build them, per ADR-014).
 
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
@@ -57,14 +82,16 @@ deliberately unregistered neighbours and aliases below — falls through to
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink; guest-memory **write** |
 | puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
-| puts alias | B0:3F | **Unregistered** — selected by real-ROM evidence per the ADR-014 amendment *B0:3F selected by real-ROM evidence* ([3.4](#34-real-rom-evidence-obtained)) | Same as A0:3E | Nothing — evidence, identity and both Runtime capabilities are in place; only the registration work remains |
+| puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11) | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
 | all other A0/B0/C0 | — | **Unregistered** — any call not in the registry fails loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 
-- `BiosHleRuntime.PutCharFunction == 0x3C` and `PutsFunction == 0x3E`; the
-  registrations are `(BiosCallFamily.A0, PutCharFunction)` and
-  `(BiosCallFamily.A0, PutsFunction)`.
+- `BiosHleRuntime.PutCharFunction == 0x3C`, `PutsFunction == 0x3E`, and
+  `PutsAliasFunction == 0x3F`; the registrations are
+  `(BiosCallFamily.A0, PutCharFunction)`, `(BiosCallFamily.A0, PutsFunction)`,
+  and `(BiosCallFamily.B0, PutsAliasFunction)`, the latter two both bound to
+  `InvokePuts`/`PutsService.Invoke`.
 - `InvokePutChar` rejects any argument count ≠ 1 with
   `BIOS_HLE_INVALID_ARGUMENTS`; otherwise it writes the low byte
   (`identity.Arguments[0] & 0xFFu`) to the injected `IRuntimeOutputSink` and
@@ -73,15 +100,18 @@ Notes verified against the code:
   The TTY output side effect is emitted; the rejection path writes nothing to
   the sink. The sink is a required constructor dependency
   (`ArgumentNullException` on null), so it can never be a silent no-op.
-- `BiosHleContractTests` pins A0:3B / A0:3D / A0:3F / B0:3D / B0:3F and a
+- `BiosHleContractTests` pins A0:3B / A0:3D / A0:3F / B0:3D / B0:3E / B0:40 and a
   non-contiguous A0:09 as `BIOS_HLE_UNSUPPORTED_CALL`, guarding against any
   accidental widening of the registry; it pins putchar's emitted byte, its call
   ordering, its determinism across fresh runtimes, both required constructor
   dependencies, and the untouched sink on the invalid-argument path; and it pins
-  puts's dispatch end to end — the guest string reaching the sink, the returned
-  pointer, an unmapped pointer failing loudly with zero bytes written, and both
-  services sharing one sink in call order. A0:3E is no longer in the
-  unsupported-neighbour set because it is now registered.
+  puts's dispatch end to end for both A0:3E and its B0:3F alias — the guest
+  string reaching the sink, the returned pointer, an unmapped pointer failing
+  loudly with zero bytes written, the two identities producing observably
+  equivalent output while a failure diagnostic still names the identity that
+  was actually invoked (not a hard-coded one), and all three services sharing
+  one sink in call order. Neither A0:3E nor B0:3F is in the unsupported-neighbour
+  set because both are now registered.
 - `PutsServiceTests` covers `PutsService` itself exhaustively (bounded scan,
   atomicity on every failure path, KUSEG/KSEG0/KSEG1 aliasing, uint-overflow
   rejection, determinism); the contract tests deliberately prove only the wiring
@@ -279,23 +309,33 @@ the recognizer models:
    document registers nothing, and the amendment registers nothing either — only the
    evidence precondition has changed.
 
-**What was *not* established.** The frequently observed function numbers below are raw
-identities from the recognizer; this repository has **not** verified what they are.
-Verifying an identity against the documentation cited in `docs/REFERENCES.md` is a
-prerequisite for any registration work, per ADR-014's no-guessing rule.
+**Update (2026-09-11): seven of these identities are now verified.** Cross-referenced
+against the same source `docs/REFERENCES.md` already cites (psx-spx / Nocash), and now
+recorded in `BiosCallNames`: `A0:39` `InitHeap(addr,size)`, `A0:AB` `_card_info(port)`,
+`A0:AC` `_card_load(port)`, `B0:4E` `_card_write(port,sector,src)`, `B0:50` `_new_card()`,
+`B0:56` `GetC0Table`, `B0:57` `GetB0Table`. `B0:0A` and `B0:4F` were **not** part of that
+verification pass and remain unverified below. Verifying an identity is identification
+only — it is not a decision to implement any of them as an HLE service; that remains
+ADR-014's separate, evidence-and-prerequisite-gated decision (see §4 "Next candidates").
 
-| Identity | Observed in (of the 5 distinct executables) | Sites per executable |
-|---|---|---|
-| `A0:39` | 5 | 1 |
-| `A0:AB`, `A0:AC`, `B0:0A`, `B0:4E`, `B0:4F`, `B0:50` | 4 | 1 |
-| `B0:57` | 3 | 4 |
-| `B0:56` | 3 | 2–3 |
+| Identity | Observed in (of the 5 distinct executables) | Sites per executable | Verified? |
+|---|---|---|---|
+| `A0:39` | 5 | 1 | ✅ `InitHeap(addr,size)` |
+| `A0:AB` | 4 | 1 | ✅ `_card_info(port)` |
+| `A0:AC` | 4 | 1 | ✅ `_card_load(port)` |
+| `B0:0A` | 4 | 1 | Not verified |
+| `B0:4E` | 4 | 1 | ✅ `_card_write(port,sector,src)` |
+| `B0:4F` | 4 | 1 | Not verified |
+| `B0:50` | 4 | 1 | ✅ `_new_card()` |
+| `B0:57` | 3 | 4 | ✅ `GetB0Table()` |
+| `B0:56` | 3 | 2–3 | ✅ `GetC0Table()` |
 
 `B0:56` and `B0:57` are the only identities observed with more than one call site in a
 single executable.
 
-These are reported as call-frequency observations only. None is proposed as a service
-until its identity is verified.
+These remain call-frequency observations. A verified identity is not yet proposed as a
+service — see §4's next-candidate ranking, which weighs frequency against criticality,
+ABI complexity, and missing prerequisites rather than frequency alone.
 
 ### 3.5 Connection to #225 and future bring-up
 
@@ -347,7 +387,8 @@ carry a "verify before register" marker.
 | ~~puts~~ — **done**, registered with full documented behavior | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High (differential: stub reads, compare output + R2) | **None observed for A0:3E**; the B0:3F alias *is* called (3.4). Identity verified (ADR-014) | Low–medium |
 | getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | **None observed** — consistent with the expectation that real titles rarely use TTY input | Medium–high |
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
-| B0 putchar/puts aliases | B0:3D / B0:3F | same as A0 counterparts | same | same, through the B0 table | host (+ guest read for puts) | High (once the capability exists) | **B0:3F — confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)), recorded in the ADR-014 amendment *B0:3F selected by real-ROM evidence*. **B0:3D — still none.** | Low (capability-gated) |
+| ~~B0:3F puts alias~~ — **done**, registered with full documented behavior | B0:3F `std_out_puts(src)` (alias of A0:3E) | same as A0:3E | same | same, through the B0 table, same `PutsService` | host + guest read (already exists) | High (differential: stub reads, compare output + R2) | **Confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)) | Low — reuse, no new implementation |
+| B0 putchar alias | B0:3D | same as A0:3C | same | same, through the B0 table | host (output sink already exists) | High (deterministic sink assertable) | **None observed.** | Low (capability-gated) |
 
 ### Recommendation
 
@@ -370,14 +411,11 @@ they unblocked have since been implemented:
    guest-memory write. Neither is on the critical path for a first
    BIOS-touching real-ROM function (games overwhelmingly *write* to TTY via
    putchar/puts; TTY input is rare).
-4. **B0:3F** — the condition this item set has been met, and the change of fact is
-   recorded in the ADR-014 amendment *B0:3F selected by real-ROM evidence*: a real title
-   calls the B0-table `puts` entry ([3.4](#34-real-rom-evidence-obtained)). Both Runtime
-   capabilities it needs already exist, and its identity is verified in
-   `docs/REFERENCES.md`, so registering it is an implementation task rather than a
-   capability or research one. **B0:3D** stays unregistered: no call site selects it.
-   Note that no locally available title calls A0:3C or A0:3E, so the B0 alias is at
-   present the *only* observed call to a service this repository has verified.
+4. **B0:3F** — ✅ **done.** Registered 2026-09-11 (ADR-014 amendment *B0:3F registered*),
+   reusing the existing `PutsService` under a distinct identity rather than a new
+   implementation. **B0:3D** stays unregistered: no call site selects it. Note that no
+   locally available title calls A0:3C or A0:3E directly, so the B0 alias was, until this
+   registration, the *only* observed call to a service this repository had verified.
 
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
@@ -415,7 +453,7 @@ Two explicit guarantees:
   bytes written. The same bar applies unchanged to every service registered from
   here on.
 - **This document registers nothing.** It is an inventory; the registry in
-  `BiosHleRuntime` is `(A0, 0x3C)` and `(A0, 0x3E)`, changed by the
+  `BiosHleRuntime` is `(A0, 0x3C)`, `(A0, 0x3E)`, and `(B0, 0x3F)`, changed by the
   implementation tasks that added those services, not by this document. Any
   service added later is likewise a separate implementation task that adds code
   and updates ADR-014/ARCHITECTURE.md as appropriate.
@@ -436,13 +474,13 @@ Two explicit guarantees:
    evidence test asks for a text-wide window explicitly. Deciding the persisted artifact's
    own window is a separate change with an artifact-churn cost, and is deliberately not
    made here.
-4. **Verify the identities the evidence surfaces most often** (`A0:39`, `B0:56`,
-   `B0:57`, `A0:AB`, `A0:AC`, `B0:4E`, `B0:50`) against the documentation cited in
-   `docs/REFERENCES.md`, and record them there. Until that is done they are call-frequency
-   observations, not service candidates — ADR-014 forbids registering a guessed identity.
-5. **Decide whether to register `B0:3F`**, now that the ADR-014 amendment records a real
-   call site selecting it ([3.4](#34-real-rom-evidence-obtained)) and both required
-   Runtime capabilities exist.
+4. ~~**Verify the identities the evidence surfaces most often**~~ — ✅ **done for seven of
+   nine** (2026-09-11, Issue #11): `A0:39`, `A0:AB`, `A0:AC`, `B0:4E`, `B0:50`, `B0:56`,
+   `B0:57` are verified against `docs/REFERENCES.md` and recorded in `BiosCallNames`.
+   `B0:0A` and `B0:4F` were not part of that pass and remain unverified — they are
+   call-frequency observations, not service candidates, until checked.
+5. ~~**Decide whether to register `B0:3F`**~~ — ✅ **done.** Registered 2026-09-11 (ADR-014
+   amendment *B0:3F registered*), reusing `PutsService`.
 6. **Decide the input sink design for getchar/gets** — blocking semantics,
    host-provided input source, and how the Domain layer receives it without I/O.
 7. **Re-verify getchar/gets identity** (A0:3B / A0:3D) against the documented
