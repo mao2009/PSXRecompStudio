@@ -446,7 +446,7 @@ they unblocked have since been implemented:
    `puts`'s wiring task — the effect is now genuine, not a bare constant return.
    See open question 9 (resolved) and the §4 next-service table above for the
    updated status. The remaining open item — executing patched targets — is tracked
-   as follow-up Issue #TBD (item 11).
+   as follow-up Issue #362 (item 11).
 
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
@@ -548,4 +548,4 @@ Two explicit guarantees:
     guest-jump-to-`0xA0`/`0xB0`/`0xC0` recognition/trap mechanism in the
     interpreter and/or recompiled-code path, and (b) a decision for how a
     `PatchedTarget` result falls back to raw guest-code execution. Filed as
-    follow-up Issue #TBD (filed alongside PR for #360).
+    follow-up Issue #362 (filed alongside PR for #360).

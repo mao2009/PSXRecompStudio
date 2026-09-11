@@ -538,7 +538,7 @@ amendment identified.
 - (k) **A `PatchedTarget` result carries the raw target address and nothing more.**
   This Runtime does not execute or validate a patched target — jumping to arbitrary
   guest code requires an interpreter or recompiled-code dispatch trap that does not
-  exist in this repository (see follow-up Issue #TBD, filed alongside this PR).
+  exist in this repository (see follow-up Issue #362, filed alongside this PR).
   Execution of patched targets is intentionally out of scope here.
 - (l) **The behavioral superset guarantee holds.** Every existing registered service
   (`A0:3C`, `A0:3E`, `B0:3F`) and every "stays Unsupported" case is unaffected as
@@ -592,7 +592,7 @@ amendment identified.
   `RecompilerInterpreterExecutor.cs` as of this amendment, and (b) how a
   `PatchedTarget` result falls back to raw guest-code execution versus staying
   diagnosable is an open design question. Both are tracked in follow-up
-  Issue #TBD (to be filled in once filed alongside this PR). This is a pre-existing
+  Issue #362 (to be filled in once filed alongside this PR). This is a pre-existing
   gap, not something this amendment introduces or resolves.
 
 ### Registry after this amendment
