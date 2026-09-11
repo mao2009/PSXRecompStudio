@@ -327,6 +327,167 @@ public sealed class BiosHleContractTests
             new byte[] { (byte)'h', (byte)'i', (byte)'!' }, static o => o.WithStrictOrdering());
     }
 
+    // GetC0Table (B0:56) and GetB0Table (B0:57) are now registered (ADR-014
+    // amendment for #360). They return the Runtime's chosen table base addresses
+    // and take no arguments — the returned address is backed by guest-visible RAM
+    // that is connected to dispatch, so this is genuine behavior, not a bare
+    // constant (the "effect-incomplete" bar the previous amendment invoked is met).
+    [Theory]
+    [InlineData(BiosHleRuntime.GetC0TableFunction, BiosJumpTables.C0TableAddress)]
+    [InlineData(BiosHleRuntime.GetB0TableFunction, BiosJumpTables.B0TableAddress)]
+    public void GetTableFunctions_Return_Their_Table_Base_With_No_Arguments(byte function, uint expectedBase)
+    {
+        var result = CreateRuntime(new CapturedOutputSink())
+            .Invoke(new BiosCallIdentity(BiosCallFamily.B0, function));
+
+        result.Status.Should().Be(BiosServiceStatus.Supported);
+        result.ReturnValue.Should().Be(expectedBase);
+        result.Diagnostic.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(BiosHleRuntime.GetC0TableFunction, "B0:56 GetC0Table takes no arguments.")]
+    [InlineData(BiosHleRuntime.GetB0TableFunction, "B0:57 GetB0Table takes no arguments.")]
+    public void GetTableFunctions_Reject_A_Call_With_Arguments(byte function, string expectedMessage)
+    {
+        var result = CreateRuntime(new CapturedOutputSink())
+            .Invoke(new BiosCallIdentity(BiosCallFamily.B0, function, arguments: [0x1u]));
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
+        result.Diagnostic.Message.Should().Be(expectedMessage);
+    }
+
+    // A patched table entry is observed on the very next call through it.
+    // Writing a non-zero 4-byte LE word at the slot address makes Invoke return
+    // PatchedTarget rather than running the registered handler.
+    [Fact]
+    public void PatchedTableEntry_IsObserved_OnNextCall_And_OriginalHandlerDoesNotRun()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8));
+
+        // Patch the slot for A0:3C putchar (slot address = 0x200 + 0x3C * 4 = 0x2F0).
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction);
+        slotAddress.Should().Be(0x2F0u, "sanity-check: A0:3C slot address");
+
+        const uint patchedTarget = 0x00100000u;
+        writer.TryWrite(slotAddress, BitConverter.GetBytes(patchedTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'X']));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(patchedTarget);
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_PATCHED_TARGET");
+        sink.Bytes.Should().BeEmpty("the original putchar handler must not have run when the slot is patched");
+    }
+
+    // Patched dispatch also works for a slot that was never HLE-registered.
+    [Fact]
+    public void PatchedTableEntry_WorksForUnregisteredSlot()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+
+        // Patch slot for C0:0x00 (slot address = C0TableAddress + 0 = 0x674).
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.C0, 0x00);
+        slotAddress.Should().Be(BiosJumpTables.C0TableAddress, "sanity-check: C0:00 slot address");
+
+        const uint patchedTarget = 0x00200000u;
+        writer.TryWrite(slotAddress, BitConverter.GetBytes(patchedTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.C0, 0x00));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(patchedTarget);
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_PATCHED_TARGET");
+    }
+
+    // An unpatched, unregistered slot must still report Unsupported.
+    [Fact]
+    public void UnpatchedUnregisteredSlot_Remains_Unsupported()
+    {
+        var identity = new BiosCallIdentity(BiosCallFamily.C0, 0x05);
+
+        var result = CreateRuntime(new CapturedOutputSink()).Invoke(identity);
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+    }
+
+    // A patch written through a KSEG0 alias is visible when dispatching through
+    // the KUSEG address — exercises Ps1AddressTranslation aliasing end-to-end.
+    [Fact]
+    public void PatchWrittenViaKseg0Alias_IsVisibleThroughDispatch()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutsFunction);
+        slotAddress.Should().Be(0x2F8u, "sanity-check: A0:3E slot address");
+
+        const uint patchedTarget = 0x00300000u;
+        var kseg0SlotAddress = 0x80000000u + slotAddress;
+        writer.TryWrite(kseg0SlotAddress, BitConverter.GetBytes(patchedTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.PutsFunction, arguments: [0x00000100u]));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(patchedTarget);
+    }
+
+    // A patched target that is itself untranslatable is still reported as
+    // PatchedTarget — this Runtime does not validate the target address.
+    [Fact]
+    public void PatchedTarget_UntranslatableAddress_IsStillReportedAsPatchedTarget()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction);
+        slotAddress.Should().Be(0x970u, "sanity-check: B0:3F slot address");
+
+        const uint untranslatableTarget = 0xFFFFFFFFu; // KSEG2 — untranslatable
+        writer.TryWrite(slotAddress, BitConverter.GetBytes(untranslatableTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0x00000100u]));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(untranslatableTarget);
+    }
+
+    // Fresh-instance determinism: two runtimes over fresh RAM dispatch identically.
+    // Because RAM is zero-initialised by construction, the table state is
+    // deterministic without an explicit initialisation step — zero IS the
+    // "unpatched" state, and both runtimes must observe the same initial behavior.
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetB0TableFunction)]
+    public void FreshInstances_DispatchIdentically_For_RegisteredServices(BiosCallFamily family, byte function)
+    {
+        // Use a no-arg identity (putchar/puts argument-validation paths are
+        // already covered; here we only confirm status determinism).
+        var identity = new BiosCallIdentity(family, function);
+
+        var result1 = new BiosHleRuntime(new CapturedOutputSink(), NewReader()).Invoke(identity);
+        var result2 = new BiosHleRuntime(new CapturedOutputSink(), NewReader()).Invoke(identity);
+
+        result1.Status.Should().Be(result2.Status,
+            "fresh instances over zero-initialised RAM must dispatch identically");
+        result1.ReturnValue.Should().Be(result2.ReturnValue);
+    }
+
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => new(sink, NewReader());
 
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink, RecompilerGuestMemory ram) =>
