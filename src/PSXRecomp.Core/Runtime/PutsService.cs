@@ -4,16 +4,19 @@ namespace PSXRecomp.Core.Runtime;
 
 /// <summary>
 /// HLE implementation of the documented BIOS TTY service
-/// <c>A(3Eh) std_out_puts(src)</c>: read a NUL-terminated string from guest
-/// memory, write it to the output sink, and return the incoming string pointer
-/// (<c>docs/REFERENCES.md</c>, ADR-014).
+/// <c>A(3Eh) or B(3Fh) std_out_puts(src)</c>: read a NUL-terminated string from
+/// guest memory, write it to the output sink, and return the incoming string
+/// pointer (<c>docs/REFERENCES.md</c>, ADR-014).
 /// </summary>
 /// <remarks>
 /// The service is deliberately a pure function over its injected boundaries —
 /// it never reaches host I/O directly and never branches on title identity.
-/// <see cref="BiosHleRuntime"/> registers it under A0:3E and dispatches to it;
+/// <see cref="BiosHleRuntime"/> registers it under both documented identities,
+/// A0:3E and its B0:3F alias, and dispatches both to this one implementation;
 /// keeping the behavior here rather than in the registry is what lets it be
-/// tested directly, without constructing a runtime.
+/// tested directly, without constructing a runtime. Diagnostics name the
+/// identity they were invoked with rather than a hard-coded one, so a failure
+/// reports the jump table the guest actually called.
 /// </remarks>
 [Domain]
 public static class PutsService
@@ -63,7 +66,7 @@ public static class PutsService
         if (identity.Arguments.Count != 1)
         {
             return BiosServiceResult.InvalidArguments(
-                identity, "A0:3E puts requires one string-pointer argument.");
+                identity, $"{identity.StableKey} puts requires one string-pointer argument.");
         }
 
         var address = identity.Arguments[0];
@@ -73,7 +76,7 @@ public static class PutsService
         if (address + (uint)MaxStringLength < address)
         {
             return BiosServiceResult.UnsupportedState(
-                identity, "A0:3E puts: guest string address is invalid or unmapped.");
+                identity, $"{identity.StableKey} puts: guest string address is invalid or unmapped.");
         }
 
         var buffer = new byte[MaxStringLength];
@@ -84,7 +87,7 @@ public static class PutsService
             if (!reader.TryReadByte(address + (uint)length, out var value))
             {
                 return BiosServiceResult.UnsupportedState(
-                    identity, "A0:3E puts: guest string address is invalid or unmapped.");
+                    identity, $"{identity.StableKey} puts: guest string address is invalid or unmapped.");
             }
 
             if (value == 0)
@@ -102,6 +105,7 @@ public static class PutsService
         }
 
         return BiosServiceResult.UnsupportedState(
-            identity, "A0:3E puts: string exceeds the bounded scan length without a NUL terminator.");
+            identity,
+            $"{identity.StableKey} puts: string exceeds the bounded scan length without a NUL terminator.");
     }
 }

@@ -160,7 +160,8 @@ public sealed class BiosHleContractTests
     [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
     [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
     [InlineData(BiosCallFamily.B0, 0x3D)] // the B0 putchar alias, deliberately unregistered
-    [InlineData(BiosCallFamily.B0, 0x3F)] // the B0 puts alias, deliberately unregistered
+    [InlineData(BiosCallFamily.B0, 0x3E)] // the B0 slot just below the puts alias
+    [InlineData(BiosCallFamily.B0, 0x40)] // the next B0 slot above the puts alias
     public void NeighbouringFunctionNumbers_Are_Not_Caught_By_The_Registry(
         BiosCallFamily family, byte functionNumber)
     {
@@ -214,25 +215,132 @@ public sealed class BiosHleContractTests
         sink.Bytes.Should().BeEmpty("a failed puts must not emit partial output");
     }
 
+    // B0:3F is the B0-table alias of the same service, selected by real-ROM
+    // evidence (ADR-014 amendment "B0:3F selected by real-ROM evidence"). It is
+    // registered to the very same PutsService, so these cases prove the alias
+    // reaches puts semantics — guest read, ordered output, pointer return —
+    // rather than a second implementation.
     [Fact]
-    public void PutChar_And_Puts_Share_One_Sink_In_Call_Order()
+    public void PutsAlias_Is_Dispatched_Through_The_Registry_To_The_Guest_String()
     {
         var ram = new RecompilerGuestMemory();
-        ram.Write8(0x00000200, (byte)'i');
-        ram.Write8(0x00000201, 0);
+        WriteCString(ram, 0x00000100, "hi");
         var sink = new CapturedOutputSink();
-        IBiosRuntime runtime = new BiosHleRuntime(sink, new GuestMemoryReader(ram.Read8));
+        IBiosRuntime runtime = CreateRuntime(sink, ram);
+
+        BiosHleRuntime.PutsAliasFunction.Should().Be(0x3F);
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, 0x800D0FF8, [0x00000100u]));
+
+        result.Status.Should().Be(
+            BiosServiceStatus.Supported, "B0:3F is registered, not an unsupported call");
+        result.ReturnValue.Should().Be(0x00000100u, "puts returns its incoming string pointer");
+        result.Diagnostic.Should().BeNull();
+        sink.Bytes.Should().BeEquivalentTo(
+            new byte[] { (byte)'h', (byte)'i' }, static o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void PutsAlias_Unmapped_Pointer_Fails_Loudly_Through_The_Registry()
+    {
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = CreateRuntime(sink);
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0xC0000000u]));
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.ReturnValue.Should().BeNull();
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+        sink.Bytes.Should().BeEmpty("a failed puts must not emit partial output");
+    }
+
+    // Sharing one implementation must not blur the two identities: the alias is
+    // observably equivalent on success, and still names itself on failure.
+    [Fact]
+    public void Puts_And_Its_Alias_Are_Observably_Equivalent_For_The_Same_String()
+    {
+        static IReadOnlyList<byte> Emit(BiosCallFamily family, byte function, out uint? returnValue)
+        {
+            var ram = new RecompilerGuestMemory();
+            WriteCString(ram, 0x00000300, "PSX");
+            var sink = new CapturedOutputSink();
+            var result = CreateRuntime(sink, ram)
+                .Invoke(new BiosCallIdentity(family, function, arguments: [0x00000300u]));
+
+            result.Status.Should().Be(BiosServiceStatus.Supported);
+            returnValue = result.ReturnValue;
+            return sink.Bytes;
+        }
+
+        var direct = Emit(BiosCallFamily.A0, BiosHleRuntime.PutsFunction, out var directReturn);
+        var alias = Emit(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, out var aliasReturn);
+
+        direct.Should().BeEquivalentTo("PSX"u8.ToArray(), static o => o.WithStrictOrdering());
+        alias.Should().BeEquivalentTo(direct, static o => o.WithStrictOrdering());
+        directReturn.Should().Be(0x00000300u);
+        aliasReturn.Should().Be(directReturn);
+    }
+
+    // The diagnostic must name the jump table the guest actually called, in the
+    // human-readable message and not only in the structured Identity, otherwise
+    // one shared service would misattribute every alias failure to A0:3E.
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction, "A0:3E")]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, "B0:3F")]
+    public void PutsDiagnostics_Name_The_Identity_That_Was_Actually_Called(
+        BiosCallFamily family, byte function, string expectedKey)
+    {
+        var runtime = CreateRuntime(new CapturedOutputSink());
+
+        var badPointer = runtime.Invoke(new BiosCallIdentity(family, function, arguments: [0xC0000000u]));
+        var badArguments = runtime.Invoke(new BiosCallIdentity(family, function));
+
+        badPointer.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+        badPointer.Diagnostic.Identity.StableKey.Should().Be(expectedKey);
+        badPointer.Diagnostic.Message.Should().StartWith($"{expectedKey} puts:");
+
+        badArguments.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
+        badArguments.Diagnostic.Identity.StableKey.Should().Be(expectedKey);
+        badArguments.Diagnostic.Message.Should()
+            .Be($"{expectedKey} puts requires one string-pointer argument.");
+    }
+
+    [Fact]
+    public void PutChar_And_Both_Puts_Identities_Share_One_Sink_In_Call_Order()
+    {
+        var ram = new RecompilerGuestMemory();
+        WriteCString(ram, 0x00000200, "i");
+        WriteCString(ram, 0x00000210, "!");
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = CreateRuntime(sink, ram);
 
         runtime.Invoke(new BiosCallIdentity(
             BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'h']));
         runtime.Invoke(new BiosCallIdentity(
             BiosCallFamily.A0, BiosHleRuntime.PutsFunction, arguments: [0x00000200u]));
+        runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0x00000210u]));
 
         sink.Bytes.Should().BeEquivalentTo(
-            new byte[] { (byte)'h', (byte)'i' }, static o => o.WithStrictOrdering());
+            new byte[] { (byte)'h', (byte)'i', (byte)'!' }, static o => o.WithStrictOrdering());
     }
 
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => new(sink, NewReader());
+
+    private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink, RecompilerGuestMemory ram) =>
+        new(sink, new GuestMemoryReader(ram.Read8));
+
+    private static void WriteCString(RecompilerGuestMemory ram, uint address, string value)
+    {
+        for (var i = 0; i < value.Length; i++)
+        {
+            ram.Write8(address + (uint)i, (byte)value[i]);
+        }
+
+        ram.Write8(address + (uint)value.Length, 0);
+    }
 
     // Any valid reader satisfies call sites that never dispatch to a
     // pointer-taking service; puts's own cases build a reader over known bytes.
