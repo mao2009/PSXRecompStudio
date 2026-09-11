@@ -375,3 +375,55 @@ No second service class was written.
 - (d) **No other service's status changes.** getchar (A0:3B) and gets (A0:3D)
   stay unregistered pending an input-sink design. Issue #279's B0:3F item is
   now closed; the Issue itself remains open for the rest of its scope.
+
+## Amendment (2026-09-11): B0:56 GetC0Table / B0:57 GetB0Table evaluated, not registered
+
+Both identities are verified (`BiosCallNames`) and are the two most frequently
+observed real-ROM identities recorded to date
+([docs/runtime/bios-hle-evidence.md](../runtime/bios-hle-evidence.md) §3.4:
+`B0:56` in 3 of 5 executables, `B0:57` in 3 of 5 with up to 4 sites in one).
+This amendment records why they are not registered, rather than leaving that
+decision implicit.
+
+- (a) **Their documented behavior names a real, patchable table, not a bare
+  number.** [docs/REFERENCES.md](../REFERENCES.md): "retrieve the address of
+  the jump list for the `C(NNh)` and `B(NNh)` functions respectively,
+  allowing entries in those lists to be patched." The returned address is
+  documented as pointing at guest-visible, patchable function-pointer table
+  content — not an opaque handle whose only observable use is being echoed
+  back through R2.
+- (b) **No such table exists in this Runtime.** `BiosHleRuntime` dispatches
+  purely through a host-side `(BiosCallFamily, byte)` lookup (the `services`
+  dictionary in `BiosHleRuntime.cs`); no guest memory address anywhere in the
+  Runtime or Domain layer is backed by, or connected to, the actual A0/B0/C0
+  dispatch tables, and no BIOS ROM image is loaded (base Decision). Returning
+  a constant address — even the historically correct real-hardware one —
+  would satisfy only the return-register contract while the guest-visible
+  content at that address stays unmodeled: a read returns whatever happens to
+  already be in guest RAM (never a real function pointer), and a write (the
+  documented "patch" use) has no effect on this Runtime's actual dispatch.
+  This is the same effect-incomplete pattern the base Decision's Alternatives
+  section already rejected once for `puts` (an ABI-correct, return-value-only
+  registration that skips the guest-observable effect a caller depends on),
+  applied here to a table pointer instead of a guest string read.
+- (c) **Whether real call sites actually use the pointer cannot be answered
+  with existing tooling.** `BiosCallRecognizer` resolves call-site *identity*
+  (family/function number) only; this repository has no register-liveness or
+  return-value-use dataflow pass, so whether the observed `B0:56`/`B0:57`
+  sites dereference or patch through the returned address, or discard it, is
+  unverified. Per this ADR's no-guessing rule, an unverified fact resolves to
+  the safe side — it does not narrow the documented ABI down to "harmless
+  because it's probably unused" without evidence, and the current absence of
+  a locally observed dereference is not evidence that one never occurs.
+- (d) **Verdict: evaluated and left unregistered.** `BiosHleRuntime`'s
+  registry is unchanged by this amendment; it still holds exactly `(A0,
+  0x3C)`, `(A0, 0x3E)`, and `(B0, 0x3F)`. Registering `B0:56`/`B0:57` needs a
+  Runtime capability this repository does not yet have — a guest-visible,
+  dispatch-connected representation of the B0/C0 jump tables — which is a new
+  capability decision, not a two-service wiring task like `puts`'s `B0:3F`
+  alias was. A follow-up Issue proposing that capability is recommended (see
+  [docs/runtime/bios-hle-evidence.md](../runtime/bios-hle-evidence.md)).
+- (e) **No other service's status changes.** getchar (A0:3B) and gets (A0:3D)
+  stay unregistered pending an input-sink design; `B0:3D` stays unregistered
+  pending evidence. Issue #279 remains open for all of these, plus the new
+  kernel jump-table state item this amendment surfaces.

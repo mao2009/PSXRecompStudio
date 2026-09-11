@@ -66,14 +66,24 @@ Verified (docs/REFERENCES.md, BiosCallNames):
 
 Implemented (BiosHleRuntime registry):
   A0:3C putchar, A0:3E puts, B0:3F puts
+
+Blocked (evaluated, not registered — ADR-014 amendment 2026-09-11
+"B0:56 GetC0Table / B0:57 GetB0Table evaluated, not registered"):
+  B0:56 GetC0Table — guest-visible BIOS kernel table state not modeled
+  B0:57 GetB0Table — guest-visible BIOS kernel table state not modeled
 ```
 
-The three lists answer different questions and do not imply each other: an
+The four lists answer different questions and do not imply each other: an
 identity can be Verified without ever being Observed in a local fixture (the
 seven newly verified identities above), Observed without being Verified until
 checked, or Verified and Observed without being Implemented (the six
 card/table identities above have no registered service — identifying them is
-not a decision to build them, per ADR-014).
+not a decision to build them, per ADR-014), or Verified, Observed, and
+explicitly evaluated but still not Implemented (`B0:56`/`B0:57` — unlike the
+other four card/table identities, which simply have not been evaluated for
+registration yet, these two were evaluated and found to need a Runtime
+capability that does not exist; see the per-service table in §4 and the
+ADR-014 amendment it cites).
 
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
@@ -389,6 +399,8 @@ carry a "verify before register" marker.
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
 | ~~B0:3F puts alias~~ — **done**, registered with full documented behavior | B0:3F `std_out_puts(src)` (alias of A0:3E) | same as A0:3E | same | same, through the B0 table, same `PutsService` | host + guest read (already exists) | High (differential: stub reads, compare output + R2) | **Confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)) | Low — reuse, no new implementation |
 | B0 putchar alias | B0:3D | same as A0:3C | same | same, through the B0 table | host (output sink already exists) | High (deterministic sink assertable) | **None observed.** | Low (capability-gated) |
+| GetC0Table | B0:56 `GetC0Table()` | none | address of the C0 jump-table list | none directly observable, but the documented purpose is to let callers **patch** that list — the return value is only honest if it points at real, guest-visible, dispatch-connected table content | **guest state** — a guest-visible, dispatch-connected jump-table representation this Runtime does not model at all | Low today for a bare return value, but that alone would not honestly test the documented behavior; the modeled table this ABI depends on does not exist to test against | **Confirmed** — the most frequently observed verified identity (3 of 5 executables, 2–3 sites in one) | **Blocked** — needs a new Runtime capability (guest-visible kernel jump-table state), not a wiring task (ADR-014 amendment 2026-09-11) |
+| GetB0Table | B0:57 `GetB0Table()` | none | address of the B0 jump-table list | same as GetC0Table, for the B0 list | same as GetC0Table | same as GetC0Table | **Confirmed** — tied for most frequently observed, with 4 sites in one executable | **Blocked** — same capability gap (ADR-014 amendment 2026-09-11) |
 
 ### Recommendation
 
@@ -416,6 +428,15 @@ they unblocked have since been implemented:
    implementation. **B0:3D** stays unregistered: no call site selects it. Note that no
    locally available title calls A0:3C or A0:3E directly, so the B0 alias was, until this
    registration, the *only* observed call to a service this repository had verified.
+5. **B0:56 GetC0Table / B0:57 GetB0Table** — ⛔ **evaluated, blocked.** Despite being
+   the two most frequently observed verified identities, their documented behavior
+   (returning the address of a real, patchable jump-table list) requires guest-visible,
+   dispatch-connected kernel table state this Runtime does not model at all — unlike
+   `puts`/`putchar`, which needed only boundaries (a reader, a sink) this Runtime already
+   had. Registering either with a bare constant return would repeat the exact
+   effect-incomplete pattern ADR-014 already rejected once for `puts` (base Decision's
+   Alternatives). See the ADR-014 amendment *B0:56 GetC0Table / B0:57 GetB0Table
+   evaluated, not registered* (2026-09-11) and open question 9 below.
 
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
@@ -495,3 +516,10 @@ Two explicit guarantees:
    discharged for the whole registry, and the strict reading — full documented
    behavior including host-visible output, not just the ABI return contract —
    is the bar every future registration must meet.
+9. **Decide whether to build a guest-visible BIOS kernel jump-table (A0/B0/C0) state
+   abstraction.** This is required before `B0:56 GetC0Table` / `B0:57 GetB0Table` (and
+   any future service whose documented contract is "the address of a patchable table",
+   not just a scalar or a string) can be honestly registered under ADR-014's bar. A new
+   Issue proposing this capability is recommended (2026-09-11 evaluation, ADR-014
+   amendment *B0:56 GetC0Table / B0:57 GetB0Table evaluated, not registered*); none has
+   been filed by this document.
