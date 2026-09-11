@@ -92,15 +92,27 @@ public sealed class BiosHleRuntime : IBiosRuntime
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var entryAddress = BiosJumpTables.EntryAddress(identity.Family, identity.FunctionNumber);
-        Span<byte> entryBytes = stackalloc byte[4];
+        // A0's table has a primary-source-confirmed size (192 entries, 0x00-0xBF).
+        // Function numbers >= 0xC0 are out of the A0 table; probing RAM there would
+        // read unrelated content and could falsely report PatchedTarget. Skip the
+        // patch-check for those and fall through directly to the registry (which
+        // correctly returns Unsupported for anything unregistered).
+        // B0/C0 have no primary-source-confirmed upper bound — no guard is applied.
+        var inTableRange = identity.Family != BiosCallFamily.A0 ||
+                           identity.FunctionNumber <= BiosJumpTables.A0MaxFunctionNumber;
 
-        if (_guestMemoryReader.TryRead(entryAddress, entryBytes))
+        if (inTableRange)
         {
-            var entryValue = (uint)(entryBytes[0] | (entryBytes[1] << 8) | (entryBytes[2] << 16) | (entryBytes[3] << 24));
-            if (entryValue != 0)
+            var entryAddress = BiosJumpTables.EntryAddress(identity.Family, identity.FunctionNumber);
+            Span<byte> entryBytes = stackalloc byte[4];
+
+            if (_guestMemoryReader.TryRead(entryAddress, entryBytes))
             {
-                return BiosServiceResult.PatchedTarget(identity, entryValue);
+                var entryValue = (uint)(entryBytes[0] | (entryBytes[1] << 8) | (entryBytes[2] << 16) | (entryBytes[3] << 24));
+                if (entryValue != 0)
+                {
+                    return BiosServiceResult.PatchedTarget(identity, entryValue);
+                }
             }
         }
 

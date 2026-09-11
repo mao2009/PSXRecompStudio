@@ -488,6 +488,35 @@ public sealed class BiosHleContractTests
         result1.ReturnValue.Should().Be(result2.ReturnValue);
     }
 
+    // Regression: A0 function numbers >= 0xC0 are out of the A0 table
+    // (primary-source-confirmed size: 192 entries, 0x00-0xBF). Writing a non-zero
+    // value at the address EntryAddress(A0, 0xC0) *would* compute (the first
+    // address past the table, 0x500) must NOT be misreported as PatchedTarget —
+    // the patch-check is skipped for out-of-range A0 function numbers.
+    [Fact]
+    public void A0_FunctionNumber_AboveTableBound_SkipsPatchCheck_And_IsUnsupported()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8));
+
+        // 0xC0 is the first out-of-range A0 function number; its computed slot
+        // address would be 0x200 + 0xC0 * 4 = 0x500 — past the A0 table.
+        const byte outOfRangeFunction = 0xC0;
+        var wouldBeSlotAddress = BiosJumpTables.A0TableAddress + (uint)outOfRangeFunction * 4u;
+        wouldBeSlotAddress.Should().Be(0x500u, "sanity-check: first address past the A0 table");
+
+        // Write a non-zero sentinel at that address.
+        writer.TryWrite(wouldBeSlotAddress, BitConverter.GetBytes(0xDEADBEEFu)).Should().BeTrue();
+
+        // Invoke must not probe that address or return PatchedTarget.
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.A0, outOfRangeFunction));
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported,
+            "out-of-range A0 function numbers must bypass the patch-check and remain Unsupported");
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+    }
+
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => new(sink, NewReader());
 
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink, RecompilerGuestMemory ram) =>

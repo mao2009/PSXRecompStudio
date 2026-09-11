@@ -600,3 +600,23 @@ amendment identified.
 - (s) **The registry now holds five entries:** `(A0, 0x3C)`, `(A0, 0x3E)`,
   `(B0, 0x3F)`, `(B0, 0x56)`, `(B0, 0x57)`. Issue #279 remains open for getchar,
   gets, B0:3D, and the patched-target execution gap above.
+
+### Addendum: A0 upper-bound enforced; B0/C0 bounds intentionally left open
+
+- (t) **A0's table size is primary-source-confirmed** (psx-spx, pinned commit
+  `ecd6f794f459ab5f72feb88d46df8d23b3c413e0`: 0x300 bytes = 192 entries,
+  function numbers 0x00–0xBF). `BiosJumpTables.A0MaxFunctionNumber = 0xBF` was
+  added and `BiosHleRuntime.Invoke` now skips the patch-check for A0 function
+  numbers > 0xBF. Without this guard, computing `EntryAddress(A0, fn)` for
+  fn >= 0xC0 would land in the "relocated kernel code" region of the BIOS
+  memory map; a non-zero byte pattern there would be falsely reported as
+  `PatchedTarget`.
+- (u) **No equivalent bound is enforced for B0 or C0.** No primary source in
+  this repository confirms an upper function-number limit for either table. The
+  no-guessing rule in this ADR (Appendix A) prohibits inventing a bound from
+  secondary sources. The B0/C0 address-collision note in `BiosJumpTables`
+  (C0 entries at fn >= 0x80 arithmetically alias B0 entries at fn 0x00) is a
+  documented consequence of the chosen base addresses, not a confirmed
+  hardware behavior, and does not establish a usable upper bound. This
+  limitation is deliberate and documented; it may be revisited only when a
+  primary source is located.

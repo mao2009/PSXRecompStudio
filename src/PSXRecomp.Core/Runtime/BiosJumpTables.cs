@@ -36,6 +36,17 @@ public static class BiosJumpTables
     public const uint A0TableAddress = 0x00000200;
 
     /// <summary>
+    /// Highest valid function number for the A0 table (inclusive). Primary-source-confirmed:
+    /// psx-spx (pinned commit ecd6f794f459ab5f72feb88d46df8d23b3c413e0) states the A0 table
+    /// size as 0x300 bytes = 192 entries × 4 bytes, so valid function numbers are
+    /// <c>0x00</c>–<c>0xBF</c>. Function numbers <c>&gt;= 0xC0</c> are out of the A0 table;
+    /// their computed addresses fall into the "relocated kernel code" region of the BIOS
+    /// memory map and must not be treated as jump-table slots.
+    /// <see cref="BiosHleRuntime.Invoke"/> skips the patch-check for such numbers.
+    /// </summary>
+    public const byte A0MaxFunctionNumber = 0xBF;
+
+    /// <summary>
     /// B0 jump-table base address. This Runtime's own design choice, not a
     /// confirmed real-hardware fact (see remarks).
     /// </summary>
@@ -45,6 +56,16 @@ public static class BiosJumpTables
     /// C0 jump-table base address. This Runtime's own design choice, not a
     /// confirmed real-hardware fact (see remarks).
     /// </summary>
+    /// <remarks>
+    /// Note: the B0 and C0 table addresses chosen here are only 0x200 bytes apart
+    /// (<c>0x874 - 0x674 = 0x200</c>). C0 entries at function numbers &gt;= 0x80 would
+    /// arithmetically alias B0 entries starting at 0x00 (e.g.
+    /// <c>EntryAddress(C0, 0x80) == EntryAddress(B0, 0x00) == 0x874</c>). This is
+    /// expected and harmless: C0's real documented range never reaches 0x80, and no
+    /// confirmed upper bound for B0 or C0 exists in this repository's primary sources —
+    /// enforcing one would require guessing, which ADR-014 forbids. This is a
+    /// deliberate, documented limitation; see ADR-014's amendment for #360.
+    /// </remarks>
     public const uint C0TableAddress = 0x00000674;
 
     /// <summary>
