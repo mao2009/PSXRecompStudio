@@ -35,6 +35,16 @@ public sealed record BiosServiceResult(
     public static BiosServiceResult UnsupportedState(BiosCallIdentity identity, string message) =>
         CreateUnsupportedState(identity, message);
 
+    /// <summary>
+    /// Creates the result for a jump-table entry that guest code has patched to
+    /// its own target. <see cref="ReturnValue"/> carries the patched guest target
+    /// address (not a BIOS return-register value) so a caller can act on it; this
+    /// Runtime does not execute or validate that target itself — see ADR-014's
+    /// amendment for #360.
+    /// </summary>
+    public static BiosServiceResult PatchedTarget(BiosCallIdentity identity, uint targetAddress) =>
+        CreatePatchedTarget(identity, targetAddress);
+
     private static BiosServiceResult CreateSupported(BiosCallIdentity identity, uint? returnValue)
     {
         ArgumentNullException.ThrowIfNull(identity);
@@ -72,6 +82,19 @@ public sealed record BiosServiceResult(
             null,
             new BiosDiagnostic("BIOS_HLE_UNSUPPORTED_STATE", identity, message));
     }
+
+    private static BiosServiceResult CreatePatchedTarget(BiosCallIdentity identity, uint targetAddress)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        return new(
+            BiosServiceStatus.PatchedTarget,
+            targetAddress,
+            new BiosDiagnostic(
+                "BIOS_HLE_PATCHED_TARGET",
+                identity,
+                $"{identity.StableKey}: jump-table entry was patched to guest address 0x{targetAddress:X8}; " +
+                "this Runtime does not yet execute a patched target (no interpreter/recompiled dispatch trap exists)."));
+    }
 }
 
 /// <summary>Whether the Runtime BIOS service was implemented or rejected.</summary>
@@ -80,6 +103,7 @@ public enum BiosServiceStatus : byte
 {
     Supported,
     Unsupported,
+    PatchedTarget,
 }
 
 /// <summary>Stable diagnostic data for an unsupported or otherwise rejected BIOS call.</summary>

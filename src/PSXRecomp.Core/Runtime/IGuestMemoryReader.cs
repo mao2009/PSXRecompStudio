@@ -18,4 +18,14 @@ public interface IGuestMemoryReader
     /// <param name="value">The byte read; set to zero when the read fails.</param>
     /// <returns>True if the address is translatable and mapped; false otherwise.</returns>
     bool TryReadByte(uint address, out byte value);
+
+    /// <summary>
+    /// Reads an address range contiguously into <paramref name="buffer"/>.
+    /// All-or-nothing: if any byte fails to be read, the buffer is left untouched
+    /// and false is returned.
+    /// </summary>
+    /// <param name="address">Guest virtual address of the first byte.</param>
+    /// <param name="buffer">Buffer to fill; its length is the number of bytes to read.</param>
+    /// <returns>True if every byte was read; false if any byte failed.</returns>
+    bool TryRead(uint address, Span<byte> buffer);
 }

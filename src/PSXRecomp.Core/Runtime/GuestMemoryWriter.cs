@@ -53,4 +53,49 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
         _writePhysicalByte(physical, value);
         return true;
     }
+
+    /// <summary>
+    /// Writes a contiguous range of bytes to guest memory. All-or-nothing: every
+    /// address in the range is validated before anything is written, so a
+    /// rejected range never partially mutates guest memory (mirrors
+    /// <see cref="GuestMemoryReader.TryRead"/>'s all-or-nothing contract).
+    /// </summary>
+    /// <param name="address">Guest virtual address of the first byte.</param>
+    /// <param name="buffer">Bytes to write.</param>
+    /// <returns>True if every byte was written; false if any address was rejected.</returns>
+    public bool TryWrite(uint address, ReadOnlySpan<byte> buffer)
+    {
+        var length = (uint)buffer.Length;
+        if (length > 0 && address + length < address)
+        {
+            return false;
+        }
+
+        if (length > Ps1MemoryMap.RamSize)
+        {
+            return false;
+        }
+
+        // Validate every address before writing anything, so a rejected range
+        // never partially mutates guest memory (mirrors GuestMemoryReader.TryRead's
+        // all-or-nothing contract).
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            if (!Ps1AddressTranslation.TryTranslate(address + (uint)i, out var physical) ||
+                physical >= Ps1MemoryMap.RamSize)
+            {
+                return false;
+            }
+        }
+
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            // TryWriteByte re-translates, but reuses the single-byte contract
+            // exactly rather than duplicating the physical-write call; the
+            // validation pass above guarantees every one of these succeeds.
+            TryWriteByte(address + (uint)i, buffer[i]);
+        }
+
+        return true;
+    }
 }

@@ -18,4 +18,14 @@ public interface IGuestMemoryWriter
     /// <param name="value">The byte to write.</param>
     /// <returns>True if the address is translatable and mapped; false otherwise.</returns>
     bool TryWriteByte(uint address, byte value);
+
+    /// <summary>
+    /// Writes a contiguous range of bytes to guest memory. All-or-nothing: every
+    /// address in the range is validated before anything is written, so a
+    /// rejected range never partially mutates guest memory.
+    /// </summary>
+    /// <param name="address">Guest virtual address of the first byte.</param>
+    /// <param name="buffer">Bytes to write.</param>
+    /// <returns>True if every byte was written; false if any address was rejected.</returns>
+    bool TryWrite(uint address, ReadOnlySpan<byte> buffer);
 }

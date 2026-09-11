@@ -23,6 +23,12 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </summary>
     public const byte PutsAliasFunction = 0x3F;
 
+    /// <summary>B0:56 GetC0Table — returns <see cref="BiosJumpTables.C0TableAddress"/>.</summary>
+    public const byte GetC0TableFunction = 0x56;
+
+    /// <summary>B0:57 GetB0Table — returns <see cref="BiosJumpTables.B0TableAddress"/>.</summary>
+    public const byte GetB0TableFunction = 0x57;
+
     private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
     private readonly IRuntimeOutputSink _outputSink;
     private readonly IGuestMemoryReader _guestMemoryReader;
@@ -64,13 +70,40 @@ public sealed class BiosHleRuntime : IBiosRuntime
             [(BiosCallFamily.A0, PutCharFunction)] = InvokePutChar,
             [(BiosCallFamily.A0, PutsFunction)] = InvokePuts,
             [(BiosCallFamily.B0, PutsAliasFunction)] = InvokePuts,
+            [(BiosCallFamily.B0, GetC0TableFunction)] = InvokeGetC0Table,
+            [(BiosCallFamily.B0, GetB0TableFunction)] = InvokeGetB0Table,
         };
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Dispatch now consults guest-visible jump-table state before falling back
+    /// to the registry. If the table entry for this call's
+    /// <c>(Family, FunctionNumber)</c> holds a non-zero 32-bit value, the entry
+    /// has been patched by guest code and <see cref="BiosServiceResult.PatchedTarget"/>
+    /// is returned — regardless of whether a host-side handler is also registered for
+    /// that slot. The raw patched address is carried in
+    /// <see cref="BiosServiceResult.ReturnValue"/> for the caller to inspect;
+    /// this Runtime does not execute or validate it (ADR-014 amendment for #360).
+    /// Guest RAM backing is zero-initialised by construction, so an unpatched slot
+    /// reads as zero and falls through to the registry exactly as before.
+    /// </remarks>
     public BiosServiceResult Invoke(BiosCallIdentity identity)
     {
         ArgumentNullException.ThrowIfNull(identity);
+
+        var entryAddress = BiosJumpTables.EntryAddress(identity.Family, identity.FunctionNumber);
+        Span<byte> entryBytes = stackalloc byte[4];
+
+        if (_guestMemoryReader.TryRead(entryAddress, entryBytes))
+        {
+            var entryValue = (uint)(entryBytes[0] | (entryBytes[1] << 8) | (entryBytes[2] << 16) | (entryBytes[3] << 24));
+            if (entryValue != 0)
+            {
+                return BiosServiceResult.PatchedTarget(identity, entryValue);
+            }
+        }
+
         return services.TryGetValue((identity.Family, identity.FunctionNumber), out var service)
             ? service(identity)
             : BiosServiceResult.Unsupported(identity);
@@ -108,4 +141,40 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </summary>
     private BiosServiceResult InvokePuts(BiosCallIdentity identity) =>
         PutsService.Invoke(identity, _guestMemoryReader, _outputSink);
+
+    /// <summary>
+    /// B0:56 GetC0Table. Returns <see cref="BiosJumpTables.C0TableAddress"/>,
+    /// which is this Runtime's own design choice for the C0 jump-table base
+    /// address (not a primary-source-confirmed real-hardware fact — see
+    /// ADR-014's amendment for #360). The returned address is now backed by
+    /// guest-visible RAM connected to dispatch: reads and writes at that address
+    /// affect actual dispatch outcomes through <see cref="Invoke"/>.
+    /// </summary>
+    private BiosServiceResult InvokeGetC0Table(BiosCallIdentity identity)
+    {
+        if (identity.Arguments.Count != 0)
+        {
+            return BiosServiceResult.InvalidArguments(identity, "B0:56 GetC0Table takes no arguments.");
+        }
+
+        return BiosServiceResult.Supported(identity, BiosJumpTables.C0TableAddress);
+    }
+
+    /// <summary>
+    /// B0:57 GetB0Table. Returns <see cref="BiosJumpTables.B0TableAddress"/>,
+    /// which is this Runtime's own design choice for the B0 jump-table base
+    /// address (not a primary-source-confirmed real-hardware fact — see
+    /// ADR-014's amendment for #360). The returned address is now backed by
+    /// guest-visible RAM connected to dispatch: reads and writes at that address
+    /// affect actual dispatch outcomes through <see cref="Invoke"/>.
+    /// </summary>
+    private BiosServiceResult InvokeGetB0Table(BiosCallIdentity identity)
+    {
+        if (identity.Arguments.Count != 0)
+        {
+            return BiosServiceResult.InvalidArguments(identity, "B0:57 GetB0Table takes no arguments.");
+        }
+
+        return BiosServiceResult.Supported(identity, BiosJumpTables.B0TableAddress);
+    }
 }
