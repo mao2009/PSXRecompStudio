@@ -660,6 +660,148 @@ public sealed class BiosHleContractTests
         result.ReturnValue.Should().Be(patchedTarget);
     }
 
+    // #360 Blocker B: a C0 high-range call is a second identity for the very
+    // same physical slot as its mirrored B0 call. A registered B0 service must
+    // be reachable through its C0 alias, dispatching exactly as the direct B0
+    // call does — not misreported as PatchedTarget and not left Unsupported.
+    [Theory]
+    [InlineData((byte)0xBF, BiosHleRuntime.PutsAliasFunction)] // C0:BF -> B0:3F puts
+    [InlineData((byte)0xD6, BiosHleRuntime.GetC0TableFunction)] // C0:D6 -> B0:56 GetC0Table
+    [InlineData((byte)0xD7, BiosHleRuntime.GetB0TableFunction)] // C0:D7 -> B0:57 GetB0Table
+    public void RegisteredB0Service_IsReachable_ThroughItsC0HighRangeAlias(byte c0Function, byte b0Function)
+    {
+        BiosJumpTables.EntryAddress(BiosCallFamily.C0, c0Function)
+            .Should().Be(BiosJumpTables.EntryAddress(BiosCallFamily.B0, b0Function), "sanity-check: same physical slot");
+
+        var isPuts = b0Function == BiosHleRuntime.PutsAliasFunction;
+        var arguments = isPuts ? new[] { 0x00000400u } : Array.Empty<uint>();
+
+        var ramForAlias = new RecompilerGuestMemory();
+        if (isPuts) WriteCString(ramForAlias, 0x00000400, "hi");
+        var aliasSink = new CapturedOutputSink();
+        var viaC0Alias = CreateRuntime(aliasSink, ramForAlias)
+            .Invoke(new BiosCallIdentity(BiosCallFamily.C0, c0Function, arguments: arguments));
+
+        var ramForDirect = new RecompilerGuestMemory();
+        if (isPuts) WriteCString(ramForDirect, 0x00000400, "hi");
+        var directSink = new CapturedOutputSink();
+        var viaB0Direct = CreateRuntime(directSink, ramForDirect)
+            .Invoke(new BiosCallIdentity(BiosCallFamily.B0, b0Function, arguments: arguments));
+
+        viaC0Alias.Status.Should().Be(BiosServiceStatus.Supported,
+            "the C0 alias must reach the registered B0 service, not PatchedTarget or Unsupported");
+        viaC0Alias.ReturnValue.Should().Be(viaB0Direct.ReturnValue);
+        aliasSink.Bytes.Should().BeEquivalentTo(directSink.Bytes, static o => o.WithStrictOrdering());
+    }
+
+    // Sentinel consistency: the same physical slot uses exactly one sentinel
+    // value, regardless of which identity computes it.
+    [Theory]
+    [InlineData((byte)0xBF, BiosHleRuntime.PutsAliasFunction)]
+    [InlineData((byte)0xD6, BiosHleRuntime.GetC0TableFunction)]
+    [InlineData((byte)0xD7, BiosHleRuntime.GetB0TableFunction)]
+    public void HleSentinelTarget_IsIdenticalForC0Alias_AndItsCanonicalB0Identity(byte c0Function, byte b0Function)
+    {
+        BiosJumpTables.HleSentinelTarget(BiosCallFamily.C0, c0Function)
+            .Should().Be(BiosJumpTables.HleSentinelTarget(BiosCallFamily.B0, b0Function));
+    }
+
+    // Fresh construction seeds the shared physical slot once, using the
+    // canonical (B0) sentinel; reading it back through either identity agrees.
+    [Fact]
+    public void RegisteredMirrorSlot_ReadsAsCanonicalSentinel_ThroughEitherIdentity()
+    {
+        var ram = new RecompilerGuestMemory();
+        _ = CreateRuntime(new CapturedOutputSink(), ram);
+
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> entryBytes = stackalloc byte[4];
+        reader.TryRead(BiosJumpTables.EntryAddress(BiosCallFamily.C0, 0xBF), entryBytes).Should().BeTrue();
+        var entryValue = BitConverter.ToUInt32(entryBytes);
+
+        entryValue.Should().Be(BiosJumpTables.HleSentinelTarget(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction));
+        entryValue.Should().Be(BiosJumpTables.HleSentinelTarget(BiosCallFamily.C0, 0xBF));
+    }
+
+    // Patch consistency: patching the registered mirror slot from the B0 side
+    // is observed identically when dispatching through the C0 alias.
+    [Fact]
+    public void PatchAppliedViaB0Side_IsObservedIdentically_ThroughC0AliasDispatch()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
+
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction);
+        const uint guestTarget = 0x000C0000u;
+        writer.TryWrite(slotAddress, BitConverter.GetBytes(guestTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.C0, 0xBF, arguments: [0u]));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(guestTarget);
+    }
+
+    // ...and the reverse: patching via the C0 alias is observed through the
+    // direct B0 dispatch of the registered service.
+    [Fact]
+    public void PatchAppliedViaC0Alias_IsObservedIdentically_ThroughB0DirectDispatch()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+        IBiosRuntime runtime = new BiosHleRuntime(new CapturedOutputSink(), new GuestMemoryReader(ram.Read8), writer);
+
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.C0, 0xBF);
+        const uint guestTarget = 0x000D0000u;
+        writer.TryWrite(slotAddress, BitConverter.GetBytes(guestTarget)).Should().BeTrue();
+
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0u]));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(guestTarget);
+    }
+
+    // Restore behavior for a registered mirror slot: a non-zero patch already
+    // present in memory before construction must survive construction, and
+    // both identities must observe the same restored state.
+    [Fact]
+    public void RegisteredMirrorSlot_PreexistingPatch_SurvivesConstruction_ObservedFromBothIdentities()
+    {
+        var ram = new RecompilerGuestMemory();
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction);
+        const uint preexistingGuestPatch = 0x000E0000u;
+        new GuestMemoryWriter(ram.Write8).TryWrite(slotAddress, BitConverter.GetBytes(preexistingGuestPatch)).Should().BeTrue();
+
+        var runtime = CreateRuntime(new CapturedOutputSink(), ram);
+
+        var viaB0 = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0u]));
+        var viaC0 = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.C0, 0xBF, arguments: [0u]));
+
+        viaB0.Status.Should().Be(BiosServiceStatus.PatchedTarget,
+            "constructing over a pre-patched mirror slot must not overwrite the patch (Blocker A)");
+        viaB0.ReturnValue.Should().Be(preexistingGuestPatch);
+        viaC0.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        viaC0.ReturnValue.Should().Be(preexistingGuestPatch);
+    }
+
+    // Identity preservation: dispatching a registered service through its C0
+    // alias must still report the identity the guest actually called (C0),
+    // never silently rewritten to the canonical B0 identity — the same policy
+    // already established for the A0:3E/B0:3F puts alias.
+    [Fact]
+    public void C0AliasDispatch_PreservesTheOriginalC0Identity_InTheResult()
+    {
+        var sink = new CapturedOutputSink();
+        var runtime = CreateRuntime(sink);
+
+        var badArguments = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.C0, 0xBF));
+
+        badArguments.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
+        badArguments.Diagnostic.Identity.StableKey.Should().Be("C0:BF",
+            "the diagnostic must name the identity the guest actually called, not the canonical B0 identity");
+        badArguments.Diagnostic.Message.Should().Be("C0:BF puts requires one string-pointer argument.");
+    }
+
     // C0's documented N/A range (0x1E..0x7F, jump_to_00000000h) must still
     // dispatch as an ordinary unregistered slot: real, present, but zero.
     [Theory]
@@ -671,6 +813,130 @@ public sealed class BiosHleContractTests
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+    }
+
+    // #360 Blocker A: constructing a Runtime over memory that already holds a
+    // guest patch or restored save-state value must never clobber it. Only a
+    // slot that reads as zero may be seeded with the HLE sentinel.
+    [Fact]
+    public void Constructor_SeedsSlot_OnlyWhenExistingEntryIsZero()
+    {
+        var ram = new RecompilerGuestMemory();
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction);
+        const uint preexistingGuestPatch = 0x00090000u;
+        new GuestMemoryWriter(ram.Write8).TryWrite(slotAddress, BitConverter.GetBytes(preexistingGuestPatch)).Should().BeTrue();
+
+        _ = CreateRuntime(new CapturedOutputSink(), ram);
+
+        Span<byte> entryBytes = stackalloc byte[4];
+        new GuestMemoryReader(ram.Read8).TryRead(slotAddress, entryBytes).Should().BeTrue();
+        BitConverter.ToUInt32(entryBytes).Should().Be(preexistingGuestPatch,
+            "the constructor must not overwrite a pre-existing non-zero entry with its sentinel");
+    }
+
+    // The counterpart: a zeroed, freshly-allocated slot is still seeded as before.
+    [Fact]
+    public void Constructor_SeedsAllRegisteredSlots_OverFreshZeroedMemory()
+    {
+        var ram = new RecompilerGuestMemory();
+        _ = CreateRuntime(new CapturedOutputSink(), ram);
+
+        var reader = new GuestMemoryReader(ram.Read8);
+        Span<byte> entryBytes = stackalloc byte[4];
+        foreach (var (family, function) in new[]
+        {
+            (BiosCallFamily.A0, BiosHleRuntime.PutCharFunction),
+            (BiosCallFamily.A0, BiosHleRuntime.PutsFunction),
+            (BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction),
+            (BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction),
+            (BiosCallFamily.B0, BiosHleRuntime.GetB0TableFunction),
+        })
+        {
+            reader.TryRead(BiosJumpTables.EntryAddress(family, function), entryBytes).Should().BeTrue();
+            BitConverter.ToUInt32(entryBytes).Should().Be(BiosJumpTables.HleSentinelTarget(family, function));
+        }
+    }
+
+    // A guest patch surviving construction must still dispatch as PatchedTarget,
+    // not silently revert to the registered handler.
+    [Fact]
+    public void Constructor_PreservesGuestPatch_AndInvokeStillReportsPatchedTarget()
+    {
+        var ram = new RecompilerGuestMemory();
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction);
+        const uint preexistingGuestPatch = 0x000A0000u;
+        new GuestMemoryWriter(ram.Write8).TryWrite(slotAddress, BitConverter.GetBytes(preexistingGuestPatch)).Should().BeTrue();
+
+        var runtime = CreateRuntime(new CapturedOutputSink(), ram);
+        var result = runtime.Invoke(new BiosCallIdentity(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'Z']));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget);
+        result.ReturnValue.Should().Be(preexistingGuestPatch);
+    }
+
+    // Save/restore simulation: a Runtime built earlier patches a slot; a second
+    // Runtime constructed later over the very same memory (as a save-state
+    // restore would do) must observe the patch unchanged, never re-seeded.
+    [Fact]
+    public void SecondRuntime_ConstructedOverSameMemory_PreservesFirstRuntimesPatch()
+    {
+        var ram = new RecompilerGuestMemory();
+        var runtimeA = CreateRuntime(new CapturedOutputSink(), ram);
+        var slotAddress = BiosJumpTables.EntryAddress(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction);
+
+        const uint guestTarget = 0x000B0000u;
+        new GuestMemoryWriter(ram.Write8).TryWrite(slotAddress, BitConverter.GetBytes(guestTarget)).Should().BeTrue();
+        runtimeA.Invoke(new BiosCallIdentity(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0u]))
+            .Status.Should().Be(BiosServiceStatus.PatchedTarget);
+
+        // Simulates a save-state restore: reconstruct the Runtime over the same
+        // backing memory, which already holds runtimeA's patch, not zero.
+        var runtimeB = CreateRuntime(new CapturedOutputSink(), ram);
+        var result = runtimeB.Invoke(new BiosCallIdentity(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, arguments: [0u]));
+
+        result.Status.Should().Be(BiosServiceStatus.PatchedTarget,
+            "reconstructing the Runtime over already-patched memory must not revert the patch");
+        result.ReturnValue.Should().Be(guestTarget);
+    }
+
+    // Re-seeding an already-sentinel-valued slot (e.g. a save-state that
+    // captured the sentinel itself, before any guest patch) must not change its
+    // meaning: the value is non-zero, so the zero-only seeding rule leaves it
+    // untouched, and it is still recognised as the slot's own sentinel.
+    [Fact]
+    public void Constructor_ReSeeding_RestoredSentinel_DoesNotChangeItsMeaning()
+    {
+        var ram = new RecompilerGuestMemory();
+        _ = CreateRuntime(new CapturedOutputSink(), ram); // first construction seeds the sentinel
+
+        var runtimeB = CreateRuntime(new CapturedOutputSink(), ram); // simulated restore over the same memory
+        var result = runtimeB.Invoke(new BiosCallIdentity(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: [(uint)'Q']));
+
+        result.Status.Should().Be(BiosServiceStatus.Supported,
+            "a restored sentinel must still be recognised as the slot's own sentinel, not as a guest patch");
+        result.ReturnValue.Should().Be((uint)'Q');
+    }
+
+    // Contract test for the read-failure policy: when the guest memory reader
+    // cannot read a slot at construction, the constructor must not seed it —
+    // never a silent partial mutation, and never a thrown exception.
+    [Fact]
+    public void Constructor_SlotReadFailure_DoesNotSeed_AndDoesNotThrow()
+    {
+        var act = static () => new BiosHleRuntime(new CapturedOutputSink(), new AlwaysFailingReader(), NewWriter());
+
+        act.Should().NotThrow();
+    }
+
+    private sealed class AlwaysFailingReader : IGuestMemoryReader
+    {
+        public bool TryReadByte(uint address, out byte value)
+        {
+            value = 0;
+            return false;
+        }
+
+        public bool TryRead(uint address, Span<byte> buffer) => false;
     }
 
     private static BiosHleRuntime CreateRuntime(IRuntimeOutputSink sink) => CreateRuntime(sink, new RecompilerGuestMemory());

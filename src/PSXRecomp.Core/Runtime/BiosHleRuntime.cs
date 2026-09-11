@@ -60,12 +60,15 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </param>
     /// <param name="guestMemoryWriter">
     /// Writes each registered service's own jump-table slot with its HLE sentinel
-    /// (<see cref="BiosJumpTables.HleSentinelTarget"/>) so a guest read of an
-    /// *existing* entry observes real, non-zero content rather than 0 — the
-    /// read/save/patch/restore pattern psx-spx documents for GetB0Table/GetC0Table
-    /// (ADR-014's amendment for #360's Blocker 1 fix). Required for the same
-    /// reason as the sink and reader: a missing writer would leave every
-    /// registered slot's guest-visible content silently unmodeled.
+    /// (<see cref="BiosJumpTables.HleSentinelTarget"/>) — but only when that slot
+    /// currently reads as zero — so a guest read of an *existing* entry observes
+    /// real, non-zero content rather than 0, the read/save/patch/restore pattern
+    /// psx-spx documents for GetB0Table/GetC0Table (ADR-014's amendment for
+    /// #360's Blocker 1 fix). A slot that already holds a guest patch or restored
+    /// save-state content is left untouched: this constructor never overwrites
+    /// pre-existing guest-visible state. Required for the same reason as the sink
+    /// and reader: a missing writer would leave every registered slot's
+    /// guest-visible content silently unmodeled.
     /// </param>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="outputSink"/>, <paramref name="guestMemoryReader"/>, or
@@ -95,16 +98,30 @@ public sealed class BiosHleRuntime : IBiosRuntime
         // Seed every registered slot's own guest-visible table entry with its HLE
         // sentinel, so a guest that reads (and later saves/restores) an existing
         // entry sees a real, deterministic, non-zero value instead of 0 — this is
-        // the actual production-behavior fix for #360's Blocker 1. Best-effort: a
-        // rejected write here only leaves that one slot at its pre-existing
-        // all-zero default (Invoke still dispatches it through the registry
-        // exactly as before), never a hard construction failure, because a
+        // the actual production-behavior fix for #360's Blocker 1. Zero-only:
+        // this Runtime can be constructed over memory that already holds a guest
+        // patch or a restored save-state value, and seeding must never clobber
+        // that pre-existing state, so each slot is read first and only written
+        // when its current value is exactly zero. A read failure is treated the
+        // same as a non-zero read — do not seed — so a slot is never partially or
+        // speculatively mutated when its actual current content is unknown; the
+        // slot then simply keeps whatever it already held (Invoke still
+        // dispatches it through the registry exactly as before). A rejected write
+        // is likewise best-effort, never a hard construction failure, because a
         // memory-bound rejection at these fixed, always-in-range low addresses
         // would indicate a degenerate memory implementation, not guest state.
         foreach (var (family, function) in services.Keys)
         {
-            var sentinel = BiosJumpTables.HleSentinelTarget(family, function);
-            _guestMemoryWriter.TryWrite(BiosJumpTables.EntryAddress(family, function), BitConverter.GetBytes(sentinel));
+            var entryAddress = BiosJumpTables.EntryAddress(family, function);
+            Span<byte> existing = stackalloc byte[4];
+            var isZero = _guestMemoryReader.TryRead(entryAddress, existing) &&
+                         existing[0] == 0 && existing[1] == 0 && existing[2] == 0 && existing[3] == 0;
+
+            if (isZero)
+            {
+                var sentinel = BiosJumpTables.HleSentinelTarget(family, function);
+                _guestMemoryWriter.TryWrite(entryAddress, BitConverter.GetBytes(sentinel));
+            }
         }
     }
 
@@ -113,7 +130,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// Dispatch now consults guest-visible jump-table state before falling back
     /// to the registry. If the table entry for this call's
     /// <c>(Family, FunctionNumber)</c> holds a non-zero 32-bit value that is
-    /// <em>not</em> this Runtime's own HLE sentinel for that exact slot
+    /// <em>not</em> this Runtime's own HLE sentinel for that exact physical slot
     /// (<see cref="BiosJumpTables.HleSentinelTarget"/>), the entry has been
     /// patched by guest code and <see cref="BiosServiceResult.PatchedTarget"/>
     /// is returned — regardless of whether a host-side handler is also registered
@@ -126,7 +143,13 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// (see the constructor), so reading it, saving the read value, patching it,
     /// and later restoring the exact saved value all round-trip correctly: the
     /// restored sentinel is recognised again and dispatch resumes reaching the
-    /// registered service (#360's Blocker 1 fix).
+    /// registered service (#360's Blocker 1 fix). A C0 high-range call is a
+    /// second identity for the very same physical slot as its mirrored B0 call
+    /// (<see cref="BiosJumpTables.CanonicalizeIdentity"/>); the registry is
+    /// consulted under that canonical identity so the alias reaches the
+    /// registered B0 service exactly as the direct B0 call does, while the
+    /// service still receives — and the result still reports — the identity the
+    /// guest actually called, not the canonical one (#360's Blocker 2 fix).
     /// </remarks>
     public BiosServiceResult Invoke(BiosCallIdentity identity)
     {
@@ -158,7 +181,16 @@ public sealed class BiosHleRuntime : IBiosRuntime
             }
         }
 
-        return services.TryGetValue((identity.Family, identity.FunctionNumber), out var service)
+        // Registry lookup uses the canonical physical-slot identity so a C0
+        // high-range alias reaches the same registered handler as its mirrored
+        // B0 call (#360's Blocker 2 fix). The handler still receives the
+        // original, uncanonicalized identity — the guest's own call is never
+        // rewritten — matching the identity-preserving pattern the A0:3E/B0:3F
+        // puts alias already established.
+        var (canonicalFamily, canonicalFunction) =
+            BiosJumpTables.CanonicalizeIdentity(identity.Family, identity.FunctionNumber);
+
+        return services.TryGetValue((canonicalFamily, canonicalFunction), out var service)
             ? service(identity)
             : BiosServiceResult.Unsupported(identity);
     }

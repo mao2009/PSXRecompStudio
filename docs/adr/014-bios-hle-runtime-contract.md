@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x4) — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x5) — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -816,3 +816,129 @@ unchanged and still passes.
   `IRuntimeOutputSink`, `IGuestMemoryReader`, `IGuestMemoryWriter` — all
   `ArgumentNullException`-guarded, none with a parameterless fallback,
   consistent with every prior boundary this ADR has added.
+
+## Amendment (2026-09-11): PR #363 CodeRabbit follow-up — zero-only sentinel seeding, and C0/B0 canonical physical-slot identity
+
+Two CodeRabbit Major findings against the previous amendment's implementation,
+both confirmed valid against current code and primary source.
+
+### Blocker A: sentinel seeding overwrote pre-existing guest state
+
+The previous amendment's constructor seeding ((b) above) wrote every
+registered slot's sentinel unconditionally. A `BiosHleRuntime` constructed
+over guest memory that already holds a guest patch, or a save-state's
+restored content, silently replaced that value with the sentinel — exactly
+the "dual source of truth" and "silent state loss" failure modes this ADR's
+base Decision and Blocker 1 fix were meant to rule out.
+
+**Fix:** seeding is now zero-only. For each registered slot, the constructor
+reads the existing 4-byte entry through `IGuestMemoryReader` first:
+
+- Existing value is exactly zero → seed the sentinel (unchanged production
+  behavior for a freshly-allocated guest memory).
+- Existing value is non-zero → leave it untouched. A pre-existing guest patch
+  or a restored save-state value is never overwritten.
+- The read itself fails (an unmapped or rejected address) → treated the same
+  as non-zero: do not seed. This is a deliberate, deterministic failure
+  policy — a slot whose actual current content cannot be established is left
+  exactly as it already stood, never speculatively or partially mutated. It
+  is not a construction error: the same best-effort posture the previous
+  amendment already established for a rejected *write* now applies
+  symmetrically to a failed *read*.
+
+No new host-side state is introduced; the check is a plain read-then-write
+sequence over the same guest RAM this Runtime already treats as the single
+dispatch source of truth. Reconstructing a `BiosHleRuntime` over memory a
+save-state has already restored — patched or not — now reproduces the exact
+same dispatch outcome the original Runtime instance would have given.
+
+### Blocker B: C0:80+ mirror shared a physical slot but not a sentinel/registry identity
+
+psx-spx (pinned commit ecd6f794f459ab5f72feb88d46df8d23b3c413e0,
+`docs/kernelbios.md`) documents `C(80h.....) N/A ;mirrors to B(00h.....)` as
+real-hardware behavior — already cited by this ADR's prior amendment for the
+*address arithmetic* (`EntryAddress(C0, fn) == EntryAddress(B0, fn-0x80)` for
+`fn >= 0x80`). What that amendment missed: `HleSentinelTarget` and the
+registry lookup both keyed off the call's *logical* `(family, function)` pair,
+not the physical slot. `EntryAddress(C0, 0xBF)` and `EntryAddress(B0, 0x3F)`
+read/write the identical guest address, but `HleSentinelTarget(C0, 0xBF)` and
+`HleSentinelTarget(B0, 0x3F)` computed two different values, and the registry
+dictionary held only `(B0, 0x3F)` — so a guest calling the registered puts
+alias through its C0 high-range mirror (`C0:BF`) would misread the slot's real
+sentinel as an unrecognized non-zero value and get `PatchedTarget` instead of
+reaching `PutsService`, even on a completely unpatched, freshly-constructed
+Runtime.
+
+**Fix — one canonical identity per physical slot**, added as a single new
+`BiosJumpTables.CanonicalizeIdentity(family, functionNumber)` helper (the sole
+place the `0x80` mirror threshold is written down): a C0 call with
+`functionNumber >= 0x80` canonicalizes to `(B0, functionNumber - 0x80)`; every
+other call canonicalizes to itself. Both existing call sites for
+family/function identity now go through this canonicalization:
+
+- `HleSentinelTarget(family, functionNumber)` canonicalizes before computing
+  the sentinel, so a C0 alias and its mirrored B0 identity always produce the
+  identical value — matching the one physical guest RAM slot they share.
+- `BiosHleRuntime.Invoke`'s registry lookup canonicalizes
+  `(identity.Family, identity.FunctionNumber)` before consulting `services`,
+  so `C0:BF` now resolves the very same registered handler as a direct
+  `B0:3F` call.
+
+**Original vs. canonical identity — Option 1 chosen, consistent with the
+existing A0:3E/B0:3F alias policy.** The canonical identity is used
+*only* to select the sentinel value and the registry entry. The
+`BiosCallIdentity` actually passed to the resolved handler, and therefore
+`BiosServiceResult.Diagnostic.Identity` and every `StableKey`, is always the
+identity the guest actually called — `C0:BF` stays `C0:BF` in every
+diagnostic and result, never silently rewritten to `B0:3F`. This mirrors the
+pattern the B0:3F puts-alias amendment already established: registering two
+distinct call identities against one shared implementation, while the
+identity in the result names whichever one the guest actually invoked.
+`Invoke`'s existing non-A0 patch-check bound and untranslatable-target
+reporting are unaffected — this fix only changes which identity computes the
+sentinel and which registry key is looked up, not the patch-check control
+flow itself.
+
+**Snapshot/save-state consistency:** because canonicalization is a pure
+function of `(family, functionNumber)` with no new host-side state, and the
+underlying guest RAM slot is unchanged (still exactly the address
+`EntryAddress` already computed), a save-state captured through either the C0
+alias or the direct B0 identity restores to the same dispatch behavior from
+both identities after Blocker A's zero-only seeding fix — reconstructing a
+Runtime over already-mirrored, already-patched guest memory changes nothing
+about which physical bytes are read.
+
+### Scope confirmation
+
+This amendment does not touch `#362` (executing a patched guest target):
+`PatchedTarget` is still only reported, never executed, from either the C0
+alias or the direct B0 identity. It does not change `A0MaxFunctionNumber` or
+the A0 patch-check bound (Blocker 2 territory in the prior amendment). It
+does not change registry membership: still exactly `(A0, 0x3C)`, `(A0, 0x3E)`,
+`(B0, 0x3F)`, `(B0, 0x56)`, `(B0, 0x57)`.
+
+### Regression tests added (`BiosHleContractTests`)
+
+- Zero-only seeding: `Constructor_SeedsSlot_OnlyWhenExistingEntryIsZero`,
+  `Constructor_SeedsAllRegisteredSlots_OverFreshZeroedMemory`,
+  `Constructor_PreservesGuestPatch_AndInvokeStillReportsPatchedTarget`,
+  `SecondRuntime_ConstructedOverSameMemory_PreservesFirstRuntimesPatch`,
+  `Constructor_ReSeeding_RestoredSentinel_DoesNotChangeItsMeaning`,
+  `Constructor_SlotReadFailure_DoesNotSeed_AndDoesNotThrow`.
+- Canonical physical-slot identity: `RegisteredB0Service_IsReachable_ThroughItsC0HighRangeAlias`
+  (`C0:BF`→`B0:3F` puts, `C0:D6`→`B0:56` GetC0Table, `C0:D7`→`B0:57`
+  GetB0Table), `HleSentinelTarget_IsIdenticalForC0Alias_AndItsCanonicalB0Identity`,
+  `RegisteredMirrorSlot_ReadsAsCanonicalSentinel_ThroughEitherIdentity`,
+  `PatchAppliedViaB0Side_IsObservedIdentically_ThroughC0AliasDispatch`,
+  `PatchAppliedViaC0Alias_IsObservedIdentically_ThroughB0DirectDispatch`,
+  `RegisteredMirrorSlot_PreexistingPatch_SurvivesConstruction_ObservedFromBothIdentities`,
+  `C0AliasDispatch_PreservesTheOriginalC0Identity_InTheResult`.
+
+All prior regression tests from the base ADR and every previous amendment,
+including the address-arithmetic alias tests
+(`EntryAddress_C0HighFunctionNumbers_Alias_DocumentedB0Entries`), the
+unregistered-slot alias patch tests
+(`PatchWrittenViaC0HighAlias_IsObservedThroughB0Dispatch`,
+`PatchWrittenViaB0Slot_IsObservedThroughC0HighAliasDispatch`), the A0
+upper-bound guard, and the read/save/patch/restore round trip, remain
+unchanged and still pass.

@@ -57,15 +57,30 @@ unregistered neighbours and aliases below — falls through to
 Additionally, `BiosHleRuntime.Invoke` now consults guest-visible jump-table
 state before reaching the registry. If the 4-byte slot at
 `BiosJumpTables.EntryAddress(family, functionNumber)` holds a non-zero value
-that is not that exact slot's own HLE sentinel (`BiosJumpTables.HleSentinelTarget`),
-`BiosServiceResult.PatchedTarget` is returned instead — carrying the raw patched
-guest address in `ReturnValue` (ADR-014 amendment 2026-09-11 for #360). Each of
-the five registered slots is seeded with that sentinel at construction time (a
-new required `IGuestMemoryWriter` constructor dependency), so a guest reading
-one of these slots' *existing* entry observes a real, non-zero, deterministic
-value rather than 0 — and can save/patch/restore it with dispatch correctly
-following each state (ADR-014's #360 pre-merge-fix amendment, 2026-09-11).
-Slots with no registered service are unaffected and remain zero by default.
+that is not that physical slot's own HLE sentinel (`BiosJumpTables.HleSentinelTarget`,
+computed from the slot's canonical identity — see below), `BiosServiceResult.PatchedTarget`
+is returned instead — carrying the raw patched guest address in `ReturnValue`
+(ADR-014 amendment 2026-09-11 for #360). Each of the five registered slots is
+seeded with that sentinel at construction time (a required `IGuestMemoryWriter`
+constructor dependency) **only when that slot currently reads as zero** — a
+pre-existing guest patch or a save-state's restored content is never
+overwritten (ADR-014's 2026-09-11 CodeRabbit follow-up amendment). A slot that
+does read as zero observes a real, non-zero, deterministic sentinel rather
+than 0, and can save/patch/restore it with dispatch correctly following each
+state. Slots with no registered service are unaffected and remain zero by
+default.
+
+Registry lookup and sentinel recognition both key off a call's **canonical
+physical-slot identity**, not its logical `(family, function)` pair:
+`BiosJumpTables.CanonicalizeIdentity` maps a C0 call with `functionNumber >= 0x80`
+to its mirrored B0 identity (`functionNumber - 0x80`; psx-spx documents
+`C(80h.....) N/A ;mirrors to B(00h.....)`, real hardware dispatching C-function
+numbers 0x80+ through the same jump-list memory as B-function numbers 0x00+),
+and every other call to itself. A registered B0 service is therefore reachable
+through its C0 high-range alias exactly as through the direct B0 call — the
+`BiosCallIdentity` passed to that service, and reported in the result and
+diagnostic, is always the identity the guest actually invoked, never the
+canonical one (ADR-014's 2026-09-11 CodeRabbit follow-up amendment).
 
 **Observed / Verified / Implemented, kept distinct:**
 
@@ -144,7 +159,14 @@ Notes verified against the code:
   immediately after construction; an unregistered slot still reads as zero; the
   full read/save/patch/restore round trip re-enables the original handler; and
   (#360's Blocker 2 fix) the C0-high/B0 alias is live through dispatch in both
-  directions, not just in address arithmetic.
+  directions, not just in address arithmetic. Following the PR #363 CodeRabbit
+  follow-up (ADR-014's 2026-09-11 amendment), it further pins: seeding a
+  registered slot never overwrites a pre-existing non-zero entry (guest patch
+  or restored save-state), a reconstructed Runtime over already-patched memory
+  observes that patch unchanged, and a registered B0 service (puts,
+  GetC0Table, GetB0Table) is reachable through its C0 high-range alias with
+  the same sentinel, the same patch behavior in both directions, and the
+  original C0 identity preserved in the result/diagnostic.
 - `PutsServiceTests` covers `PutsService` itself exhaustively (bounded scan,
   atomicity on every failure path, KUSEG/KSEG0/KSEG1 aliasing, uint-overflow
   rejection, determinism); the contract tests deliberately prove only the wiring

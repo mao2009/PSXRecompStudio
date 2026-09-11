@@ -125,12 +125,54 @@ public static class BiosJumpTables
     /// service's own jump-table slot at construction time, so guest code that reads
     /// (and later saves/patches/restores) that slot's existing entry observes a
     /// real, deterministic, non-zero value instead of 0 (ADR-014's amendment for
-    /// #360's Blocker 1 fix). Distinct per <paramref name="family"/>/
-    /// <paramref name="functionNumber"/> pair, so two different registered slots
-    /// never collide with each other.
+    /// #360's Blocker 1 fix). Distinct per canonical <paramref name="family"/>/
+    /// <paramref name="functionNumber"/> pair (see <see cref="CanonicalizeIdentity"/>),
+    /// so two different registered slots never collide with each other, and a C0
+    /// high-range alias and its mirrored B0 slot — one physical guest RAM entry —
+    /// always compute the identical sentinel (ADR-014's amendment for #360's
+    /// Blocker 2 fix).
     /// </summary>
-    public static uint HleSentinelTarget(BiosCallFamily family, byte functionNumber) =>
-        HleSentinelHighWord | ((uint)family << 8) | functionNumber;
+    public static uint HleSentinelTarget(BiosCallFamily family, byte functionNumber)
+    {
+        var (canonicalFamily, canonicalFunction) = CanonicalizeIdentity(family, functionNumber);
+        return HleSentinelHighWord | ((uint)canonicalFamily << 8) | canonicalFunction;
+    }
+
+    /// <summary>
+    /// Resolves the canonical physical-slot identity for one BIOS call. Every
+    /// C0/B0 family/function pair maps to exactly one physical guest RAM jump-table
+    /// slot; this is the single place that mapping is computed, so sentinel
+    /// generation (<see cref="HleSentinelTarget"/>), registry dispatch, and
+    /// own-sentinel recognition (<see cref="BiosHleRuntime.Invoke"/>) never
+    /// disagree about which slot a call actually reaches.
+    /// </summary>
+    /// <remarks>
+    /// psx-spx (pinned commit ecd6f794f459ab5f72feb88d46df8d23b3c413e0,
+    /// <c>docs/kernelbios.md</c>) documents <c>C(80h.....) N/A ;mirrors to
+    /// B(00h.....)</c>: C-function numbers 0x80 and up dispatch through the very
+    /// same jump-list memory as B-function numbers <c>functionNumber - 0x80</c>
+    /// (see <see cref="C0TableAddress"/>'s remarks for the address arithmetic
+    /// this reproduces). Canonicalizing to the B0 identity here does not discard
+    /// the original C0 call: <see cref="BiosHleRuntime.Invoke"/> uses the
+    /// canonical identity only to recognize the sentinel and select the
+    /// registered handler, and still passes the guest's actual, uncanonicalized
+    /// <see cref="BiosCallIdentity"/> to that handler and into the result/diagnostic
+    /// — the same original-identity-preserving pattern already established for
+    /// the A0:3E/B0:3F puts alias. Every other family/function pair (A0, and
+    /// B0/C0 below the mirror threshold) canonicalizes to itself.
+    /// </remarks>
+    public static (BiosCallFamily Family, byte FunctionNumber) CanonicalizeIdentity(
+        BiosCallFamily family, byte functionNumber) =>
+        family == BiosCallFamily.C0 && functionNumber >= C0AliasThreshold
+            ? (BiosCallFamily.B0, (byte)(functionNumber - C0AliasThreshold))
+            : (family, functionNumber);
+
+    /// <summary>
+    /// The first C0 function number that mirrors a B0 physical slot
+    /// (<c>C(80h.....) N/A ;mirrors to B(00h.....)</c>). The single definition of
+    /// this boundary; see <see cref="CanonicalizeIdentity"/>.
+    /// </summary>
+    private const byte C0AliasThreshold = 0x80;
 
     /// <summary>
     /// Computes the guest address of one function's 4-byte jump-table entry:
