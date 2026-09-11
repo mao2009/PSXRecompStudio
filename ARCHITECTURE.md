@@ -155,8 +155,11 @@ Unimplemented calls return explicit diagnostics such as
 `BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
-wires A0:3C `putchar` and A0:3E `puts`, and implements the full documented
-behavior of both. `putchar`
+wires A0:3C `putchar`, A0:3E `puts`, and the B0:3F alias of `puts` (selected by
+real-ROM evidence — a title observed calling it through the B0 jump table), and
+implements the full documented behavior of all three. A0:3E and B0:3F dispatch
+to the same `PutsService` implementation rather than a per-family copy of it;
+each diagnostic still names the identity that was actually invoked. `putchar`
 writes the low byte of the character argument to the `IRuntimeOutputSink`
 injected into `BiosHleRuntime` and returns that same byte, so `Supported` here
 means the host-visible TTY effect too, not just the return-register contract.
@@ -167,7 +170,8 @@ layer reaches host output only through that boundary, never `System.Console`
 `BIOS_HLE_INVALID_ARGUMENTS` and writes nothing to the sink. A0:3E `puts`
 reads its NUL-terminated string argument through the `IGuestMemoryReader` also
 injected into `BiosHleRuntime`, writes those bytes to the same sink, and
-returns the incoming string pointer. Because its argument is a guest-memory
+returns the incoming string pointer; its B0:3F alias behaves identically.
+Because its argument is a guest-memory
 pointer rather than a scalar, the read is what makes `Supported` honest here:
 the string is collected into a bounded buffer first and emitted only once it is
 proven fully readable, so an invalid or unmapped pointer reports

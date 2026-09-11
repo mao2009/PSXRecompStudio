@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10 — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -338,3 +338,40 @@ this ADR asserted in its base Decision and in both registration amendments.
   latter is worse, because it would be acted on.
 - (f) **No other service's status changes.** getchar (A0:3B) and gets (A0:3D)
   stay unregistered pending an input-sink design. Issue #279 remains open.
+
+## Amendment (2026-09-11): B0:3F registered
+
+The registration the previous amendment said was now "an implementation task
+rather than a research or capability one" is done. `BiosHleRuntime` registers
+`(BiosCallFamily.B0, 0x3F)` under a distinct constant,
+`BiosHleRuntime.PutsAliasFunction`, dispatched to the same `InvokePuts` private
+method — and therefore the same `PutsService` — that `(A0, 0x3E)` already used.
+No second service class was written.
+
+- (a) **One implementation, two identities, not two implementations.** The
+  registry now holds `(A0, 0x3C)`, `(A0, 0x3E)`, and `(B0, 0x3F)`. The last two
+  entries both bind to `InvokePuts`/`PutsService.Invoke`; the family/function
+  identity is what the registry keys on, not what runs. This is the reuse this
+  ADR's base Decision requires ("must not select behavior from title identity,
+  guest address hacks, generated C, or duplicated CPU semantics") applied to an
+  alias: sharing behavior across two identities is not the same failure mode as
+  hard-coding behavior by title.
+- (b) **Identity preservation was a real gap, not a formality.** `PutsService`'s
+  three diagnostic messages previously hard-coded the literal string `"A0:3E"`.
+  Left unfixed, a `B0:3F` failure would have reported itself as an `A0:3E`
+  failure in the human-readable message — correct in the structured
+  `BiosDiagnostic.Identity` field (which was always the actual call's identity,
+  never hard-coded), but wrong in the text a diagnostic consumer reads. The
+  messages now interpolate `identity.StableKey`, so a `B0:3F` failure reports
+  `"B0:3F puts: ..."` and an `A0:3E` failure still reports `"A0:3E puts: ..."`.
+  `BiosHleContractTests.PutsDiagnostics_Name_The_Identity_That_Was_Actually_Called`
+  pins both directions.
+- (c) **`B0:3D` remains unselected and unregistered.** No real-ROM call site has
+  been observed for it (`docs/runtime/bios-hle-evidence.md` §3.4); this
+  amendment changes nothing about it. Registering it later, if evidence ever
+  selects it, is expected to be the same kind of reuse this amendment
+  demonstrates for `B0:3F` — binding an existing identity to the existing
+  `InvokePutChar`, not a new putchar implementation.
+- (d) **No other service's status changes.** getchar (A0:3B) and gets (A0:3D)
+  stay unregistered pending an input-sink design. Issue #279's B0:3F item is
+  now closed; the Issue itself remains open for the rest of its scope.
