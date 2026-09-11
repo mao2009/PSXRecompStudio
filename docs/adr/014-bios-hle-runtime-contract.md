@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x2) — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -427,3 +427,43 @@ decision implicit.
   stay unregistered pending an input-sink design; `B0:3D` stays unregistered
   pending evidence. Issue #279 remains open for all of these, plus the new
   kernel jump-table state item this amendment surfaces.
+
+## Amendment (2026-09-11): Runtime guest-memory write boundary
+
+The follow-up this ADR's previous amendment recommended is filed as two
+Issues: #359 (this amendment's subject) and #360 (the jump-table state
+abstraction itself, still blocked — see below). This amendment adds
+`IGuestMemoryWriter`, with a default `GuestMemoryWriter`, as the write-side
+mirror of the existing guest-memory read boundary (amendment
+2026-09-09). It records only that boundary and its contract; it does not
+register any service and does not by itself unblock `GetC0Table`/`GetB0Table`.
+
+- (a) **The boundary exists so a service can distinguish a rejected write from
+  a successful one**: writes are Try-style, mirroring the reader, and a
+  rejected write never partially mutates guest memory.
+- (b) **Translation and RAM bound are shared with the reader, not
+  reimplemented.** `GuestMemoryWriter` calls `Ps1AddressTranslation.TryTranslate`
+  directly — the same shared KUSEG/KSEG0/KSEG1 helper `GuestMemoryReader` uses,
+  so the writer depends on the shared translation rule rather than on the
+  reader class — and rejects any physical address outside
+  `Ps1MemoryMap.RamSize`, identically to `GuestMemoryReader`. BIOS ROM,
+  scratchpad, and hardware registers are not accessible through this writer,
+  matching the reader's stated scope.
+- (c) **This boundary is deliberately unwired into `BiosHleRuntime`.** No
+  currently registered service needs it. This mirrors the precedent set by
+  the guest-memory read boundary itself (unwired at landing, wired only once
+  `puts` needed it) and by the output-sink amendment's item (d): wiring a
+  write parameter through to a registry with no service that uses it would be
+  speculative. The injection point is left to whichever future change
+  actually needs it.
+- (d) **This does not, by itself, unblock `GetC0Table`/`GetB0Table`.** The
+  previous amendment's verdict — that registering either needs a
+  guest-visible, dispatch-connected representation of the actual B0/C0
+  tables, not merely the ability to write a byte somewhere — is unchanged.
+  A write boundary is a necessary building block for that representation
+  (and independently for `gets`, A0:3D, which needs guest-memory write for
+  its input buffer), but the table's canonical address, entry format, and
+  initial contents remain unconfirmed and are tracked in #360, not resolved
+  here.
+- (e) **No other service's status changes.** The registry is unchanged:
+  `(A0, 0x3C)`, `(A0, 0x3E)`, `(B0, 0x3F)`. Issue #279 remains open.

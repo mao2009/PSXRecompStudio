@@ -89,7 +89,7 @@ ADR-014 amendment it cites).
 |---|---|---|---|---|
 | getchar | A0:3B | **Unregistered** — falls through to `BIOS_HLE_UNSUPPORTED_CALL` | TTY input read/consume; blocking wait for input | Input sink (no design yet) |
 | putchar | A0:3C | **Registered `Supported` (full documented behavior)** — `InvokePutChar` writes `arg & 0xFF` to the injected `IRuntimeOutputSink` *and* returns it | None — TTY output is now emitted (ADR-014 amendment 2026-09-10) | None; `BiosHleRuntime` takes the sink by constructor injection |
-| gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink; guest-memory **write** |
+| gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink (no design yet) — guest-memory **write** now exists (`IGuestMemoryWriter`, ADR-014 amendment 2026-09-11 "Runtime guest-memory write boundary") but is unwired into `BiosHleRuntime` pending a consumer |
 | puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
 | putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
 | puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11) | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
@@ -399,8 +399,8 @@ carry a "verify before register" marker.
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; needs guest-memory write too) | Medium | High |
 | ~~B0:3F puts alias~~ — **done**, registered with full documented behavior | B0:3F `std_out_puts(src)` (alias of A0:3E) | same as A0:3E | same | same, through the B0 table, same `PutsService` | host + guest read (already exists) | High (differential: stub reads, compare output + R2) | **Confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)) | Low — reuse, no new implementation |
 | B0 putchar alias | B0:3D | same as A0:3C | same | same, through the B0 table | host (output sink already exists) | High (deterministic sink assertable) | **None observed.** | Low (capability-gated) |
-| GetC0Table | B0:56 `GetC0Table()` | none | address of the C0 jump-table list | none directly observable, but the documented purpose is to let callers **patch** that list — the return value is only honest if it points at real, guest-visible, dispatch-connected table content | **guest state** — a guest-visible, dispatch-connected jump-table representation this Runtime does not model at all | Low today for a bare return value, but that alone would not honestly test the documented behavior; the modeled table this ABI depends on does not exist to test against | **Confirmed** — the most frequently observed verified identity (3 of 5 executables, 2–3 sites in one) | **Blocked** — needs a new Runtime capability (guest-visible kernel jump-table state), not a wiring task (ADR-014 amendment 2026-09-11) |
-| GetB0Table | B0:57 `GetB0Table()` | none | address of the B0 jump-table list | same as GetC0Table, for the B0 list | same as GetC0Table | same as GetC0Table | **Confirmed** — tied for most frequently observed, with 4 sites in one executable | **Blocked** — same capability gap (ADR-014 amendment 2026-09-11) |
+| GetC0Table | B0:56 `GetC0Table()` | none | address of the C0 jump-table list | none directly observable, but the documented purpose is to let callers **patch** that list — the return value is only honest if it points at real, guest-visible, dispatch-connected table content | **guest state** — a guest-visible, dispatch-connected jump-table representation this Runtime does not model at all; a generic write primitive now exists (`IGuestMemoryWriter`) but the table's own canonical address/format/initial contents remain unconfirmed (#360) | Low today for a bare return value, but that alone would not honestly test the documented behavior; the modeled table this ABI depends on does not exist to test against | **Confirmed** — the most frequently observed verified identity (3 of 5 executables, 2–3 sites in one) | **Blocked** — needs a new Runtime capability (guest-visible kernel jump-table state), not a wiring task (ADR-014 amendment 2026-09-11; tracked in #360) |
+| GetB0Table | B0:57 `GetB0Table()` | none | address of the B0 jump-table list | same as GetC0Table, for the B0 list | same as GetC0Table | same as GetC0Table | **Confirmed** — tied for most frequently observed, with 4 sites in one executable | **Blocked** — same capability gap (ADR-014 amendment 2026-09-11; tracked in #360) |
 
 ### Recommendation
 
@@ -519,7 +519,16 @@ Two explicit guarantees:
 9. **Decide whether to build a guest-visible BIOS kernel jump-table (A0/B0/C0) state
    abstraction.** This is required before `B0:56 GetC0Table` / `B0:57 GetB0Table` (and
    any future service whose documented contract is "the address of a patchable table",
-   not just a scalar or a string) can be honestly registered under ADR-014's bar. A new
-   Issue proposing this capability is recommended (2026-09-11 evaluation, ADR-014
-   amendment *B0:56 GetC0Table / B0:57 GetB0Table evaluated, not registered*); none has
-   been filed by this document.
+   not just a scalar or a string) can be honestly registered under ADR-014's bar.
+   ✅ **Filed as #360** (2026-09-11), alongside its prerequisite generic capability,
+   filed separately as **#359** (the guest-memory write boundary — landed, see item 10).
+   #360 itself remains open: the table's canonical address, entry format, and initial
+   contents are unconfirmed in this repository's authoritative sources (ADR-014
+   amendment "Runtime guest-memory write boundary").
+10. ~~**Add a generic Runtime guest-memory write boundary**~~ — ✅ **done** (#359,
+    ADR-014 amendment 2026-09-11 "Runtime guest-memory write boundary").
+    `IGuestMemoryWriter`/`GuestMemoryWriter` mirror the read boundary (translation,
+    RAM bound, Try-style contract) and are deliberately unwired into `BiosHleRuntime`
+    pending a consumer, following the same precedent the read boundary and output
+    sink set. This is a prerequisite building block for #360, not a resolution of it:
+    the jump-table's own address/format/initial-contents questions remain open.
