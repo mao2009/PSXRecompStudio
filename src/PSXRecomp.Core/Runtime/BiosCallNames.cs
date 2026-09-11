@@ -26,15 +26,36 @@ public static class BiosCallNames
     public static bool TryResolve(BiosCallFamily family, byte functionNumber, out string name)
     {
         // Verified in docs/REFERENCES.md: "A(3Ch) or B(3Dh) std_out_putchar(char)" and
-        // "A(3Eh) or B(3Fh) std_out_puts(src)". Nothing else is verified yet; getchar
-        // (A0:3B) and gets (A0:3D) carry an explicit "verify before use" marker in
-        // docs/runtime/bios-hle-evidence.md and are therefore absent by design.
+        // "A(3Eh) or B(3Fh) std_out_puts(src)". getchar (A0:3B) and gets (A0:3D) carry an
+        // explicit "verify before use" marker in docs/runtime/bios-hle-evidence.md and are
+        // therefore absent by design.
+        //
+        // The identities below were verified the same way, against the same cited source,
+        // for the function numbers real-ROM analysis observed most often (Issue #11):
+        // "A(39h) InitHeap(addr,size)", "A(ABh) _card_info(port)", "A(ACh) _card_load(port)",
+        // "B(4Eh) _card_write(port,sector,src)", "B(50h) _new_card()", "B(56h) GetC0Table"
+        // and "B(57h) GetB0Table". None of the seven is documented as an A0/B0 alias of
+        // another entry — unlike putchar/puts, each is listed for exactly one family, and
+        // the same function number in the other family is an unrelated function (A0:56
+        // _96_remove, A0:57 a return-0 stub, B0:39 isatty, A0:4E gpu_sync, A0:50
+        // SystemError; B0:AB and B0:AC do not exist, the B table ending at B(5Dh)).
+        //
+        // Verification is identification only: naming an identity says what a ROM asked
+        // for, never that the Runtime can provide it. Registration remains ADR-014's
+        // separate, evidence-and-prerequisite-gated decision.
         name = (family, functionNumber) switch
         {
+            (BiosCallFamily.A0, 0x39) => "InitHeap",
             (BiosCallFamily.A0, 0x3C) => "putchar",
             (BiosCallFamily.B0, 0x3D) => "putchar",
             (BiosCallFamily.A0, 0x3E) => "puts",
             (BiosCallFamily.B0, 0x3F) => "puts",
+            (BiosCallFamily.A0, 0xAB) => "_card_info",
+            (BiosCallFamily.A0, 0xAC) => "_card_load",
+            (BiosCallFamily.B0, 0x4E) => "_card_write",
+            (BiosCallFamily.B0, 0x50) => "_new_card",
+            (BiosCallFamily.B0, 0x56) => "GetC0Table",
+            (BiosCallFamily.B0, 0x57) => "GetB0Table",
             _ => string.Empty,
         };
 

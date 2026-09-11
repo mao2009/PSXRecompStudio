@@ -31,6 +31,7 @@ public class BiosCallRecognizerTests
     private const uint LiT1PutChar = 0x2409003C;   // addiu $t1, $zero, 0x3C
     private const uint OriT1Puts = 0x3409003E;     // ori   $t1, $zero, 0x3E
     private const uint LiT1Func17 = 0x24090017;    // addiu $t1, $zero, 0x17
+    private const uint LiT1GetC0Table = 0x24090056; // addiu $t1, $zero, 0x56
     private const uint LiT1TooWide = 0x24090100;   // addiu $t1, $zero, 0x100  (not a byte)
     private const uint LiT3PutChar = 0x240B003C;   // addiu $t3, $zero, 0x3C   (wrong register)
 
@@ -583,6 +584,15 @@ public class BiosCallRecognizerTests
     [InlineData(BiosCallFamily.B0, (byte)0x3D, "putchar")]
     [InlineData(BiosCallFamily.A0, (byte)0x3E, "puts")]
     [InlineData(BiosCallFamily.B0, (byte)0x3F, "puts")]
+    // The identities real-ROM analysis observed most often, verified against the same
+    // source docs/REFERENCES.md already cites (Issue #11).
+    [InlineData(BiosCallFamily.A0, (byte)0x39, "InitHeap")]
+    [InlineData(BiosCallFamily.A0, (byte)0xAB, "_card_info")]
+    [InlineData(BiosCallFamily.A0, (byte)0xAC, "_card_load")]
+    [InlineData(BiosCallFamily.B0, (byte)0x4E, "_card_write")]
+    [InlineData(BiosCallFamily.B0, (byte)0x50, "_new_card")]
+    [InlineData(BiosCallFamily.B0, (byte)0x56, "GetC0Table")]
+    [InlineData(BiosCallFamily.B0, (byte)0x57, "GetB0Table")]
     public void BiosCallNames_ResolvesTheVerifiedIdentities(
         BiosCallFamily family, byte functionNumber, string expected)
     {
@@ -600,10 +610,47 @@ public class BiosCallRecognizerTests
     [InlineData(BiosCallFamily.C0, (byte)0x3C)]
     [InlineData(BiosCallFamily.C0, (byte)0x3E)]
     [InlineData(BiosCallFamily.A0, (byte)0x00)]
+    // The other family of each newly verified identity. Every one of these function
+    // numbers names a *different*, unverified-by-this-repository function in the family
+    // below (A0:56 _96_remove, A0:57 a return-0 stub, B0:39 isatty, A0:4E gpu_sync, A0:50
+    // SystemError), or no function at all (the B table ends at B(5Dh), so B0:AB and B0:AC
+    // do not exist). Sharing a function number is not sharing an identity.
+    [InlineData(BiosCallFamily.B0, (byte)0x39)]
+    [InlineData(BiosCallFamily.B0, (byte)0xAB)]
+    [InlineData(BiosCallFamily.B0, (byte)0xAC)]
+    [InlineData(BiosCallFamily.A0, (byte)0x4E)]
+    [InlineData(BiosCallFamily.A0, (byte)0x50)]
+    [InlineData(BiosCallFamily.A0, (byte)0x56)]
+    [InlineData(BiosCallFamily.A0, (byte)0x57)]
+    // C0 hosts none of them either.
+    [InlineData(BiosCallFamily.C0, (byte)0x56)]
+    [InlineData(BiosCallFamily.C0, (byte)0x57)]
     public void BiosCallNames_DoesNotGuessUnverifiedIdentities(BiosCallFamily family, byte functionNumber)
     {
         Assert.False(BiosCallNames.TryResolve(family, functionNumber, out var name));
         Assert.Empty(name);
+    }
+
+    [Fact]
+    public void Recognize_NewlyVerifiedIdentity_IsNamedInBothSiteAndSummary()
+    {
+        // End-to-end through the recognizer, not through TryResolve alone: a B0:56 stub
+        // must reach the deterministic summary already carrying its name.
+        //
+        // This is also where Analysis's independence from the Runtime registry is pinned.
+        // No HLE service implements B0:56 and this class constructs no BiosHleRuntime —
+        // it references no Runtime registration concept at all — yet the identity must
+        // still be named, or evidence would shrink and grow with implementation progress
+        // (ADR-014, Issue #279).
+        var evidence = Recognize(LiT2VectorB0, JrT2, LiT1GetC0Table, JrRa, Nop);
+
+        var site = Assert.Single(evidence.Sites);
+        Assert.Equal(BiosCallFamily.B0, site.Family);
+        Assert.Equal((byte)0x56, site.FunctionNumber);
+        Assert.Equal("GetC0Table", site.ServiceName);
+
+        var entry = Assert.Single(evidence.Summary);
+        Assert.Equal("GetC0Table", entry.ServiceName);
     }
 
     // === Helpers ====================================================================
