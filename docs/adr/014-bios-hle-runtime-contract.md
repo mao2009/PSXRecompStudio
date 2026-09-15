@@ -1008,7 +1008,12 @@ that resolves to a trampoline vector is dispatched instead of ending the run:
 | `Unsupported` | The run stops with `UnresolvedIndirectFlow` and the Runtime's own diagnostic. |
 
 The identity is built from the PS1 ABI: `$t1` selects the function number and
-`$a0`–`$a3` carry the argument words.
+`$a0`–`$a3` carry up to the registered service's own argument count (see the
+2026-09-15 "minimal live-trap arity SSOT" amendment below — the exact-count
+version corrects what this paragraph originally read as "always carry all
+four"). `GuestPc` is left `null`: `core.Pc` at this point is the trampoline
+vector address, not a call-site PC this executor tracks separately (same
+amendment).
 
 **No new address policy is introduced.** A patched target is rejected only when
 `Ps1AddressTranslation.TryTranslate` rejects it — the same boundary every guest
@@ -1034,13 +1039,12 @@ for like against the generated host.
   Runtime hook to call if it did. This is a generic gap in the generated-host
   dispatch, not a patched-target-specific one, and it is pinned by
   `RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
-- (u) **A live trap cannot reach a registered HLE service.** Each registered
-  service rejects any argument count but its own exact arity, while a trap can
-  only supply the ABI's register file (`$a0`–`$a3`) — it cannot know a service's
-  arity. Every unpatched registered slot therefore resolves to
-  `BIOS_HLE_INVALID_ARGUMENTS` under a live trap. This does not affect #362's
-  patched-target path (the patch check precedes the registry), but it blocks HLE
-  dispatch generally and needs ABI arity modelling to close.
+- (u) ~~**A live trap cannot reach a registered HLE service.**~~ **Resolved**
+  by the 2026-09-15 "minimal live-trap arity SSOT" amendment below: the trap
+  now queries each registered service's exact argument count from the
+  Runtime itself before reading `$a0`–`$a3`, rather than always supplying all
+  four. Richer, machine-readable service descriptors (return-type metadata, a
+  general ABI type system) remain out of scope and are tracked by Issue #365.
 
 Both are out of scope here: #362 is bounded to transferring control to a target
 that already exists as guest code. Dynamic overlay compilation (#249),
@@ -1062,6 +1066,105 @@ KSEG0), `PatchedTarget_IsJumpedTo_Verbatim_WithoutSegmentNormalization`,
 `PatchedTarget_LoopingBackIntoTheCall_IsBoundedByTheExecutionBudget`,
 `WithoutABiosRuntime_ACallToAVector_LeavesTheProgramExactlyAsBefore`, and the
 parity marker `RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
+
+## Amendment (2026-09-15): CodeRabbit fresh review on #364 — minimal live-trap arity SSOT, and correcting the reported GuestPc
+
+CodeRabbit's fresh review of PR #364 raised two findings against
+`RecompilerInterpreterExecutor.TryDispatchBiosVector` before merge. Both are
+confirmed valid and fixed here.
+
+### Finding A (Major): the live trap always passed all four ABI registers
+
+This is exactly blocker (u) above, materialised: `TryDispatchBiosVector`
+always built `BiosCallIdentity.Arguments` from all four of `$a0`–`$a3`, but
+every registered service (A0:3C, A0:3E, B0:3F, B0:56, B0:57) rejects any
+argument count but its own exact arity. A live call to an unpatched
+registered service therefore always failed with `BIOS_HLE_INVALID_ARGUMENTS`
+— the "Supported" path this very PR's own live-trap mechanism exists to
+reach was unreachable for every registered service.
+
+**Fix: arity is a Runtime query, not an executor-side table.** `IBiosRuntime`
+gains one new member:
+
+```csharp
+bool TryGetServiceArgumentCount(BiosCallFamily family, byte functionNumber, out int argumentCount);
+```
+
+`BiosHleRuntime` is the sole implementation and the sole source of truth: its
+service registry, previously `IReadOnlyDictionary<(Family, Function),
+Func<BiosCallIdentity, BiosServiceResult>>`, now carries the argument count
+alongside each handler — `IReadOnlyDictionary<(Family, Function), (int
+ArgumentCount, Func<BiosCallIdentity, BiosServiceResult> Handler)>` — so a
+service's arity can never drift out of sync with its own argument-count
+check. `TryGetServiceArgumentCount` resolves through the very same
+`BiosJumpTables.CanonicalizeIdentity` alias mapping `Invoke` already uses, so
+a C0 high-range alias (e.g. `C0:BF`) reports its canonical B0 service's arity
+(`B0:3F` puts, one argument) — never a second, independently-tracked number;
+alias and canonical identity share exactly one arity, exactly as they already
+share one sentinel and one handler.
+
+`TryDispatchBiosVector` queries this before reading any argument register:
+
+| Arity lookup | Behavior |
+|---|---|
+| Registered, `N` ≤ 4 | Read exactly `$a0`..`$a{N-1}`; the rest are never read. |
+| Registered, `N` > 4 | Stop with a new `BIOS_ARITY_EXCEEDS_REGISTER_BOUNDARY` diagnostic — this register-only trap has no stack-argument model and must not guess one. No registered service needs this today; it exists so a future one fails loudly here instead of silently misreading registers. |
+| Unregistered | Read all four `$a0`–`$a3` (arity is unknown, so nothing is fabricated as zero) and dispatch anyway — `Invoke` still reaches the registry and reports `Unsupported` with its own diagnostic, unaffected by which registers were carried. |
+
+**Scope boundary with Issue #365.** #365 ("Model BIOS HLE service arity for
+live vector dispatch") owns richer, machine-readable service descriptors —
+return-type metadata, a general ABI type system, and future recompiled-path
+consumers. This PR implements only the minimal query #364 needs to unblock
+its own live-trap Supported path: an argument *count*, nothing more. #365
+stays open and is not closed by this change; a comment on #365 records that
+this minimal SSOT was implemented here and what remains for it.
+
+### Finding B (Minor): `GuestPc` reported the trampoline vector, not the call site
+
+`TryDispatchBiosVector` passed `core.Pc` as `BiosCallIdentity.GuestPc`. At
+that point in execution `core.Pc` **is** the trampoline vector address
+(`0x000000A0`/`0xB0`/`0xC0`) — the interpreter's dispatch loop traps *before*
+stepping into the vector, so the PC never moves off it. `GuestPc` is
+documented as the guest call-site PC; reporting the vector address under
+that name would misattribute every live-trap diagnostic's `pc=` field to a
+fixed low address that names no actual call site in the guest program.
+
+**Fix: `GuestPc` is `null`.** This executor does not yet track the transfer
+instruction's own PC separately from `core.Pc`, so there is no real call-site
+value to report. `null` is the honest value — `BiosDiagnostic.ToStableString()`
+already renders a `null` `GuestPc` as `pc=unknown` rather than a fabricated
+address. Nothing else changes: `BiosCallIdentity.GuestPc` remains optional by
+design (see its constructor), and every other producer of an identity
+(`BiosHleContractTests`, `BiosCallRecognition`'s static site tracking) is
+unaffected — this fix touches only the one live-trap call site that was
+passing the wrong value.
+
+### Registry shape after this amendment
+
+Registry membership is unchanged (still exactly `(A0, 0x3C)`, `(A0, 0x3E)`,
+`(B0, 0x3F)`, `(B0, 0x56)`, `(B0, 0x57)`); only the value type each entry
+maps to gained its argument count.
+
+### Regression tests added
+
+`BiosHleContractTests`: `TryGetServiceArgumentCount_ReturnsTheRegisteredServicesArity`
+(all five registered services), `TryGetServiceArgumentCount_UnregisteredService_ReturnsFalse_AndZero`,
+`TryGetServiceArgumentCount_C0HighRangeAlias_ReportsItsCanonicalB0Arity`.
+
+`BiosPatchedTargetExecutionTests`: `LiveTrap_GetC0Table_ZeroArgumentService_IsSupported_DespiteNonZeroAbiRegisters`,
+`LiveTrap_GetB0Table_ZeroArgumentService_IsSupported_DespiteNonZeroAbiRegisters`,
+`LiveTrap_PutChar_OneArgumentService_UsesOnlyA0_DespiteNonZeroExtraAbiRegisters`,
+`LiveTrap_Puts_OneArgumentService_UsesOnlyA0_DespiteNonZeroExtraAbiRegisters` (A0:3E and B0:3F),
+`LiveTrap_C0HighRangeAlias_UsesTheCanonicalArity_AndDispatchesNormally`; and
+`UnpatchedUnregisteredEntry_StopsTheRun_WithTheRuntimesOwnDiagnostic` gained
+assertions that its diagnostic reports `pc=unknown`, never the trampoline
+vector address, covering Finding B end-to-end through the live trap.
+
+### What remains open
+
+(t) is unchanged and #362 stays open on that basis: the recompiled path still
+cannot dispatch a BIOS vector at all. #365 stays open for richer service
+descriptor/signature work beyond the minimal arity count this amendment adds.
 
 All prior regression tests from the base ADR and every previous amendment remain
 unchanged and still pass.
