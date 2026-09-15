@@ -47,7 +47,15 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     /// <c>main</c>; the two must stay in step (the driver is a verbatim C string,
     /// so it cannot interpolate this constant).
     /// </summary>
-    private const string HostTransferArgument = "--host-transfer";
+    internal const string HostTransferArgument = "--host-transfer";
+
+    /// <summary>
+    /// Command-line switch that makes the driver dump its full guest RAM as
+    /// <c>RAMHEX</c> lines after the state snapshot (full-title segments, #366).
+    /// The literal lives in C and cannot interpolate this constant either, so the
+    /// two must stay in step.
+    /// </summary>
+    internal const string FullRamArgument = "--full-ram";
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
 
@@ -358,7 +366,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         File.WriteAllText(path, sb.ToString());
     }
 
-    private static (int ExitCode, string Stdout, string Stderr) RunProcess(
+    internal static (int ExitCode, string Stdout, string Stderr) RunProcess(
         string fileName, string arguments, int timeoutMs, out bool timedOut,
         HostTransferSession? session = null)
     {
@@ -499,7 +507,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     /// the interpreter's is.
     /// </para>
     /// </remarks>
-    private sealed class HostTransferSession
+    internal sealed class HostTransferSession
     {
         private const string InitLine = "RHOST_INIT";
         private const string TransferPrefix = "RHOST_TRANSFER ";
@@ -515,6 +523,20 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         private TextWriter? _toHost;
         private IBiosRuntime? _biosRuntime;
 
+        /// <summary>The diagnostic of the dispatch that stopped the run, when one did.</summary>
+        public string? DiagnosticCode { get; private set; }
+
+        /// <inheritdoc cref="DiagnosticCode" />
+        public string? DiagnosticMessage { get; private set; }
+
+        /// <summary>
+        /// Constructs the session. The Runtime is built per run (the full-title
+        /// host engine builds one per segment so each observes that segment's RAM),
+        /// hence the factory rather than an instance.
+        /// </summary>
+        /// <param name="biosRuntimeFactory">Builds the Runtime over the child's guest memory.</param>
+        /// <param name="blockEntryPcs">The generated program's block entry PCs, used to reject
+        /// patched targets the generated host has no block for.</param>
         public HostTransferSession(
             Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
             IReadOnlySet<uint> blockEntryPcs)
@@ -522,12 +544,6 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
             _biosRuntimeFactory = biosRuntimeFactory;
             _blockEntryPcs = blockEntryPcs;
         }
-
-        /// <summary>The diagnostic of the dispatch that stopped the run, when one did.</summary>
-        public string? DiagnosticCode { get; private set; }
-
-        /// <inheritdoc cref="DiagnosticCode" />
-        public string? DiagnosticMessage { get; private set; }
 
         public void Attach(TextReader fromHost, TextWriter toHost)
         {
@@ -708,10 +724,21 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 #define PSX_TEST_RAM_SIZE (2u * 1024u * 1024u)
 #define PSX_TEST_MAX_INIT 256u
 #define PSX_TEST_MAX_WINDOW 256u
+#define PSX_TEST_RAM_BLOCK_SIZE 512u
+#define PSX_TEST_MAX_RAM_BLOCKS 4096u
 static uint8_t test_ram[PSX_TEST_RAM_SIZE];
 static uint32_t init_addrs[PSX_TEST_MAX_INIT];
 static uint32_t init_vals[PSX_TEST_MAX_INIT];
 static uint32_t window_addrs[PSX_TEST_MAX_WINDOW];
+static uint32_t ram_offsets[PSX_TEST_MAX_RAM_BLOCKS];
+static char ram_hex[PSX_TEST_MAX_RAM_BLOCKS][PSX_TEST_RAM_BLOCK_SIZE * 2u];
+
+static int hex_val(char c) {
+    if ((unsigned)(c - '0') <= 9u) return c - '0';
+    if ((unsigned)(c - 'a') <= 5u) return c - 'a' + 10;
+    if ((unsigned)(c - 'A') <= 5u) return c - 'A' + 10;
+    return -1;
+}
 
 static uint32_t test_translate(uint32_t va) {
     if (va <= 0x7FFFFFFFu) return va;
@@ -849,6 +876,19 @@ int main(int argc, char** argv) {
         if (fscanf(in, ""%lu"", &a) != 1) return 92;
         window_addrs[i] = (uint32_t)a;
     }
+
+    /* Optional full-RAM preload (full-title segments 2+, Issue #366). A
+       missing section means 0 blocks, so every pre-#366 input stays valid. */
+    unsigned long ram_blocks = 0;
+    if (fscanf(in, ""%lu"", &u) == 1) {
+        if (u > PSX_TEST_MAX_RAM_BLOCKS) return 95;  /* TooManyRamBlocks */
+        ram_blocks = u;
+        for (i = 0; i < (int)ram_blocks; i++) {
+            if (fscanf(in, ""%lu %2048s"", &a, ram_hex[i]) != 2) return 92;
+            ram_offsets[i] = (uint32_t)a;
+            if (strlen(ram_hex[i]) != PSX_TEST_RAM_BLOCK_SIZE * 2u) return 92;
+        }
+    }
     fclose(in);
 
     state.gpr[0] = 0;
@@ -856,6 +896,20 @@ int main(int argc, char** argv) {
     memset(test_ram, 0, sizeof(test_ram));
     for (i = 0; i < (int)init_count; i++) {
         recompiler_write_mem8((void*)0, init_addrs[i], (uint8_t)init_vals[i]);
+    }
+
+    /* Full-title segments 2+ carry the previous segment's RAM so continuity
+       survives the process restart. Hex pairs decode straight into test_ram. */
+    for (i = 0; i < (int)ram_blocks; i++) {
+        uint32_t base = ram_offsets[i];
+        int j;
+        for (j = 0; j < (int)PSX_TEST_RAM_BLOCK_SIZE; j++) {
+            int hi2 = hex_val(ram_hex[i][j * 2]);
+            int lo2 = hex_val(ram_hex[i][j * 2 + 1]);
+            if (hi2 < 0 || lo2 < 0) return 92;
+            if (base + (uint32_t)j < PSX_TEST_RAM_SIZE)
+                test_ram[base + (uint32_t)j] = (uint8_t)((hi2 << 4) | lo2);
+        }
     }
 
     /* The host-transfer protocol is opt-in and must be requested by name: a
@@ -884,6 +938,20 @@ int main(int argc, char** argv) {
         printf(""mem[0x%08X]=0x%02X\n"", window_addrs[i],
                (unsigned)recompiler_read_mem8((void*)0, window_addrs[i]));
     printf(""RSNAPSHOT_END\n"");
+
+    /* Full-title segments (Issue #366): dump the whole guest RAM as hex blocks
+       so the parent process can keep the image across process restarts. */
+    if (argc >= 4 && strcmp(argv[3], ""--full-ram"") == 0) {
+        for (i = 0; i < (int)(PSX_TEST_RAM_SIZE / PSX_TEST_RAM_BLOCK_SIZE); i++) {
+            unsigned long base = (unsigned long)i * PSX_TEST_RAM_BLOCK_SIZE;
+            int j;
+            printf(""RAMHEX %lu "", base);
+            for (j = 0; j < (int)PSX_TEST_RAM_BLOCK_SIZE; j++)
+                printf(""%02X"", (unsigned)test_ram[base + (unsigned)j]);
+            printf(""\n"");
+        }
+    }
+
     return (int)state.termination_reason;
 }
 ";
