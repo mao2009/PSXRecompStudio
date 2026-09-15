@@ -41,7 +41,12 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     private const int BuildTimeoutMs = 30000;
     private const int RunTimeoutMs = 5000;
 
-    /// <summary>Command-line switch that turns the driver's host-transfer protocol on.</summary>
+    /// <summary>
+    /// Command-line switch that turns the driver's host-transfer protocol on.
+    /// The driver matches this literal by name in <see cref="DriverSource"/>'s
+    /// <c>main</c>; the two must stay in step (the driver is a verbatim C string,
+    /// so it cannot interpolate this constant).
+    /// </summary>
     private const string HostTransferArgument = "--host-transfer";
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
@@ -254,9 +259,16 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                 ? null
                 : new HostTransferSession(_biosRuntimeFactory, blockEntryPcs);
 
+            // The input path is quoted so a temp directory containing a space
+            // cannot split it into two arguments — which would both break the
+            // file open and, with the protocol switch appended, misplace it.
+            var runArguments = bios is null
+                ? $"\"{inputPath}\""
+                : $"\"{inputPath}\" {HostTransferArgument}";
+
             var (runExit, runOut, runErr) = RunProcess(
                 ResolveBinaryPath(tempDir),
-                bios is null ? inputPath : $"{inputPath} {HostTransferArgument}",
+                runArguments,
                 RunTimeoutMs,
                 out var runTimedOut,
                 bios);
@@ -794,11 +806,13 @@ int main(int argc, char** argv) {
         recompiler_write_mem8((void*)0, init_addrs[i], (uint8_t)init_vals[i]);
     }
 
-    /* A second argument turns the host-transfer protocol on. The handshake runs
-       after the initial memory has landed and before the first block retires, so
-       whatever the parent's Runtime seeds into guest RAM is visible to the
-       generated program exactly as it is to the interpreter. */
-    if (argc >= 3) {
+    /* The host-transfer protocol is opt-in and must be requested by name: a
+       stray extra argument never enables it, so a run with no parent listening
+       can never block on the handshake. The handshake runs after the initial
+       memory has landed and before the first block retires, so whatever the
+       parent's Runtime seeds into guest RAM is visible to the generated program
+       exactly as it is to the interpreter. */
+    if (argc >= 3 && strcmp(argv[2], ""--host-transfer"") == 0) {
         state.host_transfer = &host_transfer;
         printf(""RHOST_INIT\n"");
         fflush(stdout);
