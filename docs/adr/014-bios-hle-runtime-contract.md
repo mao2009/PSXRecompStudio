@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x5) — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x5), 2026-09-15 (x3) — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -1032,13 +1032,15 @@ for like against the generated host.
 
 ### Remaining blockers (#362 stays open)
 
-- (t) **The recompiled path cannot dispatch a BIOS vector.** A `jal` to a
+- (t) ~~**The recompiled path cannot dispatch a BIOS vector.**~~ **Resolved** by
+  the 2026-09-15 "dispatching BIOS vectors from the recompiled path" amendment
+  below; the paragraph is kept as written for the record. A `jal` to a
   trampoline lowers to an ordinary `RecompilerIrFlowKind.Call` naming an address
   the program has no block for; the generated host's dispatch stops at an unknown
   PC. Nothing in the IR marks that target as a BIOS vector, and the host has no
   Runtime hook to call if it did. This is a generic gap in the generated-host
-  dispatch, not a patched-target-specific one, and it is pinned by
-  `RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
+  dispatch, not a patched-target-specific one, and it was pinned by a gap marker
+  test (since replaced, per the resolving amendment's item (d)).
 - (u) ~~**A live trap cannot reach a registered HLE service.**~~ **Resolved**
   by the 2026-09-15 "minimal live-trap arity SSOT" amendment below: the trap
   now queries each registered service's exact argument count from the
@@ -1064,8 +1066,10 @@ KSEG0), `PatchedTarget_IsJumpedTo_Verbatim_WithoutSegmentNormalization`,
 `PatchedTarget_OutsideEveryTranslatableRegion_StopsTheRun_WithADiagnostic`,
 `UnpatchedUnregisteredEntry_StopsTheRun_WithTheRuntimesOwnDiagnostic`,
 `PatchedTarget_LoopingBackIntoTheCall_IsBoundedByTheExecutionBudget`,
-`WithoutABiosRuntime_ACallToAVector_LeavesTheProgramExactlyAsBefore`, and the
-parity marker `RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
+`WithoutABiosRuntime_ACallToAVector_LeavesTheProgramExactlyAsBefore`, and a
+parity marker asserting the then-open recompiled-path gap (since replaced by
+`ABiosVectorCall_StaysAnOrdinaryCallFlow_WithNoBiosMarkerInTheIr` — see the
+2026-09-15 recompiled-path amendment's item (d)).
 
 ## Amendment (2026-09-15): CodeRabbit fresh review on #364 — minimal live-trap arity SSOT, and correcting the reported GuestPc
 
@@ -1163,8 +1167,160 @@ vector address, covering Finding B end-to-end through the live trap.
 ### What remains open
 
 (t) is unchanged and #362 stays open on that basis: the recompiled path still
-cannot dispatch a BIOS vector at all. #365 stays open for richer service
-descriptor/signature work beyond the minimal arity count this amendment adds.
+cannot dispatch a BIOS vector at all. (Superseded by the next amendment, which
+closes (t).) #365 stays open for richer service descriptor/signature work beyond
+the minimal arity count this amendment adds.
+
+All prior regression tests from the base ADR and every previous amendment remain
+unchanged and still pass.
+
+## Amendment (2026-09-15): dispatching BIOS vectors from the recompiled path (#362)
+
+The preceding amendment's blocker (t) — "the recompiled path cannot dispatch a
+BIOS vector" — is closed here. Both execution paths now reach the same Runtime
+through the same semantics.
+
+### Decision 1: the semantics are extracted, not duplicated
+
+`BiosVectorDispatch` (new, `PSXRecomp.Core/Runtime/`) is the single statement of
+what a guest transfer to an A0/B0/C0 trampoline vector means. Given the guest
+register file and the resolved family it builds the identity from the PS1 ABI,
+queries the arity SSOT, invokes `IBiosRuntime`, and returns a
+`BiosVectorDispatchOutcome` saying where control continues, what (if anything)
+goes into `$v0`, or which diagnostic stops the run. Applying that outcome to a
+concrete machine is the only path-specific part.
+
+`RecompilerInterpreterExecutor.TryDispatchBiosVector` is now a thin adapter over
+it; the three diagnostic-code constants it previously declared are aliases of
+`BiosVectorDispatch`'s, so existing consumers are unaffected and there is still
+exactly one definition of each. Nothing about the interpreter's observable
+behavior changes — this amendment does not revisit the previous two.
+
+The alternative of writing a second, generated-path-only dispatch was rejected
+for the reason the base Decision's Alternatives section already gives: two
+implementations of one contract is exactly how the interpreter and the
+recompiled path come to disagree about a BIOS call.
+
+### Decision 2: the backend gets a generic host hook, not BIOS knowledge
+
+Three designs were considered for reaching the Runtime from generated code:
+
+- **(A) the generated dispatch loop recognises a BIOS vector itself** — rejected.
+  It would put `BiosJumpTables`' addresses and the family mapping into emitted C,
+  which is precisely the "embed BIOS behavior in generated C" alternative the
+  base Decision rejected, and it would give the backend a second copy of a rule
+  `TryResolveVectorFamily` already owns.
+- **(B) a dedicated BIOS IR flow kind, decided at lowering time** — rejected. It
+  changes the IR contract (`RecompilerIrFlowKind`, the validator, every
+  consumer) to carry a fact the IR does not need: the lowering already produces
+  a correct `Call` naming the vector address, and marking it would push PS1 BIOS
+  specifics into Recompiler Core. It also cannot express a vector reached
+  indirectly, so the unknown-PC boundary would still need the check.
+- **(C) the generated dispatch offers an unresolved PC to a generic host
+  control-transfer hook, and the host classifies it.** **Adopted.**
+
+Under (C) the emitted `RecompilerState` gains one optional function pointer,
+`host_transfer`, consulted at the dispatch loop's unknown-PC boundary before it
+gives up. The hook returns non-zero when the host does not claim the PC — in
+which case the pre-existing behavior (Success once at least one block retired,
+otherwise `UNSUPPORTED_IR`) runs unchanged — and zero when it does, having set
+`termination_reason` and `next_pc` itself. This mirrors the `recompiler_read_mem*`
+extern-helper precedent the backend already uses for guest memory: a contract
+the host fulfils, not a behavior the backend implements.
+
+Consequences of (C) worth recording:
+
+- (a) **The generated C contains no BIOS identifier at all** — no vector
+  address, no function number, no service name — which is pinned by a codegen
+  test asserting the emitted source never mentions one.
+- (b) **A null hook is byte-for-byte the previous behavior.** Every existing
+  host driver zero-initialises its state, so nothing that does not want the hook
+  has to change, and every existing differential fixture keeps comparing like
+  for like.
+- (c) **A claimed transfer retires like a block.** It emits a checkpoint at the
+  PC it was claimed for and spends one step from the same budget that bounds
+  retired blocks, so a guest looping back into a BIOS call is cut short by
+  `ExecutionBudgetExceeded` exactly as the interpreter's is.
+- (d) **The IR contract is untouched.** `jal 0xA0` still lowers to an ordinary
+  `RecompilerIrFlowKind.Call` whose target the program has no block for, and
+  nothing marks it; that is now pinned as intended behavior by
+  `ABiosVectorCall_StaysAnOrdinaryCallFlow_WithNoBiosMarkerInTheIr` (which
+  replaces the gap marker the previous amendment introduced).
+
+### Decision 3: a patched target must resolve to an existing generated block
+
+The interpreter can enter any translatable address because it fetches guest
+MIPS at run time. The generated host can only enter a PC it already compiled a
+block for. So the recompiled path adds one guard on top of the shared
+semantics: a `PatchedTarget` whose address is not a static block entry stops
+the run with `BIOS_PATCHED_TARGET_NO_GENERATED_BLOCK` instead of redirecting
+there and silently falling off the end of the program at the next unknown PC.
+That silent-success outcome is the failure mode Issue #279 forbids, so the
+guard is part of the contract rather than an implementation detail.
+
+- (e) **Block matching is by exact PC**, the same comparison the generated
+  dispatch itself makes. A patched target naming a different segment alias of a
+  compiled block (KUSEG for a KSEG0 program) therefore does not resolve and is
+  reported. This is a real, deliberate limitation of the recompiled path, not a
+  claim about hardware; the interpreter jumps to such an alias verbatim.
+- (f) **Compiling a target found only at runtime is out of scope.** That is
+  dynamic overlay recompilation, tracked as Issue #249. This amendment adds no
+  interpreter fallback for the generated path either: mixing execution engines
+  mid-run is a separate design decision nobody has taken, and introducing it as
+  a side effect of a dispatch hook would be exactly the kind of silent
+  capability creep this ADR exists to prevent.
+
+### Test binding: the boundary is crossed, not simulated
+
+The generated program is a separate OS process, so its `host_transfer` hook is
+relayed to the test process over a line protocol on stdout/stdin carrying only
+registers, single guest-memory bytes, and a decision. The protocol holds no BIOS
+knowledge; the Runtime on the other side is a real `BiosHleRuntime` reading and
+writing the running program's own guest RAM through the ordinary
+`GuestMemoryReader`/`GuestMemoryWriter` boundaries. It is constructed at the
+handshake the driver performs after the fixture's initial memory has landed and
+before the first block retires, so its zero-only sentinel seeding is observed by
+the generated program exactly as it is by the interpreter.
+
+This keeps the assertions honest: what the tests exercise is generated C
+compiled by the real backend and run, not a simulation of it.
+
+### Registry, contract and scope after this amendment
+
+- (g) Registry membership is unchanged: `(A0, 0x3C)`, `(A0, 0x3E)`, `(B0, 0x3F)`,
+  `(B0, 0x56)`, `(B0, 0x57)`. No service was added, removed, or re-audited.
+- (h) `IBiosRuntime`, `BiosCallIdentity` and `BiosServiceResult` are unchanged.
+  The recompiled path consumes the identical contract the interpreter does.
+- (i) **#365 is not a dependency of this change.** The jump-table patch check
+  runs before registry/arity dispatch, and the minimal arity query the previous
+  amendment added is sufficient for every registered service; the generated path
+  uses the same query through the same shared helper. Richer, machine-readable
+  service descriptors remain #365's scope and remain open.
+
+### Regression tests added (`RecompiledBiosVectorDispatchTests`)
+
+Every fixture runs the real pipeline (decode → lower → validate → host codegen →
+gcc → run): `GeneratedPath_ZeroArgumentService_IsSupported_DespiteGarbageInEveryAbiRegister`
+(B0:56 and B0:57, with garbage in all four ABI argument registers),
+`GeneratedPath_OneArgumentService_UsesOnlyA0_AndProducesTheServicesOutput`
+(A0:3C), `GeneratedPath_Puts_ReachesOneImplementation_ThroughEveryRegisteredIdentity`
+(A0:3E, B0:3F, and the C0:BF mirror),
+`GeneratedPath_PatchedEntry_TransfersControlToTheGeneratedBlockAtTheGuestTarget`,
+`GeneratedPath_PatchedEntry_Dispatches_ThroughEveryAliasOfTheTrampolineVector`
+(KUSEG and KSEG0), `GeneratedPath_PatchedEntry_OverridesARegisteredServicesOwnSlot`,
+`GeneratedPath_PatchedTarget_WithNoGeneratedBlock_StopsTheRun_WithADiagnostic`,
+`GeneratedPath_PatchedTarget_OutsideEveryTranslatableRegion_StopsTheRun_WithADiagnostic`,
+`GeneratedPath_UnregisteredService_StopsTheRun_WithTheRuntimesOwnDiagnostic`,
+`GeneratedPath_PatchedTarget_LoopingBackIntoTheCall_IsBoundedByTheExecutionBudget`,
+`WithoutABiosRuntime_ACallToAVector_LeavesTheGeneratedProgramExactlyAsBefore`,
+and three interpreter/recompiled parity runs through
+`RecompilerDifferentialRunner` covering the patched-target, Supported and
+Unsupported outcomes (GPR, HI/LO, PC, memory, termination reason, checkpoint
+trace, the diagnostic, and the service's captured output).
+
+`HostCodeGenTests` pins the emitted contract: `Generation_HostTransfer_Hook_Is_In_State_Struct`
+and `Generation_Dispatch_Offers_An_Unknown_Pc_To_The_Host_Before_Giving_Up`
+(including that the generated source never names the BIOS).
 
 All prior regression tests from the base ADR and every previous amendment remain
 unchanged and still pass.
