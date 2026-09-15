@@ -3,11 +3,52 @@
 [![CI](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-PlayStation 1（PS1 / PSX）向けソフトウェアの静的再コンパイル、バイナリ解析、リバースエンジニアリング、MIPS コード解析、ネイティブ移植を支援するオープンソース開発環境。
+PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイルとリバースエンジニアリングを研究するための開発環境**です。
+
+最大の特徴は、**差分検証付きの Recompiler パス**です。MIPS → IR/lowering → 決定論的な host C → bounded execution → interpreter state comparison という経路を、synthetic fixture と最初の bounded な実 ROM 関数の両方で検証済みです。商用 PS1 タイトル全体の再コンパイルは**まだ実装されていません**。
 
 *[English README (Canonical / SSOT)](README.md)*
 
 > このファイルは [`README.md`](README.md)（English Canonical / SSOT）の日本語訳です。内容に相違がある場合は `README.md` を正としてください。
+
+## クイックスタート
+
+まず managed solution をビルドし、主要な C# テストスイートを実行します。
+
+```bash
+dotnet build src/PSXRecompStudio.slnx --configuration Release
+dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
+```
+
+成功すれば、現在の CPU / Runtime / Recompiler の契約と synthetic Recompiler vertical slice が検証されます。実 ROM の differential path は、ユーザー自身が合法的に用意したイメージを必要とし、現時点では意図的に bounded な検証対象に限定されています。
+
+Native Core と Headless GUI のテストについては [ビルド](#ビルド) と [テスト](#テスト) を参照してください。
+
+## 現在検証済みのもの
+
+- **CPU 実行基盤:** R3000A / MIPS I の decode / execution、KSEG 変換、Branch / Load Delay、COP0 例外、割り込み、Golden Trace。
+- **Disc / executable 解析:** CHD → ISO 9660 → PS-X EXE → MIPS 解析 → basic blocks / CFG。
+- **Recompiler の実証:** 同一の MIPS → IR → host C → bounded execution → interpreter diff パイプラインを synthetic fixture と最初の保守的な実 ROM 関数の両方で検証済み（#225）。
+- **Runtime / BIOS 境界:** interpreter / recompiled の両パスから guest-visible な A0/B0/C0 BIOS vector を共有 `BiosVectorDispatch` semantics で dispatch 可能（#364、#368）。
+- **Persona E2E gate:** 現在の gate は実装済みの解析 / Recompiler 段階まで到達し、次の code-level blocker を `RUNTIME_EXECUTION` として識別（#351、#366、#367）。
+
+## 未対応
+
+- 商用 PlayStation 1 タイトル全体の end-to-end 静的再コンパイルと実行。
+- 汎用的な実 ROM 関数再コンパイル、および MIPS I の完全対応。
+- recompiled executable を CPU execution / BIOS HLE / hardware integration まで継続的に駆動する full-title execution orchestrator（#366）。
+- 広範な BIOS HLE service coverage。
+- GPU / SPU / CD-ROM / MDEC / GTE の完全な hardware support。
+- 完全な PS1 native port を成立させる完成済み native runtime。
+
+## 次のマイルストーン
+
+1. **Full-title execution orchestrator（#366）:** recompiled guest execution を Runtime / BIOS 境界まで駆動できる title-agnostic な実行ループを作る。
+2. **BIOS HLE coverage の拡張（#279、#365）:** 次の real-title execution path に必要な service を実装し、未対応 call は引き続き明示的に失敗させる。
+3. **#351 に必要な最小 hardware integration:** Persona v0.1.0 E2E gate を `RUNTIME_EXECUTION` の先へ進め、rendering に近づけるための GPU / SPU / CD-ROM / MMIO 経路を接続する。
+4. **実 ROM 再コンパイル範囲の拡大:** differential validation を正しさの gate として維持したまま、対応命令・制御フローを拡張する。
+
+> **Asset policy:** ROM、ISO、CHD、BIOS、firmware image、商用ゲーム asset は本リポジトリに含めません。ユーザーが用意するファイルは合法的に入手・利用してください。
 
 ## PSXRecompStudio とは
 
