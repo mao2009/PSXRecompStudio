@@ -172,6 +172,13 @@ public sealed class BiosPatchedTargetExecutionTests
         result.DiagnosticMessage.Should().Contain($"A0:{UnregisteredA0Function:X2}");
         result.Snapshot!.Termination.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
         result.Snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u);
+
+        // CodeRabbit fresh review Finding B (#364): core.Pc at this point IS the
+        // BIOS trampoline vector (0x000000A0), not a guest call-site PC this
+        // executor tracks separately, so it must never be reported as one.
+        result.DiagnosticMessage.Should().Contain("pc=unknown");
+        result.DiagnosticMessage.Should().NotContain("pc=0x000000A0",
+            "the trampoline vector address must never be misreported as the guest call-site PC");
     }
 
     [Fact]
@@ -227,6 +234,141 @@ public sealed class BiosPatchedTargetExecutionTests
         // Nothing in the IR marks that target as a BIOS vector, which is precisely
         // why the generated host cannot act on it.
         lowered.Block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+    }
+
+    // --- Live-trap arity (CodeRabbit fresh review on #364, Finding A) -------
+    //
+    // The live trap must pass a registered service only the argument count it
+    // actually expects, read from the Runtime's own arity registry
+    // (IBiosRuntime.TryGetServiceArgumentCount) rather than always all four
+    // ABI argument registers — otherwise a live call to a registered
+    // 0/1-argument service fails BIOS_HLE_INVALID_ARGUMENTS.
+
+    private const uint ArityCallIndex = 0;
+    private const uint ArityDelaySlotIndex = 1;
+    private const uint ArityTailIndex = 2;
+    private const uint ArityProgramLength = 3;
+
+    [Fact]
+    public void LiveTrap_GetC0Table_ZeroArgumentService_IsSupported_DespiteNonZeroAbiRegisters()
+    {
+        var result = RunArityProgram(
+            BiosJumpTables.B0VectorAddress, BiosHleRuntime.GetC0TableFunction,
+            a0: 0xDEADBEEFu, a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu);
+
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(BiosJumpTables.C0TableAddress);
+        result.Snapshot.Gpr[(int)R3000aRegister.Ra].Should().Be(Kseg0EntryPc + (ArityTailIndex * 4u));
+        result.Snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(ReturnedMarker);
+        result.Snapshot.Termination.Should().Be(RecompilerIrTerminationReason.Success);
+    }
+
+    [Fact]
+    public void LiveTrap_GetB0Table_ZeroArgumentService_IsSupported_DespiteNonZeroAbiRegisters()
+    {
+        var result = RunArityProgram(
+            BiosJumpTables.B0VectorAddress, BiosHleRuntime.GetB0TableFunction,
+            a0: 0xDEADBEEFu, a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu);
+
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(BiosJumpTables.B0TableAddress);
+        result.Snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(ReturnedMarker);
+    }
+
+    [Fact]
+    public void LiveTrap_PutChar_OneArgumentService_UsesOnlyA0_DespiteNonZeroExtraAbiRegisters()
+    {
+        var sink = new CapturedOutputSink();
+        var result = RunArityProgram(
+            BiosJumpTables.A0VectorAddress, BiosHleRuntime.PutCharFunction,
+            a0: (uint)'Z', a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu, sink: sink);
+
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be((uint)'Z');
+        result.Snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(ReturnedMarker);
+        sink.Bytes.Should().BeEquivalentTo(new byte[] { (byte)'Z' }, static o => o.WithStrictOrdering());
+    }
+
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
+    public void LiveTrap_Puts_OneArgumentService_UsesOnlyA0_DespiteNonZeroExtraAbiRegisters(
+        BiosCallFamily family, byte function)
+    {
+        const uint stringAddress = 0x00000100u;
+        var sink = new CapturedOutputSink();
+        var result = RunArityProgram(
+            VectorAddressOf(family), function,
+            a0: stringAddress, a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu,
+            sink: sink,
+            initialMemory: StringBytes(stringAddress, "hi"));
+
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(stringAddress);
+        sink.Bytes.Should().BeEquivalentTo("hi"u8.ToArray(), static o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void LiveTrap_C0HighRangeAlias_UsesTheCanonicalArity_AndDispatchesNormally()
+    {
+        // C0:BF canonicalizes to B0:3F puts (one argument) — the arity lookup
+        // must resolve through the same canonical mapping dispatch uses.
+        const uint stringAddress = 0x00000400u;
+        var sink = new CapturedOutputSink();
+        var result = RunArityProgram(
+            BiosJumpTables.C0VectorAddress, 0xBF,
+            a0: stringAddress, a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu,
+            sink: sink,
+            initialMemory: StringBytes(stringAddress, "hi"));
+
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(stringAddress);
+        sink.Bytes.Should().BeEquivalentTo("hi"u8.ToArray(), static o => o.WithStrictOrdering());
+    }
+
+    private static RecompilerExecutionResult RunArityProgram(
+        uint vectorAddress,
+        byte function,
+        uint a0 = 0,
+        uint a1 = 0,
+        uint a2 = 0,
+        uint a3 = 0,
+        CapturedOutputSink? sink = null,
+        IEnumerable<RecompilerInitialMemoryItem>? initialMemory = null)
+    {
+        var words = new uint[ArityProgramLength];
+        words[ArityCallIndex] = MipsEncoding.JumpAndLink(vectorAddress);
+        words[ArityDelaySlotIndex] = MipsEncoding.Nop;
+        words[ArityTailIndex] = MipsEncoding.I(
+            OriOpcodeField, rt: (byte)R3000aRegister.S1, rs: 0, immediate: (ushort)ReturnedMarker);
+
+        var initialGpr = new uint[RecompilerDifferentialFixture.GprCount];
+        initialGpr[(int)R3000aRegister.T1] = function;
+        initialGpr[(int)R3000aRegister.A0] = a0;
+        initialGpr[(int)R3000aRegister.A1] = a1;
+        initialGpr[(int)R3000aRegister.A2] = a2;
+        initialGpr[(int)R3000aRegister.A3] = a3;
+
+        var fixture = new RecompilerDifferentialFixture(
+            name: "bios-live-trap-arity",
+            encodedInstructions: words,
+            entryPc: Kseg0EntryPc,
+            stepBudget: 16,
+            initialGpr: initialGpr,
+            initialMemory: initialMemory,
+            referenceStepBudget: 16);
+
+        return Run(fixture, sink);
+    }
+
+    private static IEnumerable<RecompilerInitialMemoryItem> StringBytes(uint address, string value)
+    {
+        for (var i = 0; i < value.Length; i++)
+        {
+            yield return new RecompilerInitialMemoryItem(address + (uint)i, (byte)value[i]);
+        }
+
+        yield return new RecompilerInitialMemoryItem(address + (uint)value.Length, 0);
     }
 
     // --- Program layout -----------------------------------------------------

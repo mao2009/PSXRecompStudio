@@ -928,6 +928,50 @@ public sealed class BiosHleContractTests
         act.Should().NotThrow();
     }
 
+    // CodeRabbit fresh review on #364 (Finding A): the arity SSOT a live trap
+    // queries before extracting ABI argument registers.
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, 1)]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction, 1)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, 1)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction, 0)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetB0TableFunction, 0)]
+    public void TryGetServiceArgumentCount_ReturnsTheRegisteredServicesArity(
+        BiosCallFamily family, byte function, int expectedArgumentCount)
+    {
+        IBiosRuntime runtime = CreateRuntime(new CapturedOutputSink());
+
+        runtime.TryGetServiceArgumentCount(family, function, out var argumentCount).Should().BeTrue();
+        argumentCount.Should().Be(expectedArgumentCount);
+    }
+
+    [Fact]
+    public void TryGetServiceArgumentCount_UnregisteredService_ReturnsFalse_AndZero()
+    {
+        IBiosRuntime runtime = CreateRuntime(new CapturedOutputSink());
+
+        runtime.TryGetServiceArgumentCount(BiosCallFamily.A0, 0x09, out var argumentCount).Should().BeFalse();
+        argumentCount.Should().Be(0);
+    }
+
+    // A C0 high-range alias must report the same arity as its canonical B0
+    // service — never a separately-tracked value (no per-alias arity, no
+    // duplicated table).
+    [Theory]
+    [InlineData((byte)0xBF, BiosHleRuntime.PutsAliasFunction)]
+    [InlineData((byte)0xD6, BiosHleRuntime.GetC0TableFunction)]
+    [InlineData((byte)0xD7, BiosHleRuntime.GetB0TableFunction)]
+    public void TryGetServiceArgumentCount_C0HighRangeAlias_ReportsItsCanonicalB0Arity(
+        byte c0Function, byte b0Function)
+    {
+        IBiosRuntime runtime = CreateRuntime(new CapturedOutputSink());
+
+        runtime.TryGetServiceArgumentCount(BiosCallFamily.C0, c0Function, out var viaAlias).Should().BeTrue();
+        runtime.TryGetServiceArgumentCount(BiosCallFamily.B0, b0Function, out var viaDirect).Should().BeTrue();
+
+        viaAlias.Should().Be(viaDirect);
+    }
+
     private sealed class AlwaysFailingReader : IGuestMemoryReader
     {
         public bool TryReadByte(uint address, out byte value)

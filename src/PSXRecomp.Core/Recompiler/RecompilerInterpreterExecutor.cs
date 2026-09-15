@@ -29,6 +29,17 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
     /// </summary>
     public const string BiosUntranslatableTargetDiagnosticCode = "BIOS_PATCHED_TARGET_UNTRANSLATABLE";
 
+    /// <summary>
+    /// Reported when a registered service's arity exceeds the number of ABI
+    /// argument registers ($a0-$a3) this register-only live trap can read. No
+    /// PS1 service is registered above that arity today; this exists so a
+    /// future one fails loudly here rather than the trap guessing stack args.
+    /// </summary>
+    public const string BiosServiceArityExceedsRegisterBoundaryDiagnosticCode = "BIOS_ARITY_EXCEEDS_REGISTER_BOUNDARY";
+
+    /// <summary>Number of ABI argument registers ($a0-$a3) a live BIOS trap can read.</summary>
+    private const int AbiArgumentRegisterCount = 4;
+
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
 
     /// <summary>
@@ -247,16 +258,39 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         // PS1 ABI: $t1 selects the function number, $a0-$a3 carry the argument
         // words, $v0 takes the return value, and $ra holds the call site's own
         // link — the trampoline is transparent to it.
-        var identity = new BiosCallIdentity(
-            family,
-            (byte)(core.GetGpr((int)R3000aRegister.T1) & 0xFFu),
-            core.Pc,
-            [
-                core.GetGpr((int)R3000aRegister.A0),
-                core.GetGpr((int)R3000aRegister.A1),
-                core.GetGpr((int)R3000aRegister.A2),
-                core.GetGpr((int)R3000aRegister.A3),
-            ]);
+        var functionNumber = (byte)(core.GetGpr((int)R3000aRegister.T1) & 0xFFu);
+
+        // The Runtime's registry is the single source of truth for how many of
+        // $a0-$a3 a registered service actually consumes (Issue #365 owns any
+        // richer descriptor; this trap only needs the count). An unregistered
+        // call has no known arity, so every ABI argument register is preserved
+        // rather than fabricated as zero — the Runtime's own Unsupported outcome
+        // does not consume Arguments either way.
+        uint[] arguments;
+        if (biosRuntime.TryGetServiceArgumentCount(family, functionNumber, out var argumentCount))
+        {
+            if (argumentCount > AbiArgumentRegisterCount)
+            {
+                diagnosticCode = BiosServiceArityExceedsRegisterBoundaryDiagnosticCode;
+                diagnosticMessage =
+                    $"{family}:{functionNumber:X2} requires {argumentCount} arguments, which exceeds the " +
+                    $"{AbiArgumentRegisterCount} ABI argument registers ($a0-$a3) this live trap can read; " +
+                    "stack arguments are not supported.";
+                return false;
+            }
+
+            arguments = AbiArgumentRegisters(core)[..argumentCount];
+        }
+        else
+        {
+            arguments = AbiArgumentRegisters(core);
+        }
+
+        // GuestPc is the guest call-site PC, not the trampoline vector: this
+        // executor does not yet track the transfer instruction's own PC
+        // separately from core.Pc (which, at this point, IS the trampoline
+        // vector address), so it is left null rather than misreported.
+        var identity = new BiosCallIdentity(family, functionNumber, guestPc: null, arguments);
 
         var result = biosRuntime.Invoke(identity);
         switch (result.Status)
@@ -291,6 +325,15 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
                 return false;
         }
     }
+
+    /// <summary>Reads the four PS1 ABI argument registers, $a0-$a3, in order.</summary>
+    private static uint[] AbiArgumentRegisters(PSXCoreWrapper core) =>
+    [
+        core.GetGpr((int)R3000aRegister.A0),
+        core.GetGpr((int)R3000aRegister.A1),
+        core.GetGpr((int)R3000aRegister.A2),
+        core.GetGpr((int)R3000aRegister.A3),
+    ];
 
     private static bool PcWithinProgram(uint pc, RecompilerDifferentialFixture fixture)
     {
