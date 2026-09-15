@@ -107,7 +107,16 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
                 message);
         }
 
-        ParseRamDump(stdout);
+        // Guest RAM continuity is part of this segment's result: commit the
+        // dump only after the whole thing parses, or the next segment would
+        // silently inherit stale bytes.
+        if (TryApplyRamDump(stdout) is string ramError)
+        {
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.MalformedResult,
+                "MALFORMED_RAM_DUMP",
+                ramError);
+        }
 
         return new RecompilerExecutionResult(
             RecompilerExecutionStatus.Completed, snapshot, session.DiagnosticCode, session.DiagnosticMessage);
@@ -166,8 +175,22 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
         File.WriteAllText(_segmentInputPath, sb.ToString());
     }
 
-    private void ParseRamDump(string stdout)
+    /// <summary>
+    /// Parses the full RAMHEX dump into a staging buffer and copies it into
+    /// <c>_ram</c> only when the complete dump is present and valid.
+    /// </summary>
+    /// <remarks>The generated driver always emits exactly one 512-byte block per
+    /// offset, sequentially from 0. Anything short of that — a truncated dump, a
+    /// bad offset, a non-hex payload — is a malformed segment result and must
+    /// not leave stale RAM for the next segment.</remarks>
+    /// <returns>An error message when the dump is not complete and valid, or
+    /// null when it was fully applied.</returns>
+    private string? TryApplyRamDump(string stdout)
     {
+        var staged = new byte[RamSize];
+        uint nextOffset = 0;
+        var blocks = 0;
+
         foreach (var line in stdout.Split('\n'))
         {
             if (!line.StartsWith(RamLinePrefix, StringComparison.Ordinal))
@@ -176,13 +199,54 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
             }
 
             var space = line.IndexOf(' ', RamLinePrefix.Length);
-            var offset = uint.Parse(line.AsSpan(RamLinePrefix.Length, space - RamLinePrefix.Length), CultureInfo.InvariantCulture);
+            if (space < 0)
+            {
+                return "RAMHEX line without an offset.";
+            }
+
+            if (!uint.TryParse(
+                    line.AsSpan(RamLinePrefix.Length, space - RamLinePrefix.Length),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var offset)
+                || offset != nextOffset)
+            {
+                return $"Expected RAMHEX block at offset 0x{nextOffset:X}, found '{line}'.";
+            }
+
             var hex = line.AsSpan(space + 1);
+            if (hex.Length > 0 && hex[^1] == '\r')
+            {
+                hex = hex[..^1];
+            }
+
+            if (hex.Length != RamBlockSize * 2)
+            {
+                return $"RAMHEX block at offset 0x{offset:X} has {hex.Length} hex chars, expected {RamBlockSize * 2}.";
+            }
+
             for (var i = 0; i < hex.Length / 2; i++)
             {
-                _ram[offset + (uint)i] = byte.Parse(hex.Slice(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                if (!byte.TryParse(hex.Slice(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var value))
+                {
+                    return $"RAMHEX block at offset 0x{offset:X} has a non-hex payload.";
+                }
+
+                staged[offset + (uint)i] = value;
             }
+
+            blocks++;
+            nextOffset += RamBlockSize;
         }
+
+        var expected = RamSize / RamBlockSize;
+        if (blocks != expected)
+        {
+            return $"RAMHEX dump incomplete: {blocks} of {expected} blocks received.";
+        }
+
+        Array.Copy(staged, _ram, RamSize);
+        return null;
     }
 
     private static RecompilerIrProgram LowerProgram(RecompilerDifferentialFixture fixture)
