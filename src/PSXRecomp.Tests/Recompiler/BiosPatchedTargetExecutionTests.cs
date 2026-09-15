@@ -213,15 +213,16 @@ public sealed class BiosPatchedTargetExecutionTests
     }
 
     [Fact]
-    public void RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering()
+    public void ABiosVectorCall_StaysAnOrdinaryCallFlow_WithNoBiosMarkerInTheIr()
     {
-        // Parity marker, deliberately asserting the gap rather than hiding it: the
-        // generated-host path has no equivalent of the trap above. A call to a
+        // Pins the IR-contract half of the #362 design decision: a call to a
         // trampoline vector lowers to an ordinary Call flow naming an address the
-        // program has no block for, and the host dispatch stops at an unknown PC
-        // instead of dispatching - so the recompiled side cannot reach a patched
-        // target at all. Closing that needs a host-side Runtime dispatch hook,
-        // which is a separate change from this executor's trap.
+        // program has no block for, and nothing in the IR marks it as a BIOS
+        // vector. That is deliberate, not a gap - the recompiled path dispatches
+        // such a transfer at the generated dispatch loop's unknown-PC boundary
+        // (RecompilerHostCodeGen's host_transfer hook), so no BIOS knowledge ever
+        // enters the IR or the backend. See RecompiledBiosVectorDispatchTests for
+        // the end-to-end recompiled behavior.
         var lowered = MipsToIrLowerer.LowerControlTransfer(
             R3000aDecoder.Decode(MipsEncoding.JumpAndLink(BiosJumpTables.A0VectorAddress)),
             Kseg0EntryPc + (CallIndex * 4u),
@@ -230,9 +231,6 @@ public sealed class BiosPatchedTargetExecutionTests
         lowered.IsSupported.Should().BeTrue();
         lowered.Block!.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Call);
         lowered.Block.Exit.Flow.Target.Should().Be(VectorPcFor(Kseg0EntryPc, BiosJumpTables.A0VectorAddress));
-
-        // Nothing in the IR marks that target as a BIOS vector, which is precisely
-        // why the generated host cannot act on it.
         lowered.Block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
     }
 
