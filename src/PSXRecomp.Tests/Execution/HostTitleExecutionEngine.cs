@@ -209,6 +209,7 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
                     NumberStyles.Integer,
                     CultureInfo.InvariantCulture,
                     out var offset)
+                || offset >= RamSize
                 || offset != nextOffset)
             {
                 return $"Expected RAMHEX block at offset 0x{nextOffset:X}, found '{line}'.";
