@@ -489,8 +489,8 @@ they unblocked have since been implemented:
    the required capability; once it existed, registration was equivalent to
    `puts`'s wiring task — the effect is now genuine, not a bare constant return.
    See open question 9 (resolved) and the §4 next-service table above for the
-   updated status. The remaining open item — executing patched targets — is tracked
-   as follow-up Issue #362 (item 11).
+   updated status. Executing patched targets, which this left open, was handled
+   as follow-up Issue #362 and is now done on both execution paths (item 11).
 
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
@@ -594,11 +594,17 @@ Two explicit guarantees:
     RAM bound, Try-style contract). The writer is now a required `BiosHleRuntime`
     dependency for zero-only sentinel seeding and is exercised by jump-table
     patch tests; `gets` itself still does not consume it.
-11. **Execute patched BIOS jump-table targets (guest-code / interpreter dispatch
-    trap).** `BiosHleRuntime.Invoke` now returns `BiosServiceResult.PatchedTarget`
-    carrying the raw guest target address when a slot has been patched, but this
-    Runtime has no capability to actually execute that target. Requires (a) a
-    guest-jump-to-`0xA0`/`0xB0`/`0xC0` recognition/trap mechanism in the
-    interpreter and/or recompiled-code path, and (b) a decision for how a
-    `PatchedTarget` result falls back to raw guest-code execution. Filed as
-    follow-up Issue #362 (filed alongside PR for #360).
+11. ~~**Execute patched BIOS jump-table targets (guest-code / interpreter dispatch
+    trap).**~~ — ✅ **done for both execution paths** (#362; ADR-014 amendments
+    2026-09-15 "executing patched jump-table targets in the interpreter path" and
+    "dispatching BIOS vectors from the recompiled path"). Both requirements are
+    met: (a) `BiosJumpTables.TryResolveVectorFamily` is the single
+    guest-jump-to-`0xA0`/`0xB0`/`0xC0` recognition rule, consumed by the
+    interpreter's live trap and by the generated host's unknown-PC boundary;
+    (b) `BiosVectorDispatch` states the fallback once — `PatchedTarget` moves
+    the PC to the raw guest target, `Supported` writes `$v0` — only when the
+    service produced a return value; otherwise it is left untouched — and returns to
+    `$ra`, `Unsupported` stops with the Runtime's own diagnostic. The
+    generated path additionally requires the target to resolve to a block it
+    already compiled; a target discovered only at runtime is dynamic overlay
+    recompilation, tracked separately as Issue #249.

@@ -299,6 +299,47 @@ public class HostCodeGenTests
         result.Source.Should().Contain("void* core;");
     }
 
+    // --- Issue #362: the host control-transfer hook ---
+
+    [Fact]
+    public void Generation_HostTransfer_Hook_Is_In_State_Struct()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("typedef int32_t (*recompiler_host_transfer_fn)(struct RecompilerState*);");
+        result.Source.Should().Contain("recompiler_host_transfer_fn host_transfer;");
+    }
+
+    [Fact]
+    public void Generation_Dispatch_Offers_An_Unknown_Pc_To_The_Host_Before_Giving_Up()
+    {
+        var program = CreateSingleBlockProgram(new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 0, register: 8),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        // The hook is consulted first; only an unclaimed PC falls through to the
+        // pre-existing end-of-program / unsupported-entry behavior.
+        result.Source.Should().Contain("int32_t hosted = (state->host_transfer != 0)");
+        result.Source.Should().Contain("? state->host_transfer(state)");
+        result.Source.Should().Contain("if (hosted != 0) {");
+
+        // The backend carries no BIOS knowledge: it never names a vector address,
+        // a function number, or a Runtime service (ADR-014).
+        result.Source.Should().NotContain("bios");
+        result.Source.Should().NotContain("BIOS");
+    }
+
     // --- Phase 3C: Compare operations ---
 
     [Fact]

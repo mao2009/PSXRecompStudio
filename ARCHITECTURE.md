@@ -155,9 +155,10 @@ Unimplemented calls return explicit diagnostics such as
 `BIOS_HLE_UNSUPPORTED_CALL` rather than silently succeeding. Title-specific BIOS
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
-wires A0:3C `putchar`, A0:3E `puts`, and the B0:3F alias of `puts` (selected by
+wires A0:3C `putchar`, A0:3E `puts`, the B0:3F alias of `puts` (selected by
 real-ROM evidence — a title observed calling it through the B0 jump table), and
-implements the full documented behavior of all three. A0:3E and B0:3F dispatch
+B0:56 `GetC0Table` / B0:57 `GetB0Table`, and implements the full documented
+behavior of all five. A0:3E and B0:3F dispatch
 to the same `PutsService` implementation rather than a per-family copy of it;
 each diagnostic still names the identity that was actually invoked. `putchar`
 writes the low byte of the character argument to the `IRuntimeOutputSink`
@@ -196,6 +197,22 @@ analysis artifact (`report.json`, `biosCalls`; see
 The evidence covers whatever instruction window the analysis decoded, so a report
 produced with the pipeline's default entry-point window records only the sites
 within it, not the executable's whole BIOS surface.
+
+Both execution paths reach the `IBiosRuntime` boundary through one shared
+statement of what a BIOS call means, `BiosVectorDispatch` (Issue #362): a guest
+transfer to an A0/B0/C0 trampoline vector builds the identity from the PS1 ABI
+(`$t1` selects the function, `$a0`–`$a3` carry up to the registered service's own
+argument count), and the Runtime's answer either moves the PC to a patched
+jump-table target, returns to `$ra` — writing `$v0` only when the service
+produced a return value, leaving it untouched otherwise — or stops the run with
+an explicit diagnostic; never a silent success. The interpreter applies that
+outcome to a live core; the generated host is offered its unresolved PCs through
+a generic control-transfer hook in the emitted state struct, so no BIOS address,
+function number, or service name ever enters the Recompiler IR or the generated
+C (ADR-014). Because the generated host can only enter a block it already
+compiled, a patched target outside its static block table is reported rather
+than jumped to; compiling a target discovered at run time is dynamic overlay
+recompilation (Issue #249) and is out of scope.
 
 ## Recompiler
 

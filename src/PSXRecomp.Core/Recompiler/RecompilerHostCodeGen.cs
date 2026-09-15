@@ -21,6 +21,8 @@ public static class RecompilerHostCodeGen
     private const string TerminationField = "termination_reason";
     private const string NextPcField = "next_pc";
     private const string PcField = "pc";
+    private const string HostTransferField = "host_transfer";
+    private const string HostTransferFnType = "recompiler_host_transfer_fn";
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
@@ -209,9 +211,34 @@ public static class RecompilerHostCodeGen
         sb.AppendLine();
     }
 
+    /// <summary>
+    /// Emits the generated program's architectural state, plus the optional host
+    /// control-transfer hook (Issue #362).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="HostTransferField"/> is the backend's only concession to a
+    /// runtime that owns control transfers this program cannot resolve on its own
+    /// — notably the PS1 BIOS A0/B0/C0 trampoline vectors. It is deliberately
+    /// generic: the generated code carries no BIOS address, function number, or
+    /// service knowledge, and never classifies a PC itself. It simply offers an
+    /// unresolved PC to the host and lets the host decide, which keeps BIOS
+    /// semantics in the Runtime where ADR-014 requires them.
+    /// </para>
+    /// <para>
+    /// A null hook (the value every zero-initialised state already has) keeps the
+    /// pre-existing behavior byte for byte, so a host that does not provide one
+    /// needs no change.
+    /// </para>
+    /// </remarks>
     private static void EmitStateStruct(StringBuilder sb)
     {
-        sb.AppendLine("typedef struct {");
+        sb.AppendLine("struct " + StateStruct + ";");
+        sb.AppendLine("/* Optional host control-transfer hook (see recompiler_dispatch). Returns 0 when");
+        sb.AppendLine("   the host claims the current pc — having set termination_reason (0 to continue at");
+        sb.AppendLine("   next_pc, otherwise a stop reason) — and non-zero when it does not claim it. */");
+        sb.AppendLine("typedef int32_t (*" + HostTransferFnType + ")(struct " + StateStruct + "*);");
+        sb.AppendLine("typedef struct " + StateStruct + " {");
         sb.AppendLine("  uint32_t gpr[32];");
         sb.AppendLine("  uint32_t hi;");
         sb.AppendLine("  uint32_t lo;");
@@ -219,6 +246,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  int32_t " + TerminationField + ";");
         sb.AppendLine("  uint32_t " + NextPcField + ";");
         sb.AppendLine("  void* " + CoreField + ";");
+        sb.AppendLine("  " + HostTransferFnType + " " + HostTransferField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
     }
@@ -485,9 +513,26 @@ public static class RecompilerHostCodeGen
             sb.AppendLine(IndentUnit + IndentUnit + "}");
         }
 
+        // The unknown-PC boundary. Before giving up, offer the PC to the host's
+        // optional control-transfer hook (Issue #362): a runtime that owns
+        // transfers this program cannot resolve statically — the PS1 BIOS
+        // A0/B0/C0 trampoline vectors among them — claims the PC here and sets
+        // the state's termination_reason and next_pc itself. The generated code
+        // classifies nothing; a host that provides no hook keeps the pre-existing
+        // behavior exactly.
         sb.AppendLine(IndentUnit + IndentUnit + "else {");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"int32_t hosted = ({StateParam}->{HostTransferField} != 0)");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"? {StateParam}->{HostTransferField}({StateParam})");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + ": 1;");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (hosted != 0) {");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+        // A claimed transfer retires like a block, so it appears in the checkpoint
+        // trace at the PC it was claimed for and spends a step from the same budget.
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
         // Stop on a non-Success termination before enforcing the budget.
