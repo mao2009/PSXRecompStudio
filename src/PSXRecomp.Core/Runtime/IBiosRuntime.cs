@@ -19,7 +19,7 @@ public interface IBiosRuntime
     /// through the same canonical alias mapping <see cref="Invoke"/> uses (so a
     /// C0 high-range alias reports its mirrored B0 service's arity, never a
     /// separate one). This is the single source of truth for service arity: a
-    /// caller with a live register-only ABI boundary (such as a interpreter or
+    /// caller with a live register-only ABI boundary (such as an interpreter or
     /// recompiled trap) must read this rather than assume a fixed argument
     /// count of its own. Richer, machine-readable service descriptors are
     /// out of scope here (Issue #365); this covers only the minimal query a
