@@ -53,6 +53,56 @@ public static class BiosJumpTables
     public const uint A0TableAddress = 0x00000200;
 
     /// <summary>
+    /// Physical address of the A0 trampoline vector — the address guest code
+    /// transfers to in order to reach the A0 jump table. Primary-source-confirmed
+    /// (psx-spx, pinned commit ecd6f794f459ab5f72feb88d46df8d23b3c413e0).
+    /// </summary>
+    public const uint A0VectorAddress = 0x000000A0;
+
+    /// <summary>Physical address of the B0 trampoline vector. See <see cref="A0VectorAddress"/>.</summary>
+    public const uint B0VectorAddress = 0x000000B0;
+
+    /// <summary>Physical address of the C0 trampoline vector. See <see cref="A0VectorAddress"/>.</summary>
+    public const uint C0VectorAddress = 0x000000C0;
+
+    /// <summary>
+    /// Maps a guest virtual address onto the BIOS jump-table family whose
+    /// trampoline vector lives there. The vectors sit in the first page of RAM,
+    /// so every KUSEG/KSEG0/KSEG1 alias of <c>0xA0</c>/<c>0xB0</c>/<c>0xC0</c>
+    /// names the same location and is accepted through the canonical
+    /// <see cref="Ps1AddressTranslation.TryTranslate"/> rule; an untranslatable
+    /// address (KSEG2 and above) is not.
+    /// </summary>
+    /// <remarks>
+    /// The single definition of "which vector is which family", shared by the
+    /// static call recognizer (which resolves a jump target in a decoded
+    /// instruction stream) and by an execution path's BIOS trap (which resolves a
+    /// live guest PC). Both ask the same question about the same three addresses,
+    /// so neither answers it on its own.
+    /// </remarks>
+    public static bool TryResolveVectorFamily(uint address, out BiosCallFamily family)
+    {
+        if (Ps1AddressTranslation.TryTranslate(address, out var physical))
+        {
+            switch (physical)
+            {
+                case A0VectorAddress:
+                    family = BiosCallFamily.A0;
+                    return true;
+                case B0VectorAddress:
+                    family = BiosCallFamily.B0;
+                    return true;
+                case C0VectorAddress:
+                    family = BiosCallFamily.C0;
+                    return true;
+            }
+        }
+
+        family = default;
+        return false;
+    }
+
+    /// <summary>
     /// Highest valid function number for the A0 table (inclusive). Primary-source-confirmed:
     /// psx-spx (pinned commit ecd6f794f459ab5f72feb88d46df8d23b3c413e0) states the A0 table
     /// size as 0x300 bytes = 192 entries × 4 bytes, so valid function numbers are

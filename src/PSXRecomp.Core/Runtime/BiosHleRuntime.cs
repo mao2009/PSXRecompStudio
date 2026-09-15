@@ -29,7 +29,14 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>B0:57 GetB0Table — returns <see cref="BiosJumpTables.B0TableAddress"/>.</summary>
     public const byte GetB0TableFunction = 0x57;
 
-    private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), Func<BiosCallIdentity, BiosServiceResult>> services;
+    /// <summary>
+    /// One registered service: its exact expected argument count (the arity
+    /// SSOT <see cref="TryGetServiceArgumentCount"/> exposes to live traps) and
+    /// the handler that implements it. Kept together so registration can never
+    /// drift out of sync with dispatch — there is exactly one place a service's
+    /// arity is declared.
+    /// </summary>
+    private readonly IReadOnlyDictionary<(BiosCallFamily Family, byte Function), (int ArgumentCount, Func<BiosCallIdentity, BiosServiceResult> Handler)> services;
     private readonly IRuntimeOutputSink _outputSink;
     private readonly IGuestMemoryReader _guestMemoryReader;
     private readonly IGuestMemoryWriter _guestMemoryWriter;
@@ -86,13 +93,13 @@ public sealed class BiosHleRuntime : IBiosRuntime
         _guestMemoryReader = guestMemoryReader;
         _guestMemoryWriter = guestMemoryWriter;
 
-        services = new Dictionary<(BiosCallFamily, byte), Func<BiosCallIdentity, BiosServiceResult>>
+        services = new Dictionary<(BiosCallFamily, byte), (int ArgumentCount, Func<BiosCallIdentity, BiosServiceResult> Handler)>
         {
-            [(BiosCallFamily.A0, PutCharFunction)] = InvokePutChar,
-            [(BiosCallFamily.A0, PutsFunction)] = InvokePuts,
-            [(BiosCallFamily.B0, PutsAliasFunction)] = InvokePuts,
-            [(BiosCallFamily.B0, GetC0TableFunction)] = InvokeGetC0Table,
-            [(BiosCallFamily.B0, GetB0TableFunction)] = InvokeGetB0Table,
+            [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
+            [(BiosCallFamily.A0, PutsFunction)] = (1, InvokePuts),
+            [(BiosCallFamily.B0, PutsAliasFunction)] = (1, InvokePuts),
+            [(BiosCallFamily.B0, GetC0TableFunction)] = (0, InvokeGetC0Table),
+            [(BiosCallFamily.B0, GetB0TableFunction)] = (0, InvokeGetB0Table),
         };
 
         // Seed every registered slot's own guest-visible table entry with its HLE
@@ -190,9 +197,23 @@ public sealed class BiosHleRuntime : IBiosRuntime
         var (canonicalFamily, canonicalFunction) =
             BiosJumpTables.CanonicalizeIdentity(identity.Family, identity.FunctionNumber);
 
-        return services.TryGetValue((canonicalFamily, canonicalFunction), out var service)
-            ? service(identity)
+        return services.TryGetValue((canonicalFamily, canonicalFunction), out var registration)
+            ? registration.Handler(identity)
             : BiosServiceResult.Unsupported(identity);
+    }
+
+    /// <inheritdoc />
+    public bool TryGetServiceArgumentCount(BiosCallFamily family, byte functionNumber, out int argumentCount)
+    {
+        var (canonicalFamily, canonicalFunction) = BiosJumpTables.CanonicalizeIdentity(family, functionNumber);
+        if (services.TryGetValue((canonicalFamily, canonicalFunction), out var registration))
+        {
+            argumentCount = registration.ArgumentCount;
+            return true;
+        }
+
+        argumentCount = 0;
+        return false;
     }
 
     /// <summary>
