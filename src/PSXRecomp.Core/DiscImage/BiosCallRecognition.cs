@@ -132,11 +132,6 @@ public static class BiosCallRecognizer
     /// <summary>R9 (<c>$t1</c>) carries the BIOS function number at the jump-table entry.</summary>
     private const byte FunctionNumberRegister = (byte)R3000aRegister.T1;
 
-    /// <summary>Physical addresses of the three BIOS jump-table vectors.</summary>
-    private const uint VectorA0 = 0x000000A0;
-    private const uint VectorB0 = 0x000000B0;
-    private const uint VectorC0 = 0x000000C0;
-
     /// <summary>
     /// Recognizes BIOS call sites in a decoded instruction stream partitioned into basic
     /// blocks. <paramref name="functions"/> is optional; when supplied, each site is
@@ -332,32 +327,13 @@ public static class BiosCallRecognizer
     }
 
     /// <summary>
-    /// Maps a guest virtual address onto a BIOS jump-table family. The vectors live in the
-    /// first page of RAM, so the KUSEG/KSEG0/KSEG1 aliases of <c>0xA0</c>/<c>0xB0</c>/
-    /// <c>0xC0</c> are the same location and are accepted through the canonical
-    /// translation; an untranslatable address (KSEG2 and above) is not.
+    /// Maps a guest virtual address onto a BIOS jump-table family. Delegates to
+    /// <see cref="BiosJumpTables.TryResolveVectorFamily"/>, the single definition of the
+    /// three vector addresses and their KUSEG/KSEG aliasing rule, so this static analysis
+    /// and an execution path's BIOS trap can never disagree about which vector a target is.
     /// </summary>
-    private static bool TryMapVector(uint target, out BiosCallFamily family)
-    {
-        if (Ps1AddressTranslation.TryTranslate(target, out var physical))
-        {
-            switch (physical)
-            {
-                case VectorA0:
-                    family = BiosCallFamily.A0;
-                    return true;
-                case VectorB0:
-                    family = BiosCallFamily.B0;
-                    return true;
-                case VectorC0:
-                    family = BiosCallFamily.C0;
-                    return true;
-            }
-        }
-
-        family = default;
-        return false;
-    }
+    private static bool TryMapVector(uint target, out BiosCallFamily family) =>
+        BiosJumpTables.TryResolveVectorFamily(target, out family);
 
     /// <summary>
     /// Applies one instruction's effect on the tracked constants. Only the immediate
