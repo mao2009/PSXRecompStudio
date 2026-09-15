@@ -23,7 +23,7 @@ internal sealed class RecompiledIrTitleExecutionEngine : IRecompiledExecutionEng
     public const string EngineName = "ir-evaluator";
 
     private readonly RecompilerIrProgram _program;
-    private readonly RecompilerGuestMemory _memory = new();
+    private RecompilerGuestMemory _memory = new();
     private uint _hi;
     private uint _lo;
 
@@ -38,6 +38,7 @@ internal sealed class RecompiledIrTitleExecutionEngine : IRecompiledExecutionEng
     public void Load(TitleExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        _memory = new RecompilerGuestMemory();
         foreach (var item in request.InitialMemory)
         {
             _memory.Write8(item.Address, item.Value);

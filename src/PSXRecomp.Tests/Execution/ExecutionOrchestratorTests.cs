@@ -145,15 +145,29 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
-    public void AnEngineMechanismFailure_IsInvalidState_NotAGuestFailure()
+    public void AnEngineMechanismFailure_IsARuntimeFailure_NotAContractViolation()
     {
         using var engine = new FailingEngine();
 
         var result = new ExecutionOrchestrator().Execute(
             engine, ExitHandoff(), Request(Entry, outer: 1, segment: 8));
 
-        result.State.Should().Be(TitleExecutionState.InvalidState);
+        result.State.Should().Be(TitleExecutionState.RuntimeFailure);
         result.DiagnosticCode.Should().Be("FAKE_CRASH");
+        result.SegmentsRetired.Should().Be(1);
+        result.FinalSnapshot.Should().BeNull();
+    }
+
+    [Fact]
+    public void ACompletedSegmentWithoutASnapshot_IsInvalidState()
+    {
+        using var engine = new NoSnapshotEngine();
+
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 1, segment: 8));
+
+        result.State.Should().Be(TitleExecutionState.InvalidState);
+        result.DiagnosticCode.Should().Be("MISSING_SNAPSHOT");
         result.SegmentsRetired.Should().Be(1);
         result.FinalSnapshot.Should().BeNull();
     }
@@ -389,6 +403,23 @@ public sealed class ExecutionOrchestratorTests
         public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest) =>
             RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed, "FAKE_CRASH", "The engine crashed on purpose.");
+
+        public void Dispose()
+        {
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    private sealed class NoSnapshotEngine : IRecompiledExecutionEngine
+    {
+        public string Name => "no-snapshot-test-engine";
+
+        public void Load(TitleExecutionRequest request)
+        {
+        }
+
+        public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest) =>
+            new(RecompilerExecutionStatus.Completed, null, null, null);
 
         public void Dispose()
         {

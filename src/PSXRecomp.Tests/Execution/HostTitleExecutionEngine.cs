@@ -56,9 +56,14 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
     public void Load(TitleExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        Array.Clear(_ram);
         foreach (var item in request.InitialMemory)
         {
-            _ram[RecompilerGuestMemory.Translate(item.Address)] = item.Value;
+            var physical = RecompilerGuestMemory.Translate(item.Address);
+            if (physical < RamSize)
+            {
+                _ram[physical] = item.Value;
+            }
         }
     }
 

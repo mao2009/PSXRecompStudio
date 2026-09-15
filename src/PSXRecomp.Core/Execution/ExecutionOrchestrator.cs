@@ -44,8 +44,9 @@ public sealed class ExecutionOrchestrator
     /// that transfer.</param>
     /// <param name="request">The initial guest state and budgets.</param>
     /// <returns>A classified terminal outcome. Guest failure paths never throw;
-    /// only contract-contradicting segments map to
-    /// <see cref="TitleExecutionState.InvalidState"/>.</returns>
+    /// only contract-contradicting segments (engine or handoff) map to
+    /// <see cref="TitleExecutionState.InvalidState"/>; engine mechanism and
+    /// CPU-level execution stops are <see cref="TitleExecutionState.RuntimeFailure"/>.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="engine"/> or
     /// <paramref name="request"/> is null.</exception>
     /// <exception cref="InvalidOperationException">The engine's
@@ -86,15 +87,31 @@ public sealed class ExecutionOrchestrator
             segments++;
             last = result.Snapshot;
 
-            if (result.Status != RecompilerExecutionStatus.Completed || result.Snapshot is null)
+            if (result.Status != RecompilerExecutionStatus.Completed)
             {
+                // An engine mechanism failure (host process lost, timeout,
+                // malformed output) is a failed run, not a handoff/contract
+                // violation, so it is a RuntimeFailure with the engine's code.
+                return Terminal(
+                    TitleExecutionState.RuntimeFailure,
+                    last,
+                    segments,
+                    engine.Name,
+                    result.DiagnosticCode ?? "ENGINE_FAILED",
+                    result.DiagnosticMessage ?? "The execution engine failed to complete the segment.");
+            }
+
+            if (result.Snapshot is null)
+            {
+                // A completed engine that produced no snapshot contradicts the
+                // execution contract; that is the engine's contract violation.
                 return Terminal(
                     TitleExecutionState.InvalidState,
                     last,
                     segments,
                     engine.Name,
-                    result.DiagnosticCode ?? "ENGINE_FAILED",
-                    result.DiagnosticMessage ?? "The execution engine did not produce a state snapshot.");
+                    "MISSING_SNAPSHOT",
+                    "The execution engine reported a completed segment without a state snapshot.");
             }
 
             var snap = result.Snapshot;
@@ -206,13 +223,17 @@ public sealed class ExecutionOrchestrator
                 case RecompilerIrTerminationReason.UnsupportedMemory:
                 case RecompilerIrTerminationReason.UnsupportedMmio:
                 case RecompilerIrTerminationReason.StateMismatch:
+                    // The engine could not execute the guest at that point. That
+                    // is a failed run (the recompiled path lacks coverage for it),
+                    // not a clean transfer to an uncompiled PC — so RuntimeFailure,
+                    // never UnsupportedTransfer.
                     return Terminal(
-                        TitleExecutionState.UnsupportedTransfer,
+                        TitleExecutionState.RuntimeFailure,
                         snap,
                         segments,
                         engine.Name,
                         snap.Termination.ToString(),
-                        $"The execution engine reported {snap.Termination} at PC 0x{snap.PC:X8}.");
+                        $"The execution engine could not execute at PC 0x{snap.PC:X8}: {snap.Termination}.");
 
                 default:
                     return Terminal(

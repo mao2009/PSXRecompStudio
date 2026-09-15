@@ -731,7 +731,7 @@ static uint32_t init_addrs[PSX_TEST_MAX_INIT];
 static uint32_t init_vals[PSX_TEST_MAX_INIT];
 static uint32_t window_addrs[PSX_TEST_MAX_WINDOW];
 static uint32_t ram_offsets[PSX_TEST_MAX_RAM_BLOCKS];
-static char ram_hex[PSX_TEST_MAX_RAM_BLOCKS][PSX_TEST_RAM_BLOCK_SIZE * 2u];
+static char ram_hex[PSX_TEST_MAX_RAM_BLOCKS][PSX_TEST_RAM_BLOCK_SIZE * 2u + 1u];
 
 static int hex_val(char c) {
     if ((unsigned)(c - '0') <= 9u) return c - '0';
@@ -884,7 +884,9 @@ int main(int argc, char** argv) {
         if (u > PSX_TEST_MAX_RAM_BLOCKS) return 95;  /* TooManyRamBlocks */
         ram_blocks = u;
         for (i = 0; i < (int)ram_blocks; i++) {
-            if (fscanf(in, ""%lu %2048s"", &a, ram_hex[i]) != 2) return 92;
+            /* Width 1024 == PSX_TEST_RAM_BLOCK_SIZE * 2: a full-size block's hex
+               payload, leaving the +1 row byte for the NUL terminator. */
+            if (fscanf(in, ""%lu %1024s"", &a, ram_hex[i]) != 2) return 92;
             ram_offsets[i] = (uint32_t)a;
             if (strlen(ram_hex[i]) != PSX_TEST_RAM_BLOCK_SIZE * 2u) return 92;
         }

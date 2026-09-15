@@ -83,11 +83,14 @@ public sealed class TitleExecutionRequest
         for (var i = 0; i < GprCount; i++) gpr[i] = initialGpr[i];
         gpr[0] = 0;
 
+        var memory = new RecompilerInitialMemoryItem[initialMemory.Count];
+        for (var i = 0; i < memory.Length; i++) memory[i] = initialMemory[i];
+
         EntryPc = entryPc;
         InitialGpr = Array.AsReadOnly(gpr);
         InitialHi = initialHi;
         InitialLo = initialLo;
-        InitialMemory = initialMemory;
+        InitialMemory = Array.AsReadOnly(memory);
         OuterBudget = outerBudget;
         SegmentBudget = segmentBudget;
     }
