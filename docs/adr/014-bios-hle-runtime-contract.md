@@ -942,3 +942,126 @@ unregistered-slot alias patch tests
 `PatchWrittenViaB0Slot_IsObservedThroughC0HighAliasDispatch`), the A0
 upper-bound guard, and the read/save/patch/restore round trip, remain
 unchanged and still pass.
+
+## Amendment (2026-09-15): executing patched jump-table targets in the interpreter path (#362)
+
+The prior amendment recorded finding (r) — "no interpreter or recompiled-code
+dispatch trap for patched targets exists" — and deferred it to Issue #362. This
+amendment closes the interpreter half of that gap and states precisely what
+remains open on the recompiled half.
+
+### Investigation: the gap was wider than "cannot jump"
+
+Before this amendment `IBiosRuntime` had **no production consumer at all**.
+`BiosHleRuntime.Invoke` was reached only from `BiosHleContractTests`; neither
+`RecompilerInterpreterExecutor` nor the generated host ever called it. So
+`PatchedTarget` was not merely "reported but not executed" — no execution path
+had a BIOS call boundary to report it *to*. The missing capability was therefore
+a BIOS vector trap, of which the patched-target jump is one of three outcomes.
+
+### Decision: the trap is a PC redirect, not a new dispatch abstraction
+
+Three designs were considered:
+
+- **A — redirect the PC and return to the existing execution loop.** The
+  interpreter already executes arbitrary MIPS from guest RAM; a patched target is
+  ordinary guest code, so "jump to it" is exactly "set the PC to it and keep
+  stepping".
+- **B — a new shared `GuestExecutionTarget` / `RuntimeDispatchResult`
+  abstraction** consumed by both executors.
+- **C — interpreter only, recompiled path declared explicitly unsupported.**
+
+**A (with C's honesty about the recompiled path) is chosen.** B was rejected
+under YAGNI: `BiosServiceResult`'s three existing statuses already encode the
+three things a trampoline can do with an entry (jump to the guest target,
+return an HLE result, or resolve nothing), and a second result vocabulary
+mapping one-to-one onto the first would be duplication, not structure. There is
+likewise no pre-existing indirect-dispatch abstraction to reuse: `JR`/`JALR`
+lower to `RecompilerIrTerminationReason.UnresolvedIndirectFlow` precisely
+because the IR carries no runtime target, so nothing in the recompiler models a
+computed jump this could have been expressed through.
+
+No CPU semantics are reimplemented. Setting the PC hands the target back to the
+same native R3000A interpreter that ran the caller, and the target returns
+through the `$ra` the original call site linked — the trampoline never consumes
+the link register, exactly as on hardware.
+
+### Vector→family mapping is now stated once
+
+`BiosJumpTables.TryResolveVectorFamily(address, out family)` is added as the
+single definition of the three trampoline vector addresses (`0xA0`/`0xB0`/`0xC0`,
+primary-source-confirmed) and their KUSEG/KSEG aliasing rule. The static
+`BiosCallRecognizer` (which asks this question of a decoded jump target) now
+delegates to it, so the static analysis and the runtime trap cannot disagree
+about which vector an address is.
+
+### Trap semantics
+
+`RecompilerInterpreterExecutor` optionally takes a factory that builds an
+`IBiosRuntime` over the running core's guest memory. When one is supplied, a PC
+that resolves to a trampoline vector is dispatched instead of ending the run:
+
+| `BiosServiceStatus` | Effect |
+|---|---|
+| `PatchedTarget` | PC ← the raw guest target; the interpreter executes it. |
+| `Supported` | `$v0` ← the service's return value (when it has one); PC ← `$ra`. |
+| `Unsupported` | The run stops with `UnresolvedIndirectFlow` and the Runtime's own diagnostic. |
+
+The identity is built from the PS1 ABI: `$t1` selects the function number and
+`$a0`–`$a3` carry the argument words.
+
+**No new address policy is introduced.** A patched target is rejected only when
+`Ps1AddressTranslation.TryTranslate` rejects it — the same boundary every guest
+memory access in this executor already passes through, applied to an address
+that is about to be fetched from. The PC does not move in that case, and the
+diagnostic names the address. A target that *is* translatable is jumped to
+verbatim: a KUSEG alias stays a KUSEG alias, never normalised.
+
+Dispatching a vector spends one step from the same budget that bounds ordinary
+instructions, so a guest that loops back into a BIOS call is cut short by
+`ExecutionBudgetExceeded` exactly as any other unterminated loop is.
+
+The trap is opt-in. An executor constructed without a factory behaves exactly as
+before, which is what keeps every existing differential fixture comparing like
+for like against the generated host.
+
+### Remaining blockers (#362 stays open)
+
+- (t) **The recompiled path cannot dispatch a BIOS vector.** A `jal` to a
+  trampoline lowers to an ordinary `RecompilerIrFlowKind.Call` naming an address
+  the program has no block for; the generated host's dispatch stops at an unknown
+  PC. Nothing in the IR marks that target as a BIOS vector, and the host has no
+  Runtime hook to call if it did. This is a generic gap in the generated-host
+  dispatch, not a patched-target-specific one, and it is pinned by
+  `RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
+- (u) **A live trap cannot reach a registered HLE service.** Each registered
+  service rejects any argument count but its own exact arity, while a trap can
+  only supply the ABI's register file (`$a0`–`$a3`) — it cannot know a service's
+  arity. Every unpatched registered slot therefore resolves to
+  `BIOS_HLE_INVALID_ARGUMENTS` under a live trap. This does not affect #362's
+  patched-target path (the patch check precedes the registry), but it blocks HLE
+  dispatch generally and needs ABI arity modelling to close.
+
+Both are out of scope here: #362 is bounded to transferring control to a target
+that already exists as guest code. Dynamic overlay compilation (#249),
+self-modifying code, and a whole-program interpreter fallback remain out of
+scope and unchanged.
+
+### Regression tests added (`BiosPatchedTargetExecutionTests`)
+
+A synthetic program patches a jump-table entry with its own `sw`, calls the
+vector, and proves the patched routine ran and returned:
+`PatchedEntry_TransfersControlToTheGuestTarget_WhichRunsAndReturns`,
+`PatchedEntry_TransfersControl_ForRegisteredAndUnregisteredAndMirroredSlots`
+(registered A0:3C, registered B0:3F, the C0:BF mirror of that same physical
+slot, and an unregistered A0 slot),
+`PatchedEntry_Dispatches_ThroughEveryAliasOfTheTrampolineVector` (KUSEG and
+KSEG0), `PatchedTarget_IsJumpedTo_Verbatim_WithoutSegmentNormalization`,
+`PatchedTarget_OutsideEveryTranslatableRegion_StopsTheRun_WithADiagnostic`,
+`UnpatchedUnregisteredEntry_StopsTheRun_WithTheRuntimesOwnDiagnostic`,
+`PatchedTarget_LoopingBackIntoTheCall_IsBoundedByTheExecutionBudget`,
+`WithoutABiosRuntime_ACallToAVector_LeavesTheProgramExactlyAsBefore`, and the
+parity marker `RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
+
+All prior regression tests from the base ADR and every previous amendment remain
+unchanged and still pass.
