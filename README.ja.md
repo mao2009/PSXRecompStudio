@@ -46,7 +46,8 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | 最小 MIPS プログラム実行パス | 実装済み |
 | Golden Trace（決定論的実行トレース） | 実装済み |
 | GPU / SPU / CD-ROM / MDEC / GTE | 予定（インターフェース定義のみ） |
-| Runtime（BIOS-less BIOS service 境界、EXE ロード、I/O ループ） | Phase 1 契約 |
+| Runtime / BIOS HLE 実行境界 | 部分実装 — interpreter / recompiled の両パスから共有 Runtime semantics で A0/B0/C0 vector を dispatch 可能。フルタイトル実行ループは未実装（#366） |
+| Persona v0.1.0 E2E 検証ゲート | scaffold 実装済み — 既存の解析 / Recompiler 段階までを検証し、次の code-level blocker を `RUNTIME_EXECUTION` として識別（#351, #367） |
 | Synthetic MIPS Recompiler vertical slice（IR/lowering、メモリ、制御フロー、host codegen、differential validation） | 実装済み・差分検証済み |
 | 実 ROM 関数の再コンパイル | 最初の1関数を実装・差分検証済み（#225）。汎用対応は未完了 |
 | フルタイトルの静的再コンパイル | 未実装 |
@@ -58,7 +59,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 
 **Recompiler について**: PSXRecompStudio の最終目標は静的再コンパイルです。backend-agnostic な Recompiler IR と共有 state contract、MIPS→IR lowering、決定論的な host C 生成、メモリバックエンド（各幅の load/store、unaligned access、load-delay セマンティクス）、制御フローバックエンド（branch、jump、link、delay slot、bounded/budget 付きループ）、interpreter-vs-recompiled の differential validator が `PSXRecomp.Core.Recompiler` に実装済みです（`PSXRecomp.Recompiler` という独立プロジェクトはまだ存在しません。[ディレクトリ構成](#ディレクトリ構成) を参照）。これらにより、**synthetic な MIPS fixture** に対する MIPS → IR → 生成された host C → build → bounded execution → interpreter diff → MATCH という end-to-end vertical slice が実装・差分検証済みです（#207、#208、#209、#211。#266 の統合スモークテストで再確認済み）。
 
-最初の実 ROM 関数についても、同じ仕組みで再コンパイル・差分検証済みです（#225）。`RealRomCandidateSelector`（`PSXRecomp.Core.Recompiler`）が、既存のディスク/EXE 解析出力（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）から、変更を加えていない `MipsToIrLowerer` で実際に lowering を試みて成功し、かつ indirect jump を含まない bounded な命令ウィンドウだけを候補として選定します。実 ROM 専用の第二の semantics 実装は存在しません。これはまだ汎用的な実 ROM 関数の再コンパイルではありません。候補選定は意図的に保守的であり、フルタイトルの再コンパイル、完全な Runtime 統合、完全なハードウェアサポートは未実装です。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
+最初の実 ROM 関数についても、同じ仕組みで再コンパイル・差分検証済みです（#225）。`RealRomCandidateSelector`（`PSXRecomp.Core.Recompiler`）が、既存のディスク/EXE 解析出力（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）から、変更を加えていない `MipsToIrLowerer` で実際に lowering を試みて成功し、かつ indirect jump を含まない bounded な命令ウィンドウだけを候補として選定します。実 ROM 専用の第二の semantics 実装は存在しません。生成 host は unknown-PC 境界で汎用 host-transfer hook を通じて Runtime に制御を渡せるようになり、生成 C に BIOS 固有知識を埋め込まずに、interpreter と同じ `BiosVectorDispatch` semantics で BIOS A0/B0/C0 vector を処理できます（#368）。これはまだ汎用的な実 ROM 関数の再コンパイルではありません。候補選定は意図的に保守的であり、フルタイトルの再コンパイル、完全な実行 orchestrator（#366）、完全なハードウェアサポートは未実装です。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
 
 ## Core Capabilities
 
