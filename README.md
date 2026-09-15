@@ -3,30 +3,48 @@
 [![CI](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-PSXRecompStudio is an open-source PlayStation 1 (PS1 / PSX) research and development environment for static recompilation, PSX reverse engineering, MIPS R3000A analysis, binary analysis, and native porting research.
+PSXRecompStudio is a research-oriented PlayStation 1 (PS1 / PSX) static-recompilation and reverse-engineering environment.
 
-It currently focuses on a validated CPU execution foundation, disc and PS-X EXE analysis, control-flow discovery, Golden Trace validation, and a MIPS recompiler vertical slice validated on both a synthetic fixture and a first real-ROM function. Complete commercial PS1 game recompilation is **not yet implemented**.
+Its core differentiator is a **differentially validated recompiler path**: MIPS → IR/lowering → deterministic host C → bounded execution → interpreter state comparison. That path is proven on a synthetic fixture and on a first bounded real-ROM function. Complete commercial PS1 game recompilation is **not yet implemented**.
 
 *[日本語版 README はこちら / Japanese README](README.ja.md)* · [Project website](https://mao2009.github.io/PSXRecompStudio/)
 
-## What works today
+## Quick start
 
-- R3000A / MIPS I instruction modeling and decoding, memory translation, branch and load delay behavior, COP0 exceptions, interrupts, and deterministic Golden Trace validation.
-- Disc image analysis from CHD through ISO 9660 and PS-X EXE parsing into MIPS instruction analysis, basic blocks, and control-flow graphs.
-- A MIPS static recompiler validation path — MIPS → IR/lowering → deterministic host C → bounded execution → interpreter differential comparison — proven on a synthetic fixture and, from the same unmodified pipeline, on a first bounded real-ROM function (#225).
-- BIOS-less Runtime foundations with guest-visible A0/B0/C0 jump tables, BIOS service dispatch through a shared `BiosVectorDispatch`, registered-service arity lookup, and patched-target execution from both interpreter and recompiled execution paths (#364, #368).
-- A Persona v0.1.0 E2E gate scaffold that reports progress through fixture discovery, analysis, the recompiler slice, and runtime execution; the current first code-level blocker is the missing full-title execution orchestrator (#351, #366, #367).
-- A C# / .NET analysis core, Avalonia application shell, and C++ native core connected through a stable C ABI and P/Invoke boundary.
-- Compiler-enforced architecture rules for layering, dependency direction, forbidden APIs, and interop boundaries.
+Build the managed solution and run the main C# test suite:
 
-## Not yet implemented
+```bash
+dotnet build src/PSXRecompStudio.slnx --configuration Release
+dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
+```
 
-- End-to-end static recompilation of a complete commercial PlayStation 1 title.
-- General-purpose real-ROM function recompilation: only a first, deliberately conservative real-ROM function is proven end to end so far (#225); arbitrary functions and full MIPS I coverage remain incomplete.
+A successful run verifies the current CPU/runtime/recompiler contracts, including the synthetic recompiler vertical slice. The real-ROM differential path requires a legally obtained user-supplied image and remains intentionally bounded rather than general-purpose.
+
+For the native core and headless GUI suites, see [Build](#build) and [Test](#test).
+
+## Verified today
+
+- **CPU execution foundation:** R3000A / MIPS I decode and execution, KSEG translation, branch/load delays, COP0 exceptions, interrupts, and deterministic Golden Trace validation.
+- **Disc and executable analysis:** CHD → ISO 9660 → PS-X EXE → MIPS analysis → basic blocks / CFG.
+- **Recompiler proof:** the same MIPS → IR → host-C → bounded-execution → interpreter-diff pipeline is validated on both a synthetic fixture and a first conservative real-ROM function (#225).
+- **Runtime / BIOS boundary:** interpreter and recompiled paths can dispatch guest-visible A0/B0/C0 BIOS vectors through shared `BiosVectorDispatch` semantics (#364, #368).
+- **Persona E2E gate:** the current gate reaches the implemented analysis/recompiler stages and identifies `RUNTIME_EXECUTION` as the next code-level blocker (#351, #366, #367).
+
+## Not supported yet
+
+- End-to-end static recompilation and execution of a complete commercial PlayStation 1 title.
+- General-purpose real-ROM function recompilation or complete MIPS I coverage.
 - A full-title execution orchestrator that continuously drives a recompiled executable through CPU execution, BIOS HLE, and hardware integration (#366).
-- Broad BIOS HLE service coverage; the Runtime execution boundary and a small registered service set are implemented, but unsupported services still fail explicitly (#279, #365).
-- A finished native runtime for complete PS1 native ports.
+- Broad BIOS HLE service coverage.
 - Complete GPU, SPU, CD-ROM, MDEC, and GTE hardware support.
+- A finished native runtime for complete PS1 native ports.
+
+## Next milestones
+
+1. **Full-title execution orchestrator (#366):** create the title-agnostic runtime loop that can drive recompiled guest execution through Runtime/BIOS boundaries.
+2. **Expand BIOS HLE coverage (#279, #365):** implement the services required by the next real-title execution path while preserving explicit failure for unsupported calls.
+3. **Minimum hardware integration for #351:** connect the GPU/SPU/CD-ROM/MMIO paths needed to move the Persona v0.1.0 E2E gate beyond `RUNTIME_EXECUTION` toward rendering.
+4. **Broaden real-ROM recompilation coverage:** expand supported instructions/control flow only with differential validation retained as the correctness gate.
 
 > **Asset policy:** ROM, ISO, CHD, BIOS, firmware images, and commercial game assets are not included in this repository. Any user-supplied files must be obtained and used legally.
 
