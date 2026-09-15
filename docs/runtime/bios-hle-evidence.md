@@ -602,7 +602,8 @@ Two explicit guarantees:
     guest-jump-to-`0xA0`/`0xB0`/`0xC0` recognition rule, consumed by the
     interpreter's live trap and by the generated host's unknown-PC boundary;
     (b) `BiosVectorDispatch` states the fallback once — `PatchedTarget` moves
-    the PC to the raw guest target, `Supported` writes `$v0` and returns to
+    the PC to the raw guest target, `Supported` writes `$v0` — only when the
+    service produced a return value; otherwise it is left untouched — and returns to
     `$ra`, `Unsupported` stops with the Runtime's own diagnostic. The
     generated path additionally requires the target to resolve to a block it
     already compiled; a target discovered only at runtime is dynamic overlay

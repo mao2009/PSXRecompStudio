@@ -203,8 +203,9 @@ statement of what a BIOS call means, `BiosVectorDispatch` (Issue #362): a guest
 transfer to an A0/B0/C0 trampoline vector builds the identity from the PS1 ABI
 (`$t1` selects the function, `$a0`–`$a3` carry up to the registered service's own
 argument count), and the Runtime's answer either moves the PC to a patched
-jump-table target, writes `$v0` and returns to `$ra`, or stops the run with an
-explicit diagnostic — never a silent success. The interpreter applies that
+jump-table target, returns to `$ra` — writing `$v0` only when the service
+produced a return value, leaving it untouched otherwise — or stops the run with
+an explicit diagnostic; never a silent success. The interpreter applies that
 outcome to a live core; the generated host is offered its unresolved PCs through
 a generic control-transfer hook in the emitted state struct, so no BIOS address,
 function number, or service name ever enters the Recompiler IR or the generated

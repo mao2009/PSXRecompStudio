@@ -393,12 +393,18 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
             return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
         }
 
-        var output = new StringBuilder();
-        try
-        {
-            process.StandardInput.AutoFlush = true;
-            session.Attach(process.StandardOutput, process.StandardInput);
+        // The pump runs off the calling thread so the same bounded budget that
+        // covers an ordinary run also covers the protocol. A blocking ReadLine
+        // cannot be cancelled, so the timeout path kills the child instead:
+        // that closes the pipe, the pending read returns, and the pump ends.
+        // Without this a child that stops mid-line — or stops answering — would
+        // hang the test run indefinitely rather than reporting a timeout.
+        process.StandardInput.AutoFlush = true;
+        session.Attach(process.StandardOutput, process.StandardInput);
 
+        var output = new StringBuilder();
+        var pump = Task.Run(() =>
+        {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)
             {
@@ -407,11 +413,12 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                     output.AppendLine(line);
                 }
             }
-        }
-        catch
+        });
+
+        if (!WaitForPump(pump, process, timeoutMs))
         {
-            TryKillTree(process);
-            throw;
+            timedOut = true;
+            return (int.MinValue, output.ToString(), stderrTask.Result);
         }
 
         if (!process.WaitForExit(timeoutMs))
@@ -425,6 +432,51 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         timedOut = false;
         return (process.ExitCode, output.ToString(), stderrTask.Result);
     }
+
+    /// <summary>
+    /// Waits for the protocol pump, bounded by <paramref name="timeoutMs"/>.
+    /// Returns false when the budget expired; the child is killed either way so
+    /// no orphan survives, and the pump is drained before its output buffer is
+    /// read back.
+    /// </summary>
+    /// <exception cref="Exception">Whatever the pump threw, once the child is killed.</exception>
+    private static bool WaitForPump(Task pump, Process process, int timeoutMs)
+    {
+        bool completed;
+        try
+        {
+            completed = pump.Wait(timeoutMs);
+        }
+        catch
+        {
+            // A protocol failure inside the pump: stop the child before surfacing it.
+            TryKillTree(process);
+            throw;
+        }
+
+        if (completed)
+        {
+            return true;
+        }
+
+        // Killing the child closes the pipe the pump is blocked on, so the wait
+        // below is what makes the output buffer safe to read from this thread.
+        TryKillTree(process);
+        try
+        {
+            pump.Wait(PumpDrainTimeoutMs);
+        }
+        catch
+        {
+            // The run already failed on the timeout; a pump fault reported on the
+            // way down must not replace that verdict.
+        }
+
+        return false;
+    }
+
+    /// <summary>How long a killed child's pump is given to observe its closed pipe.</summary>
+    private const int PumpDrainTimeoutMs = 5000;
 
     /// <summary>
     /// One run's binding between the generated host's optional control-transfer
