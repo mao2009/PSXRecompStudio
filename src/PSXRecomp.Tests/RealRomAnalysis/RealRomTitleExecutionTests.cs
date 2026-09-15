@@ -85,7 +85,9 @@ public class RealRomTitleExecutionTests
         // mechanism failure with no snapshot.
         result.FinalSnapshot.Should().NotBeNull(
             $"{evidence}\n{result.DiagnosticCode} {result.DiagnosticMessage}");
-        result.State.Should().NotBe(TitleExecutionState.InvalidState, evidence);
+        result.State.Should().NotBe(
+            TitleExecutionState.InvalidState,
+            $"{evidence}\n{result.DiagnosticCode} {result.DiagnosticMessage}");
         result.SegmentsRetired.Should().BeGreaterThan(0, evidence);
     }
 
