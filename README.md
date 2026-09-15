@@ -192,7 +192,7 @@ PSXRecompStudio/
 │   ├── PSXRecompStudio.Tests/         # Headless GUI tests
 │   ├── PSXRecomp.Core/                # C# Domain model + P/Invoke interop
 │   ├── PSXRecomp.Native/              # C++ native core (CMake project)
-│   ├── architecture.contract.json     # Architecture SSOT, enforced by loach.ArchitectureAnalyzer
+│   ├── architecture.contract.json     # Architecture SSOT (loach.ArchitectureAnalyzer)
 │   └── PSXRecomp.Tests/               # xUnit tests (Core + Native via P/Invoke)
 ├── config/                            # SSOT configuration (artifact policy, CPU instruction data, README automation)
 ├── scripts/                           # CI and development scripts
