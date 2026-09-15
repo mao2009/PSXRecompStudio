@@ -17,28 +17,15 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
 {
     public const string ExecutorName = "interpreter-native";
 
-    /// <summary>
-    /// Reported when a guest transfer reached a BIOS trampoline vector that the
-    /// Runtime could neither service nor turn into a jumpable guest target.
-    /// </summary>
-    public const string BiosDispatchDiagnosticCode = "BIOS_DISPATCH_UNRESOLVED";
+    /// <inheritdoc cref="BiosVectorDispatch.UnresolvedDiagnosticCode" />
+    public const string BiosDispatchDiagnosticCode = BiosVectorDispatch.UnresolvedDiagnosticCode;
 
-    /// <summary>
-    /// Reported when a patched jump-table entry names an address outside every
-    /// translatable region (KSEG2 and above), so control cannot be transferred to it.
-    /// </summary>
-    public const string BiosUntranslatableTargetDiagnosticCode = "BIOS_PATCHED_TARGET_UNTRANSLATABLE";
+    /// <inheritdoc cref="BiosVectorDispatch.UntranslatableTargetDiagnosticCode" />
+    public const string BiosUntranslatableTargetDiagnosticCode = BiosVectorDispatch.UntranslatableTargetDiagnosticCode;
 
-    /// <summary>
-    /// Reported when a registered service's arity exceeds the number of ABI
-    /// argument registers ($a0-$a3) this register-only live trap can read. No
-    /// PS1 service is registered above that arity today; this exists so a
-    /// future one fails loudly here rather than the trap guessing stack args.
-    /// </summary>
-    public const string BiosServiceArityExceedsRegisterBoundaryDiagnosticCode = "BIOS_ARITY_EXCEEDS_REGISTER_BOUNDARY";
-
-    /// <summary>Number of ABI argument registers ($a0-$a3) a live BIOS trap can read.</summary>
-    private const int AbiArgumentRegisterCount = 4;
+    /// <inheritdoc cref="BiosVectorDispatch.ArityExceedsRegisterBoundaryDiagnosticCode" />
+    public const string BiosServiceArityExceedsRegisterBoundaryDiagnosticCode =
+        BiosVectorDispatch.ArityExceedsRegisterBoundaryDiagnosticCode;
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
 
@@ -210,38 +197,16 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is the guest-jump-to-target mechanism Issue #362 asks for. The three
-    /// <see cref="BiosServiceStatus"/> outcomes map onto the three things a real
-    /// trampoline can do with a jump-table entry:
+    /// The BIOS semantics themselves live in <see cref="BiosVectorDispatch"/>,
+    /// shared with the generated host (Issue #362), so the two execution paths
+    /// cannot disagree about what a BIOS call means. This method only applies the
+    /// outcome to a live interpreter core.
     /// </para>
-    /// <list type="bullet">
-    /// <item><description>
-    /// <see cref="BiosServiceStatus.PatchedTarget"/> — guest code owns this entry
-    /// now, so control moves to the raw guest address it holds and the interpreter
-    /// executes whatever MIPS lives there. The guest target returns through the
-    /// <c>$ra</c> the original call site already linked, exactly as it would on
-    /// hardware, because the trampoline never consumed the link register. No
-    /// CPU semantics are reimplemented here: setting the PC hands the target back
-    /// to the same interpreter that ran the caller.
-    /// </description></item>
-    /// <item><description>
-    /// <see cref="BiosServiceStatus.Supported"/> — the entry still dispatches to
-    /// HLE, so the service's return value lands in <c>$v0</c> and control returns
-    /// to <c>$ra</c>.
-    /// </description></item>
-    /// <item><description>
-    /// <see cref="BiosServiceStatus.Unsupported"/> — the Runtime can neither
-    /// service the call nor name a guest target for it. Execution stops with the
-    /// Runtime's own diagnostic rather than continuing past a call whose effects
-    /// never happened.
-    /// </description></item>
-    /// </list>
     /// <para>
-    /// A patched target that falls outside every translatable region is rejected
-    /// before the PC moves. This adds no address policy of its own: it is the
-    /// same <see cref="Ps1AddressTranslation.TryTranslate"/> boundary every guest
-    /// memory access in this executor already passes through, applied to an
-    /// address that is about to be fetched from.
+    /// No CPU semantics are reimplemented here: setting the PC hands the patched
+    /// target back to the same interpreter that ran the caller, and the target
+    /// returns through the <c>$ra</c> the original call site already linked,
+    /// exactly as it would on hardware.
     /// </para>
     /// </remarks>
     /// <returns>True when control was transferred; false when the run must stop.</returns>
@@ -252,88 +217,33 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         out string? diagnosticCode,
         out string? diagnosticMessage)
     {
+        var gpr = new uint[RecompilerDifferentialFixture.GprCount];
+        for (var i = 0; i < gpr.Length; i++)
+        {
+            gpr[i] = core.GetGpr(i);
+        }
+
+        var outcome = BiosVectorDispatch.Dispatch(biosRuntime, family, gpr);
+        if (!outcome.ContinueExecution)
+        {
+            diagnosticCode = outcome.DiagnosticCode;
+            diagnosticMessage = outcome.DiagnosticMessage;
+            return false;
+        }
+
         diagnosticCode = null;
         diagnosticMessage = null;
-
-        // PS1 ABI: $t1 selects the function number, $a0-$a3 carry the argument
-        // words, $v0 takes the return value, and $ra holds the call site's own
-        // link — the trampoline is transparent to it.
-        var functionNumber = (byte)(core.GetGpr((int)R3000aRegister.T1) & 0xFFu);
-
-        // The Runtime's registry is the single source of truth for how many of
-        // $a0-$a3 a registered service actually consumes (Issue #365 owns any
-        // richer descriptor; this trap only needs the count). An unregistered
-        // call has no known arity, so every ABI argument register is preserved
-        // rather than fabricated as zero — the Runtime's own Unsupported outcome
-        // does not consume Arguments either way.
-        uint[] arguments;
-        if (biosRuntime.TryGetServiceArgumentCount(family, functionNumber, out var argumentCount))
+        if (outcome.ReturnValue is uint returnValue)
         {
-            if (argumentCount > AbiArgumentRegisterCount)
-            {
-                diagnosticCode = BiosServiceArityExceedsRegisterBoundaryDiagnosticCode;
-                diagnosticMessage =
-                    $"{family}:{functionNumber:X2} requires {argumentCount} arguments, which exceeds the " +
-                    $"{AbiArgumentRegisterCount} ABI argument registers ($a0-$a3) this live trap can read; " +
-                    "stack arguments are not supported.";
-                return false;
-            }
-
-            arguments = AbiArgumentRegisters(core)[..argumentCount];
-        }
-        else
-        {
-            arguments = AbiArgumentRegisters(core);
+            core.SetGpr((int)R3000aRegister.V0, returnValue);
         }
 
-        // GuestPc is the guest call-site PC, not the trampoline vector: this
-        // executor does not yet track the transfer instruction's own PC
-        // separately from core.Pc (which, at this point, IS the trampoline
-        // vector address), so it is left null rather than misreported.
-        var identity = new BiosCallIdentity(family, functionNumber, guestPc: null, arguments);
-
-        var result = biosRuntime.Invoke(identity);
-        switch (result.Status)
-        {
-            case BiosServiceStatus.PatchedTarget:
-                var target = result.ReturnValue ?? 0u;
-                if (!Ps1AddressTranslation.TryTranslate(target, out _))
-                {
-                    diagnosticCode = BiosUntranslatableTargetDiagnosticCode;
-                    diagnosticMessage =
-                        $"{identity.StableKey}: patched jump-table entry names guest address 0x{target:X8}, " +
-                        "which falls outside every translatable region, so control cannot be transferred to it.";
-                    return false;
-                }
-
-                core.Pc = target;
-                return true;
-
-            case BiosServiceStatus.Supported:
-                if (result.ReturnValue is uint returnValue)
-                {
-                    core.SetGpr((int)R3000aRegister.V0, returnValue);
-                }
-
-                core.Pc = core.GetGpr((int)R3000aRegister.Ra);
-                return true;
-
-            default:
-                diagnosticCode = result.Diagnostic?.Code ?? BiosDispatchDiagnosticCode;
-                diagnosticMessage = result.Diagnostic?.ToStableString() ??
-                    $"{identity.StableKey}: the Runtime returned {result.Status} with no diagnostic.";
-                return false;
-        }
+        // A translatable patched target is jumped to verbatim — a KUSEG alias
+        // stays a KUSEG alias, never normalised — because the interpreter can
+        // fetch from any translatable address.
+        core.Pc = outcome.NextPc;
+        return true;
     }
-
-    /// <summary>Reads the four PS1 ABI argument registers, $a0-$a3, in order.</summary>
-    private static uint[] AbiArgumentRegisters(PSXCoreWrapper core) =>
-    [
-        core.GetGpr((int)R3000aRegister.A0),
-        core.GetGpr((int)R3000aRegister.A1),
-        core.GetGpr((int)R3000aRegister.A2),
-        core.GetGpr((int)R3000aRegister.A3),
-    ];
 
     private static bool PcWithinProgram(uint pc, RecompilerDifferentialFixture fixture)
     {
