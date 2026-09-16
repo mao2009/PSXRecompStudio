@@ -258,6 +258,50 @@ public sealed class ExecutionOrchestratorTests
         result.FinalSnapshot!.Termination.Should().Be(RecompilerIrTerminationReason.Exception);
     }
 
+    // --- Engine image validation ----------------------------------------------
+
+    [Fact]
+    public void EngineConstructor_ProgramImageOverflowing32Bits_Throws()
+    {
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                new uint[] { 0u, 0u, 0u, 0u }, 0xFFFFFFF8u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("overflows");
+    }
+
+    [Fact]
+    public void EngineConstructor_ProgramSpanCrossingTranslationBoundary_Throws()
+    {
+        // The span [0x7FFFFF00..0x80000100) straddles KUSEG/KSEG0: the start
+        // translates to itself and the last byte is masked into low RAM, so the
+        // image would be written to non-contiguous physical addresses.
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                Enumerable.Repeat(0u, 128).ToArray(), 0x7FFFFF00u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("contiguous");
+    }
+
+    [Fact]
+    public void EngineConstructor_NontranslatableProgramStart_Throws()
+    {
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                new uint[] { 0u, 0u }, 0xC0000000u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("translatable");
+    }
+
     // --- End-to-end over the generated host (gcc, RAM continuity) -------------
 
     [Fact]

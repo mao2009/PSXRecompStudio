@@ -52,7 +52,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// A0/B0/C0 vector hits to, over the engine's own guest memory. Null runs without
     /// BIOS dispatch, so a vector hit is simply an unresolved transfer.</param>
     /// <exception cref="ArgumentNullException"><paramref name="instructions"/> is null.</exception>
-    /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty.</exception>
+    /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty, or the
+    /// program image overflows the 32-bit address space or does not map to a contiguous
+    /// translatable span of physical memory.</exception>
     public InterpreterTitleExecutionEngine(
         IReadOnlyList<uint> instructions,
         uint loadAddress,
@@ -64,9 +66,32 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             throw new ArgumentException("The interpreter needs at least one instruction to execute.", nameof(instructions));
         }
 
+        // Mirrors PsxExeTitleInput.Build: Load writes at TranslateAddress(loadAddress) + i*4
+        // while FetchInstruction translates each virtual PC, so an image that wraps 32 bits
+        // or crosses a KUSEG/KSEG0/KSEG1 boundary would be written to different physical
+        // addresses than the CPU fetches. Fail closed here too so no caller can bypass the
+        // bridge's validation by constructing the engine directly.
+        ulong programEndUlong = (ulong)loadAddress + (uint)instructions.Count * 4u;
+        if (programEndUlong > uint.MaxValue || programEndUlong <= loadAddress)
+        {
+            throw new ArgumentException(
+                $"The program image overflows the 32-bit address space: loadAddress=0x{loadAddress:X8} count={instructions.Count}.",
+                nameof(loadAddress));
+        }
+
+        var programEnd = (uint)programEndUlong;
+        if (!Ps1AddressTranslation.TryTranslate(loadAddress, out var startPhysical)
+            || !Ps1AddressTranslation.TryTranslate(programEnd - 1, out var endPhysical)
+            || endPhysical != startPhysical + (uint)instructions.Count * 4u - 1)
+        {
+            throw new ArgumentException(
+                $"The program image 0x{loadAddress:X8}..0x{programEnd:X8} does not map to a contiguous " +
+                "translatable span of physical memory.", nameof(loadAddress));
+        }
+
         _instructions = instructions;
         _loadAddress = loadAddress;
-        _programEnd = unchecked(loadAddress + (uint)instructions.Count * 4u);
+        _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
     }
 
