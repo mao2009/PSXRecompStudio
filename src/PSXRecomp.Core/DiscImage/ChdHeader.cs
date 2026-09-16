@@ -30,8 +30,23 @@ public sealed record ChdHeader
     public bool IsCompressed => Compressors[0] != 0;
     public bool HasParent => ParentSha1.Any(b => b != 0);
 
-    public int FramesPerHunk => UnitBytes > 0 ? (int)(HunkBytes / UnitBytes) : 0;
-    public int TotalHunks => HunkBytes > 0 ? (int)((LogicalBytes + HunkBytes - 1) / HunkBytes) : 0;
+    public int FramesPerHunk => UnitBytes > 0 ? checked((int)(HunkBytes / UnitBytes)) : 0;
+
+    public int TotalHunks
+    {
+        get
+        {
+            if (HunkBytes == 0 || LogicalBytes == 0)
+            {
+                return 0;
+            }
+
+            // Ceiling division without LogicalBytes + HunkBytes - 1, which can
+            // overflow ulong for a hostile header before the narrowing cast.
+            var total = 1UL + ((LogicalBytes - 1UL) / HunkBytes);
+            return checked((int)total);
+        }
+    }
 
     public string CompressionName(int index) => Compressors[index] switch
     {
