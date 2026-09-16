@@ -15,9 +15,12 @@
       5. RUNTIME_EXECUTION  — runs RealRomTitleExecutionTests (full-title orchestrator over recompiled host)
 
     Exit codes:
-      0 — all implemented stages passed (PASS)
+      0 — reserved for a future run that reaches the TITLE_SCREEN release gate;
+          the current implementation does not return PASS because that criterion
+          is not implemented yet
       1 — a stage failed (FAIL)
-      2 — no fixture present; pipeline could not start (SKIP)
+      2 — no fixture is present, or all currently implemented stages completed
+          without reaching TITLE_SCREEN (SKIP)
 
     Output: prints a JSON summary to stdout; optionally writes it to --output-path.
 
@@ -50,7 +53,7 @@
       - No fake title screen.
       - RUNTIME_EXECUTION is implemented for guest-code execution (orchestrator +
         BIOS HLE dispatch); reaching an actual title screen additionally requires
-        GPU/SPU/CD-ROM producers (Issue #9).
+        broader BIOS HLE coverage and GPU/SPU/CD-ROM producers (Issue #9).
 #>
 [CmdletBinding()]
 param(
@@ -105,16 +108,25 @@ function Add-Fail   {
     $script:verdict = 'FAIL'
 }
 
+function Get-NextBlocker {
+    if ($script:verdict -eq 'FAIL' -and $null -ne $script:firstBlocker) {
+        return "$($script:firstBlocker.stage): resolve the failing stage before the gate can continue. " +
+               $script:firstBlocker.description
+    }
+
+    return 'TITLE_SCREEN: the implemented stages can execute bounded guest code, but the next ' +
+           'generic runtime blocker is broader BIOS HLE coverage. After the required BIOS calls ' +
+           'are supported, GPU/SPU/CD-ROM producers remain necessary to reach an actual title ' +
+           'screen. See docs/v0.1.0/persona-e2e-status.md and Issue #351.'
+}
+
 function Build-Result {
     [PSCustomObject]@{
         schemaVersion = 1
         verdict       = $script:verdict
         stages        = $script:stages.ToArray()
         firstBlocker  = $script:firstBlocker
-        nextBlocker   = 'TITLE_SCREEN: the orchestrator runs recompiled guest code to a ' +
-                        'classified end (Completed/RuntimeHandoff), but driving it to an actual title ' +
-                        'screen needs GPU/SPU/CD-ROM producers. ' +
-                        'See docs/v0.1.0/persona-e2e-status.md and Issue #351.'
+        nextBlocker   = Get-NextBlocker
     }
 }
 
@@ -159,10 +171,10 @@ if ($fixtureFiles.Count -eq 0) {
             diagnosticCode = $null
             knownIssue     = 'https://github.com/mao2009/PSXRecompStudio/issues/351'
         }
-        nextBlocker   = 'Once a fixture is present, the pipeline proceeds: ' +
-                        'ANALYSIS → RECOMPILER_SLICE → RUNTIME_EXECUTION. ' +
-                        'The next code-level blocker is TITLE_SCREEN: GPU/SPU/CD-ROM ' +
-                        'producers (Issue #351 / #9).'
+        nextBlocker   = 'FIXTURE_DISCOVERY: provide a legally-owned CHD under rom/. Once fixture discovery succeeds, ' +
+                        'the pipeline proceeds through ANALYSIS → RECOMPILER_SLICE → RUNTIME_EXECUTION; the next ' +
+                        'generic runtime blocker toward TITLE_SCREEN is broader BIOS HLE coverage, followed by ' +
+                        'GPU/SPU/CD-ROM producers.'
     }
     Emit-Result $result
     exit 2
@@ -299,9 +311,9 @@ if (-not $runtimePassed) {
 }
 
 # If stages 1-5 all passed/skipped without FAIL, overall is SKIP (not PASS)
-# because the gate's ultimate criterion (an actual title screen) is not met:
-# the orchestrator runs recompiled code to a classified end, but GPU/SPU/CD-ROM
-# are interface-only, so no frame is ever produced.
+# because the gate's ultimate criterion (an actual title screen) is not met.
+# Broader BIOS HLE coverage is the next generic runtime blocker; after the
+# required calls are supported, GPU/SPU/CD-ROM producers are still required.
 if ($verdict -eq 'PASS') {
     $verdict = 'SKIP'
 }

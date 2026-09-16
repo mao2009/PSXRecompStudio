@@ -24,7 +24,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 ```text
 [1] FIXTURE_DISCOVERY  — legal user-owned disc image in rom/*.chd
 [2] BUILD              — dotnet build (Release)
-[3] ANALYSIS           — CHD → ISO → SYSTEM.CNF → PSX EXE → decode → CFG → COMPLETE
+[3] ANALYSIS           — CHD → ISO → SYSTEM.CNF → PS-X EXE → decode → CFG → COMPLETE
 [4] RECOMPILER_SLICE   — candidate function selection → recompilation → differential validation
 [5] RUNTIME_EXECUTION  — full-title execution loop (`ExecutionOrchestrator` + host engine, Issue #366)
         ↓
@@ -50,16 +50,16 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 
 The RUNTIME_EXECUTION row above is this gate's own real-ROM, fixture-gated test
 path (generated-host `HostTitleExecutionEngine`, `[Test]`-only). It is separate
-from the Studio's own production execution entry point described under
-[First Blocker](#first-blocker-as-of-head-orchestrator-landed-issue-366) below
+from the Studio's own production execution entry point described below
 (ADR-015, interpreter-backed) — the two are not the same engine and should not
 be conflated.
 
-## First Blocker (as of HEAD: orchestrator landed, Issue #366)
+## First Blocker toward TITLE_SCREEN (as of HEAD)
 
-**Stage:** GPU / SPU / CD-ROM rendering (stands between RUNTIME_EXECUTION and TITLE_SCREEN)
+**Stage:** BIOS HLE coverage
 
-**Classification:** `hardware rendering` — no production GPU/SPU/CD-ROM implementation
+**Classification:** `runtime/BIOS coverage` — the bounded execution loop exists,
+but the BIOS service surface needed by a real title is still incomplete.
 
 **Description:**
 
@@ -75,6 +75,13 @@ PC with no continuation rule is classified (UnsupportedTransfer), never a hang.
 
 It runs on real-ROM functions through `RealRomTitleExecutionTests`
 (real-fixture-gated; skips with no `rom/*.chd`).
+
+Only five BIOS services are currently registered: A0:3C putchar, A0:3E puts,
+B0:3F puts alias, B0:56 GetC0Table, and B0:57 GetB0Table. The first unregistered
+call fails closed with `BIOS_HLE_UNSUPPORTED_CALL`. Therefore broader BIOS HLE
+coverage is the next generic runtime blocker after the implemented bounded
+execution stages. Once the required BIOS calls are covered, GPU/SPU/CD-ROM
+producers remain necessary before an actual title screen can be reached.
 
 The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
@@ -97,20 +104,21 @@ What still does not exist:
   diagnostic program. The disc/EXE analysis itself already exists (CHD → ISO
   9660 → PS-X EXE → CFG); what is missing is the join between that analysis
   output and the production execution entry point above, not the analysis or
-  the entry point individually.
+  the entry point individually. This is the first blocker for running a real
+  title through the Studio's production entry point; it is distinct from the
+  E2E gate's fixture-gated Test execution path described above.
 - **A production generated-host (recompiled) execution backend.** The Studio's
   production path is interpreter-backed only (ADR-015); compiling recompiled
   guest code and running it as the product's execution backend is deferred
   (Option B in ADR-015), not implemented.
 - Runs the entire Persona executable to an **actual title screen** — even once
-  a real title is loaded, the orchestrator stops at the first discontinuity the
-  engine has no code for: the boot path needs BIOS HLE beyond 5 services and
-  GPU/SPU/CD-ROM MMIO.
+  a real title is loaded, the boot path needs BIOS HLE beyond the five services
+  above and GPU/SPU/CD-ROM MMIO.
 - GPU / SPU / CD-ROM hardware: `IGpu` and the other hardware interfaces have no
   production implementation. Hardware communication would hit MMIO open-bus
   (reads return 0, writes ignored).
 
-**Sub-blockers in order** (after an execution loop exists):
+**Remaining generic runtime sub-blockers in order:**
 
 1. **BIOS HLE coverage**: Only 5 services implemented (A0:3C putchar, A0:3E puts,
    B0:3F puts alias, B0:56 GetC0Table, B0:57 GetB0Table). First unregistered call
@@ -138,9 +146,9 @@ pwsh scripts/e2e/persona-e2e-gate.ps1
 ```
 
 Exit codes:
-- `0` — all implemented stages passed
-- `1` — a stage failed  
-- `2` — no fixture present (SKIP)
+- `0` — reserved for a future run that reaches the `TITLE_SCREEN` release gate; the current implementation does not return PASS
+- `1` — a stage failed
+- `2` — no fixture is present, or the currently implemented stages completed without reaching `TITLE_SCREEN` (SKIP)
 
 Output: machine-readable JSON in `reports/e2e/persona-e2e-gate-result.json` (git-ignored).
 
@@ -162,6 +170,11 @@ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj `
 
 With no fixture present, all three skip explicitly with reason:
 `skipped: no real-ROM fixture found under rom/*.chd (disc images are never committed)`
+
+The repository CI does not provide commercial ROM fixtures. Therefore these
+real-ROM-gated tests **skip in CI by design**; CI still validates the synthetic
+and fixture-independent paths. A local user-supplied legal fixture is required
+to exercise the real-ROM stages.
 
 ## Output Artifacts
 

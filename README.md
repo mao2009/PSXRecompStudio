@@ -25,7 +25,7 @@ Its core differentiator is a **differentially validated recompiler path**: MIPS 
 - Shared BIOS A0/B0/C0 vector dispatch on both the interpreter and recompiled paths, currently covering 5 registered services (putchar, puts and its B0 alias, `GetB0Table`, `GetC0Table`) — not broad BIOS HLE coverage: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs).
 - Register-level DMA/interrupt/timer MMIO adapters and a memory bus with dedicated tests: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/) — not yet wired into any execution engine.
 - Architecture layering mechanically enforced by `loach.ArchitectureAnalyzer` against [`architecture.contract.json`](src/architecture.contract.json).
-- An end-to-end reproduction workflow, the Persona E2E gate, chains disc discovery → analysis → recompiler slice → orchestrated execution against a legally user-supplied fixture and reports PASS/FAIL/SKIP per stage: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1), tracked in [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md). Its own documented first blocker is GPU/SPU/CD-ROM rendering, consistent with [Not implemented](#current-scope) below.
+- An end-to-end reproduction workflow, the Persona E2E gate, chains disc discovery → analysis → recompiler slice → orchestrated execution against a legally user-supplied fixture and reports PASS/FAIL/SKIP per stage: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1), tracked in [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md). Its next generic runtime blocker toward an actual title screen is broader BIOS HLE coverage; GPU/SPU/CD-ROM producers remain required after the needed BIOS calls are supported.
 
 **Not implemented**
 
@@ -230,7 +230,7 @@ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
 dotnet test src/PSXRecompStudio.Tests/PSXRecompStudio.Tests.csproj --configuration Release
 ```
 
-CI (`.github/workflows/ci.yml`) runs an Artifact Contamination Gate, the native build/test, the .NET build/test, and the headless GUI tests as independent required jobs before a PR can merge.
+CI (`.github/workflows/ci.yml`) runs an Artifact Contamination Gate, the native build/test, the .NET build/test, and the headless GUI tests as independent required jobs before a PR can merge. CI intentionally does **not** provide commercial ROM fixtures, so the real-ROM-gated analysis/recompiler/title-execution tests skip there by design; their real-ROM path is exercised only with a legally user-supplied local fixture.
 
 ## Documentation
 
