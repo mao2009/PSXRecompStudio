@@ -19,9 +19,10 @@ internal static class SnapshotParser
         if (begin < 0 || end <= begin) return null;
 
         var gpr = new uint[32];
+        var gprSeen = new bool[32];
+        var gprSeenCount = 0;
         uint hi = 0, lo = 0, pc = 0;
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
-        var gprSeen = 0;
         var memory = new List<RecompilerMemoryObservation>();
         var pcTrace = ParseCheckpoints(lines, begin);
 
@@ -32,9 +33,8 @@ internal static class SnapshotParser
 
             if (TryParseKeyValue(line, "termination=", out var term) && byte.TryParse(term, out var termByte))
             {
-                termination = Enum.IsDefined(typeof(RecompilerIrTerminationReason), termByte)
-                    ? (RecompilerIrTerminationReason)termByte
-                    : RecompilerIrTerminationReason.UnsupportedIr;
+                if (!Enum.IsDefined(typeof(RecompilerIrTerminationReason), termByte)) return null;
+                termination = (RecompilerIrTerminationReason)termByte;
                 continue;
             }
             if (line.StartsWith("pc=", StringComparison.Ordinal) && TryParseHex(line, "pc=", out pc)) continue;
@@ -46,11 +46,13 @@ internal static class SnapshotParser
                 var close = line.IndexOf(']');
                 if (close < 0) return null;
                 if (!int.TryParse(line.Substring(4, close - 4), out var index) || index < 0 || index >= 32) return null;
+                if (gprSeen[index]) return null;
                 var valuePart = line.Substring(close + 1).Trim();
                 if (!valuePart.StartsWith("=0x", StringComparison.Ordinal)) return null;
                 if (!uint.TryParse(valuePart.Substring(3), System.Globalization.NumberStyles.HexNumber, null, out var value)) return null;
                 gpr[index] = value;
-                gprSeen++;
+                gprSeen[index] = true;
+                gprSeenCount++;
                 continue;
             }
 
@@ -68,7 +70,7 @@ internal static class SnapshotParser
             }
         }
 
-        if (gprSeen != 32) return null;
+        if (gprSeenCount != 32) return null;
 
         return new RecompilerStateSnapshot(gpr, hi, lo, pc, termination: termination, memory: memory, pcTrace: pcTrace);
     }
