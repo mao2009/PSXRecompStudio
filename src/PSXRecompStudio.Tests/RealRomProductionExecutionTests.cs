@@ -29,6 +29,8 @@ public class RealRomProductionExecutionTests
 
         Skip.If(chdFiles.Length == 0, NoFixtureSkipReason);
 
+        var executedCount = 0;
+
         foreach (var chdPath in chdFiles)
         {
             var outcome = AnalyzeFixture(chdPath);
@@ -36,6 +38,8 @@ public class RealRomProductionExecutionTests
             {
                 continue; // Analysis failed or produced no EXE — not a failure of this test.
             }
+
+            executedCount++;
 
             var exe = outcome.Executable;
             var run = new TitleExecutionService().Run(exe, outerBudget: 64, segmentBudget: 4096);
@@ -50,6 +54,9 @@ public class RealRomProductionExecutionTests
                 $"{chdPath}: {run.Result.DiagnosticCode} {run.Result.DiagnosticMessage}");
             run.Result.SegmentsRetired.Should().BeGreaterThan(0, chdPath);
         }
+
+        executedCount.Should().BeGreaterThan(0,
+            "at least one fixture must produce an EXE that reaches the production execution path");
     }
 
     private static RomAnalysisOutcome AnalyzeFixture(string chdPath)

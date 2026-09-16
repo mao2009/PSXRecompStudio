@@ -152,7 +152,7 @@ public static class RealRomAnalyzer
                 recorder.Fail(RomAnalysisStage.Manifest, DiscMetadataUnreadable, ex);
             }
 
-            return (null, RomAnalysisOutcome.From(recorder, outcome.Report, outcome.DecodeFailureCount), recorder, log);
+            return (null, RomAnalysisOutcome.From(recorder, outcome.Report, outcome.DecodeFailureCount, outcome.Executable), recorder, log);
         }
 
         Record("CHD_META", "PASS",

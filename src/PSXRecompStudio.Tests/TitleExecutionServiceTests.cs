@@ -166,10 +166,10 @@ public class TitleExecutionServiceTests
 
         // Header fields at their standard offsets.
         BitConverter.GetBytes(entryPoint).CopyTo(fileContent, 0x10);
+        BitConverter.GetBytes(gpInitial).CopyTo(fileContent, 0x14);
         BitConverter.GetBytes(textStart).CopyTo(fileContent, 0x18);
         BitConverter.GetBytes((uint)(words.Length * 4)).CopyTo(fileContent, 0x1C);
         BitConverter.GetBytes(spInitial).CopyTo(fileContent, 0x30);
-        BitConverter.GetBytes(gpInitial).CopyTo(fileContent, 0x34);
 
         for (var i = 0; i < words.Length; i++)
         {

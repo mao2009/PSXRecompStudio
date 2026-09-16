@@ -260,6 +260,17 @@ public class PsxExeTitleInputTests
             .Which.Message.Should().Contain("outside the text region");
     }
 
+    [Fact]
+    public void Build_PropagatesSpOffsetFromHeader()
+    {
+        // SP base 0x801FFF00 + offset 0x40 → SpInitial = 0x801FFF40.
+        var exe = BuildExe(TextStart, TextStart, spInitial: 0x801FFF00u, GpInitial, [0x03E00008u], spOffset: 0x40u);
+
+        var result = PsxExeTitleInput.Build(exe, outerBudget: 2, segmentBudget: 16);
+
+        result.Request.InitialGpr[(int)R3000aRegister.Sp].Should().Be(0x801FFF40u);
+    }
+
     // ---- helpers ----
 
     private static PsxExe BuildExe(
@@ -267,15 +278,17 @@ public class PsxExeTitleInputTests
         uint entryPoint,
         uint spInitial,
         uint gpInitial,
-        uint[] words)
+        uint[] words,
+        uint spOffset = 0u)
     {
         var fileContent = new byte[PsxExeHeader.HeaderSize + words.Length * 4];
         WriteMagic(fileContent);
         WriteU32(fileContent, 0x10, entryPoint);
+        WriteU32(fileContent, 0x14, gpInitial);
         WriteU32(fileContent, 0x18, textStart);
         WriteU32(fileContent, 0x1C, (uint)(words.Length * 4));
         WriteU32(fileContent, 0x30, spInitial);
-        WriteU32(fileContent, 0x34, gpInitial);
+        WriteU32(fileContent, 0x34, spOffset);
         for (var i = 0; i < words.Length; i++)
         {
             WriteU32(fileContent, PsxExeHeader.HeaderSize + i * 4, words[i]);
