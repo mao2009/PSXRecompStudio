@@ -34,8 +34,9 @@
     own copy (Issue #388): it sets EnableArchitectureAnalyzer=true explicitly while leaving
     CompileArchitectureAttributes unset, keeping enforcement without a second, colliding copy of
     the marker source. The old built-in PSXRecomp.Analyzer was removed in #294; AARC is now the
-    single enforcement path. PSXRecompStudio.Tests sets neither property and therefore does not
-    consume the architecture contract, preserving its current build.
+    single enforcement path. PSXRecompStudio.Tests follows the Issue #388 pattern: it explicitly
+    enables ArchitectureAnalyzer while reusing the marker types exposed by PSXRecompStudio rather
+    than compiling a second copy of the marker source.
   -->
   <PropertyGroup Condition="'$(EnableArchitectureAnalyzer)' == ''">
     <EnableArchitectureAnalyzer>$(CompileArchitectureAttributes)</EnableArchitectureAnalyzer>

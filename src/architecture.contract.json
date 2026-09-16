@@ -3,7 +3,7 @@
     { "name": "Domain", "namespaceRoots": [ "PSXRecomp.Core" ] },
     { "name": "Application", "namespaceRoots": [ "PSXRecompStudio" ] },
     { "name": "Infrastructure", "namespaceRoots": [ "PSXRecomp.Infrastructure" ] },
-    { "name": "Test", "namespaceRoots": [ "PSXRecomp.Tests" ] },
+    { "name": "Test", "namespaceRoots": [ "PSXRecomp.Tests", "PSXRecompStudio.Tests" ] },
     { "name": "Generated", "namespaceRoots": [ "PSXRecomp.Generated" ] }
   ],
   "forbiddenDependencies": [

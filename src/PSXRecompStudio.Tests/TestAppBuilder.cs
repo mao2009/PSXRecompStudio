@@ -5,6 +5,7 @@ using Avalonia.Headless;
 
 namespace PSXRecompStudio.Tests;
 
+[Test]
 public static class TestAppBuilder
 {
     public static AppBuilder BuildAvaloniaApp() =>
