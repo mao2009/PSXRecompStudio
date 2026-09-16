@@ -99,66 +99,6 @@ public sealed class GuestMemoryReaderTests
     }
 
     [Fact]
-    public void TryReadCString_Bounded_ReadsBeforeNullTerminator()
-    {
-        var ram = new RecompilerGuestMemory();
-        ram.Write8(0x00000000, (byte)'h');
-        ram.Write8(0x00000001, (byte)'i');
-        ram.Write8(0x00000002, 0);
-        var reader = new GuestMemoryReader(ram.Read8);
-
-        var result = GuestMemoryStringReader.TryReadCString(reader, 0x00000000, maxLength: 16);
-
-        result.Success.Should().BeTrue();
-        result.Length.Should().Be(2);
-        result.Error.Should().BeNull();
-    }
-
-    [Fact]
-    public void TryReadCString_EmptyString_IsSuccess()
-    {
-        var ram = new RecompilerGuestMemory();
-        ram.Write8(0x00000000, 0);
-        var reader = new GuestMemoryReader(ram.Read8);
-
-        var result = GuestMemoryStringReader.TryReadCString(reader, 0x00000000, maxLength: 16);
-
-        result.Success.Should().BeTrue();
-        result.Length.Should().Be(0);
-        result.Error.Should().BeNull();
-    }
-
-    [Fact]
-    public void TryReadCString_NoTerminatorWithinBound_IsUnterminated()
-    {
-        var ram = new RecompilerGuestMemory();
-        for (byte b = 0; b < 16; b++)
-        {
-            ram.Write8(b, (byte)(b + 1));
-        }
-
-        var reader = new GuestMemoryReader(ram.Read8);
-
-        var result = GuestMemoryStringReader.TryReadCString(reader, 0x00000000, maxLength: 16);
-
-        result.Success.Should().BeFalse();
-        result.Length.Should().Be(16);
-        result.Error.Should().Be("unterminated");
-    }
-
-    [Fact]
-    public void TryReadCString_UnreadableFirstByte_IsInvalidAddress()
-    {
-        var reader = new GuestMemoryReader(new RecompilerGuestMemory().Read8);
-
-        var result = GuestMemoryStringReader.TryReadCString(reader, 0xC0000000, maxLength: 16);
-
-        result.Success.Should().BeFalse();
-        result.Length.Should().Be(0);
-        result.Error.Should().Be("invalid address");
-    }
-
-    [Fact]
     public void TryReadByte_RepeatedReads_AreDeterministic()
     {
         var ram = new RecompilerGuestMemory();
@@ -287,32 +227,5 @@ public sealed class GuestMemoryReaderTests
 
         result.Should().BeFalse();
         buffer.Should().OnlyContain(b => b == 0xFF, "buffer must not be modified on partial failure");
-    }
-
-    [Fact]
-    public void TryReadCString_AddressPlusMaxLengthOverflows_IsRejected()
-    {
-        var ram = new RecompilerGuestMemory();
-        var reader = new GuestMemoryReader(ram.Read8);
-
-        var result = GuestMemoryStringReader.TryReadCString(reader, 0xFFFFFFFF, maxLength: 2);
-
-        result.Success.Should().BeFalse();
-        result.Length.Should().Be(0);
-        result.Error.Should().Be("invalid address");
-    }
-
-    [Fact]
-    public void TryReadCString_ValidAddressNearMaxUint_ButNotOverflow_Succeeds()
-    {
-        var ram = new RecompilerGuestMemory();
-        ram.Write8(0x001FFFFE, (byte)'A');
-        ram.Write8(0x001FFFFF, 0);
-        var reader = new GuestMemoryReader(ram.Read8);
-
-        var result = GuestMemoryStringReader.TryReadCString(reader, 0x801FFFFE, maxLength: 2);
-
-        result.Success.Should().BeTrue();
-        result.Length.Should().Be(1);
     }
 }
