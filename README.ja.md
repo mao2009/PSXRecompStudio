@@ -27,7 +27,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 - interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
 - レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。ただしどの実行エンジンにも結線されていない。
 - `loach.ArchitectureAnalyzer` が [`architecture.contract.json`](src/architecture.contract.json) に基づきアーキテクチャレイヤーを機械的に強制。
-- disc 発見 → 解析 → Recompiler slice → orchestrated execution を、ユーザーが合法的に用意した fixture に対して一気通貫で実行し、段階ごとに PASS/FAIL/SKIP を報告する Persona E2E gate: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1)、状況は [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md) で追跡。文書化されている現在の first blocker は GPU/SPU/CD-ROM の rendering で、下記の[未実装](#現在のスコープ)と整合します。
+- disc 発見 → 解析 → Recompiler slice → orchestrated execution を、ユーザーが合法的に用意した fixture に対して一気通貫で実行し、段階ごとに PASS/FAIL/SKIP を報告する Persona E2E gate: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1)、状況は [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md) で追跡。実際のタイトル画面への次なる generic runtime blocker は広範な BIOS HLE coverage で、必要な BIOS call がサポートされた後も GPU/SPU/CD-ROM producer が必要です。
 
 **未実装**
 
