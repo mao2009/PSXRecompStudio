@@ -261,6 +261,39 @@ public class PsxExeTitleInputTests
     }
 
     [Fact]
+    public void Build_ThrowsOnTruncatedTextSegment()
+    {
+        // Header claims 8 bytes of text but the file carries only 4; PsxExe.Load
+        // silently keeps the shorter 4, so Build must reject the mismatch rather
+        // than execute a partial image.
+        var fileContent = new byte[PsxExeHeader.HeaderSize + 4];
+        WriteMagic(fileContent);
+        WriteU32(fileContent, 0x10, TextStart);
+        WriteU32(fileContent, 0x18, TextStart);
+        WriteU32(fileContent, 0x1C, 8u); // declared 8 bytes
+        WriteU32(fileContent, PsxExeHeader.HeaderSize, 0x03E00008u);
+        var exe = PsxExe.Load(fileContent, "TRUNCATED.EXE");
+
+        var act = () => PsxExeTitleInput.Build(exe, 2, 16);
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("truncated");
+    }
+
+    [Fact]
+    public void Build_TruncationCheckIsSkippedWhenTextSizeIsZero()
+    {
+        // TextSize == 0 means "use every available byte": PsxExe.Load takes all of
+        // them, so Build must accept the image instead of flagging a mismatch.
+        var exe = BuildExe(TextStart, TextStart, SpInitial, GpInitial, [0x03E00008u]);
+        var truncated = exe with { Header = exe.Header with { TextSize = 0 } };
+
+        var act = () => PsxExeTitleInput.Build(truncated, 2, 16);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void Build_PropagatesSpOffsetFromHeader()
     {
         // SP base 0x801FFF00 + offset 0x40 → SpInitial = 0x801FFF40.

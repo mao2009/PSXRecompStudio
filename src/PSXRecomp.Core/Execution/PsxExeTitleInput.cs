@@ -40,7 +40,8 @@ public static class PsxExeTitleInput
     /// request carrying the header-derived entry PC and initial SP/GP.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="exe"/> is null.</exception>
     /// <exception cref="ArgumentException">The executable image is empty, is not a whole
-    /// number of 32-bit words, loads at an address that is not 4-byte aligned, overflows
+    /// number of 32-bit words, its text region is shorter than the header declares
+    /// (truncated file), loads at an address that is not 4-byte aligned, overflows
     /// the 32-bit address space or does not map to a contiguous translatable span of
     /// physical memory, or declares an entry point outside the text region or not 4-byte
     /// aligned. The bridge fails closed rather than fabricating a loadable program from
@@ -67,6 +68,17 @@ public static class PsxExeTitleInput
         {
             throw new ArgumentException(
                 $"The PS-X EXE text start 0x{header.TextStart:X8} is not 4-byte aligned.", nameof(exe));
+        }
+
+        // PsxExe.Load stores min(header.TextSize, available) bytes; a file shorter
+        // than its declared text region would otherwise be validated and executed
+        // as a partial image. Reject it, preserving the header.TextSize == 0 case
+        // ("use all available bytes" is not a declared length to truncate).
+        if (header.TextSize != 0 && (uint)exe.TextSegment.Length != header.TextSize)
+        {
+            throw new ArgumentException(
+                $"The PS-X EXE text segment is truncated: expected {header.TextSize} bytes, got {exe.TextSegment.Length}.",
+                nameof(exe));
         }
 
         uint textEndUint;
