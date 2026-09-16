@@ -11,39 +11,72 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 
 > このファイルは [`README.md`](README.md)（English Canonical / SSOT）の日本語訳です。内容に相違がある場合は `README.md` を正としてください。
 
+## 現在のスコープ
+
+**実装済み・検証済み**
+
+- synthetic な MIPS fixture → Recompiler IR/lowering → 決定論的な host C → gcc build → bounded execution → interpreter state comparison が end-to-end で証明済み（下記の Evidence で再実行）: [`RecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/Recompiler/RecompilerVerticalSliceTests.cs)。
+- 同じパイプラインを、保守的に選定した最初の bounded な実 ROM 関数に適用（ユーザー提供 ROM が必要）: [`RealRomCandidateSelector`](src/PSXRecomp.Core/Recompiler/RealRomRecompilerBridge.cs)、[`RealRomRecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomRecompilerVerticalSliceTests.cs)（#225）。
+- full-title 実行ループのテストハーネス自身に対する、synthetic かつ常時実行される correctness oracle。実 ROM 実行テストが依拠する「classified-end」アサーションが、実際に誤った実行結果を棄却できることを証明する: [`ObservedTitleExecutionTests.cs`](src/PSXRecomp.Tests/Execution/ObservedTitleExecutionTests.cs)（#378）。
+
+**実装済みの基盤 / 部分実装**
+
+- R3000A / MIPS I の decode/execute、Branch / Load Delay Slot、COP0 / 例外処理、割り込みサンプリング、KSEG0/KSEG1 変換: [`src/PSXRecomp.Core/Cpu/`](src/PSXRecomp.Core/Cpu/)。Native 側では命令単位の Golden Trace がレジスタ書き込みをリタイア順に記録し、将来の backend 比較に備える: [`golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h)。
+- CHD → ISO 9660 → PS-X EXE → MIPS 解析 → basic blocks/CFG が end-to-end で動作し、[`DiscImageAnalyzerIntegrationTests.cs`](src/PSXRecomp.Tests/DiscImage/DiscImageAnalyzerIntegrationTests.cs) で検証済み。
+- title-agnostic な bounded full-title 実行ループ [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs) が、Domain 層の production interpreter engine によって駆動され、Studio UI の診断実行アクションから到達可能（[ADR-015](docs/adr/015-production-execution-engine-ownership.md)）。ただしこれは組み込みの診断用プログラムをゼロ初期化レジスタから実行するのみで、実際の disc/EXE イメージのロードはまだ行われず、生成 C（recompiled）engine は現時点でも test 専用のまま。
+- interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
+- レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。ただしどの実行エンジンにも結線されていない。
+- `loach.ArchitectureAnalyzer` が [`architecture.contract.json`](src/architecture.contract.json) に基づきアーキテクチャレイヤーを機械的に強制。
+- disc 発見 → 解析 → Recompiler slice → orchestrated execution を、ユーザーが合法的に用意した fixture に対して一気通貫で実行し、段階ごとに PASS/FAIL/SKIP を報告する Persona E2E gate: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1)、状況は [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md) で追跡。文書化されている現在の first blocker は GPU/SPU/CD-ROM の rendering で、下記の[未実装](#現在のスコープ)と整合します。
+
+**未実装**
+
+- 汎用的な実 ROM 関数再コンパイル — 候補選定は意図的に保守的（[再コンパイルワークフロー](#再コンパイルワークフロー) 参照）。
+- 商用 PS1 タイトル全体の end-to-end 静的再コンパイルと実行。production 実行パスへの実 disc/EXE イメージのロード。
+- GPU、SPU、CD-ROM、MDEC、GTE — インターフェース定義のみで、実装・利用する側は存在しない（例: [`IGte.cs`](src/PSXRecomp.Core/Runtime/IGte.cs)）。
+- 広範な BIOS HLE service coverage。
+- 汎用的なプロダクト CLI。
+
+### Evidence: 実際の差分検証の実行結果
+
+```text
+$ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release \
+    --filter "FullyQualifiedName~PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests"
+
+Passed PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests.VerticalSlice_Matches_Interpreter_On_One_Plus_Two_Equals_Three [312 ms]
+Passed PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests.VerticalSlice_RecompiledSnapshots_Are_Deterministic_Across_Independent_Runs [623 ms]
+Passed PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests.VerticalSlice_Produced_Test_Binary_Is_Identical_Across_Runs [320 ms]
+
+Total tests: 3
+     Passed: 3
+```
+
+これは synthetic な MIPS → IR → 生成された host C → gcc build → bounded execution → interpreter state comparison の経路を、このリポジトリ上で実際に実行した結果です（Issue #209）。実 ROM 版は同一パイプラインをユーザー提供 ROM（`rom/` 配下）に対して実行し、ROM が存在しない場合は明示的に skip されます — 詳細は [`RealRomFixtures.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomFixtures.cs) を参照。
+
 ## クイックスタート
 
-まず managed solution をビルドし、主要な C# テストスイートを実行します。
+### 現在の実装を検証する
 
 ```bash
 dotnet build src/PSXRecompStudio.slnx --configuration Release
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
 ```
 
-成功すれば、現在の CPU / Runtime / Recompiler の契約と synthetic Recompiler vertical slice が検証されます。実 ROM の differential path は、ユーザー自身が合法的に用意したイメージを必要とし、現時点では意図的に bounded な検証対象に限定されています。
+成功すれば、現在の CPU / Runtime / Recompiler の契約と、上記の synthetic Recompiler vertical slice が検証されます。実 ROM の differential test は、ユーザー自身が合法的に用意したイメージを必要とし、無い場合は自動的に skip されます。Native Core と Headless GUI のテストについては [ビルド](#ビルド) と [テスト](#テスト) を参照してください。
 
-Native Core と Headless GUI のテストについては [ビルド](#ビルド) と [テスト](#テスト) を参照してください。
+### Recompiler を探索する
 
-## 現在検証済みのもの
+- Recompiler 実装: [`src/PSXRecomp.Core/Recompiler/`](src/PSXRecomp.Core/Recompiler/)（IR/lowering は `MipsToIrLowerer.cs`、host codegen は `RecompilerHostCodeGen.cs`、差分比較は `RecompilerDifferentialResult.cs`）。
+- Synthetic な差分検証: [`RecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/Recompiler/RecompilerVerticalSliceTests.cs)。
+- Bounded な実 ROM 検証: [`RealRomRecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomRecompilerVerticalSliceTests.cs) と [`RealRomTitleExecutionTests.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomTitleExecutionTests.cs)。
+- Native の命令単位 Golden Trace: [`src/PSXRecomp.Native/tests/golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h)。
+- BIOS vector dispatch: [`BiosVectorDispatch.cs`](src/PSXRecomp.Core/Runtime/BiosVectorDispatch.cs)。
 
-- **CPU 実行基盤:** R3000A / MIPS I の decode / execution、KSEG 変換、Branch / Load Delay、COP0 例外、割り込み、Golden Trace。
-- **Disc / executable 解析:** CHD → ISO 9660 → PS-X EXE → MIPS 解析 → basic blocks / CFG。
-- **Recompiler の実証:** 同一の MIPS → IR → host C → bounded execution → interpreter diff パイプラインを synthetic fixture と最初の保守的な実 ROM 関数の両方で検証済み（#225）。
-- **Runtime / BIOS 境界:** interpreter / recompiled の両パスから guest-visible な A0/B0/C0 BIOS vector を共有 `BiosVectorDispatch` semantics で dispatch 可能（#364、#368）。
-- **Persona E2E gate:** gate の `RUNTIME_EXECUTION` 段階が実 ROM 候補を full-title `ExecutionOrchestrator` に通して駆動。次の code-level blocker は GPU / SPU / CD-ROM hardware（#351、#366）。
-
-## 未対応
-
-- 商用 PlayStation 1 タイトル全体の end-to-end 静的再コンパイルと実行。
-- 汎用的な実 ROM 関数再コンパイル、および MIPS I の完全対応。
-- full-title orchestrator のためのプロダクト（CLI）実行エントリポイントと、orchestrator 駆動の GPU / SPU / CD-ROM レンダリング（#366）。
-- 広範な BIOS HLE service coverage。
-- GPU / SPU / CD-ROM / MDEC / GTE の完全な hardware support。
-- 完全な PS1 native port を成立させる完成済み native runtime。
+汎用的な再コンパイル CLI はまだ提供されていません。
 
 ## 次のマイルストーン
 
-1. **orchestrator を rendering まで駆動（#366）:** プロダクト実行エントリポイント（CLI runner）と GPU / SPU / CD-ROM / MMIO の結線を追加し、E2E gate を `RUNTIME_EXECUTION` から実際のタイトル画面へ進める。
+1. **実タイトルを production 実行パスへロードする:** `RealRomAnalysis` の disc/EXE 解析結果を `TitleExecutionService`（ADR-015）と結合し、Studio が組み込みの診断プログラム以外も実行できるようにする。
 2. **BIOS HLE coverage の拡張（#279、#365）:** 次の real-title execution path に必要な service を実装し、未対応 call は引き続き明示的に失敗させる。
 3. **実 ROM 再コンパイル範囲の拡大:** differential validation を正しさの gate として維持したまま、対応命令・制御フローを拡張する。
 
@@ -51,64 +84,35 @@ Native Core と Headless GUI のテストについては [ビルド](#ビルド)
 
 ## PSXRecompStudio とは
 
-PSXRecompStudio は、PlayStation 1（PS1）ソフトウェアを解析・リバースエンジニアリングするためのスクラッチ開発の統合開発環境です。PS-X EXE の逆アセンブル、R3000A / MIPS I コードの解析、CPU 挙動のバイト単位で忠実なモデル化を行い、最終的にはタイトルコードを静的に再コンパイルして、エミュレーションを介さず Windows / Linux / macOS 上でネイティブに直接実行できるプログラムへ変換することを目指します。
+PSXRecompStudio は、PlayStation 1（PS1）ソフトウェアを解析・リバースエンジニアリングするためのスクラッチ開発の統合開発環境です。PS-X EXE の逆アセンブル、R3000A / MIPS I コードの解析、CPU 挙動のバイト単位で忠実なモデル化を行い、最終的にはタイトルコードを静的に再コンパイルして、エミュレーションを介さずネイティブに直接実行できるプログラムへ変換することを目指します。
 
 Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケーション Core、そして安定した C ABI で接続された C++ ネイティブ Core から構成されます。AI 開発エージェントはプロダクトそのものではなく、Evidence-first な支援手段の一つという位置付けです。
+
+保存（preservation）とリバースエンジニアリングの観点からは、opaque な互換性ヒューリスティックやタイトル固有のハックではなく、再現可能な解析と再検証可能な決定論的実行の根拠を重視しています。
 
 ## PSXRecompStudio が目指すもの
 
 - **SSOT 駆動のアーキテクチャ**: アーキテクチャ、CPU 仕様、開発プロセスは [`docs/`](docs/) と [Architecture Decision Records](docs/adr/) に生きた Single Source of Truth として文書化されており、暗黙知に頼りません。
-- **機械的に強制される境界**: [`src/architecture.contract.json`](src/architecture.contract.json) で構成された `loach.ArchitectureAnalyzer` がレイヤー違反・依存方向違反・禁止 API 使用をビルドエラーとして検出します。Architecture Matrix は図面ではなく、コンパイラが検証する契約です。
-- **決定論的な CPU 基盤**: R3000A モデルは命令単位の Golden Trace で検証されています。すべてのレジスタ書き込みをリタイア順に記録・再生して差異を検出する仕組みは、将来の Recompiler バックエンドを interpreter と比較検証するための土台でもあります。
+- **機械的に強制される境界**: [`src/architecture.contract.json`](src/architecture.contract.json) で構成された `loach.ArchitectureAnalyzer` がレイヤー違反・依存方向違反・禁止 API 使用をビルドエラーとして検出します。
 - **安定した C# / Native 境界**: Native Core とのやり取りはすべて単一の C ABI（`psx_core.h`）経由の P/Invoke で行い、C++ の型を C# 側へ漏らしません。
-- **Evidence-first・Human-in-the-loop な AI 協働**: AI 開発エージェントはプロジェクトのアイデンティティではなく交換可能な支援手段です。User-driven analysis・検証可能な根拠・人間によるレビューを中心に据え、ワークフローは Agent-agnostic（Claude Code、OpenCode、Codex 等を問わない）です。
+- **Evidence-first・Human-in-the-loop な AI 協働**: AI 開発エージェントは交換可能な支援手段であり、ワークフローは Agent-agnostic（Claude Code、OpenCode、Codex 等を問わない）です。
 
 ## 現在の開発状況
 
-以下は Issue や設計意図ではなく、現在のリポジトリの実装・テスト・CI の状態を反映しています。
+以下は Issue や設計意図ではなく、現在のリポジトリの実装・テスト・CI の状態を反映しています。根拠は上記の [現在のスコープ](#現在のスコープ) を参照してください。
 
 | 領域 | 状態 |
 |---|---|
-| アーキテクチャ基盤（レイヤー、C ABI 境界、ADR） | 実装済み |
-| Avalonia UI アプリケーションシェル | 実装済み（最小構成。機能 UI は未実装） |
-| C# Core / Native Core 境界 | 実装済み |
-| C ABI / P/Invoke | 実装済み |
-| アーキテクチャ強制 Analyzer（Roslyn） | 実装済み・CI で強制 |
-| Analyzer テストスイート | 実装済み |
-| R3000A 命令ドメインモデル | 実装済み |
-| R3000A デコーダー | 実装済み |
-| MemoryBus / KSEG0・KSEG1 アドレス変換 | 実装済み |
-| Branch / Load Delay Slot モデリング | 実装済み |
-| COP0 / 例外処理 | 実装済み |
-| Interrupt Controller | 実装済み |
-| CPU 割り込み統合 | 実装済み |
-| Timer / DMA Controller | 部分実装（レジスタレベルの Native モデルは実装済み。メモリバスへの完全な結線は進行中） |
-| 最小 MIPS プログラム実行パス | 実装済み |
-| Golden Trace（決定論的実行トレース） | 実装済み |
-| GPU / SPU / CD-ROM / MDEC / GTE | 予定（インターフェース定義のみ） |
-| Runtime / BIOS HLE 実行境界 | 実装済み — interpreter / recompiled の両パスから共有 Runtime semantics で A0/B0/C0 vector を dispatch でき、フルタイトルの実行ループ（Core の `ExecutionOrchestrator`、Test の host engine）が bounded guest execution を実行（#364、#368、#366） |
-| Persona v0.1.0 E2E 検証ゲート | 実装済み — 解析 / Recompiler 段階に加え、`RUNTIME_EXECUTION` 段階が実 ROM 候補を full-title orchestrator に通して駆動。次の blocker は GPU / SPU / CD-ROM hardware（#351、#366、#367） |
-| Synthetic MIPS Recompiler vertical slice（IR/lowering、メモリ、制御フロー、host codegen、differential validation） | 実装済み・差分検証済み |
-| 実 ROM 関数の再コンパイル | 最初の1関数を実装・差分検証済み（#225）。汎用対応は未完了 |
+| CPU 実行（decode/execute、Delay Slot、COP0、割り込み、KSEG、Golden Trace） | 実装済み — [`docs/cpu/`](docs/cpu/) |
+| Recompiler（synthetic + 最初の実 ROM 関数、差分検証） | 検証済み（bounded） — 汎用的な実 ROM 対応は未実装 |
+| Disc / executable 解析（CHD → ISO 9660 → PS-X EXE → CFG） | 実装済み |
+| Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — bounded な in-memory の診断実行のみ。実 disc/EXE のロードなし。広範な BIOS HLE ではない |
+| Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — 単体では実装・テスト済みだが、どの実行エンジンにも未結線 |
+| Hardware — GPU / SPU / CD-ROM / MDEC / GTE | 予定 — インターフェース定義のみ |
 | フルタイトルの静的再コンパイル | 未実装 |
-| Debugger | 予定 |
-| MCP / AI 連携 | 予定 |
-| Ghidra 連携 | 予定 |
-
-**CPU 実行基盤について**: CPU 実行基盤はすでに機能しています。命令デコード、メモリパス経由の実行（KSEG 変換を含む）、Branch/Load Delay Slot の挙動、COP0・例外処理、ハードウェア割り込みのサンプリング、決定論的な実行トレースが組み合わさり、最小の MIPS プログラムをエンドツーエンドで実行できます。これは CPU を貫く縦切りの実装であり、完全なエミュレータではありません。詳細仕様は [`docs/cpu/`](docs/cpu/) を参照してください。
-
-**Recompiler について**: PSXRecompStudio の最終目標は静的再コンパイルです。backend-agnostic な Recompiler IR と共有 state contract、MIPS→IR lowering、決定論的な host C 生成、メモリバックエンド（各幅の load/store、unaligned access、load-delay セマンティクス）、制御フローバックエンド（branch、jump、link、delay slot、bounded/budget 付きループ）、interpreter-vs-recompiled の differential validator が `PSXRecomp.Core.Recompiler` に実装済みです（`PSXRecomp.Recompiler` という独立プロジェクトはまだ存在しません。[ディレクトリ構成](#ディレクトリ構成) を参照）。これらにより、**synthetic な MIPS fixture** に対する MIPS → IR → 生成された host C → build → bounded execution → interpreter diff → MATCH という end-to-end vertical slice が実装・差分検証済みです（#207、#208、#209、#211。#266 の統合スモークテストで再確認済み）。
-
-最初の実 ROM 関数についても、同じ仕組みで再コンパイル・差分検証済みです（#225）。`RealRomCandidateSelector`（`PSXRecomp.Core.Recompiler`）が、既存のディスク/EXE 解析出力（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）から、変更を加えていない `MipsToIrLowerer` で実際に lowering を試みて成功し、かつ indirect jump を含まない bounded な命令ウィンドウだけを候補として選定します。実 ROM 専用の第二の semantics 実装は存在しません。生成 host は unknown-PC 境界で汎用 host-transfer hook を通じて Runtime に制御を渡せるようになり、生成 C に BIOS 固有知識を埋め込まずに、interpreter と同じ `BiosVectorDispatch` semantics で BIOS A0/B0/C0 vector を処理できます（#368）。これはまだ汎用的な実 ROM 関数の再コンパイルではありません。候補選定は意図的に保守的であり、フルタイトルの再コンパイルと完全なハードウェアサポートは未実装です（title-agnostic なフルタイトル実行 orchestrator 自体は `PSXRecomp.Core.Execution` に実装済み — Issue #366）。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
-
-## Core Capabilities
-
-- レイヤー・依存方向・禁止 API・P/Invoke 配置などのアーキテクチャルールを、文書化するだけでなくコンパイル時に強制。
-- 実行エンジンから独立してテスト可能な R3000A/MIPS I 命令デコード・ドメインモデル。
-- Delay Slot・例外処理のセマンティクスを正しく扱いながら実際の命令列を実行する Native CPU + Memory Bus。
-- 将来の Recompiler バックエンドを interpreter と比較検証するための、決定論的で再生可能な実行トレース（Golden Trace）。
-- 決定論的な MIPS→IR→host-C の Recompiler パイプライン。bounded execution と interpreter differential validation を備え、synthetic fixture と最初の実 ROM 関数（#225）の両方で end-to-end に証明済み（汎用的な実 ROM 対応はまだ未実装）。
-- Native 実装の詳細を管理層へ漏らさない C# ⇄ C++ の相互運用境界（C ABI + P/Invoke）。
+| アーキテクチャ強制（Roslyn Analyzer、Artifact Contamination Gate） | 実装済み・CI で強制 |
+| Avalonia UI アプリケーションシェル | 実装済み（最小構成。診断実行アクションが1つ。機能 UI は未実装） |
+| Debugger / MCP / Ghidra 連携 | 予定 |
 
 ## アーキテクチャ
 
@@ -142,35 +146,27 @@ C++ Native Core（PSXRecomp.Native）
 
 ## 再コンパイルワークフロー
 
-現在、2 つのパスがあります。どちらも同じ Recompiler contract（変更なし）を通じて実装済みで、interpreter に対して差分検証済みです。**synthetic パス**:
+現在、2 つのパスがあります。どちらも同じ Recompiler contract（変更なし）を通じて実装済みで、interpreter に対して差分検証済みです。
+
+**synthetic パス**:
 
 ```text
-MIPS fixture
-        ↓  decode / analysis
-Recompiler IR（lowering + validation）
-        ↓  決定論的な host C 生成
-生成された host C
-        ↓  host compile
-Bounded execution
-        ↓
-Interpreter reference execution
-        ↓  State Snapshot / checkpoint 比較
-Differential validation → MATCH
+MIPS fixture → Recompiler IR（lowering + validation） → 決定論的な host C 生成
+        → host compile → bounded execution → interpreter reference execution
+        → State Snapshot 比較 → Differential validation → MATCH
 ```
 
-**実 ROM パス**は同じ disc/EXE 解析（関数・命令境界、CFG/basic blocks）と、上と同じ Recompiler IR/lowering/codegen/differential の各段階を再利用します。入力が異なるだけです。`RealRomCandidateSelector` が実 ROM の関数/ウィンドウを選定し、それが正しく lowering でき indirect jump を含まないことそのものが「有効な入力」の条件になっているため、実 ROM 専用の semantics や実行パスは別途存在しません（#225）。
+**実 ROM パス**は同じ disc/EXE 解析と、上と同じ Recompiler IR/lowering/codegen/differential の各段階を再利用します。入力が異なるだけです。`RealRomCandidateSelector` が実 ROM のウィンドウを選定し、それが正しく lowering でき indirect jump を含まないことそのものが選定基準になっているため、実 ROM 専用の semantics は別途存在しません（#225）：
 
 ```text
-PSX タイトル（ROM/EXE、ユーザーが用意）
-        ↓  逆アセンブル・解析（実装済み。Ghidra 連携：予定）
-関数・命令境界、MMIO の発見事項、CFG/basic blocks
-        ↓  RealRomCandidateSelector: bounded かつ indirect-jump を含まない候補ウィンドウ
-Recompiler IR（lowering + validation）   — synthetic パスと同じ段階
-        ↓  ... 以降は上記と同じパイプライン ...
-Differential validation → MATCH   （最初の1関数で証明済み；#225）
+PSX タイトル（ROM/EXE、ユーザーが用意） → 逆アセンブル・解析（Ghidra 連携：予定）
+        → 関数・命令境界、MMIO の発見事項、CFG/basic blocks
+        → RealRomCandidateSelector: bounded かつ indirect-jump を含まない候補ウィンドウ
+        → ... 以降は上記と同じ Recompiler IR/codegen/differential パイプライン ...
+        → Differential validation → MATCH（最初の1関数で証明済み；#225）
 ```
 
-候補選定は意図的に保守的です。`MipsToIrLowerer` が実際に lowering できる場合のみ、かつ JR/JALR を含まない場合のみウィンドウを採用し、非対応命令や indirect jump は迂回せず除外します。汎用的な実 ROM 関数対応（任意の関数、全 MIPS I 命令のカバレッジ）と、フルタイトルの静的再コンパイル（実タイトルの全関数、および Runtime・ハードウェア統合）は未実装です。「最初の実 ROM 関数を証明済み」であることを「汎用的な実 ROM またはフルタイトルの再コンパイルが実装済み」と読み替えないでください。両者は別のマイルストーンです。
+候補選定は意図的に保守的です。`MipsToIrLowerer` が実際に lowering できる場合のみ、かつ JR/JALR を含まない場合のみウィンドウを採用します。汎用的な実 ROM 関数対応と、フルタイトルの静的再コンパイル（実タイトルの全関数、および Runtime・ハードウェア統合）は未実装です。「最初の実 ROM 関数を証明済み」であることを「汎用的な実 ROM またはフルタイトルの再コンパイルが実装済み」と読み替えないでください。
 
 ## 技術スタック
 
@@ -244,7 +240,7 @@ CI（`.github/workflows/ci.yml`）は Artifact Contamination Gate、Native ビ�
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — システムアーキテクチャ
 - [`docs/architecture-matrix.md`](docs/architecture-matrix.md) — レイヤー・依存方向の SSOT（Analyzer により機械的に強制）
-- [`docs/adr/`](docs/adr/) — Architecture Decision Records
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records（production execution engine については [ADR-015](docs/adr/015-production-execution-engine-ownership.md)）
 - [`docs/cpu/`](docs/cpu/) — R3000A 命令セット、パイプライン、COP0、例外、メモリモデル
 - [`docs/architecture/gui-ux.md`](docs/architecture/gui-ux.md) — GUI/UX 設計
 - [`docs/development/agent-guide.md`](docs/development/agent-guide.md) — AI 開発エージェント向けブートストラップガイド
