@@ -6,6 +6,7 @@ namespace PSXRecompStudio.Tests;
 // Issue #179 scenario 1 (initial View/Navigation state):
 // ViewLocator is the shared ViewModel->View DataTemplate contract. If its Match
 // contract or null handling breaks, no future workflow screen can render.
+[Test]
 public class ViewLocatorTests
 {
     [AvaloniaFact]

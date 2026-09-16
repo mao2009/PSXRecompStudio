@@ -10,6 +10,7 @@ namespace PSXRecompStudio.Tests;
 // verifies the app boots headless without a startup exception and that the
 // observable startup-screen contracts (window identity, environment info,
 // automation identifiers) remain intact — the surface every future workflow needs.
+[Test]
 public class StartupWorkflowTests
 {
     [AvaloniaFact]

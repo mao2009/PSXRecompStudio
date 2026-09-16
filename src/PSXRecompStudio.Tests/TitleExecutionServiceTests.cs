@@ -8,6 +8,7 @@ namespace PSXRecompStudio.Tests;
 // Issue #380 / ADR-015: the production execution path must be reachable from a
 // production assembly. These tests drive it end to end — production engine,
 // production orchestrator, real BIOS HLE dispatch — with no test-only engine.
+[Test]
 public class TitleExecutionServiceTests
 {
     [Fact]

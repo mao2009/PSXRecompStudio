@@ -4,6 +4,7 @@ using PSXRecompStudio.Views;
 
 namespace PSXRecompStudio.Tests;
 
+[Test]
 public class MainWindowSmokeTests
 {
     [AvaloniaFact]
