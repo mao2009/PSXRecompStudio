@@ -191,7 +191,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
             WriteInputFile(inputPath, fixture);
 
             var (exit, _, stderr) = RunProcess(
-                Compiler, $"{CompilerArgs} {sourcePath} -o {ResolveBinaryCandidate(tempDir)}", BuildTimeoutMs, out var timedOut);
+                Compiler, $"{CompilerArgs} \"{sourcePath}\" -o \"{ResolveBinaryCandidate(tempDir)}\"", BuildTimeoutMs, out var timedOut);
             if (timedOut || exit != 0)
             {
                 throw new InvalidOperationException(
@@ -252,7 +252,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
             WriteInputFile(inputPath, fixture);
 
             var (compileExit, _, compileErr) = RunProcess(
-                Compiler, $"{CompilerArgs} {CheckpointCompileFlag} {sourcePath} -o {outputPath}", BuildTimeoutMs, out var buildTimedOut);
+                Compiler, $"{CompilerArgs} {CheckpointCompileFlag} \"{sourcePath}\" -o \"{outputPath}\"", BuildTimeoutMs, out var buildTimedOut);
 
             if (buildTimedOut)
             {
