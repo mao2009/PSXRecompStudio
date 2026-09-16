@@ -30,23 +30,22 @@ Native Core と Headless GUI のテストについては [ビルド](#ビルド)
 - **Disc / executable 解析:** CHD → ISO 9660 → PS-X EXE → MIPS 解析 → basic blocks / CFG。
 - **Recompiler の実証:** 同一の MIPS → IR → host C → bounded execution → interpreter diff パイプラインを synthetic fixture と最初の保守的な実 ROM 関数の両方で検証済み（#225）。
 - **Runtime / BIOS 境界:** interpreter / recompiled の両パスから guest-visible な A0/B0/C0 BIOS vector を共有 `BiosVectorDispatch` semantics で dispatch 可能（#364、#368）。
-- **Persona E2E gate:** 現在の gate は実装済みの解析 / Recompiler 段階まで到達し、次の code-level blocker を `RUNTIME_EXECUTION` として識別（#351、#366、#367）。
+- **Persona E2E gate:** gate の `RUNTIME_EXECUTION` 段階が実 ROM 候補を full-title `ExecutionOrchestrator` に通して駆動。次の code-level blocker は GPU / SPU / CD-ROM hardware（#351、#366）。
 
 ## 未対応
 
 - 商用 PlayStation 1 タイトル全体の end-to-end 静的再コンパイルと実行。
 - 汎用的な実 ROM 関数再コンパイル、および MIPS I の完全対応。
-- recompiled executable を CPU execution / BIOS HLE / hardware integration まで継続的に駆動する full-title execution orchestrator（#366）。
+- full-title orchestrator のためのプロダクト（CLI）実行エントリポイントと、orchestrator 駆動の GPU / SPU / CD-ROM レンダリング（#366）。
 - 広範な BIOS HLE service coverage。
 - GPU / SPU / CD-ROM / MDEC / GTE の完全な hardware support。
 - 完全な PS1 native port を成立させる完成済み native runtime。
 
 ## 次のマイルストーン
 
-1. **Full-title execution orchestrator（#366）:** recompiled guest execution を Runtime / BIOS 境界まで駆動できる title-agnostic な実行ループを作る。
+1. **orchestrator を rendering まで駆動（#366）:** プロダクト実行エントリポイント（CLI runner）と GPU / SPU / CD-ROM / MMIO の結線を追加し、E2E gate を `RUNTIME_EXECUTION` から実際のタイトル画面へ進める。
 2. **BIOS HLE coverage の拡張（#279、#365）:** 次の real-title execution path に必要な service を実装し、未対応 call は引き続き明示的に失敗させる。
-3. **#351 に必要な最小 hardware integration:** Persona v0.1.0 E2E gate を `RUNTIME_EXECUTION` の先へ進め、rendering に近づけるための GPU / SPU / CD-ROM / MMIO 経路を接続する。
-4. **実 ROM 再コンパイル範囲の拡大:** differential validation を正しさの gate として維持したまま、対応命令・制御フローを拡張する。
+3. **実 ROM 再コンパイル範囲の拡大:** differential validation を正しさの gate として維持したまま、対応命令・制御フローを拡張する。
 
 > **Asset policy:** ROM、ISO、CHD、BIOS、firmware image、商用ゲーム asset は本リポジトリに含めません。ユーザーが用意するファイルは合法的に入手・利用してください。
 
@@ -87,8 +86,8 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | 最小 MIPS プログラム実行パス | 実装済み |
 | Golden Trace（決定論的実行トレース） | 実装済み |
 | GPU / SPU / CD-ROM / MDEC / GTE | 予定（インターフェース定義のみ） |
-| Runtime / BIOS HLE 実行境界 | 部分実装 — interpreter / recompiled の両パスから共有 Runtime semantics で A0/B0/C0 vector を dispatch 可能。フルタイトル実行ループは未実装（#366） |
-| Persona v0.1.0 E2E 検証ゲート | scaffold 実装済み — 既存の解析 / Recompiler 段階までを検証し、次の code-level blocker を `RUNTIME_EXECUTION` として識別（#351, #367） |
+| Runtime / BIOS HLE 実行境界 | 実装済み — interpreter / recompiled の両パスから共有 Runtime semantics で A0/B0/C0 vector を dispatch でき、フルタイトルの実行ループ（Core の `ExecutionOrchestrator`、Test の host engine）が bounded guest execution を実行（#364、#368、#366） |
+| Persona v0.1.0 E2E 検証ゲート | 実装済み — 解析 / Recompiler 段階に加え、`RUNTIME_EXECUTION` 段階が実 ROM 候補を full-title orchestrator に通して駆動。次の blocker は GPU / SPU / CD-ROM hardware（#351、#366、#367） |
 | Synthetic MIPS Recompiler vertical slice（IR/lowering、メモリ、制御フロー、host codegen、differential validation） | 実装済み・差分検証済み |
 | 実 ROM 関数の再コンパイル | 最初の1関数を実装・差分検証済み（#225）。汎用対応は未完了 |
 | フルタイトルの静的再コンパイル | 未実装 |
@@ -100,7 +99,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 
 **Recompiler について**: PSXRecompStudio の最終目標は静的再コンパイルです。backend-agnostic な Recompiler IR と共有 state contract、MIPS→IR lowering、決定論的な host C 生成、メモリバックエンド（各幅の load/store、unaligned access、load-delay セマンティクス）、制御フローバックエンド（branch、jump、link、delay slot、bounded/budget 付きループ）、interpreter-vs-recompiled の differential validator が `PSXRecomp.Core.Recompiler` に実装済みです（`PSXRecomp.Recompiler` という独立プロジェクトはまだ存在しません。[ディレクトリ構成](#ディレクトリ構成) を参照）。これらにより、**synthetic な MIPS fixture** に対する MIPS → IR → 生成された host C → build → bounded execution → interpreter diff → MATCH という end-to-end vertical slice が実装・差分検証済みです（#207、#208、#209、#211。#266 の統合スモークテストで再確認済み）。
 
-最初の実 ROM 関数についても、同じ仕組みで再コンパイル・差分検証済みです（#225）。`RealRomCandidateSelector`（`PSXRecomp.Core.Recompiler`）が、既存のディスク/EXE 解析出力（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）から、変更を加えていない `MipsToIrLowerer` で実際に lowering を試みて成功し、かつ indirect jump を含まない bounded な命令ウィンドウだけを候補として選定します。実 ROM 専用の第二の semantics 実装は存在しません。生成 host は unknown-PC 境界で汎用 host-transfer hook を通じて Runtime に制御を渡せるようになり、生成 C に BIOS 固有知識を埋め込まずに、interpreter と同じ `BiosVectorDispatch` semantics で BIOS A0/B0/C0 vector を処理できます（#368）。これはまだ汎用的な実 ROM 関数の再コンパイルではありません。候補選定は意図的に保守的であり、フルタイトルの再コンパイル、完全な実行 orchestrator（#366）、完全なハードウェアサポートは未実装です。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
+最初の実 ROM 関数についても、同じ仕組みで再コンパイル・差分検証済みです（#225）。`RealRomCandidateSelector`（`PSXRecomp.Core.Recompiler`）が、既存のディスク/EXE 解析出力（上記「[現在の開発状況](#現在の開発状況)」のディスクイメージ解析を参照）から、変更を加えていない `MipsToIrLowerer` で実際に lowering を試みて成功し、かつ indirect jump を含まない bounded な命令ウィンドウだけを候補として選定します。実 ROM 専用の第二の semantics 実装は存在しません。生成 host は unknown-PC 境界で汎用 host-transfer hook を通じて Runtime に制御を渡せるようになり、生成 C に BIOS 固有知識を埋め込まずに、interpreter と同じ `BiosVectorDispatch` semantics で BIOS A0/B0/C0 vector を処理できます（#368）。これはまだ汎用的な実 ROM 関数の再コンパイルではありません。候補選定は意図的に保守的であり、フルタイトルの再コンパイルと完全なハードウェアサポートは未実装です（title-agnostic なフルタイトル実行 orchestrator 自体は `PSXRecomp.Core.Execution` に実装済み — Issue #366）。上記の CPU / デコーダーの実装は Recompiler の基盤ではありますが、Recompiler そのものの代替ではありません。
 
 ## Core Capabilities
 
