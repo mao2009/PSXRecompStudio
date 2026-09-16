@@ -27,13 +27,13 @@ Two documents together form the managed architecture SSOT, and they own differen
 |-------|----------------|-----------------|----------|
 | **Domain** | Pure business logic, PSX concept model, deterministic computation, and the C ABI interop boundary | `PSXRecomp.Core` | `PSXRecomp.Core` |
 | **Application** | Avalonia UI, user interface, presentation | `PSXRecompStudio` | `PSXRecompStudio` |
-| **Infrastructure** | Managed hardware-abstraction / adapter code (reserved; no project occupies this layer yet) | `PSXRecomp.Infrastructure` | *(planned)* |
+| **Infrastructure** | Managed host-I/O / adapter implementations (reserved; no project occupies this layer yet) | `PSXRecomp.Infrastructure` | *(planned)* |
 | **Test** | Unit/integration tests | `PSXRecomp.Tests` | `PSXRecomp.Tests` |
 | **Generated** | Auto-generated code | `PSXRecomp.Generated` | *(planned)* |
 
 `PSXRecomp.Native` (the C++ emulation core) has no managed namespace and sits
-outside the analyzer's reach entirely; it is reached only through the Domain
-layer's C ABI boundary (see below).
+outside the analyzer's reach and outside the managed Infrastructure layer; it is
+reached only through the Domain layer's C ABI boundary (see below).
 
 Namespace resolution matches by **root prefix**: a namespace equal to a root or
 any descendant (`Root` / `Root.*`) maps to that root's layer — e.g.
@@ -47,11 +47,40 @@ array. Read at a glance:
 | From | To | Allowed | Reason |
 |------|-----|---------|---------|
 | Domain | Application | ❌ NO | Domain must not depend on the outer Application layer |
-| Application | Infrastructure | ❌ NO | Application reaches Infrastructure only through the Domain interop boundary |
+| Application | Infrastructure | ❌ NO | Application consumes Domain/Application contracts; concrete Infrastructure composition requires an explicit host/bootstrap boundary |
 | Infrastructure | Application | ❌ NO | Infrastructure must not depend on Application |
 | Domain / Application / Infrastructure | Test | ❌ NO | Production code must not depend on test code |
-| Application | Domain | ✅ YES | Application → Domain via `PSXRecomp.Core` (P/Invoke wrappers); not a forbidden edge |
+| Application | Domain | ✅ YES | Application → Domain via `PSXRecomp.Core`; not a forbidden edge |
+| Infrastructure | Domain | ✅ YES | Infrastructure may implement Domain-owned ports/contracts |
 | Test | Domain / Application / Infrastructure | ✅ YES | Tests depend on production code, not vice versa |
+
+The `Application -> Infrastructure` edge remains forbidden while no managed
+Infrastructure project exists. When the first concrete adapter is introduced,
+the executable composition/bootstrap owner must be designed explicitly rather
+than weakening Domain isolation implicitly. See ADR-016.
+
+## Managed host I/O boundary
+
+Concrete host-side effects belong in managed Infrastructure adapters when that
+layer is activated. Typical examples are filesystem/disc-image host access,
+process/toolchain execution, network clients, and logging sinks. Domain and
+Application continue to consume stable contracts/ports rather than concrete host
+APIs where the machine contract forbids those APIs.
+
+Accordingly, `System.IO.File` and `System.IO.Directory` are **allowed** in the
+Infrastructure layer. Process/network APIs are likewise not blanket-forbidden
+there today. This is capability ownership, not a general exemption: adapter
+types still require `[Infrastructure]`, remain subject to dependency rules, and
+new restrictions are added only from concrete evidence through #23/#106.
+
+`System.Console` remains forbidden in Infrastructure so an arbitrary adapter
+cannot silently become a presentation/logging sink.
+
+Do not create `PSXRecomp.Infrastructure` only to satisfy the layer diagram. Its
+activation condition is the first production use case that needs a concrete
+managed host adapter outside Domain/Application; that change must also establish
+the explicit bootstrap/composition boundary. See
+[ADR-016](adr/016-managed-infrastructure-host-io-boundary.md).
 
 ## C ABI / P/Invoke Boundary
 
@@ -60,7 +89,7 @@ PSXRecompStudio (Application)
     ↓ ProjectReference (allowed)
 PSXRecomp.Core (Domain/Interop)
     ↓ NativeInterop (internal static partial class, [LibraryImport])
-PSXRecomp.Native (Infrastructure/C++)
+PSXRecomp.Native (native C++ core; outside managed layer matrix)
 ```
 
 - **PSXRecompStudio → PSXRecomp.Core** ProjectReference is **allowed** (regular dependency for UI layer)
@@ -68,21 +97,22 @@ PSXRecomp.Native (Infrastructure/C++)
 - `NativeInterop.cs` declares the P/Invoke bindings: `internal static partial class NativeInterop` with `[LibraryImport("PSXRecomp.Native")]`
 - `PSXCoreWrapper.cs` exposes the public `PSXCoreWrapper` wrapper (`IDisposable`, native handle owner) over those bindings
 - **Boundary**: `PSXRecomp.Core` ↔ `PSXRecomp.Native` (P/Invoke contract)
-- **No direct dependency** from `PSXRecomp.Native` → `PSXRecomp.Core` (reverse prohibited)
+- **No direct dependency** from `PSXRecomp.Native` → `PSXRecomp.Core` (reverse prohibited by the native/managed boundary, not by Roslyn layer classification)
 - **No direct dependency** from `PSXRecompStudio` → `PSXRecomp.Native` (UI layer must not bypass Core interop)
-- Mechanically enforced by `interopBoundaryRules` in the contract (`DllImport`/`LibraryImport` must be declared inside the Domain layer) — see [Mechanical Enforcement](#mechanical-enforcement).
+- Mechanically enforced on the managed declaration side by `interopBoundaryRules` in the contract (`DllImport`/`LibraryImport` must be declared inside the Domain layer) — see [Mechanical Enforcement](#mechanical-enforcement).
 
 ## Forbidden API Matrix (high-level)
 
 The exhaustive per-layer list (including specific members like `DateTime.Now`
 vs `DateTime.UtcNow`) is `architecture.contract.json`'s `forbiddenApis` array.
-Every layer forbids the same non-determinism / external-I/O categories, with
-the underlying reason varying by layer intent:
+The table records the current contract; blank cells are not declared forbidden.
+In particular, managed Infrastructure is the owner of concrete host adapters, so
+filesystem APIs are intentionally permitted there.
 
 | Category | Domain | Application | Infrastructure | Test | Generated | Reason |
 |----------|:---:|:---:|:---:|:---:|:---:|---|
-| `Console.*` | ❌ | ❌ | ❌ | ❌ | ❌ | standard output must be abstracted behind an adapter |
-| `File.*` / `Directory.*` | ❌ | ❌ | ❌ | ❌ | ❌ | external I/O is an Infrastructure responsibility |
+| `Console.*` | ❌ | ❌ | ❌ | ❌ | ❌ | output must remain behind an explicit host/presentation boundary |
+| `File.*` / `Directory.*` | ❌ | ❌ | | ❌ | ❌ | concrete external I/O belongs in Infrastructure adapters |
 | `Environment.*` | ❌ | | | ❌ | ❌ | execution environment dependencies break determinism |
 | `Process.*` | ❌ | | | ❌ | ❌ | process control is an Infrastructure responsibility |
 | `DateTime.Now` / `.UtcNow` | ❌ | | | ❌ | ❌ | non-deterministic time sources break determinism |
@@ -93,8 +123,8 @@ the underlying reason varying by layer intent:
 | `HttpClient` / `Socket` | ❌ | | | | | network access is an Infrastructure responsibility |
 
 Blank cells are not currently declared forbidden for that layer in the
-contract (this table only records what the contract actually declares — it is
-not a design claim that the blank combination is safe).
+contract; they are not a design claim that every use is automatically sound.
+Review still checks whether an API belongs in the owning adapter boundary.
 
 ## Architecture Attribute Contract
 
@@ -102,7 +132,7 @@ not a design claim that the blank combination is safe).
 |-----------|-------|-------|
 | `[Domain]` | Domain | Pure business logic, no side effects |
 | `[Application]` | Application | UI components, ViewModels |
-| `[Infrastructure]` | Infrastructure | Reserved for the future Infrastructure project |
+| `[Infrastructure]` | Infrastructure | Managed host-I/O / adapter implementation |
 | `[Test]` | Test | Test classes |
 | `[Generated]` | Generated | Auto-generated artifacts |
 
@@ -137,8 +167,8 @@ none, since no project occupies it.
 | `PSXRecompStudio` | `PSXRecompStudio` | Application (UI, ViewModels) |
 | `PSXRecompStudio` | `PSXRecompStudio.ViewModels` | Application (UI models) |
 | `PSXRecomp.Core` | `PSXRecomp.Core` | Domain (business logic) + Interop (`NativeInterop`, `PSXCoreWrapper`) |
-| `PSXRecomp.Native` | (C++ - no managed namespace) | Infrastructure (CPU emulation) |
-| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Infrastructure (reserved; managed adapters, project planned) |
+| `PSXRecomp.Native` | (C++ - no managed namespace) | Native C++ core; outside managed layer classification/AARC enforcement |
+| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Managed Infrastructure (reserved; concrete host adapters, project planned) |
 | `PSXRecomp.Tests` | `PSXRecomp.Tests` | Test infrastructure |
 
 ## Mechanical Enforcement
@@ -217,24 +247,27 @@ Enforcement notes (unchanged in substance from the PSXR era):
    - `PSXRecompStudio` → `PSXRecomp.Core` (ProjectReference confirmed)
    - `PSXRecomp.Core` → `PSXRecomp.Native` (P/Invoke contract confirmed)
    - `PSXRecomp.Tests` → `PSXRecomp.Core` (Test dependency confirmed)
+   - `PSXRecomp.Infrastructure` remains reserved and is not created prematurely
 
 2. **Dependency Matrix** ENFORCED — mechanically enforced by `AARC002`; see contract for the full edge list.
 
-3. **Forbidden API** ENFORCED — mechanically enforced by `AARC003`; see contract for the full per-layer list.
+3. **Forbidden API** ENFORCED — mechanically enforced by `AARC003`; managed Infrastructure intentionally permits concrete filesystem adapter APIs while Domain/Application remain prohibited.
 
-4. **C ABI Boundary** — clear separation via `NativeInterop.cs` and `LibraryImport`; P/Invoke location enforced (`AARC007`). Runtime verification requires native build and integration tests (tracked separately from this matrix).
+4. **C ABI Boundary** — clear separation via `NativeInterop.cs` and `LibraryImport`; P/Invoke location enforced (`AARC007`). `PSXRecomp.Native` is outside the managed layer model. Runtime verification requires native build and integration tests (tracked separately from this matrix).
 
 5. **Layer Declaration** ENFORCED — presence, uniqueness, and namespace mapping enforced (`AARC004`–`AARC006`).
 
 ## Issues Identified
 
 1. **Missing Generated Code Project** - `PSXRecomp.Generated` project not yet defined (generated code is exempted by path convention until then).
-2. **Missing Infrastructure Project** - `PSXRecomp.Infrastructure` namespace root is reserved in the contract; no project occupies it yet.
+2. **Managed Infrastructure activation** - `PSXRecomp.Infrastructure` namespace root is reserved in the contract; create the project only when a concrete production host adapter is required, and define its bootstrap/composition owner in the same change.
 3. **C ABI Contract** - Runtime integration verification remains pending (native build passes locally; CI-level integration tests pending).
 
 ## Recommendations
 
-- Define the `PSXRecomp.Generated` and `PSXRecomp.Infrastructure` projects and decide their dependency policy once they exist.
+- Introduce `PSXRecomp.Infrastructure` only with the first evidence-backed concrete host adapter; do not create an empty layer project.
+- Define the executable bootstrap/composition boundary when that first managed Infrastructure adapter is introduced, while retaining Domain-owned ports and AARC dependency protection.
+- Define `PSXRecomp.Generated` when a concrete generated-code project is required.
 - Verify the native build and integration tests for the documented `NativeInterop` boundary.
 
 ---
@@ -244,4 +277,5 @@ Enforcement notes (unchanged in substance from the PSXR era):
 - Architecture Matrix: ✅ ESTABLISHED - subsystem SSOT for managed architecture rationale and high-level tables; the executable rule set is `src/architecture.contract.json`.
 - Top-level architecture: [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-wide system direction and cross-cutting architecture.
 - Mechanical enforcement: ✅ ACTIVE - `loach.ArchitectureAnalyzer` (AARC002–AARC007) via `src/architecture.contract.json` + `.editorconfig`; see ADR-006 (amended).
-- **Missing Items**: `PSXRecomp.Generated` and `PSXRecomp.Infrastructure` projects not yet created.
+- Managed host-I/O policy: ✅ DEFINED - concrete managed adapters own host I/O; Domain/Application remain protected; see ADR-016.
+- **Missing Items**: `PSXRecomp.Generated` and `PSXRecomp.Infrastructure` projects are not created until concrete use cases require them.
