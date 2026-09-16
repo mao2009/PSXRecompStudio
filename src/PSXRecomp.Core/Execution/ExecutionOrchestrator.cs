@@ -174,10 +174,11 @@ public sealed class ExecutionOrchestrator
                             return Terminal(TitleExecutionState.RuntimeHandoff, snap, segments, engine.Name, null, null);
 
                         case TitleExecutionHandoffAction.ContinueAt:
-                            // A continuation PC must be a translatable guest
+                            // A continuation PC must be a translatable, instruction-aligned guest
                             // address; anything else is a handoff contract
                             // violation, not a guest failure.
-                            if (!Ps1AddressTranslation.TryTranslate(decision.Value.NextPc, out _))
+                            if ((decision.Value.NextPc & 0x3u) != 0 ||
+                                !Ps1AddressTranslation.TryTranslate(decision.Value.NextPc, out _))
                             {
                                 return Terminal(
                                     TitleExecutionState.InvalidState,
@@ -186,7 +187,7 @@ public sealed class ExecutionOrchestrator
                                     engine.Name,
                                     "INVALID_CONTINUATION_TARGET",
                                     $"The handoff named continuation target 0x{decision.Value.NextPc:X8}, " +
-                                    "which is not a translatable guest address.");
+                                    "which is not a translatable, 4-byte-aligned guest instruction address.");
                             }
 
                             // Fold any return value into V0 (what a BIOS dispatch
