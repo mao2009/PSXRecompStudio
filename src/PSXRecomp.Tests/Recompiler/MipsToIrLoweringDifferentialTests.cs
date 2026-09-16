@@ -71,13 +71,20 @@ public class MipsToIrLoweringDifferentialTests
         RunBoth(words, retiredInstructions: 7, dataWindowBytes: 12);
     }
 
+    // The two tests below previously asserted that the interpreter and the IR
+    // memory model were both "byte-wise and alignment-agnostic" on an unaligned
+    // LW/SW. That was never R3000A behaviour: the hardware raises AdEL/AdES for a
+    // misaligned LH/LHU/LW/SH/SW, and the interpreter now does too (Issue #376) —
+    // a misaligned SW smearing four bytes across a word boundary was exactly the
+    // silent corruption that fault exists to surface. The IR lowering has no
+    // address-error model yet, so these cases can no longer be run
+    // differentially; they pin the interpreter's architectural behaviour instead
+    // and the IR-side gap is called out in the PR for #376 as follow-up work.
+    // The aligned load/store differential coverage above is unaffected.
+
     [Fact]
-    public void UnalignedLw_MatchesTheInterpreterByteForByte()
+    public void UnalignedLw_RaisesAnAddressErrorOnTheInterpreter()
     {
-        // The interpreter (psx_cpu.cpp ExecLw) and the IR memory model are both
-        // byte-wise and alignment-agnostic, so an LW whose effective address is
-        // not word-aligned re-assembles the four straddled bytes in both. This
-        // pins that intentionally permissive alignment contract.
         var words = new[]
         {
             MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),               // LUI   $t0, 0x8000
@@ -89,20 +96,19 @@ public class MipsToIrLoweringDifferentialTests
             MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 1),
         };
 
-        var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 8);
+        var run = RunInterpreter(words, stepBudget: 7, dataWindowBytes: 8);
 
-        run.Ir.Gpr[10].Should().Be(0x44112233u,
-            "the unaligned LW straddles the word boundary and re-assembles the four bytes");
-        run.IrMemory.Should().Equal(
-            new byte[] { 0x44, 0x33, 0x22, 0x11, 0x44, 0x33, 0x22, 0x11 });
+        run.Pc.Should().Be(0x80000080u,
+            "the misaligned LW raises AdEL and transfers to the BEV=0 general exception vector");
+        run.Gpr[10].Should().Be(0u, "the faulting load must not write its destination register");
+        run.Memory.Should().Equal(
+            new byte[] { 0x44, 0x33, 0x22, 0x11, 0x44, 0x33, 0x22, 0x11 },
+            "the two preceding aligned stores still committed");
     }
 
     [Fact]
-    public void UnalignedSw_MatchesTheInterpreterByteForByte()
+    public void UnalignedSw_RaisesAnAddressErrorOnTheInterpreter()
     {
-        // An SW to a non-word-aligned address must land its four bytes at exactly
-        // that address in both engines — shifting the existing word store neither
-        // down nor losing the straddling byte into the next word.
         var words = new[]
         {
             MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),               // LUI   $t0, 0x8000
@@ -115,12 +121,14 @@ public class MipsToIrLoweringDifferentialTests
             MipsEncoding.Load(R3000aOpcode.Sw, rt: 10, baseRegister: 8, offset: 1),
         };
 
-        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 5);
+        var run = RunInterpreter(words, stepBudget: 8, dataWindowBytes: 5);
 
-        run.IrMemory.Should().Equal(
-            new byte[] { 0x66, 0x77, 0x44, 0x55, 0x33 },
-            "the unaligned SW sits exactly on the unaligned address, keeps the byte before it, and writes through to the next word boundary");
-        run.Ir.Gpr[10].Should().Be(0x33554477u);
+        run.Pc.Should().Be(0x80000080u,
+            "the misaligned SW raises AdES and transfers to the BEV=0 general exception vector");
+        run.Gpr[10].Should().Be(0x33554477u, "the preceding LUI/ADDIU pair still retired");
+        run.Memory.Should().Equal(
+            new byte[] { 0x66, 0x44, 0x22, 0x00, 0x00 },
+            "only the aligned store committed; the faulting store wrote nothing");
     }
 
     [Fact]
