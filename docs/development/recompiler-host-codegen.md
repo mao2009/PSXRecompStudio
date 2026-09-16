@@ -18,7 +18,10 @@ Phase 3A scope.
 ### State struct
 
 ```c
-typedef struct {
+struct RecompilerState;
+typedef int32_t (*recompiler_host_transfer_fn)(struct RecompilerState*);
+
+typedef struct RecompilerState {
   uint32_t gpr[32];
   uint32_t hi;
   uint32_t lo;
@@ -26,6 +29,7 @@ typedef struct {
   int32_t termination_reason;
   uint32_t next_pc;
   void* core;
+  recompiler_host_transfer_fn host_transfer;
 } RecompilerState;
 ```
 
@@ -37,6 +41,14 @@ typedef struct {
   target; on Jump/Call, sets the target address.
 - `core`: opaque pointer passed to memory helper functions. The runtime
   provides the implementation; the codegen never dereferences it.
+- `host_transfer`: optional host-owned control-transfer hook. When the
+  dispatcher reaches a PC that no generated block owns, it offers the current
+  state to this callback before classifying the PC as unsupported. A return
+  value of 0 means the host claimed the transfer and has set
+  `termination_reason`/`next_pc`; nonzero means it was not claimed. A null hook
+  preserves the normal unsupported-PC behavior. This is used by the runtime
+  boundary for transfers such as BIOS A0/B0/C0 trampoline vectors without
+  embedding BIOS-specific knowledge in generated code.
 
 ### Function signature
 
@@ -59,10 +71,17 @@ int32_t recompiler_dispatch(RecompilerState* state, uint32_t budget);
 A budgeted sequential dispatcher. It selects the block function whose entry PC
 matches `state->pc`, executes it, stops on a non-Success termination, and
 refuses to retire more than `budget` instructions (reporting
-`RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED`). A PC that matches no block after
-at least one step means the straight-line program fell off the end (normal
-completion); a PC that matches no block on the first step is reported as
-`RECOMPILER_REASON_UNSUPPORTED_IR`.
+`RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED`). When a PC matches no generated
+block, the dispatcher first calls the optional `state->host_transfer` hook. If
+the host claims the PC, execution follows the termination/continuation state set
+by that hook. If no host claims it, a PC reached after at least one step means
+the straight-line program fell off the end (normal completion); an unclaimed PC
+on the first step is reported as `RECOMPILER_REASON_UNSUPPORTED_IR`.
+
+The generated `RECOMPILER_REASON_*` constants used by the dispatcher are emitted
+from the live `RecompilerIrTerminationReason` enum values rather than duplicated
+numeric literals, keeping dispatcher and per-block termination reporting on the
+same contract.
 
 ### Entry / exit behavior
 
