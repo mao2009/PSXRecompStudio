@@ -29,7 +29,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public const string EngineName = "interpreter-native-full-title";
 
     private readonly IReadOnlyList<uint> _instructions;
-    private readonly uint _entryPc;
+    private readonly uint _loadAddress;
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly PSXCoreWrapper _core = new();
@@ -37,10 +37,17 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>
     /// Creates an engine over the guest program <paramref name="instructions"/>,
-    /// loaded at <paramref name="entryPc"/>.
+    /// loaded at guest address <paramref name="loadAddress"/>. Execution starts
+    /// wherever the orchestrator seeds each segment (the initial <c>PC</c> of the
+    /// <see cref="TitleExecutionRequest"/>), so the load base and the entry point
+    /// are deliberately independent: a real PS-X EXE loads its whole text region
+    /// at <see cref="PsxExe.Header"/>'s text start and enters at its header entry
+    /// point, which need not coincide with the text start.
     /// </summary>
-    /// <param name="instructions">The guest instruction words making up the program image.</param>
-    /// <param name="entryPc">The guest address the program image is written to and entered at.</param>
+    /// <param name="instructions">The guest instruction words making up the program image,
+    /// written contiguously at <paramref name="loadAddress"/>.</param>
+    /// <param name="loadAddress">The guest address the program image is written to; also
+    /// the lower bound of the program image the engine will execute guests inside of.</param>
     /// <param name="biosRuntimeFactory">Builds the BIOS runtime this engine dispatches
     /// A0/B0/C0 vector hits to, over the engine's own guest memory. Null runs without
     /// BIOS dispatch, so a vector hit is simply an unresolved transfer.</param>
@@ -48,7 +55,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty.</exception>
     public InterpreterTitleExecutionEngine(
         IReadOnlyList<uint> instructions,
-        uint entryPc,
+        uint loadAddress,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(instructions);
@@ -58,8 +65,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         }
 
         _instructions = instructions;
-        _entryPc = entryPc;
-        _programEnd = unchecked(entryPc + (uint)instructions.Count * 4u);
+        _loadAddress = loadAddress;
+        _programEnd = unchecked(loadAddress + (uint)instructions.Count * 4u);
         _biosRuntimeFactory = biosRuntimeFactory;
     }
 
@@ -79,7 +86,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
         }
 
-        var ramOffset = TranslateAddress(_entryPc);
+        var ramOffset = TranslateAddress(_loadAddress);
         for (var i = 0; i < _instructions.Count; i++)
         {
             _core.WriteMemory32(ramOffset + unchecked((uint)i * 4u), _instructions[i]);
@@ -191,7 +198,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         return gpr;
     }
 
-    private bool PcWithinProgram(uint pc) => pc >= _entryPc && pc < _programEnd;
+    private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
 
     private static uint TranslateAddress(uint virtualAddress)
     {

@@ -251,7 +251,11 @@ public static class RealRomAnalyzer
             recorder.Pass(RomAnalysisStage.Complete, "Real-ROM analysis flow completed");
         }
 
-        var outcome = RomAnalysisOutcome.From(recorder, staged.Outcome.Report, staged.Outcome.DecodeFailureCount);
+        var outcome = RomAnalysisOutcome.From(
+            recorder,
+            staged.Outcome.Report,
+            staged.Outcome.DecodeFailureCount,
+            staged.Outcome.Executable);
         return new RealRomAnalysisRunResult
         {
             FixtureId = fixtureId,

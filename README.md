@@ -21,7 +21,7 @@ Its core differentiator is a **differentially validated recompiler path**: MIPS 
 
 - R3000A / MIPS I decode/execute, branch and load delay slots, COP0/exceptions, interrupt sampling, and KSEG0/KSEG1 translation: [`src/PSXRecomp.Core/Cpu/`](src/PSXRecomp.Core/Cpu/). A native, per-instruction Golden Trace captures retirement-order register writes for future backend comparison: [`golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h).
 - CHD → ISO 9660 → PS-X EXE → MIPS analysis → basic blocks/CFG, exercised end-to-end by [`DiscImageAnalyzerIntegrationTests.cs`](src/PSXRecomp.Tests/DiscImage/DiscImageAnalyzerIntegrationTests.cs).
-- A bounded, title-agnostic full-title execution loop, [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs), driven by a production, Domain-layer interpreter engine reachable from the Studio UI's diagnostic execution action ([ADR-015](docs/adr/015-production-execution-engine-ownership.md)). This runs a small built-in diagnostic program from a zeroed register state — it does not load a real disc/EXE image yet, and the generated-C (recompiled) engine remains test-only.
+- A bounded, title-agnostic full-title execution loop, [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs), driven by a production, Domain-layer interpreter engine reachable from the Studio UI's diagnostic execution action ([ADR-015](docs/adr/015-production-execution-engine-ownership.md)). The Studio now loads analyzed PS-X EXE images (entry PC, SP, GP, text segment from the EXE header) into the production execution path via `TitleExecutionService.Run(PsxExe, ...)` (#409), alongside its built-in diagnostic program; the generated-C (recompiled) engine remains test-only.
 - Shared BIOS A0/B0/C0 vector dispatch on both the interpreter and recompiled paths, currently covering 5 registered services (putchar, puts and its B0 alias, `GetB0Table`, `GetC0Table`) — not broad BIOS HLE coverage: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs).
 - Register-level DMA/interrupt/timer MMIO adapters and a memory bus with dedicated tests: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/) — not yet wired into any execution engine.
 - Architecture layering mechanically enforced by `loach.ArchitectureAnalyzer` against [`architecture.contract.json`](src/architecture.contract.json).
@@ -30,7 +30,7 @@ Its core differentiator is a **differentially validated recompiler path**: MIPS 
 **Not implemented**
 
 - General-purpose real-ROM function recompilation — candidate selection is deliberately conservative (see [Recompilation Workflow](#recompilation-workflow)).
-- End-to-end static recompilation and execution of a complete commercial PS1 title; loading a real disc/EXE image into the production execution path.
+- End-to-end static recompilation and execution of a complete commercial PS1 title.
 - GPU, SPU, CD-ROM, MDEC, and GTE — interface contracts only; nothing implements or consumes them yet (e.g. [`IGte.cs`](src/PSXRecomp.Core/Runtime/IGte.cs)).
 - Broad BIOS HLE service coverage.
 - A general-purpose product CLI.
@@ -74,9 +74,9 @@ A general-purpose recompilation CLI is not available yet.
 
 ## Next milestones
 
-1. **Load a real title into the production execution path:** join `RealRomAnalysis`'s disc/EXE output with `TitleExecutionService` (ADR-015) so the Studio can run more than its built-in diagnostic program.
-2. **Expand BIOS HLE coverage (#279, #365):** implement the services required by the next real-title execution path while preserving explicit failure for unsupported calls.
-3. **Broaden real-ROM recompilation coverage:** expand supported instructions/control flow only with differential validation retained as the correctness gate.
+1. **Expand BIOS HLE coverage (#279, #365):** implement the services required by the next real-title execution path while preserving explicit failure for unsupported calls.
+2. **Broaden real-ROM recompilation coverage:** expand supported instructions/control flow only with differential validation retained as the correctness gate.
+3. **A production generated-host (recompiled) execution backend:** compile recompiled guest code and run it as the product's execution backend, deferred from ADR-015 Option B.
 
 > **Asset policy:** ROM, ISO, CHD, BIOS, firmware images, and commercial game assets are not included in this repository. Any user-supplied files must be obtained and used legally.
 
@@ -104,7 +104,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | CPU execution (decode/execute, delay slots, COP0, interrupts, KSEG, Golden Trace) | Implemented — [`docs/cpu/`](docs/cpu/) |
 | Recompiler (synthetic + first real-ROM function, differential validation) | Validated, bounded — general real-ROM coverage not implemented |
 | Disc / executable analysis (CHD → ISO 9660 → PS-X EXE → CFG) | Implemented |
-| Runtime / BIOS execution boundary (A0/B0/C0 dispatch, production interpreter engine wired into Studio) | Partial — bounded, in-memory diagnostic execution only; no real disc/EXE loading; not broad BIOS HLE |
+| Runtime / BIOS execution boundary (A0/B0/C0 dispatch, production interpreter engine wired into Studio) | Partial — real PS-X EXE loading and interpreter execution supported (#409); not broad BIOS HLE |
 | Hardware — DMA / interrupts / timers (MMIO adapters, memory bus) | Partial — implemented and tested standalone, not wired into any execution engine |
 | Hardware — GPU / SPU / CD-ROM / MDEC / GTE | Planned — interface contracts only |
 | Full-title static recompilation | Not implemented |

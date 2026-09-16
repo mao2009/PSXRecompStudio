@@ -23,7 +23,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 
 - R3000A / MIPS I の decode/execute、Branch / Load Delay Slot、COP0 / 例外処理、割り込みサンプリング、KSEG0/KSEG1 変換: [`src/PSXRecomp.Core/Cpu/`](src/PSXRecomp.Core/Cpu/)。Native 側では命令単位の Golden Trace がレジスタ書き込みをリタイア順に記録し、将来の backend 比較に備える: [`golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h)。
 - CHD → ISO 9660 → PS-X EXE → MIPS 解析 → basic blocks/CFG が end-to-end で動作し、[`DiscImageAnalyzerIntegrationTests.cs`](src/PSXRecomp.Tests/DiscImage/DiscImageAnalyzerIntegrationTests.cs) で検証済み。
-- title-agnostic な bounded full-title 実行ループ [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs) が、Domain 層の production interpreter engine によって駆動され、Studio UI の診断実行アクションから到達可能（[ADR-015](docs/adr/015-production-execution-engine-ownership.md)）。ただしこれは組み込みの診断用プログラムをゼロ初期化レジスタから実行するのみで、実際の disc/EXE イメージのロードはまだ行われず、生成 C（recompiled）engine は現時点でも test 専用のまま。
+- title-agnostic な bounded full-title 実行ループ [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs) が、Domain 層の production interpreter engine によって駆動され、Studio UI の診断実行アクションから到達可能（[ADR-015](docs/adr/015-production-execution-engine-ownership.md)）。Studio は現在、解析済み PS-X EXE イメージ（EXE ヘッダ由来の entry PC・SP・GP・text segment）を `TitleExecutionService.Run(PsxExe, ...)` 経由で production 実行パスにロード可能（#409）。組み込みの診断用プログラムも引き続き実行できる。生成 C（recompiled）engine は現時点でも test 専用のまま。
 - interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
 - レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。ただしどの実行エンジンにも結線されていない。
 - `loach.ArchitectureAnalyzer` が [`architecture.contract.json`](src/architecture.contract.json) に基づきアーキテクチャレイヤーを機械的に強制。
@@ -32,7 +32,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 **未実装**
 
 - 汎用的な実 ROM 関数再コンパイル — 候補選定は意図的に保守的（[再コンパイルワークフロー](#再コンパイルワークフロー) 参照）。
-- 商用 PS1 タイトル全体の end-to-end 静的再コンパイルと実行。production 実行パスへの実 disc/EXE イメージのロード。
+- 商用 PS1 タイトル全体の end-to-end 静的再コンパイルと実行。
 - GPU、SPU、CD-ROM、MDEC、GTE — インターフェース定義のみで、実装・利用する側は存在しない（例: [`IGte.cs`](src/PSXRecomp.Core/Runtime/IGte.cs)）。
 - 広範な BIOS HLE service coverage。
 - 汎用的なプロダクト CLI。
@@ -76,9 +76,9 @@ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
 
 ## 次のマイルストーン
 
-1. **実タイトルを production 実行パスへロードする:** `RealRomAnalysis` の disc/EXE 解析結果を `TitleExecutionService`（ADR-015）と結合し、Studio が組み込みの診断プログラム以外も実行できるようにする。
-2. **BIOS HLE coverage の拡張（#279、#365）:** 次の real-title execution path に必要な service を実装し、未対応 call は引き続き明示的に失敗させる。
-3. **実 ROM 再コンパイル範囲の拡大:** differential validation を正しさの gate として維持したまま、対応命令・制御フローを拡張する。
+1. **BIOS HLE coverage の拡張（#279、#365）:** 次の real-title execution path に必要な service を実装し、未対応 call は引き続き明示的に失敗させる。
+2. **実 ROM 再コンパイル範囲の拡大:** differential validation を正しさの gate として維持したまま、対応命令・制御フローを拡張する。
+3. **production の生成ホスト（recompiled）実行 backend:** 再コンパイルされた guest code をコンパイルし、製品の実行 backend として稼働させる（ADR-015 Option B から延期）。
 
 > **Asset policy:** ROM、ISO、CHD、BIOS、firmware image、商用ゲーム asset は本リポジトリに含めません。ユーザーが用意するファイルは合法的に入手・利用してください。
 
@@ -106,7 +106,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | CPU 実行（decode/execute、Delay Slot、COP0、割り込み、KSEG、Golden Trace） | 実装済み — [`docs/cpu/`](docs/cpu/) |
 | Recompiler（synthetic + 最初の実 ROM 関数、差分検証） | 検証済み（bounded） — 汎用的な実 ROM 対応は未実装 |
 | Disc / executable 解析（CHD → ISO 9660 → PS-X EXE → CFG） | 実装済み |
-| Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — bounded な in-memory の診断実行のみ。実 disc/EXE のロードなし。広範な BIOS HLE ではない |
+| Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — 実 PS-X EXE のロードと interpreter 実行をサポート（#409）。広範な BIOS HLE ではない |
 | Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — 単体では実装・テスト済みだが、どの実行エンジンにも未結線 |
 | Hardware — GPU / SPU / CD-ROM / MDEC / GTE | 予定 — インターフェース定義のみ |
 | フルタイトルの静的再コンパイル | 未実装 |
