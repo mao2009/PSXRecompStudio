@@ -111,8 +111,10 @@ private:
     GprWriteTrace* gpr_write_trace_ = nullptr;
     void RecordGprWrite(int index, uint32_t before, uint32_t value);
 
-    // Instruction decode helpers
-    uint32_t FetchInstruction(PSXMemory& memory);
+    // Instruction decode helpers. FetchInstruction returns false when the PC is
+    // misaligned or unmapped; it has already raised AdEL in that case and no
+    // instruction is executed this step (docs/cpu/exceptions.md, Issue #376).
+    bool FetchInstruction(PSXMemory& memory, uint32_t& instruction);
     void ExecuteInstruction(uint32_t instruction, PSXMemory& memory);
     void FlushPipeline();
     void UpdateLoadDelay();
@@ -197,8 +199,14 @@ private:
     void ExecMfc0(uint32_t rt, uint32_t rd);
     void ExecMtc0(uint32_t rt, uint32_t rd);
     void ExecRfe();
-    void RaiseException(uint32_t excode);
-    
+    // Raises an exception (docs/cpu/exceptions.md). `ce` is the coprocessor
+    // number written to CAUSE.CE (bits 28-29); it is only meaningful for CpU
+    // (0x0B) and is cleared to 0 for every other exception.
+    void RaiseException(uint32_t excode, uint32_t ce = 0);
+    // Raises AdEL (load/fetch) or AdES (store) for `addr`, recording it in
+    // BadVaddr (cop0r8) as documented in docs/cpu/cop0.md.
+    void RaiseAddressError(uint32_t excode, uint32_t addr);
+
     // Helpers
     uint32_t TranslateAddress(uint32_t virt) const;
     bool IsMapped(uint32_t phys) const;

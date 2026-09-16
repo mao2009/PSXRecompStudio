@@ -1593,6 +1593,261 @@ static void test_exception_in_delay_slot() {
     PASS();
 }
 
+// RI / CpU / AdEL / AdES exception tests (Issue #376).
+//
+// Every one of these fails against the pre-#376 interpreter: undefined
+// opcodes/functs/selectors and COP1/2/3 + LWC2/SWC2 all hit a bare `break;`
+// (no exception, PC simply advances to +4), and the misaligned load/store and
+// misaligned/unmapped fetch paths had no alignment check at all (the access
+// went through to memory, or the fetch returned 0 and executed as a NOP). So
+// on the old code CAUSE.Excode stayed 0 and PC was 4 rather than 0x80000080.
+
+// Asserts the common post-exception state: Excode, EPC, BD=0 and the general
+// exception vector (BEV=0), matching test_syscall_exception's shape.
+#define ASSERT_EXCEPTION(core, excode, epc) \
+    do { \
+        ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, (uint32_t)(excode)); \
+        ASSERT_EQ(PSXCore_GetCop0(core, 14), (uint32_t)(epc)); \
+        ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x80000000u, 0u); \
+        ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u); \
+    } while(0)
+
+static void test_ri_undefined_opcode() {
+    TEST("Undefined opcode raises RI (Excode=0x0A)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x78000000u); // opcode 0x1E: reserved
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x0Au, 0u);
+    // SR 3-level stack pushed: KUc/IEc cleared, previous level holds the old
+    // current level (seeded 0 by Reset, so bits 0-5 are 0 after the push).
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3Fu, 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ri_undefined_special_funct() {
+    TEST("Undefined SPECIAL funct raises RI");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x00000014u); // SPECIAL, funct 0x14: reserved
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x0Au, 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ri_undefined_regimm() {
+    TEST("Undefined REGIMM selector raises RI");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x04020000u); // REGIMM, rt=0x02: reserved
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x0Au, 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ri_undefined_cop0_form() {
+    TEST("Unrecognised COP0 form (CFC0) raises RI");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x40410000u); // CFC0 $1, $0 (rs=0x02)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x0Au, 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ri_in_delay_slot() {
+    TEST("RI in a delay slot sets BD=1, EPC=branch addr");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x10000001u); // BEQ $0,$0,+1
+    PSXCore_WriteMemory32(core, 4, 0x78000000u); // reserved opcode in delay slot
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 4u);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0x0Au);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x80000000u, 0x80000000u); // BD = 1
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u); // EPC = branch addr
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// CAUSE.CE (bits 28-29) carries the coprocessor number for CpU.
+static void assert_cpu_unusable(uint32_t instruction, uint32_t expected_ce) {
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, instruction);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    if (((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2) != 0x0Bu ||
+        ((PSXCore_GetCop0(core, 13) >> 28) & 3u) != expected_ce ||
+        PSXCore_GetCop0(core, 14) != 0u ||
+        PSXCore_GetPC(core) != 0x80000080u) {
+        PSXCore_Destroy(core);
+        printf("FAIL (instr %08X: expected CpU with CE=%u)\n",
+               (unsigned)instruction, (unsigned)expected_ce);
+        return;
+    }
+    PSXCore_Destroy(core);
+    tests_passed++;
+    printf("PASS\n");
+}
+
+static void test_cpu_unusable_cop1() {
+    TEST("COP1 access raises CpU with CAUSE.CE=1");
+    assert_cpu_unusable(0x44010000u, 1u); // MFC1 $1, $0
+}
+
+static void test_cpu_unusable_cop2() {
+    TEST("COP2/GTE command raises CpU with CAUSE.CE=2 (Issue #377)");
+    assert_cpu_unusable(0x4A180001u, 2u); // RTPS (GTE command)
+}
+
+static void test_cpu_unusable_cop3() {
+    TEST("COP3 access raises CpU with CAUSE.CE=3");
+    assert_cpu_unusable(0x4C010000u, 3u); // MFC3 $1, $0
+}
+
+static void test_cpu_unusable_lwc2() {
+    TEST("LWC2 raises CpU with CAUSE.CE=2");
+    assert_cpu_unusable(0xC8010000u, 2u); // LWC2 $1, 0($0)
+}
+
+static void test_cpu_unusable_swc2() {
+    TEST("SWC2 raises CpU with CAUSE.CE=2");
+    assert_cpu_unusable(0xE8010000u, 2u); // SWC2 $1, 0($0)
+}
+
+static void test_cause_ce_cleared_by_non_cpu_exception() {
+    TEST("CAUSE.CE is cleared by a following non-CpU exception");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x4C010000u); // MFC3 -> CpU, CE=3
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) >> 28) & 3u, 3u);
+    PSXCore_WriteMemory32(core, 0x80u, 0x0000000Cu); // SYSCALL at the vector
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0x08u); // Sys
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) >> 28) & 3u, 0u);      // CE reset
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_adel_misaligned_lh() {
+    TEST("Misaligned LH raises AdEL with BadVaddr");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_WriteMemory32(core, 0, 0x87A10001u); // LH $1, 1($29) -> 0x1001
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x04u, 0u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0x1001u); // BadVaddr
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u);       // no value loaded
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_adel_misaligned_lhu() {
+    TEST("Misaligned LHU raises AdEL");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_WriteMemory32(core, 0, 0x97A10001u); // LHU $1, 1($29)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x04u, 0u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0x1001u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_adel_misaligned_lw() {
+    TEST("Misaligned LW raises AdEL with BadVaddr");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_WriteMemory32(core, 0x1000u, 0x12345678u);
+    PSXCore_WriteMemory32(core, 0, 0x8FA10002u); // LW $1, 2($29) -> 0x1002
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x04u, 0u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0x1002u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ades_misaligned_sh() {
+    TEST("Misaligned SH raises AdES with BadVaddr");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_SetGPR(core, 2, 0xBEEFu);
+    PSXCore_WriteMemory32(core, 0x1000u, 0u);
+    PSXCore_WriteMemory32(core, 0, 0xA7A20001u); // SH $2, 1($29) -> 0x1001
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x05u, 0u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0x1001u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1000u), 0u); // store suppressed
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ades_misaligned_sw() {
+    TEST("Misaligned SW raises AdES with BadVaddr");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_SetGPR(core, 2, 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 0x1000u, 0u);
+    PSXCore_WriteMemory32(core, 0, 0xAFA20003u); // SW $2, 3($29) -> 0x1003
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x05u, 0u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0x1003u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1000u), 0u); // store suppressed
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_aligned_halfword_word_access_unaffected() {
+    TEST("Aligned LH/LW/SH/SW still execute normally");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_SetGPR(core, 2, 0x1234u);
+    PSXCore_WriteMemory32(core, 0, 0xA7A20002u); // SH $2, 2($29) -> 0x1002
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0u); // no exception
+    ASSERT_EQ(PSXCore_GetPC(core), 4u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_adel_misaligned_fetch() {
+    TEST("Fetch from a misaligned PC raises AdEL");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x2401002Au); // ADDIU $1,$0,42 (must not run)
+    PSXCore_SetPC(core, 2u);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x04u, 2u); // EPC = the faulting PC
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 2u); // BadVaddr
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_adel_unmapped_fetch() {
+    TEST("Fetch from an unmapped PC raises AdEL (not a silent NOP)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetPC(core, 0xC0000000u); // KSEG2: unmapped in this model
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x04u, 0xC0000000u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0xC0000000u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 // Timer tests
 static uint32_t TMR(int t, uint32_t off) {
     return 0x1F801100u + (uint32_t)t * 0x10u + off;
@@ -2226,6 +2481,27 @@ int main() {
     test_exception_nested_sr();
     test_rfe_pop();
     test_exception_in_delay_slot();
+
+    // RI / CpU / AdEL / AdES (Issue #376, and #377 for the COP2 paths)
+    test_ri_undefined_opcode();
+    test_ri_undefined_special_funct();
+    test_ri_undefined_regimm();
+    test_ri_undefined_cop0_form();
+    test_ri_in_delay_slot();
+    test_cpu_unusable_cop1();
+    test_cpu_unusable_cop2();
+    test_cpu_unusable_cop3();
+    test_cpu_unusable_lwc2();
+    test_cpu_unusable_swc2();
+    test_cause_ce_cleared_by_non_cpu_exception();
+    test_adel_misaligned_lh();
+    test_adel_misaligned_lhu();
+    test_adel_misaligned_lw();
+    test_ades_misaligned_sh();
+    test_ades_misaligned_sw();
+    test_aligned_halfword_word_access_unaffected();
+    test_adel_misaligned_fetch();
+    test_adel_unmapped_fetch();
 
     test_timer_registers();
     test_timer_free_run_target_irq();

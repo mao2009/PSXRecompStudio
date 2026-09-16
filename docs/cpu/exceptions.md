@@ -18,6 +18,43 @@
 | 0x0B | CpU | Coprocessor unusable |
 | 0x0C | Ov | Arithmetic overflow |
 
+## Implementation Status
+
+`PSXCpu` (`src/PSXRecomp.Native/src/psx_cpu.cpp`) raises the following through
+`RaiseException`; all of them go through the same EPC / CAUSE.BD / SR-stack /
+vector-selection machinery described below.
+
+| ExcCode | Raised when |
+|---------|-------------|
+| 0x00 INT | A pending, unmasked interrupt at an instruction-fetch boundary outside a delay slot (Issue #144) |
+| 0x04 AdEL | A misaligned LH/LHU/LW, or an instruction fetch from a misaligned or unmapped PC (Issue #376) |
+| 0x05 AdES | A misaligned SH/SW (Issue #376) |
+| 0x08 Sys | SYSCALL |
+| 0x09 Bp | BREAK |
+| 0x0A RI | An undefined opcode, an undefined SPECIAL funct, an undefined REGIMM selector, or a COP0 form other than MFC0/MTC0/RFE (Issue #376) |
+| 0x0B CpU | Any COP1/COP2/COP3 access, including LWC1/2/3 and SWC1/2/3, since none of those coprocessors are implemented. CAUSE.CE carries the coprocessor number (Issue #376, Issue #377) |
+| 0x0C Ov | Signed overflow in ADD/ADDI/SUB |
+
+Not modelled: MOD/TLBL/TLBS (0x01-0x03; the PSX has no TLB) and IBE/DBE
+(0x06-0x07; no bus-error reporting in this memory model).
+
+Notes on the choices above:
+
+- An unrecognised **COP0** form raises RI, not CpU. COP0 itself is usable — CU0
+  is implicitly set in kernel mode on the PSX — so the *form* is what is
+  reserved: CFC0/CTC0 address control registers the R3000A's COP0 does not have,
+  and TLBR/TLBWI/TLBP/TLBWR address a TLB the PSX does not have. CpU is reserved
+  for coprocessors that are genuinely absent (1, 2 and 3).
+- SR.CU1/CU2/CU3 are not consulted: those coprocessors are unimplemented, so
+  access is unusable regardless of what software wrote to SR. Likewise SR.CU0 is
+  not checked for a COP0 access from user mode.
+- **Address errors apply to instruction fetch and to the aligned load/store
+  forms only.** LWL/LWR/SWL/SWR are the architecturally unaligned forms and are
+  deliberately exempt. An unmapped *data* access remains a silent read-of-0 /
+  ignored write in this model (see `test_kseg_unmapped`); only an unmapped
+  *instruction fetch* faults, because continuing past a corrupted control
+  transfer is what hides the bug.
+
 ## Exception Vectors
 
 | Exception | BEV=0 | BEV=1 |

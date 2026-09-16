@@ -128,12 +128,19 @@ void PSXCpu::SetCop0(int index, uint32_t value) {
     cop0_[index] = value;
 }
 
-uint32_t PSXCpu::FetchInstruction(PSXMemory& memory) {
+bool PSXCpu::FetchInstruction(PSXMemory& memory, uint32_t& instruction) {
     uint32_t phys = TranslateAddress(pc_);
-    if (!IsMapped(phys)) {
-        return 0;
+    // An instruction fetch from a misaligned or unmapped PC is an address error
+    // (AdEL), not a silent NOP: continuing to execute past a corrupted control
+    // transfer hides exactly the class of bug this fault exists to surface
+    // (Issue #376). This is instruction fetch only -- an unmapped *data*
+    // access stays a silent read-0/ignored-write by design (test_kseg_unmapped).
+    if ((pc_ & 3u) != 0 || !IsMapped(phys)) {
+        RaiseAddressError(0x04, pc_); // AdEL
+        return false;
     }
-    return memory.Read32(phys);
+    instruction = memory.Read32(phys);
+    return true;
 }
 
 void PSXCpu::FlushPipeline() {
@@ -245,16 +252,19 @@ int PSXCpu::Step(PSXMemory& memory) {
     }
 
     uint32_t instr_addr = pc_;
-    uint32_t instruction = FetchInstruction(memory);
-
     bool in_delay_slot = branch_pending_;
     branch_issued_ = false;
 
+    // Set the exception anchor before the fetch: a fetch address error raises
+    // through the same RaiseException path and needs EPC/BD already resolved.
     executing_instr_addr_ = instr_addr;
     executing_in_delay_slot_ = in_delay_slot;
     exception_raised_ = false;
 
-    ExecuteInstruction(instruction, memory);
+    uint32_t instruction = 0;
+    if (FetchInstruction(memory, instruction)) {
+        ExecuteInstruction(instruction, memory);
+    }
 
     if (exception_raised_) {
         // An exception occurred: pc_ was forced to the exception vector by
@@ -336,7 +346,7 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
                 case 0x09: ExecJalr(rd, rs); break;
                 case 0x0C: ExecSyscall(); break;
                 case 0x0D: ExecBreak(); break;
-                default: break; // Reserved/Unimplemented
+                default: RaiseException(0x0A); break; // RI: reserved SPECIAL funct
             }
             break;
         }
@@ -350,7 +360,7 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
                 case 0x01: ExecBgez(rs, offset); break;
                 case 0x10: ExecBltzal(rs, offset); break;
                 case 0x11: ExecBgezal(rs, offset); break;
-                default: break;
+                default: RaiseException(0x0A); break; // RI: reserved REGIMM rt
             }
             break;
         }
@@ -541,11 +551,39 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
                 ExecMtc0(rt, rd);
             } else if (rs == 0x10 && funct == 0x10) { // RFE
                 ExecRfe();
+            } else {
+                // COP0 itself is usable (CU0 is implicitly set in kernel mode on
+                // the PSX), so an unrecognised COP0 form is a *reserved
+                // instruction*, not a coprocessor-unusable one: CFC0/CTC0 have no
+                // control registers to address on the R3000A, and the TLB forms
+                // (TLBR/TLBWI/TLBP/TLBWR) address a TLB the PSX does not have.
+                // RI is therefore the architecturally correct code here, not CpU.
+                RaiseException(0x0A); // RI
             }
             break;
         }
+        // Coprocessors 1 (FPU), 2 (GTE) and 3 are not implemented, so every
+        // access to them is unusable: CpU with CAUSE.CE = the coprocessor number
+        // (docs/cpu/cop0.md, CAUSE bits 28-29 = opcode bits 26-27). This covers
+        // COPz, LWCz and SWCz alike; for all three families the coprocessor
+        // number is the low two bits of the opcode. LWC0/SWC0 (0x30/0x38) are
+        // deliberately absent: COP0 has no load/store forms on the R3000A, so
+        // they fall through to RI below. GTE *command* execution stays
+        // unimplemented (Issue #377) -- this only makes it fault loudly.
+        case 0x11: // COP1
+        case 0x12: // COP2 (GTE)
+        case 0x13: // COP3
+        case 0x31: // LWC1
+        case 0x32: // LWC2
+        case 0x33: // LWC3
+        case 0x39: // SWC1
+        case 0x3A: // SWC2
+        case 0x3B: // SWC3
+            RaiseException(0x0B, opcode & 3u); // CpU
+            break;
         default:
-            break; // Reserved/Unimplemented
+            RaiseException(0x0A); // RI: reserved/undefined opcode
+            break;
     }
 }
 
@@ -761,6 +799,10 @@ void PSXCpu::ExecLbu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
 
 void PSXCpu::ExecLh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    if ((addr & 1u) != 0) {
+        RaiseAddressError(0x04, addr); // AdEL
+        return;
+    }
     uint32_t phys = TranslateAddress(addr);
     if (!IsMapped(phys)) {
         WriteRegDelayed(rt, 0);
@@ -772,6 +814,10 @@ void PSXCpu::ExecLh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
 
 void PSXCpu::ExecLhu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    if ((addr & 1u) != 0) {
+        RaiseAddressError(0x04, addr); // AdEL
+        return;
+    }
     uint32_t phys = TranslateAddress(addr);
     if (!IsMapped(phys)) {
         WriteRegDelayed(rt, 0);
@@ -782,6 +828,10 @@ void PSXCpu::ExecLhu(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
 
 void PSXCpu::ExecLw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    if ((addr & 3u) != 0) {
+        RaiseAddressError(0x04, addr); // AdEL
+        return;
+    }
     uint32_t phys = TranslateAddress(addr);
     if (!IsMapped(phys)) {
         WriteRegDelayed(rt, 0);
@@ -801,6 +851,10 @@ void PSXCpu::ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
 
 void PSXCpu::ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    if ((addr & 1u) != 0) {
+        RaiseAddressError(0x05, addr); // AdES
+        return;
+    }
     uint32_t phys = TranslateAddress(addr);
     if (!IsMapped(phys)) {
         return;
@@ -810,6 +864,10 @@ void PSXCpu::ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
 
 void PSXCpu::ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
+    if ((addr & 3u) != 0) {
+        RaiseAddressError(0x05, addr); // AdES
+        return;
+    }
     uint32_t phys = TranslateAddress(addr);
     if (!IsMapped(phys)) {
         return;
@@ -985,17 +1043,25 @@ void PSXCpu::ExecRfe() {
     cop0_[12] = sr;
 }
 
-void PSXCpu::RaiseException(uint32_t excode) {
+void PSXCpu::RaiseAddressError(uint32_t excode, uint32_t addr) {
+    // BadVaddr (cop0r8) is updated only for AdEL/AdES (docs/cpu/cop0.md).
+    cop0_[8] = addr;
+    RaiseException(excode);
+}
+
+void PSXCpu::RaiseException(uint32_t excode, uint32_t ce) {
     // EPC: branch instruction address (delay_slot_pc_ - 4, since delay_slot_pc_
     // is the delay-slot instruction's address = branch addr + 4) if in a delay
     // slot, else the current instruction's address (docs/cpu/pipeline.md).
     uint32_t epc = executing_in_delay_slot_ ? (delay_slot_pc_ - 4u) : executing_instr_addr_;
     bool bd = executing_in_delay_slot_;
 
-    // CAUSE: set Excode[6:2] and BD (bit 31); preserve IP[1:0] (bits 8-9).
+    // CAUSE: set Excode[6:2], CE[29:28] and BD (bit 31); preserve IP[1:0]
+    // (bits 8-9). CE is cleared for every exception that is not CpU so a stale
+    // coprocessor number from an earlier CpU cannot be misread afterwards.
     uint32_t cause = cop0_[13];
-    cause &= ~(0x7Cu | 0x80000000u);
-    cause |= (excode << 2);
+    cause &= ~(0x7Cu | 0x30000000u | 0x80000000u);
+    cause |= (excode << 2) | ((ce & 3u) << 28);
     if (bd) {
         cause |= 0x80000000u;
     }
