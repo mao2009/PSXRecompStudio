@@ -167,6 +167,51 @@ public sealed class ObservedTitleExecutionTests
             .Should().Throw<XunitException>();
     }
 
+    [Fact]
+    public void ABudgetExhaustedRunThatStoppedBeforeSpendingTheBudget_IsCaught()
+    {
+        // The loop spends exactly one outer-budget unit per retired segment, so a
+        // run that reports BudgetExhausted after fewer segments than the budget
+        // stopped for some other reason. Reproduced by driving the run under a
+        // smaller budget than the one the result is then checked against; the
+        // observed trace is exactly what an orchestrator that bailed out early
+        // would have produced.
+        using var engine = new ParkedEngine(Entry);
+        var observed = new ObservedTitleExecution(engine, ExitHandoff());
+
+        var result = new ExecutionOrchestrator().Execute(observed, observed, Request(outer: 2, segment: 8));
+        result.State.Should().Be(TitleExecutionState.BudgetExhausted);
+        result.FinalSnapshot.Should().NotBeNull();
+        result.SegmentsRetired.Should().BeGreaterThan(0);
+
+        observed.Invoking(o => o.AssertInvariantsHold(
+                Request(outer: 5, segment: 8), result with { SegmentsRetired = 2 }, "red/short-budget"))
+            .Should().Throw<XunitException>()
+            .WithMessage("*outer budget*");
+    }
+
+    [Fact]
+    public void AnUnresolvedTransferTheHandoffWasNeverOfferedIsCaught()
+    {
+        // UnsupportedTransfer is only legitimate when the handoff was asked and
+        // had no rule. Reproduced by running the orchestration with a null handoff
+        // so the decorator is never consulted — the shape a run that silently
+        // skipped the handoff would leave behind.
+        using var engine = new RecompiledIrTitleExecutionEngine(Lower(Entry, MipsEncoding.Nop));
+        var observed = new ObservedTitleExecution(engine, ExitHandoff());
+
+        var request = Request(outer: 2, segment: 8);
+        var result = new ExecutionOrchestrator().Execute(observed, handoff: null, request);
+
+        result.State.Should().Be(TitleExecutionState.UnsupportedTransfer);
+        result.FinalSnapshot.Should().NotBeNull();
+        result.SegmentsRetired.Should().BeGreaterThan(0);
+
+        observed.Invoking(o => o.AssertInvariantsHold(request, result, "red/handoff-skipped"))
+            .Should().Throw<XunitException>()
+            .WithMessage("*offered to the handoff*");
+    }
+
     // --- Harness ---------------------------------------------------------------
 
     private static ITitleExecutionHandoff ExitHandoff() => new ScriptedHandoff(TitleExecutionHandoffResult.Exit());

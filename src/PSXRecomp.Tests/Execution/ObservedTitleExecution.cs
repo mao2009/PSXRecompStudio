@@ -39,6 +39,11 @@ namespace PSXRecomp.Tests.Execution;
 /// out of scope: <c>BiosVectorDispatch</c> is deliberately shared by every
 /// engine, so no test built on running those engines can validate it. Those
 /// remain open, separately tracked gaps.</para>
+/// <para>The same instance must be handed to
+/// <see cref="ExecutionOrchestrator.Execute"/> as <i>both</i> the engine and the
+/// handoff, or the trace is incomplete and the invariants below reject the run.
+/// An orchestration that genuinely has no continuation rules is expressed by
+/// wrapping a null inner handoff, not by bypassing the decorator.</para>
 /// <para>The decorator does not own the engine it wraps; disposal stays with
 /// the caller that constructed it.</para>
 /// </remarks>
@@ -58,7 +63,16 @@ internal sealed class ObservedTitleExecution : IRecompiledExecutionEngine, ITitl
 
     public string Name => _engine.Name;
 
-    public void Load(TitleExecutionRequest request) => _engine.Load(request);
+    /// <summary>
+    /// Seeds the engine and drops any earlier trace: <c>Load</c> starts one
+    /// orchestration, so a reused decorator must not carry a previous run's
+    /// segments into this one's segment count.
+    /// </summary>
+    public void Load(TitleExecutionRequest request)
+    {
+        _segments.Clear();
+        _engine.Load(request);
+    }
 
     public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest)
     {
@@ -138,8 +152,34 @@ internal sealed class ObservedTitleExecution : IRecompiledExecutionEngine, ITitl
             _segments.Count == 0 ? null : _segments[^1].Result.Snapshot,
             $"{context}: the final snapshot must be the last segment's own snapshot");
 
+        // A segment that ended on an unresolved transfer must have been offered
+        // to the handoff. Without this, "no decision recorded" would cover both a
+        // declined decision and a handoff the orchestrator never consulted, and
+        // a run that silently skipped the handoff would classify as
+        // UnsupportedTransfer and be accepted.
+        var last = _segments.Count == 0 ? null : _segments[^1];
+        if (last is { Result.Status: RecompilerExecutionStatus.Completed } &&
+            last.Result.Snapshot is { Termination: RecompilerIrTerminationReason.Success })
+        {
+            last.HandoffConsulted.Should().BeTrue(
+                $"{context}: a segment that stopped on an unresolved transfer must be offered to the handoff");
+        }
+
+        var expected = ExpectedTerminalState();
+
+        // BudgetExhausted is only reachable once the outer budget is spent, and
+        // the loop spends exactly one unit per retired segment. Checking the
+        // count rejects a run that stopped early and still reported the budget as
+        // the reason, which the classification map alone would accept.
+        if (expected == TitleExecutionState.BudgetExhausted)
+        {
+            _segments.Count.Should().Be(
+                (int)request.OuterBudget,
+                $"{context}: a run that reports BudgetExhausted must have spent the whole outer budget");
+        }
+
         result.State.Should().Be(
-            ExpectedTerminalState(),
+            expected,
             $"{context}: the terminal state must classify what the run actually did " +
             $"(diag={result.DiagnosticCode} {result.DiagnosticMessage})");
     }
