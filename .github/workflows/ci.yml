@@ -250,12 +250,12 @@ jobs:
   ci:
     name: CI Gate
     if: always()
-    needs: [artifact-policy, dotnet, native, gui-tests]
+    needs: [artifact-policy, dotnet, native, gui-tests, native-windows, dotnet-windows, native-macos, dotnet-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Require all checks to pass
         run: |
-          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" || "${{ needs.gui-tests.result }}" != "success" ]]; then
+          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" || "${{ needs.gui-tests.result }}" != "success" || "${{ needs.native-windows.result }}" != "success" || "${{ needs.dotnet-windows.result }}" != "success" || "${{ needs.native-macos.result }}" != "success" || "${{ needs.dotnet-macos.result }}" != "success" ]]; then
             echo "Required CI jobs did not all succeed."
             exit 1
           fi
