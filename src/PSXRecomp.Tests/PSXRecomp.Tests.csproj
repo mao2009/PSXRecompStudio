@@ -6,7 +6,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-      <CompileArchitectureAttributes>true</CompileArchitectureAttributes>
+      <EnableArchitectureAnalyzer>true</EnableArchitectureAnalyzer>
 </PropertyGroup>
 
   <ItemGroup>
