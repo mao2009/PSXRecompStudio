@@ -1,22 +1,31 @@
-using PSXRecomp.Core;
+using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
-using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
 
-namespace PSXRecomp.Tests.Execution;
+namespace PSXRecomp.Core.Execution;
 
 /// <summary>
 /// An <see cref="IRecompiledExecutionEngine"/> that drives the existing native
-/// R3000A interpreter (<c>PSXCoreWrapper</c>) over one persistent core, so guest
-/// RAM written in a previous segment is still there for the next one. It applies
-/// the shared <c>BiosVectorDispatch</c> in-band exactly like
+/// R3000A interpreter (<see cref="PSXCoreWrapper"/>) over one persistent core, so
+/// guest RAM written in a previous segment is still there for the next one. It
+/// applies the shared <c>BiosVectorDispatch</c> in-band exactly like
 /// <c>RecompilerInterpreterExecutor</c> (Issue #362/ADR-014): no BIOS semantics
 /// are reimplemented here.
 /// </summary>
-[Test]
-internal sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
+/// <remarks>
+/// This is the production execution backend (ADR-015). It lives in the Domain
+/// layer because it needs none of the things <see cref="IRecompiledExecutionEngine"/>
+/// names as reasons to live outside it: no compiler, no temporary files, no
+/// process control. Its only dependency is <see cref="PSXCoreWrapper"/>, the
+/// Domain-resident P/Invoke boundary the interop rule already pins here. The
+/// generated-host backend — which does need a compiler and process control —
+/// stays outside the Domain layer and is deferred (ADR-015).
+/// </remarks>
+[Domain]
+public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 {
+    /// <summary>The diagnostic-facing backend name this engine reports as <see cref="Name"/>.</summary>
     public const string EngineName = "interpreter-native-full-title";
 
     private readonly IReadOnlyList<uint> _instructions;
@@ -26,6 +35,17 @@ internal sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngi
     private readonly PSXCoreWrapper _core = new();
     private bool _loaded;
 
+    /// <summary>
+    /// Creates an engine over the guest program <paramref name="instructions"/>,
+    /// loaded at <paramref name="entryPc"/>.
+    /// </summary>
+    /// <param name="instructions">The guest instruction words making up the program image.</param>
+    /// <param name="entryPc">The guest address the program image is written to and entered at.</param>
+    /// <param name="biosRuntimeFactory">Builds the BIOS runtime this engine dispatches
+    /// A0/B0/C0 vector hits to, over the engine's own guest memory. Null runs without
+    /// BIOS dispatch, so a vector hit is simply an unresolved transfer.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="instructions"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty.</exception>
     public InterpreterTitleExecutionEngine(
         IReadOnlyList<uint> instructions,
         uint entryPc,
@@ -43,8 +63,10 @@ internal sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngi
         _biosRuntimeFactory = biosRuntimeFactory;
     }
 
+    /// <inheritdoc />
     public string Name => EngineName;
 
+    /// <inheritdoc />
     public void Load(TitleExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -66,6 +88,7 @@ internal sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngi
         _loaded = true;
     }
 
+    /// <inheritdoc />
     public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest)
     {
         ArgumentNullException.ThrowIfNull(segmentRequest);
@@ -151,6 +174,7 @@ internal sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngi
             RecompilerExecutionStatus.Completed, snapshot, diagnosticCode, diagnosticMessage);
     }
 
+    /// <summary>Releases the native core this engine owns.</summary>
     public void Dispose()
     {
         _core.Dispose();
