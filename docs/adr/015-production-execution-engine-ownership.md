@@ -113,7 +113,16 @@ this slice: the question is deferred along with the backend that raises it.
   not. **Amended by #409**: `TitleExecutionService.Run(PsxExe, ...)` now loads
   an analyzed PS-X EXE image with its header-derived initial state (entry PC,
   SP, GP, text segment) into the same production composition root; the
-  interpreter-backend limitation below is unchanged.
+  interpreter-backend limitation below is unchanged. **Amended further by this
+  PR**: the Studio product flow actually reaches it — `MainWindowViewModel.
+  RunRealTitleCommand` delegates to `RealRomTitleExecutionService`, which runs
+  the disc analysis through `RomAnalysisPipeline`, retains
+  `RomAnalysisOutcome.Executable`, and hands that same executable to
+  `TitleExecutionService.Run(PsxExe, ...)`. The flow deliberately avoids the
+  report-only `DiscImageAnalyzer` façade, which drops the executable; and no
+  PS1 semantics live in the view model. Disc-image acquisition (file I/O) is
+  left to the Infrastructure seam (Issue #38), so the action consumes pre-read
+  disc bytes.
 - **Negative**: `ExecutionOrchestratorTests` now depends on a production type.
   That is the intended direction of the dependency, but it does mean a change
   to the engine's public shape is now an API change rather than a test-fixture

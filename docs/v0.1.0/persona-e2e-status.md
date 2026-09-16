@@ -87,21 +87,43 @@ The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
 composition root: it assembles the production, Domain-layer
 `InterpreterTitleExecutionEngine`, a `BiosHleRuntime`, and
-`ExecutionOrchestrator`, and `MainWindowViewModel.RunDiagnosticTitleCommand` is
-a real Studio UI action that calls it — the product genuinely reaches
-`request → engine load → bounded run → BIOS handoff → classified result`. The
-Studio can now run both its own built-in diagnostic program (zeroed register
-state) and analyzed PS-X EXE images (entry PC, SP, GP, and text segment from
-the EXE header, via `TitleExecutionService.Run(PsxExe, ...)`) — see #409. It
-runs through the **interpreter** backend, not the generated-host (recompiled)
-one (`HostTitleExecutionEngine` remains `[Test]`-only).
+`ExecutionOrchestrator`. The product reaches classified execution through two
+distinct Studio actions:
+
+- `MainWindowViewModel.RunDiagnosticTitleCommand` runs the built-in diagnostic
+  program (zeroed register state) — `request → engine load → bounded run →
+  BIOS handoff → classified result`.
+- `MainWindowViewModel.RunRealTitleCommand` runs the real-ROM production flow
+  (Issue #409): the loaded disc image is analyzed by
+  `RealRomTitleExecutionService` through `RomAnalysisPipeline`, the analyzed
+  PS-X EXE is retained from `RomAnalysisOutcome.Executable`, and that same
+  executable object is fed into `TitleExecutionService.Run(PsxExe, ...)` →
+  `ExecutionOrchestrator` → `InterpreterTitleExecutionEngine`, producing a
+  classified outcome. The flow deliberately routes through the outcome-
+  preserving pipeline rather than the report-only `DiscImageAnalyzer` façade,
+  which returns only a `DiscImageAnalysisReport` and drops the executable.
+
+Both run through the **interpreter** backend, not the generated-host
+(recompiled) one (`HostTitleExecutionEngine` remains `[Test]`-only).
+
+The real-ROM product flow is proven end to end by the Studio's product-flow
+tests (`RealRomProductionFlowTests`): a synthetic disc input → Studio service
+layer → production execution → classified result, including an assertion that
+the exact executable held by the analysis outcome is the object handed to
+`TitleExecutionService.Run(PsxExe, ...)`.
 
 What still does not exist:
 
-- ~~**Real disc/EXE → production execution wiring.**~~ Resolved by #409. Real
-  analyzed PS-X EXE images now enter the production execution path via
-  `TitleExecutionService.Run(PsxExe, ...)`. This is distinct from the E2E
-  gate's fixture-gated Test execution path described above.
+- ~~**Real disc/EXE → production execution wiring.**~~ Wired in this PR: the
+  Studio's `RealRomTitleExecutionService`/`RunRealTitleCommand` retain the
+  analyzed PS-X EXE and run it through the production execution path. This is
+  distinct from the E2E gate's fixture-gated Test execution path described
+  above.
+- **Disc-image acquisition (file I/O) in the product.** The Application layer
+  is forbidden `System.IO.File`/`Directory` by the architecture contract
+  (`src/architecture.contract.json`), so the product action consumes pre-read
+  disc bytes (`MainWindowViewModel.DiscImageBytes`); reading a disc image from
+  disk stays behind the Infrastructure seam, deferred to Issue #38.
 - **A production generated-host (recompiled) execution backend.** The Studio's
   production path is interpreter-backed only (ADR-015); compiling recompiled
   guest code and running it as the product's execution backend is deferred
