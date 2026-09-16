@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler), #366 (full-title execution orchestrator)
 
 ## Purpose
 
@@ -26,9 +26,9 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 [2] BUILD              — dotnet build (Release)
 [3] ANALYSIS           — CHD → ISO → SYSTEM.CNF → PSX EXE → decode → CFG → COMPLETE
 [4] RECOMPILER_SLICE   — candidate function selection → recompilation → differential validation
-[5] RUNTIME_EXECUTION  — full-title execution loop (⚠ NOT YET IMPLEMENTED)
+[5] RUNTIME_EXECUTION  — full-title execution loop (`ExecutionOrchestrator` + host engine, Issue #366)
         ↓
-    BIOS HLE dispatch  — A0/B0/C0 jump-table service calls
+    BIOS HLE dispatch  — A0/B0/C0 jump-table service calls (in-band `BiosVectorDispatch`)
         ↓
     GPU / SPU / CD-ROM — hardware rendering + audio + disc (⚠ NOT YET IMPLEMENTED)
         ↓
@@ -43,45 +43,53 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | BUILD | ✅ Implemented | `dotnet build` |
 | ANALYSIS | ✅ Implemented | `RealRomAnalysisSkillTests` / `RealRomAnalyzer.RunAll()` |
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
-| RUNTIME_EXECUTION | ❌ Not implemented | — |
+| RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests` |
 | BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 5 of 256+ services |
 | GPU / SPU / CD-ROM | ❌ Not implemented | Interface-only |
 | TITLE_SCREEN | ❌ Not reached | — |
 
-## First Blocker (as of HEAD 7799a9b)
+## First Blocker (as of HEAD: orchestrator landed, Issue #366)
 
-**Stage:** RUNTIME_EXECUTION
+**Stage:** GPU / SPU / CD-ROM rendering (stands between RUNTIME_EXECUTION and TITLE_SCREEN)
 
-**Classification:** `artifact-build-runtime wiring` — missing execution orchestrator
+**Classification:** `hardware rendering` — no production GPU/SPU/CD-ROM implementation
 
 **Description:**
 
-No full-title execution orchestrator exists. After analysis and single-function
-recompilation (stages 3–4), there is no component that:
+The full-title execution orchestrator (Issue #366) now runs recompiled guest code
+through a bounded CPU loop: `ExecutionOrchestrator` in `PSXRecomp.Core.Execution`
+drives an `IRecompiledExecutionEngine` (the Test assembly's IR, interpreter, and
+generated-host `HostTitleExecutionEngine`) across multiple segments with outer and
+per-segment budgets. Guest segments end on unresolved control transfers at the
+Runtime/BIOS boundary; the shared `BiosVectorDispatch` contract (PR #364,
+interpreter + recompiled paths) services A0/B0/C0 jump-table calls in-band, and a
+handoff decides continue/exit/return/pause. A segment that stops at an unresolved
+PC with no continuation rule is classified (UnsupportedTransfer), never a hang.
 
-- Runs the entire Persona executable through a CPU execution loop
-- Services BIOS calls from running recompiled code at runtime
-- Connects the recompiled guest to GPU/SPU/CD-ROM hardware
+It runs on real-ROM functions through `RealRomTitleExecutionTests`
+(real-fixture-gated; skips with no `rom/*.chd`).
 
-The PSXRecompStudio application is a GUI (Avalonia) with no CLI execution entry point.
-The existing test infrastructure only covers individual-function differential validation,
-not full-title execution.
+What still does not exist:
 
-**Sub-blockers in order** (after a full execution loop exists):
+- Runs the entire Persona executable to an **actual title screen** — the
+  orchestrator stops at the first discontinuity the engine has no code for: the
+  boot path needs BIOS HLE beyond 5 services, GPU/SPU/CD-ROM MMIO, and a CLI
+  product runner (the PSXRecompStudio application itself is a GUI with no
+  execution entry point).
+- GPU / SPU / CD-ROM hardware: `IGpu` and the other hardware interfaces have no
+  production implementation. Hardware communication would hit MMIO open-bus
+  (reads return 0, writes ignored).
+
+**Sub-blockers in order** (after an execution loop exists):
 
 1. **BIOS HLE coverage**: Only 5 services implemented (A0:3C putchar, A0:3E puts,
    B0:3F puts alias, B0:56 GetC0Table, B0:57 GetB0Table). First unregistered call
    produces diagnostic code `BIOS_HLE_UNSUPPORTED_CALL`.
 
-2. **Recompiled-path BIOS vector dispatch**: The generated-host path cannot yet
-   dispatch BIOS trampoline vectors (interpreter-path dispatch landed in PR #364;
-   recompiled-path equivalent tracked in Issue #362 / Worker A).
-   Parity marker: `BiosPatchedTargetExecutionTests.RecompiledPath_CannotYetDispatchABiosVector_AndSaysSoInTheLowering`.
-
-3. **GPU rendering**: `IGpu` is an interface with no production implementation.
+2. **GPU rendering**: `IGpu` is an interface with no production implementation.
    Hardware communication would hit MMIO open-bus (reads return 0, writes ignored).
 
-4. **SPU / CD-ROM**: Same situation — interface-only.
+3. **SPU / CD-ROM**: Same situation — interface-only.
 
 ## Reproduction Route
 
@@ -116,9 +124,13 @@ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj `
 # Stage 4 — Recompiler vertical slice:
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj `
   --filter 'FullyQualifiedName~RealRomRecompilerVerticalSliceTests' -c Release
+
+# Stage 5 — Full-title execution (orchestrator over generated host):
+dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj `
+  --filter 'FullyQualifiedName~RealRomTitleExecutionTests' -c Release
 ```
 
-With no fixture present, both skip explicitly with reason:
+With no fixture present, all three skip explicitly with reason:
 `skipped: no real-ROM fixture found under rom/*.chd (disc images are never committed)`
 
 ## Output Artifacts
@@ -153,3 +165,4 @@ or local paths.
 - [Issue #9](https://github.com/mao2009/PSXRecompStudio/issues/9) — v0.1.0 milestone
 - [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution policy
 - [Issue #362](https://github.com/mao2009/PSXRecompStudio/issues/362) — recompiled-path BIOS dispatch (Worker A)
+- [Issue #366](https://github.com/mao2009/PSXRecompStudio/issues/366) — full-title execution orchestrator (this work)

@@ -12,7 +12,7 @@
       2. BUILD              — restores and builds the .NET solution (Release)
       3. ANALYSIS           — runs RealRomAnalysisSkillTests (CHD→COMPLETE)
       4. RECOMPILER_SLICE   — runs RealRomRecompilerVerticalSliceTests (function recompilation)
-      5. RUNTIME_EXECUTION  — not yet implemented; stops here with a classified blocker
+      5. RUNTIME_EXECUTION  — runs RealRomTitleExecutionTests (full-title orchestrator over recompiled host)
 
     Exit codes:
       0 — all implemented stages passed (PASS)
@@ -48,7 +48,9 @@
       - No title-specific hacks in Core/Recompiler.
       - No "screenshot exists = PASS" shortcut.
       - No fake title screen.
-      - RUNTIME_EXECUTION requires additional infrastructure tracked in #351 / #9.
+      - RUNTIME_EXECUTION is implemented for guest-code execution (orchestrator +
+        BIOS HLE dispatch); reaching an actual title screen additionally requires
+        GPU/SPU/CD-ROM producers (Issue #9).
 #>
 [CmdletBinding()]
 param(
@@ -109,7 +111,9 @@ function Build-Result {
         verdict       = $script:verdict
         stages        = $script:stages.ToArray()
         firstBlocker  = $script:firstBlocker
-        nextBlocker   = 'RUNTIME_EXECUTION: no full-title execution orchestrator. ' +
+        nextBlocker   = 'TITLE_SCREEN: the orchestrator runs recompiled guest code to a ' +
+                        'classified end (Completed/RuntimeHandoff), but driving it to an actual title ' +
+                        'screen needs GPU/SPU/CD-ROM producers. ' +
                         'See docs/v0.1.0/persona-e2e-status.md and Issue #351.'
     }
 }
@@ -156,9 +160,9 @@ if ($fixtureFiles.Count -eq 0) {
             knownIssue     = 'https://github.com/mao2009/PSXRecompStudio/issues/351'
         }
         nextBlocker   = 'Once a fixture is present, the pipeline proceeds: ' +
-                        'ANALYSIS → RECOMPILER_SLICE. ' +
-                        'The next generic code-level blocker is RUNTIME_EXECUTION: ' +
-                        'no full-title execution orchestration exists yet (Issue #351 / #9).'
+                        'ANALYSIS → RECOMPILER_SLICE → RUNTIME_EXECUTION. ' +
+                        'The next code-level blocker is TITLE_SCREEN: GPU/SPU/CD-ROM ' +
+                        'producers (Issue #351 / #9).'
     }
     Emit-Result $result
     exit 2
@@ -251,34 +255,53 @@ if (-not $recompPassed) {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 5: RUNTIME_EXECUTION — not yet implemented
-#
-# This stage requires a full-title execution orchestrator: a loop that runs the
-# entire recompiled executable through PSXRecomp Runtime, services BIOS HLE calls,
-# drives GPU/SPU/CD-ROM, and reaches the title screen.
+# Stage 5: RUNTIME_EXECUTION (RealRomTitleExecutionTests)
+# Drives: the full-title execution orchestrator (Issue #366) over the
+#         recompiled host (gcc) for several bounded segments, with BIOS HLE
+#         dispatch in-band (Issue #368). The test asserts the orchestrator ends
+#         in a classified outcome with a real snapshot — never InvalidState.
 #
 # Known sub-blockers (in priority order):
-#   a) No full-title execution loop (PSXRecompStudio is GUI-only; no CLI runner)
+#   a) (resolved) No full-title execution loop — now the ExecutionOrchestrator
+#      over the Test host engine; a product CLI runner still does not exist.
 #   b) BIOS HLE covers only 5 services — first unregistered call → BIOS_HLE_UNSUPPORTED_CALL
-#   c) Recompiled-path BIOS vector dispatch not yet implemented (parity marker test)
+#   c) (resolved) Recompiled-path BIOS vector dispatch — now in-band via the
+#      shared BiosVectorDispatch contract (BiosPatchedTargetExecutionTests parity marker removed).
 #   d) GPU/SPU/CD-ROM are interface-only with no production implementation
 #
 # Tracked: Issue #351 (gate), Issue #9 (v0.1.0 milestone)
 # ---------------------------------------------------------------------------
-$runtimeDetail = (
-    'No full-title execution orchestration exists. ' +
-    'Pipeline stops after single-function recompilation. ' +
-    'Sub-blockers: ' +
-    '(a) no runtime execution CLI loop — PSXRecompStudio is GUI-only; ' +
-    '(b) BIOS HLE covers 5 of 256+ services — next unregistered call yields BIOS_HLE_UNSUPPORTED_CALL; ' +
-    '(c) recompiled-path BIOS vector dispatch not implemented ' +
-        '(BiosPatchedTargetExecutionTests.RecompiledPath_CannotYetDispatchABiosVector parity marker); ' +
-    '(d) GPU/SPU/CD-ROM are interface-only.'
-)
-Add-Skip 'RUNTIME_EXECUTION' $runtimeDetail
+Write-Host "[RUNTIME_EXECUTION] Running RealRomTitleExecutionTests ..." -ForegroundColor Cyan
+$runtimeOutput = & dotnet test (Join-Path $repoRoot 'src' 'PSXRecomp.Tests' 'PSXRecomp.Tests.csproj') `
+    --filter 'FullyQualifiedName~RealRomTitleExecutionTests' `
+    -c Release --nologo --no-build `
+    --logger 'console;verbosity=normal' 2>&1
 
-# If stages 1-4 all passed/skipped without FAIL, overall is SKIP (not PASS)
-# because the gate's ultimate criterion (title screen) is not met.
+$runtimePassed = $LASTEXITCODE -eq 0
+
+if (-not $runtimePassed) {
+    $isSkip = ($runtimeOutput | Select-String 'skipped: no real-ROM fixture|no qualifying' |
+               Measure-Object).Count -gt 0
+    if ($isSkip) {
+        Add-Skip 'RUNTIME_EXECUTION' 'Orchestrator tests skipped (no qualifying real-ROM candidate; not a failure)'
+    } else {
+        $failLine = ($runtimeOutput | Select-String 'DiagnosticCode|InvalidState|FAIL|failed|Error' |
+                     Select-Object -First 1).Line
+        Add-Fail 'RUNTIME_EXECUTION' "RealRomTitleExecutionTests failed. $failLine" `
+            'full-title execution'
+        Emit-Result (Build-Result)
+        exit 1
+    }
+} else {
+    $summary = ($runtimeOutput | Select-String 'passed|classified' | Select-Object -First 1).Line
+    Add-Pass 'RUNTIME_EXECUTION' "RealRomTitleExecutionTests passed. $summary"
+    Write-Host "  Runtime execution: PASS" -ForegroundColor Green
+}
+
+# If stages 1-5 all passed/skipped without FAIL, overall is SKIP (not PASS)
+# because the gate's ultimate criterion (an actual title screen) is not met:
+# the orchestrator runs recompiled code to a classified end, but GPU/SPU/CD-ROM
+# are interface-only, so no frame is ever produced.
 if ($verdict -eq 'PASS') {
     $verdict = 'SKIP'
 }

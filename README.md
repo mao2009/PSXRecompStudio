@@ -28,23 +28,22 @@ For the native core and headless GUI suites, see [Build](#build) and [Test](#tes
 - **Disc and executable analysis:** CHD → ISO 9660 → PS-X EXE → MIPS analysis → basic blocks / CFG.
 - **Recompiler proof:** the same MIPS → IR → host-C → bounded-execution → interpreter-diff pipeline is validated on both a synthetic fixture and a first conservative real-ROM function (#225).
 - **Runtime / BIOS boundary:** interpreter and recompiled paths can dispatch guest-visible A0/B0/C0 BIOS vectors through shared `BiosVectorDispatch` semantics (#364, #368).
-- **Persona E2E gate:** the current gate reaches the implemented analysis/recompiler stages and identifies `RUNTIME_EXECUTION` as the next code-level blocker (#351, #366, #367).
+- **Persona E2E gate:** the gate's `RUNTIME_EXECUTION` stage drives a real-ROM candidate through the full-title `ExecutionOrchestrator`; the next code-level blocker is GPU/SPU/CD-ROM hardware (#351, #366).
 
 ## Not supported yet
 
 - End-to-end static recompilation and execution of a complete commercial PlayStation 1 title.
 - General-purpose real-ROM function recompilation or complete MIPS I coverage.
-- A full-title execution orchestrator that continuously drives a recompiled executable through CPU execution, BIOS HLE, and hardware integration (#366).
+- A product (CLI) execution entry point for the full-title orchestrator, and orchestrator-driven GPU/SPU/CD-ROM rendering (#366).
 - Broad BIOS HLE service coverage.
 - Complete GPU, SPU, CD-ROM, MDEC, and GTE hardware support.
 - A finished native runtime for complete PS1 native ports.
 
 ## Next milestones
 
-1. **Full-title execution orchestrator (#366):** create the title-agnostic runtime loop that can drive recompiled guest execution through Runtime/BIOS boundaries.
+1. **Drive the orchestrator through rendering (#366):** add a product execution entry point (CLI runner) and the GPU/SPU/CD-ROM/MMIO wiring so the E2E gate moves beyond `RUNTIME_EXECUTION` toward an actual title screen.
 2. **Expand BIOS HLE coverage (#279, #365):** implement the services required by the next real-title execution path while preserving explicit failure for unsupported calls.
-3. **Minimum hardware integration for #351:** connect the GPU/SPU/CD-ROM/MMIO paths needed to move the Persona v0.1.0 E2E gate beyond `RUNTIME_EXECUTION` toward rendering.
-4. **Broaden real-ROM recompilation coverage:** expand supported instructions/control flow only with differential validation retained as the correctness gate.
+3. **Broaden real-ROM recompilation coverage:** expand supported instructions/control flow only with differential validation retained as the correctness gate.
 
 > **Asset policy:** ROM, ISO, CHD, BIOS, firmware images, and commercial game assets are not included in this repository. Any user-supplied files must be obtained and used legally.
 
@@ -86,8 +85,8 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Golden Trace (deterministic execution tracing) | Implemented |
 | Disc image analysis (CHD → ISO 9660 → PS-X EXE → MIPS analysis, basic blocks / CFG) | Implemented |
 | GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
-| Runtime / BIOS HLE execution boundary | Partially implemented — interpreter and recompiled paths dispatch A0/B0/C0 vectors through shared Runtime semantics; full-title execution loop is not implemented (#366) |
-| Persona v0.1.0 E2E verification gate | Implemented scaffold — reaches the existing analysis/recompiler stages and identifies `RUNTIME_EXECUTION` as the next code-level blocker (#351, #367) |
+| Runtime / BIOS HLE execution boundary | Implemented — interpreter and recompiled paths dispatch A0/B0/C0 vectors through shared Runtime semantics, and a full-title loop (`ExecutionOrchestrator` in Core, host engine in Test) runs bounded guest execution (#364, #368, #366) |
+| Persona v0.1.0 E2E verification gate | Implemented — analysis/recompiler stages plus an `RUNTIME_EXECUTION` stage that drives a real-ROM candidate through the full-title orchestrator; next blocker is GPU/SPU/CD-ROM hardware (#351, #366, #367) |
 | Synthetic MIPS recompiler vertical slice (IR/lowering, memory, control flow, host codegen, differential validation) | Implemented and differentially validated |
 | Real-ROM function recompilation | First function implemented and differentially validated (#225); general coverage not yet complete |
 | Full-title static recompilation | Not implemented |
@@ -99,7 +98,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 
 **Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. A backend-agnostic Recompiler IR and shared state contract, MIPS→IR lowering, deterministic host C generation, a memory backend (load/store at every width, unaligned access, load-delay semantics), a control-flow backend (branches, jumps, links, delay slots, bounded/budgeted loops), and an interpreter-vs-recompiled differential validator are all implemented in `PSXRecomp.Core.Recompiler` (there is no standalone `PSXRecomp.Recompiler` project yet — see [Repository Structure](#repository-structure)). Together these prove an executable, differentially-validated **synthetic MIPS fixture** vertical slice: MIPS → IR → generated host C → build → bounded execution → interpreter diff → match (#207, #208, #209, #211; re-verified end-to-end by the integration smoke test, #266).
 
-A first real-ROM function is now recompiled and differentially validated the same way (#225): `RealRomCandidateSelector` (`PSXRecomp.Core.Recompiler`) selects a bounded, contiguous instruction window from the existing disc/EXE analysis output (see [Disc image analysis](#current-status) above) by actually attempting to lower it through the unmodified `MipsToIrLowerer` contract and excluding any indirect jump, so only a window the Recompiler already supports is ever selected — no second, real-ROM-specific semantics implementation exists. The generated-host path can now hand unresolved control transfers to the Runtime through a generic host-transfer hook, allowing BIOS A0/B0/C0 vectors to use the same `BiosVectorDispatch` semantics as the interpreter without embedding BIOS knowledge in generated C (#368). This is not yet general real-ROM function recompilation: candidate selection is deliberately conservative, and full-title recompilation, a complete execution orchestrator (#366), and complete hardware support remain unimplemented. The CPU/decoder work above is foundational to it, not a substitute for it.
+A first real-ROM function is now recompiled and differentially validated the same way (#225): `RealRomCandidateSelector` (`PSXRecomp.Core.Recompiler`) selects a bounded, contiguous instruction window from the existing disc/EXE analysis output (see [Disc image analysis](#current-status) above) by actually attempting to lower it through the unmodified `MipsToIrLowerer` contract and excluding any indirect jump, so only a window the Recompiler already supports is ever selected — no second, real-ROM-specific semantics implementation exists. The generated-host path can now hand unresolved control transfers to the Runtime through a generic host-transfer hook, allowing BIOS A0/B0/C0 vectors to use the same `BiosVectorDispatch` semantics as the interpreter without embedding BIOS knowledge in generated C (#368). This is not yet general real-ROM function recompilation: candidate selection is deliberately conservative, and full-title recompilation and complete hardware support remain unimplemented (the title-agnostic full-title execution orchestrator itself now exists in `PSXRecomp.Core.Execution` — Issue #366). The CPU/decoder work above is foundational to it, not a substitute for it.
 
 ## Core Capabilities
 
