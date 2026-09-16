@@ -40,10 +40,11 @@ public static class PsxExeTitleInput
     /// request carrying the header-derived entry PC and initial SP/GP.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="exe"/> is null.</exception>
     /// <exception cref="ArgumentException">The executable image is empty, is not a whole
-    /// number of 32-bit words, loads at an address that is not 4-byte aligned or not
-    /// translatable to physical RAM, or declares an entry point outside the text region
-    /// or not 4-byte aligned. The bridge fails closed rather than fabricating a loadable
-    /// program from a malformed image.</exception>
+    /// number of 32-bit words, loads at an address that is not 4-byte aligned, overflows
+    /// the 32-bit address space or does not map to a contiguous translatable span of
+    /// physical memory, or declares an entry point outside the text region or not 4-byte
+    /// aligned. The bridge fails closed rather than fabricating a loadable program from
+    /// a malformed image.</exception>
     public static PsxExeTitleExecution Build(PsxExe exe, uint outerBudget, uint segmentBudget)
     {
         ArgumentNullException.ThrowIfNull(exe);
@@ -68,19 +69,33 @@ public static class PsxExeTitleInput
                 $"The PS-X EXE text start 0x{header.TextStart:X8} is not 4-byte aligned.", nameof(exe));
         }
 
-        if (!Ps1AddressTranslation.TryTranslate(header.TextStart, out _))
+        uint textEndUint;
         {
-            throw new ArgumentException(
-                $"The PS-X EXE text start 0x{header.TextStart:X8} is outside any translatable KUSEG/KSEG0/KSEG1 address.",
-                nameof(exe));
+            var textEnd = (ulong)header.TextStart + (uint)exe.TextSegment.Length;
+            if (textEnd > uint.MaxValue || textEnd <= header.TextStart)
+            {
+                throw new ArgumentException(
+                    $"The PS-X EXE text region overflows the 32-bit address space: start=0x{header.TextStart:X8} length={exe.TextSegment.Length}.",
+                    nameof(exe));
+            }
+
+            textEndUint = (uint)textEnd;
         }
 
-        var textEnd = header.TextStart + (uint)exe.TextSegment.Length;
-        if (header.EntryPoint < header.TextStart || header.EntryPoint >= textEnd)
+        if (!Ps1AddressTranslation.TryTranslate(header.TextStart, out var textStartPhysical)
+            || !Ps1AddressTranslation.TryTranslate(textEndUint - 1, out var textEndPhysical)
+            || textEndPhysical != textStartPhysical + (uint)exe.TextSegment.Length - 1)
+        {
+            throw new ArgumentException(
+                $"The PS-X EXE text region 0x{header.TextStart:X8}..0x{textEndUint:X8} does not map to a contiguous " +
+                "translatable span of physical memory.", nameof(exe));
+        }
+
+        if (header.EntryPoint < header.TextStart || header.EntryPoint >= textEndUint)
         {
             throw new ArgumentException(
                 $"The PS-X EXE entry point 0x{header.EntryPoint:X8} is outside the text region " +
-                $"[0x{header.TextStart:X8}..0x{textEnd:X8}).", nameof(exe));
+                $"[0x{header.TextStart:X8}..0x{textEndUint:X8}).", nameof(exe));
         }
 
         if ((header.EntryPoint & 3) != 0)

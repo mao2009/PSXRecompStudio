@@ -163,6 +163,55 @@ public class PsxExeTitleInputTests
     }
 
     [Fact]
+    public void Build_ThrowsWhenTextRangeOverflowsAddressSpace()
+    {
+        // TextStart must pass the 4-byte alignment check before overflow is evaluated;
+        // use an aligned KUSEG start whose span wraps past uint.MaxValue.
+        const uint textStart = 0xFFFFFFF8u;
+        var fileContent = new byte[PsxExeHeader.HeaderSize + 16];
+        WriteMagic(fileContent);
+        WriteU32(fileContent, 0x18, textStart);
+        WriteU32(fileContent, 0x1C, 16u);
+        WriteU32(fileContent, 0x10, textStart);
+        for (var i = 0; i < 4; i++)
+        {
+            WriteU32(fileContent, PsxExeHeader.HeaderSize + i * 4, 0x03E00008u);
+        }
+
+        var exe = PsxExe.Load(fileContent, "OVERFLOW.EXE");
+
+        var act = () => PsxExeTitleInput.Build(exe, 2, 16);
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("overflows");
+    }
+
+    [Fact]
+    public void Build_ThrowsWhenTextRangeCrossesNonContiguousTranslationBoundary()
+    {
+        // The text region [0x7FFFF800..0x80000800) straddles the KUSEG/KSEG0 boundary:
+        // the start translates to itself but the last byte falls in KSEG0 and is masked
+        // into low physical RAM, so the whole span is not contiguous and must fail closed.
+        const uint textStart = 0x7FFFF800u;
+        var fileContent = new byte[PsxExeHeader.HeaderSize + 4096];
+        WriteMagic(fileContent);
+        WriteU32(fileContent, 0x18, textStart);
+        WriteU32(fileContent, 0x1C, 4096u);
+        WriteU32(fileContent, 0x10, textStart);
+        for (var i = 0; i < 4096 / 4; i++)
+        {
+            WriteU32(fileContent, PsxExeHeader.HeaderSize + i * 4, 0x03E00008u);
+        }
+
+        var exe = PsxExe.Load(fileContent, "STRADDLES.EXE");
+
+        var act = () => PsxExeTitleInput.Build(exe, 2, 16);
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("contiguous");
+    }
+
+    [Fact]
     public void Build_ThrowsWhenTextStartNotWordAligned()
     {
         const uint unaligned = TextStart + 2;
