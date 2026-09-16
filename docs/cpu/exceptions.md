@@ -55,6 +55,31 @@ Notes on the choices above:
   *instruction fetch* faults, because continuing past a corrupted control
   transfer is what hides the bug.
 
+### Observing a fault from a host caller (Issue #377)
+
+`PSXCore_Step()` returns **zero for a step that faulted**. That is deliberate: an
+architectural exception is a normal, continuable hardware event — `PSXCore_Run()`
+must keep executing into the handler, and a title's every SYSCALL would otherwise
+look like an emulator error. The step succeeds; it simply lands the PC on the
+exception vector.
+
+A host caller that must not mistake a faulted run for a clean one therefore asks
+`PSXCore_GetExceptionRaised()` (C#: `PSXCoreWrapper.ExceptionRaised`), which
+reports whether the most recent step raised, and is reset by every step.
+
+Two callers depend on this, both of which run a bare program with no exception
+handler installed:
+
+- `RecompilerInterpreterExecutor` — the differential-testing reference oracle.
+  A fault must surface as `RecompilerIrTerminationReason.Exception`, which
+  `RecompilerStateDiff` treats as a behavioral field and therefore a hard
+  mismatch. Without it, a CpU fault moved the PC out of the program bounds and
+  the run reported `Success`: a faulted reference indistinguishable from a clean
+  one, which is the false-match risk the oracle exists to rule out.
+- `InterpreterTitleExecutionEngine` — reaching `ExecutionOrchestrator` as
+  `RuntimeFailure` / `CPU_EXCEPTION` rather than being handed to the handoff,
+  which would classify a faulted title as `Completed`.
+
 ## Exception Vectors
 
 | Exception | BEV=0 | BEV=1 |

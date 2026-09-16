@@ -110,8 +110,18 @@ PSX_API void     PSXCore_ClearInterrupt(PSXCore* core, int irq);
 /** Resets the interrupt controller (I_STAT/I_MASK) to its power-on state. */
 PSX_API void     PSXCore_ResetInterruptController(PSXCore* core);
 
-/** Executes a single instruction, honoring branch/load-delay slot semantics. Returns zero on success, non-zero native status/exception code otherwise. */
+/**
+ * Executes a single instruction, honoring branch/load-delay slot semantics.
+ * Returns zero when the step was taken, or a negative status when `core` is NULL.
+ *
+ * A guest exception is NOT reported here: an architectural exception (INT,
+ * SYSCALL, RI/CpU/AdEL/AdES) is a normal, continuable hardware event, and the
+ * step that takes it succeeds — it simply lands the PC on the exception vector.
+ * Use PSXCore_GetExceptionRaised() to ask whether the step faulted (Issue #377).
+ */
 PSX_API int PSXCore_Step(PSXCore* core);
+/** Returns non-zero when the most recent PSXCore_Step() raised a guest exception. Reset by every step. */
+PSX_API int PSXCore_GetExceptionRaised(PSXCore* core);
 /** Executes up to `maxInstructions` instructions, stopping early on a native exception/halt condition. Returns the number of instructions actually executed, or a negative status on error. */
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

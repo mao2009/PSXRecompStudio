@@ -141,9 +141,13 @@ internal static partial class NativeInterop
     internal static partial void PSXCore_ResetInterruptController(IntPtr core);
 
     /// <summary>Executes a single instruction, honoring branch/load-delay slot semantics.</summary>
-    /// <returns>Zero on success; a non-zero native status/exception code otherwise.</returns>
+    /// <returns>Zero when the step was taken; a negative status when the handle is null. A guest exception is not reported here — see <see cref="PSXCore_GetExceptionRaised"/>.</returns>
     [LibraryImport(LibName)]
     internal static partial int PSXCore_Step(IntPtr core);
+
+    /// <summary>Returns non-zero when the most recent <see cref="PSXCore_Step"/> raised a guest exception. Reset by every step.</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetExceptionRaised(IntPtr core);
 
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>

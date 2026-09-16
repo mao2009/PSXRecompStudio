@@ -139,8 +139,17 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             }
 
             pcTrace.Add(core.Pc);
+            // Step() reports only a native-call failure; a guest exception leaves
+            // it 0 and moves the PC to the exception vector. Asking Step() alone
+            // (as this did before Issue #377) meant a faulting fixture — a GTE/
+            // COP2, LWC2 or SWC2 word raising CpU, or any RI/AdEL/AdES — simply
+            // left the program bounds on the next iteration and the reference
+            // oracle reported Success: a faulted run indistinguishable from a
+            // clean one, which is exactly the false-match risk this oracle exists
+            // to rule out. Exception is a behavioral field in RecompilerStateDiff,
+            // so reporting it makes any such fixture a hard mismatch.
             var status = core.Step();
-            if (status != 0)
+            if (status != 0 || core.ExceptionRaised)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;
