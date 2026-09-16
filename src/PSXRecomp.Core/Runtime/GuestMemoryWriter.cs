@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using DmaMemoryMap = PSXRecomp.Core.Dma.Ps1MemoryMap;
 
 namespace PSXRecomp.Core.Runtime;
 
@@ -23,7 +24,7 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
     /// <c>memoryBus.Write8</c> or a test RAM window). It receives a translated
     /// physical address shown to be within RAM by
     /// <see cref="Ps1AddressTranslation.TryTranslate"/> and the
-    /// <see cref="Ps1MemoryMap.RamSize"/> bound.
+    /// <see cref="DmaMemoryMap.RamSize"/> bound.
     /// </param>
     public GuestMemoryWriter(Action<uint, byte> writePhysicalByte)
     {
@@ -45,7 +46,7 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
             return false;
         }
 
-        if (physical >= Ps1MemoryMap.RamSize)
+        if (physical >= DmaMemoryMap.RamSize)
         {
             return false;
         }
@@ -71,7 +72,7 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
             return false;
         }
 
-        if (length > Ps1MemoryMap.RamSize)
+        if (length > DmaMemoryMap.RamSize)
         {
             return false;
         }
@@ -82,7 +83,7 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
         for (var i = 0; i < buffer.Length; i++)
         {
             if (!Ps1AddressTranslation.TryTranslate(address + (uint)i, out var physical) ||
-                physical >= Ps1MemoryMap.RamSize)
+                physical >= DmaMemoryMap.RamSize)
             {
                 return false;
             }

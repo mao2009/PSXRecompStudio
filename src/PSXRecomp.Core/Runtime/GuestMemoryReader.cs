@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using DmaMemoryMap = PSXRecomp.Core.Dma.Ps1MemoryMap;
 
 namespace PSXRecomp.Core.Runtime;
 
@@ -21,7 +22,7 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
     /// Reads one physical byte from the existing memory path (for example
     /// <c>memoryBus.Read8</c> or a test RAM window). It receives a translated
     /// physical address shown to be within RAM by <see cref="TryTranslate"/> and
-    /// the <see cref="Ps1MemoryMap.RamSize"/> bound.
+    /// the <see cref="DmaMemoryMap.RamSize"/> bound.
     /// </param>
     public GuestMemoryReader(Func<uint, byte> readPhysicalByte)
     {
@@ -55,7 +56,7 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
             return false;
         }
 
-        if (physical >= Ps1MemoryMap.RamSize)
+        if (physical >= DmaMemoryMap.RamSize)
         {
             value = 0;
             return false;
@@ -81,7 +82,7 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
             return false;
         }
 
-        if (length > Ps1MemoryMap.RamSize)
+        if (length > DmaMemoryMap.RamSize)
         {
             return false;
         }
