@@ -236,6 +236,28 @@ public sealed class ExecutionOrchestratorTests
         result.FinalSnapshot!.Termination.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
     }
 
+    [Theory]
+    [InlineData(0x4A180001u)] // COP2/GTE RTPS
+    [InlineData(0xC8010000u)] // LWC2 $1, 0($0)
+    [InlineData(0xE8010000u)] // SWC2 $1, 0($0)
+    public void Interpreter_ACop2FamilyFault_IsARuntimeFailure_NotCompleted(uint cop2Word)
+    {
+        // Issue #377. The GTE is unimplemented, so the interpreter raises CpU. The
+        // fault must reach the orchestrator as Exception -> RuntimeFailure. Before
+        // the fix it reported Success: the PC had simply left the program (it was
+        // parked on the exception vector), the orchestrator asked the handoff, and
+        // this exit handoff classified a faulted title as Completed.
+        using var engine = new InterpreterTitleExecutionEngine(
+            [MipsEncoding.Nop, cop2Word], Entry);
+
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 4, segment: 64));
+
+        result.State.Should().Be(TitleExecutionState.RuntimeFailure);
+        result.DiagnosticCode.Should().Be("CPU_EXCEPTION");
+        result.FinalSnapshot!.Termination.Should().Be(RecompilerIrTerminationReason.Exception);
+    }
+
     // --- End-to-end over the generated host (gcc, RAM continuity) -------------
 
     [Fact]

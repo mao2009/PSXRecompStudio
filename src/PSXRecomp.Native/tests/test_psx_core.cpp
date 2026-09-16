@@ -1721,6 +1721,34 @@ static void test_cpu_unusable_swc2() {
     assert_cpu_unusable(0xE8010000u, 2u); // SWC2 $1, 0($0)
 }
 
+// Issue #377: PSXCore_Step() returns 0 for a step that faulted, so a caller that
+// must not mistake a faulted run for a clean one (the differential reference
+// oracle, the interpreter-backed title engine) needs an explicit signal. Before
+// this existed, a GTE word made those callers report a clean Success.
+static void test_exception_raised_flag() {
+    TEST("PSXCore_GetExceptionRaised reports a GTE/CpU fault that Step() returns 0 for");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x00000000u); // NOP
+    PSXCore_WriteMemory32(core, 4, 0x4A180001u); // RTPS (GTE command) -> CpU
+    PSXCore_SetPC(core, 0);
+
+    ASSERT_EQ(PSXCore_Step(core), 0);               // NOP
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0); // ... did not fault
+
+    ASSERT_EQ(PSXCore_Step(core), 0);               // GTE: Step() still reports success
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1); // ... but the flag shows the fault
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0x0Bu); // CpU
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+
+    // The flag is per-step, not sticky: the next (non-faulting) step clears it.
+    PSXCore_WriteMemory32(core, 0x80u, 0x00000000u); // NOP at the vector
+    ASSERT_EQ(PSXCore_Step(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_cause_ce_cleared_by_non_cpu_exception() {
     TEST("CAUSE.CE is cleared by a following non-CpU exception");
     PSXCore* core = PSXCore_Create();
@@ -2493,6 +2521,7 @@ int main() {
     test_cpu_unusable_cop3();
     test_cpu_unusable_lwc2();
     test_cpu_unusable_swc2();
+    test_exception_raised_flag();
     test_cause_ce_cleared_by_non_cpu_exception();
     test_adel_misaligned_lh();
     test_adel_misaligned_lhu();

@@ -50,6 +50,16 @@ public:
     // kept as a foot-gun (CodeRabbit, PR #198).
     int Step(PSXMemory& memory);
 
+    // True when the most recent Step() raised an exception (Issue #377). Step()
+    // deliberately still returns 0 in that case: an architectural exception is a
+    // normal, continuable hardware event (INT, SYSCALL), not an emulator error,
+    // and PSXCore_Run must keep executing into the handler. A caller that treats
+    // a fault as the end of its run — the differential reference oracle and the
+    // interpreter-backed title engine, which have no exception handler installed
+    // and must never report a faulted run as a clean completion — asks this
+    // instead. Reset at the start of every Step().
+    bool ExceptionRaised() const { return exception_raised_; }
+
     // Golden Trace GPR write-event recording (Issue #157). A single MIPS I step
     // retires at most kMaxGprWritesPerStep writes: one instruction-result write
     // (SetGPR) plus at most one load-delay commit (ADR-004), so the recorder

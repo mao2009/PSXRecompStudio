@@ -96,7 +96,7 @@ public class MipsToIrLoweringDifferentialTests
             MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 1),
         };
 
-        var run = RunInterpreter(words, stepBudget: 7, dataWindowBytes: 8);
+        var run = RunInterpreter(words, stepBudget: 7, dataWindowBytes: 8, expectFault: true);
 
         run.Pc.Should().Be(0x80000080u,
             "the misaligned LW raises AdEL and transfers to the BEV=0 general exception vector");
@@ -121,7 +121,7 @@ public class MipsToIrLoweringDifferentialTests
             MipsEncoding.Load(R3000aOpcode.Sw, rt: 10, baseRegister: 8, offset: 1),
         };
 
-        var run = RunInterpreter(words, stepBudget: 8, dataWindowBytes: 5);
+        var run = RunInterpreter(words, stepBudget: 8, dataWindowBytes: 5, expectFault: true);
 
         run.Pc.Should().Be(0x80000080u,
             "the misaligned SW raises AdES and transfers to the BEV=0 general exception vector");
@@ -727,7 +727,15 @@ public class MipsToIrLoweringDifferentialTests
         return new DifferentialRun(ir.Result, ir.Memory, interpreter.Pc);
     }
 
-    private static (uint[] Gpr, byte[] Memory, uint Pc) RunInterpreter(uint[] words, uint stepBudget, uint dataWindowBytes)
+    /// <param name="expectFault">
+    /// True for the two Issue #376 address-error cases, which exist precisely to
+    /// pin the interpreter's architectural fault. Every other caller feeds a
+    /// fixture whose result is compared against the lowered IR, which has no
+    /// exception model at all, so a fault there would silently compare a faulted
+    /// run against a clean one (Issue #377).
+    /// </param>
+    private static (uint[] Gpr, byte[] Memory, uint Pc) RunInterpreter(
+        uint[] words, uint stepBudget, uint dataWindowBytes, bool expectFault = false)
     {
         using var core = new PSXCoreWrapper();
         core.Reset();
@@ -741,7 +749,20 @@ public class MipsToIrLoweringDifferentialTests
         core.Pc = EntryPc;
         for (uint step = 0; step < stepBudget; step++)
         {
-            core.Step().Should().Be(0, "the fixture must not raise an exception on the interpreter");
+            core.Step().Should().Be(0, "the interpreter step must not fail natively");
+            // Step()'s return does not report a guest exception (Issue #377), so
+            // asserting only on it left this guard vacuous: a fixture that faulted
+            // on the interpreter still compared "equal" against an IR lowering that
+            // has no exception model at all.
+            if (!expectFault)
+            {
+                core.ExceptionRaised.Should().BeFalse("the fixture must not raise an exception on the interpreter");
+            }
+        }
+
+        if (expectFault)
+        {
+            core.ExceptionRaised.Should().BeTrue("this fixture exists to pin the interpreter's architectural fault");
         }
 
         var gpr = new uint[RecompilerDifferentialFixture.GprCount];

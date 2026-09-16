@@ -121,7 +121,12 @@ internal sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngi
                 break;
             }
 
-            if (_core.Step() != 0)
+            // Step() reports only a native-call failure; a guest exception leaves
+            // it 0 and moves the PC to the exception vector. Without the flag
+            // (Issue #377) a faulting segment left the program bounds on the next
+            // iteration and reported Success, which the orchestrator hands to the
+            // handoff — a GTE/CpU fault could be classified Completed.
+            if (_core.Step() != 0 || _core.ExceptionRaised)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;

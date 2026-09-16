@@ -17,6 +17,13 @@ namespace PSXRecomp.Core.Runtime;
 ///   clipping values, screen offset, depth scaling.
 ///
 /// Commands are issued via COP2 instructions (e.g. RTPS, NCLIP, AVSZ3).
+///
+/// UNWIRED PLACEHOLDER (Issue #377): nothing implements or consumes this
+/// interface yet. The native interpreter does not execute COP2 at all — it
+/// raises Coprocessor Unusable (CAUSE.Excode=0x0B, CAUSE.CE=2) for COP2, LWC2
+/// and SWC2, so a GTE-bearing program faults loudly instead of being silently
+/// treated as a NOP by the differential reference oracle. Implementing the GTE
+/// itself is a separate, larger effort.
 /// </summary>
 [Domain]
 public interface IGte

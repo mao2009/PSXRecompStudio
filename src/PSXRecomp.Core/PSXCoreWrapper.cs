@@ -246,11 +246,29 @@ public sealed class PSXCoreWrapper : IDisposable
     // Instruction execution
 
     /// <summary>Executes a single instruction, honoring branch/load-delay slot semantics (ADR-004/005).</summary>
-    /// <returns>Zero on success; a non-zero native status/exception code otherwise.</returns>
+    /// <returns>
+    /// Zero when the step was taken; a negative native status otherwise. A guest
+    /// exception is deliberately not reported here — the step that takes a fault
+    /// succeeds and lands the PC on the exception vector. Ask
+    /// <see cref="ExceptionRaised"/> instead (Issue #377).
+    /// </returns>
     public int Step()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return NativeInterop.PSXCore_Step(_handle);
+    }
+
+    /// <summary>
+    /// Whether the most recent <see cref="Step"/> raised a guest exception
+    /// (INT, SYSCALL, RI/CpU/AdEL/AdES). Reset by every step.
+    /// </summary>
+    public bool ExceptionRaised
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetExceptionRaised(_handle) != 0;
+        }
     }
 
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
