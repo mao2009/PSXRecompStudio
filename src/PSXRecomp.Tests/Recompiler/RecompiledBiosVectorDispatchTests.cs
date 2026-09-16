@@ -179,12 +179,15 @@ public sealed class RecompiledBiosVectorDispatchTests
     // --- Explicit failures: never a silent success (Issue #279) ---------------
 
     [Fact]
-    public void GeneratedPath_PatchedTarget_WithNoGeneratedBlock_StopsTheRun_WithADiagnostic()
+    public void GeneratedPath_PatchedTarget_WithNoGeneratedBlock_StopsAtTheTarget_WithAnAdvisory()
     {
         // A translatable address the program has no block for. The interpreter
         // would fetch whatever MIPS lives there; the generated host has nothing to
-        // enter, so it must say so rather than redirect and silently fall off the
-        // end of the program at the next unknown PC.
+        // enter, so control transfers to the target and the run ends there — the
+        // same segment-level outcome the interpreter reaches when the target lies
+        // outside its program image, which is what lets both backends hand the
+        // identical PC to a full-title handoff (Issue #379). The reason the
+        // recompiled path could go no further is still reported (Issue #279).
         var unreachableTarget = Kseg0EntryPc + 0x800u;
         var result = RunGenerated(PatchProgram(
             Kseg0EntryPc, BiosJumpTables.A0VectorAddress, BiosCallFamily.A0, UnregisteredA0Function,
@@ -197,7 +200,10 @@ public sealed class RecompiledBiosVectorDispatchTests
         result.DiagnosticMessage.Should().Contain("#249");
 
         var snapshot = result.Snapshot!;
-        snapshot.Termination.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        snapshot.Termination.Should().Be(RecompilerIrTerminationReason.Success);
+        snapshot.PC.Should().Be(unreachableTarget, "control stops at the address it could not enter");
+
+        // Nothing past the dispatch ran: neither the patched routine nor the tail.
         snapshot.Gpr[(int)R3000aRegister.S0].Should().Be(0u);
         snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u);
     }

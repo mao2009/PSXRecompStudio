@@ -27,11 +27,18 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     /// Reported when a patched jump-table entry names a translatable guest
     /// address that this execution path has no generated block for. Unlike the
     /// interpreter — which fetches arbitrary MIPS from guest RAM — the generated
-    /// host can only enter a block it already compiled, so redirecting there
-    /// would silently fall off the end of the program. Compiling a target found
-    /// only at runtime is dynamic overlay recompilation (Issue #249), out of
-    /// scope here; this fails loudly instead (Issue #279).
+    /// host can only enter a block it already compiled, so control stops at that
+    /// address instead of continuing there. Compiling a target found only at
+    /// runtime is dynamic overlay recompilation (Issue #249), out of scope here.
     /// </summary>
+    /// <remarks>
+    /// This is an <em>advisory</em> diagnostic, not a stop reason: the segment
+    /// still ends with <see cref="RecompilerIrTerminationReason.Success"/> at the
+    /// patched target, which is the same segment-level outcome the interpreter
+    /// produces for the same guest condition, so both backends reach the
+    /// full-title handoff identically (Issue #379). It is carried so the reason
+    /// the recompiled path could go no further is never lost (Issue #279).
+    /// </remarks>
     public const string BiosPatchedTargetHasNoGeneratedBlockDiagnosticCode =
         "BIOS_PATCHED_TARGET_NO_GENERATED_BLOCK";
 
@@ -523,7 +530,13 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         private TextWriter? _toHost;
         private IBiosRuntime? _biosRuntime;
 
-        /// <summary>The diagnostic of the dispatch that stopped the run, when one did.</summary>
+        /// <summary>
+        /// The diagnostic of the dispatch that stopped the run, when one did —
+        /// or the advisory
+        /// <see cref="BiosPatchedTargetHasNoGeneratedBlockDiagnosticCode"/>, which
+        /// explains where the recompiled path ran out of code without itself
+        /// being a stop reason.
+        /// </summary>
         public string? DiagnosticCode { get; private set; }
 
         /// <inheritdoc cref="DiagnosticCode" />
@@ -604,19 +617,25 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                 return;
             }
 
-            // The generated host can only enter a PC it compiled a block for. A
-            // patched target outside the static block table is reported, never
-            // silently jumped to and lost at the next unknown-PC boundary.
+            // The generated host can only enter a PC it compiled a block for, so
+            // a patched target outside the static block table is where this path
+            // runs out of code. Control is still transferred there: the generated
+            // dispatch finds no block at the next boundary and ends the segment
+            // cleanly at that PC — exactly what the interpreter does when a
+            // patched target lies outside its program image — so both backends
+            // hand the identical unresolved PC to the same outer resolution step
+            // (Issue #379). The reason is recorded as an advisory so it is still
+            // visible to a caller that has no handoff, rather than lost (#279).
             if (outcome.IsPatchedTarget && !_blockEntryPcs.Contains(outcome.NextPc))
             {
                 var functionNumber = (byte)(gpr[(int)R3000aRegister.T1] & 0xFFu);
-                Stop(
-                    BiosPatchedTargetHasNoGeneratedBlockDiagnosticCode,
+                DiagnosticCode = BiosPatchedTargetHasNoGeneratedBlockDiagnosticCode;
+                DiagnosticMessage =
                     $"{family}:{functionNumber:X2}: patched jump-table entry names guest address " +
                     $"0x{outcome.NextPc:X8}, which this program has no generated block for, so the " +
-                    "recompiled path cannot transfer control to it. Compiling a target discovered at " +
-                    "runtime is dynamic overlay recompilation (Issue #249), out of scope here.");
-                return;
+                    "recompiled path stops there instead of entering it. Resolving such a target is " +
+                    "the caller's (a full-title handoff's) decision, and compiling one discovered at " +
+                    "runtime is dynamic overlay recompilation (Issue #249), out of scope here.";
             }
 
             Send(string.Create(
