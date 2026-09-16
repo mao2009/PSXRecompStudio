@@ -26,14 +26,21 @@
 
   <!--
     ArchitectureAnalyzer (AARC) adoption (Refs #293/#294):
-    The generic ArchitectureAnalyzer NuGet is wired for every consumer project that opts in to
-    architectural enforcement via CompileArchitectureAttributes. The architecture contract
-    (src/architecture.contract.json, #291) is supplied as an AdditionalFiles item. The old
-    built-in PSXRecomp.Analyzer was removed in #294; AARC is now the single enforcement path.
-    PSXRecompStudio.Tests does not set CompileArchitectureAttributes and therefore does not
+    The generic ArchitectureAnalyzer NuGet and the architecture contract
+    (src/architecture.contract.json, #291) are wired via EnableArchitectureAnalyzer, which
+    defaults to CompileArchitectureAttributes so every existing consumer keeps enforcing without
+    change. The two properties diverge for a project that must be visible to the marker types
+    compiled into another referenced assembly (via InternalsVisibleTo) instead of compiling its
+    own copy (Issue #388): it sets EnableArchitectureAnalyzer=true explicitly while leaving
+    CompileArchitectureAttributes unset, keeping enforcement without a second, colliding copy of
+    the marker source. The old built-in PSXRecomp.Analyzer was removed in #294; AARC is now the
+    single enforcement path. PSXRecompStudio.Tests sets neither property and therefore does not
     consume the architecture contract, preserving its current build.
   -->
-  <ItemGroup Condition="'$(CompileArchitectureAttributes)' == 'true'">
+  <PropertyGroup Condition="'$(EnableArchitectureAnalyzer)' == ''">
+    <EnableArchitectureAnalyzer>$(CompileArchitectureAttributes)</EnableArchitectureAnalyzer>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(EnableArchitectureAnalyzer)' == 'true'">
     <PackageReference Include="loach.ArchitectureAnalyzer" Version="0.1.0" PrivateAssets="all" />
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)src/architecture.contract.json" />
   </ItemGroup>
