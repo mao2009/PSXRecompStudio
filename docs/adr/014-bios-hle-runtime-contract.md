@@ -1249,6 +1249,11 @@ Consequences of (C) worth recording:
 
 ### Decision 3: a patched target must resolve to an existing generated block
 
+> Superseded in part by the amendment "patched-target-with-no-block parity
+> between the host and interpreter engines (#379)" below: the guard and its
+> diagnostic remain, but the diagnostic is now an advisory carried alongside a
+> clean segment end rather than a stop reason.
+
 The interpreter can enter any translatable address because it fetches guest
 MIPS at run time. The generated host can only enter a PC it already compiled a
 block for. So the recompiled path adds one guard on top of the shared
@@ -1308,7 +1313,9 @@ gcc → run): `GeneratedPath_ZeroArgumentService_IsSupported_DespiteGarbageInEve
 `GeneratedPath_PatchedEntry_TransfersControlToTheGeneratedBlockAtTheGuestTarget`,
 `GeneratedPath_PatchedEntry_Dispatches_ThroughEveryAliasOfTheTrampolineVector`
 (KUSEG and KSEG0), `GeneratedPath_PatchedEntry_OverridesARegisteredServicesOwnSlot`,
-`GeneratedPath_PatchedTarget_WithNoGeneratedBlock_StopsTheRun_WithADiagnostic`,
+`GeneratedPath_PatchedTarget_WithNoGeneratedBlock_StopsAtTheTarget_WithAnAdvisory`
+(named `..._StopsTheRun_WithADiagnostic` when it was added; renamed by the #379
+amendment below),
 `GeneratedPath_PatchedTarget_OutsideEveryTranslatableRegion_StopsTheRun_WithADiagnostic`,
 `GeneratedPath_UnregisteredService_StopsTheRun_WithTheRuntimesOwnDiagnostic`,
 `GeneratedPath_PatchedTarget_LoopingBackIntoTheCall_IsBoundedByTheExecutionBudget`,
@@ -1324,3 +1331,76 @@ and `Generation_Dispatch_Offers_An_Unknown_Pc_To_The_Host_Before_Giving_Up`
 
 All prior regression tests from the base ADR and every previous amendment remain
 unchanged and still pass.
+
+## Amendment (2026-09-16): patched-target-with-no-block parity between the host and interpreter engines (#379)
+
+### Problem
+
+Decision 3 above was written before the full-title execution orchestrator
+(`ExecutionOrchestrator`, #366/#373) and its `ITitleExecutionHandoff` existed.
+It made "a `PatchedTarget` this program has no block for" a **stop reason**:
+`HostTransferSession.HandleTransfer` answered the generated dispatch with
+`UnresolvedIndirectFlow` plus `BIOS_PATCHED_TARGET_NO_GENERATED_BLOCK`.
+
+Once the orchestrator existed, that turned one guest-level condition into two
+different orchestrator-visible outcomes:
+
+- **Host engine** — a diagnosed `UnresolvedIndirectFlow`, which
+  `ExecutionOrchestrator` maps straight to `TitleExecutionState.RuntimeFailure`.
+  The handoff is never consulted.
+- **Interpreter engine** — the patched target is jumped to verbatim; the next
+  loop iteration's program-range check ends the segment with `Success` at that
+  PC, which the orchestrator routes into `handoff.Decide(...)`.
+
+Both cite Issue #249 as the escape hatch for exactly this case, but only the
+interpreter reached the thing that can take it.
+
+### Decision
+
+The guard stays; its verdict changes. A `PatchedTarget` with no generated block
+now ends the host segment the same way the interpreter's does — `Success`, with
+the PC left at the patched target — and
+`BIOS_PATCHED_TARGET_NO_GENERATED_BLOCK` is recorded as an **advisory** on the
+`RecompilerExecutionResult` rather than as the segment's termination reason.
+
+Consequences:
+
+- (a) **Both engines hand the orchestrator the identical unresolved PC**, so the
+  same handoff produces the same `TitleExecutionState` on either backend. That
+  is what #249's escape hatch was for; deciding what such a target means is the
+  caller's job, not the backend's.
+- (b) **No information is lost.** The advisory still names the family, the
+  function number, the unreachable address and #249, and still reaches a caller
+  that has no handoff (the differential harness reads it off the result). What
+  #279 forbids is a *silent* success; this outcome is neither silent nor a claim
+  that the call succeeded.
+- (c) **The orchestrator is unchanged.** No new state, no new contract member,
+  and no backend-specific diagnostic code in `PSXRecomp.Core` — the parity is
+  achieved entirely inside the host backend that diverged.
+- (d) **Alternatives rejected.** Making the *interpreter* hard-fail instead
+  (option b of #379) would delete a capability the interpreter legitimately has
+  and contradict both the orchestrator's own doc comment and this ADR's #249
+  framing. Special-casing the diagnostic code inside `ExecutionOrchestrator`
+  would put a Test-assembly backend's diagnostic string into the Domain layer.
+- (e) **Known limitation, unchanged.** A patched target *inside* the program
+  image but not at a block entry (a mid-block address, or a different segment
+  alias of a compiled block — point (e) of Decision 3) still diverges: the
+  interpreter executes from it, the host stops at it. Closing that is dynamic
+  overlay recompilation, Issue #249.
+
+### Regression tests
+
+`ExecutionOrchestratorTests.BiosJumpTableDispatch_ReachesTheSameOrchestratorOutcome_OnBothEngines`
+is a single contract-driven `[Theory]`: one scenario table of guest programs and
+expected outcomes, each scenario run through **both**
+`InterpreterTitleExecutionEngine` and `HostTitleExecutionEngine` with the same
+handoff, asserting both against the same expected row *and* against each other.
+It covers an unpatched registered entry, a patch that overrides a registered
+service's slot, an unregistered service, and the patched-target-with-no-block
+case this amendment is about, including `$v0` return-value propagation and the
+patched routine's guest-RAM side effect read back into a register.
+
+`RecompiledBiosVectorDispatchTests.GeneratedPath_PatchedTarget_WithNoGeneratedBlock_StopsAtTheTarget_WithAnAdvisory`
+(renamed from `..._StopsTheRun_WithADiagnostic`) pins the backend-level change:
+`Completed` status, the advisory diagnostic, `Success` termination, and the PC
+left at the address the recompiled path could not enter.

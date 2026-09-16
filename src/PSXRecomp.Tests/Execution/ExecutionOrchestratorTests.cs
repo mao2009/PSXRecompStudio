@@ -345,6 +345,266 @@ public sealed class ExecutionOrchestratorTests
             "the request's initial memory must seed the first generated-host segment");
     }
 
+    // --- One contract, both engines (Issue #379) ------------------------------
+
+    /// <summary>
+    /// The BIOS jump-table dispatch situations both execution backends must agree
+    /// on. Each one names a row in <see cref="DispatchScenarioTable"/>; the
+    /// expected values live there once rather than being hand-typed per backend.
+    /// </summary>
+    public enum BiosDispatchScenario
+    {
+        /// <summary>An untouched entry that still dispatches to a registered HLE service.</summary>
+        UnpatchedRegisteredEntry,
+
+        /// <summary>A guest patch over a registered service's own slot, naming a compiled routine.</summary>
+        PatchedOverRegisteredSlot,
+
+        /// <summary>An untouched entry the Runtime can neither service nor redirect.</summary>
+        UnregisteredService,
+
+        /// <summary>
+        /// A guest patch naming a translatable address neither backend can enter:
+        /// outside the interpreter's program image and outside the generated
+        /// host's block table. The divergence Issue #379 is about.
+        /// </summary>
+        PatchedTargetWithNoBlock,
+    }
+
+    [Theory]
+    [InlineData(BiosDispatchScenario.UnpatchedRegisteredEntry)]
+    [InlineData(BiosDispatchScenario.PatchedOverRegisteredSlot)]
+    [InlineData(BiosDispatchScenario.UnregisteredService)]
+    [InlineData(BiosDispatchScenario.PatchedTargetWithNoBlock)]
+    public void BiosJumpTableDispatch_ReachesTheSameOrchestratorOutcome_OnBothEngines(
+        BiosDispatchScenario scenario)
+    {
+        var (fixture, expected) = DispatchScenarioTable(scenario);
+
+        var interpreterSink = new CapturedOutputSink();
+        using var interpreter = new InterpreterTitleExecutionEngine(
+            fixture.Instructions,
+            fixture.EntryPc,
+            (reader, writer) => new BiosHleRuntime(interpreterSink, reader, writer));
+        var interpreterResult = new ExecutionOrchestrator().Execute(
+            interpreter, DispatchHandoff(), DispatchRequest());
+
+        var hostSink = new CapturedOutputSink();
+        using var host = new HostTitleExecutionEngine(
+            fixture,
+            (reader, writer) => new BiosHleRuntime(hostSink, reader, writer));
+        var hostResult = new ExecutionOrchestrator().Execute(
+            host, DispatchHandoff(), DispatchRequest());
+
+        // The whole point: one guest-level condition, one orchestrator-visible
+        // outcome, whichever backend executed it.
+        hostResult.State.Should().Be(
+            interpreterResult.State,
+            $"both engines run the identical guest program. {Describe(interpreterResult)} vs {Describe(hostResult)}");
+
+        AssertDispatchOutcome(interpreterResult, expected);
+        AssertDispatchOutcome(hostResult, expected);
+
+        // A patch fully overrides the slot's registered service on both paths, so
+        // no scenario here may produce service output.
+        hostSink.Bytes.Should().BeEquivalentTo(interpreterSink.Bytes, static o => o.WithStrictOrdering());
+        hostSink.Bytes.Should().BeEmpty("no scenario reaches a service with a host-visible effect");
+    }
+
+    private static void AssertDispatchOutcome(TitleExecutionResult result, DispatchExpectation expected)
+    {
+        var because = Describe(result);
+        result.State.Should().Be(expected.State, because);
+        result.DiagnosticCode.Should().Be(expected.DiagnosticCode, because);
+
+        var snapshot = result.FinalSnapshot!;
+        snapshot.PC.Should().Be(expected.FinalPc, because);
+        snapshot.Gpr[(int)R3000aRegister.V0].Should().Be(expected.V0, because);
+        snapshot.Gpr[(int)R3000aRegister.S0].Should().Be(expected.S0, because);
+        snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(expected.S1, because);
+        snapshot.Gpr[(int)R3000aRegister.S2].Should().Be(expected.ScratchWord, because);
+    }
+
+    private static string Describe(TitleExecutionResult result) =>
+        $"[{result.EngineName}] state={result.State} segments={result.SegmentsRetired} " +
+        $"diag={result.DiagnosticCode} pc=0x{result.FinalSnapshot?.PC:X8} " +
+        $"term={result.FinalSnapshot?.Termination}";
+
+    /// <summary>
+    /// One expected orchestration outcome, shared by every backend that runs the
+    /// scenario. <see cref="ScratchWord"/> is the guest RAM the patched routine
+    /// wrote, read back into <c>$s2</c> so a RAM side effect is comparable through
+    /// the register file on both engines.
+    /// </summary>
+    private sealed record DispatchExpectation(
+        TitleExecutionState State,
+        string? DiagnosticCode,
+        uint FinalPc,
+        uint V0,
+        uint S0,
+        uint S1,
+        uint ScratchWord);
+
+    private static (RecompilerDifferentialFixture Fixture, DispatchExpectation Expected) DispatchScenarioTable(
+        BiosDispatchScenario scenario) => scenario switch
+    {
+        // Baseline: the entry is untouched, so B0:56 GetC0Table is serviced by the
+        // Runtime, returns through $ra, and the tail runs.
+        BiosDispatchScenario.UnpatchedRegisteredEntry => (
+            DispatchProgram(patchTheSlot: false, BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction),
+            new DispatchExpectation(
+                TitleExecutionState.Completed,
+                DiagnosticCode: null,
+                FinalPc: DispatchProgramEnd,
+                V0: BiosJumpTables.C0TableAddress,
+                S0: 0,
+                S1: ReturnedMarker,
+                ScratchWord: 0)),
+
+        // A patch over a registered slot: control reaches the guest routine (which
+        // the generated host has a block for), not the HLE service.
+        BiosDispatchScenario.PatchedOverRegisteredSlot => (
+            DispatchProgram(patchTheSlot: true, BiosCallFamily.A0, BiosHleRuntime.PutCharFunction),
+            new DispatchExpectation(
+                TitleExecutionState.Completed,
+                DiagnosticCode: null,
+                FinalPc: DispatchProgramEnd,
+                V0: 0,
+                S0: DispatchRoutineMarker,
+                S1: ReturnedMarker,
+                ScratchWord: DispatchRoutineMarker)),
+
+        // Neither serviceable nor redirectable: both engines stop on the Runtime's
+        // own diagnostic, at the trampoline vector, without consulting the handoff.
+        BiosDispatchScenario.UnregisteredService => (
+            DispatchProgram(patchTheSlot: false, BiosCallFamily.A0, UnregisteredA0Function),
+            new DispatchExpectation(
+                TitleExecutionState.RuntimeFailure,
+                DiagnosticCode: "BIOS_HLE_UNSUPPORTED_CALL",
+                FinalPc: DispatchVectorPc,
+                V0: 0,
+                S0: 0,
+                S1: 0,
+                ScratchWord: 0)),
+
+        // The Issue #379 case: a patched target no backend can enter. Both must
+        // end the segment at that PC and let the handoff resolve it — which it
+        // does here, continuing at the tail with a return value in $v0.
+        BiosDispatchScenario.PatchedTargetWithNoBlock => (
+            DispatchProgram(
+                patchTheSlot: true, BiosCallFamily.A0, UnregisteredA0Function,
+                patchedTargetOverride: UncompiledTarget),
+            new DispatchExpectation(
+                TitleExecutionState.Completed,
+                DiagnosticCode: null,
+                FinalPc: DispatchProgramEnd,
+                V0: HandoffReturnValue,
+                S0: 0,
+                S1: ReturnedMarker,
+                ScratchWord: 0)),
+
+        _ => throw new ArgumentOutOfRangeException(nameof(scenario)),
+    };
+
+    /// <summary>
+    /// The one continuation rule every scenario runs under: an unresolvable
+    /// patched target is resumed at the program's tail with a return value, and
+    /// any other unresolved PC ends the run.
+    /// </summary>
+    private static ITitleExecutionHandoff DispatchHandoff() =>
+        new FunctionHandoff(snapshot => snapshot.PC == UncompiledTarget
+            ? TitleExecutionHandoffResult.ContinueAt(Entry + (DispatchTailIndex * 4u), HandoffReturnValue)
+            : TitleExecutionHandoffResult.Exit());
+
+    private static TitleExecutionRequest DispatchRequest() =>
+        Request(Entry, outer: 8, segment: 64);
+
+    // Shared dispatch-parity program. Identical words feed the interpreter (as a
+    // guest RAM image) and the generated host (as compiled blocks):
+    //
+    //   0  LUI  $t0, hi(target)
+    //   1  ORI  $t0, $t0, lo(target)
+    //   2  ORI  $t2, $zero, slot          slot addresses are all below 0x10000
+    //   3  SW   $t0, 0($t2)               the guest patches the entry (NOP if not)
+    //   4  ORI  $t1, $zero, function      PS1 ABI: $t1 selects the BIOS function
+    //   5  JAL  vector                    links $ra to index 7
+    //   6  NOP                            branch delay slot
+    //   7  J    tail                      reached only on return from the call
+    //   8  NOP
+    //   9  ORI  $s0, $zero, marker        the patched routine, reachable only
+    //  10  ORI  $t3, $zero, scratch       through the BIOS dispatch under test
+    //  11  J    return                    static return to index 7, so the whole
+    //  12  SB   $s0, 0($t3)               program is representable as blocks
+    //  13  ORI  $s1, $zero, returned      the tail
+    //  14  ORI  $t3, $zero, scratch
+    //  15  LW   $s2, 0($t3)               the routine's RAM effect, in a register
+    //  16  NOP                            load delay slot, so $s2 is committed
+    //                                     before control leaves the program
+    private const uint DispatchCallIndex = 5;
+    private const uint DispatchReturnIndex = 7;
+    private const uint DispatchRoutineIndex = 9;
+    private const uint DispatchTailIndex = 13;
+    private const uint DispatchProgramLength = 17;
+
+    private const byte LuiOpcodeField = 0x0F;
+    private const uint DispatchScratch = 0x00000C00u;
+    private const uint DispatchRoutineMarker = 0x5Au;
+    private const uint HandoffReturnValue = 0x99u;
+
+    /// <summary>The PC both engines fall off the program at, where the handoff exits.</summary>
+    private const uint DispatchProgramEnd = Entry + (DispatchProgramLength * 4u);
+
+    /// <summary>A translatable address outside the program and outside every block.</summary>
+    private const uint UncompiledTarget = Entry + 0x800u;
+
+    /// <summary>The A0 trampoline vector as reached from a KSEG0 program.</summary>
+    private const uint DispatchVectorPc = (Entry & 0xF0000000u) | BiosJumpTables.A0VectorAddress;
+
+    private static RecompilerDifferentialFixture DispatchProgram(
+        bool patchTheSlot,
+        BiosCallFamily family,
+        byte function,
+        uint? patchedTargetOverride = null)
+    {
+        var target = patchedTargetOverride ?? (Entry + (DispatchRoutineIndex * 4u));
+        var slot = BiosJumpTables.EntryAddress(family, function);
+        var vector = family switch
+        {
+            BiosCallFamily.A0 => BiosJumpTables.A0VectorAddress,
+            BiosCallFamily.B0 => BiosJumpTables.B0VectorAddress,
+            _ => BiosJumpTables.C0VectorAddress,
+        };
+
+        var words = new uint[DispatchProgramLength];
+        words[0] = MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: (ushort)(target >> 16));
+        words[1] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: (byte)R3000aRegister.T0, immediate: (ushort)target);
+        words[2] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: (ushort)slot);
+        words[3] = patchTheSlot
+            ? MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T0, baseRegister: (byte)R3000aRegister.T2, offset: 0)
+            : MipsEncoding.Nop;
+        words[4] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: function);
+        words[DispatchCallIndex] = MipsEncoding.JumpAndLink(vector);
+        words[6] = MipsEncoding.Nop;
+        words[DispatchReturnIndex] = MipsEncoding.Jump(Entry + (DispatchTailIndex * 4u));
+        words[8] = MipsEncoding.Nop;
+        words[DispatchRoutineIndex] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S0, rs: 0, immediate: (ushort)DispatchRoutineMarker);
+        words[10] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: (ushort)DispatchScratch);
+        words[11] = MipsEncoding.Jump(Entry + (DispatchReturnIndex * 4u));
+        words[12] = MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.S0, baseRegister: (byte)R3000aRegister.T3, offset: 0);
+        words[DispatchTailIndex] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S1, rs: 0, immediate: (ushort)ReturnedMarker);
+        words[14] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: (ushort)DispatchScratch);
+        words[15] = MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S2, baseRegister: (byte)R3000aRegister.T3, offset: 0);
+        words[16] = MipsEncoding.Nop;
+
+        return new RecompilerDifferentialFixture(
+            name: "execution-orchestrator-bios-dispatch-parity",
+            encodedInstructions: words,
+            entryPc: Entry,
+            stepBudget: 64,
+            memoryWindow: [],
+            referenceStepBudget: 64);
+    }
+
     // --- Harness ---------------------------------------------------------------
 
     private const byte UnregisteredA0Function = 0x17;
