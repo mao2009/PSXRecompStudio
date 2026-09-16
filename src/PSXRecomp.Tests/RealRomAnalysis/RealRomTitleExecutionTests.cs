@@ -64,7 +64,12 @@ public class RealRomTitleExecutionTests
             fixture,
             (reader, writer) => new BiosHleRuntime(sink, reader, writer));
 
-        var handoff = new CachedExitHandoff();
+        // Issue #378: the run is observed through ObservedTitleExecution so the
+        // classified-end assertions below are backed by an actual correctness
+        // oracle rather than standing alone. The observer is a pass-through, so
+        // this is still the one real run; see its documentation for exactly what
+        // the invariants do and do not prove.
+        var observed = new ObservedTitleExecution(engine, new CachedExitHandoff());
         var request = new TitleExecutionRequest(
             entryPc: fixture.EntryPc,
             initialGpr: fixture.InitialGpr,
@@ -77,7 +82,7 @@ public class RealRomTitleExecutionTests
         var evidence =
             $"fixture={fixtureId} entry=0x{candidate.StartAddress:X8} instructions={candidate.InstructionCount}";
 
-        var result = new ExecutionOrchestrator().Execute(engine, handoff, request);
+        var result = new ExecutionOrchestrator().Execute(observed, observed, request);
 
         // Real-ROM control flow is unknown until it is run; the orchestrator must
         // end in one of the classified guest outcomes with a real snapshot, never
@@ -89,6 +94,12 @@ public class RealRomTitleExecutionTests
             TitleExecutionState.InvalidState,
             $"{evidence}\n{result.DiagnosticCode} {result.DiagnosticMessage}");
         result.SegmentsRetired.Should().BeGreaterThan(0, evidence);
+
+        // Which classified state a real ROM lands in stays unconstrained (#373):
+        // the oracle asserts the reported state is the *correct* classification of
+        // what this run actually did, and that architectural state survived every
+        // segment boundary intact — not that the run reached a particular outcome.
+        observed.AssertInvariantsHold(request, result, evidence);
     }
 
     private sealed class CachedExitHandoff : ITitleExecutionHandoff
