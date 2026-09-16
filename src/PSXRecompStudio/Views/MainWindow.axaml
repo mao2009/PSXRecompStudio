@@ -43,6 +43,22 @@
                        FontSize="14" Foreground="#4EC9B0"/>
         </Border>
 
+        <!-- Execution (Issue #380 / ADR-015): runs the built-in diagnostic title
+             through the production execution engine and reports the outcome. -->
+        <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="60,24,60,0"
+                    HorizontalAlignment="Center">
+            <Button x:Name="RunDiagnosticTitleButton"
+                    AutomationProperties.Name="RunDiagnosticTitle"
+                    Content="Run diagnostic title"
+                    HorizontalAlignment="Center"
+                    Command="{Binding RunDiagnosticTitleCommand}"/>
+            <TextBlock x:Name="ExecutionStatusText"
+                       AutomationProperties.Name="ExecutionStatus"
+                       Text="{Binding ExecutionStatus}"
+                       FontSize="12" Foreground="#808080"
+                       HorizontalAlignment="Center"/>
+        </StackPanel>
+
         <!-- Spacer -->
         <Rectangle DockPanel.Dock="Top" Height="32"/>
 
