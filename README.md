@@ -9,39 +9,72 @@ Its core differentiator is a **differentially validated recompiler path**: MIPS 
 
 *[日本語版 README はこちら / Japanese README](README.ja.md)* · [Project website](https://mao2009.github.io/PSXRecompStudio/)
 
+## Current scope
+
+**Implemented and validated**
+
+- Synthetic MIPS fixture → Recompiler IR/lowering → deterministic host C → gcc build → bounded execution → interpreter-state comparison, proven end-to-end (re-run below as evidence): [`RecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/Recompiler/RecompilerVerticalSliceTests.cs).
+- The same pipeline on a first conservatively selected, bounded real-ROM function, gated on a user-supplied ROM: [`RealRomCandidateSelector`](src/PSXRecomp.Core/Recompiler/RealRomRecompilerBridge.cs), [`RealRomRecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomRecompilerVerticalSliceTests.cs) (#225).
+- A synthetic, always-run correctness oracle for the full-title execution loop's own test harness: it proves the classified-end assertions the real-ROM execution test relies on actually reject a wrong run, rather than passing everything: [`ObservedTitleExecutionTests.cs`](src/PSXRecomp.Tests/Execution/ObservedTitleExecutionTests.cs) (#378).
+
+**Implemented foundations / partial**
+
+- R3000A / MIPS I decode/execute, branch and load delay slots, COP0/exceptions, interrupt sampling, and KSEG0/KSEG1 translation: [`src/PSXRecomp.Core/Cpu/`](src/PSXRecomp.Core/Cpu/). A native, per-instruction Golden Trace captures retirement-order register writes for future backend comparison: [`golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h).
+- CHD → ISO 9660 → PS-X EXE → MIPS analysis → basic blocks/CFG, exercised end-to-end by [`DiscImageAnalyzerIntegrationTests.cs`](src/PSXRecomp.Tests/DiscImage/DiscImageAnalyzerIntegrationTests.cs).
+- A bounded, title-agnostic full-title execution loop, [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs), driven by a production, Domain-layer interpreter engine reachable from the Studio UI's diagnostic execution action ([ADR-015](docs/adr/015-production-execution-engine-ownership.md)). This runs a small built-in diagnostic program from a zeroed register state — it does not load a real disc/EXE image yet, and the generated-C (recompiled) engine remains test-only.
+- Shared BIOS A0/B0/C0 vector dispatch on both the interpreter and recompiled paths, currently covering 5 registered services (putchar, puts and its B0 alias, `GetB0Table`, `GetC0Table`) — not broad BIOS HLE coverage: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs).
+- Register-level DMA/interrupt/timer MMIO adapters and a memory bus with dedicated tests: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/) — not yet wired into any execution engine.
+- Architecture layering mechanically enforced by `loach.ArchitectureAnalyzer` against [`architecture.contract.json`](src/architecture.contract.json).
+- An end-to-end reproduction workflow, the Persona E2E gate, chains disc discovery → analysis → recompiler slice → orchestrated execution against a legally user-supplied fixture and reports PASS/FAIL/SKIP per stage: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1), tracked in [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md). Its own documented first blocker is GPU/SPU/CD-ROM rendering, consistent with [Not implemented](#current-scope) below.
+
+**Not implemented**
+
+- General-purpose real-ROM function recompilation — candidate selection is deliberately conservative (see [Recompilation Workflow](#recompilation-workflow)).
+- End-to-end static recompilation and execution of a complete commercial PS1 title; loading a real disc/EXE image into the production execution path.
+- GPU, SPU, CD-ROM, MDEC, and GTE — interface contracts only; nothing implements or consumes them yet (e.g. [`IGte.cs`](src/PSXRecomp.Core/Runtime/IGte.cs)).
+- Broad BIOS HLE service coverage.
+- A general-purpose product CLI.
+
+### Evidence: a real differential-validation run
+
+```text
+$ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release \
+    --filter "FullyQualifiedName~PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests"
+
+Passed PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests.VerticalSlice_Matches_Interpreter_On_One_Plus_Two_Equals_Three [312 ms]
+Passed PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests.VerticalSlice_RecompiledSnapshots_Are_Deterministic_Across_Independent_Runs [623 ms]
+Passed PSXRecomp.Tests.Recompiler.RecompilerVerticalSliceTests.VerticalSlice_Produced_Test_Binary_Is_Identical_Across_Runs [320 ms]
+
+Total tests: 3
+     Passed: 3
+```
+
+This is the synthetic MIPS → IR → generated host C → gcc build → bounded execution → interpreter-state comparison path, run directly from this repository (Issue #209). The real-ROM counterpart runs the identical pipeline against a user-supplied ROM under `rom/` and skips explicitly when none is present — see [`RealRomFixtures.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomFixtures.cs).
+
 ## Quick start
 
-Build the managed solution and run the main C# test suite:
+### Verify the current implementation
 
 ```bash
 dotnet build src/PSXRecompStudio.slnx --configuration Release
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
 ```
 
-A successful run verifies the current CPU/runtime/recompiler contracts, including the synthetic recompiler vertical slice. The real-ROM differential path requires a legally obtained user-supplied image and remains intentionally bounded rather than general-purpose.
+A successful run verifies the current CPU/runtime/recompiler contracts, including the synthetic recompiler vertical slice above. The real-ROM differential tests require a legally obtained, user-supplied image and skip automatically without one. For the native core and headless GUI suites, see [Build](#build) and [Test](#test).
 
-For the native core and headless GUI suites, see [Build](#build) and [Test](#test).
+### Explore the recompiler
 
-## Verified today
+- Recompiler implementation: [`src/PSXRecomp.Core/Recompiler/`](src/PSXRecomp.Core/Recompiler/) (IR/lowering `MipsToIrLowerer.cs`, host codegen `RecompilerHostCodeGen.cs`, differential comparison `RecompilerDifferentialResult.cs`).
+- Synthetic differential validation: [`RecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/Recompiler/RecompilerVerticalSliceTests.cs).
+- Bounded real-ROM validation: [`RealRomRecompilerVerticalSliceTests.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomRecompilerVerticalSliceTests.cs) and [`RealRomTitleExecutionTests.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomTitleExecutionTests.cs).
+- Native per-instruction Golden Trace: [`src/PSXRecomp.Native/tests/golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h).
+- BIOS vector dispatch: [`BiosVectorDispatch.cs`](src/PSXRecomp.Core/Runtime/BiosVectorDispatch.cs).
 
-- **CPU execution foundation:** R3000A / MIPS I decode and execution, KSEG translation, branch/load delays, COP0 exceptions, interrupts, and deterministic Golden Trace validation.
-- **Disc and executable analysis:** CHD → ISO 9660 → PS-X EXE → MIPS analysis → basic blocks / CFG.
-- **Recompiler proof:** the same MIPS → IR → host-C → bounded-execution → interpreter-diff pipeline is validated on both a synthetic fixture and a first conservative real-ROM function (#225).
-- **Runtime / BIOS boundary:** interpreter and recompiled paths can dispatch guest-visible A0/B0/C0 BIOS vectors through shared `BiosVectorDispatch` semantics (#364, #368).
-- **Persona E2E gate:** the gate's `RUNTIME_EXECUTION` stage drives a real-ROM candidate through the full-title `ExecutionOrchestrator`; the next code-level blocker is GPU/SPU/CD-ROM hardware (#351, #366).
-
-## Not supported yet
-
-- End-to-end static recompilation and execution of a complete commercial PlayStation 1 title.
-- General-purpose real-ROM function recompilation or complete MIPS I coverage.
-- A product (CLI) execution entry point for the full-title orchestrator, and orchestrator-driven GPU/SPU/CD-ROM rendering (#366).
-- Broad BIOS HLE service coverage.
-- Complete GPU, SPU, CD-ROM, MDEC, and GTE hardware support.
-- A finished native runtime for complete PS1 native ports.
+A general-purpose recompilation CLI is not available yet.
 
 ## Next milestones
 
-1. **Drive the orchestrator through rendering (#366):** add a product execution entry point (CLI runner) and the GPU/SPU/CD-ROM/MMIO wiring so the E2E gate moves beyond `RUNTIME_EXECUTION` toward an actual title screen.
+1. **Load a real title into the production execution path:** join `RealRomAnalysis`'s disc/EXE output with `TitleExecutionService` (ADR-015) so the Studio can run more than its built-in diagnostic program.
 2. **Expand BIOS HLE coverage (#279, #365):** implement the services required by the next real-title execution path while preserving explicit failure for unsupported calls.
 3. **Broaden real-ROM recompilation coverage:** expand supported instructions/control flow only with differential validation retained as the correctness gate.
 
@@ -53,61 +86,31 @@ PSXRecompStudio is a from-scratch development environment for analyzing and reve
 
 It combines an Avalonia-based desktop UI, a C# domain/application core, and a C++ native core connected through a stable C ABI, with AI development agents as an optional, evidence-first assistance layer rather than the product itself.
 
+For preservation and reverse-engineering work, the project favors reproducible analysis and deterministic, re-verifiable execution evidence over opaque compatibility heuristics or title-specific hacks.
+
 ## Why PSXRecompStudio?
 
 - **SSOT-driven architecture.** Architecture, CPU semantics, and development process are documented as living Single Sources of Truth in [`docs/`](docs/) and [Architecture Decision Records](docs/adr/), not left to tribal knowledge.
-- **Mechanically enforced boundaries.** `loach.ArchitectureAnalyzer`, configured by [`src/architecture.contract.json`](src/architecture.contract.json), fails the build on layering, dependency-direction, and forbidden-API violations — the architecture matrix is a compiler-checked contract, not just a diagram.
-- **Deterministic CPU foundation.** The R3000A model is validated with a per-instruction Golden Trace: every register write is captured in retirement order and replayed to catch divergence, laying the groundwork for comparing future recompiler backends against the interpreter.
+- **Mechanically enforced boundaries.** `loach.ArchitectureAnalyzer`, configured by [`src/architecture.contract.json`](src/architecture.contract.json), fails the build on layering, dependency-direction, and forbidden-API violations.
 - **A stable C#/Native boundary.** All communication with the native core crosses a single C ABI (`psx_core.h`) via P/Invoke — no C++ types leak into C#.
-- **Evidence-first, human-in-the-loop AI collaboration.** AI development agents are a replaceable tool, not the product's identity: user-driven analysis, verifiable evidence, and human review remain central, and the workflow is agent-agnostic (Claude Code, OpenCode, Codex, or others).
+- **Evidence-first, human-in-the-loop AI collaboration.** AI development agents are a replaceable tool, not the product's identity; the workflow is agent-agnostic (Claude Code, OpenCode, Codex, or others).
 
 ## Current Status
 
-Status reflects the current repository state (implementation, tests, and CI), not open issues or design intent.
+Status reflects the current repository state (implementation, tests, and CI), not open issues or design intent. See [Current scope](#current-scope) above for the evidence behind each row.
 
 | Area | Status |
 |---|---|
-| Architecture foundation (layers, C ABI boundary, ADRs) | Implemented |
-| Avalonia UI application shell | Implemented (minimal — no feature UI yet) |
-| C# Core / Native Core boundary | Implemented |
-| C ABI / P/Invoke | Implemented |
-| Architecture Analyzer (Roslyn) | Implemented — enforced in CI |
-| Analyzer test suite | Implemented |
-| R3000A instruction domain model | Implemented |
-| R3000A decoder | Implemented |
-| MemoryBus / KSEG0 / KSEG1 translation | Implemented |
-| Branch and load delay-slot modeling | Implemented |
-| COP0 / exception handling | Implemented |
-| Interrupt Controller | Implemented |
-| CPU interrupt integration | Implemented |
-| Timers / DMA controller | Partially implemented (register-level native models exist; full memory-bus wiring in progress) |
-| Minimal MIPS program execution path | Implemented |
-| Golden Trace (deterministic execution tracing) | Implemented |
-| Disc image analysis (CHD → ISO 9660 → PS-X EXE → MIPS analysis, basic blocks / CFG) | Implemented |
-| GPU / SPU / CD-ROM / MDEC / GTE | Planned (interface contracts only) |
-| Runtime / BIOS HLE execution boundary | Implemented — interpreter and recompiled paths dispatch A0/B0/C0 vectors through shared Runtime semantics, and a full-title loop (`ExecutionOrchestrator` in Core, host engine in Test) runs bounded guest execution (#364, #368, #366) |
-| Persona v0.1.0 E2E verification gate | Implemented — analysis/recompiler stages plus an `RUNTIME_EXECUTION` stage that drives a real-ROM candidate through the full-title orchestrator; next blocker is GPU/SPU/CD-ROM hardware (#351, #366, #367) |
-| Synthetic MIPS recompiler vertical slice (IR/lowering, memory, control flow, host codegen, differential validation) | Implemented and differentially validated |
-| Real-ROM function recompilation | First function implemented and differentially validated (#225); general coverage not yet complete |
+| CPU execution (decode/execute, delay slots, COP0, interrupts, KSEG, Golden Trace) | Implemented — [`docs/cpu/`](docs/cpu/) |
+| Recompiler (synthetic + first real-ROM function, differential validation) | Validated, bounded — general real-ROM coverage not implemented |
+| Disc / executable analysis (CHD → ISO 9660 → PS-X EXE → CFG) | Implemented |
+| Runtime / BIOS execution boundary (A0/B0/C0 dispatch, production interpreter engine wired into Studio) | Partial — bounded, in-memory diagnostic execution only; no real disc/EXE loading; not broad BIOS HLE |
+| Hardware — DMA / interrupts / timers (MMIO adapters, memory bus) | Partial — implemented and tested standalone, not wired into any execution engine |
+| Hardware — GPU / SPU / CD-ROM / MDEC / GTE | Planned — interface contracts only |
 | Full-title static recompilation | Not implemented |
-| Debugger | Planned |
-| MCP / AI integration | Planned |
-| Ghidra integration | Planned |
-
-**CPU execution foundation.** The CPU execution foundation is now functional: instruction decoding, memory-path execution (including KSEG translation), branch/load delay-slot behavior, COP0 and exception handling, hardware interrupt sampling, and deterministic execution tracing all work together to execute a minimal MIPS program end to end. This is a vertical slice through the CPU, not a complete emulator — see [`docs/cpu/`](docs/cpu/) for the detailed specification.
-
-**Recompiler.** PSXRecompStudio's ultimate goal is static recompilation. A backend-agnostic Recompiler IR and shared state contract, MIPS→IR lowering, deterministic host C generation, a memory backend (load/store at every width, unaligned access, load-delay semantics), a control-flow backend (branches, jumps, links, delay slots, bounded/budgeted loops), and an interpreter-vs-recompiled differential validator are all implemented in `PSXRecomp.Core.Recompiler` (there is no standalone `PSXRecomp.Recompiler` project yet — see [Repository Structure](#repository-structure)). Together these prove an executable, differentially-validated **synthetic MIPS fixture** vertical slice: MIPS → IR → generated host C → build → bounded execution → interpreter diff → match (#207, #208, #209, #211; re-verified end-to-end by the integration smoke test, #266).
-
-A first real-ROM function is now recompiled and differentially validated the same way (#225): `RealRomCandidateSelector` (`PSXRecomp.Core.Recompiler`) selects a bounded, contiguous instruction window from the existing disc/EXE analysis output (see [Disc image analysis](#current-status) above) by actually attempting to lower it through the unmodified `MipsToIrLowerer` contract and excluding any indirect jump, so only a window the Recompiler already supports is ever selected — no second, real-ROM-specific semantics implementation exists. The generated-host path can now hand unresolved control transfers to the Runtime through a generic host-transfer hook, allowing BIOS A0/B0/C0 vectors to use the same `BiosVectorDispatch` semantics as the interpreter without embedding BIOS knowledge in generated C (#368). This is not yet general real-ROM function recompilation: candidate selection is deliberately conservative, and full-title recompilation and complete hardware support remain unimplemented (the title-agnostic full-title execution orchestrator itself now exists in `PSXRecomp.Core.Execution` — Issue #366). The CPU/decoder work above is foundational to it, not a substitute for it.
-
-## Core Capabilities
-
-- Architecture rules (layering, dependency direction, forbidden APIs, P/Invoke location) enforced at compile time, not just documented.
-- R3000A/MIPS I instruction decoding and domain modeling, independently testable from the execution engine.
-- A native CPU + memory bus that executes real instruction sequences with correct delay-slot and exception semantics.
-- Deterministic, replayable execution traces (Golden Trace) intended to validate future recompiler backends against the interpreter.
-- A deterministic MIPS→IR→host-C Recompiler pipeline with bounded execution and interpreter differential validation, proven end-to-end on both a synthetic fixture and a first real-ROM function (#225); general real-ROM coverage is not yet implemented.
-- A C# ⇄ C++ interop boundary (C ABI + P/Invoke) that keeps native implementation details out of the managed layer.
+| Architecture enforcement (Roslyn analyzer, Artifact Contamination Gate) | Implemented — enforced in CI |
+| Avalonia UI application shell | Implemented (minimal — one diagnostic execution action; no feature UI yet) |
+| Debugger / MCP / Ghidra integration | Planned |
 
 ## Architecture
 
@@ -141,49 +144,27 @@ Layering and dependency direction (Domain / Application / Infrastructure / Inter
 
 ## Recompilation Workflow
 
-Two paths exist today, both implemented end to end and differentially
-validated against the interpreter through the same, unmodified Recompiler
-contract. The **synthetic path**:
+Two paths exist today, both implemented end to end and differentially validated against the interpreter through the same, unmodified Recompiler contract.
+
+The **synthetic path**:
 
 ```text
-MIPS fixture
-        ↓  decode / analysis
-Recompiler IR (lowering + validation)
-        ↓  deterministic host C generation
-Generated host C
-        ↓  host compile
-Bounded execution
-        ↓
-Interpreter reference execution
-        ↓  State Snapshot / checkpoint comparison
-Differential validation → MATCH
+MIPS fixture → Recompiler IR (lowering + validation) → deterministic host C
+        → host compile → bounded execution → interpreter reference execution
+        → state-snapshot comparison → Differential validation → MATCH
 ```
 
-The **real-ROM path** reuses the same disc/EXE analysis (function/instruction
-boundaries, CFG/basic blocks) and the same Recompiler IR/lowering/codegen/
-differential stages above — only the input is different. `RealRomCandidateSelector`
-picks the real-ROM function/window; the very fact it lowers cleanly and excludes
-any indirect jump is what makes it a valid input, so no separate real-ROM
-semantics or execution path exists (#225):
+The **real-ROM path** reuses the same disc/EXE analysis and the same Recompiler IR/lowering/codegen/differential stages — only the input differs. `RealRomCandidateSelector` picks a real-ROM window; the fact that it lowers cleanly and excludes every indirect jump is itself the selection criterion, so no separate real-ROM semantics implementation exists (#225):
 
 ```text
-PSX title (ROM/EXE, user-supplied)
-        ↓  disassembly / analysis (implemented; Ghidra integration: planned)
-Function/instruction boundaries, MMIO findings, CFG/basic blocks
-        ↓  RealRomCandidateSelector: bounded, indirect-jump-free candidate window
-Recompiler IR (lowering + validation)   — the same stage as the synthetic path
-        ↓  ... same pipeline as above ...
-Differential validation → MATCH   (first function proven; #225)
+PSX title (ROM/EXE, user-supplied) → disassembly/analysis (Ghidra integration: planned)
+        → function/instruction boundaries, MMIO findings, CFG/basic blocks
+        → RealRomCandidateSelector: bounded, indirect-jump-free candidate window
+        → ... same Recompiler IR/codegen/differential pipeline as above ...
+        → Differential validation → MATCH (first function proven; #225)
 ```
 
-Candidate selection is deliberately conservative: it accepts a window only when
-`MipsToIrLowerer` actually lowers it and no JR/JALR appears in it, so an
-unsupported instruction or an indirect jump is excluded rather than
-worked around. General real-ROM function coverage (arbitrary functions, full
-MIPS I coverage) and full-title static recompilation (every function of a real
-title, plus runtime and hardware integration) are not implemented. Do not read
-"a first real-ROM function proven" as "general real-ROM or full-title
-recompilation implemented" — they are separate milestones.
+Candidate selection is deliberately conservative: a window is accepted only when `MipsToIrLowerer` actually lowers it and no JR/JALR appears in it. General real-ROM function coverage and full-title static recompilation (every function of a real title, plus runtime and hardware integration) remain unimplemented — do not read "a first real-ROM function proven" as "general real-ROM or full-title recompilation implemented."
 
 ## Technology Stack
 
@@ -257,7 +238,7 @@ Start with [`docs/README.md`](docs/README.md) for the full documentation index. 
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — system architecture
 - [`docs/architecture-matrix.md`](docs/architecture-matrix.md) — layering and dependency-direction SSOT, mechanically enforced by the analyzer
-- [`docs/adr/`](docs/adr/) — Architecture Decision Records
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records, including [ADR-015](docs/adr/015-production-execution-engine-ownership.md) on the production execution engine
 - [`docs/cpu/`](docs/cpu/) — R3000A instruction set, pipeline, COP0, exceptions, memory model
 - [`docs/architecture/gui-ux.md`](docs/architecture/gui-ux.md) — GUI/UX design
 - [`docs/development/agent-guide.md`](docs/development/agent-guide.md) — bootstrap guide for AI development agents
