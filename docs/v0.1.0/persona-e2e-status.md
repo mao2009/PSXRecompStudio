@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler), #366 (full-title execution orchestrator)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler), #366 (full-title execution orchestrator), #380 (production execution engine ownership, ADR-015)
 
 ## Purpose
 
@@ -48,6 +48,13 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | GPU / SPU / CD-ROM | ❌ Not implemented | Interface-only |
 | TITLE_SCREEN | ❌ Not reached | — |
 
+The RUNTIME_EXECUTION row above is this gate's own real-ROM, fixture-gated test
+path (generated-host `HostTitleExecutionEngine`, `[Test]`-only). It is separate
+from the Studio's own production execution entry point described under
+[First Blocker](#first-blocker-as-of-head-orchestrator-landed-issue-366) below
+(ADR-015, interpreter-backed) — the two are not the same engine and should not
+be conflated.
+
 ## First Blocker (as of HEAD: orchestrator landed, Issue #366)
 
 **Stage:** GPU / SPU / CD-ROM rendering (stands between RUNTIME_EXECUTION and TITLE_SCREEN)
@@ -69,13 +76,36 @@ PC with no continuation rule is classified (UnsupportedTransfer), never a hang.
 It runs on real-ROM functions through `RealRomTitleExecutionTests`
 (real-fixture-gated; skips with no `rom/*.chd`).
 
+The Studio itself is **not** blocked on having no execution entry point. As of
+ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
+composition root: it assembles the production, Domain-layer
+`InterpreterTitleExecutionEngine`, a `BiosHleRuntime`, and
+`ExecutionOrchestrator`, and `MainWindowViewModel.RunDiagnosticTitleCommand` is
+a real Studio UI action that calls it — the product genuinely reaches
+`request → engine load → bounded run → BIOS handoff → classified result`. This
+is a diagnostic execution path, not a general title runner: it runs a small,
+fixed, built-in program from a zeroed register state, not a loaded ROM/EXE, and
+it runs through the **interpreter** backend, not the generated-host
+(recompiled) one (`HostTitleExecutionEngine` remains `[Test]`-only).
+
 What still does not exist:
 
-- Runs the entire Persona executable to an **actual title screen** — the
-  orchestrator stops at the first discontinuity the engine has no code for: the
-  boot path needs BIOS HLE beyond 5 services, GPU/SPU/CD-ROM MMIO, and a CLI
-  product runner (the PSXRecompStudio application itself is a GUI with no
-  execution entry point).
+- **Real disc/EXE → production execution wiring.** `RealRomAnalysis`'s
+  disc/ISO/EXE analysis output is not connected to `TitleExecutionService` as a
+  program image + initial state, so the Studio's production execution path
+  cannot yet run Persona or any other real title — only its own built-in
+  diagnostic program. The disc/EXE analysis itself already exists (CHD → ISO
+  9660 → PS-X EXE → CFG); what is missing is the join between that analysis
+  output and the production execution entry point above, not the analysis or
+  the entry point individually.
+- **A production generated-host (recompiled) execution backend.** The Studio's
+  production path is interpreter-backed only (ADR-015); compiling recompiled
+  guest code and running it as the product's execution backend is deferred
+  (Option B in ADR-015), not implemented.
+- Runs the entire Persona executable to an **actual title screen** — even once
+  a real title is loaded, the orchestrator stops at the first discontinuity the
+  engine has no code for: the boot path needs BIOS HLE beyond 5 services and
+  GPU/SPU/CD-ROM MMIO.
 - GPU / SPU / CD-ROM hardware: `IGpu` and the other hardware interfaces have no
   production implementation. Hardware communication would hit MMIO open-bus
   (reads return 0, writes ignored).
@@ -166,3 +196,4 @@ or local paths.
 - [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution policy
 - [Issue #362](https://github.com/mao2009/PSXRecompStudio/issues/362) — recompiled-path BIOS dispatch (Worker A)
 - [Issue #366](https://github.com/mao2009/PSXRecompStudio/issues/366) — full-title execution orchestrator (this work)
+- [Issue #380](https://github.com/mao2009/PSXRecompStudio/issues/380) / [ADR-015](../adr/015-production-execution-engine-ownership.md) — production execution engine ownership; the Studio's diagnostic execution entry point described above
