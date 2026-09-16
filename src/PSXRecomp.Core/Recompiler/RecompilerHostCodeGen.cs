@@ -186,9 +186,9 @@ public static class RecompilerHostCodeGen
     private static void EmitTerminationReasonMacros(StringBuilder sb)
     {
         sb.AppendLine("/* RecompilerIrTerminationReason byte values (RecompilerContract). */");
-        sb.AppendLine("#define RECOMPILER_REASON_SUCCESS 0");
-        sb.AppendLine("#define RECOMPILER_REASON_UNSUPPORTED_IR 2");
-        sb.AppendLine("#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7");
+        sb.AppendLine($"#define RECOMPILER_REASON_SUCCESS {(byte)RecompilerIrTerminationReason.Success}");
+        sb.AppendLine($"#define RECOMPILER_REASON_UNSUPPORTED_IR {(byte)RecompilerIrTerminationReason.UnsupportedIr}");
+        sb.AppendLine($"#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED {(byte)RecompilerIrTerminationReason.ExecutionBudgetExceeded}");
         sb.AppendLine();
     }
 
@@ -439,7 +439,7 @@ public static class RecompilerHostCodeGen
                     return EmitJumpExit(flow);
 
                 case RecompilerIrFlowKind.Call:
-                    return EmitCallExit(flow, exit);
+                    return EmitCallExit(flow);
             }
         }
 
@@ -461,10 +461,9 @@ public static class RecompilerHostCodeGen
         return $"{StateParam}->{NextPcField} = {target}; {StateParam}->{TerminationField} = 0; return 0;";
     }
 
-    private static string EmitCallExit(RecompilerIrFlow flow, RecompilerIrExit exit)
+    private static string EmitCallExit(RecompilerIrFlow flow)
     {
         var calleeTarget = FormatImmediate(flow.Target!.Value);
-        var returnAddress = FormatImmediate(exit.NextPc!.Value);
         return $"{StateParam}->{NextPcField} = {calleeTarget}; {StateParam}->{TerminationField} = 0; return 0;";
     }
 
