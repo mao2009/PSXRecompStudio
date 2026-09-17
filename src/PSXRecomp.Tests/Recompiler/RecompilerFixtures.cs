@@ -355,13 +355,15 @@ internal static class RecompilerFixtures
     /// <summary>
     /// An unbounded BEQ loop that never exits. Both sides must stop on their budget
     /// with the identical state (termination ExecutionBudgetExceeded, PC parked at
-    /// the loop body) rather than spin or fall through. The host retires four
-    /// blocks — prologue, the first loop body, the fused BEQ+delay-slot test, then
-    /// the second loop body — before its budget check parks the PC at 0x80000004;
-    /// the interpreter retires seven instructions (the prologue plus two full
-    /// body/test/delay iterations) and lands on the same PC with $t0 = 2. A smaller
-    /// reference budget stops mid-iteration and leaves the two sides with different
-    /// $t0 values, which is why the interpreter's budget must be seven.
+    /// the loop body) rather than spin or fall through. Issue #375's strict
+    /// pre-dispatch budget retires at most the requested count of host units, so
+    /// the host's five-unit budget retires exactly five blocks — prologue, then two
+    /// full (loop body, fused BEQ+delay-slot test) iterations — before its guard
+    /// parks the PC at 0x80000004; the interpreter retires seven instructions (the
+    /// prologue plus the same two full body/test/delay iterations) and lands on the
+    /// same PC with $t0 = 2. A smaller reference budget stops mid-iteration and
+    /// leaves the two sides with different $t0 values, which is why the
+    /// interpreter's budget must be seven.
     /// </summary>
     public static RecompilerDifferentialFixture Issue209UnboundedLoop() =>
         new(
@@ -374,6 +376,6 @@ internal static class RecompilerFixtures
                 MipsEncoding.Nop,                                                        // 0x0C delay slot
             },
             entryPc: EntryPc,
-            stepBudget: 3,
+            stepBudget: 5,
             referenceStepBudget: 7);
 }

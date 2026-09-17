@@ -535,9 +535,13 @@ public static class RecompilerHostCodeGen
         EmitBudgetExceededReturn(sb, 4);
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"int32_t hosted = {StateParam}->{HostTransferField}({StateParam});");
+        // A decline the budget guard above let through is definitive: this pc has
+        // no block and no host claim, regardless of steps. Unlike the null-hook
+        // case, "steps == 0" here can just mean a segment restart landed back on
+        // this same pc with a fresh budget, not an invalid entry — so it must not
+        // gate this outcome the way it gates the null-hook branch above.
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (hosted != 0) {");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0;");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
         // A claimed transfer retires like a block, so it appears in the checkpoint
         // trace at the PC it was claimed for and spends a step from the same budget.
