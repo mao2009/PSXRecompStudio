@@ -89,4 +89,54 @@ public sealed class MemoryCardSlotConfigurationTests
         var write = () => MemoryCardSlotConfiguration.Empty.WithCard(Slot3, Slot1Card);
         write.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    /// <summary>
+    /// CodeRabbit round 2: direct positional construction enforces the same
+    /// invariant as <see cref="MemoryCardSlotConfiguration.WithCard"/>, so
+    /// <c>new(...)</c> can never produce a configuration whose whitespace path
+    /// <see cref="MemoryCardSlotConfiguration.HasCard"/> would misreport as an
+    /// inserted card.
+    /// </summary>
+    [Fact]
+    public void Constructor_AcceptsNullForAnEmptySlot()
+    {
+        var configuration = new MemoryCardSlotConfiguration(null, null);
+
+        configuration.HasCard(MemoryCardSlot.Slot1).Should().BeFalse();
+        configuration.HasCard(MemoryCardSlot.Slot2).Should().BeFalse();
+        configuration[MemoryCardSlot.Slot1].Should().BeNull();
+        configuration[MemoryCardSlot.Slot2].Should().BeNull();
+    }
+
+    /// <summary>A non-blank path is accepted directly, without going through <see cref="MemoryCardSlotConfiguration.WithCard"/>.</summary>
+    [Fact]
+    public void Constructor_AcceptsAValidPathInEitherSlot()
+    {
+        var configuration = new MemoryCardSlotConfiguration(Slot1Card, Slot2Card);
+
+        configuration[MemoryCardSlot.Slot1].Should().Be(Slot1Card);
+        configuration[MemoryCardSlot.Slot2].Should().Be(Slot2Card);
+    }
+
+    /// <summary>A blank slot 1 path is rejected at construction, the same as <see cref="MemoryCardSlotConfiguration.WithCard"/> rejects it.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Constructor_RejectsABlankSlot1Path(string path)
+    {
+        var act = () => new MemoryCardSlotConfiguration(path, null);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    /// <summary>A blank slot 2 path is rejected at construction, the same as <see cref="MemoryCardSlotConfiguration.WithCard"/> rejects it.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Constructor_RejectsABlankSlot2Path(string path)
+    {
+        var act = () => new MemoryCardSlotConfiguration(null, path);
+
+        act.Should().Throw<ArgumentException>();
+    }
 }

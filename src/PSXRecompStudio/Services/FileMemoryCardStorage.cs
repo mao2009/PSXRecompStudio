@@ -22,12 +22,26 @@ namespace PSXRecompStudio.Services;
 /// one class to Infrastructure later changes no caller and no Domain type.
 /// </para>
 /// <para>
-/// <b>Write safety.</b> A save goes to a sibling temporary file, is flushed to
-/// the storage device, and is then moved over the card with a single rename, so
-/// a crash or a failure mid-write leaves the previous card intact rather than a
-/// half-written one. Backup/versioning is deliberately not implemented: the
-/// rename already makes a torn card unreachable, and keeping historical copies
-/// is a separate product decision.
+/// <b>Write safety.</b> A save goes to a sibling, uniquely named temporary file
+/// (<see cref="StagingPathFactory"/>), is flushed to the storage device, and is
+/// then moved over the card with a single rename, so a crash or a failure
+/// mid-write leaves the previous card intact rather than a half-written one.
+/// Backup/versioning is deliberately not implemented: the rename already makes
+/// a torn card unreachable, and keeping historical copies is a separate product
+/// decision.
+/// </para>
+/// <para>
+/// <b>Crash durability scope.</b> The guarantee above is "no torn file", not
+/// "survives a power loss the instant after a successful return". <c>Flush</c>
+/// (below) fsyncs the staging file's content, but this adapter does not fsync
+/// the card's parent directory after the create or the rename. On Linux and
+/// macOS a directory-entry update is only durable across a crash once its
+/// directory is itself fsynced — an OS/filesystem guarantee plain
+/// <see cref="FileStream"/> and <see cref="File"/> do not expose, and this
+/// adapter does not add native interop to obtain. In the ordinary case (no
+/// crash between the rename returning and the entry reaching disk) the file is
+/// exactly right; the narrower claim is stated rather than assumed. See
+/// <c>docs/runtime/memory-card.md</c> for the full contract.
 /// </para>
 /// <para>
 /// <b>Concurrency.</b> As <see cref="IMemoryCardStorage"/> specifies, concurrent
@@ -45,12 +59,20 @@ namespace PSXRecompStudio.Services;
 public sealed class FileMemoryCardStorage : IMemoryCardStorage
 {
     /// <summary>
-    /// Appended to a card's path to form the staging file a save is written to
-    /// before the rename. Deterministic so the staging file is always adjacent to
-    /// its card (hence on the same volume, which the rename requires) and so a
-    /// leftover one is recognisable.
+    /// Marks a save's staging file. Every staging path starts with a card's own
+    /// path plus this suffix, so a leftover one is always recognisable and always
+    /// adjacent to its card (hence on the same volume, which the rename requires).
     /// </summary>
     public const string StagingSuffix = ".psxtmp";
+
+    /// <summary>
+    /// Builds the staging path a save writes to, given the card's path. Each call
+    /// must return a name distinct from every other in-flight save's, so two
+    /// concurrent saves to the same card never share, and cannot clobber, a
+    /// staging file. <see cref="DefaultStagingPath"/> is production's choice;
+    /// tests override this to force a specific, deterministic path.
+    /// </summary>
+    internal Func<string, string> StagingPathFactory { get; init; } = DefaultStagingPath;
 
     /// <summary>
     /// Runs after the staging file is written and before the card is renamed over.
@@ -59,6 +81,13 @@ public sealed class FileMemoryCardStorage : IMemoryCardStorage
     /// reliably. Production leaves it null.
     /// </summary>
     internal Action? AfterStagingForTests { get; init; }
+
+    /// <summary>
+    /// A staging path unique to this call: the card's path, <see cref="StagingSuffix"/>,
+    /// and a fresh GUID, so no two saves — of the same card or different ones —
+    /// ever collide on one staging file.
+    /// </summary>
+    internal static string DefaultStagingPath(string cardPath) => $"{cardPath}{StagingSuffix}.{Guid.NewGuid():N}";
 
     /// <inheritdoc />
     public bool Exists(string path)
@@ -128,11 +157,19 @@ public sealed class FileMemoryCardStorage : IMemoryCardStorage
         }
 
         var raw = handle.Image.ToArray();
-        var staging = handle.Path + StagingSuffix;
+        var staging = StagingPathFactory(handle.Path);
 
+        // CreateNew is exclusive, so this save can never open (and silently
+        // adopt) a staging file another in-flight save owns — collision is
+        // already made vanishingly unlikely by the GUID in the default path.
+        // Opening is kept outside the cleanup block on purpose, exactly as in
+        // CreateBlank: a failure to create means the path is somebody else's
+        // (another save's own staging file, or an unrelated leftover) and must
+        // not be deleted.
+        var stream = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         try
         {
-            using (var stream = new FileStream(staging, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (stream)
             {
                 stream.Write(raw);
                 stream.Flush(flushToDisk: true);

@@ -143,16 +143,119 @@ public sealed class FileMemoryCardStorageTests : IDisposable
         var handle = _storage.Load(path);
         handle.Image.Write(MemoryCardImage.BlockOffset(9), [0xAB]);
 
-        // Occupying the staging path with a directory makes the staging write fail
-        // before anything can reach the card itself.
+        // A storage pinned to a known staging path, occupied by a directory, makes
+        // the staging write fail before anything can reach the card itself.
+        var staging = path + FileMemoryCardStorage.StagingSuffix;
 #pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
-        Directory.CreateDirectory(path + FileMemoryCardStorage.StagingSuffix);
+        Directory.CreateDirectory(staging);
 #pragma warning restore AARC003
+        var storage = new FileMemoryCardStorage { StagingPathFactory = _ => staging };
 
-        var act = () => _storage.Save(handle);
+        var act = () => storage.Save(handle);
 
         act.Should().Throw<SystemException>();
         ReadFile(path).Should().Equal(raw, "a failed save must not touch the card");
+    }
+
+    /// <summary>
+    /// Item 4 (CodeRabbit round 2): staging creation is exclusive, so a save can
+    /// never adopt — or delete on failure — a path that is already somebody
+    /// else's, mirroring <see cref="FileMemoryCardStorage.CreateBlank"/>.
+    /// </summary>
+    [Fact]
+    public void Save_RefusesToOverwriteAnAlreadyOccupiedStagingPath()
+    {
+        var raw = ExternalCardBytes();
+        var path = WriteCard("occupied.mcr", raw);
+        var handle = _storage.Load(path);
+        handle.Image.Write(MemoryCardImage.BlockOffset(9), [0xAB]);
+
+        var staging = path + FileMemoryCardStorage.StagingSuffix;
+        byte[] someoneElsesBytes = [0x01, 0x02, 0x03];
+#pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
+        File.WriteAllBytes(staging, someoneElsesBytes);
+#pragma warning restore AARC003
+        var storage = new FileMemoryCardStorage { StagingPathFactory = _ => staging };
+
+        var act = () => storage.Save(handle);
+
+        act.Should().Throw<IOException>("CreateNew must refuse a staging path that already exists");
+        ReadFile(path).Should().Equal(raw, "a failed save must not touch the card");
+        ReadFile(staging).Should().Equal(someoneElsesBytes, "a path this save did not create must not be deleted");
+    }
+
+    /// <summary>Required case 8: every save picks its own staging path, adjacent to the card.</summary>
+    [Fact]
+    public void DefaultStagingPath_IsUniquePerCallAndAdjacentToTheCard()
+    {
+        var path = Path.Combine(_directory, "unique.mcr");
+
+        var first = FileMemoryCardStorage.DefaultStagingPath(path);
+        var second = FileMemoryCardStorage.DefaultStagingPath(path);
+
+        first.Should().NotBe(second, "two saves must never be steered onto the same staging file");
+        Path.GetDirectoryName(first).Should().Be(_directory, "staging stays on the card's own volume");
+        Path.GetDirectoryName(second).Should().Be(_directory);
+    }
+
+    /// <summary>
+    /// Required case 9: one save's failure and cleanup never touches another
+    /// save's staging file, even when both target the same card.
+    /// </summary>
+    [Fact]
+    public void Save_CleanupRemovesOnlyItsOwnStagingFile()
+    {
+        var raw = ExternalCardBytes();
+        var path = WriteCard("isolated.mcr", raw);
+        var handleA = _storage.Load(path);
+        handleA.Image.Write(MemoryCardImage.BlockOffset(9), [0xAB]);
+
+        var stagingA = path + FileMemoryCardStorage.StagingSuffix + ".writer-a";
+        var stagingB = path + FileMemoryCardStorage.StagingSuffix + ".writer-b";
+        byte[] writerBsBytes = [0xB1, 0xB2, 0xB3];
+#pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
+        File.WriteAllBytes(stagingB, writerBsBytes); // writer B's staging file, still in flight
+        Directory.CreateDirectory(stagingA); // forces writer A's own staging write to fail
+#pragma warning restore AARC003
+        var storageA = new FileMemoryCardStorage { StagingPathFactory = _ => stagingA };
+
+        var act = () => storageA.Save(handleA);
+
+        act.Should().Throw<SystemException>();
+        Exists(stagingB).Should().BeTrue("writer A's cleanup must not remove writer B's staging file");
+        ReadFile(stagingB).Should().Equal(writerBsBytes, "writer A must never write into writer B's staging file");
+    }
+
+    /// <summary>
+    /// Item 4/10 (CodeRabbit round 2): two real, concurrently in-flight saves to
+    /// the same card use independent staging files, so the one that reaches its
+    /// pre-rename check second is refused instead of renaming the other's bytes.
+    /// </summary>
+    [Fact]
+    public void Save_ConcurrentSavesToTheSameCardNeverMixStagingBytes()
+    {
+        var raw = ExternalCardBytes();
+        var path = WriteCard("racing-writers.mcr", raw);
+        var handleA = _storage.Load(path);
+        handleA.Image.Write(MemoryCardImage.BlockOffset(9), [0xAA]);
+
+        var handleB = _storage.Load(path);
+        handleB.Image.Write(MemoryCardImage.BlockOffset(12), [0xBB]);
+        var storageB = new FileMemoryCardStorage();
+
+        // Writer B fully completes — its own, independent staging file — while
+        // writer A's staging write is still "in flight" (inside A's callback).
+        var storageA = new FileMemoryCardStorage
+        {
+            AfterStagingForTests = () => storageB.Save(handleB),
+        };
+
+        var act = () => storageA.Save(handleA);
+
+        act.Should().Throw<MemoryCardConflictException>("writer A's card changed under it once writer B committed");
+        var onDisk = ReadFile(path);
+        onDisk[MemoryCardImage.BlockOffset(12)].Should().Be(0xBB, "writer B's bytes must be exactly what survives");
+        onDisk[MemoryCardImage.BlockOffset(9)].Should().NotBe(0xAA, "writer A's rejected bytes must never land on disk");
     }
 
     /// <summary>
@@ -194,8 +297,10 @@ public sealed class FileMemoryCardStorageTests : IDisposable
         interloper[MemoryCardImage.BlockOffset(12)] = 0x5A;
 
         // The card passes the pre-write check, then changes underneath the save.
+        var staging = path + FileMemoryCardStorage.StagingSuffix;
         var racing = new FileMemoryCardStorage
         {
+            StagingPathFactory = _ => staging,
             AfterStagingForTests = () => WriteCard("raced.mcr", interloper),
         };
 
@@ -203,8 +308,7 @@ public sealed class FileMemoryCardStorageTests : IDisposable
 
         act.Should().Throw<MemoryCardConflictException>().Which.Path.Should().Be(path);
         ReadFile(path).Should().Equal(interloper, "the write that landed during staging must survive");
-        Exists(path + FileMemoryCardStorage.StagingSuffix)
-            .Should().BeFalse("the abandoned staging file is cleaned up");
+        Exists(staging).Should().BeFalse("the abandoned staging file is cleaned up");
     }
 
     /// <summary>A deleted card is treated as changed rather than silently recreated.</summary>

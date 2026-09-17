@@ -242,8 +242,7 @@ public sealed class MemoryCardFormatContractTests
         {
             foreach (var referenced in ReferencedTypes(type))
             {
-                var ns = Root(referenced);
-                if (ns is not (null or "System" or "PSXRecomp.Architecture") && ns != cardNamespace)
+                if (IsProhibited(referenced, cardNamespace))
                 {
                     offenders.Add($"{type.Name} -> {referenced.FullName}");
                 }
@@ -266,6 +265,32 @@ public sealed class MemoryCardFormatContractTests
             .Where(t => t.Name.Contains("SaveState", StringComparison.OrdinalIgnoreCase))
             .Should().BeEmpty();
     }
+
+    /// <summary>
+    /// The architecture-test hole CodeRabbit found: a forbidden type hiding inside
+    /// a <c>System</c> generic wrapper, at any nesting depth, must still be caught.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ProhibitedTypeCases))]
+    public void IsProhibited_InspectsGenericArgumentsRecursively(Type type, bool expected)
+    {
+        var cardNamespace = typeof(MemoryCardImage).Namespace!;
+
+        IsProhibited(type, cardNamespace).Should().Be(expected);
+    }
+
+    public static TheoryData<Type, bool> ProhibitedTypeCases() => new()
+    {
+        { typeof(List<NotACardType>), true },
+        { typeof(Dictionary<string, NotACardType>), true },
+        { typeof(List<List<NotACardType>>), true },
+        { typeof(List<string>), false },
+        { typeof(NotACardType[]), true },
+        { typeof(MemoryCardImage), false },
+    };
+
+    /// <summary>A stand-in for a forbidden (non-System, non-card, non-Architecture) type.</summary>
+    private sealed class NotACardType;
 
     private static byte[] Frame(MemoryCardImage card, int index)
     {
@@ -316,8 +341,14 @@ public sealed class MemoryCardFormatContractTests
         }
     }
 
-    /// <summary>The namespace of <paramref name="type"/>, looking through arrays, by-refs, and generics.</summary>
-    private static string? Root(Type type)
+    /// <summary>
+    /// Whether <paramref name="type"/> — looking through arrays, by-refs, and
+    /// recursively through every generic type argument — names anything outside
+    /// <c>System</c>, <c>PSXRecomp.Architecture</c>, or <paramref name="cardNamespace"/>.
+    /// A wrapper such as <c>List&lt;RuntimeState&gt;</c> is <c>System</c> at its own
+    /// namespace but must still be rejected for what it wraps.
+    /// </summary>
+    private static bool IsProhibited(Type type, string cardNamespace)
     {
         while (type.HasElementType)
         {
@@ -325,6 +356,12 @@ public sealed class MemoryCardFormatContractTests
         }
 
         var ns = type.Namespace;
-        return ns?.StartsWith("System", StringComparison.Ordinal) == true ? "System" : ns;
+        var root = ns?.StartsWith("System", StringComparison.Ordinal) == true ? "System" : ns;
+        if (root is not (null or "System" or "PSXRecomp.Architecture") && root != cardNamespace)
+        {
+            return true;
+        }
+
+        return type.IsGenericType && type.GetGenericArguments().Any(argument => IsProhibited(argument, cardNamespace));
     }
 }

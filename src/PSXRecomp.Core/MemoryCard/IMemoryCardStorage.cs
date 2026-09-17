@@ -111,6 +111,15 @@ public sealed class MemoryCardConflictException : IOException
 /// lock and run no watcher, because a lock an external emulator does not honour
 /// would only give false confidence. See <c>docs/runtime/memory-card.md</c>.
 /// </para>
+/// <para>
+/// <b>Crash durability.</b> <see cref="Save"/> and <see cref="CreateBlank"/>
+/// guarantee that a crash never leaves a torn or half-written card file: the
+/// file holds either its previous content or the complete new content. They do
+/// not additionally guarantee that a successful return survives a crash in the
+/// instant after — filesystem metadata (the directory entry itself) may not yet
+/// be durable, most notably on Linux and macOS. See
+/// <c>docs/runtime/memory-card.md</c> for the exact scope.
+/// </para>
 /// </remarks>
 [Domain]
 public interface IMemoryCardStorage

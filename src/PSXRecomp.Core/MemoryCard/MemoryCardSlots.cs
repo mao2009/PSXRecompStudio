@@ -39,11 +39,18 @@ public enum MemoryCardSlot
 /// </remarks>
 /// <param name="Slot1Path">The card file in slot 1, or <see langword="null"/> when the slot is empty.</param>
 /// <param name="Slot2Path">The card file in slot 2, or <see langword="null"/> when the slot is empty.</param>
+/// <exception cref="ArgumentException">A non-null path is empty or whitespace.</exception>
 [Domain]
 public sealed record MemoryCardSlotConfiguration(string? Slot1Path, string? Slot2Path)
 {
     /// <summary>Both slots empty.</summary>
     public static MemoryCardSlotConfiguration Empty { get; } = new(null, null);
+
+    /// <summary>The card file in slot 1, or <see langword="null"/> when the slot is empty.</summary>
+    public string? Slot1Path { get; init; } = ValidatePath(Slot1Path, nameof(Slot1Path));
+
+    /// <summary>The card file in slot 2, or <see langword="null"/> when the slot is empty.</summary>
+    public string? Slot2Path { get; init; } = ValidatePath(Slot2Path, nameof(Slot2Path));
 
     /// <summary>The card file in <paramref name="slot"/>, or <see langword="null"/> when it is empty.</summary>
     /// <param name="slot">The slot to read.</param>
@@ -84,4 +91,19 @@ public sealed record MemoryCardSlotConfiguration(string? Slot1Path, string? Slot
         MemoryCardSlot.Slot2 => this with { Slot2Path = path },
         _ => throw new ArgumentOutOfRangeException(nameof(slot), slot, "Unknown memory-card slot."),
     };
+
+    /// <summary>
+    /// Enforces the same null-or-non-blank invariant as <see cref="WithCard"/> at
+    /// construction time, so a positional <c>new(...)</c> cannot create a
+    /// configuration <see cref="HasCard"/> would misreport as holding a card.
+    /// </summary>
+    private static string? ValidatePath(string? path, string paramName)
+    {
+        if (path is not null && string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("A slot's card path must not be blank; use null for an empty slot.", paramName);
+        }
+
+        return path;
+    }
 }

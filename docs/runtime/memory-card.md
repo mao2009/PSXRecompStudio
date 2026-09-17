@@ -118,7 +118,8 @@ Card-management strategies are configuration, not separate mechanisms:
 
 Saving a card is a four-step sequence in `FileMemoryCardStorage`:
 
-1. write the complete image to a sibling staging file (`<card path>.psxtmp`),
+1. write the complete image to a sibling staging file, uniquely named per save
+   (`<card path>.psxtmp.<guid>`) and created exclusively,
 2. flush it to the storage device,
 3. re-check the card against the handle's fingerprint (see
    [External modification](#external-modification)),
@@ -129,6 +130,12 @@ content, never a partially written mixture. A failure at any step leaves the
 previous card untouched; the staging file is removed on a best-effort basis, and
 a leftover one is harmless because the card itself was never opened for writing.
 
+The staging name is unique per save (a fresh GUID), not just per card, and is
+created exclusively (`FileMode.CreateNew`): two saves in flight at once — even
+to the same card — never share, write into, or clean up each other's staging
+file. This is a separate guarantee from the fingerprint recheck in step 3, which
+is what stops the *card itself* from being overwritten by a conflicting change.
+
 Creating a blank card uses an exclusive create instead: an existing card is
 never replaced by a blank one, not even under a race.
 
@@ -136,6 +143,33 @@ never replaced by a blank one, not even under a race.
 makes a torn card unreachable, which is what corruption safety requires;
 retaining historical copies of a card is a separate product decision and is not
 part of this subsystem.
+
+### Crash-durability scope
+
+"A crash leaves the previous card untouched" means: the file is never torn —
+it holds either the complete old content or the complete new content, because
+the write happens in a staging file and only a single rename ever touches the
+card's own path. It does **not** mean the outcome of a successful `Save` or
+`CreateBlank` call is guaranteed durable against a crash that happens in the
+instant after that call returns.
+
+`FileStream.Flush(flushToDisk: true)` fsyncs the *file's* content, but neither
+`CreateBlank`'s create nor `Save`'s rename additionally fsyncs the *parent
+directory*. On Linux and macOS, POSIX does not guarantee a directory-entry
+change (a new file, or a rename replacing one) is itself durable until that
+directory is fsynced — an operation the .NET `FileStream` / `File` APIs do not
+expose, and which this adapter does not obtain through native interop. Windows'
+`NTFS` metadata-journaling behavior differs from POSIX and is not documented as
+requiring the same operation, so this gap is specifically a Linux/macOS one.
+
+This is a deliberate, scoped decision rather than an oversight: Issue #22's
+acceptance criteria ask for safe, atomic writes that avoid a partial or
+corrupt card, which the rename-based design already satisfies. Guaranteeing
+survival of a crash landing in the narrow window right after a successful
+return is a stronger, separate property this subsystem does not claim, and
+adding platform-specific native directory-fsync interop to obtain it would
+also pre-empt Issue #38 / ADR-017's still-open decision about where host I/O
+and any native interop for it belongs.
 
 ## External modification
 
@@ -177,8 +211,12 @@ unsupported.** The policy is *detect, do not prevent*:
   writer is refused rather than silently winning.
 - Read-only concurrent use (another process reading the card) is unaffected.
 
-A consequence of the fixed staging-file name is that two saves to one card in
-parallel are also unsupported, consistently with the policy above.
+Two saves to one card started from *within this process* at the same time are
+independent at the filesystem level — each gets its own uniquely named,
+exclusively created staging file (see [Write safety](#write-safety)) — but the
+fingerprint check still means only one of them can win: whichever reaches its
+pre-rename check first commits, and the other is refused as an external
+conflict when it checks next, consistently with the policy above.
 
 ## Interoperability claim
 

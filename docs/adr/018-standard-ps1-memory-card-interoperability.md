@@ -83,10 +83,12 @@ enforces the separation rather than leaving it to convention.
 
 ### 5. Writes are atomic-by-rename, without backup or versioning
 
-A save writes the whole image to a sibling staging file, flushes it to the
-device, and renames it over the card. The card holds either its previous content
-or the complete new content, never a mixture. Creating a blank card uses an
-exclusive create, so an existing card is never replaced by a blank one.
+A save writes the whole image to a sibling staging file — uniquely named per
+save and created exclusively, so two saves in flight at once never share or
+clobber one staging file — flushes it to the device, and renames it over the
+card. The card holds either its previous content or the complete new content,
+never a mixture. Creating a blank card uses an exclusive create, so an existing
+card is never replaced by a blank one.
 
 Backup/versioning is deliberately **not** implemented: the rename already makes
 a torn card unreachable, which is what corruption safety requires. Retaining
@@ -130,7 +132,27 @@ contract test and a synthetic non-empty card fixture. No compatibility with a
 specific named emulator build is claimed, because no external emulator binary is
 part of the test suite. Adding such a claim requires evidence, not inference.
 
-### 9. The filesystem adapter's layer is temporary and owned by Issue #38
+### 9. Crash durability is scoped to no-torn-file, not post-return power loss
+
+The rename-based design in decision 5 guarantees a card is never left torn: a
+crash at any point leaves it holding either the complete previous content or
+the complete new content. It does not additionally guarantee that a
+successful `Save` or `CreateBlank` call survives a crash landing in the
+instant after that call returns, because `FileStream.Flush(flushToDisk: true)`
+fsyncs a file's content but neither operation fsyncs the card's *parent
+directory*. On Linux and macOS, POSIX does not make a directory-entry change
+(a new file, or a rename that replaces one) durable across a crash until the
+directory itself is fsynced, and the .NET `FileStream` / `File` APIs expose no
+way to do that.
+
+Issue #22's acceptance criteria ask for safe, atomic writes that avoid a
+partial or corrupt card — satisfied by decision 5 alone. Guaranteeing survival
+of a crash in that narrow post-return window is a stronger, separate property
+this decision does not claim, so the documentation states the narrower scope
+explicitly (`docs/runtime/memory-card.md`) rather than letting "atomic" or
+"safe" be read as covering it.
+
+### 10. The filesystem adapter's layer is temporary and owned by Issue #38
 
 The format, card model, slot model, and storage contract (`IMemoryCardStorage`)
 are Domain types performing no I/O. The concrete filesystem adapter
@@ -151,8 +173,9 @@ later changes no caller and no Domain type.
   written here stays usable by it, because neither side's file is transformed.
 - The format cannot drift silently: the frame layout is pinned by tests, so a
   change that invented a house format fails the build rather than shipping.
-- A user's existing card survives a crash, a failed write, and a concurrent
-  writer, and is never overwritten by a blank one.
+- A user's existing card is never left torn by a crash or a failed write, a
+  concurrent writer is detected rather than silently overwriting it, and the
+  card is never overwritten by a blank one.
 - Memory cards cannot become an accidental save-state mechanism.
 
 ### Costs / constraints
@@ -162,8 +185,13 @@ later changes no caller and no Domain type.
   does not act.
 - Refusing to write after an external change is a hard failure the caller must
   handle, not a merge. There is no automatic reconciliation.
-- Parallel saves to one card are unsupported, including from one process, a
-  consequence of the fixed staging-file name.
+- Parallel saves to the same card, including from within one process, still
+  resolve to one winner: the staging files themselves no longer collide, but
+  the fingerprint check still refuses whichever save reaches its pre-rename
+  check second.
+- A successful `Save` or `CreateBlank` is not guaranteed durable against a
+  crash in the instant after it returns, because the parent directory is not
+  fsynced (decision 9). This is scoped, not fixed, without new native interop.
 - The adapter's Application-layer placement is a known temporary state carried
   until Issue #38 activates `PSXRecomp.Infrastructure`.
 - Wrapped card formats stay unreadable until someone implements an explicit,
@@ -208,6 +236,18 @@ Rejected for this Issue. Atomic replacement already satisfies the corruption
 requirement; retaining history is a product feature with its own retention,
 naming, and cleanup questions, and bundling it here would decide those by
 accident.
+
+### Native parent-directory fsync on Linux/macOS
+
+Rejected for this Issue. It would close the post-return power-loss gap
+decision 9 describes, but only by adding platform-conditional native interop
+(open/fsync/close on the directory handle) to an adapter whose class doc
+already states its Application-layer placement is temporary pending Issue #38
+/ ADR-017's still-open host-I/O boundary decision — building new native-interop
+plumbing here would pre-empt that decision rather than wait for it. Issue #22's
+acceptance criteria ask for safe, atomic writes free of torn files, which
+decision 5 already satisfies without it. Revisit if a concrete crash-durability
+requirement is raised, ideally once Issue #38 gives native host I/O a home.
 
 ### Creating `PSXRecomp.Infrastructure` for the adapter
 
