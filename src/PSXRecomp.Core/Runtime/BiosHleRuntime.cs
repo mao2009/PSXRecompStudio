@@ -228,14 +228,6 @@ public sealed class BiosHleRuntime : IBiosRuntime
     }
 
     /// <summary>
-    /// A0:3C putchar. Writes the low byte of the character argument to the
-    /// injected output sink and returns that same byte, which is putchar's full
-    /// documented behavior (ADR-014). An argument shape the ABI does not accept
-    /// is rejected before anything is written, so a rejected call has no side
-    /// effect. The byte is emitted raw: encoding is the sink receiver's concern,
-    /// never the Domain layer's.
-    /// </summary>
-    /// <summary>
     /// A0:39 InitHeap(addr, size). Documented behavior (docs/REFERENCES.md): sets
     /// the address and size of the heap used by the malloc/realloc/calloc/free
     /// and qsort family, and deallocates all existing memory handles; the BIOS
@@ -259,6 +251,14 @@ public sealed class BiosHleRuntime : IBiosRuntime
         return BiosServiceResult.Supported(identity);
     }
 
+    /// <summary>
+    /// A0:3C putchar. Writes the low byte of the character argument to the
+    /// injected output sink and returns that same byte, which is putchar's full
+    /// documented behavior (ADR-014). An argument shape the ABI does not accept
+    /// is rejected before anything is written, so a rejected call has no side
+    /// effect. The byte is emitted raw: encoding is the sink receiver's concern,
+    /// never the Domain layer's.
+    /// </summary>
     private BiosServiceResult InvokePutChar(BiosCallIdentity identity)
     {
         if (identity.Arguments.Count != 1)
