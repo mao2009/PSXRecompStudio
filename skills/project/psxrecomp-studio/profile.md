@@ -24,6 +24,7 @@ common skill is ported to another project.
 | Repository artifact policy | `docs/development/artifact-policy.md` (SSOT: `config/artifact-policy.json`) |
 | Real-ROM analysis flow (stages, failure kinds, artifacts, CI/SKIP policy) | `docs/development/real-rom-analysis.md` (procedure: `skills/project/psxrecomp-studio/real-rom-analysis/SKILL.md`) |
 | API documentation & docstring policy | `docs/development/documentation-policy.md` (ADR-011), measured by `scripts/docs/measure-docstring-coverage.ps1` |
+| Memory-card format, slot, and storage policy | `docs/runtime/memory-card.md` (ADR-018) |
 
 ## 2. ADR directory
 
@@ -47,6 +48,12 @@ Current records:
 | 012 | Function Discovery and CFG Hand-off | Accepted |
 | 013 | Real-ROM Candidate Selection Reuses the Recompiler as Its Own Validator | Accepted |
 | 014 | BIOS HLE Calls Cross a Shared Runtime Contract | Accepted |
+| 015 | Production Execution Engine Ownership | Accepted |
+| 016 | Generated-Host Execution Budget Semantics | Accepted |
+| 018 | Standard Raw 128 KiB PS1 Card Image as the Memory-Card Format | Accepted |
+
+017 is reserved by the in-review managed host-I/O boundary record (Issue #38);
+018 was taken next so the two do not collide.
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).
