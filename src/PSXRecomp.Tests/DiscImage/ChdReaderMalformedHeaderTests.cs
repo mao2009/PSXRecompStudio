@@ -3,42 +3,33 @@ using PSXRecomp.Core.DiscImage;
 namespace PSXRecomp.Tests.DiscImageTests;
 
 /// <summary>
-/// Focused tests that a CHD V5 header with invalid geometry is rejected during
-/// header parsing (ReadHeader), rather than failing later with a
-/// DivideByZeroException or returning malformed sector geometry.
+/// Focused tests that hostile CHD V5 size fields are rejected before they can
+/// drive large allocations.
 /// </summary>
 [Test]
 public class ChdReaderMalformedHeaderTests
 {
     private static readonly byte[] ValidMagic = [
-        0x4D, 0x43, 0x6F, 0x6D, 0x70, 0x72, 0x48, 0x44, // "MComprHD"
+        0x4D, 0x43, 0x6F, 0x6D, 0x70, 0x72, 0x48, 0x44,
     ];
 
-    /// <summary>
-    /// Builds a minimal CHD V5 header honoring the reader's pre-map geometry
-    /// validation: a valid magic, locked to V5, followed by the two uint32
-    /// geometry fields under test (hunkBytes and unitBytes). Other fields are
-    /// zero-filled.
-    /// </summary>
-    private static byte[] BuildV5Header(uint hunkBytes, uint unitBytes)
+    private static byte[] BuildV5Header(
+        uint hunkBytes,
+        uint unitBytes,
+        ulong logicalBytes = 0,
+        ulong mapOffset = 0,
+        uint compressor0 = 0)
     {
         var header = new byte[ChdHeader.V5HeaderSize];
         Array.Copy(ValidMagic, header, ValidMagic.Length);
 
-        void PutUInt32(int offset, uint value)
-        {
-            header[offset] = (byte)(value >> 24);
-            header[offset + 1] = (byte)(value >> 16);
-            header[offset + 2] = (byte)(value >> 8);
-            header[offset + 3] = (byte)value;
-        }
-
-        uint headerLength = ChdHeader.V5HeaderSize;
-        PutUInt32(8, headerLength);
-        PutUInt32(12, 5); // version 5
-        PutUInt32(56, hunkBytes);
-        PutUInt32(60, unitBytes);
-
+        PutUInt32(header, 8, ChdHeader.V5HeaderSize);
+        PutUInt32(header, 12, 5);
+        PutUInt32(header, 16, compressor0);
+        PutUInt64(header, 32, logicalBytes);
+        PutUInt64(header, 40, mapOffset);
+        PutUInt32(header, 56, hunkBytes);
+        PutUInt32(header, 60, unitBytes);
         return header;
     }
 
@@ -66,12 +57,94 @@ public class ChdReaderMalformedHeaderTests
     [Fact]
     public void Open_ValidGeometry_DoesNotThrowForHeaderParsing()
     {
-        // A valid geometry causes ReadHeader to pass; map parsing may still
-        // fail for the minimal (empty) stream, but it must NOT be a geometry
-        // (InvalidDataException) rejection. Use a small logical size so the
-        // map region has no hunks to parse.
         using var stream = new MemoryStream(BuildV5Header(hunkBytes: 2352 * 8, unitBytes: 2352));
+        stream.Invoking(s => ChdReader.Open(s)).Should().NotThrow();
+    }
+
+    [Fact]
+    public void Open_HunkBytesAboveSafetyCeiling_RejectsBeforeAllocation()
+    {
+        using var stream = new MemoryStream(BuildV5Header(
+            hunkBytes: 16U * 1024U * 1024U + 1U,
+            unitBytes: 2352));
+
         stream.Invoking(s => ChdReader.Open(s))
-            .Should().NotThrow();
+            .Should().Throw<InvalidDataException>()
+            .WithMessage("*hunkBytes*ceiling*");
+    }
+
+    [Fact]
+    public void Open_LogicalBytesAbovePs1Ceiling_RejectsBeforeMapAllocation()
+    {
+        using var stream = new MemoryStream(BuildV5Header(
+            hunkBytes: 2352 * 8,
+            unitBytes: 2352,
+            logicalBytes: 2UL * 1024UL * 1024UL * 1024UL + 1UL));
+
+        stream.Invoking(s => ChdReader.Open(s))
+            .Should().Throw<InvalidDataException>()
+            .WithMessage("*logicalBytes*ceiling*");
+    }
+
+    [Fact]
+    public void Open_TooManyHunks_RejectsBeforeExpandedMapAllocation()
+    {
+        using var stream = new MemoryStream(BuildV5Header(
+            hunkBytes: 1,
+            unitBytes: 1,
+            logicalBytes: 500_001));
+
+        stream.Invoking(s => ChdReader.Open(s))
+            .Should().Throw<InvalidDataException>()
+            .WithMessage("*hunks*ceiling*");
+    }
+
+    [Fact]
+    public void Open_CompressedMapLengthLargerThanContainer_RejectsBeforeAllocation()
+    {
+        var header = BuildV5Header(
+            hunkBytes: 2352 * 8,
+            unitBytes: 2352,
+            logicalBytes: 2352 * 8,
+            mapOffset: ChdHeader.V5HeaderSize,
+            compressor0: 1);
+
+        var image = new byte[ChdHeader.V5HeaderSize + 16];
+        Array.Copy(header, image, header.Length);
+        PutUInt32(image, ChdHeader.V5HeaderSize, uint.MaxValue);
+
+        using var stream = new MemoryStream(image);
+        stream.Invoking(s => ChdReader.Open(s))
+            .Should().Throw<InvalidDataException>()
+            .WithMessage("*compressed map length*ceiling*");
+    }
+
+    [Fact]
+    public void Open_UncompressedMapOutsideContainer_RejectsBeforeAllocation()
+    {
+        var image = BuildV5Header(
+            hunkBytes: 2352 * 8,
+            unitBytes: 2352,
+            logicalBytes: 2352 * 8,
+            mapOffset: ChdHeader.V5HeaderSize);
+
+        using var stream = new MemoryStream(image);
+        stream.Invoking(s => ChdReader.Open(s))
+            .Should().Throw<InvalidDataException>()
+            .WithMessage("*uncompressed map*outside*");
+    }
+
+    private static void PutUInt32(byte[] data, int offset, uint value)
+    {
+        data[offset] = (byte)(value >> 24);
+        data[offset + 1] = (byte)(value >> 16);
+        data[offset + 2] = (byte)(value >> 8);
+        data[offset + 3] = (byte)value;
+    }
+
+    private static void PutUInt64(byte[] data, int offset, ulong value)
+    {
+        PutUInt32(data, offset, (uint)(value >> 32));
+        PutUInt32(data, offset + 4, (uint)value);
     }
 }
