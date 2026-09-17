@@ -16,11 +16,20 @@ public sealed class Iso9660Reader
     private const byte PrimaryVolumeDescriptorType = 1;
     private const byte DirectoryRecordTerminator = 0;
 
+    // This reader is used by the PS1 analysis pipeline, not as a general ISO
+    // extraction utility. Bounding one materialized file prevents a hostile
+    // directory record from turning an untrusted uint length into a process-sized
+    // byte[] allocation. Legitimate analysis inputs (SYSTEM.CNF / PS-X EXE) are
+    // far below this ceiling.
+    internal const int MaxSingleFileBytes = 256 * 1024 * 1024;
+    internal const ulong MaxVolumeBytes = 1UL * 1024UL * 1024UL * 1024UL;
+
     private readonly Func<int, byte[]> _sectorReader;
     private bool _initialized;
 
     public Iso9660Reader(Func<int, byte[]> sectorReader)
     {
+        ArgumentNullException.ThrowIfNull(sectorReader);
         _sectorReader = sectorReader;
     }
 
@@ -38,7 +47,7 @@ public sealed class Iso9660Reader
         int sectorIndex = VolumeDescriptorSector;
         while (true)
         {
-            var sector = _sectorReader(sectorIndex);
+            var sector = ReadSectorChecked(sectorIndex, "volume descriptor");
             byte type = sector[0];
 
             if (type == PrimaryVolumeDescriptorType)
@@ -52,30 +61,46 @@ public sealed class Iso9660Reader
                 throw new InvalidDataException("ISO 9660: No Primary Volume Descriptor found.");
             }
 
-            sectorIndex++;
+            sectorIndex = checked(sectorIndex + 1);
         }
     }
 
     private void ParsePrimaryVolumeDescriptor(byte[] sector)
     {
-        // Volume space size (LE uint32) at offset 80
-        VolumeSpaceSize = BitConverter.ToUInt32(sector, 80);
+        if (sector.Length < SectorSize)
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: Primary Volume Descriptor sector is {sector.Length} bytes; expected at least {SectorSize}.");
+        }
 
-        // Volume identifier (32 ASCII bytes) at offset 40
+        VolumeSpaceSize = BitConverter.ToUInt32(sector, 80);
+        if (VolumeSpaceSize == 0)
+        {
+            throw new InvalidDataException("ISO 9660: VolumeSpaceSize must be positive.");
+        }
+
+        ulong volumeBytes = (ulong)VolumeSpaceSize * SectorSize;
+        if (volumeBytes > MaxVolumeBytes)
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: declared volume size {volumeBytes} bytes exceeds the {MaxVolumeBytes}-byte PS1 analysis ceiling.");
+        }
+
         var volIdBytes = sector.AsSpan(40, 32).ToArray();
         int volLen = 0;
         while (volLen < volIdBytes.Length && volIdBytes[volLen] != 0 && volIdBytes[volLen] != ' ') volLen++;
         VolumeIdentifier = Encoding.ASCII.GetString(volIdBytes, 0, volLen);
 
-        // Root directory record is at offset 156, 34 bytes long
         int rootOffset = 156;
         RootDirectoryLocation = BitConverter.ToUInt32(sector, rootOffset + 2);
         RootDirectorySize = BitConverter.ToUInt32(sector, rootOffset + 10);
+        ValidateExtent(RootDirectoryLocation, RootDirectorySize, "root directory", allowLargeAllocation: false);
         _initialized = true;
     }
 
     public byte[] ReadFile(string isoPath)
     {
+        EnsureInitialized();
         var pathParts = isoPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var currentDirRecord = new Iso9660DirectoryEntry
         {
@@ -108,7 +133,6 @@ public sealed class Iso9660Reader
 
             if (!found)
             {
-                // Try case-insensitive partial match for directories
                 bool matched = false;
                 foreach (var entry in entries)
                 {
@@ -146,6 +170,7 @@ public sealed class Iso9660Reader
 
     public List<Iso9660DirectoryEntry> ListDirectory(string isoPath)
     {
+        EnsureInitialized();
         var pathParts = isoPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var currentDirRecord = new Iso9660DirectoryEntry
         {
@@ -184,18 +209,10 @@ public sealed class Iso9660Reader
     /// Collects the deterministic volume statistics for this disc: identity fields from
     /// the Primary Volume Descriptor plus a full recursive entry count from the root.
     /// <see cref="Initialize"/> must have been called first.
-    ///
-    /// This is the filesystem-layer counterpart of <c>ChdReader.ComputeMapStatistics</c>;
-    /// it performs a full directory traversal, so callers should compute it once and
-    /// reuse the result rather than calling it per field.
     /// </summary>
     public IsoVolumeStatistics ComputeVolumeStatistics()
     {
-        if (!_initialized)
-        {
-            throw new InvalidOperationException(
-                "ISO 9660: Initialize() must be called before ComputeVolumeStatistics().");
-        }
+        EnsureInitialized();
 
         var root = new Iso9660DirectoryEntry
         {
@@ -226,6 +243,7 @@ public sealed class Iso9660Reader
     /// </summary>
     public void CountEntries(Iso9660DirectoryEntry root, out int fileCount, out int directoryCount)
     {
+        EnsureInitialized();
         fileCount = 0;
         directoryCount = 0;
         CountEntriesCore(root, ref fileCount, ref directoryCount);
@@ -233,9 +251,6 @@ public sealed class Iso9660Reader
 
     private void CountEntriesCore(Iso9660DirectoryEntry dirRecord, ref int fileCount, ref int directoryCount)
     {
-        // Some disc images contain directory records whose location points outside
-        // the disc (e.g. stray XA / overlaid entries). Guard so enumeration never
-        // throws; such subtrees are ignored rather than counted.
         List<Iso9660DirectoryEntry> entries;
         try
         {
@@ -272,22 +287,29 @@ public sealed class Iso9660Reader
         while (offset < data.Length)
         {
             byte recordLength = data[offset];
-            if (recordLength == 0)
+            if (recordLength == DirectoryRecordTerminator)
             {
-                // Move to next sector boundary
-                offset = ((offset / SectorSize) + 1) * SectorSize;
+                offset = checked(((offset / SectorSize) + 1) * SectorSize);
                 if (offset >= data.Length) break;
                 recordLength = data[offset];
-                if (recordLength == 0) break;
+                if (recordLength == DirectoryRecordTerminator) break;
             }
 
-            if (offset + recordLength > data.Length) break;
+            if (recordLength < 34 || checked(offset + recordLength) > data.Length)
+            {
+                break;
+            }
 
             byte fileNameLength = data[offset + 32];
+            if (fileNameLength > recordLength - 33)
+            {
+                throw new InvalidDataException(
+                    $"ISO 9660: directory record at offset {offset} declares filename length {fileNameLength} beyond record length {recordLength}.");
+            }
+
             byte flags = data[offset + 25];
             uint location = BitConverter.ToUInt32(data, offset + 2);
             uint size = BitConverter.ToUInt32(data, offset + 10);
-            byte extraAttrLength = data[offset + 1];
 
             int nameOffset = 33;
             string fileName;
@@ -306,6 +328,11 @@ public sealed class Iso9660Reader
                 fileName = Encoding.ASCII.GetString(data, offset + nameOffset, fileNameLength);
             }
 
+            // Validate extent metadata while it is still cheap. This rejects a
+            // hostile size/location during directory enumeration instead of only
+            // when a later consumer happens to open the entry.
+            ValidateExtent(location, size, $"directory entry '{fileName}'", allowLargeAllocation: true);
+
             entries.Add(new Iso9660DirectoryEntry
             {
                 Location = location,
@@ -315,7 +342,7 @@ public sealed class Iso9660Reader
                 FileName = fileName,
             });
 
-            offset += recordLength;
+            offset = checked(offset + recordLength);
         }
 
         return entries;
@@ -323,13 +350,15 @@ public sealed class Iso9660Reader
 
     private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false)
     {
-        var totalSectors = (int)((entry.Size + SectorSize - 1) / SectorSize);
-        var data = new byte[totalSectors * SectorSize];
+        EnsureInitialized();
+        var extent = ValidateExtent(entry.Location, entry.Size, $"entry '{entry.FileName}'", allowLargeAllocation: false);
 
-        for (int i = 0; i < totalSectors; i++)
+        var data = new byte[extent.AllocationBytes];
+        for (int i = 0; i < extent.TotalSectors; i++)
         {
-            var sector = _sectorReader((int)entry.Location + i);
-            Buffer.BlockCopy(sector, 0, data, i * SectorSize, SectorSize);
+            int sectorIndex = checked((int)((ulong)entry.Location + (uint)i));
+            var sector = ReadSectorChecked(sectorIndex, $"entry '{entry.FileName}'");
+            Buffer.BlockCopy(sector, 0, data, checked(i * SectorSize), SectorSize);
         }
 
         if (padToSectorSize || data.Length == entry.Size)
@@ -337,9 +366,86 @@ public sealed class Iso9660Reader
             return data;
         }
 
-        // File data is exactly entry.Size bytes; trim the sector-rounded padding so
-        // hash/size and parsed content match the bytes stored on the disc.
-        Array.Resize(ref data, (int)entry.Size);
+        Array.Resize(ref data, checked((int)entry.Size));
         return data;
+    }
+
+    private (int TotalSectors, int AllocationBytes) ValidateExtent(
+        uint location,
+        uint size,
+        string description,
+        bool allowLargeAllocation)
+    {
+        if (!_initialized && description != "root directory")
+        {
+            // During PVD parsing, VolumeSpaceSize is already populated before the
+            // root extent is validated. All normal callers require initialization.
+            EnsureInitialized();
+        }
+
+        ulong totalSectors = ((ulong)size + SectorSize - 1UL) / SectorSize;
+        ulong endSector;
+        try
+        {
+            endSector = checked((ulong)location + totalSectors);
+        }
+        catch (OverflowException ex)
+        {
+            throw new InvalidDataException($"ISO 9660: {description} sector extent overflows.", ex);
+        }
+
+        if ((ulong)location > VolumeSpaceSize || endSector > VolumeSpaceSize)
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: {description} extent [{location}, {endSector}) exceeds declared volume size {VolumeSpaceSize} sectors.");
+        }
+
+        ulong allocationBytes;
+        try
+        {
+            allocationBytes = checked(totalSectors * SectorSize);
+        }
+        catch (OverflowException ex)
+        {
+            throw new InvalidDataException($"ISO 9660: {description} allocation size overflows.", ex);
+        }
+
+        if (allocationBytes > int.MaxValue || totalSectors > int.MaxValue)
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: {description} is too large for the in-memory reader ({allocationBytes} bytes).");
+        }
+
+        if (!allowLargeAllocation && allocationBytes > MaxSingleFileBytes)
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: {description} would allocate {allocationBytes} bytes, above the {MaxSingleFileBytes}-byte safety ceiling.");
+        }
+
+        return (checked((int)totalSectors), checked((int)allocationBytes));
+    }
+
+    private byte[] ReadSectorChecked(int sectorIndex, string description)
+    {
+        if (sectorIndex < 0)
+        {
+            throw new InvalidDataException($"ISO 9660: {description} requested negative sector {sectorIndex}.");
+        }
+
+        var sector = _sectorReader(sectorIndex);
+        if (sector is null || sector.Length < SectorSize)
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: {description} sector {sectorIndex} returned {sector?.Length ?? 0} bytes; expected at least {SectorSize}.");
+        }
+        return sector;
+    }
+
+    private void EnsureInitialized()
+    {
+        if (!_initialized)
+        {
+            throw new InvalidOperationException("ISO 9660: Initialize() must be called before reading the volume.");
+        }
     }
 }
