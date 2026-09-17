@@ -41,6 +41,7 @@ The GUI must not become the source of truth for architecture or analysis semanti
 | Testing | Automated and compatibility validation | Planned / evolving |
 | GUI / UX | Modern developer-tool workspace | Defined by Issue #75 |
 | Runtime | BIOS-less execution boundary and runtime inspection | Phase 1 contract |
+| Input | Console-agnostic host mapping (`PSXRecomp.Core.Runtime.Input`) + PS1 controller module (`PSXRecomp.Core.Runtime.Input.Ps1`) | Host layer + PS1 module (Issue #47) |
 
 ## Authority rule
 

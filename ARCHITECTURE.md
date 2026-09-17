@@ -219,6 +219,25 @@ compiled, a patched target outside its static block table is reported rather
 than jumped to; compiling a target discovered at run time is dynamic overlay
 recompilation (Issue #249) and is out of scope.
 
+### Input
+
+Input follows a host-independent contract split into a console-agnostic host
+layer and per-console modules (Issue #47). The host layer
+(`PSXRecomp.Core.Runtime.Input`) maps abstract `PhysicalInputId`s to a console's
+logical buttons through `InputBindingMap<TButton>` and captures the result as an
+immutable `ControllerInputSnapshot<TButton>`, carrying each port's attached
+device kind in `PhysicalControllerState<TDeviceKind>`; it contains no console
+button, device-kind, or protocol semantics. The PS1 console module
+(`PSXRecomp.Core.Runtime.Input.Ps1`) owns `Ps1Button`, `Ps1ControllerDeviceKind`,
+`Ps1ControllerState`, `Ps1ControllerPortState`, and `Ps1ControllerSnapshot`,
+whose `Resolve` applies PS1 device policy: the standard digital pad is the only
+supported kind today, and recognized-but-unimplemented devices (DualShock,
+analog, NeGcon, mouse, light guns, and other dedicated controllers) are carried
+through explicitly as unsupported rather than treated as digital pads. Keyboard /
+gamepad / touch acquisition and the PS1 SIO/controller protocol remain out of
+scope and connect to this contract later; other consoles add their own module
+without changing the host layer. See [docs/runtime/input.md](docs/runtime/input.md).
+
 ## Recompiler
 
 - `PSXRecomp.Core.Recompiler` owns the backend-agnostic IR and shared
