@@ -71,7 +71,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // or crosses a KUSEG/KSEG0/KSEG1 boundary would be written to different physical
         // addresses than the CPU fetches. Fail closed here too so no caller can bypass the
         // bridge's validation by constructing the engine directly.
-        ulong programEndUlong = (ulong)loadAddress + (uint)instructions.Count * 4u;
+        // instructions.Count * 4 must happen in ulong: computed in uint first (as a
+        // previous revision did), a Count above 0x3FFFFFFF wraps before the ulong
+        // widening ever sees it, so the overflow check below sees a small, wrong
+        // length and lets a bogus loadAddress/programEnd pair through.
+        var programLength = (ulong)instructions.Count * sizeof(uint);
+        var programEndUlong = (ulong)loadAddress + programLength;
         if (programEndUlong > uint.MaxValue || programEndUlong <= loadAddress)
         {
             throw new ArgumentException(
@@ -82,7 +87,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         var programEnd = (uint)programEndUlong;
         if (!Ps1AddressTranslation.TryTranslate(loadAddress, out var startPhysical)
             || !Ps1AddressTranslation.TryTranslate(programEnd - 1, out var endPhysical)
-            || endPhysical != startPhysical + (uint)instructions.Count * 4u - 1)
+            || (ulong)endPhysical != (ulong)startPhysical + programLength - 1)
         {
             throw new ArgumentException(
                 $"The program image 0x{loadAddress:X8}..0x{programEnd:X8} does not map to a contiguous " +

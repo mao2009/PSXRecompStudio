@@ -302,6 +302,45 @@ public sealed class ExecutionOrchestratorTests
             .Which.Message.Should().Contain("translatable");
     }
 
+    [Fact]
+    public void EngineConstructor_OrdinarySizedProgram_DoesNotThrow()
+    {
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                Enumerable.Repeat(0u, 256).ToArray(), 0x80010000u);
+        };
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EngineConstructor_InstructionCountMultiplicationWouldWrapInUint_Throws()
+    {
+        // Count = 0x4000_0001: (uint)Count * 4u wraps to 4 in 32-bit arithmetic, so a
+        // constructor that multiplies in uint before widening to ulong sees a bogus
+        // 4-byte program instead of the real ~4 GiB one and lets it through. The real
+        // ulong length overflows the 32-bit address space from loadAddress 0, so a
+        // correct constructor must reject it as an overflow. The list never indexes an
+        // element; only Count is read before this must throw.
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                new HugeCountInstructions(0x4000_0001), 0u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("overflows");
+    }
+
+    private sealed class HugeCountInstructions(int count) : IReadOnlyList<uint>
+    {
+        public int Count { get; } = count;
+        public uint this[int index] => throw new NotSupportedException("Boundary check must not index the image.");
+        public IEnumerator<uint> GetEnumerator() => throw new NotSupportedException("Boundary check must not enumerate the image.");
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     // --- End-to-end over the generated host (gcc, RAM continuity) -------------
 
     [Fact]
