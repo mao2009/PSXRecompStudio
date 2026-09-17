@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PSXRecomp.Architecture;
@@ -65,10 +66,16 @@ public partial class MainWindowViewModel : ViewModelBase
     /// <see cref="TitleExecutionService.Run(PsxExe, uint, uint)"/>, whose classified outcome
     /// is reported here. This is the product wiring for a real title, distinct from
     /// <see cref="RunDiagnosticTitleCommand"/>, which runs the built-in diagnostic program.
-    /// All execution semantics stay in the Domain layer (ADR-015).
+    /// All execution semantics stay in the Domain layer (ADR-015). Disc analysis and
+    /// interpreter execution are CPU-bound and can run tens of thousands of guest steps
+    /// for a real title, so the whole flow runs on a worker thread (Issue #409 follow-up)
+    /// and only the final status assignment touches UI-bound state, on the UI thread the
+    /// awaited continuation resumes on. Concurrent executions are disallowed so a second
+    /// click while a run is in flight is a no-op rather than a second concurrent
+    /// analysis/execution over the same disc bytes.
     /// </summary>
-    [RelayCommand]
-    private void RunRealTitle()
+    [RelayCommand(AllowConcurrentExecutions = false)]
+    private async Task RunRealTitle()
     {
         var bytes = DiscImageBytes;
         if (bytes is null || bytes.Length == 0)
@@ -77,13 +84,12 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        string sha256;
-        using (var hasher = System.Security.Cryptography.SHA256.Create())
+        var result = await Task.Run(() =>
         {
-            sha256 = Convert.ToHexString(hasher.ComputeHash(bytes)).ToLowerInvariant();
-        }
-
-        var result = _realExecution.AnalyzeAndExecuteFromDiscImage(bytes, sha256);
+            var sha256 = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+            return _realExecution.AnalyzeAndExecuteFromDiscImage(bytes, sha256);
+        }).ConfigureAwait(true);
 
         if (result.ExecutionLayoutRejectionReason is not null)
         {

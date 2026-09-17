@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using CommunityToolkit.Mvvm.Input;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecompStudio.Services;
@@ -88,7 +89,7 @@ public class RealRomProductionFlowTests
     }
 
     [Fact]
-    public void MainWindowViewModel_RunRealTitleCommand_ReportsClassifiedOutcome()
+    public async Task MainWindowViewModel_RunRealTitleCommand_ReportsClassifiedOutcome()
     {
         const uint textStart = 0x80010000u;
         var exeBytes = SyntheticDiscImage.BuildSyntheticExe(
@@ -105,25 +106,27 @@ public class RealRomProductionFlowTests
         viewModel.DiscImageBytes = discImageBytes;
 
         viewModel.RealTitleExecutionStatus.Should().Be("Not run");
-        viewModel.RunRealTitleCommand.Execute(null);
+        viewModel.RunRealTitleCommand.Should().BeAssignableTo<IAsyncRelayCommand>(
+            "the real-title command must run off the UI thread (Issue #409 follow-up)");
+        await viewModel.RunRealTitleCommand.ExecuteAsync(null);
 
         viewModel.RealTitleExecutionStatus.Should().Contain(nameof(TitleExecutionState.Completed));
         viewModel.RealTitleExecutionStatus.Should().Contain(InterpreterTitleExecutionEngine.EngineName);
     }
 
     [Fact]
-    public void MainWindowViewModel_RunRealTitleCommand_WithoutLoadedDisc_ReportsNotLoaded()
+    public async Task MainWindowViewModel_RunRealTitleCommand_WithoutLoadedDisc_ReportsNotLoaded()
     {
         var viewModel = new MainWindowViewModel();
         viewModel.DiscImageBytes = null;
 
-        viewModel.RunRealTitleCommand.Execute(null);
+        await viewModel.RunRealTitleCommand.ExecuteAsync(null);
 
         viewModel.RealTitleExecutionStatus.Should().Contain("Load a disc image");
     }
 
     [Fact]
-    public void MainWindowViewModel_RunRealTitleCommand_WhenExecutableFailsLayoutValidation_ReportsRejectionWithoutThrowing()
+    public async Task MainWindowViewModel_RunRealTitleCommand_WhenExecutableFailsLayoutValidation_ReportsRejectionWithoutThrowing()
     {
         // Text region [0x7FFFFFF0..0x80000010) straddles the KUSEG/KSEG0 boundary.
         // RomAnalysisPipeline's own EXE_HEADER/ENTRY_POINT/TEXT_REGION stages never call
@@ -140,9 +143,9 @@ public class RealRomProductionFlowTests
         var viewModel = new MainWindowViewModel();
         viewModel.DiscImageBytes = discImageBytes;
 
-        var act = () => viewModel.RunRealTitleCommand.Execute(null);
+        var act = async () => await viewModel.RunRealTitleCommand.ExecuteAsync(null);
 
-        act.Should().NotThrow(
+        await act.Should().NotThrowAsync(
             "an execution-layout rejection must be classified, not thrown from the command");
         viewModel.RealTitleExecutionStatus.Should().Contain("rejected for execution");
     }
