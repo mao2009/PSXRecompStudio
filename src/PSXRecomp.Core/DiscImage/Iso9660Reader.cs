@@ -323,8 +323,29 @@ public sealed class Iso9660Reader
 
     private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false)
     {
-        var totalSectors = (int)((entry.Size + SectorSize - 1) / SectorSize);
-        var data = new byte[totalSectors * SectorSize];
+        // entry.Size and entry.Location come straight from an on-disc directory record
+        // and are untrusted. Everything below is computed in long so nothing wraps, and
+        // the extent is proven to exist in the container before a byte is allocated.
+        long totalSectors = ((long)entry.Size + SectorSize - 1) / SectorSize;
+        long totalBytes = totalSectors * SectorSize;
+        long lastSector = (long)entry.Location + totalSectors - 1;
+
+        if (totalBytes > int.MaxValue || (totalSectors > 0 && lastSector > int.MaxValue))
+        {
+            throw new InvalidDataException(
+                $"ISO 9660: directory entry declares a {entry.Size}-byte extent at sector {entry.Location}, which is not addressable.");
+        }
+
+        if (totalSectors > 0)
+        {
+            // Reading the last sector first proves the container really holds the whole
+            // extent. It bounds the allocation by the real image rather than by an
+            // arbitrary ceiling, and cannot reject anything the sector-by-sector read
+            // below would have succeeded on.
+            _sectorReader((int)lastSector);
+        }
+
+        var data = new byte[totalBytes];
 
         for (int i = 0; i < totalSectors; i++)
         {
