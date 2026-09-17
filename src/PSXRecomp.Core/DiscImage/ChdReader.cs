@@ -444,8 +444,6 @@ public sealed class ChdReader : IDisposable
 
     private static ChdMapEntry[] DecompressV5Map(Stream stream, ChdHeader header, int hunkCount)
     {
-        var rawMap = new byte[hunkCount * 12];
-
         // Read the 16-byte map header
         SeekChecked(stream, header.MapOffset, 16, "compressed map header");
         var mapHeader = new byte[16];
@@ -564,12 +562,6 @@ public sealed class ChdReader : IDisposable
                     break;
             }
 
-            int e = (int)hunkNum * 12;
-            rawMap[e] = type;
-            PutUInt24BE(rawMap, e + 1, length);
-            PutUInt48BE(rawMap, e + 4, offset);
-            PutUInt16BE(rawMap, e + 10, crc);
-
             entries[hunkNum] = new ChdMapEntry
             {
                 CompressionType = type,
@@ -579,7 +571,9 @@ public sealed class ChdReader : IDisposable
             };
         }
 
-        // Optional CRC verification of the expanded raw map (MAME does this; low priority).
+        // MAME additionally verifies mapCrc over the 12-byte-per-hunk raw map image.
+        // This reader consumes the entries directly and never materializes that image,
+        // so the CRC is parsed but not checked (low priority).
         return entries;
     }
 
@@ -594,25 +588,4 @@ public sealed class ChdReader : IDisposable
     }
 
     private static ulong MulU32x32(uint a, uint b) => (ulong)a * b;
-
-    private static void PutUInt24BE(byte[] data, int offset, uint value)
-    {
-        data[offset] = (byte)(value >> 16);
-        data[offset + 1] = (byte)(value >> 8);
-        data[offset + 2] = (byte)value;
-    }
-
-    private static void PutUInt48BE(byte[] data, int offset, ulong value)
-    {
-        for (int i = 0; i < 6; i++)
-        {
-            data[offset + i] = (byte)(value >> (8 * (5 - i)));
-        }
-    }
-
-    private static void PutUInt16BE(byte[] data, int offset, ushort value)
-    {
-        data[offset] = (byte)(value >> 8);
-        data[offset + 1] = (byte)value;
-    }
 }
