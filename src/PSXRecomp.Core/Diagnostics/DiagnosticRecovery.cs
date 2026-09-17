@@ -98,6 +98,13 @@ public readonly record struct DiagnosticRecovery(
             return false;
         }
 
+        // AutomaticRetryAllowed is only valid when the identical request can be retried
+        // without any change — the only semantics eligible for automation.
+        if (AutomaticRetryAllowed && Retry != DiagnosticRetrySemantics.RetrySameRequest)
+        {
+            return false;
+        }
+
         // Retrying the same request needs no user change; retrying after a user
         // change implies one is needed. External state changes may or may not.
         return (Retry != DiagnosticRetrySemantics.RetrySameRequest || !RequiresUserAction)

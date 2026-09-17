@@ -14,23 +14,26 @@ namespace PSXRecomp.Core.Diagnostics;
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DiagnosticEvidenceKind
 {
+    /// <summary>No evidence kind was provided; used as a safe default to detect missing values.</summary>
+    Unknown = 0,
+
     /// <summary>A real-ROM recompilation coverage document.</summary>
-    RealRomCoverage = 0,
+    RealRomCoverage = 1,
 
     /// <summary>An automated execution trace (guest PCs retired per segment).</summary>
-    ExecutionTrace = 1,
+    ExecutionTrace = 2,
 
     /// <summary>A generated-source / host build log.</summary>
-    BuildLog = 2,
+    BuildLog = 3,
 
     /// <summary>A deterministic analysis artifact (report, manifest, snapshot).</summary>
-    AnalysisArtifact = 3,
+    AnalysisArtifact = 4,
 
     /// <summary>A guest address / instruction within the analyzed binary.</summary>
-    GuestAddress = 4,
+    GuestAddress = 5,
 
     /// <summary>A source file (generated host source, fixture, or configuration).</summary>
-    SourceFile = 5,
+    SourceFile = 6,
 }
 
 /// <summary>
@@ -44,9 +47,11 @@ public enum DiagnosticEvidenceKind
 [Domain]
 public sealed record DiagnosticEvidenceReference(DiagnosticEvidenceKind Kind, string Identifier, string? Description = null)
 {
-    /// <summary>Whether the reference is well-formed: a defined kind and a non-empty identifier.</summary>
+    /// <summary>Whether the reference is well-formed: a known non-unknown kind and a non-empty identifier.</summary>
     public bool IsValid()
     {
-        return Enum.IsDefined(Kind) && !string.IsNullOrWhiteSpace(Identifier);
+        return Kind != DiagnosticEvidenceKind.Unknown
+            && Enum.IsDefined(Kind)
+            && !string.IsNullOrWhiteSpace(Identifier);
     }
 }

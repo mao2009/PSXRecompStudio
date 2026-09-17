@@ -73,13 +73,6 @@ public static class DiagnosticAdapter
                 : DiagnosticSeverity.Error,
             Message = result.DiagnosticMessage,
             Context = context,
-            Evidence =
-            [
-                new DiagnosticEvidenceReference(
-                    DiagnosticEvidenceKind.ExecutionTrace,
-                    "bounded-title-execution",
-                    "Bounded per-segment execution trace of the orchestrated run."),
-            ],
             Recovery = recovery,
         };
     }
