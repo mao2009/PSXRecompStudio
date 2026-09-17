@@ -17,6 +17,13 @@ public sealed record RealRomAnalysisArtifacts
     public required ControlFlowGraphDocument Cfg { get; init; }
 
     /// <summary>
+    /// Recompilation coverage (Issue #410), or <see langword="null"/> when no coverage
+    /// measurement was supplied. Optional because coverage is measured by the Recompiler
+    /// layer, not derived from the analysis report alone.
+    /// </summary>
+    public RealRomCoverageDocument? Coverage { get; init; }
+
+    /// <summary>
     /// Canonical file name / content pairs, ordered by file name (ordinal ascending).
     /// Content is already newline- and encoding-canonical; a writer must persist it
     /// verbatim as UTF-8 without a BOM.
