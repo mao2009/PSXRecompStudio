@@ -47,6 +47,7 @@ Current records:
 | 012 | Function Discovery and CFG Hand-off | Accepted |
 | 013 | Real-ROM Candidate Selection Reuses the Recompiler as Its Own Validator | Accepted |
 | 014 | BIOS HLE Calls Cross a Shared Runtime Contract | Accepted |
+| 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).

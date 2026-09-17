@@ -44,6 +44,14 @@ Every load and store first materialises the guest 32-bit effective address as
 | LH rt,off(base) | address → `Load16` → `ShiftLeftLogical 16` → `ShiftRightArithmetic 16` → `WriteGpr` | |
 | SB / SH / SW rt,off(base) | address, `ReadGpr(rt)` → `Store8` / `Store16` / `Store32` | Address is input A, value is input B |
 
+Every emitted memory operation's `RecompilerIrMemoryEffectKind` stays at its
+`Unknown` default (ADR-020, Issue #411): the effective address above is always
+`ReadGpr(base) + Constant(offset)`, a runtime value this lowering stage cannot
+prove is ordinary RAM or a device register. `RecompilerIrMemoryEffectClassifier`
+exists for a caller that does know the address ahead of time (tests over a
+synthetic, statically-known address; a future lowering stage that can prove a
+constant effective address) — this stage is not that caller.
+
 ### Control flow
 
 A control-transfer instruction and the instruction in its branch delay slot lower
