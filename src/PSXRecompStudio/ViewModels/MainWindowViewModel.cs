@@ -1,7 +1,11 @@
+using System;
 using System.Text;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.DiscImage;
+using PSXRecomp.Core.Execution;
 using PSXRecompStudio.Services;
 
 namespace PSXRecompStudio.ViewModels;
@@ -10,6 +14,7 @@ namespace PSXRecompStudio.ViewModels;
 public partial class MainWindowViewModel : ViewModelBase
 {
     private readonly TitleExecutionService _execution = new();
+    private readonly RealRomTitleExecutionService _realExecution = new();
 
     public string AppName { get; } = "PSXRecompStudio";
     public string Version { get; } = "0.1.0-dev";
@@ -24,6 +29,21 @@ public partial class MainWindowViewModel : ViewModelBase
     private string _executionStatus = "Not run";
 
     /// <summary>
+    /// The outcome of the last <see cref="RunRealTitleCommand"/> invocation.
+    /// </summary>
+    [ObservableProperty]
+    private string _realTitleExecutionStatus = "Not run";
+
+    /// <summary>
+    /// The raw bytes of the disc image the real-ROM production flow analyzes and executes.
+    /// I/O-free by design: the Application layer is forbidden <see cref="System.IO.File"/> /
+    /// <see cref="System.IO.Directory"/> by the architecture contract, so disc bytes are
+    /// supplied pre-read (Issue #38). Null means no disc image has been loaded.
+    /// </summary>
+    [ObservableProperty]
+    private byte[]? _discImageBytes;
+
+    /// <summary>
     /// Runs the built-in diagnostic title through the production execution path
     /// (ADR-015) and reports its classified outcome. This is the Studio's wiring
     /// proof that a title can be executed from the product, not only from tests.
@@ -34,6 +54,61 @@ public partial class MainWindowViewModel : ViewModelBase
         var run = _execution.RunDiagnostic();
         var output = Encoding.ASCII.GetString([.. run.Output]);
         ExecutionStatus =
+            $"{run.Result.State} via {run.Result.EngineName} " +
+            $"({run.Result.SegmentsRetired} segment(s), TTY \"{output}\")" +
+            (run.Result.DiagnosticCode is null ? string.Empty : $" — {run.Result.DiagnosticCode}");
+    }
+
+    /// <summary>
+    /// Runs the real-ROM production flow (Issue #409): the loaded disc image is analyzed by
+    /// <see cref="RealRomTitleExecutionService"/>, the analyzed PS-X EXE is retained, and the
+    /// same executable is fed into the production execution path through
+    /// <see cref="TitleExecutionService.Run(PsxExe, uint, uint)"/>, whose classified outcome
+    /// is reported here. This is the product wiring for a real title, distinct from
+    /// <see cref="RunDiagnosticTitleCommand"/>, which runs the built-in diagnostic program.
+    /// All execution semantics stay in the Domain layer (ADR-015). Disc analysis and
+    /// interpreter execution are CPU-bound and can run tens of thousands of guest steps
+    /// for a real title, so the whole flow runs on a worker thread (Issue #409 follow-up)
+    /// and only the final status assignment touches UI-bound state, on the UI thread the
+    /// awaited continuation resumes on. Concurrent executions are disallowed so a second
+    /// click while a run is in flight is a no-op rather than a second concurrent
+    /// analysis/execution over the same disc bytes.
+    /// </summary>
+    [RelayCommand(AllowConcurrentExecutions = false)]
+    private async Task RunRealTitle()
+    {
+        var bytes = DiscImageBytes;
+        if (bytes is null || bytes.Length == 0)
+        {
+            RealTitleExecutionStatus = "Load a disc image to analyze and execute";
+            return;
+        }
+
+        var result = await Task.Run(() =>
+        {
+            var sha256 = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+            return _realExecution.AnalyzeAndExecuteFromDiscImage(bytes, sha256);
+        }).ConfigureAwait(true);
+
+        if (result.ExecutionLayoutRejectionReason is not null)
+        {
+            RealTitleExecutionStatus =
+                $"{result.Analysis.Status} — executable rejected for execution: {result.ExecutionLayoutRejectionReason}";
+            return;
+        }
+
+        var run = result.Run;
+        if (run is null)
+        {
+            RealTitleExecutionStatus =
+                $"{result.Analysis.Status} — no executable produced" +
+                (result.Analysis.FailureReason is null ? string.Empty : $": {result.Analysis.FailureReason}");
+            return;
+        }
+
+        var output = Encoding.ASCII.GetString([.. run.Output]);
+        RealTitleExecutionStatus =
             $"{run.Result.State} via {run.Result.EngineName} " +
             $"({run.Result.SegmentsRetired} segment(s), TTY \"{output}\")" +
             (run.Result.DiagnosticCode is null ? string.Empty : $" — {run.Result.DiagnosticCode}");

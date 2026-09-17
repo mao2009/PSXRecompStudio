@@ -59,8 +59,25 @@
                        HorizontalAlignment="Center"/>
         </StackPanel>
 
+        <!-- Real-ROM execution (Issue #409): analyzes a loaded disc image, retains the
+             analyzed PS-X EXE, and runs it through the same production execution path.
+             Distinct from the diagnostic action above. -->
+        <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="60,16,60,0"
+                    HorizontalAlignment="Center">
+            <Button x:Name="RunRealTitleButton"
+                    AutomationProperties.Name="RunRealTitle"
+                    Content="Run analyzed title"
+                    HorizontalAlignment="Center"
+                    Command="{Binding RunRealTitleCommand}"/>
+            <TextBlock x:Name="RealTitleExecutionStatusText"
+                       AutomationProperties.Name="RealTitleExecutionStatus"
+                       Text="{Binding RealTitleExecutionStatus}"
+                       FontSize="12" Foreground="#808080"
+                       HorizontalAlignment="Center"/>
+        </StackPanel>
+
         <!-- Spacer -->
-        <Rectangle DockPanel.Dock="Top" Height="32"/>
+        <Rectangle DockPanel.Dock="Top" Height="24"/>
 
         <!-- Environment Info -->
         <Border DockPanel.Dock="Bottom"

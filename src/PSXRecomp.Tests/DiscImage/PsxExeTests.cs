@@ -16,22 +16,84 @@ public class PsxExeTests
         // Write entry point at offset 0x10
         BitConverter.GetBytes(0x80010000u).CopyTo(header, 0x10);
 
+        // Write GP/R28 at offset 0x14
+        BitConverter.GetBytes(0xAAAABBCCu).CopyTo(header, 0x14);
+
         // Write text start at offset 0x18
         BitConverter.GetBytes(0x80010800u).CopyTo(header, 0x18);
 
         // Write text size at offset 0x1C
         BitConverter.GetBytes(0x1000u).CopyTo(header, 0x1C);
 
-        // Write SP at offset 0x30
+        // Write SP base at offset 0x30
         BitConverter.GetBytes(0x801FFF00u).CopyTo(header, 0x30);
 
         var result = PsxExeHeader.Parse(header);
 
         result.EntryPoint.Should().Be(0x80010000u);
+        result.GpInitial.Should().Be(0xAAAABBCCu);
         result.TextStart.Should().Be(0x80010800u);
         result.TextSize.Should().Be(0x1000u);
         result.TextEnd.Should().Be(0x80011800u);
         result.SpInitial.Should().Be(0x801FFF00u);
+    }
+
+    [Fact]
+    public void Parse_GpFromOffset0x14()
+    {
+        var header = new byte[PsxExeHeader.HeaderSize];
+        System.Text.Encoding.ASCII.GetBytes("PS-X EXE").CopyTo(header, 0);
+        BitConverter.GetBytes(0x80010000u).CopyTo(header, 0x10);
+        BitConverter.GetBytes(0xDEADBEEFu).CopyTo(header, 0x14);
+
+        var result = PsxExeHeader.Parse(header);
+
+        result.GpInitial.Should().Be(0xDEADBEEFu);
+    }
+
+    [Fact]
+    public void Parse_SpBasePlusOffset()
+    {
+        var header = new byte[PsxExeHeader.HeaderSize];
+        System.Text.Encoding.ASCII.GetBytes("PS-X EXE").CopyTo(header, 0);
+        BitConverter.GetBytes(0x80010000u).CopyTo(header, 0x10);
+        BitConverter.GetBytes(0x801FFF00u).CopyTo(header, 0x30);
+        BitConverter.GetBytes(0x00000040u).CopyTo(header, 0x34);
+
+        var result = PsxExeHeader.Parse(header);
+
+        result.SpInitial.Should().Be(0x801FFF40u);
+    }
+
+    [Fact]
+    public void Parse_SpBaseZero_YieldsSpZero()
+    {
+        var header = new byte[PsxExeHeader.HeaderSize];
+        System.Text.Encoding.ASCII.GetBytes("PS-X EXE").CopyTo(header, 0);
+        BitConverter.GetBytes(0x80010000u).CopyTo(header, 0x10);
+        // base = 0, offset nonzero — spec says "0=None", offset is ignored.
+        BitConverter.GetBytes(0x00000000u).CopyTo(header, 0x30);
+        BitConverter.GetBytes(0x00000100u).CopyTo(header, 0x34);
+
+        var result = PsxExeHeader.Parse(header);
+
+        result.SpInitial.Should().Be(0u);
+    }
+
+    [Fact]
+    public void Parse_SpOverflow_ThrowsInvalidData()
+    {
+        var header = new byte[PsxExeHeader.HeaderSize];
+        System.Text.Encoding.ASCII.GetBytes("PS-X EXE").CopyTo(header, 0);
+        BitConverter.GetBytes(0x80010000u).CopyTo(header, 0x10);
+        // base + offset > 0xFFFFFFFF.
+        BitConverter.GetBytes(0xFFFFFF00u).CopyTo(header, 0x30);
+        BitConverter.GetBytes(0x00000200u).CopyTo(header, 0x34);
+
+        var act = () => PsxExeHeader.Parse(header);
+
+        act.Should().Throw<InvalidDataException>()
+            .Which.Message.Should().Contain("overflows");
     }
 
     [Fact]

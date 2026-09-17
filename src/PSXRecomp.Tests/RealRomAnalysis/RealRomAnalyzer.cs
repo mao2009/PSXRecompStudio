@@ -152,7 +152,7 @@ public static class RealRomAnalyzer
                 recorder.Fail(RomAnalysisStage.Manifest, DiscMetadataUnreadable, ex);
             }
 
-            return (null, RomAnalysisOutcome.From(recorder, outcome.Report, outcome.DecodeFailureCount), recorder, log);
+            return (null, RomAnalysisOutcome.From(recorder, outcome.Report, outcome.DecodeFailureCount, outcome.Executable), recorder, log);
         }
 
         Record("CHD_META", "PASS",
@@ -251,7 +251,11 @@ public static class RealRomAnalyzer
             recorder.Pass(RomAnalysisStage.Complete, "Real-ROM analysis flow completed");
         }
 
-        var outcome = RomAnalysisOutcome.From(recorder, staged.Outcome.Report, staged.Outcome.DecodeFailureCount);
+        var outcome = RomAnalysisOutcome.From(
+            recorder,
+            staged.Outcome.Report,
+            staged.Outcome.DecodeFailureCount,
+            staged.Outcome.Executable);
         return new RealRomAnalysisRunResult
         {
             FixtureId = fixtureId,

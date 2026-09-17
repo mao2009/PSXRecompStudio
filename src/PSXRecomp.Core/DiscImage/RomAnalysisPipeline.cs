@@ -441,7 +441,7 @@ public static class RomAnalysisPipeline
         recorder.Pass(RomAnalysisStage.Report, string.Create(CultureInfo.InvariantCulture,
             $"Report assembled for '{report.ExecutableFileName}' ({report.DecodedInstructionCount} instructions, {report.BasicBlocks.Count} blocks)"));
 
-        return RomAnalysisOutcome.From(recorder, report, decodeFailures.Count);
+        return RomAnalysisOutcome.From(recorder, report, decodeFailures.Count, executable: exe);
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
@@ -90,6 +91,40 @@ public sealed class TitleExecutionService
     }
 
     /// <summary>
+    /// Runs a real PS-X EXE image (Issue #409) through the same production execution
+    /// path as <see cref="RunDiagnostic"/>: the whole text image is loaded at the
+    /// header's text start and execution enters at the header's entry point, with
+    /// SP/GP seeded from the header. Reaching the declared end of the text image is a
+    /// natural exit; every other unresolved transfer, unsupported BIOS service, or
+    /// runtime boundary is classified rather than silently emulated.
+    /// </summary>
+    /// <param name="exe">A legally user-supplied, already-parsed PS-X EXE.</param>
+    /// <param name="outerBudget">How many segments the orchestrator may run.</param>
+    /// <param name="segmentBudget">How many steps each segment may spend.</param>
+    /// <returns>The classified outcome and the bytes the guest wrote to the TTY.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="exe"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="exe"/>'s image or header is
+    /// malformed for execution (see <see cref="PsxExeTitleInput.Build"/>).</exception>
+    public TitleExecutionRun Run(PsxExe exe, uint outerBudget, uint segmentBudget)
+    {
+        ArgumentNullException.ThrowIfNull(exe);
+
+        var input = PsxExeTitleInput.Build(exe, outerBudget, segmentBudget);
+        var sink = new CollectedOutput();
+        using var engine = new InterpreterTitleExecutionEngine(
+            input.InstructionWords,
+            input.LoadAddress,
+            (reader, writer) => new BiosHleRuntime(sink, reader, writer));
+
+        var result = new ExecutionOrchestrator().Execute(
+            engine,
+            new ProgramEndHandoff(input.LoadAddress, input.InstructionWords.Count),
+            input.Request);
+
+        return new TitleExecutionRun(result, sink.Bytes);
+    }
+
+    /// <summary>
     /// Runs the built-in diagnostic title: a guest program that calls BIOS
     /// <c>A0:3C putchar</c> and then runs off its own end. It proves the whole
     /// production path — engine load, bounded run, BIOS handoff, outcome
@@ -136,9 +171,9 @@ public sealed class TitleExecutionService
     /// classified as <see cref="TitleExecutionState.UnsupportedTransfer"/>
     /// rather than silently treated as success.
     /// </summary>
-    private sealed class ProgramEndHandoff(uint entryPc, int instructionCount) : ITitleExecutionHandoff
+    private sealed class ProgramEndHandoff(uint loadAddress, int instructionCount) : ITitleExecutionHandoff
     {
-        private readonly uint _programEnd = unchecked(entryPc + (uint)instructionCount * 4u);
+        private readonly uint _programEnd = unchecked(loadAddress + (uint)instructionCount * 4u);
 
         public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState)
         {

@@ -29,7 +29,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public const string EngineName = "interpreter-native-full-title";
 
     private readonly IReadOnlyList<uint> _instructions;
-    private readonly uint _entryPc;
+    private readonly uint _loadAddress;
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly PSXCoreWrapper _core = new();
@@ -37,18 +37,27 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>
     /// Creates an engine over the guest program <paramref name="instructions"/>,
-    /// loaded at <paramref name="entryPc"/>.
+    /// loaded at guest address <paramref name="loadAddress"/>. Execution starts
+    /// wherever the orchestrator seeds each segment (the initial <c>PC</c> of the
+    /// <see cref="TitleExecutionRequest"/>), so the load base and the entry point
+    /// are deliberately independent: a real PS-X EXE loads its whole text region
+    /// at <see cref="PsxExe.Header"/>'s text start and enters at its header entry
+    /// point, which need not coincide with the text start.
     /// </summary>
-    /// <param name="instructions">The guest instruction words making up the program image.</param>
-    /// <param name="entryPc">The guest address the program image is written to and entered at.</param>
+    /// <param name="instructions">The guest instruction words making up the program image,
+    /// written contiguously at <paramref name="loadAddress"/>.</param>
+    /// <param name="loadAddress">The guest address the program image is written to; also
+    /// the lower bound of the program image the engine will execute guests inside of.</param>
     /// <param name="biosRuntimeFactory">Builds the BIOS runtime this engine dispatches
     /// A0/B0/C0 vector hits to, over the engine's own guest memory. Null runs without
     /// BIOS dispatch, so a vector hit is simply an unresolved transfer.</param>
     /// <exception cref="ArgumentNullException"><paramref name="instructions"/> is null.</exception>
-    /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty.</exception>
+    /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty, or the
+    /// program image overflows the 32-bit address space or does not map to a contiguous
+    /// translatable span of physical memory.</exception>
     public InterpreterTitleExecutionEngine(
         IReadOnlyList<uint> instructions,
-        uint entryPc,
+        uint loadAddress,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(instructions);
@@ -57,9 +66,37 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             throw new ArgumentException("The interpreter needs at least one instruction to execute.", nameof(instructions));
         }
 
+        // Mirrors PsxExeTitleInput.Build: Load writes at TranslateAddress(loadAddress) + i*4
+        // while FetchInstruction translates each virtual PC, so an image that wraps 32 bits
+        // or crosses a KUSEG/KSEG0/KSEG1 boundary would be written to different physical
+        // addresses than the CPU fetches. Fail closed here too so no caller can bypass the
+        // bridge's validation by constructing the engine directly.
+        // instructions.Count * 4 must happen in ulong: computed in uint first (as a
+        // previous revision did), a Count above 0x3FFFFFFF wraps before the ulong
+        // widening ever sees it, so the overflow check below sees a small, wrong
+        // length and lets a bogus loadAddress/programEnd pair through.
+        var programLength = (ulong)instructions.Count * sizeof(uint);
+        var programEndUlong = (ulong)loadAddress + programLength;
+        if (programEndUlong > uint.MaxValue || programEndUlong <= loadAddress)
+        {
+            throw new ArgumentException(
+                $"The program image overflows the 32-bit address space: loadAddress=0x{loadAddress:X8} count={instructions.Count}.",
+                nameof(loadAddress));
+        }
+
+        var programEnd = (uint)programEndUlong;
+        if (!Ps1AddressTranslation.TryTranslate(loadAddress, out var startPhysical)
+            || !Ps1AddressTranslation.TryTranslate(programEnd - 1, out var endPhysical)
+            || (ulong)endPhysical != (ulong)startPhysical + programLength - 1)
+        {
+            throw new ArgumentException(
+                $"The program image 0x{loadAddress:X8}..0x{programEnd:X8} does not map to a contiguous " +
+                "translatable span of physical memory.", nameof(loadAddress));
+        }
+
         _instructions = instructions;
-        _entryPc = entryPc;
-        _programEnd = unchecked(entryPc + (uint)instructions.Count * 4u);
+        _loadAddress = loadAddress;
+        _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
     }
 
@@ -79,7 +116,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
         }
 
-        var ramOffset = TranslateAddress(_entryPc);
+        var ramOffset = TranslateAddress(_loadAddress);
         for (var i = 0; i < _instructions.Count; i++)
         {
             _core.WriteMemory32(ramOffset + unchecked((uint)i * 4u), _instructions[i]);
@@ -191,7 +228,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         return gpr;
     }
 
-    private bool PcWithinProgram(uint pc) => pc >= _entryPc && pc < _programEnd;
+    private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
 
     private static uint TranslateAddress(uint virtualAddress)
     {

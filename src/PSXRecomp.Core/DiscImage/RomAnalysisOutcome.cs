@@ -33,6 +33,14 @@ public sealed record RomAnalysisOutcome
     public DiscImageAnalysisReport? Report { get; init; }
 
     /// <summary>
+    /// The loaded PS-X EXE image, present when the PSX_EXE / EXE_HEADER stages
+    /// passed, so downstream consumers can feed the production execution path
+    /// (Issue #409) with the image already produced by the existing analysis — no
+    /// second executable loader. Never serialized into a deterministic artifact.
+    /// </summary>
+    public PsxExe? Executable { get; init; }
+
+    /// <summary>
     /// Number of addresses the linear decoder could not decode. A run can pass with
     /// a non-zero count (partial decode); zero decoded instructions is a MIPS_DECODE failure.
     /// </summary>
@@ -51,7 +59,8 @@ public sealed record RomAnalysisOutcome
     public static RomAnalysisOutcome From(
         RomAnalysisStageRecorder recorder,
         DiscImageAnalysisReport? report = null,
-        int decodeFailureCount = 0)
+        int decodeFailureCount = 0,
+        PsxExe? executable = null)
     {
         ArgumentNullException.ThrowIfNull(recorder);
 
@@ -64,6 +73,7 @@ public sealed record RomAnalysisOutcome
             FailureReason = recorder.FailureReason,
             Stages = recorder.Results,
             Report = report,
+            Executable = executable,
             DecodeFailureCount = decodeFailureCount,
             FailureException = recorder.FailureException,
         };

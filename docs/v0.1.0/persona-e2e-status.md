@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler), #366 (full-title execution orchestrator), #380 (production execution engine ownership, ADR-015)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler), #366 (full-title execution orchestrator), #380 (production execution engine ownership, ADR-015), #409 (real PS-X EXE → production execution path bridge)
 
 ## Purpose
 
@@ -43,7 +43,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | BUILD | ✅ Implemented | `dotnet build` |
 | ANALYSIS | ✅ Implemented | `RealRomAnalysisSkillTests` / `RealRomAnalyzer.RunAll()` |
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
-| RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests` |
+| RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests`; production PS-X EXE path via `TitleExecutionService.Run(PsxExe, ...)` (#409) |
 | BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 5 of 256+ services |
 | GPU / SPU / CD-ROM | ❌ Not implemented | Interface-only |
 | TITLE_SCREEN | ❌ Not reached | — |
@@ -87,26 +87,43 @@ The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
 composition root: it assembles the production, Domain-layer
 `InterpreterTitleExecutionEngine`, a `BiosHleRuntime`, and
-`ExecutionOrchestrator`, and `MainWindowViewModel.RunDiagnosticTitleCommand` is
-a real Studio UI action that calls it — the product genuinely reaches
-`request → engine load → bounded run → BIOS handoff → classified result`. This
-is a diagnostic execution path, not a general title runner: it runs a small,
-fixed, built-in program from a zeroed register state, not a loaded ROM/EXE, and
-it runs through the **interpreter** backend, not the generated-host
+`ExecutionOrchestrator`. The product reaches classified execution through two
+distinct Studio actions:
+
+- `MainWindowViewModel.RunDiagnosticTitleCommand` runs the built-in diagnostic
+  program (zeroed register state) — `request → engine load → bounded run →
+  BIOS handoff → classified result`.
+- `MainWindowViewModel.RunRealTitleCommand` runs the real-ROM production flow
+  (Issue #409): the loaded disc image is analyzed by
+  `RealRomTitleExecutionService` through `RomAnalysisPipeline`, the analyzed
+  PS-X EXE is retained from `RomAnalysisOutcome.Executable`, and that same
+  executable object is fed into `TitleExecutionService.Run(PsxExe, ...)` →
+  `ExecutionOrchestrator` → `InterpreterTitleExecutionEngine`, producing a
+  classified outcome. The flow deliberately routes through the outcome-
+  preserving pipeline rather than the report-only `DiscImageAnalyzer` façade,
+  which returns only a `DiscImageAnalysisReport` and drops the executable.
+
+Both run through the **interpreter** backend, not the generated-host
 (recompiled) one (`HostTitleExecutionEngine` remains `[Test]`-only).
+
+The real-ROM product flow is proven end to end by the Studio's product-flow
+tests (`RealRomProductionFlowTests`): a synthetic disc input → Studio service
+layer → production execution → classified result, including an assertion that
+the exact executable held by the analysis outcome is the object handed to
+`TitleExecutionService.Run(PsxExe, ...)`.
 
 What still does not exist:
 
-- **Real disc/EXE → production execution wiring.** `RealRomAnalysis`'s
-  disc/ISO/EXE analysis output is not connected to `TitleExecutionService` as a
-  program image + initial state, so the Studio's production execution path
-  cannot yet run Persona or any other real title — only its own built-in
-  diagnostic program. The disc/EXE analysis itself already exists (CHD → ISO
-  9660 → PS-X EXE → CFG); what is missing is the join between that analysis
-  output and the production execution entry point above, not the analysis or
-  the entry point individually. This is the first blocker for running a real
-  title through the Studio's production entry point; it is distinct from the
-  E2E gate's fixture-gated Test execution path described above.
+- ~~**Real disc/EXE → production execution wiring.**~~ Wired in this PR: the
+  Studio's `RealRomTitleExecutionService`/`RunRealTitleCommand` retain the
+  analyzed PS-X EXE and run it through the production execution path. This is
+  distinct from the E2E gate's fixture-gated Test execution path described
+  above.
+- **Disc-image acquisition (file I/O) in the product.** The Application layer
+  is forbidden `System.IO.File`/`Directory` by the architecture contract
+  (`src/architecture.contract.json`), so the product action consumes pre-read
+  disc bytes (`MainWindowViewModel.DiscImageBytes`); reading a disc image from
+  disk stays behind the Infrastructure seam, deferred to Issue #38.
 - **A production generated-host (recompiled) execution backend.** The Studio's
   production path is interpreter-backed only (ADR-015); compiling recompiled
   guest code and running it as the product's execution backend is deferred

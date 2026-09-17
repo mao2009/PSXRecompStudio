@@ -1,6 +1,6 @@
 # ADR-015: The Production Execution Engine Is the Interpreter Backend, and It Lives in the Domain Layer
 
-- **Status**: Accepted
+- **Status**: Accepted (amended 2026-09-16 by Issue #409)
 - **Date**: 2026-09-16
 - **Issue**: #380
 
@@ -105,12 +105,24 @@ this slice: the question is deferred along with the backend that raises it.
   capability gap and is named as such, not papered over — the engine's
   `Name` is `interpreter-native-full-title`, and it is reported in every
   `TitleExecutionResult.EngineName`.
-- **Negative / known limitation**: `TitleExecutionService.Run` takes an
-  in-memory program image and starts from a zeroed register file with no
+- **Negative / known limitation**: `TitleExecutionService.Run` took an
+  in-memory program image and started from a zeroed register file with no
   initial-memory seed. Loading a real title (disc/EXE image → program image +
-  initial state) is a separate concern that is not wired here; the analysis
-  side of it already exists (`RealRomAnalysis`), the joining of the two does
-  not.
+  initial state) was a separate concern that was not wired here; the analysis
+  side of it already exists (`RealRomAnalysis`), the joining of the two did
+  not. **Amended by #409**: `TitleExecutionService.Run(PsxExe, ...)` now loads
+  an analyzed PS-X EXE image with its header-derived initial state (entry PC,
+  SP, GP, text segment) into the same production composition root; the
+  interpreter-backend limitation below is unchanged. **Amended further by this
+  PR**: the Studio product flow actually reaches it — `MainWindowViewModel.
+  RunRealTitleCommand` delegates to `RealRomTitleExecutionService`, which runs
+  the disc analysis through `RomAnalysisPipeline`, retains
+  `RomAnalysisOutcome.Executable`, and hands that same executable to
+  `TitleExecutionService.Run(PsxExe, ...)`. The flow deliberately avoids the
+  report-only `DiscImageAnalyzer` façade, which drops the executable; and no
+  PS1 semantics live in the view model. Disc-image acquisition (file I/O) is
+  left to the Infrastructure seam (Issue #38), so the action consumes pre-read
+  disc bytes.
 - **Negative**: `ExecutionOrchestratorTests` now depends on a production type.
   That is the intended direction of the dependency, but it does mean a change
   to the engine's public shape is now an API change rather than a test-fixture

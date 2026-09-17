@@ -258,6 +258,89 @@ public sealed class ExecutionOrchestratorTests
         result.FinalSnapshot!.Termination.Should().Be(RecompilerIrTerminationReason.Exception);
     }
 
+    // --- Engine image validation ----------------------------------------------
+
+    [Fact]
+    public void EngineConstructor_ProgramImageOverflowing32Bits_Throws()
+    {
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                new uint[] { 0u, 0u, 0u, 0u }, 0xFFFFFFF8u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("overflows");
+    }
+
+    [Fact]
+    public void EngineConstructor_ProgramSpanCrossingTranslationBoundary_Throws()
+    {
+        // The span [0x7FFFFF00..0x80000100) straddles KUSEG/KSEG0: the start
+        // translates to itself and the last byte is masked into low RAM, so the
+        // image would be written to non-contiguous physical addresses.
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                Enumerable.Repeat(0u, 128).ToArray(), 0x7FFFFF00u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("contiguous");
+    }
+
+    [Fact]
+    public void EngineConstructor_NontranslatableProgramStart_Throws()
+    {
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                new uint[] { 0u, 0u }, 0xC0000000u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("translatable");
+    }
+
+    [Fact]
+    public void EngineConstructor_OrdinarySizedProgram_DoesNotThrow()
+    {
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                Enumerable.Repeat(0u, 256).ToArray(), 0x80010000u);
+        };
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void EngineConstructor_InstructionCountMultiplicationWouldWrapInUint_Throws()
+    {
+        // Count = 0x4000_0001: (uint)Count * 4u wraps to 4 in 32-bit arithmetic, so a
+        // constructor that multiplies in uint before widening to ulong sees a bogus
+        // 4-byte program instead of the real ~4 GiB one and lets it through. The real
+        // ulong length overflows the 32-bit address space from loadAddress 0, so a
+        // correct constructor must reject it as an overflow. The list never indexes an
+        // element; only Count is read before this must throw.
+        var act = () =>
+        {
+            using var engine = new InterpreterTitleExecutionEngine(
+                new HugeCountInstructions(0x4000_0001), 0u);
+        };
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("overflows");
+    }
+
+    private sealed class HugeCountInstructions(int count) : IReadOnlyList<uint>
+    {
+        public int Count { get; } = count;
+        public uint this[int index] => throw new NotSupportedException("Boundary check must not index the image.");
+        public IEnumerator<uint> GetEnumerator() => throw new NotSupportedException("Boundary check must not enumerate the image.");
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     // --- End-to-end over the generated host (gcc, RAM continuity) -------------
 
     [Fact]
