@@ -1,4 +1,4 @@
-# ADR-016: Real-ROM Coverage Is Measured Per Instruction, Separately From Proof Selection
+# ADR-021: Real-ROM Coverage Is Measured Per Instruction, Separately From Proof Selection
 
 - **Status**: Accepted
 - **Date**: 2026-09-17
