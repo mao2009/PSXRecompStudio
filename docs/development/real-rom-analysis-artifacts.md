@@ -4,9 +4,9 @@
 
 **Authority:** SSOT
 
-**Related Issues:** #212, #215, #11, #279
+**Related Issues:** #212, #215, #11, #279, #410
 
-**Related Components:** `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
+**Related Components:** `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/`, `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
 
 ## Purpose
 
@@ -83,7 +83,12 @@ reports/real-rom/<fixture>/
   report.json          per-stage summary and distributions
   instructions.json    detailed instruction artifact
   cfg.json             detailed control-flow artifact
+  coverage.json        recompilation coverage (optional; present when measured)
 ```
+
+`coverage.json` is the only optional document: it exists when a coverage measurement was
+supplied to the artifact builder, and is absent otherwise. Every other document is always
+written.
 
 `<fixture>` is a **human-facing alias only**, derived mechanically from the disc image's
 file name. The transform is pure and title-agnostic:
@@ -111,8 +116,10 @@ hash.
 ## Schema versioning
 
 Each document carries its own `schemaVersion` and an `artifactKind` discriminator. The
-versions are constants in `AnalysisArtifactSchema`: `report.json` is at version `2`
-(version 2 added the `biosCalls` section), the other three are at version `1`.
+versions are constants in `AnalysisArtifactSchema`: `manifest.json` is at version `2`
+(version 2 admitted `coverage.json` into the indexable set), `report.json` is at version
+`2` (version 2 added the `biosCalls` section), and `instructions.json`, `cfg.json` and
+`coverage.json` are at version `1`.
 
 **Any change to the shape or meaning of a field requires bumping that document's
 version.** Consumers diff artifacts across analyzer revisions, and must be able to tell
@@ -134,7 +141,8 @@ The index. Small enough to read at a glance and to diff across titles.
 
 The manifest hashes its siblings but **never itself**: a self-referential hash is not
 computable, and the format does not pretend otherwise. To verify a fixture directory,
-hash `report.json`, `instructions.json` and `cfg.json` and compare against the manifest.
+hash every file `documents[]` names and compare against the manifest. `coverage.json`
+appears there only when it was produced, so the entry count is 3 or 4.
 
 ### The `fixture` identity block
 
@@ -230,6 +238,75 @@ target address, then kind. Both contracts are recorded in `blockOrdering` and
 - `edges[]` — `sourceAddress`, `targetAddress`, `kind` (`branch`, `jump`, `fallthrough`,
   `indirect`; an unresolved indirect target is recorded as `0x00000000`)
 
+### `coverage.json` (Issue #410)
+
+How much of the analyzed code corpus is currently recompilable, and — for the remainder —
+why not. It answers a different question from the proof path, and the two must never be
+conflated:
+
+| | Lowerable coverage (`coverage.json`) | Differentially validated coverage |
+|---|---|---|
+| Question | *Would this code lower?* | *Did the recompiled code execute identically?* |
+| Produced by | `RealRomCoverageAnalyzer` over the whole analyzed corpus | a differential run over one selected window |
+| Selection | none — every analyzed unit is measured | `RealRomCandidateSelector`, deliberately conservative (ADR-013) |
+| Strength | an **upper bound**: the lowering stage accepts the shape | a **proof**: reference and recompiled state agree |
+| Where | `totals` and `classes` | the `differential` section only |
+
+`RealRomCandidateSelector` is untouched by this document. Coverage is descriptive;
+differential proof remains the correctness gate. A progress statement reads *"X of Y
+analyzed units currently lowerable; N selected candidates differentially validated"* —
+never "coverage == proof success rate".
+
+**The unit is one instruction-sized word**, not a function, and the document says so in
+its own `unit` and `unitRationale` fields. `FunctionDiscovery` grows each function by
+reachability from a seed, so its functions overlap, stop at unresolved indirect transfers,
+and do not partition the corpus; whole-program percentages over them would be fabricated
+(ADR-012 describes what that projection is actually for). Basic blocks *do* partition the
+decoded stream and are reported as a secondary structural breakdown.
+
+- `unit`, `unitRationale`, `classOrdering`, `reasonOrdering`, `differentialWindowOrdering`
+  — the contracts, recorded in the document
+- `totals` — `textInstructionSlots`, `decodedInstructions`, `decodeFailures`,
+  `notAnalyzedInstructions`, `lowerableInstructions`, `rejectedInstructions`,
+  `basicBlocks`, `fullyLowerableBasicBlocks`, `partiallyLowerableBasicBlocks`,
+  `rejectedBasicBlocks`
+- `classes[]` — `class`, `instructionCount`; **every** class is present even at zero, so
+  two fixtures diff row-for-row
+- `reasons[]` — `class`, `detail`, `instructionCount`: the named, machine-readable reason
+  (the decoded opcode for an instruction-level rejection, the BIOS identity such as
+  `A0:3C` or `A0:unresolved` for a runtime dependency, the decoder's own reason for an
+  undecodable word)
+- `differential` — `attemptedWindows`, `matchedWindows`, `mismatchedWindows`,
+  `matchedInstructions`, `mismatchedInstructions`, `windows[]`
+
+The classes, and the evidence each one rests on:
+
+| Class | Evidence |
+|---|---|
+| `Lowerable` | `MipsToIrLowerer.LowerProgram` accepts the instruction's shape |
+| `IndirectControlFlow` | `JR`/`JALR` — the same unresolved transfer `cfg.json` records as an `indirect` edge |
+| `BiosDependency` | a recognized BIOS jump-table call site (`report.json`'s `biosCalls`) |
+| `UnsupportedInstruction` | the lowering stage rejects the shape outright |
+| `MalformedOrUndecodable` | a `DecodeFailure` from the existing pipeline |
+| `AnalysisUncertainty` | the instruction decoded, but the block partition does not cover it |
+| `NotAnalyzed` | a text-region word the bounded decode window never reached |
+
+There is no second "supported instruction" list: support is decided by calling the real
+lowerer, exactly as candidate selection does (ADR-013). `NotAnalyzed` is what keeps the
+denominator honest — a ratio computed over decoded instructions alone would overstate
+whole-title coverage whenever the decode window is smaller than the text region.
+
+**Three classes Issue #410 lists as desirable are deliberately absent**, because nothing
+in the repository can currently establish them: MMIO / hardware dependency (no analyzer
+computes a static effective address, so a load's target region is unknown), dynamic /
+overlay suspicion (`OverlayInfo` is a contract with no producer, and #249 is unstarted),
+and self-modifying code. An always-zero bucket would read as "measured and absent" rather
+than "not measured", so they are reported nowhere rather than reported falsely. Adding one
+later is a `coverage.json` schema bump.
+
+`differential` is populated only by a run that actually executed a differential. An empty
+section means *nothing was proven* — never *nothing failed*.
+
 ## Comparing artifacts
 
 - **Same disc, two runs** — expect an empty diff. A non-empty diff is an analyzer
@@ -259,7 +336,7 @@ on every build. The real-ROM tests confirm the same guarantees hold on real data
 
 | Artifact | Shareable |
 |---|---|
-| `manifest.json`, `report.json` | Yes — metadata and statistics only |
+| `manifest.json`, `report.json`, `coverage.json` | Yes — metadata and statistics only |
 | `instructions.json`, `cfg.json` | Yes in principle (disassembly metadata, no game data blobs); prefer excerpts in issues and PRs given their size |
 | `logs/**` | Local only — may contain local filesystem paths |
 | `rom/**` | Never. Copyrighted game data |
