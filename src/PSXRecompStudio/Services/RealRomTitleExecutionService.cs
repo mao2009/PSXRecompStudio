@@ -27,6 +27,20 @@ public sealed record RealRomTitleExecutionResult
     /// to verify the analyzed executable was not swapped or reloaded before execution.
     /// </summary>
     public PsxExe? Executable { get; init; }
+
+    /// <summary>
+    /// Set when analysis passed and produced an <see cref="Executable"/>, but that
+    /// executable failed the production execution-layout invariants enforced by
+    /// <see cref="PsxExeTitleInput.Build"/> / <see cref="InterpreterTitleExecutionEngine"/>
+    /// (e.g. a non-word-aligned text start, a truncated text segment, or a text region
+    /// that does not map to a contiguous physical span) before a single guest instruction
+    /// ran. A passing <see cref="RomAnalysisOutcome.Status"/> is not proof the executable
+    /// is execution-ready — the analysis pipeline's own stages do not fully duplicate these
+    /// invariants — so this is reported as its own state, distinct from a passing analysis
+    /// with no executable (<see cref="Executable"/> is null) and from a runtime failure
+    /// reported through <see cref="Run"/> (execution never started here).
+    /// </summary>
+    public string? ExecutionLayoutRejectionReason { get; init; }
 }
 
 /// <summary>
@@ -120,7 +134,24 @@ public sealed class RealRomTitleExecutionService
             return new RealRomTitleExecutionResult { Analysis = outcome };
         }
 
-        var run = _execution.Run(outcome.Executable, outerBudget, segmentBudget);
+        TitleExecutionRun run;
+        try
+        {
+            run = _execution.Run(outcome.Executable, outerBudget, segmentBudget);
+        }
+        catch (ArgumentException ex)
+        {
+            // PsxExeTitleInput.Build / InterpreterTitleExecutionEngine reject an
+            // executable whose layout the analysis pipeline's own stages do not fully
+            // validate (see RomAnalysisPipeline's EXE_HEADER/TEXT_REGION checks). Classify
+            // it instead of letting a passing analysis' exception escape to the caller.
+            return new RealRomTitleExecutionResult
+            {
+                Analysis = outcome,
+                Executable = outcome.Executable,
+                ExecutionLayoutRejectionReason = ex.Message,
+            };
+        }
 
         return new RealRomTitleExecutionResult
         {

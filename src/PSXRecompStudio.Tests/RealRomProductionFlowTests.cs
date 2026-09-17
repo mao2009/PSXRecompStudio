@@ -121,6 +121,31 @@ public class RealRomProductionFlowTests
 
         viewModel.RealTitleExecutionStatus.Should().Contain("Load a disc image");
     }
+
+    [Fact]
+    public void MainWindowViewModel_RunRealTitleCommand_WhenExecutableFailsLayoutValidation_ReportsRejectionWithoutThrowing()
+    {
+        // Text region [0x7FFFFFF0..0x80000010) straddles the KUSEG/KSEG0 boundary.
+        // RomAnalysisPipeline's own EXE_HEADER/ENTRY_POINT/TEXT_REGION stages never call
+        // Ps1AddressTranslation, so analysis passes; PsxExeTitleInput.Build rejects the
+        // non-contiguous physical span before a single instruction runs. The command must
+        // classify this instead of letting the ArgumentException escape to the UI.
+        const uint textStart = 0x7FFFFFF0u;
+        var exeBytes = SyntheticDiscImage.BuildSyntheticExe(
+            textStart, entryPoint: textStart, spInitial: 0x801FFF00u,
+            gpInitial: 0xAAAABBCCu,
+            [0u, 0u, 0u, 0u, 0u, 0u, 0u, 0x03E00008u]); // nops, then jr $ra
+        var discImageBytes = SyntheticDiscImage.BuildExecIso(exeBytes);
+
+        var viewModel = new MainWindowViewModel();
+        viewModel.DiscImageBytes = discImageBytes;
+
+        var act = () => viewModel.RunRealTitleCommand.Execute(null);
+
+        act.Should().NotThrow(
+            "an execution-layout rejection must be classified, not thrown from the command");
+        viewModel.RealTitleExecutionStatus.Should().Contain("rejected for execution");
+    }
 }
 
 /// <summary>

@@ -85,6 +85,13 @@ public partial class MainWindowViewModel : ViewModelBase
 
         var result = _realExecution.AnalyzeAndExecuteFromDiscImage(bytes, sha256);
 
+        if (result.ExecutionLayoutRejectionReason is not null)
+        {
+            RealTitleExecutionStatus =
+                $"{result.Analysis.Status} — executable rejected for execution: {result.ExecutionLayoutRejectionReason}";
+            return;
+        }
+
         var run = result.Run;
         if (run is null)
         {
