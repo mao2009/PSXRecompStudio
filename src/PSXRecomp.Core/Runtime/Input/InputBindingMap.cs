@@ -62,6 +62,13 @@ public sealed class InputBindingMap<TButton>
                 "A binding must target a real button, not the zero/None enum value.", nameof(binding));
         }
 
+        ulong buttonBits = Convert.ToUInt64(binding.Button);
+        if ((buttonBits & (buttonBits - 1)) != 0)
+        {
+            throw new ArgumentException(
+                $"A binding must target exactly one button; {binding.Button} is a composite flag value.", nameof(binding));
+        }
+
         foreach (var existing in _bindings)
         {
             if (existing.Input != binding.Input)

@@ -270,6 +270,63 @@ public class InputAbstractionTests
     }
 
     [Fact]
+    public void Add_CompositeButtonValue_IsRejected()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new InputBindingMap<Ps1Button>().Add(Binding(Keyboard("Key.W"), Ps1Button.Cross | Ps1Button.Circle)));
+    }
+
+    [Fact]
+    public void SetPressed_WithUndefinedPort_IsRejected()
+    {
+        var physical = new PhysicalControllerState<Ps1ControllerDeviceKind>();
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => physical.SetPressed((ControllerPort)99, Keyboard("Key.W"), true));
+    }
+
+    [Fact]
+    public void IsPressed_WithUndefinedPort_IsRejected()
+    {
+        var physical = new PhysicalControllerState<Ps1ControllerDeviceKind>();
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => physical.IsPressed((ControllerPort)99, Keyboard("Key.W")));
+    }
+
+    [Fact]
+    public void SetDevice_WithUndefinedPort_IsRejected()
+    {
+        var physical = new PhysicalControllerState<Ps1ControllerDeviceKind>();
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => physical.SetDevice((ControllerPort)99, Ps1ControllerDeviceKind.StandardDigitalPad));
+    }
+
+    [Fact]
+    public void GetDevice_WithUndefinedPort_IsRejected()
+    {
+        var physical = new PhysicalControllerState<Ps1ControllerDeviceKind>();
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => physical.GetDevice((ControllerPort)99));
+    }
+
+    [Fact]
+    public void Ps1ControllerPortState_WithUndefinedDeviceKind_IsRejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new Ps1ControllerPortState((Ps1ControllerDeviceKind)999, default));
+    }
+
+    [Fact]
+    public void Ps1ControllerPortState_WithUnsupportedDevice_HasEmptyState()
+    {
+        var nonEmpty = new Ps1ControllerState(Ps1Button.Cross);
+        var portState = new Ps1ControllerPortState(Ps1ControllerDeviceKind.DualShock, nonEmpty);
+
+        portState.IsSupported.Should().BeFalse();
+        portState.State.Pressed.Should().Be(Ps1Button.None,
+            "an unsupported device kind must not carry digital-pad state");
+    }
+
+    [Fact]
     public void Snapshot_IsUnaffectedByLaterPhysicalStateMutation()
     {
         var map = new InputBindingMap<Ps1Button>().Add(Binding(Keyboard("Key.W"), Ps1Button.Up));

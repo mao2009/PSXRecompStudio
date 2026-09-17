@@ -23,9 +23,17 @@ public sealed class PhysicalControllerState<TDeviceKind>
     private readonly HashSet<(ControllerPort Port, PhysicalInputId Input)> _pressed = new();
     private readonly Dictionary<ControllerPort, TDeviceKind> _devices = new();
 
+    private static void ThrowIfPortUndefined(ControllerPort port)
+    {
+        if (!Enum.IsDefined(port))
+            throw new ArgumentOutOfRangeException(nameof(port), port, "Unknown controller port.");
+    }
+
     /// <summary>Sets or clears whether <paramref name="input"/> is pressed on <paramref name="port"/>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is not a defined port.</exception>
     public void SetPressed(ControllerPort port, PhysicalInputId input, bool pressed)
     {
+        ThrowIfPortUndefined(port);
         if (pressed)
         {
             _pressed.Add((port, input));
@@ -37,12 +45,18 @@ public sealed class PhysicalControllerState<TDeviceKind>
     }
 
     /// <summary>Whether <paramref name="input"/> is currently pressed on <paramref name="port"/>.</summary>
-    public bool IsPressed(ControllerPort port, PhysicalInputId input) => _pressed.Contains((port, input));
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is not a defined port.</exception>
+    public bool IsPressed(ControllerPort port, PhysicalInputId input)
+    {
+        ThrowIfPortUndefined(port);
+        return _pressed.Contains((port, input));
+    }
 
     /// <summary>Declares the kind of controller attached to <paramref name="port"/>.</summary>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a defined device kind.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is not a defined port, or <paramref name="kind"/> is not a defined device kind.</exception>
     public void SetDevice(ControllerPort port, TDeviceKind kind)
     {
+        ThrowIfPortUndefined(port);
         if (!Enum.IsDefined(kind))
         {
             throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown controller device kind.");
@@ -56,8 +70,10 @@ public sealed class PhysicalControllerState<TDeviceKind>
     /// <c>default</c> (the console's <c>NotPresent</c>-equivalent member) when
     /// the port was never assigned.
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is not a defined port.</exception>
     public TDeviceKind GetDevice(ControllerPort port)
     {
+        ThrowIfPortUndefined(port);
         return _devices.TryGetValue(port, out var kind) ? kind : default;
     }
 }
