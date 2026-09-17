@@ -1,4 +1,4 @@
-# ADR-017: Diagnostics & Recovery contract
+# ADR-019: Diagnostics & Recovery contract
 
 - Status: Accepted
 - Date: 2026-09-17

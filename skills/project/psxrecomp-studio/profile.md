@@ -49,7 +49,7 @@ Current records:
 | 014 | BIOS HLE Calls Cross a Shared Runtime Contract | Accepted |
 | 015 | Production Execution Engine Ownership | Accepted |
 | 016 | Generated-Host Execution Budget Semantics | Accepted |
-| 017 | Diagnostics & Recovery Contract | Accepted |
+| 019 | Diagnostics & Recovery Contract | Accepted |
 | 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
