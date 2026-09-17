@@ -32,8 +32,13 @@ namespace PSXRecompStudio.Services;
 /// <para>
 /// <b>Concurrency.</b> As <see cref="IMemoryCardStorage"/> specifies, concurrent
 /// writable use of one card file is unsupported and detected rather than
-/// prevented: the file's content is re-read and compared with the handle's stamp
-/// immediately before the rename, and a mismatch is refused.
+/// prevented. The file is compared against the handle's stamp twice: once before
+/// the staging write, to fail a known conflict cheaply, and again immediately
+/// before the rename, which is the check that protects data — the staging write
+/// is long enough for another writer to land inside it. The window left between
+/// that second comparison and the rename cannot be closed without an atomic
+/// compare-and-rename the filesystem does not offer, so the race is narrowed
+/// rather than eliminated.
 /// </para>
 /// </remarks>
 [Application]
@@ -46,6 +51,14 @@ public sealed class FileMemoryCardStorage : IMemoryCardStorage
     /// leftover one is recognisable.
     /// </summary>
     public const string StagingSuffix = ".psxtmp";
+
+    /// <summary>
+    /// Runs after the staging file is written and before the card is renamed over.
+    /// It exists so a test can drive a write into exactly the window the pre-rename
+    /// conflict check protects, which is otherwise a timing race no test could hit
+    /// reliably. Production leaves it null.
+    /// </summary>
+    internal Action? AfterStagingForTests { get; init; }
 
     /// <inheritdoc />
     public bool Exists(string path)
@@ -107,6 +120,8 @@ public sealed class FileMemoryCardStorage : IMemoryCardStorage
     {
         ArgumentNullException.ThrowIfNull(handle);
 
+        // Fail a known conflict before spending a 128 KiB write on it. This check
+        // is an optimization, not the guarantee — see the second one below.
         if (!Matches(handle.Path, handle.OriginStamp))
         {
             throw new MemoryCardConflictException(handle.Path);
@@ -121,6 +136,17 @@ public sealed class FileMemoryCardStorage : IMemoryCardStorage
             {
                 stream.Write(raw);
                 stream.Flush(flushToDisk: true);
+            }
+
+            AfterStagingForTests?.Invoke();
+
+            // The check that actually protects the card. Writing and flushing
+            // 128 KiB takes long enough for another writer to land in between, and
+            // the rename below would destroy it, so the card is re-verified here
+            // with nothing but the comparison standing between the two.
+            if (!Matches(handle.Path, handle.OriginStamp))
+            {
+                throw new MemoryCardConflictException(handle.Path);
             }
 
 #pragma warning disable AARC003 // Issue #38: host I/O adapter; moves to PSXRecomp.Infrastructure once that layer exists.

@@ -176,6 +176,37 @@ public sealed class FileMemoryCardStorageTests : IDisposable
         ReadFile(path).Should().Equal(external, "the other writer's card is left exactly as it was");
     }
 
+    /// <summary>
+    /// Required case 11, at the moment that actually matters: a write that lands
+    /// while the staging file is being written is still caught. Checking only
+    /// before the staging write would leave the whole duration of a 128 KiB write
+    /// and a device flush unguarded, and the rename would then destroy the other
+    /// writer's card.
+    /// </summary>
+    [Fact]
+    public void Save_RefusesWhenTheCardChangesWhileTheStagingFileIsWritten()
+    {
+        var path = WriteCard("raced.mcr", ExternalCardBytes());
+        var handle = _storage.Load(path);
+        handle.Image.Write(MemoryCardImage.BlockOffset(9), [0xAB]);
+
+        var interloper = ExternalCardBytes();
+        interloper[MemoryCardImage.BlockOffset(12)] = 0x5A;
+
+        // The card passes the pre-write check, then changes underneath the save.
+        var racing = new FileMemoryCardStorage
+        {
+            AfterStagingForTests = () => WriteCard("raced.mcr", interloper),
+        };
+
+        var act = () => racing.Save(handle);
+
+        act.Should().Throw<MemoryCardConflictException>().Which.Path.Should().Be(path);
+        ReadFile(path).Should().Equal(interloper, "the write that landed during staging must survive");
+        Exists(path + FileMemoryCardStorage.StagingSuffix)
+            .Should().BeFalse("the abandoned staging file is cleaned up");
+    }
+
     /// <summary>A deleted card is treated as changed rather than silently recreated.</summary>
     [Fact]
     public void Save_RefusesWhenTheCardFileDisappeared()
@@ -312,6 +343,13 @@ public sealed class FileMemoryCardStorageTests : IDisposable
         File.WriteAllBytes(path, content);
 #pragma warning restore AARC003
         return path;
+    }
+
+    private static bool Exists(string path)
+    {
+#pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
+        return File.Exists(path);
+#pragma warning restore AARC003
     }
 
     private static byte[] ReadFile(string path)

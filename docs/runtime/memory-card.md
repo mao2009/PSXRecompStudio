@@ -116,15 +116,18 @@ Card-management strategies are configuration, not separate mechanisms:
 
 ## Write safety
 
-Saving a card is a three-step sequence in `FileMemoryCardStorage`:
+Saving a card is a four-step sequence in `FileMemoryCardStorage`:
 
 1. write the complete image to a sibling staging file (`<card path>.psxtmp`),
 2. flush it to the storage device,
-3. move the staging file over the card in a single rename.
+3. re-check the card against the handle's fingerprint (see
+   [External modification](#external-modification)),
+4. move the staging file over the card in a single rename.
 
 The card therefore holds either its previous content or the complete new
 content, never a partially written mixture. A failure at any step leaves the
-previous card untouched and removes the staging file.
+previous card untouched; the staging file is removed on a best-effort basis, and
+a leftover one is harmless because the card itself was never opened for writing.
 
 Creating a blank card uses an exclusive create instead: an existing card is
 never replaced by a blank one, not even under a race.
@@ -137,13 +140,19 @@ part of this subsystem.
 ## External modification
 
 When a card is read, its content is fingerprinted (`MemoryCardStamp`: length
-plus SHA-256 of the file). Immediately before a save's rename, the file on disk
-is re-read and compared against that fingerprint.
+plus SHA-256 of the file). A save compares the file on disk against that
+fingerprint **twice**:
 
-- Match — the save proceeds.
-- Mismatch, or the file no longer exists — the save is refused with
-  `MemoryCardConflictException`, and whatever is on disk is left exactly as it
-  is. Recovery is to reload the card and reapply the change.
+- once before the staging write, so a conflict that is already known costs no
+  wasted 128 KiB write — an optimization only;
+- again immediately before the rename, with nothing but the comparison between
+  the two. This is the check that protects data: writing and flushing 128 KiB
+  takes long enough for another writer to land in that window, and the rename
+  would otherwise destroy it.
+
+Either check refuses the save with `MemoryCardConflictException` on a mismatch,
+or when the file no longer exists, and leaves whatever is on disk exactly as it
+is. Recovery is to reload the card and reapply the change.
 
 The fingerprint is content-derived rather than timestamp-derived on purpose:
 file-modification timestamps vary in resolution between filesystems and are
@@ -151,6 +160,11 @@ preserved by many copy tools, so they miss real edits.
 
 There is no filesystem watcher and no background monitoring. Detection happens
 at the moment it protects data — the point of overwrite.
+
+A residual window remains between the second comparison and the rename itself,
+because the filesystem offers no atomic compare-and-rename. It is orders of
+magnitude smaller than the write it replaces, and the policy below is detection
+rather than prevention, so this is a narrowed race, not an eliminated one.
 
 ## Concurrent access
 
@@ -173,11 +187,17 @@ What is verified, and therefore all that is claimed:
 - The file format read and written is the standard raw 128 KiB image, matching
   the published psx-spx layout frame by frame
   (`MemoryCardFormatContractTests`).
-- A formatted card carrying a save — including a directory entry written by
-  something other than PSXRecompStudio — loads with no conversion step and
-  round-trips byte-for-byte.
+- A formatted card carrying a save loads with no conversion step and round-trips
+  byte-for-byte.
 - Writing one region of a card leaves the directory and every existing save
   byte-identical, so the card remains readable by whatever wrote it.
+
+The load-and-preserve fixtures are built from this project's own blank card and
+then given a directory entry, so they demonstrate *preservation* rather than
+independent format agreement. The independent part is
+`MemoryCardFormatContractTests`, which checks the layout against hard-coded
+expected values and a separately written checksum implementation rather than
+against the production code's own output.
 
 What is **not** claimed: compatibility with any specific named emulator build.
 No external emulator binary is part of the test suite, so no such claim has been

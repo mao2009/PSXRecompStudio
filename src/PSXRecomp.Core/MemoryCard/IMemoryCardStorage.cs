@@ -129,6 +129,9 @@ public interface IMemoryCardStorage
     /// <exception cref="ArgumentException"><paramref name="path"/> is blank, or the
     /// file is not exactly <see cref="MemoryCardImage.SizeInBytes"/> bytes.</exception>
     /// <exception cref="FileNotFoundException">No file exists at <paramref name="path"/>.</exception>
+    /// <exception cref="DirectoryNotFoundException">Part of <paramref name="path"/> does not exist.</exception>
+    /// <exception cref="IOException">The card could not be read.</exception>
+    /// <exception cref="UnauthorizedAccessException">The card is not readable by this process.</exception>
     MemoryCardHandle Load(string path);
 
     /// <summary>

@@ -94,9 +94,20 @@ historical copies is a separate product decision.
 
 ### 6. External modification is detected at the point of overwrite
 
-Reading a card records a content fingerprint (length plus SHA-256). Immediately
-before the rename, the file is re-read and compared; a mismatch, or a file that
-has disappeared, refuses the save and leaves what is on disk untouched.
+Reading a card records a content fingerprint (length plus SHA-256). A save
+compares the file against it twice: once before the staging write, which only
+avoids a pointless 128 KiB write on an already-known conflict, and again
+immediately before the rename, which is the comparison that protects data. The
+second one is load-bearing because the staging write and device flush take long
+enough for another writer to land in between; checking only before the write
+would leave that whole duration unguarded and the rename would then destroy the
+other writer's card. A mismatch, or a file that has disappeared, refuses the save
+and leaves what is on disk untouched.
+
+The remaining window between the second comparison and the rename cannot be
+closed without an atomic compare-and-rename the filesystem does not offer. This
+decision narrows the race rather than eliminating it, consistently with the
+detect-don't-prevent policy below.
 
 The fingerprint is content-derived rather than timestamp-derived because
 modification timestamps vary in resolution between filesystems and are preserved
