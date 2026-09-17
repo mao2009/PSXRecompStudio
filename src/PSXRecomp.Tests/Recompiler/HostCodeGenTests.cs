@@ -328,10 +328,13 @@ public class HostCodeGenTests
         var result = RecompilerHostCodeGen.Generate(program);
         result.Success.Should().BeTrue();
 
-        // The hook is consulted first; only an unclaimed PC falls through to the
-        // pre-existing end-of-program / unsupported-entry behavior.
-        result.Source.Should().Contain("int32_t hosted = (state->host_transfer != 0)");
-        result.Source.Should().Contain("? state->host_transfer(state)");
+        // A null hook falls straight through to the pre-existing end-of-program /
+        // unsupported-entry behavior. A non-null hook is guarded by the strict
+        // dispatch budget (Issue #375) before it can be invoked, so it never
+        // mutates guest state past the limit; only once that guard has passed is
+        // the hook actually consulted.
+        result.Source.Should().Contain("if (state->host_transfer == 0) {");
+        result.Source.Should().Contain("int32_t hosted = state->host_transfer(state);");
         result.Source.Should().Contain("if (hosted != 0) {");
 
         // The backend carries no BIOS knowledge: it never names a vector address,

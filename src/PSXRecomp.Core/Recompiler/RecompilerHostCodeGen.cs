@@ -475,16 +475,23 @@ public static class RecompilerHostCodeGen
         return $"({value}u)";
     }
 
+    private static void EmitBudgetExceededReturn(StringBuilder sb, int indentLevel)
+    {
+        var indent = string.Concat(Enumerable.Repeat(IndentUnit, indentLevel));
+        sb.AppendLine(indent + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
+        sb.AppendLine(indent + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
+    }
+
     private static void EmitDispatchFunction(StringBuilder sb, RecompilerIrProgram program)
     {
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
         sb.AppendLine(IndentUnit + "for (;;) {");
 
-        // Resolve the block function for the current PC. A PC that matches no
-        // block means the straight-line program has fallen off the end (normal
-        // completion once at least one step ran); a PC that matches no block on
-        // the very first step means the entry PC cannot start the program.
+        // A generated-host budget is a strict upper bound on retired dispatch
+        // units. Known generated blocks and host-claimed transfers both spend one
+        // unit. The guard therefore runs before either callback can mutate guest
+        // state; budget == 0 executes nothing.
         for (var i = 0; i < program.Blocks.Count; i++)
         {
             var functionName = $"recompiler_block_0x{program.Blocks[i].EntryPc:X8}";
@@ -500,6 +507,9 @@ public static class RecompilerHostCodeGen
             {
                 sb.AppendLine(IndentUnit + IndentUnit + cond + " {");
             }
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
+            EmitBudgetExceededReturn(sb, 4);
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
             // B1 checkpoint: under -DRECOMPILER_CHECKPOINTS the generated binary
             // prints the guest PC of every retired block, so the harness can compare
             // the recompiled block trace against the interpreter's instruction trace.
@@ -512,20 +522,26 @@ public static class RecompilerHostCodeGen
             sb.AppendLine(IndentUnit + IndentUnit + "}");
         }
 
-        // The unknown-PC boundary. Before giving up, offer the PC to the host's
-        // optional control-transfer hook (Issue #362): a runtime that owns
-        // transfers this program cannot resolve statically — the PS1 BIOS
-        // A0/B0/C0 trampoline vectors among them — claims the PC here and sets
-        // the state's termination_reason and next_pc itself. The generated code
-        // classifies nothing; a host that provides no hook keeps the pre-existing
-        // behavior exactly.
+        // The unknown-PC boundary. A null hook has no side effect, so the existing
+        // normal fall-off / unsupported-entry distinction can be resolved without
+        // spending budget. A real host callback may mutate state and therefore must
+        // not be invoked once the strict dispatch budget is exhausted.
         sb.AppendLine(IndentUnit + IndentUnit + "else {");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"int32_t hosted = ({StateParam}->{HostTransferField} != 0)");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"? {StateParam}->{HostTransferField}({StateParam})");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + ": 1;");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (hosted != 0) {");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if ({StateParam}->{HostTransferField} == 0) {{");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
+        EmitBudgetExceededReturn(sb, 4);
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"int32_t hosted = {StateParam}->{HostTransferField}({StateParam});");
+        // A decline the budget guard above let through is definitive: this pc has
+        // no block and no host claim, regardless of steps. Unlike the null-hook
+        // case, "steps == 0" here can just mean a segment restart landed back on
+        // this same pc with a fresh budget, not an invalid entry — so it must not
+        // gate this outcome the way it gates the null-hook branch above.
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (hosted != 0) {");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0;");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
         // A claimed transfer retires like a block, so it appears in the checkpoint
         // trace at the PC it was claimed for and spends a step from the same budget.
@@ -534,18 +550,12 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
-        // Stop on a non-Success termination before enforcing the budget.
+        // Stop on a non-Success termination from the retired dispatch unit.
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} != RECOMPILER_REASON_SUCCESS) {{");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"return {StateParam}->{TerminationField};");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
-        // Bounded execution: refuse to retire more than `budget` instructions.
-        sb.AppendLine(IndentUnit + IndentUnit + "if (steps >= budget) {");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
-        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
-        sb.AppendLine(IndentUnit + IndentUnit + "}");
-
-        // Advance the sequential program counter.
+        // Advance only after a dispatch unit successfully retires.
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{PcField} = {StateParam}->{NextPcField};");
         sb.AppendLine(IndentUnit + IndentUnit + "steps++;");
         sb.AppendLine(IndentUnit + "}");

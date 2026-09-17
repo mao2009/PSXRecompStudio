@@ -349,6 +349,9 @@ public sealed class ExecutionOrchestratorTests
         // Segment 1 writes 0xAA to scratch. A loop then parks execution between
         // segments (block budget 3), and the final read of scratch lands in S1.
         // If the engine lost RAM between process restarts, the read would see 0.
+        // The NOP after the LW fills its load-delay slot: $t4 is not visible to
+        // the immediately following instruction on real MIPS, so without it the
+        // OR would read $t4's pre-load (stale) value instead of the loaded one.
         const ushort scratch = 0x0080;
         var words = new uint[]
         {
@@ -360,6 +363,7 @@ public sealed class ExecutionOrchestratorTests
             MipsEncoding.Branch(0x05, (byte)R3000aRegister.T3, 0, Entry + 20, Entry + 16),
             MipsEncoding.Nop,
             MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.T4, baseRegister: (byte)R3000aRegister.T1, offset: 0),
+            MipsEncoding.Nop,
             MipsEncoding.R(0x25, rd: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.T4, rt: 0, shamt: 0),
         };
 
