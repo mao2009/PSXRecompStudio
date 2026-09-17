@@ -58,9 +58,10 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 
     /// <summary>
     /// Command-line switch that makes the driver dump its full guest RAM as
-    /// <c>RAMHEX</c> lines after the state snapshot (full-title segments, #366).
-    /// The literal lives in C and cannot interpolate this constant either, so the
-    /// two must stay in step.
+    /// <c>RAMHEX</c> lines and the hardware-register window as <c>HWREG</c> lines
+    /// after the state snapshot (full-title segments, #366; device-state round-trip
+    /// across segments, #387). The literal lives in C and cannot interpolate this
+    /// constant either, so the two must stay in step.
     /// </summary>
     internal const string FullRamArgument = "--full-ram";
 
@@ -734,8 +735,12 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     //
     // The driver also provides minimal memory helper implementations backed by
     // a 2 MiB RAM buffer, matching RecompilerGuestMemory (KUSEG physical,
-    // KSEG0/KSEG1 masked). Out-of-range reads return 0; out-of-range writes are
-    // silently dropped.
+    // KSEG0/KSEG1 masked). The hardware-register window [0x1F801000, +8 KiB) —
+    // the guest-visible MMIO state the interpreter keeps in its persistent
+    // core's hw_regs — is backed by a second buffer so DMA/timer/interrupt
+    // registers can round-trip across the per-segment process forks (Issue
+    // #387); the driver models no controller semantics, it only carries the
+    // bytes. Out-of-range reads return 0; out-of-range writes are dropped.
     private const string DriverSource = @"
 #include <stdio.h>
 #include <string.h>
@@ -746,6 +751,24 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
 #define PSX_TEST_RAM_BLOCK_SIZE 512u
 #define PSX_TEST_MAX_RAM_BLOCKS 4096u
 static uint8_t test_ram[PSX_TEST_RAM_SIZE];
+
+/* The hardware-register window (Issue #387). The interpreter keeps the guest's
+   software-visible MMIO state in the native core's 8 KiB hw_regs buffer at
+   PSX_HW_REG_BASE 0x1F801000, and it persists across title segments because the
+   interpreter holds one core. The generated host forks one process per segment,
+   so that state has to be carried across the fork just like guest RAM: the
+   driver holds a byte buffer of the same size, routes [0x1F801000, 0x1F802000)
+   to it from the CPU memory helpers, resets it to zero, applies an optional
+   HWREG preload from the segment input, and dumps it back as HWREG lines under
+   --full-ram. This mirrors the interpreter's guest-visible contract without
+   duplicating any DMA/timer/interrupt controller semantics (Issue #386). */
+#define PSX_TEST_HW_BASE 0x1F801000u
+#define PSX_TEST_HW_SIZE (8u * 1024u)
+#define PSX_TEST_MAX_HW_BLOCKS (PSX_TEST_HW_SIZE / PSX_TEST_RAM_BLOCK_SIZE)
+static uint8_t test_hw[PSX_TEST_HW_SIZE];
+static uint32_t hw_offsets[PSX_TEST_MAX_HW_BLOCKS];
+static char hw_hex[PSX_TEST_MAX_HW_BLOCKS][PSX_TEST_RAM_BLOCK_SIZE * 2u + 1u];
+
 static uint32_t init_addrs[PSX_TEST_MAX_INIT];
 static uint32_t init_vals[PSX_TEST_MAX_INIT];
 static uint32_t window_addrs[PSX_TEST_MAX_WINDOW];
@@ -765,53 +788,66 @@ static uint32_t test_translate(uint32_t va) {
     return 0xFFFFFFFFu;
 }
 
+/* The single read/write path for guest memory: below PSX_TEST_RAM_SIZE it is
+   the RAM buffer, in the hardware-register window it is test_hw, and anywhere
+   else reads return 0 and writes are dropped (the pre-#387 behavior). Widths
+   are little-endian; a wide access must fit inside the buffer or it is
+   out of range, exactly as the pre-#387 RAM-only helpers required. */
+static uint32_t test_read(uint32_t pa, uint32_t width) {
+    uint32_t v = 0, k, base = pa;
+    if (pa >= PSX_TEST_RAM_SIZE) {
+        if (pa < PSX_TEST_HW_BASE) return 0;
+        base = pa - PSX_TEST_HW_BASE;
+        if (base > PSX_TEST_HW_SIZE - width) return 0;
+        for (k = 0; k < width; k++) v |= (uint32_t)test_hw[base + k] << (8u * k);
+        return v;
+    }
+    if (pa > PSX_TEST_RAM_SIZE - width) return 0;
+    for (k = 0; k < width; k++) v |= (uint32_t)test_ram[pa + k] << (8u * k);
+    return v;
+}
+
+static void test_write(uint32_t pa, uint32_t width, uint32_t value) {
+    uint32_t k, base = pa;
+    if (pa >= PSX_TEST_RAM_SIZE) {
+        if (pa < PSX_TEST_HW_BASE) return;
+        base = pa - PSX_TEST_HW_BASE;
+        if (base > PSX_TEST_HW_SIZE - width) return;
+        for (k = 0; k < width; k++) test_hw[base + k] = (uint8_t)(value >> (8u * k));
+        return;
+    }
+    if (pa > PSX_TEST_RAM_SIZE - width) return;
+    for (k = 0; k < width; k++) test_ram[pa + k] = (uint8_t)(value >> (8u * k));
+}
+
 uint8_t recompiler_read_mem8(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = test_translate(address);
-    if (pa >= PSX_TEST_RAM_SIZE) return 0;
-    return test_ram[pa];
+    return (uint8_t)test_read(test_translate(address), 1);
 }
 
 uint16_t recompiler_read_mem16(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = test_translate(address);
-    if (pa > PSX_TEST_RAM_SIZE - 2) return 0;
-    return (uint16_t)(test_ram[pa] | ((uint16_t)test_ram[pa + 1] << 8));
+    return (uint16_t)test_read(test_translate(address), 2);
 }
 
 uint32_t recompiler_read_mem32(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = test_translate(address);
-    if (pa > PSX_TEST_RAM_SIZE - 4) return 0;
-    return (uint32_t)(test_ram[pa]
-        | ((uint32_t)test_ram[pa + 1] << 8)
-        | ((uint32_t)test_ram[pa + 2] << 16)
-        | ((uint32_t)test_ram[pa + 3] << 24));
+    return test_read(test_translate(address), 4);
 }
 
 void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;
-    uint32_t pa = test_translate(address);
-    if (pa >= PSX_TEST_RAM_SIZE) return;
-    test_ram[pa] = value;
+    test_write(test_translate(address), 1, value);
 }
 
 void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
     (void)core;
-    uint32_t pa = test_translate(address);
-    if (pa > PSX_TEST_RAM_SIZE - 2) return;
-    test_ram[pa] = (uint8_t)value;
-    test_ram[pa + 1] = (uint8_t)(value >> 8);
+    test_write(test_translate(address), 2, value);
 }
 
 void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
     (void)core;
-    uint32_t pa = test_translate(address);
-    if (pa > PSX_TEST_RAM_SIZE - 4) return;
-    test_ram[pa] = (uint8_t)value;
-    test_ram[pa + 1] = (uint8_t)(value >> 8);
-    test_ram[pa + 2] = (uint8_t)(value >> 16);
-    test_ram[pa + 3] = (uint8_t)(value >> 24);
+    test_write(test_translate(address), 4, value);
 }
 
 /* Host control-transfer protocol (Issue #362).
@@ -910,11 +946,25 @@ int main(int argc, char** argv) {
             if (strlen(ram_hex[i]) != PSX_TEST_RAM_BLOCK_SIZE * 2u) return 92;
         }
     }
+
+    /* Optional hardware-register preload (full-title segments 2+, Issue #387),
+       trailing after the RAM section so every existing input stays valid. */
+    unsigned long hw_blocks = 0;
+    if (fscanf(in, ""%lu"", &u) == 1) {
+        if (u > PSX_TEST_MAX_HW_BLOCKS) return 96;   /* TooManyHwBlocks */
+        hw_blocks = u;
+        for (i = 0; i < (int)hw_blocks; i++) {
+            if (fscanf(in, ""%lu %1024s"", &a, hw_hex[i]) != 2) return 92;
+            hw_offsets[i] = (uint32_t)a;
+            if (strlen(hw_hex[i]) != PSX_TEST_RAM_BLOCK_SIZE * 2u) return 92;
+        }
+    }
     fclose(in);
 
     state.gpr[0] = 0;
     state.core = (void*)0;
     memset(test_ram, 0, sizeof(test_ram));
+    memset(test_hw, 0, sizeof(test_hw));
     for (i = 0; i < (int)init_count; i++) {
         recompiler_write_mem8((void*)0, init_addrs[i], (uint8_t)init_vals[i]);
     }
@@ -930,6 +980,20 @@ int main(int argc, char** argv) {
             if (hi2 < 0 || lo2 < 0) return 92;
             if (base + (uint32_t)j < PSX_TEST_RAM_SIZE)
                 test_ram[base + (uint32_t)j] = (uint8_t)((hi2 << 4) | lo2);
+        }
+    }
+
+    /* And the same continuity for the software-visible hardware-register state
+       (Issue #387), so MMIO writes from an earlier segment survive the fork. */
+    for (i = 0; i < (int)hw_blocks; i++) {
+        uint32_t base = hw_offsets[i];
+        int j;
+        for (j = 0; j < (int)PSX_TEST_RAM_BLOCK_SIZE; j++) {
+            int hi2 = hex_val(hw_hex[i][j * 2]);
+            int lo2 = hex_val(hw_hex[i][j * 2 + 1]);
+            if (hi2 < 0 || lo2 < 0) return 92;
+            if (base + (uint32_t)j < PSX_TEST_HW_SIZE)
+                test_hw[base + (uint32_t)j] = (uint8_t)((hi2 << 4) | lo2);
         }
     }
 
@@ -969,6 +1033,19 @@ int main(int argc, char** argv) {
             printf(""RAMHEX %lu "", base);
             for (j = 0; j < (int)PSX_TEST_RAM_BLOCK_SIZE; j++)
                 printf(""%02X"", (unsigned)test_ram[base + (unsigned)j]);
+            printf(""\n"");
+        }
+    }
+
+    /* Full-title segments (Issue #387): the same dump for the
+       hardware-register window, so MMIO state survives the fork too. */
+    if (argc >= 4 && strcmp(argv[3], ""--full-ram"") == 0) {
+        for (i = 0; i < (int)(PSX_TEST_HW_SIZE / PSX_TEST_RAM_BLOCK_SIZE); i++) {
+            unsigned long base = (unsigned long)i * PSX_TEST_RAM_BLOCK_SIZE;
+            int j;
+            printf(""HWREG %lu "", base);
+            for (j = 0; j < (int)PSX_TEST_RAM_BLOCK_SIZE; j++)
+                printf(""%02X"", (unsigned)test_hw[base + (unsigned)j]);
             printf(""\n"");
         }
     }
