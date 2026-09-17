@@ -47,6 +47,14 @@ Current records:
 | 012 | Function Discovery and CFG Hand-off | Accepted |
 | 013 | Real-ROM Candidate Selection Reuses the Recompiler as Its Own Validator | Accepted |
 | 014 | BIOS HLE Calls Cross a Shared Runtime Contract | Accepted |
+| 015 | Production Execution Engine Ownership | Accepted |
+| 016 | Generated-Host Execution Budget Semantics | Accepted |
+| 017 | Managed Host I/O Port-Adapter Boundary | Accepted |
+| 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
+
+ADR numbers 018 and 019 are reserved by other in-flight, not-yet-merged pull
+requests as of this record (see the PR that added ADR-020) and intentionally
+do not appear here; a future merge adds their rows.
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).

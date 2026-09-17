@@ -228,6 +228,12 @@ recompilation (Issue #249) and is out of scope.
   analysis output, selected only when they already lower under the contract
   above — no second, real-ROM-specific semantics implementation exists
   (ADR-013, Issue #225).
+- A Load/Store IR operation carries an explicit `RecompilerIrMemoryEffectKind`
+  (`Unknown`/`Ordinary`/`Device`), fail-closed to `Unknown` unless the address
+  is provably RAM/BIOS (`Ordinary`) or a hardware register (`Device`); indirect
+  control flow, the BIOS/runtime transfer boundary, and unsupported/
+  exception-producing opcodes were already explicit before this addition
+  (ADR-020, Issue #411).
 
 ## Debugger (Future)
 
