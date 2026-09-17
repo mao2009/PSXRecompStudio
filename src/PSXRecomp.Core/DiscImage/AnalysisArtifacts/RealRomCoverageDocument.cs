@@ -168,7 +168,11 @@ public sealed record CoverageDifferentialSection
     /// <summary>Instructions inside windows whose recompiled execution diverged.</summary>
     public required int MismatchedInstructions { get; init; }
 
-    /// <summary>Windows ordered by start address ascending, then instruction count ascending.</summary>
+    /// <summary>
+    /// Windows ordered by start address ascending, then instruction count ascending, then
+    /// outcome ascending (<c>"matched"</c> before <c>"mismatched"</c>) so two validations of
+    /// the same window with different outcomes still sort deterministically.
+    /// </summary>
     public required IReadOnlyList<CoverageDifferentialWindow> Windows { get; init; }
 
     /// <summary>Nothing was differentially validated for this analysis.</summary>

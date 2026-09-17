@@ -184,6 +184,20 @@ public class RealRomCoverageAnalyzerTests
     }
 
     [Fact]
+    public void SameWindowValidationsWithDifferentOutcomesSortDeterministicallyRegardlessOfInputOrder()
+    {
+        var matched = new RealRomCoverageValidation { StartAddress = EntryPoint, InstructionCount = 4, Matched = true };
+        var mismatched = new RealRomCoverageValidation { StartAddress = EntryPoint, InstructionCount = 4, Matched = false };
+
+        var matchedFirst = Analyze(CreateReport(), validations: [matched, mismatched]).ToCanonicalJson();
+        var mismatchedFirst = Analyze(CreateReport(), validations: [mismatched, matched]).ToCanonicalJson();
+
+        mismatchedFirst.Should().Be(matchedFirst,
+            "reversing the input order of two same-window validations with different outcomes must not " +
+            "change the canonical artifact");
+    }
+
+    [Fact]
     public void LowerableCoverageIsAnUpperBoundOnWhatTheConservativeSelectorAccepts()
     {
         var report = CreateReport();

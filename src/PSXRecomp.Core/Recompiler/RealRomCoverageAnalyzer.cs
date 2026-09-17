@@ -48,7 +48,8 @@ public static class RealRomCoverageAnalyzer
 
     public const string ClassOrdering = "class-ordinal-ascending";
     public const string ReasonOrdering = "class-ordinal-ascending,detail-ordinal-ascending";
-    public const string DifferentialWindowOrdering = "start-address-ascending,instruction-count-ascending";
+    public const string DifferentialWindowOrdering =
+        "start-address-ascending,instruction-count-ascending,outcome-ascending";
 
     /// <summary>
     /// Why the unit is the instruction and not the function, and what a
@@ -381,9 +382,13 @@ public static class RealRomCoverageAnalyzer
             return CoverageDifferentialSection.None;
         }
 
+        // StartAddress and InstructionCount alone do not uniquely order two validations of the
+        // same window with different outcomes; without the Outcome tie-breaker a stable sort
+        // would leak input order into the canonical artifact.
         var windows = validations
             .OrderBy(static validation => validation.StartAddress)
             .ThenBy(static validation => validation.InstructionCount)
+            .ThenBy(static validation => validation.Matched ? "matched" : "mismatched", StringComparer.Ordinal)
             .Select(static validation => new CoverageDifferentialWindow
             {
                 StartAddress = AnalysisArtifactSchema.FormatWord32(validation.StartAddress),
