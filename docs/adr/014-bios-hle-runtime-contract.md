@@ -1,6 +1,6 @@
 # ADR-014: BIOS HLE Calls Cross a Shared Runtime Contract
 
-- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x5), 2026-09-15 (x3) — see below)
+- **Status**: Accepted (amended 2026-09-09, 2026-09-10, 2026-09-11 (x5), 2026-09-15 (x3), 2026-09-17 — see below)
 - **Date**: 2026-09-08
 - **Issue**: #279
 
@@ -1404,3 +1404,82 @@ patched routine's guest-RAM side effect read back into a register.
 (renamed from `..._StopsTheRun_WithADiagnostic`) pins the backend-level change:
 `Completed` status, the advisory diagnostic, `Success` termination, and the PC
 left at the address the recompiled path could not enter.
+
+## Amendment (2026-09-17): A0:39 InitHeap registered
+
+Issue #279's production-path evidence (`docs/runtime/bios-hle-evidence.md`
+§3.4) records `A0:39 InitHeap(addr,size)` as the most broadly observed BIOS
+identity across the locally available real-ROM fixtures — 5 of 5 distinct
+executables, one site each, more than any other identity including `B0:3F`
+(the alias selected by the previous evidence-driven registration). Its
+identity is already verified (`docs/REFERENCES.md:114-116`,
+`BiosCallNames.cs:48`); this amendment registers the service.
+
+- (a) **Documented effect, and why nothing about it is skipped.**
+  `docs/REFERENCES.md` describes `InitHeap(addr,size)` as: "initializes the
+  address and size of the heap used by `malloc`/`realloc`/`calloc`/`free` and
+  `qsort`; also deallocates all memory handles. The BIOS never calls it
+  automatically, so software must." Unlike `puts` (a guest-memory pointer
+  argument whose read this ADR's base Decision required before registration)
+  or `GetC0Table`/`GetB0Table` (a returned address this Runtime had to back
+  with guest-visible, dispatch-connected state before registration),
+  `InitHeap`'s two arguments are plain scalar words — no guest-memory access
+  is needed to honour its ABI — and this Runtime registers no
+  malloc/realloc/calloc/free/qsort service that could ever observe the heap
+  bookkeeping `InitHeap` is documented to establish. There is therefore no
+  guest-observable consumer of that bookkeeping for this Runtime to under- or
+  mis-model; validating the argument shape is InitHeap's complete
+  guest-observable contract today, satisfying the same "no documented,
+  observable effect is skipped" bar the base Decision set for `puts` and the
+  jump-table amendment set for `GetC0Table`/`GetB0Table` — the bar differs in
+  *what it requires*, not in being relaxed for this service.
+- (b) **No documented return value.** Neither `docs/REFERENCES.md` nor any
+  prior verification pass records a return value for `InitHeap`, unlike
+  `puts` (returns its string-pointer argument) or `GetC0Table`/`GetB0Table`
+  (return a table address). Per this ADR's no-guessing rule, no return value
+  is invented: the service is registered as
+  `BiosServiceResult.Supported(identity)` with a null `ReturnValue`, which
+  `BiosVectorDispatch` already treats as "leave `$v0` untouched" — the same
+  mechanism the base Decision documented but no previously registered service
+  has exercised end to end. A new production-path test
+  (`TitleExecutionServiceTests.RunDiagnostic_InitHeap_DrivesTheWholePipeline_ToAClassifiedCompletion_WithV0Untouched`)
+  seeds `$v0` with a sentinel before the call and asserts it survives
+  unchanged, proving this path is live through the interpreter's register
+  trap, not merely asserted at the `BiosVectorDispatch` unit level.
+- (c) **No new Runtime capability required.** `InitHeap` needs none of the
+  three boundaries `BiosHleRuntime` already requires (`IRuntimeOutputSink`,
+  `IGuestMemoryReader`, `IGuestMemoryWriter`); the generic per-slot HLE
+  sentinel seeding in the constructor covers `(A0, 0x39)` automatically, the
+  same as every other registered slot, because it iterates the registry
+  rather than a hard-coded list of five. Registering it is therefore a
+  wiring/argument-validation task, not a capability-research task — the same
+  category the `B0:3F` amendment established for an alias, applied here to a
+  fresh identity with a materially different (return-less) ABI.
+- (d) **Not the card-family identities also verified in the same pass.**
+  `A0:AB _card_info`, `A0:AC _card_load`, `B0:4E _card_write`, and `B0:50
+  _new_card` remain unregistered. They are memory-card I/O and are left to
+  the memory-card runtime work tracked separately; this amendment changes
+  nothing about them.
+- (e) **No other service's status changes.** The registry gains exactly one
+  entry: `(A0, 0x39)` → `InvokeInitHeap`. getchar (A0:3B) and gets (A0:3D)
+  stay unregistered pending an input-sink design; `B0:3D` stays unregistered
+  pending evidence; the card identities stay unregistered per (d). Issue #279
+  remains open.
+
+### Registry after this amendment
+
+- (f) The registry now holds six entries: `(A0, 0x39)`, `(A0, 0x3C)`,
+  `(A0, 0x3E)`, `(B0, 0x3F)`, `(B0, 0x56)`, `(B0, 0x57)`.
+
+### Regression tests
+
+`BiosHleContractTests` adds: `InitHeap_Accepts_AddrAndSize_And_Reports_No_Return_Value`
+(the registered dispatch, and that `ReturnValue` is null);
+`InvalidInitHeapArgumentCounts_Are_Rejected_Explicitly` (0, 1, and 3 arguments,
+mirroring the putchar arity-rejection pattern); the neighbouring-slots theory
+gains `A0:38`/`A0:3A`; and the three "every registered service" theories
+(fresh-instance determinism, sentinel-not-zero, and constructor seeding over
+fresh memory) gain the `(A0, 0x39)` case each, so InitHeap gets the same
+regression coverage every other registered slot already has. The production
+path gains `TitleExecutionServiceTests.RunDiagnostic_InitHeap_DrivesTheWholePipeline_ToAClassifiedCompletion_WithV0Untouched`
+(described in (b) above).
