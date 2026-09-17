@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Diagnostics;
 
 namespace PSXRecomp.Core.DiscImage;
 
@@ -13,6 +14,14 @@ namespace PSXRecomp.Core.DiscImage;
 public sealed record RomAnalysisOutcome
 {
     public required RomAnalysisStatus Status { get; init; }
+
+    /// <summary>
+    /// Optional shared <see cref="Diagnostic"/> for this run, when the caller
+    /// chooses to attach one (see <c>DiagnosticAdapter.From(RomAnalysisOutcome)</c>).
+    /// Additive and always <c>null</c> by default, so existing construction and
+    /// equality semantics are unchanged.
+    /// </summary>
+    public Diagnostic? Diagnostic { get; init; }
 
     /// <summary>The furthest stage that completed successfully, or <c>null</c> if none did.</summary>
     public required RomAnalysisStage? LastSuccessfulStage { get; init; }

@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Diagnostics;
 using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Core.Execution;
@@ -254,4 +255,13 @@ public sealed record TitleExecutionResult(
     uint SegmentsRetired,
     string? EngineName,
     string? DiagnosticCode,
-    string? DiagnosticMessage);
+    string? DiagnosticMessage)
+{
+    /// <summary>
+    /// Optional shared <see cref="Diagnostic"/> for this run, when the caller
+    /// chooses to attach one (see <c>DiagnosticAdapter.From(TitleExecutionResult)</c>).
+    /// Additive and always <c>null</c> by default, so the existing constructor
+    /// and equality semantics are unchanged.
+    /// </summary>
+    public Diagnostic? Diagnostic { get; init; }
+}
