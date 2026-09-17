@@ -10,6 +10,16 @@ namespace PSXRecomp.Core.Runtime;
 [Domain]
 public sealed class BiosHleRuntime : IBiosRuntime
 {
+    /// <summary>
+    /// A0:39 InitHeap(addr,size) — the identity real-ROM analysis observed most
+    /// broadly (5 of 5 locally available executables, docs/runtime/bios-hle-evidence.md
+    /// §3.4). Its documented effect (ADR-014 amendment "A0:39 InitHeap registered")
+    /// is guest-kernel heap bookkeeping this Runtime has no consumer for — no
+    /// malloc/free-family service is registered — so nothing about its ABI/return
+    /// contract is skipped by modeling only argument-shape validation.
+    /// </summary>
+    public const byte InitHeapFunction = 0x39;
+
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
@@ -95,6 +105,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
 
         services = new Dictionary<(BiosCallFamily, byte), (int ArgumentCount, Func<BiosCallIdentity, BiosServiceResult> Handler)>
         {
+            [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.A0, PutsFunction)] = (1, InvokePuts),
             [(BiosCallFamily.B0, PutsAliasFunction)] = (1, InvokePuts),
@@ -224,6 +235,30 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// effect. The byte is emitted raw: encoding is the sink receiver's concern,
     /// never the Domain layer's.
     /// </summary>
+    /// <summary>
+    /// A0:39 InitHeap(addr, size). Documented behavior (docs/REFERENCES.md): sets
+    /// the address and size of the heap used by the malloc/realloc/calloc/free
+    /// and qsort family, and deallocates all existing memory handles; the BIOS
+    /// never calls it automatically, so software must. Neither argument is a
+    /// pointer this service dereferences (both are scalar words, unlike puts's
+    /// string pointer), no return value is documented (unlike puts or
+    /// GetC0Table/GetB0Table), and no host-visible output is involved. This
+    /// Runtime registers no malloc/realloc/calloc/free/qsort service, so no
+    /// guest-observable state exists for InitHeap's heap bookkeeping to feed —
+    /// validating the ABI's argument shape is therefore this call's complete
+    /// documented, guest-observable contract (ADR-014).
+    /// </summary>
+    private BiosServiceResult InvokeInitHeap(BiosCallIdentity identity)
+    {
+        if (identity.Arguments.Count != 2)
+        {
+            return BiosServiceResult.InvalidArguments(
+                identity, "A0:39 InitHeap requires two arguments: addr and size.");
+        }
+
+        return BiosServiceResult.Supported(identity);
+    }
+
     private BiosServiceResult InvokePutChar(BiosCallIdentity identity)
     {
         if (identity.Arguments.Count != 1)

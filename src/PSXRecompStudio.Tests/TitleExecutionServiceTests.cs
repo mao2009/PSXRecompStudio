@@ -29,6 +29,44 @@ public class TitleExecutionServiceTests
             .Should().Be(TitleExecutionService.DiagnosticMarker);
     }
 
+    // Issue #279: A0:39 InitHeap(addr,size) is the first BIOS call real-ROM crt0
+    // startup code makes on every locally-observed executable
+    // (docs/runtime/bios-hle-evidence.md §3.4, 5 of 5). Before this call was
+    // registered, a real title reaching it here stopped at
+    // BIOS_HLE_UNSUPPORTED_CALL instead of Completed. InitHeap has no documented
+    // return value, so this also proves the production path's live BIOS trap
+    // honours a null ReturnValue by leaving $v0 untouched, not just that the call
+    // is accepted.
+    [Fact]
+    public void RunDiagnostic_InitHeap_DrivesTheWholePipeline_ToAClassifiedCompletion_WithV0Untouched()
+    {
+        const uint entry = 0x80001000u;
+        const uint v0Marker = 0xBEEFu;
+
+        var run = new TitleExecutionService().Run(
+            [
+                Immediate(0x0D, (byte)R3000aRegister.V0, v0Marker), // ori $v0, $zero, 0xBEEF
+                Immediate(0x0D, (byte)R3000aRegister.A0, 0x1000u),  // ori $a0, $zero, addr
+                Immediate(0x0D, (byte)R3000aRegister.A1, 0x2000u),  // ori $a1, $zero, size
+                Immediate(0x0D, (byte)R3000aRegister.T1, 0x39u),    // ori $t1, $zero, InitHeap
+                (uint)0x03 << 26 | (0x800000A0u & 0x0FFFFFFCu) >> 2, // jal 0xA0
+                0u, // nop (branch delay slot); resumed here, then PC == end -> Completed
+            ],
+            entry,
+            outerBudget: 4,
+            segmentBudget: 64);
+
+        run.Result.State.Should().Be(TitleExecutionState.Completed);
+        run.Result.EngineName.Should().Be(InterpreterTitleExecutionEngine.EngineName);
+        run.Result.DiagnosticCode.Should().BeNull();
+        run.Output.Should().BeEmpty("InitHeap has no TTY side effect");
+        run.Result.FinalSnapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(v0Marker,
+            "InitHeap has no documented return value, so $v0 must be left untouched");
+    }
+
+    private static uint Immediate(byte opcode, byte rt, uint immediate) =>
+        (uint)opcode << 26 | (uint)rt << 16 | (immediate & 0xFFFFu);
+
     [Fact]
     public void Run_TransferToAnAddressWithNoRule_IsClassifiedAsUnsupported_NotAsSuccess()
     {
