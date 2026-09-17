@@ -128,7 +128,11 @@ public enum RecompilerIrMemoryEffectKind : byte
     /// The address is provably ordinary guest memory (RAM or BIOS ROM, per
     /// <see cref="Runtime.Ps1AddressTranslation"/> and
     /// <see cref="Dma.Ps1MemoryMap.ClassifyRegion"/>): no device-visible side
-    /// effect, safe to treat as idempotent/pure.
+    /// effect. This does not mean idempotent/pure — an ordinary store still
+    /// mutates guest state that a later load or aliased store can observe, so
+    /// normal memory dependencies apply: a load still needs alias-analysis
+    /// proof before CSE, and a store still needs liveness and alias proof
+    /// before dead-store elimination or reordering.
     /// </summary>
     Ordinary = 1,
 

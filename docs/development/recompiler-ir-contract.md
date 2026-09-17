@@ -53,7 +53,11 @@ runtime contract still owns:
   not reorderable, not dead-store-eliminable, not CSE-eligible.
 - `Ordinary` — the address is provably RAM or BIOS ROM
   (`Ps1MemoryMap.ClassifyRegion` via `Ps1AddressTranslation`): no
-  device-visible side effect.
+  device-visible side effect. This does not mean idempotent/pure — an
+  ordinary store still mutates guest memory that a later load or aliased
+  store can observe. Normal memory dependencies still apply: a load needs
+  alias-analysis proof before CSE, and a store needs liveness and alias
+  proof before dead-store elimination or reordering.
 - `Device` — the address is provably inside the PS1 hardware-register window
   (`Ps1MemoryMap.HwRegBase`..`HwRegEnd`). A device read is not idempotent/pure
   and a device write is not dead-store-eliminable; the relative order of

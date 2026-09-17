@@ -110,8 +110,10 @@ already carries.
   serialization and codegen identically once the (compatible, trailing,
   defaulted) new field is accounted for.
 - A future optimizer that wants to reorder, CSE, or eliminate a dead store
-  now has a real signal to consult (`Device` means "do not"), and the
-  validator prevents that signal from being attached to the wrong operation.
+  now has a real signal to consult (`Device` means "never"; `Ordinary` means
+  only "no device-visible effect" — normal memory dependency, alias, and
+  liveness proof are still required before touching it), and the validator
+  prevents that signal from being attached to the wrong operation.
 - Indirect flow, BIOS/runtime transfer, and exception-producing/unsupported
   operations are formalized in tests and this ADR without touching working
   code, keeping the change minimal.
