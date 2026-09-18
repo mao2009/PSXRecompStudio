@@ -394,6 +394,86 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Host_DeviceRegisterStateSurvivesAcrossSegmentProcessRestarts()
+    {
+        // Issue #387. Like guest RAM, the guest-visible hardware-register window —
+        // the DMA/timer/interrupt MMIO state the interpreter keeps in its one
+        // persistent core — must round-trip the per-segment process fork, or a
+        // DEVICE write in one segment would be invisible to the next process.
+        // Segment 1 writes a DMA channel-0 MADR, a timer mode and the interrupt
+        // mask; a loop then parks execution between segments; the final segment
+        // reads all three registers back into S1/S2/S3. If the engine dropped the
+        // window across the restart, every read would see the reset zero.
+        const ushort DmaMadrLo = 0x1080;      // low 16 bits of 0x1F801080 (DMA channel 0 MADR)
+        const ushort TimerModeLo = 0x1114;    // low 16 bits of 0x1F801114 (timer 1 mode)
+        const ushort InterruptMaskLo = 0x1074; // low 16 bits of 0x1F801074 (I_MASK)
+
+        var words = new uint[]
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: DmaMadrLo),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0xA000),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: (byte)R3000aRegister.T3, immediate: TimerModeLo),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T4, rs: 0, immediate: 0x0200),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T4, baseRegister: (byte)R3000aRegister.T3, offset: 0),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T5, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T5, rs: (byte)R3000aRegister.T5, immediate: InterruptMaskLo),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T6, rs: 0, immediate: 0xFFFF),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T6, baseRegister: (byte)R3000aRegister.T5, offset: 0),
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.T7, rs: 0, immediate: 5),
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.T7, rs: (byte)R3000aRegister.T7, immediate: 0xFFFF),
+            MipsEncoding.Branch(0x05, (byte)R3000aRegister.T7, 0, Entry + 56, Entry + 52),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: DmaMadrLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.T4, baseRegister: (byte)R3000aRegister.T1, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.R(0x25, rd: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.T4, rt: 0, shamt: 0),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: (byte)R3000aRegister.T3, immediate: TimerModeLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.T4, baseRegister: (byte)R3000aRegister.T3, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.R(0x25, rd: (byte)R3000aRegister.S2, rs: (byte)R3000aRegister.T4, rt: 0, shamt: 0),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T5, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T5, rs: (byte)R3000aRegister.T5, immediate: InterruptMaskLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.T4, baseRegister: (byte)R3000aRegister.T5, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.R(0x25, rd: (byte)R3000aRegister.S3, rs: (byte)R3000aRegister.T4, rt: 0, shamt: 0),
+        };
+
+        var fixture = new RecompilerDifferentialFixture(
+            name: "execution-orchestrator-host-device-state-continuity",
+            encodedInstructions: words,
+            entryPc: Entry,
+            stepBudget: 128,
+            memoryWindow: [],
+            referenceStepBudget: 32);
+
+        var sink = new CapturedOutputSink();
+        using var engine = new HostTitleExecutionEngine(
+            fixture,
+            (reader, writer) => new BiosHleRuntime(sink, reader, writer));
+
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 16, segment: 3));
+
+        result.State.Should().Be(
+            TitleExecutionState.Completed,
+            $"state={result.State} segments={result.SegmentsRetired} diag={result.DiagnosticCode} " +
+            $"pc=0x{result.FinalSnapshot?.PC:X8}");
+        result.SegmentsRetired.Should().BeGreaterThanOrEqualTo(2,
+            "the writes and the read-backs must be split across process restarts");
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.S1].Should().Be(0xA000,
+            "a DMA register written in an early segment must survive process restarts");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S2].Should().Be(0x0200,
+            "a timer register written in an early segment must survive process restarts");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S3].Should().Be(0xFFFF,
+            "the interrupt mask written in an early segment must survive process restarts");
+    }
+
+    [Fact]
     public void Host_InitialMemorySeedsTheFirstSegment()
     {
         // The request's initial memory must reach the generated host even though
@@ -430,6 +510,116 @@ public sealed class ExecutionOrchestratorTests
         result.State.Should().Be(TitleExecutionState.Completed);
         result.FinalSnapshot!.Gpr[(int)R3000aRegister.S1].Should().Be(0x5A,
             "the request's initial memory must seed the first generated-host segment");
+    }
+
+    [Fact]
+    public void InitialMemoryInTheHardwareRegisterWindow_SeedsBothEnginesAlike()
+    {
+        // Issue #387 follow-up. Load must route a seeded byte the way the
+        // interpreter's core does: RAM to RAM, the hardware-register window to
+        // hw_regs. The host engine dropped the window, so the first segment's
+        // HWREG preload started at zero and a request that seeds MMIO state read
+        // back zeros while the interpreter read the seeded values.
+        //
+        // The guest reads four 32-bit registers, which also pins the window's
+        // edges: 0x1F801000 is its first valid byte, 0x1F801080 is inside it,
+        // 0x1F802FFC..0x1F802FFF is its last valid word, and the seed at
+        // 0x1F803000 (one byte past the end) must be dropped by both engines
+        // rather than corrupt anything.
+        const ushort FirstWordLo = 0x1000;     // 0x1F801000, first word of the 8 KiB window
+        const ushort DmaMadrLo = 0x1080;       // 0x1F801080, DMA channel 0 MADR
+        const ushort LastWordLo = 0x2FFC;      // 0x1F802FFC, last word of the 8 KiB window
+        const ushort InterruptMaskLo = 0x1074; // 0x1F801074, I_MASK — seeded via its KSEG1 alias
+
+        var words = new uint[]
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: DmaMadrLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S1, baseRegister: (byte)R3000aRegister.T1, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: (byte)R3000aRegister.T2, immediate: LastWordLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S2, baseRegister: (byte)R3000aRegister.T2, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: (byte)R3000aRegister.T3, immediate: InterruptMaskLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S3, baseRegister: (byte)R3000aRegister.T3, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T4, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T4, rs: (byte)R3000aRegister.T4, immediate: FirstWordLo),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S4, baseRegister: (byte)R3000aRegister.T4, offset: 0),
+            MipsEncoding.Nop,
+        };
+
+        var initialMemory = new[]
+        {
+            // KUSEG: virtual == physical inside the hardware-register window.
+            new RecompilerInitialMemoryItem(0x1F801080u, 0xEF),
+            new RecompilerInitialMemoryItem(0x1F801081u, 0xCD),
+            new RecompilerInitialMemoryItem(0x1F801082u, 0xAB),
+            new RecompilerInitialMemoryItem(0x1F801083u, 0x00),
+
+            // The window's first and last valid bytes must both land.
+            new RecompilerInitialMemoryItem(0x1F801000u, 0x5A),
+            new RecompilerInitialMemoryItem(0x1F802FFCu, 0x11),
+            new RecompilerInitialMemoryItem(0x1F802FFFu, 0x77),
+
+            // One byte past the end: out of range for both engines, dropped.
+            new RecompilerInitialMemoryItem(0x1F803000u, 0xFF),
+
+            // The same physical register reached through its KSEG1 alias, which
+            // the shared translation masks down to 0x1F801074.
+            new RecompilerInitialMemoryItem(0xBF801074u, 0x34),
+            new RecompilerInitialMemoryItem(0xBF801075u, 0x12),
+        };
+
+        var fixture = new RecompilerDifferentialFixture(
+            name: "execution-orchestrator-initial-hardware-registers",
+            encodedInstructions: words,
+            entryPc: Entry,
+            stepBudget: 128,
+            memoryWindow: [],
+            referenceStepBudget: 32);
+
+        var hostSink = new CapturedOutputSink();
+        using var host = new HostTitleExecutionEngine(
+            fixture,
+            (reader, writer) => new BiosHleRuntime(hostSink, reader, writer));
+        var hostResult = new ExecutionOrchestrator().Execute(
+            host, ExitHandoff(), Request(Entry, outer: 4, segment: 64, initialMemory: initialMemory));
+
+        var interpreterSink = new CapturedOutputSink();
+        using var interpreter = new InterpreterTitleExecutionEngine(
+            fixture.Instructions,
+            fixture.EntryPc,
+            (reader, writer) => new BiosHleRuntime(interpreterSink, reader, writer));
+        var interpreterResult = new ExecutionOrchestrator().Execute(
+            interpreter, ExitHandoff(), Request(Entry, outer: 4, segment: 64, initialMemory: initialMemory));
+
+        hostResult.State.Should().Be(TitleExecutionState.Completed, Describe(hostResult));
+        interpreterResult.State.Should().Be(TitleExecutionState.Completed, Describe(interpreterResult));
+
+        var hostSnapshot = hostResult.FinalSnapshot!;
+        hostSnapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0x00ABCDEFu,
+            "a hardware register seeded by the request must reach the first generated-host segment");
+        hostSnapshot.Gpr[(int)R3000aRegister.S2].Should().Be(0x77000011u,
+            "the window's last valid word must be seeded, and nothing past its end may spill into it");
+        hostSnapshot.Gpr[(int)R3000aRegister.S3].Should().Be(0x00001234u,
+            "a KSEG1 alias of a hardware register must translate into the same window slot");
+        hostSnapshot.Gpr[(int)R3000aRegister.S4].Should().Be(0x0000005Au,
+            "the window's first valid byte must be seeded, not skipped by an off-by-one lower bound");
+
+        // The parity the finding is really about: one request, one observed
+        // initial MMIO state, whichever backend executed it.
+        var interpreterSnapshot = interpreterResult.FinalSnapshot!;
+        foreach (var register in new[]
+                 { R3000aRegister.S1, R3000aRegister.S2, R3000aRegister.S3, R3000aRegister.S4 })
+        {
+            hostSnapshot.Gpr[(int)register].Should().Be(
+                interpreterSnapshot.Gpr[(int)register],
+                $"both engines were given the same initial MMIO state ({register}). " +
+                $"{Describe(interpreterResult)} vs {Describe(hostResult)}");
+        }
     }
 
     // --- One contract, both engines (Issue #379) ------------------------------
