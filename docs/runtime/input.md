@@ -145,9 +145,9 @@ Mapping configuration is the `InputBindingMap<TButton>` itself: a deterministic,
 backend-independent list of `InputBinding<TButton>` entries. Persisting and
 editing that list are consumer concerns outside this domain contract:
 
-- The Runtime boundary is the immutable `Ps1ControllerSnapshot` (or, later, a
-  preconfigured map plus a physical state object); the Runtime never receives a
-  mutable device object.
+- The adapter owns the preconfigured map and mutable
+  `PhysicalControllerState<TDeviceKind>`. The Runtime boundary is the immutable
+  `Ps1ControllerSnapshot`; the Runtime never receives the mutable physical state.
 - Studio / CLI will load and edit these same binding entries in a future mapping
   configuration surface (Issue #48). The GUI policy is that it edits this
   contract — it does not introduce a second mapping model.
