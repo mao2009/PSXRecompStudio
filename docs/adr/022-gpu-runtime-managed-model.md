@@ -50,6 +50,12 @@ by every later GPU change:
    `Executed`, `DecodedPendingRasterization`, `RecognizedNotImplemented`, or
    `Unsupported` on `LastResult`/`LastResultOpcode`. Nothing silently no-ops
    (consistent with the fail-closed policy from #279/#351/#377).
+   Two packet shapes publish their result later than the command word:
+   a variable-length polyline (GP0 48h/58h family) reports `Unsupported`
+   immediately and then *consumes* its payload words — they are never decoded
+   as fresh commands — until the `0x50005000` terminator rule fires; a
+   CPU→VRAM transfer publishes `Executed` only once its data phase is fully
+   consumed, so an in-progress transfer is never reported as completed.
 
 5. **Deferred by design.** Primitive rasterization and display output, the
    VRAM→VRAM blit (GP0 80h) body, VBlank/IRQ0 scheduling, and DMA channel 2
