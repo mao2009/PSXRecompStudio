@@ -87,8 +87,10 @@ A save writes the whole image to a sibling staging file — uniquely named per
 save and created exclusively, so two saves in flight at once never share or
 clobber one staging file — flushes it to the device, and renames it over the
 card. The card holds either its previous content or the complete new content,
-never a mixture. Creating a blank card uses an exclusive create, so an existing
-card is never replaced by a blank one.
+never a mixture. Creating a blank card follows the same staging-and-single-
+rename flow, publishing only to a path that does not already hold a card: an
+existing card is never replaced by a blank one, and a partial card is never
+published.
 
 Backup/versioning is deliberately **not** implemented: the rename already makes
 a torn card unreachable, which is what corruption safety requires. Retaining
@@ -107,8 +109,10 @@ other writer's card. A mismatch, or a file that has disappeared, refuses the sav
 and leaves what is on disk untouched.
 
 The remaining window between the second comparison and the rename cannot be
-closed without an atomic compare-and-rename the filesystem does not offer. This
-decision narrows the race rather than eliminating it, consistently with the
+closed against writers outside this process without an atomic compare-and-
+rename the filesystem does not offer; within one process it is closed by the
+per-card serialization described in decision 7. This decision narrows the
+cross-process race rather than eliminating it, consistently with the
 detect-don't-prevent policy below.
 
 The fingerprint is content-derived rather than timestamp-derived because
@@ -121,8 +125,17 @@ moment it protects data.
 Two processes writing one card file concurrently is unsupported. No advisory
 lock is taken, because no cross-emulator locking convention exists and a lock
 another emulator does not honour would only give false confidence. The conflict
-surfaces through the check in 6: the second writer is refused rather than
-silently winning. Concurrent reading is unaffected.
+surfaces through the check in 6: among writers outside this process, the second
+writer is refused rather than silently winning. Concurrent reading is
+unaffected.
+
+Within one process, saves to the same card path are additionally serialized:
+`FileMemoryCardStorage` holds a per-card gate for the whole of `Save`, so two
+in-process saves started from the same content cannot both pass their final
+check — whichever acquires the gate first commits, and the second is refused as
+a conflict. The gate is keyed per card path and released when the save leaves,
+so saves to different cards do not block each other and no per-card state is
+retained once no save is in flight.
 
 ### 8. Interoperability is claimed only as far as it is verified
 
@@ -139,11 +152,15 @@ crash at any point leaves it holding either the complete previous content or
 the complete new content. It does not additionally guarantee that a
 successful `Save` or `CreateBlank` call survives a crash landing in the
 instant after that call returns, because `FileStream.Flush(flushToDisk: true)`
-fsyncs a file's content but neither operation fsyncs the card's *parent
-directory*. On Linux and macOS, POSIX does not make a directory-entry change
-(a new file, or a rename that replaces one) durable across a crash until the
-directory itself is fsynced, and the .NET `FileStream` / `File` APIs expose no
-way to do that.
+fsyncs a file's content but neither operation makes the changed *parent-
+directory entry* itself durable. On POSIX systems a directory-entry change (a
+new file, or a rename that replaces one) is not durable across a crash until
+the directory itself is fsynced, and the .NET `FileStream` / `File` APIs expose
+no way to perform that on any platform. This adapter adds no native interop to
+obtain it — not a POSIX directory fsync, and not a Windows write-through
+rename — so the limitation is stated platform-neutrally: a successful return is
+not claimed to survive a crash landing in the instant after it, on any
+platform, without such interop.
 
 Issue #22's acceptance criteria ask for safe, atomic writes that avoid a
 partial or corrupt card — satisfied by decision 5 alone. Guaranteeing survival
@@ -185,13 +202,15 @@ later changes no caller and no Domain type.
   does not act.
 - Refusing to write after an external change is a hard failure the caller must
   handle, not a merge. There is no automatic reconciliation.
-- Parallel saves to the same card, including from within one process, still
-  resolve to one winner: the staging files themselves no longer collide, but
-  the fingerprint check still refuses whichever save reaches its pre-rename
-  check second.
+- Parallel saves to the same card, including from within one process, resolve
+  to exactly one winner: within a process a per-card gate serializes saves —
+  the first to acquire it commits, the next is refused as a conflict — and
+  across processes the fingerprint check refuses whichever save reaches its
+  pre-rename check second.
 - A successful `Save` or `CreateBlank` is not guaranteed durable against a
-  crash in the instant after it returns, because the parent directory is not
-  fsynced (decision 9). This is scoped, not fixed, without new native interop.
+  crash in the instant after it returns, because the parent-directory entry is
+  not made durable (decision 9). This is scoped, not fixed, without new native
+  interop.
 - The adapter's Application-layer placement is a known temporary state carried
   until Issue #38 activates `PSXRecomp.Infrastructure`.
 - Wrapped card formats stay unreadable until someone implements an explicit,
@@ -237,17 +256,18 @@ requirement; retaining history is a product feature with its own retention,
 naming, and cleanup questions, and bundling it here would decide those by
 accident.
 
-### Native parent-directory fsync on Linux/macOS
+### Native parent-directory fsync
 
 Rejected for this Issue. It would close the post-return power-loss gap
 decision 9 describes, but only by adding platform-conditional native interop
-(open/fsync/close on the directory handle) to an adapter whose class doc
-already states its Application-layer placement is temporary pending Issue #38
-/ ADR-017's still-open host-I/O boundary decision — building new native-interop
-plumbing here would pre-empt that decision rather than wait for it. Issue #22's
-acceptance criteria ask for safe, atomic writes free of torn files, which
-decision 5 already satisfies without it. Revisit if a concrete crash-durability
-requirement is raised, ideally once Issue #38 gives native host I/O a home.
+(a directory fsync on POSIX, or a write-through replace on Windows) to an
+adapter whose class doc already states its Application-layer placement is
+temporary pending Issue #38 / ADR-017's still-open host-I/O boundary decision —
+building new native-interop plumbing here would pre-empt that decision rather
+than wait for it. Issue #22's acceptance criteria ask for safe, atomic writes
+free of torn files, which decision 5 already satisfies without it. Revisit if
+a concrete crash-durability requirement is raised, ideally once Issue #38 gives
+native host I/O a home.
 
 ### Creating `PSXRecomp.Infrastructure` for the adapter
 

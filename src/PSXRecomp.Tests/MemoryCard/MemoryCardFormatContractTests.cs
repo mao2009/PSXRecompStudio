@@ -287,6 +287,8 @@ public sealed class MemoryCardFormatContractTests
         { typeof(List<string>), false },
         { typeof(NotACardType[]), true },
         { typeof(MemoryCardImage), false },
+        { typeof(SystemRuntime.LooksLikeSystem), true },
+        { typeof(List<SystemRuntime.LooksLikeSystem>), true },
     };
 
     /// <summary>A stand-in for a forbidden (non-System, non-card, non-Architecture) type.</summary>
@@ -356,7 +358,7 @@ public sealed class MemoryCardFormatContractTests
         }
 
         var ns = type.Namespace;
-        var root = ns?.StartsWith("System", StringComparison.Ordinal) == true ? "System" : ns;
+        var root = ns is "System" || ns?.StartsWith("System.", StringComparison.Ordinal) == true ? "System" : ns;
         if (root is not (null or "System" or "PSXRecomp.Architecture") && root != cardNamespace)
         {
             return true;

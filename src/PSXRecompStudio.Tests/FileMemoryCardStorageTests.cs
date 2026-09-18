@@ -227,12 +227,67 @@ public sealed class FileMemoryCardStorageTests : IDisposable
     }
 
     /// <summary>
-    /// Item 4/10 (CodeRabbit round 2): two real, concurrently in-flight saves to
-    /// the same card use independent staging files, so the one that reaches its
-    /// pre-rename check second is refused instead of renaming the other's bytes.
+    /// CodeRabbit round 2/3: two in-process saves to the same card are
+    /// serialized per card, so a save that starts while another is still in
+    /// flight must wait for it, observe only its committed result, and then be
+    /// refused as a conflict — deterministically, thanks to the staging seam.
     /// </summary>
     [Fact]
-    public void Save_ConcurrentSavesToTheSameCardNeverMixStagingBytes()
+    public void Save_ASaveStartedWhileTheFirstIsInFlightIsDeferredAndThenRefused()
+    {
+        var raw = ExternalCardBytes();
+        var path = WriteCard("deferred-writer.mcr", raw);
+        var handleA = _storage.Load(path);
+        handleA.Image.Write(MemoryCardImage.BlockOffset(9), [0xAA]);
+
+        var handleB = _storage.Load(path);
+        handleB.Image.Write(MemoryCardImage.BlockOffset(12), [0xBB]);
+        Exception? bResult = null;
+        var bFinished = new ManualResetEventSlim(false);
+
+        // Writer B starts its save on another thread while writer A's staging
+        // write is "in flight" (inside A's callback). The per-card gate keeps B
+        // out until A has fully committed, so B can never observe A's
+        // intermediate state.
+        var storageA = new FileMemoryCardStorage
+        {
+            AfterStagingForTests = () =>
+            {
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        _storage.Save(handleB);
+                    }
+                    catch (Exception e)
+                    {
+                        bResult = e;
+                    }
+
+                    bFinished.Set();
+                });
+            },
+        };
+
+        storageA.Save(handleA);
+
+        bFinished.Wait(TimeSpan.FromSeconds(30))
+            .Should().BeTrue("writer B must finish once writer A releases the card's gate");
+        bResult.Should().BeOfType<MemoryCardConflictException>("writer B picked up the pre-save state and lost the race");
+        var expected = raw.ToArray();
+        expected[MemoryCardImage.BlockOffset(9)] = 0xAA;
+        ReadFile(path).Should().Equal(expected, "writer A's bytes are exactly what survives; writer B's must never land");
+        FileSystemEntryNames(_directory).Should().ContainSingle("no staging file may be left behind");
+    }
+
+    /// <summary>
+    /// The contract shape the per-card gate exists for: two genuinely concurrent
+    /// in-process saves to the same card, started from the same content, resolve
+    /// to exactly one winner and one conflict, whichever commits first. The
+    /// assertions are winner-agnostic, so the test is not flaky.
+    /// </summary>
+    [Fact]
+    public void Save_ConcurrentSavesToTheSameCardPickExactlyOneWinner()
     {
         var raw = ExternalCardBytes();
         var path = WriteCard("racing-writers.mcr", raw);
@@ -241,21 +296,85 @@ public sealed class FileMemoryCardStorageTests : IDisposable
 
         var handleB = _storage.Load(path);
         handleB.Image.Write(MemoryCardImage.BlockOffset(12), [0xBB]);
-        var storageB = new FileMemoryCardStorage();
 
-        // Writer B fully completes — its own, independent staging file — while
-        // writer A's staging write is still "in flight" (inside A's callback).
-        var storageA = new FileMemoryCardStorage
+        Exception? aResult = null;
+        Exception? bResult = null;
+        var gate = new ManualResetEventSlim(false);
+
+        var writerA = Task.Run(() =>
         {
-            AfterStagingForTests = () => storageB.Save(handleB),
-        };
+            gate.Wait();
+            try { _storage.Save(handleA); }
+            catch (Exception e) { aResult = e; }
+        });
+        var writerB = Task.Run(() =>
+        {
+            gate.Wait();
+            try { _storage.Save(handleB); }
+            catch (Exception e) { bResult = e; }
+        });
 
-        var act = () => storageA.Save(handleA);
+        gate.Set();
+        Task.WaitAll(writerA, writerB);
 
-        act.Should().Throw<MemoryCardConflictException>("writer A's card changed under it once writer B committed");
-        var onDisk = ReadFile(path);
-        onDisk[MemoryCardImage.BlockOffset(12)].Should().Be(0xBB, "writer B's bytes must be exactly what survives");
-        onDisk[MemoryCardImage.BlockOffset(9)].Should().NotBe(0xAA, "writer A's rejected bytes must never land on disk");
+        new[] { aResult, bResult }.Count(r => r is null)
+            .Should().Be(1, "exactly one save commits");
+        new[] { aResult, bResult }.Count(r => r is MemoryCardConflictException)
+            .Should().Be(1, "the save that lost the race is refused as a conflict");
+
+        var expected = raw.ToArray();
+        if (aResult is null)
+        {
+            expected[MemoryCardImage.BlockOffset(9)] = 0xAA;
+        }
+
+        if (bResult is null)
+        {
+            expected[MemoryCardImage.BlockOffset(12)] = 0xBB;
+        }
+
+        ReadFile(path).Should().Equal(expected, "exactly the winner's bytes are on disk");
+        FileSystemEntryNames(_directory).Should().ContainSingle("no staging file may be left behind");
+    }
+
+    /// <summary>
+    /// The per-card gate must not be a global one: saves to two different cards
+    /// in the same process commit concurrently, and both succeed.
+    /// </summary>
+    [Fact]
+    public void Save_ConcurrentSavesToDifferentCardsBothSucceed()
+    {
+        var pathA = WriteCard("card-a.mcr", ExternalCardBytes());
+        var pathB = WriteCard("card-b.mcr", ExternalCardBytes());
+        var handleA = _storage.Load(pathA);
+        handleA.Image.Write(MemoryCardImage.BlockOffset(9), [0x11]);
+        var handleB = _storage.Load(pathB);
+        handleB.Image.Write(MemoryCardImage.BlockOffset(9), [0x22]);
+
+        Exception? aResult = null;
+        Exception? bResult = null;
+        var gate = new ManualResetEventSlim(false);
+
+        var writerA = Task.Run(() =>
+        {
+            gate.Wait();
+            try { _storage.Save(handleA); }
+            catch (Exception e) { aResult = e; }
+        });
+        var writerB = Task.Run(() =>
+        {
+            gate.Wait();
+            try { _storage.Save(handleB); }
+            catch (Exception e) { bResult = e; }
+        });
+
+        gate.Set();
+        Task.WaitAll(writerA, writerB);
+
+        aResult.Should().BeNull("card A is a different card and must not be blocked by card B's save");
+        bResult.Should().BeNull("card B is a different card and must not be blocked by card A's save");
+        ReadFile(pathA)[MemoryCardImage.BlockOffset(9)].Should().Be(0x11);
+        ReadFile(pathB)[MemoryCardImage.BlockOffset(9)].Should().Be(0x22);
     }
 
     /// <summary>
@@ -354,6 +473,9 @@ public sealed class FileMemoryCardStorageTests : IDisposable
         handle.Image.IsDirty.Should().BeFalse();
         ReadFile(path).Should().Equal(MemoryCardImage.CreateBlank().ToArray());
         _storage.Load(path).Image.IsFormatted.Should().BeTrue();
+
+        FileSystemEntryNames(_directory)
+            .Should().ContainSingle("the staging file is published; nothing is left behind");
     }
 
     /// <summary>An existing card is never replaced by a blank one.</summary>
@@ -367,6 +489,30 @@ public sealed class FileMemoryCardStorageTests : IDisposable
 
         act.Should().Throw<IOException>();
         ReadFile(path).Should().Equal(raw);
+        FileSystemEntryNames(_directory)
+            .Should().ContainSingle("the abandoned blank's staging file is cleaned up");
+    }
+
+    /// <summary>
+    /// CodeRabbit round 3: a blank card is staged before it is published, so a
+    /// failure before publication must leave nothing at the final path. Here the
+    /// staging file's own path is taken over, which makes even the staging write
+    /// impossible — the final path must still never appear.
+    /// </summary>
+    [Fact]
+    public void CreateBlank_StagingFailureLeavesNoPartialCardAtTheFinalPath()
+    {
+        var path = Path.Combine(_directory, "staged-new.mcr");
+        var staging = path + FileMemoryCardStorage.StagingSuffix;
+#pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
+        Directory.CreateDirectory(staging);
+#pragma warning restore AARC003
+        var storage = new FileMemoryCardStorage { StagingPathFactory = _ => staging };
+
+        var act = () => storage.CreateBlank(path);
+
+        act.Should().Throw<SystemException>("the staging file's path is occupied, so no blank image can be written");
+        Exists(path).Should().BeFalse("a failed blank creation must not leave a card, partial or not, at the final path");
     }
 
     /// <summary><see cref="IMemoryCardStorage.Exists"/> reports what is actually on disk.</summary>
@@ -453,6 +599,18 @@ public sealed class FileMemoryCardStorageTests : IDisposable
     {
 #pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
         return File.Exists(path);
+#pragma warning restore AARC003
+    }
+
+    /// <summary>
+    /// The files directly inside <paramref name="directory"/>, for asserting that
+    /// a save or a blank creation leaves no staging file behind. A helper keeps
+    /// the AARC003 suppression off the call sites.
+    /// </summary>
+    private static string[] FileSystemEntryNames(string directory)
+    {
+#pragma warning disable AARC003 // Test-only temp staging, per the architecture matrix's escape hatch.
+        return Directory.EnumerateFileSystemEntries(directory).ToArray();
 #pragma warning restore AARC003
     }
 

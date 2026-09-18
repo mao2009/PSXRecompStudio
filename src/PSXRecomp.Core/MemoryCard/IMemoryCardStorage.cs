@@ -105,19 +105,24 @@ public sealed class MemoryCardConflictException : IOException
 /// <see cref="MemoryCardImage"/>.
 /// </para>
 /// <para>
-/// <b>Concurrency.</b> Two processes holding the same card file open for writing
-/// at the same time is unsupported. Implementations detect the conflict at save
-/// time — the last writer is refused rather than silently winning — and take no
+/// <b>Concurrency.</b> Concurrent writable use of one card file is unsupported.
+/// Implementations detect the conflict at save time — the save is refused when
+/// the file no longer matches the handle's stamp — and take no cross-process
 /// lock and run no watcher, because a lock an external emulator does not honour
-/// would only give false confidence. See <c>docs/runtime/memory-card.md</c>.
+/// would only give false confidence. Within this process, saves to the same
+/// card path are additionally serialized per card, so two in-process saves
+/// started from the same content resolve to exactly one winner. Across
+/// processes, the final fingerprint check and the rename are not one atomic
+/// operation, so a narrow lost-update window remains by design. See
+/// <c>docs/runtime/memory-card.md</c> for the exact scope.
 /// </para>
 /// <para>
 /// <b>Crash durability.</b> <see cref="Save"/> and <see cref="CreateBlank"/>
 /// guarantee that a crash never leaves a torn or half-written card file: the
 /// file holds either its previous content or the complete new content. They do
 /// not additionally guarantee that a successful return survives a crash in the
-/// instant after — filesystem metadata (the directory entry itself) may not yet
-/// be durable, most notably on Linux and macOS. See
+/// instant after — the changed parent-directory entry may not yet be durable,
+/// and this adapter does not make it so on any platform. See
 /// <c>docs/runtime/memory-card.md</c> for the exact scope.
 /// </para>
 /// </remarks>
@@ -144,7 +149,10 @@ public interface IMemoryCardStorage
     MemoryCardHandle Load(string path);
 
     /// <summary>
-    /// Creates a newly formatted blank card at <paramref name="path"/>.
+    /// Creates a newly formatted blank card at <paramref name="path"/>. The image
+    /// is written to a sibling staging file and published with a single rename
+    /// that refuses to replace an existing file, so a failure never leaves a
+    /// partial card at the final path and an existing card is never replaced.
     /// </summary>
     /// <param name="path">Where to create the card.</param>
     /// <returns>A clean handle over the blank card that is now on disk.</returns>

@@ -136,8 +136,12 @@ to the same card — never share, write into, or clean up each other's staging
 file. This is a separate guarantee from the fingerprint recheck in step 3, which
 is what stops the *card itself* from being overwritten by a conflicting change.
 
-Creating a blank card uses an exclusive create instead: an existing card is
-never replaced by a blank one, not even under a race.
+Creating a blank card goes through the same staging-and-single-rename flow as a
+save — unique sibling staging file, exclusive creation, device flush, then one
+rename to the final path — with one difference: the final rename refuses to
+replace an existing file, so an existing card is never replaced by a blank one,
+not even under a race. A failure at any point before publication therefore
+leaves nothing at the final path.
 
 **Backup / versioning is deliberately not implemented.** The rename already
 makes a torn card unreachable, which is what corruption safety requires;
@@ -154,13 +158,15 @@ card's own path. It does **not** mean the outcome of a successful `Save` or
 instant after that call returns.
 
 `FileStream.Flush(flushToDisk: true)` fsyncs the *file's* content, but neither
-`CreateBlank`'s create nor `Save`'s rename additionally fsyncs the *parent
-directory*. On Linux and macOS, POSIX does not guarantee a directory-entry
-change (a new file, or a rename replacing one) is itself durable until that
-directory is fsynced — an operation the .NET `FileStream` / `File` APIs do not
-expose, and which this adapter does not obtain through native interop. Windows'
-`NTFS` metadata-journaling behavior differs from POSIX and is not documented as
-requiring the same operation, so this gap is specifically a Linux/macOS one.
+`CreateBlank`'s create-and-rename nor `Save`'s rename additionally makes the
+changed *parent-directory entry* itself durable. On POSIX systems, a
+directory-entry change (a new file, or a rename replacing one) is not
+guaranteed durable across a crash until that directory is fsynced — an
+operation the .NET `FileStream` / `File` APIs do not expose — and this adapter
+adds no native interop (neither a POSIX directory fsync nor a Windows
+write-through rename) to obtain it. The gap is therefore platform-neutral: this
+subsystem makes no claim that any platform's filesystem makes the
+parent-directory entry durable before a successful call returns.
 
 This is a deliberate, scoped decision rather than an oversight: Issue #22's
 acceptance criteria ask for safe, atomic writes that avoid a partial or
@@ -195,10 +201,13 @@ preserved by many copy tools, so they miss real edits.
 There is no filesystem watcher and no background monitoring. Detection happens
 at the moment it protects data — the point of overwrite.
 
-A residual window remains between the second comparison and the rename itself,
-because the filesystem offers no atomic compare-and-rename. It is orders of
-magnitude smaller than the write it replaces, and the policy below is detection
-rather than prevention, so this is a narrowed race, not an eliminated one.
+A residual window remains between the second comparison and the rename itself
+for writers outside this process, because the filesystem offers no atomic
+compare-and-rename. Within this process it is closed by the per-card
+serialization described under [Concurrent access](#concurrent-access). It is
+orders of magnitude smaller than the write it replaces, and the policy below is
+detection rather than prevention, so this is a narrowed cross-process race, not
+an eliminated one.
 
 ## Concurrent access
 
@@ -212,11 +221,13 @@ unsupported.** The policy is *detect, do not prevent*:
 - Read-only concurrent use (another process reading the card) is unaffected.
 
 Two saves to one card started from *within this process* at the same time are
-independent at the filesystem level — each gets its own uniquely named,
-exclusively created staging file (see [Write safety](#write-safety)) — but the
-fingerprint check still means only one of them can win: whichever reaches its
-pre-rename check first commits, and the other is refused as an external
-conflict when it checks next, consistently with the policy above.
+serialized per card: `FileMemoryCardStorage` holds a per-card gate for the
+whole of `Save`, so the two cannot interleave. Whichever acquires the gate
+first commits, and the second — still holding the same origin content — is
+refused as a conflict at its next fingerprint check, consistently with the
+policy above. The gate is keyed per card path and held only for the duration of
+a save, so saves to different cards do not block each other and no per-card
+state is retained once no save is in flight.
 
 ## Interoperability claim
 
