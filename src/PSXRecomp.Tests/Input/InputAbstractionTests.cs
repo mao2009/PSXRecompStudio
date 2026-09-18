@@ -300,6 +300,20 @@ public class InputAbstractionTests
     }
 
     [Fact]
+    public void SignedEnumSignBit_IsAcceptedAndResolvedWithoutOverflow()
+    {
+        var input = Keyboard("Key.SignBit");
+        var map = new InputBindingMap<SignedConsoleButton>()
+            .Add(new InputBinding<SignedConsoleButton>(input, SignedConsoleButton.SignBit));
+        var physical = new PhysicalControllerState<FakeConsoleDeviceKind>();
+        physical.SetPressed(ControllerPort.Port1, input, true);
+
+        var snapshot = map.Resolve(physical);
+
+        snapshot[ControllerPort.Port1].Should().Be(SignedConsoleButton.SignBit);
+    }
+
+    [Fact]
     public void SetPressed_WithUndefinedPort_IsRejected()
     {
         var physical = new PhysicalControllerState<Ps1ControllerDeviceKind>();
@@ -460,5 +474,12 @@ public class InputAbstractionTests
         A = 1,
         B = 2,
         Both = A | B,
+    }
+
+    [Flags]
+    private enum SignedConsoleButton : int
+    {
+        None = 0,
+        SignBit = int.MinValue,
     }
 }
