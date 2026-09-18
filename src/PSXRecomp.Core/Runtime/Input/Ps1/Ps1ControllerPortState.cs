@@ -14,7 +14,12 @@ public readonly record struct Ps1ControllerPortState(Ps1ControllerDeviceKind Dev
 {
     /// <summary>The kind of device attached to this port.</summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="DeviceKind"/> is not a defined device kind.</exception>
-    public Ps1ControllerDeviceKind DeviceKind { get; init; } = Enum.IsDefined(DeviceKind)
+    /// <remarks>
+    /// Get-only (no <c>init</c>): a <c>with</c> expression could otherwise assign this
+    /// directly and bypass the validation below, or set an unsupported kind while
+    /// leaving a stale non-default <see cref="State"/> (Issue #47).
+    /// </remarks>
+    public Ps1ControllerDeviceKind DeviceKind { get; } = Enum.IsDefined(DeviceKind)
         ? DeviceKind
         : throw new ArgumentOutOfRangeException(nameof(DeviceKind), DeviceKind, "Unknown device kind.");
 
@@ -23,7 +28,7 @@ public readonly record struct Ps1ControllerPortState(Ps1ControllerDeviceKind Dev
     /// unsupported or absent device kinds; only a <see cref="Ps1ControllerDeviceKind.StandardDigitalPad"/>
     /// carries meaningful digital-pad state.
     /// </summary>
-    public Ps1ControllerState State { get; init; } = DeviceKind == Ps1ControllerDeviceKind.StandardDigitalPad
+    public Ps1ControllerState State { get; } = DeviceKind == Ps1ControllerDeviceKind.StandardDigitalPad
         ? State
         : default;
 

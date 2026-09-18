@@ -350,6 +350,27 @@ public class InputAbstractionTests
     }
 
     [Fact]
+    public void Ps1ControllerPortState_WithSupportedDevice_PreservesState()
+    {
+        var pressed = new Ps1ControllerState(Ps1Button.Cross);
+        var portState = new Ps1ControllerPortState(Ps1ControllerDeviceKind.StandardDigitalPad, pressed);
+
+        portState.IsSupported.Should().BeTrue();
+        portState.State.Should().Be(pressed);
+    }
+
+    [Fact]
+    public void Ps1ControllerPortState_PropertiesHaveNoPublicSetter_WithCannotBypassInvariants()
+    {
+        typeof(Ps1ControllerPortState).GetProperty(nameof(Ps1ControllerPortState.DeviceKind))!
+            .SetMethod.Should().BeNull(
+                "a with-expression must not be able to assign DeviceKind directly and bypass its validation");
+        typeof(Ps1ControllerPortState).GetProperty(nameof(Ps1ControllerPortState.State))!
+            .SetMethod.Should().BeNull(
+                "a with-expression must not be able to assign State directly and bypass unsupported-device normalization");
+    }
+
+    [Fact]
     public void Snapshot_IsUnaffectedByLaterPhysicalStateMutation()
     {
         var map = new InputBindingMap<Ps1Button>().Add(Binding(Keyboard("Key.W"), Ps1Button.Up));
