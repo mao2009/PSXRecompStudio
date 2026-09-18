@@ -41,6 +41,13 @@ public static class AnalysisArtifactSchema
     /// <summary>Schema version of <c>coverage.json</c> (Issue #410).</summary>
     public const int CoverageSchemaVersion = 1;
 
+    /// <summary>
+    /// Schema version of the standalone selected-function provenance document. The
+    /// document is optional and never part of <c>manifest.json</c>'s <c>documents[]</c> set,
+    /// so existing manifest/report consumers are unaffected by its existence.
+    /// </summary>
+    public const int FunctionProvenanceSchemaVersion = 1;
+
     /// <summary>Artifact kind discriminator written into <c>manifest.json</c>.</summary>
     public const string ManifestArtifactKind = "psxrecomp.real-rom-analysis.manifest";
 
@@ -56,6 +63,11 @@ public static class AnalysisArtifactSchema
     /// <summary>Artifact kind discriminator written into <c>coverage.json</c>.</summary>
     public const string CoverageArtifactKind = "psxrecomp.real-rom-analysis.coverage";
 
+    /// <summary>
+    /// Artifact kind discriminator written into the selected-function provenance document.
+    /// </summary>
+    public const string FunctionProvenanceArtifactKind = "psxrecomp.real-rom-analysis.function-provenance";
+
     public const string ManifestFileName = "manifest.json";
     public const string ReportFileName = "report.json";
     public const string InstructionsFileName = "instructions.json";
@@ -67,6 +79,9 @@ public static class AnalysisArtifactSchema
     /// caller that only wants the analysis projection is unaffected.
     /// </summary>
     public const string CoverageFileName = "coverage.json";
+
+    /// <summary>File name of the optional, standalone selected-function provenance document.</summary>
+    public const string FunctionProvenanceFileName = "function-provenance.json";
 
     /// <summary>Canonical ordering of the <c>instructions</c> array, recorded in the artifact itself.</summary>
     public const string InstructionOrdering = "address-ascending";
@@ -88,6 +103,12 @@ public static class AnalysisArtifactSchema
     /// itself. Each family's unresolved bucket sorts after its resolved function numbers.
     /// </summary>
     public const string BiosCallSummaryOrdering = "family-ordinal-ascending,function-number-ascending,unresolved-last";
+
+    /// <summary>Canonical ordering of the function-provenance document's <c>requiredInstructionSubset</c>.</summary>
+    public const string FunctionProvenanceSubsetOrdering = "name-ordinal-ascending";
+
+    /// <summary>Canonical ordering of the function-provenance document's <c>unresolvedFlags</c>.</summary>
+    public const string FunctionProvenanceFlagsOrdering = "name-ordinal-ascending";
 
     /// <summary>Maximum length of a fixture identifier.</summary>
     public const int MaxFixtureIdLength = 64;
