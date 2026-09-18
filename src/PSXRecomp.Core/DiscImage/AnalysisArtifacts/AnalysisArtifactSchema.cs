@@ -18,8 +18,13 @@ namespace PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 [Domain]
 public static class AnalysisArtifactSchema
 {
-    /// <summary>Schema version of <c>manifest.json</c>.</summary>
-    public const int ManifestSchemaVersion = 1;
+    /// <summary>
+    /// Schema version of <c>manifest.json</c>. Version 2 added the optional
+    /// <c>coverage.json</c> document to the indexable set (Issue #410): the manifest's own
+    /// field shape is unchanged, but <c>documents[]</c> may now carry a fifth entry, and a
+    /// consumer must be able to tell that from an analysis change.
+    /// </summary>
+    public const int ManifestSchemaVersion = 2;
 
     /// <summary>
     /// Schema version of <c>report.json</c>. Version 2 added the <c>biosCalls</c> section
@@ -33,6 +38,9 @@ public static class AnalysisArtifactSchema
     /// <summary>Schema version of <c>cfg.json</c>.</summary>
     public const int CfgSchemaVersion = 1;
 
+    /// <summary>Schema version of <c>coverage.json</c> (Issue #410).</summary>
+    public const int CoverageSchemaVersion = 1;
+
     /// <summary>Artifact kind discriminator written into <c>manifest.json</c>.</summary>
     public const string ManifestArtifactKind = "psxrecomp.real-rom-analysis.manifest";
 
@@ -45,10 +53,20 @@ public static class AnalysisArtifactSchema
     /// <summary>Artifact kind discriminator written into <c>cfg.json</c>.</summary>
     public const string CfgArtifactKind = "psxrecomp.real-rom-analysis.cfg";
 
+    /// <summary>Artifact kind discriminator written into <c>coverage.json</c>.</summary>
+    public const string CoverageArtifactKind = "psxrecomp.real-rom-analysis.coverage";
+
     public const string ManifestFileName = "manifest.json";
     public const string ReportFileName = "report.json";
     public const string InstructionsFileName = "instructions.json";
     public const string CfgFileName = "cfg.json";
+
+    /// <summary>
+    /// Recompilation-coverage document. Unlike the other four it is <em>optional</em>: it
+    /// exists only when a coverage measurement was supplied to the artifact builder, so a
+    /// caller that only wants the analysis projection is unaffected.
+    /// </summary>
+    public const string CoverageFileName = "coverage.json";
 
     /// <summary>Canonical ordering of the <c>instructions</c> array, recorded in the artifact itself.</summary>
     public const string InstructionOrdering = "address-ascending";
