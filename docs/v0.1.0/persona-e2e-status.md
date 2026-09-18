@@ -131,9 +131,11 @@ What still does not exist:
 - Runs the entire Persona executable to an **actual title screen** — even once
   a real title is loaded, the boot path needs BIOS HLE beyond the five services
   above and GPU/SPU/CD-ROM MMIO.
-- GPU / SPU / CD-ROM hardware: `IGpu` and the other hardware interfaces have no
-  production implementation. Hardware communication would hit MMIO open-bus
-  (reads return 0, writes ignored).
+- GPU / SPU / CD-ROM hardware: a managed GPU register/VRAM model now exists
+  (#440) but is not wired into the title execution path and performs no
+  rasterization; the SPU/CD-ROM interfaces still have no production
+  implementation. Hardware communication beyond the modeled GPU registers would
+  hit MMIO open-bus (reads return 0, writes ignored).
 
 **Remaining generic runtime sub-blockers in order:**
 
@@ -141,8 +143,9 @@ What still does not exist:
    B0:3F puts alias, B0:56 GetC0Table, B0:57 GetB0Table). First unregistered call
    produces diagnostic code `BIOS_HLE_UNSUPPORTED_CALL`.
 
-2. **GPU rendering**: `IGpu` is an interface with no production implementation.
-   Hardware communication would hit MMIO open-bus (reads return 0, writes ignored).
+2. **GPU rendering**: the managed GPU model (#440) covers register semantics and
+   VRAM transfers only; rasterization and display output are not implemented, so
+   no rendering occurs.
 
 3. **SPU / CD-ROM**: Same situation — interface-only.
 

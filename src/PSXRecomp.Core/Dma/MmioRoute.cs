@@ -16,6 +16,7 @@ public readonly struct MmioRoute
     public int TimerIndex { get; init; }
     public TimerRegisterType TimerRegisterType { get; init; }
     public InterruptControllerRegisterType InterruptControllerRegisterType { get; init; }
+    public GpuRegisterType GpuRegisterType { get; init; }
 
     public static MmioRoute Unmapped => new() { Target = MmioTarget.None };
 
@@ -63,8 +64,24 @@ public readonly struct MmioRoute
             Offset = offset,
         };
 
+    public static MmioRoute ForGpu(GpuRegisterType registerType, uint offset) =>
+        new()
+        {
+            Target = MmioTarget.Gpu,
+            GpuRegisterType = registerType,
+            Offset = offset,
+        };
+
     public static MmioRoute Resolve(uint address)
     {
+        if (Ps1MemoryMap.IsGpuRegister(address))
+        {
+            var _gpuType = Ps1MemoryMap.GetGpuRegisterType(address);
+            if (_gpuType == GpuRegisterType.None)
+                return Unmapped;
+            return ForGpu(_gpuType, address - Ps1MemoryMap.GpuPort);
+        }
+
         if (Ps1MemoryMap.IsInterruptControllerRegister(address))
         {
             var _interruptType = Ps1MemoryMap.GetInterruptControllerRegisterType(address);
@@ -112,4 +129,5 @@ public enum MmioTarget
     DmaController,
     Timer,
     InterruptController,
+    Gpu,
 }

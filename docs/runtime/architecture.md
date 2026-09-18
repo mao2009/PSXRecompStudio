@@ -145,6 +145,19 @@ Controlled through the two GP0/GP1 registers.
 - **VBlank**: raises IRQ0 on vertical blank.
 - **GPU IRQ1**: requested by GP0(1Fh), acknowledged by GP1(02h).
 
+### Runtime implementation (Issue #440)
+
+The register/VRAM contract is implemented as a pure managed Domain model in
+`PSXRecomp.Core.Runtime.Gpu` (`GpuDevice`, `GpuVram`, `GpuState`,
+`Gp0CommandDecoder`) and reaches the live `0x1F801810-0x1F80181C` ports through
+`GpuMmioAdapter` + `MemoryBus`, following the Timer/Interrupt adapter pattern.
+GPUSTAT is derived from named state (see ADR-022), VRAM is 1024x512x16b, and
+unimplemented GP0 opcodes are reported explicitly rather than silently ignored.
+
+Not yet implemented: primitive rasterization and display output (#441),
+VRAM→VRAM blit, VBlank/IRQ0 scheduling (#442), and DMA channel 2 (GPU)
+consumption of the DMA controller.
+
 ## SPU Model
 
 A 24-voice audio synthesis engine.
