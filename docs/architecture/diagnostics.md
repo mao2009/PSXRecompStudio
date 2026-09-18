@@ -141,6 +141,15 @@ propagate):
   never be caught and converted into a `Diagnostic`; recovering from them
   in-process is not defined. Production catches should read
   `catch (Exception e) when (!DiagnosticExceptionPolicy.IsProcessFatal(e))`.
+- **Cancellation is not a failure.** `IsProcessFatal` answers only whether an
+  exception is process-fatal, and reports `false` for
+  `OperationCanceledException`, because cancellation is a control-flow signal
+  that the caller asked to stop — not a problem to diagnose. The guard above is
+  therefore insufficient on a boundary that can be cancelled: such a boundary
+  must exclude cancellation as well, as `RomAnalysisPipeline`'s
+  `IsClassifiableFailure` already does, so a cancelled run never surfaces as a
+  `Diagnostic`. `IsProcessFatal` itself stays a process-fatality predicate and
+  is not widened into a cancellation check.
 
 ## 7. Relationship to adjacent concerns
 

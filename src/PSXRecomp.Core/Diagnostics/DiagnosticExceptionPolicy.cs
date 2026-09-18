@@ -26,6 +26,19 @@ public static class DiagnosticExceptionPolicy
     /// out-of-memory, stack overflow, and access-violation faults (and their
     /// subtypes). Catches in production paths should use
     /// <c>catch (Exception e) when (!DiagnosticExceptionPolicy.IsProcessFatal(e))</c>.
+    ///
+    /// <para>
+    /// This predicate answers only "is this process-fatal?", never "should this
+    /// become a diagnostic?". Cancellation is neither: an
+    /// <see cref="OperationCanceledException"/> is a control-flow signal that the
+    /// caller asked to stop, not a failure to diagnose, and this method reports
+    /// <c>false</c> for it. A boundary that can be cancelled must therefore
+    /// exclude cancellation itself in addition to this guard — for example
+    /// <c>catch (Exception e) when (e is not OperationCanceledException &amp;&amp; !IsProcessFatal(e))</c>,
+    /// the shape <c>RomAnalysisPipeline.IsClassifiableFailure</c> already uses.
+    /// Do not widen this method to cover cancellation: a boundary that genuinely
+    /// cannot be cancelled still needs the process-fatal answer on its own.
+    /// </para>
     /// </summary>
     public static bool IsProcessFatal(Exception exception)
     {
