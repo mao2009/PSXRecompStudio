@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../PSXRecomp.Core/PSXRecomp.Core.csproj" />
+    <ProjectReference Include="../PSXRecomp.Infrastructure/PSXRecomp.Infrastructure.csproj" />
   </ItemGroup>
 
   <!--

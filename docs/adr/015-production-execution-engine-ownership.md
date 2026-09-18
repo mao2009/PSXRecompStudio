@@ -1,6 +1,6 @@
 # ADR-015: The Production Execution Engine Is the Interpreter Backend, and It Lives in the Domain Layer
 
-- **Status**: Accepted (amended 2026-09-16 by Issue #409)
+- **Status**: Accepted (amended 2026-09-16 by Issue #409; amended 2026-09-18 by Issue #458)
 - **Date**: 2026-09-16
 - **Issue**: #380
 
@@ -138,7 +138,22 @@ interpret. It is a genuinely larger change than Issue #380's own "minimal"
 criterion and non-goals allow, and folding it in would produce exactly the
 mega-PR the #374 audit batch forbids.
 
-A sketch for whoever picks it up, so the analysis is not redone from scratch:
+**Amended by Issue #458**: sketch point 1 below is now landed. `PSXRecomp.Infrastructure`
+exists, with `GeneratedHostBuildService` (`[Infrastructure]`) implementing the
+Domain-owned `IGeneratedHostBuildService` port (`PSXRecomp.Core.Recompiler`) to
+compile and link generated host C source into a native artifact at a
+caller-selected output location, with structured (non-exception) failure
+classification — including unusable output locations (`OutputFailed`) and
+invalid output file names, which are rejected rather than allowed to escape the
+caller-owned directory. `RecompilerHostExecutor.CompileRecompiledBinary` (test-only)
+now calls this production service instead of invoking gcc itself, so the
+differential harness and `HostTitleExecutionEngine` exercise the same compile/link
+path a production caller would. Sketch points 2–4 remain open: no
+`IExecutionEngineProvider`-shaped selector exists yet, no engine implementation
+consumes this service, and no Studio/CLI composition root resolves one. This
+Issue's explicit non-goal was the runtime entrypoint itself (#459) and CLI (#460).
+
+A sketch for whoever picks up the remaining points, so the analysis is not redone from scratch:
 
 1. **It cannot live in the Domain layer.** It needs `System.Diagnostics.Process`
    and `System.IO.File`/`Directory`, all three of which are on the Domain

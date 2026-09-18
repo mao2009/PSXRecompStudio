@@ -52,7 +52,7 @@ Managed Infrastructure / PSXRecomp.Infrastructure
 
 ### Positive
 
-- A production disc-path adapter, generated-host compiler adapter, network adapter, or logging sink now has a legal managed home.
+- A production disc-path adapter, generated-host compiler adapter, network adapter, or logging sink now has a legal managed home. **Amended 2026-09-18 by Issue #458**: `PSXRecomp.Infrastructure` was activated with its first concrete adapter, `GeneratedHostBuildService`, implementing a new Domain-owned port (`IGeneratedHostBuildService`) for the generated-host compile/link substrate.
 - Domain and Application remain isolated from concrete host mechanisms.
 - The native core and managed adapter layer are no longer conflated.
 - Existing stream/byte-based parsers do not need to move merely because they process external-format data.

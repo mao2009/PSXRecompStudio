@@ -31,7 +31,7 @@ src/
 ├── PSXRecomp.Runtime/         # Future: PSX runtime management
 ├── PSXRecomp.Recompiler/      # Future: recompiler
 ├── PSXRecomp.Debugger/        # Future: debugger
-├── PSXRecomp.Infrastructure/  # Future: shared infrastructure
+├── PSXRecomp.Infrastructure/  # Managed host adapters (compiler/process/file I/O; #458)
 └── PSXRecomp.Tests/           # xUnit tests
 mcp/                           # MCP Server (Node.js / TypeScript)
 ```
@@ -319,6 +319,5 @@ PSXRecomp.Native      → PSX emulation core
 PSXRecomp.Runtime     → runtime management
 PSXRecomp.Recompiler  → recompiler
 PSXRecomp.Debugger    → debugger
-PSXRecomp.Infrastructure → shared infrastructure
 mcp/                  → MCP Server
 ```
