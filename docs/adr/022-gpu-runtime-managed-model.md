@@ -80,7 +80,12 @@ by every later GPU change:
 - Until VBlank/IRQ0 and DMA2 wiring land, GPU interrupts do not reach the
   Interrupt Controller and title code that polls GPUSTAT bit 31 (drawing
   even/odd) sees 0.
-- GPUSTAT bit 14 (screen flip, v1-only) is always 0 on the modeled v2 GPU.
+- GPUSTAT bit 14 is always 0 on the modeled v2 GPU. On real hardware bit 14
+  reflects the reverse / screen horizontal flip display setting, whose behavior
+  differs across GPU revisions (v1 supports the flip; later revisions behave
+  differently). Display output itself is deferred in this model (see decision
+  5), so bit 14 is modeled as 0 rather than emulating a specific revision's flip
+  behavior.
 
 ## Rejected alternatives
 
