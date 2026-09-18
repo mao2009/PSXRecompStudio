@@ -4,6 +4,7 @@ using System.Text;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Infrastructure;
 
 namespace PSXRecomp.Tests.Recompiler;
 
@@ -162,6 +163,12 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     /// locations. The caller owns the returned directory's lifetime. Enables the
     /// #209 vertical-slice "compare the produced test binary" check.
     /// </summary>
+    /// <remarks>
+    /// Delegates the actual compile/link to the production
+    /// <see cref="GeneratedHostBuildService"/> (Issue #458): this helper only
+    /// owns fixture-specific concerns (lowering, the differential driver, the
+    /// input file, and this temp directory's lifetime).
+    /// </remarks>
     public CompiledBinary CompileRecompiledBinary(RecompilerDifferentialFixture fixture)
     {
         ArgumentNullException.ThrowIfNull(fixture);
@@ -184,21 +191,19 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                     generated.DiagnosticMessage ?? "Host code generation failed.");
             }
 
-            var sourcePath = Path.Combine(tempDir, "program.c");
             var inputPath = Path.Combine(tempDir, "input.txt");
-
-            File.WriteAllText(sourcePath, generated.Source + "\n" + DriverSource);
             WriteInputFile(inputPath, fixture);
 
-            var (exit, _, stderr) = RunProcess(
-                Compiler, $"{CompilerArgs} \"{sourcePath}\" -o \"{ResolveBinaryCandidate(tempDir)}\"", BuildTimeoutMs, out var timedOut);
-            if (timedOut || exit != 0)
+            var build = new GeneratedHostBuildService().Build(new GeneratedHostBuildRequest(
+                generated.Source + "\n" + DriverSource, tempDir, "program"));
+            if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {
                 throw new InvalidOperationException(
-                    $"Host compilation failed." + (string.IsNullOrEmpty(stderr) ? "" : "\n" + Truncate(stderr, 2000)));
+                    $"Host compilation failed." +
+                    (string.IsNullOrEmpty(build.DiagnosticMessage) ? "" : "\n" + build.DiagnosticMessage));
             }
 
-            return new CompiledBinary(ResolveBinaryPath(tempDir), inputPath, tempDir);
+            return new CompiledBinary(build.Artifact!.BinaryPath, inputPath, tempDir);
         }
         catch
         {
