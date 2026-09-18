@@ -16,6 +16,16 @@ public sealed class Iso9660Reader
     private const byte PrimaryVolumeDescriptorType = 1;
     private const byte DirectoryRecordTerminator = 0;
 
+    /// <summary>
+    /// Upper bound for a single file's extent read through <see cref="ReadRawFile"/>. The
+    /// largest medium a PlayStation disc image can come from is a 99-minute CD: 99 * 60 * 75
+    /// = 445,500 sectors of 2048-byte user data, about 870 MiB — and no single file can
+    /// exceed the whole disc's capacity. 1 GiB leaves ample headroom for any real PS1 file
+    /// while still ruling out the near-2 GiB range the previous int.MaxValue addressability
+    /// check alone let through as an unbounded resource, not merely an addressing limit.
+    /// </summary>
+    private const long MaxReadableExtentBytes = 1L * 1024 * 1024 * 1024;
+
     private readonly Func<int, byte[]> _sectorReader;
     private bool _initialized;
 
@@ -330,7 +340,14 @@ public sealed class Iso9660Reader
         long totalBytes = totalSectors * SectorSize;
         long lastSector = (long)entry.Location + totalSectors - 1;
 
-        if (totalBytes > int.MaxValue || (totalSectors > 0 && lastSector > int.MaxValue))
+        // int.MaxValue alone is an addressability check, not a resource cap: an extent
+        // just below it is still addressable but would allocate close to 2 GiB from a
+        // container that, via a CHD's zero-cost CompressionParent/CompressionSelf hunks,
+        // can be tiny on disk. MaxReadableExtentBytes bounds the allocation independently
+        // of what the container claims to hold; it is tighter than int.MaxValue for every
+        // real PS1 file, so it never rejects anything the addressability check would not.
+        if (totalBytes > Math.Min(MaxReadableExtentBytes, int.MaxValue)
+            || (totalSectors > 0 && lastSector > int.MaxValue))
         {
             throw new InvalidDataException(
                 $"ISO 9660: directory entry declares a {entry.Size}-byte extent at sector {entry.Location}, which is not addressable.");

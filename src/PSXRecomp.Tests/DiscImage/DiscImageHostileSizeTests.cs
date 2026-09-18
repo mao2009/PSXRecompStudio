@@ -45,6 +45,9 @@ public class DiscImageHostileSizeTests
     private const uint HostileUnitBytes = 100_000;
     private const uint HostileHunkBytes = HostileUnitBytes * 200;
 
+    /// <summary>Mirrors Iso9660Reader's independent ceiling for a single file's extent.</summary>
+    private const long IsoMaxReadableExtentBytes = 1L * 1024 * 1024 * 1024;
+
     // ------------------------------------------------------------------ CHD header
 
     [Fact]
@@ -329,6 +332,41 @@ public class DiscImageHostileSizeTests
         outcome.FailedStage.Should().Be(RomAnalysisStage.BootExecutable);
         outcome.FailureKind.Should().Be("BootExecutableUnreadable");
         outcome.FailureReason.Should().Contain("not addressable");
+    }
+
+    [Fact]
+    public void RunFromIsoImage_BootExecutableSizeAboveSupportedExtentLimit_IsClassified()
+    {
+        // Comfortably below int.MaxValue (~2 GiB), so the old addressability-only check
+        // would have accepted it and gone on to allocate ~1 GiB. Only the independent
+        // resource cap rejects it, before any allocation is attempted.
+        var image = BuildIsoDisc();
+        PatchRootDirectoryEntrySize(image, ExeIsoName, (uint)(IsoMaxReadableExtentBytes + SectorSize));
+
+        var outcome = RomAnalysisPipeline.RunFromIsoImage(image, Sha);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Fail);
+        outcome.FailedStage.Should().Be(RomAnalysisStage.BootExecutable);
+        outcome.FailureKind.Should().Be("BootExecutableUnreadable");
+        outcome.FailureReason.Should().Contain("not addressable");
+    }
+
+    [Fact]
+    public void RunFromIsoImage_BootExecutableSizeAtSupportedExtentLimit_PassesSizeValidation()
+    {
+        // Exactly at the cap: the resource limit must not reject it. The synthetic image is
+        // far smaller than 1 GiB, so the read still fails - but only because the declared
+        // sector is outside the real (tiny) image, proving the cap itself let the value
+        // through before any allocation was attempted.
+        var image = BuildIsoDisc();
+        PatchRootDirectoryEntrySize(image, ExeIsoName, (uint)IsoMaxReadableExtentBytes);
+
+        var outcome = RomAnalysisPipeline.RunFromIsoImage(image, Sha);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Fail);
+        outcome.FailedStage.Should().Be(RomAnalysisStage.BootExecutable);
+        outcome.FailureKind.Should().Be("BootExecutableUnreadable");
+        outcome.FailureReason.Should().Contain("outside the").And.NotContain("not addressable");
     }
 
     [Fact]
