@@ -13,6 +13,60 @@ public sealed class ChdReader : IDisposable
 {
     private const int CdFrameSize = ChdCdCodec.CdFrameSize; // 2448
 
+    // Every size field in a CHD comes from the file itself and is therefore
+    // attacker controlled. Sizes that describe a region of the file (the map
+    // region, a hunk's compressed data) are bounded by the real stream length,
+    // which is an exact bound; see SeekChecked. The two ceilings below cover the
+    // fields that describe *decompressed* geometry, for which the container
+    // length gives no bound at all — a few hundred bytes of header and map can
+    // legitimately expand to a whole disc — so an absolute limit is the only
+    // available one.
+
+    /// <summary>
+    /// Upper bound for the declared decompressed image size. The largest medium a
+    /// PlayStation disc image can come from is a 99-minute CD: 99 * 60 * 75 =
+    /// 445,500 raw frames of 2448 bytes, about 1.01 GiB. 2 GiB leaves ample room
+    /// for any real image while keeping the map arrays bounded.
+    /// </summary>
+    private const ulong MaxLogicalBytes = 2UL * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// Upper bound for the frames held by one hunk, which sizes every decompressed
+    /// hunk buffer. chdman writes 8 CD frames per hunk; 4096 keeps a single hunk
+    /// buffer under 10 MiB with three orders of magnitude of headroom.
+    /// </summary>
+    private const uint MaxFramesPerHunk = 4096;
+
+    /// <summary>
+    /// Upper bound for the hunk count, which sizes the map arrays. A CD hunk holds
+    /// at least one 2448-byte frame, so no valid image can declare more hunks than
+    /// <see cref="MaxLogicalBytes"/> divided by one frame.
+    /// </summary>
+    private const ulong MaxTotalHunks = MaxLogicalBytes / CdFrameSize;
+
+    /// <summary>
+    /// Slack added to the compressed-map bound for the RLE-coded Huffman tree that
+    /// precedes the per-hunk data. The tree is <c>ChdHuffmanDecoder</c>'s 16 code
+    /// lengths, each written as at most three 4-bit tokens, so 24 bytes; 64 leaves
+    /// room for bit padding without loosening the per-hunk term that matters.
+    /// </summary>
+    private const ulong MaxMapTreeBytes = 64;
+
+    /// <summary>
+    /// Independent upper bound for a single hunk's compressed data, used instead of
+    /// (not merely alongside) trusting <see cref="ChdHeader.HunkBytes"/> as the only
+    /// ceiling. <c>HunkBytes</c> itself carries no absolute limit: <see cref="ReadHeader"/>
+    /// only bounds the quotient <c>HunkBytes / UnitBytes</c> via
+    /// <see cref="MaxFramesPerHunk"/>, so a crafted image can pair a large declared
+    /// <c>UnitBytes</c> with a proportionally large <c>HunkBytes</c> and stay under that
+    /// quotient limit while <c>HunkBytes</c> itself is unbounded. Since chdman only stores
+    /// a hunk under a codec when the compressed form is smaller than the raw hunk, no
+    /// valid image's compressed length can exceed the largest raw CD hunk this reader
+    /// supports: <see cref="MaxFramesPerHunk"/> frames of <see cref="CdFrameSize"/> bytes
+    /// each, about 9.56 MiB.
+    /// </summary>
+    private const uint MaxCompressedHunkBytes = MaxFramesPerHunk * CdFrameSize;
+
     private const byte CompressionNone = 4;
     private const byte CompressionSelf = 5;
     private const byte CompressionParent = 6;
@@ -189,7 +243,26 @@ public sealed class ChdReader : IDisposable
         }
 
         var codec = _header.Compressors[entry.CompressionType];
-        var compressed = ReadBytesAt((long)entry.FileOffset, (int)entry.CompressedLength);
+
+        // CompressedLength is decoded from the map's bit stream and is attacker
+        // controlled. SeekChecked only proves those bytes exist in the file, which a
+        // large sparse or padded image satisfies, so the value still has to be bounded
+        // as a *resource* before ReadBytesAt sizes `new byte[length]` from it. chdman
+        // stores a hunk under a codec only when the compressed form is smaller than the
+        // raw hunk and writes CompressionNone otherwise, so HunkBytes cannot reject
+        // anything a valid image contains — including the uncompressed map's entries,
+        // whose CompressedLength is exactly HunkBytes. HunkBytes is itself untrusted and
+        // carries no absolute ceiling (see MaxCompressedHunkBytes), so the effective
+        // limit is whichever of the two bounds is tighter.
+        uint maxCompressedLength = Math.Min(_header.HunkBytes, MaxCompressedHunkBytes);
+        if (entry.CompressedLength > maxCompressedLength)
+        {
+            throw new InvalidDataException(
+                $"CHD hunk {hunkIndex}: compressed length {entry.CompressedLength} is above the "
+                + $"{maxCompressedLength}-byte limit for this hunk.");
+        }
+
+        var compressed = ReadBytesAt(entry.FileOffset, entry.CompressedLength);
 
         int frames = FramesPerHunk;
         if (entry.CompressedLength == 0)
@@ -216,12 +289,30 @@ public sealed class ChdReader : IDisposable
         return result;
     }
 
-    private byte[] ReadBytesAt(long offset, int length)
+    private byte[] ReadBytesAt(ulong offset, uint length)
     {
+        SeekChecked(_stream, offset, length, "hunk data");
         var buffer = new byte[length];
-        _stream.Seek(offset, SeekOrigin.Begin);
-        _stream.ReadExactly(buffer, 0, length);
+        _stream.ReadExactly(buffer);
         return buffer;
+    }
+
+    /// <summary>
+    /// Positions <paramref name="stream"/> at <paramref name="offset"/> only after proving
+    /// that <paramref name="length"/> bytes really exist there. Both values originate in the
+    /// CHD file and are untrusted, so this is the single place that bounds a file-region size
+    /// against the real image length before anything is allocated from it.
+    /// </summary>
+    private static void SeekChecked(Stream stream, ulong offset, long length, string what)
+    {
+        long streamLength = stream.Length;
+        if (offset > long.MaxValue || (long)offset > streamLength || length > streamLength - (long)offset)
+        {
+            throw new InvalidDataException(
+                $"CHD {what}: {length} byte(s) requested at offset {offset}, past the end of the {streamLength}-byte image.");
+        }
+
+        stream.Seek((long)offset, SeekOrigin.Begin);
     }
 
     internal static ChdHeader ReadHeader(Stream stream)
@@ -263,6 +354,28 @@ public sealed class ChdReader : IDisposable
             throw new InvalidDataException("CHD header declares unitBytes=0; units must have a positive size.");
         }
 
+        if (logicalBytes > MaxLogicalBytes)
+        {
+            throw new InvalidDataException(
+                $"CHD header declares logicalBytes={logicalBytes}, above the {MaxLogicalBytes}-byte limit for a PlayStation disc image.");
+        }
+
+        uint framesPerHunk = hunkBytes / unitBytes;
+        if (framesPerHunk > MaxFramesPerHunk)
+        {
+            throw new InvalidDataException(
+                $"CHD header declares {framesPerHunk} frames per hunk (hunkBytes={hunkBytes}, unitBytes={unitBytes}), above the {MaxFramesPerHunk}-frame limit.");
+        }
+
+        // Computed the same way as ChdHeader.TotalHunks, but before the header
+        // exists, so an out-of-range hunk count never reaches an allocation.
+        ulong totalHunks = logicalBytes / hunkBytes + (logicalBytes % hunkBytes == 0 ? 0UL : 1UL);
+        if (totalHunks > MaxTotalHunks)
+        {
+            throw new InvalidDataException(
+                $"CHD header declares {totalHunks} hunks (logicalBytes={logicalBytes}, hunkBytes={hunkBytes}), above the {MaxTotalHunks}-hunk limit.");
+        }
+
         var rawSha1 = headerBytes[64..84].ToArray();
         var sha1 = headerBytes[84..104].ToArray();
         var parentSha1 = headerBytes[104..124].ToArray();
@@ -291,7 +404,7 @@ public sealed class ChdReader : IDisposable
         {
             // V5 uncompressed: 4-byte BE offset per hunk
             var entries = new ChdMapEntry[hunkCount];
-            stream.Seek((long)header.MapOffset, SeekOrigin.Begin);
+            SeekChecked(stream, header.MapOffset, 4L * hunkCount, "uncompressed hunk map");
             var raw = new byte[4 * hunkCount];
             stream.ReadExactly(raw, 0, raw.Length);
             for (int i = 0; i < hunkCount; i++)
@@ -373,10 +486,8 @@ public sealed class ChdReader : IDisposable
 
     private static ChdMapEntry[] DecompressV5Map(Stream stream, ChdHeader header, int hunkCount)
     {
-        var rawMap = new byte[hunkCount * 12];
-
         // Read the 16-byte map header
-        stream.Seek((long)header.MapOffset, SeekOrigin.Begin);
+        SeekChecked(stream, header.MapOffset, 16, "compressed map header");
         var mapHeader = new byte[16];
         stream.ReadExactly(mapHeader, 0, 16);
 
@@ -387,9 +498,25 @@ public sealed class ChdReader : IDisposable
         byte selfBits = mapHeader[13];
         byte parentBits = mapHeader[14];
 
+        // mapBytes is an untrusted uint32 and SeekChecked only proves the region exists
+        // in the file, which a large sparse or padded image satisfies. Bound it as a
+        // resource first: the compressed map carries the same per-hunk fields as the
+        // 12-byte raw map entry (type, length, offset, CRC) in strictly fewer bits, so
+        // the raw map size plus the Huffman tree is an upper bound no valid image
+        // exceeds. hunkCount is already capped at MaxTotalHunks by ReadHeader, so the
+        // product cannot overflow the ulong.
+        ulong maxMapBytes = (ulong)hunkCount * ChdHeader.MapEntrySize + MaxMapTreeBytes;
+        if (mapBytes > maxMapBytes)
+        {
+            throw new InvalidDataException(
+                $"CHD compressed map bytes: {mapBytes} declared for {hunkCount} hunks, "
+                + $"above the {maxMapBytes}-byte limit for a map of that size.");
+        }
+
         // Read compressed map data
+        SeekChecked(stream, header.MapOffset + 16, mapBytes, "compressed map data");
         var compressed = new byte[mapBytes];
-        stream.ReadExactly(compressed, 0, compressed.Length);
+        stream.ReadExactly(compressed);
 
         var bitbuf = new ChdBitstream(compressed);
 
@@ -492,12 +619,6 @@ public sealed class ChdReader : IDisposable
                     break;
             }
 
-            int e = (int)hunkNum * 12;
-            rawMap[e] = type;
-            PutUInt24BE(rawMap, e + 1, length);
-            PutUInt48BE(rawMap, e + 4, offset);
-            PutUInt16BE(rawMap, e + 10, crc);
-
             entries[hunkNum] = new ChdMapEntry
             {
                 CompressionType = type,
@@ -507,7 +628,9 @@ public sealed class ChdReader : IDisposable
             };
         }
 
-        // Optional CRC verification of the expanded raw map (MAME does this; low priority).
+        // MAME additionally verifies mapCrc over the 12-byte-per-hunk raw map image.
+        // This reader consumes the entries directly and never materializes that image,
+        // so the CRC is parsed but not checked (low priority).
         return entries;
     }
 
@@ -522,25 +645,4 @@ public sealed class ChdReader : IDisposable
     }
 
     private static ulong MulU32x32(uint a, uint b) => (ulong)a * b;
-
-    private static void PutUInt24BE(byte[] data, int offset, uint value)
-    {
-        data[offset] = (byte)(value >> 16);
-        data[offset + 1] = (byte)(value >> 8);
-        data[offset + 2] = (byte)value;
-    }
-
-    private static void PutUInt48BE(byte[] data, int offset, ulong value)
-    {
-        for (int i = 0; i < 6; i++)
-        {
-            data[offset + i] = (byte)(value >> (8 * (5 - i)));
-        }
-    }
-
-    private static void PutUInt16BE(byte[] data, int offset, ushort value)
-    {
-        data[offset] = (byte)(value >> 8);
-        data[offset + 1] = (byte)value;
-    }
 }

@@ -31,7 +31,18 @@ public sealed record ChdHeader
     public bool HasParent => ParentSha1.Any(b => b != 0);
 
     public int FramesPerHunk => UnitBytes > 0 ? (int)(HunkBytes / UnitBytes) : 0;
-    public int TotalHunks => HunkBytes > 0 ? (int)((LogicalBytes + HunkBytes - 1) / HunkBytes) : 0;
+
+    /// <summary>
+    /// Hunks needed to cover <see cref="LogicalBytes"/>. The division is rounded up
+    /// without the <c>LogicalBytes + HunkBytes - 1</c> form, which wraps silently for a
+    /// hostile <see cref="LogicalBytes"/>, and the narrowing to <see cref="int"/> is
+    /// checked, so a header that does not describe an addressable hunk count raises
+    /// <see cref="OverflowException"/> instead of yielding a wrong, negative, or
+    /// truncated count that a caller would size an allocation from.
+    /// </summary>
+    public int TotalHunks => HunkBytes > 0
+        ? checked((int)(LogicalBytes / HunkBytes + (LogicalBytes % HunkBytes == 0 ? 0UL : 1UL)))
+        : 0;
 
     public string CompressionName(int index) => Compressors[index] switch
     {
