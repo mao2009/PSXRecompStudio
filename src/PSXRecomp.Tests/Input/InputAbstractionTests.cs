@@ -235,6 +235,7 @@ public class InputAbstractionTests
     [Fact]
     public void InvalidPhysicalInputId_IsRejected()
     {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PhysicalInputId((PhysicalInputKind)99, "Key.W"));
         Assert.Throws<ArgumentException>(() => new PhysicalInputId(PhysicalInputKind.Keyboard, null!));
         Assert.Throws<ArgumentException>(() => new PhysicalInputId(PhysicalInputKind.Keyboard, ""));
         Assert.Throws<ArgumentException>(() => new PhysicalInputId(PhysicalInputKind.Keyboard, "   "));
