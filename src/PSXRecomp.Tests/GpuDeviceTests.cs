@@ -234,14 +234,17 @@ public class GpuDeviceTests
         gpu.LastResult.Should().Be(GpuCommandResult.Unsupported);
         gpu.LastResultOpcode.Should().Be(0x48);
         gpu.IsBusy.Should().BeTrue();
+        var statBeforePayload = gpu.ReadGpustat();
 
-        // Payload words that would decouple as GP0 commands (IRQ, env, fill) must be swallowed.
+        // Payload words that would decode as GP0 commands (IRQ, TexturePage, fill) must be swallowed.
         gpu.WriteGP0(0x1F000000); // would raise IRQ1
-        gpu.WriteGP0(0xE1000000 | 0x1234); // would set drawing mode
+        gpu.WriteGP0(0xE100FFFF); // would set every GP0(E1h) TexturePage field
         gpu.WriteGP0(0x020000FF); // fill command, would touch VRAM
         gpu.IsBusy.Should().BeTrue();
         ((gpu.ReadGpustat() >> 24) & 1).Should().Be(0u);
         gpu.Vram[0, 0].Should().Be(0);
+        // GPUSTAT bits 0-10/15 mirror TexturePage, 11-12 MaskSetting: no register moved.
+        gpu.ReadGpustat().Should().Be(statBeforePayload);
 
         gpu.WriteGP0(0x55555555); // terminator
         gpu.IsBusy.Should().BeFalse();

@@ -30,35 +30,49 @@ public class GpuTransferTests
     }
 
     [Theory]
+    [InlineData(0xA0)]
     [InlineData(0xA1)]
+    [InlineData(0xAF)]
     [InlineData(0xBF)]
     public void CpuToVram_FamilyMirror_IsRoutedToCpuToVram(byte opcode)
     {
         using var gpu = new GpuDevice();
-        var addr = ((uint)opcode << 24) | 0x0000_00A1;
+        var addr = ((uint)opcode << 24) | 0x0000_00A1; // low 24 bits are ignored by GP0(A0h)
+        var statBefore = gpu.ReadGpustat();
 
         gpu.WriteGP0(addr);
         gpu.WriteGP0(0x00000000);
         gpu.WriteGP0(0x00010002);
-        gpu.WriteGP0(0xBBBBAAAA);
+        gpu.IsBusy.Should().BeTrue();
+        // A GP0(E1h)-shaped payload word must land in VRAM, not in the register file.
+        gpu.WriteGP0(0xE100FFFF);
 
-        gpu.Vram[0, 0].Should().Be(0xAAAA);
-        gpu.Vram[1, 0].Should().Be(0xBBBB);
+        gpu.Vram[0, 0].Should().Be(0xFFFF);
+        gpu.Vram[1, 0].Should().Be(0xE100);
+        gpu.IsBusy.Should().BeFalse();
+        gpu.LastResult.Should().Be(GpuCommandResult.Executed);
+        gpu.LastResultOpcode.Should().Be(opcode);
+        gpu.ReadGpustat().Should().Be(statBefore); // TexturePage etc. untouched
     }
 
-    [Fact]
-    public void VramToCpu_FamilyMirror_IsRoutedToVramToCpu()
+    [Theory]
+    [InlineData(0xC0)]
+    [InlineData(0xC1)]
+    [InlineData(0xDF)]
+    public void VramToCpu_FamilyMirror_IsRoutedToVramToCpu(byte opcode)
     {
         using var gpu = new GpuDevice();
         gpu.Vram[0, 0] = 0x1111;
         gpu.Vram[1, 0] = 0x2222;
 
-        gpu.WriteGP0(0xC1_000000);
+        gpu.WriteGP0((uint)opcode << 24);
         gpu.WriteGP0(0x00000000);
         gpu.WriteGP0(0x00010002);
 
         gpu.IsBusy.Should().BeFalse();
         ((gpu.ReadGpustat() >> 27) & 1).Should().Be(1u);
+        gpu.LastResult.Should().Be(GpuCommandResult.Executed);
+        gpu.LastResultOpcode.Should().Be(opcode);
         gpu.ReadGpuread().Should().Be(0x22221111);
     }
 
