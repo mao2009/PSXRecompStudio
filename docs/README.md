@@ -119,7 +119,9 @@ Constraints:
 - AI Analysis — planned
 - Harness — planned
 - Testing — planned
-- [Runtime](runtime/architecture.md)
+- Runtime
+  - [Runtime Architecture](runtime/architecture.md)
+  - [Memory Card Format and Storage Policy](runtime/memory-card.md)
 
 ## Translation relationship checks
 

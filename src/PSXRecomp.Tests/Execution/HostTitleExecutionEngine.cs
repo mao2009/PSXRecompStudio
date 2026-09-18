@@ -13,7 +13,10 @@ namespace PSXRecomp.Tests.Execution;
 /// An <see cref="IRecompiledExecutionEngine"/> that compiles the guest program
 /// once and runs each segment as a separate generated-host process, keeping guest
 /// RAM continuity between segments through the driver's full-RAM dump/preload
-/// (#366). The host-transfer hook relays BIOS decisions to the shared
+/// (#366). The hardware-register window — the guest-visible DMA/timer/interrupt
+/// MMIO state the interpreter keeps in its persistent core's <c>hw_regs</c> — is
+/// carried across the same process forks via the driver's HWREG dump/preload
+/// (Issue #387). The host-transfer hook relays BIOS decisions to the shared
 /// <c>BiosVectorDispatch</c> exactly like the differential harness (Issue #362).
 /// </summary>
 /// <remarks>
@@ -31,11 +34,24 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
     private const int RunTimeoutMs = 30000;
     private const string RamLinePrefix = "RAMHEX ";
 
+    /// <summary>
+    /// The software-visible hardware-register window, mirroring the native core's
+    /// 8 KiB <c>hw_regs</c> buffer at PSX_HW_REG_BASE (Issue #387). These two are
+    /// the driver's <c>PSX_TEST_HW_BASE</c>/<c>PSX_TEST_HW_SIZE</c>, which in turn
+    /// mirror the native core's <c>PSX_HW_REG_BASE</c>/<c>PSX_HW_REG_SIZE</c>:
+    /// deliberately not <c>Ps1MemoryMap.HwRegBase</c>/<c>HwRegEnd</c>, whose end is
+    /// the narrower 4 KiB I/O-port span and would route half this window nowhere.
+    /// </summary>
+    private const uint HwBase = 0x1F801000u;
+    private const int HwSize = 8 * 1024;
+    private const string HwLinePrefix = "HWREG ";
+
     private readonly RecompilerHostExecutor.CompiledBinary _binary;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> _biosRuntimeFactory;
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly string _segmentInputPath;
     private readonly byte[] _ram;
+    private readonly byte[] _hw;
 
     public HostTitleExecutionEngine(
         RecompilerDifferentialFixture fixture,
@@ -48,6 +64,7 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
         _segmentInputPath = Path.Combine(_binary.DirectoryPath, "segment-input.txt");
         _blockEntryPcs = LowerProgram(fixture).Blocks.Select(static block => block.EntryPc).ToHashSet();
         _ram = new byte[RamSize];
+        _hw = new byte[HwSize];
         _biosRuntimeFactory = biosRuntimeFactory;
     }
 
@@ -57,12 +74,22 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
     {
         ArgumentNullException.ThrowIfNull(request);
         Array.Clear(_ram);
+        Array.Clear(_hw);
         foreach (var item in request.InitialMemory)
         {
+            // Route each seeded byte the same way the interpreter's core does
+            // (PSXMemory::Write8): RAM to RAM, the hardware-register window to
+            // hw_regs, everything else dropped. Dropping the window here left the
+            // first segment's HWREG preload all zeros, so a request that seeds
+            // MMIO state diverged from the interpreter (Issue #387).
             var physical = RecompilerGuestMemory.Translate(item.Address);
             if (physical < RamSize)
             {
                 _ram[physical] = item.Value;
+            }
+            else if (physical >= HwBase && physical < HwBase + (uint)HwSize)
+            {
+                _hw[physical - HwBase] = item.Value;
             }
         }
     }
@@ -107,16 +134,29 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
                 message);
         }
 
-        // Guest RAM continuity is part of this segment's result: commit the
-        // dump only after the whole thing parses, or the next segment would
-        // silently inherit stale bytes.
-        if (TryApplyRamDump(stdout) is string ramError)
+        // Guest RAM and hardware-register continuity are part of this segment's
+        // result: stage both dumps and only commit them once the whole output
+        // parses, or the next segment would silently inherit stale bytes.
+        var ramStaged = new byte[RamSize];
+        if (TryParseHexDump(stdout, RamLinePrefix, RamBlockSize, ramStaged) is string ramError)
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.MalformedResult,
                 "MALFORMED_RAM_DUMP",
                 ramError);
         }
+
+        var hwStaged = new byte[HwSize];
+        if (TryParseHexDump(stdout, HwLinePrefix, RamBlockSize, hwStaged) is string hwError)
+        {
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.MalformedResult,
+                "MALFORMED_HW_DUMP",
+                hwError);
+        }
+
+        Array.Copy(ramStaged, _ram, RamSize);
+        Array.Copy(hwStaged, _hw, HwSize);
 
         return new RecompilerExecutionResult(
             RecompilerExecutionStatus.Completed, snapshot, session.DiagnosticCode, session.DiagnosticMessage);
@@ -172,47 +212,58 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
             sb.Append(hex.ToLowerInvariant()).Append('\n');
         }
 
+        // And the hardware-register window, so DMA/timer/interrupt state written
+        // by an earlier segment survives the fork into this one (Issue #387).
+        sb.Append(HwSize / RamBlockSize).Append('\n');
+        for (var offset = 0; offset < HwSize; offset += RamBlockSize)
+        {
+            sb.Append(offset).Append(' ');
+            var hex = Convert.ToHexString(_hw, offset, RamBlockSize);
+            sb.Append(hex.ToLowerInvariant()).Append('\n');
+        }
+
         File.WriteAllText(_segmentInputPath, sb.ToString());
     }
 
     /// <summary>
-    /// Parses the full RAMHEX dump into a staging buffer and copies it into
-    /// <c>_ram</c> only when the complete dump is present and valid.
+    /// Parses one full <c>&lt;prefix&gt; &lt;offset&gt; &lt;hex&gt;</c> block dump
+    /// (RAMHEX for guest RAM, HWREG for the hardware-register window) into
+    /// <paramref name="staged"/>. The generated driver always emits exactly one
+    /// block per offset, sequentially from 0; anything short of that — a truncated
+    /// dump, a bad offset, a non-hex payload — is a malformed segment result and
+    /// must not leave stale state for the next segment. The caller commits
+    /// <paramref name="staged"/> only after every dump parses.
     /// </summary>
-    /// <remarks>The generated driver always emits exactly one 512-byte block per
-    /// offset, sequentially from 0. Anything short of that — a truncated dump, a
-    /// bad offset, a non-hex payload — is a malformed segment result and must
-    /// not leave stale RAM for the next segment.</remarks>
     /// <returns>An error message when the dump is not complete and valid, or
-    /// null when it was fully applied.</returns>
-    private string? TryApplyRamDump(string stdout)
+    /// null when it was fully parsed.</returns>
+    private static string? TryParseHexDump(string stdout, string linePrefix, int blockSize, byte[] staged)
     {
-        var staged = new byte[RamSize];
-        uint nextOffset = 0;
         var blocks = 0;
+        uint nextOffset = 0;
+        var expected = staged.Length / blockSize;
 
         foreach (var line in stdout.Split('\n'))
         {
-            if (!line.StartsWith(RamLinePrefix, StringComparison.Ordinal))
+            if (!line.StartsWith(linePrefix, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            var space = line.IndexOf(' ', RamLinePrefix.Length);
+            var space = line.IndexOf(' ', linePrefix.Length);
             if (space < 0)
             {
-                return "RAMHEX line without an offset.";
+                return $"{linePrefix}line without an offset.";
             }
 
             if (!uint.TryParse(
-                    line.AsSpan(RamLinePrefix.Length, space - RamLinePrefix.Length),
+                    line.AsSpan(linePrefix.Length, space - linePrefix.Length),
                     NumberStyles.Integer,
                     CultureInfo.InvariantCulture,
                     out var offset)
-                || offset >= RamSize
+                || offset >= staged.Length
                 || offset != nextOffset)
             {
-                return $"Expected RAMHEX block at offset 0x{nextOffset:X}, found '{line}'.";
+                return $"Expected {linePrefix}block at offset 0x{nextOffset:X}, found '{line}'.";
             }
 
             var hex = line.AsSpan(space + 1);
@@ -221,32 +272,30 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
                 hex = hex[..^1];
             }
 
-            if (hex.Length != RamBlockSize * 2)
+            if (hex.Length != blockSize * 2)
             {
-                return $"RAMHEX block at offset 0x{offset:X} has {hex.Length} hex chars, expected {RamBlockSize * 2}.";
+                return $"{linePrefix}block at offset 0x{offset:X} has {hex.Length} hex chars, expected {blockSize * 2}.";
             }
 
-            for (var i = 0; i < hex.Length / 2; i++)
+            for (var i = 0; i < blockSize; i++)
             {
                 if (!byte.TryParse(hex.Slice(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var value))
                 {
-                    return $"RAMHEX block at offset 0x{offset:X} has a non-hex payload.";
+                    return $"{linePrefix}block at offset 0x{offset:X} has a non-hex payload.";
                 }
 
-                staged[offset + (uint)i] = value;
+                staged[offset + i] = value;
             }
 
             blocks++;
-            nextOffset += RamBlockSize;
+            nextOffset += (uint)blockSize;
         }
 
-        var expected = RamSize / RamBlockSize;
         if (blocks != expected)
         {
-            return $"RAMHEX dump incomplete: {blocks} of {expected} blocks received.";
+            return $"{linePrefix}dump incomplete: {blocks} of {expected} blocks received.";
         }
 
-        Array.Copy(staged, _ram, RamSize);
         return null;
     }
 

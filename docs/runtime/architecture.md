@@ -66,6 +66,12 @@ public interface IHardwareComponent
 | GTE | IGte (COP2) | Coprocessor | None |
 | Cache Control | IMemoryBus | 0xFFFE0130 | None |
 
+The Controller/MemCard row is the SIO byte protocol, which remains unimplemented.
+Memory-card **storage** — the 128 KiB card file, its format, and the slot
+configuration that selects it — is a separate, implemented subsystem documented
+in [Memory Card Format and Storage Policy](memory-card.md). It supplies the card
+content this component would carry; it is not hardware emulation.
+
 ## Memory / Bus Model
 
 `IMemoryBus` routes physical addresses to the appropriate component.
@@ -144,6 +150,19 @@ Controlled through the two GP0/GP1 registers.
 - **GPUSTAT (0x1F801814)**: GPU status register (read-only).
 - **VBlank**: raises IRQ0 on vertical blank.
 - **GPU IRQ1**: requested by GP0(1Fh), acknowledged by GP1(02h).
+
+### Runtime implementation (Issue #440)
+
+The register/VRAM contract is implemented as a pure managed Domain model in
+`PSXRecomp.Core.Runtime.Gpu` (`GpuDevice`, `GpuVram`, `GpuState`,
+`Gp0CommandDecoder`) and reaches the live `0x1F801810-0x1F80181C` ports through
+`GpuMmioAdapter` + `MemoryBus`, following the Timer/Interrupt adapter pattern.
+GPUSTAT is derived from named state (see ADR-022), VRAM is 1024x512x16b, and
+unimplemented GP0 opcodes are reported explicitly rather than silently ignored.
+
+Not yet implemented: primitive rasterization and display output (#441),
+VRAM→VRAM blit, VBlank/IRQ0 scheduling (#442), and DMA channel 2 (GPU)
+consumption of the DMA controller.
 
 ## SPU Model
 

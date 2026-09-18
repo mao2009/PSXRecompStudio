@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using PSXRecomp.Core.Analysis.Contracts;
@@ -99,6 +100,33 @@ public class DeterministicArtifactTests
             first.Files[index].FileName.Should().Be(second.Files[index].FileName);
             first.Files[index].ToUtf8Bytes().Should().Equal(second.Files[index].ToUtf8Bytes(),
                 $"'{first.Files[index].FileName}' must be byte-for-byte identical across runs");
+        }
+    }
+
+    [Fact]
+    public void Artifacts_AreByteForByteIdenticalUnderEveryCulture()
+    {
+        var baseline = ConcatenatedContent(BuildArtifacts(FixtureA, "disc-a"));
+
+        // de-DE (comma decimal separator) and tr-TR (dotted-i casing) are the two culture
+        // families most likely to leak through a serializer that is not culture-invariant.
+        AssertIdenticalUnderCulture(CultureInfo.GetCultureInfo("de-DE"), baseline);
+        AssertIdenticalUnderCulture(CultureInfo.GetCultureInfo("tr-TR"), baseline);
+
+        void AssertIdenticalUnderCulture(CultureInfo culture, string expected)
+        {
+            var previous = CultureInfo.CurrentCulture;
+            try
+            {
+                CultureInfo.CurrentCulture = culture;
+                var observed = ConcatenatedContent(BuildArtifacts(FixtureA, "disc-a"));
+                observed.Should().Be(expected,
+                    $"artifacts must be byte-for-byte identical under culture '{culture.Name}'");
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = previous;
+            }
         }
     }
 

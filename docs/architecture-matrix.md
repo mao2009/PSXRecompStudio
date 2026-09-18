@@ -21,7 +21,7 @@ Two documents together form the managed architecture SSOT, and they own differen
 |-------|----------------|----------------|----------|
 | **Domain** | Pure business logic, PSX concept model, deterministic computation, Domain-owned ports, and the C ABI/P/Invoke boundary | `PSXRecomp.Core` | `PSXRecomp.Core` |
 | **Application** | Avalonia UI, use-case orchestration, user interface, presentation | `PSXRecompStudio` | `PSXRecompStudio` |
-| **Infrastructure** | Concrete **managed host adapters**: filesystem/disc acquisition, process/toolchain execution, network integrations, logging/output sinks, and other host side effects | `PSXRecomp.Infrastructure` | *(planned; activation condition below)* |
+| **Infrastructure** | Concrete **managed host adapters**: filesystem/disc acquisition, process/toolchain execution, network integrations, logging/output sinks, and other host side effects | `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` |
 | **Test** | Unit/integration tests and test-only host tooling | `PSXRecomp.Tests`, `PSXRecompStudio.Tests` | test projects |
 | **Generated** | Auto-generated code | `PSXRecomp.Generated` | *(planned)* |
 
@@ -139,7 +139,7 @@ An `[Analyzer]` attribute and an "Analyzer" layer existed while `PSXRecomp.Analy
 | `PSXRecompStudio` | `PSXRecompStudio` | Application (UI, ViewModels, orchestration) |
 | `PSXRecomp.Core` | `PSXRecomp.Core` | Domain logic + ports + C ABI interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | *(C++; no managed namespace)* | Native emulation core; outside managed AARC layers |
-| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Managed host adapters; create on first production adapter need |
+| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Managed host adapters (activated by Issue #458: `GeneratedHostBuildService`; Issue #42: `FileProjectMetadataStore`) |
 | `PSXRecomp.Tests` / `PSXRecompStudio.Tests` | test roots | Test infrastructure |
 
 ## Mechanical Enforcement
@@ -189,7 +189,7 @@ Enforcement notes:
 1. **Repository Structure** ✅
    - `PSXRecompStudio` → `PSXRecomp.Core` is the normal managed production dependency.
    - `PSXRecomp.Core` → `PSXRecomp.Native` is only the documented P/Invoke/C ABI boundary.
-   - no `PSXRecomp.Infrastructure` production project exists yet; this is intentional until the activation condition is met.
+   - `PSXRecomp.Infrastructure` was activated by Issue #458 with its first concrete adapter, `GeneratedHostBuildService` (implements the Domain-owned `IGeneratedHostBuildService` port). Issue #42 added a second adapter, `FileProjectMetadataStore` (implements the Domain-owned `IProjectMetadataStore` port).
 
 2. **Dependency Matrix** ENFORCED — `AARC002` mechanically forbids Domain/Application from depending on concrete Infrastructure and forbids production → Test edges.
 
@@ -202,8 +202,7 @@ Enforcement notes:
 ## Issues Identified
 
 1. **Missing Generated Code Project** — `PSXRecomp.Generated` is reserved but not yet defined.
-2. **Managed Infrastructure not yet activated** — this is no longer an architecture ambiguity. Create `PSXRecomp.Infrastructure` when a production host adapter is actually required; until then no empty project is needed.
-3. **Production generated-host backend** — test-only compiler/process integration remains tracked separately (for example #380); when promoted to production its process/toolchain adapter belongs in managed Infrastructure.
+2. **Production generated-host execution engine** — Issue #458 activated `PSXRecomp.Infrastructure` with the compile/link build substrate (`GeneratedHostBuildService`), but a production `IRecompiledExecutionEngine` backed by that substrate, and its wiring to the Studio, remain future work (tracked from #380/ADR-015's deferred Option B).
 
 ## Recommendations
 
@@ -219,4 +218,4 @@ Enforcement notes:
 - Managed host-I/O boundary: ✅ DEFINED — Domain ports inward, managed Infrastructure adapters outward.
 - Top-level architecture: [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 - Mechanical enforcement: ✅ ACTIVE — `loach.ArchitectureAnalyzer` (`AARC002`–`AARC007`) via `src/architecture.contract.json` + `.editorconfig`.
-- Reserved but not yet activated: `PSXRecomp.Generated`, `PSXRecomp.Infrastructure`.
+- `PSXRecomp.Infrastructure` activated (Issue #458). Reserved but not yet activated: `PSXRecomp.Generated`.

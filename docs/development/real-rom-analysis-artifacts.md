@@ -4,9 +4,9 @@
 
 **Authority:** SSOT
 
-**Related Issues:** #212, #215, #11, #279, #410
+**Related Issues:** #212, #215, #11, #205, #206, #209, #211, #225, #279, #410
 
-**Related Components:** `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/`, `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
+**Related Components:** `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/`, `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs`, `src/PSXRecomp.Core/Recompiler/RealRomRecompilerBridge.cs`, `src/PSXRecomp.Tests/RealRomAnalysis/`, `docs/development/artifact-policy.md`
 
 ## Purpose
 
@@ -84,11 +84,19 @@ reports/real-rom/<fixture>/
   instructions.json    detailed instruction artifact
   cfg.json             detailed control-flow artifact
   coverage.json        recompilation coverage (optional; present when measured)
+  function-provenance.json  selected-function provenance (optional; standalone)
 ```
 
-`coverage.json` is the only optional document: it exists when a coverage measurement was
-supplied to the artifact builder, and is absent otherwise. Every other document is always
-written.
+`coverage.json` is the only optional document in the four-document set: it exists when a
+coverage measurement was supplied to the artifact builder, and is absent otherwise. Every
+other document in that set is always written.
+
+`function-provenance.json` is **optional and standalone**. It is *not* produced by
+`DeterministicArtifactBuilder.Build`, is never listed in `manifest.json`'s `documents[]`
+set, and adding one implies no manifest schema bump. It is written by whoever selected a
+guest range for downstream work (for example the real-ROM recompiler bridge of Issue #225)
+so that the selection can be reproduced from an artifact rather than from a rebuilt
+analysis. A reader of the four-document set is unaffected by its presence or absence.
 
 `<fixture>` is a **human-facing alias only**, derived mechanically from the disc image's
 file name. The transform is pure and title-agnostic:
@@ -119,12 +127,16 @@ Each document carries its own `schemaVersion` and an `artifactKind` discriminato
 versions are constants in `AnalysisArtifactSchema`: `manifest.json` is at version `2`
 (version 2 admitted `coverage.json` into the indexable set), `report.json` is at version
 `2` (version 2 added the `biosCalls` section), and `instructions.json`, `cfg.json` and
-`coverage.json` are at version `1`.
+`coverage.json` are at version `1`. The optional `function-provenance.json` is also at
+version `1`; it versions independently of every other document because it is not part of
+the manifest's indexable set.
 
 **Any change to the shape or meaning of a field requires bumping that document's
 version.** Consumers diff artifacts across analyzer revisions, and must be able to tell
-a schema change from an analysis change. Adding a document to the set is a manifest
-schema change.
+a schema change from an analysis change. Adding a document to the manifest's set is a
+manifest schema change; adding a *standalone* optional document (such as
+`function-provenance.json`) is not, because no existing consumer enumerates it. Removing
+or renaming a field is always a version bump for the document that carries it.
 
 ## Documents
 
@@ -146,8 +158,10 @@ appears there only when it was produced, so the entry count is 3 or 4.
 
 ### The `fixture` identity block
 
-Embedded verbatim in all four documents, so each file is independently attributable
-without reading its siblings.
+Embedded verbatim in every document (`manifest.json`, `report.json`,
+`instructions.json`, `cfg.json`, any `coverage.json`, and any
+`function-provenance.json`), so each file is independently attributable without reading
+its siblings.
 
 `fixtureId`, `discImageFormat`, `discImageSha256`, `discImageSizeBytes`,
 `executableFileName`, `executableSerial`, `executableSizeBytes`, `executableSha256`.
@@ -307,6 +321,70 @@ later is a `coverage.json` schema bump.
 `differential` is populated only by a run that actually executed a differential. An empty
 section means *nothing was proven* — never *nothing failed*.
 
+### `function-provenance.json` (Issue #215)
+
+Identifies **which guest range of which executable** a downstream consumer selected, so
+that the selection is reproducible from metadata alone. It answers *"what exactly was
+handed to the next stage?"* — not *"what did the analyzer conclude?"* (that is
+`report.json`) and not *"did the selected code run correctly?"* (that is a differential
+run).
+
+The document carries **no raw instruction words and no executable bytes**. A range is
+identified by guest addresses plus a deterministic SHA-256 over its basic blocks, and
+the executable by `fixture.executableSha256`. This is what makes it safe to attach to an
+issue.
+
+- `schemaVersion`, `artifactKind` (`psxrecomp.real-rom-analysis.function-provenance`)
+- `fixture` — the shared identity block (above)
+- `startAddress`, `endAddress` — first and last selected instruction, canonical
+  `0xXXXXXXXX`
+- `instructionCount` — decoded instructions across the selected range's blocks
+- `selectionRule` — how the range was chosen, e.g. `entry-point-reachability` or
+  `self-contained-candidate-window`; the producer names the rule, this schema only records it
+- `blockOrdering` — `start-address-ascending,end-address-ascending`, identical to
+  `cfg.json`'s contract, so a reader that has already consumed `cfg.json` applies the
+  same rule
+- `basicBlocks[]` — `startAddress`, `endAddress` (inclusive), `instructionCount`
+- `blockIdentitySha256` — lowercase hex SHA-256 over the canonical JSON of
+  `basicBlocks[]` **alone**; identifies the range's CFG subset and never depends on the
+  document that contains it
+- `subsetOrdering`, `requiredInstructionSubset[]` — distinct opcode names the range
+  requires (`lui`, `addiu`, `beq`, `jal`, `jr`, …), name-ordinal ascending
+- `flagsOrdering`, `unresolvedFlags[]` — stable, explicitly named limitations that were
+  *not* resolved for this range (for example `indirect-control-flow`, `bios-call`,
+  `decode-failure`), name-ordinal ascending
+
+`FunctionProvenanceBuilder.Build` is a pure projection: it does not discover functions
+or select ranges, it sorts blocks by start then end address, de-duplicates and sorts the
+subset and flag lists, and validates the boundary conditions (at least one block, an end
+address not before the start, a non-empty selection rule). Determinism therefore rests on
+the same three rules as the rest of the format, and `SelectedFunctionProvenanceTests`
+pins them: required fields and ordering, byte-for-byte repeatability, independence from
+block insertion order, range and fixture distinction, culture invariance, and the absence
+of any raw instruction data.
+
+`unresolvedFlags` is descriptive, not a coverage claim. An empty array means the producer
+reported no unresolved analysis flags for this selection; it never asserts that a category
+was validated when it was not analyzed at all. The producer decides which flags exist.
+
+### Relationship to the recompiler-selection issues
+
+`function-provenance.json` is the persisted form of the smaller, in-memory
+`RealRomFunctionProvenance` produced by the real-ROM recompiler bridge (Issue #225). The
+two are intentionally not the same type:
+
+- **#205 / #206** established the differential execution comparison. This document
+  records what was selected, not whether it matched.
+- **#209** established the synthetic vertical slice that proved the pipeline end to end.
+  `function-provenance.json` uses the same fixture identity and canonical JSON as the
+  rest of the format, so a synthetic selection and a real one serialize identically.
+- **#211** tracks real-ROM hardening and end-to-end execution. Provenance makes the
+  selected window of a hardened run auditable after the fact.
+- **#225** selects candidate functions and carries `RealRomFunctionProvenance` internally.
+  That value is deliberately minimal and unversioned; this document is the versioned,
+  documented, attachable projection of it. When a selected range needs to survive outside
+  the process, it is rendered here through `FunctionProvenanceBuilder`.
+
 ## Comparing artifacts
 
 - **Same disc, two runs** — expect an empty diff. A non-empty diff is an analyzer
@@ -337,6 +415,7 @@ on every build. The real-ROM tests confirm the same guarantees hold on real data
 | Artifact | Shareable |
 |---|---|
 | `manifest.json`, `report.json`, `coverage.json` | Yes — metadata and statistics only |
+| `function-provenance.json` | Yes — guest addresses, hashes, opcode names and selection metadata only; no instruction words and no executable bytes |
 | `instructions.json`, `cfg.json` | Yes in principle (disassembly metadata, no game data blobs); prefer excerpts in issues and PRs given their size |
 | `logs/**` | Local only — may contain local filesystem paths |
 | `rom/**` | Never. Copyrighted game data |

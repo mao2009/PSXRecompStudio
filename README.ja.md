@@ -26,6 +26,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 - title-agnostic な bounded full-title 実行ループ [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs) が、Domain 層の production interpreter engine によって駆動され、Studio UI から到達可能（[ADR-015](docs/adr/015-production-execution-engine-ownership.md)）。Studio は分類済み実行結果へ 2 つの独立したアクションで到達する:`RunDiagnosticTitleCommand`（組み込み診断プログラム）と、Issue #409 による `RunRealTitleCommand`（real-ROM 製品フロー。読み込んだ disc image を解析し、解析済み PS-X EXE（EXE ヘッダ由来の entry PC・SP・GP・text segment）を `RomAnalysisOutcome.Executable` から保持し、その同一の executable を `TitleExecutionService.Run(PsxExe, ...)` → `ExecutionOrchestrator` → `InterpreterTitleExecutionEngine` へ渡す。`RealRomProductionFlowTests` で end-to-end 検証済み）。生成 C（recompiled）engine は現時点でも test 専用のまま。
 - interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
 - レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。ただしどの実行エンジンにも結線されていない。
+- 標準 raw 128 KiB PlayStation メモリーカードイメージを変換なしで読み書きし、他エミュレータとカードを共有可能。Slot 1 / Slot 2 の設定、アトミックな保存、外部変更の検出に対応: [`src/PSXRecomp.Core/MemoryCard/`](src/PSXRecomp.Core/MemoryCard/)、[`FileMemoryCardStorage.cs`](src/PSXRecompStudio/Services/FileMemoryCardStorage.cs)、[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)（#22）。メモリーカードの SIO/IRQ7 プロトコルおよびカード UI は未実装。
 - `loach.ArchitectureAnalyzer` が [`architecture.contract.json`](src/architecture.contract.json) に基づきアーキテクチャレイヤーを機械的に強制。
 - disc 発見 → 解析 → Recompiler slice → orchestrated execution を、ユーザーが合法的に用意した fixture に対して一気通貫で実行し、段階ごとに PASS/FAIL/SKIP を報告する Persona E2E gate: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1)、状況は [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md) で追跡。実際のタイトル画面への次なる generic runtime blocker は広範な BIOS HLE coverage で、必要な BIOS call がサポートされた後も GPU/SPU/CD-ROM producer が必要です。
 
@@ -109,6 +110,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — 実 PS-X EXE のロードと interpreter 実行をサポート（#409）。広範な BIOS HLE ではない |
 | Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — 単体では実装・テスト済みだが、どの実行エンジンにも未結線 |
 | Hardware — GPU / SPU / CD-ROM / MDEC / GTE | 予定 — インターフェース定義のみ |
+| メモリーカード（標準 raw 128 KiB イメージ、Slot 1/2 設定、安全な保存） | 部分実装 — ストレージとフォーマットは実装済み（[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)）。SIO/IRQ7 プロトコルとカード UI は未実装 |
 | フルタイトルの静的再コンパイル | 未実装 |
 | アーキテクチャ強制（Roslyn Analyzer、Artifact Contamination Gate） | 実装済み・CI で強制 |
 | Avalonia UI アプリケーションシェル | 実装済み（最小構成。診断実行アクションが1つ。機能 UI は未実装） |

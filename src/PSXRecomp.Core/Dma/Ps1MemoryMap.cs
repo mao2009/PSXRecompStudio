@@ -36,6 +36,10 @@ public static class Ps1MemoryMap
     public const uint TimerModeOffset = 0x04;
     public const uint TimerTargetOffset = 0x08;
 
+    public const uint GpuPort = 0x1F801810;      // GP0 (write) / GPUREAD (read)
+    public const uint GpuStatusPort = 0x1F801814; // GP1 (write) / GPUSTAT (read)
+    public const uint GpuPortEnd = GpuPort + 0x10; // 0x1F801818/0x1F80181C mirror 0x1F801810/0x1F801814
+
     public static uint GetTimerBase(int timer) =>
         TimerBase + (uint)(timer * (int)TimerStride);
 
@@ -77,6 +81,16 @@ public static class Ps1MemoryMap
 
     public static bool IsInterruptControllerRegister(uint address) =>
         address == IStat || address == IMask;
+
+    public static bool IsGpuRegister(uint address) =>
+        address >= GpuPort && address < GpuPortEnd;
+
+    public static GpuRegisterType GetGpuRegisterType(uint address)
+    {
+        if (!IsGpuRegister(address))
+            return GpuRegisterType.None;
+        return ((address - GpuPort) & 0x4) == 0 ? GpuRegisterType.Data : GpuRegisterType.Status;
+    }
 
     public static InterruptControllerRegisterType GetInterruptControllerRegisterType(uint address) =>
         address switch
@@ -160,6 +174,17 @@ public enum InterruptControllerRegisterType
     None = 0,
     Status,
     Mask,
+}
+
+/// <summary>
+/// GPU I/O port types. GP0/GPUREAD share 0x1F801810; GP1/GPUSTAT share 0x1F801814.
+/// </summary>
+[Domain]
+public enum GpuRegisterType
+{
+    None = 0,
+    Data,
+    Status,
 }
 
 /// <summary>
