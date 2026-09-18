@@ -36,8 +36,13 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>
     /// The software-visible hardware-register window, mirroring the native core's
-    /// 8 KiB <c>hw_regs</c> buffer at 0x1F801000 (Issue #387).
+    /// 8 KiB <c>hw_regs</c> buffer at PSX_HW_REG_BASE (Issue #387). These two are
+    /// the driver's <c>PSX_TEST_HW_BASE</c>/<c>PSX_TEST_HW_SIZE</c>, which in turn
+    /// mirror the native core's <c>PSX_HW_REG_BASE</c>/<c>PSX_HW_REG_SIZE</c>:
+    /// deliberately not <c>Ps1MemoryMap.HwRegBase</c>/<c>HwRegEnd</c>, whose end is
+    /// the narrower 4 KiB I/O-port span and would route half this window nowhere.
     /// </summary>
+    private const uint HwBase = 0x1F801000u;
     private const int HwSize = 8 * 1024;
     private const string HwLinePrefix = "HWREG ";
 
@@ -72,10 +77,19 @@ internal sealed class HostTitleExecutionEngine : IRecompiledExecutionEngine
         Array.Clear(_hw);
         foreach (var item in request.InitialMemory)
         {
+            // Route each seeded byte the same way the interpreter's core does
+            // (PSXMemory::Write8): RAM to RAM, the hardware-register window to
+            // hw_regs, everything else dropped. Dropping the window here left the
+            // first segment's HWREG preload all zeros, so a request that seeds
+            // MMIO state diverged from the interpreter (Issue #387).
             var physical = RecompilerGuestMemory.Translate(item.Address);
             if (physical < RamSize)
             {
                 _ram[physical] = item.Value;
+            }
+            else if (physical >= HwBase && physical < HwBase + (uint)HwSize)
+            {
+                _hw[physical - HwBase] = item.Value;
             }
         }
     }
