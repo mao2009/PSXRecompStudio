@@ -111,8 +111,10 @@ same problem always serializes to the same document (see
   `NotRetryable` and no `RequiresUserAction`; `Retry` means "the same request,
   unchanged", so it admits only `RetrySameRequest` and
   `RetryAfterExternalChange`. Every other action names a change to make and
-  stays compatible with any retry semantics, so an action added later is valid
-  by default instead of rejected for lack of a rule.
+  therefore rejects `RetrySameRequest`; it remains compatible with
+  `NotRetryable`, `RetryAfterUserChange`, and
+  `RetryAfterExternalChange`, so an action added later is valid by default
+  except for the unchanged-request semantic.
 
 ## 5. Determinism and JSON
 

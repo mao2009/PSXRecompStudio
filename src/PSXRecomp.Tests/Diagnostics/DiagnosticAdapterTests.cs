@@ -186,6 +186,25 @@ public sealed class DiagnosticAdapterTests
     }
 
     [Fact]
+    public void TitleExecutionResult_InvalidRawDiagnosticCode_PreservesRawValueBeforeTerminationFallback()
+    {
+        var snapshot = new RecompilerStateSnapshot(
+            new uint[32], hi: 0, lo: 0, pc: 0x8001_0000,
+            termination: RecompilerIrTerminationReason.UnsupportedInstruction);
+        var result = new TitleExecutionResult(
+            TitleExecutionState.RuntimeFailure, snapshot, SegmentsRetired: 2, EngineName: "engine",
+            DiagnosticCode: "EngineFailed", DiagnosticMessage: "boom");
+
+        var diagnostic = DiagnosticAdapter.From(result);
+
+        diagnostic.Should().NotBeNull();
+        diagnostic!.Code.Should().Be(DiagnosticCodes.RecompUnsupportedInstruction);
+        diagnostic.Context.Should().Contain(e =>
+            e.Key == DiagnosticContextKeys.FailureKind && e.StringValue == "EngineFailed");
+        diagnostic.IsValid().Should().BeTrue();
+    }
+
+    [Fact]
     public void TitleExecutionResult_BudgetExhausted_IsWarningWithConfigurationRecovery()
     {
         var result = new TitleExecutionResult(

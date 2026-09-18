@@ -61,7 +61,7 @@ public static class DiagnosticAdapter
             context.Add(new DiagnosticContextEntry(DiagnosticContextKeys.GuestPc, UIntValue: snapshot.PC));
         }
 
-        var (code, category, recovery) = Classify(result);
+        var (code, category, recovery) = Classify(result, context);
 
         return new Diagnostic
         {
@@ -148,12 +148,21 @@ public static class DiagnosticAdapter
         };
     }
 
-    private static (DiagnosticCode Code, DiagnosticCategory Category, DiagnosticRecovery Recovery) Classify(TitleExecutionResult result)
+    private static (DiagnosticCode Code, DiagnosticCategory Category, DiagnosticRecovery Recovery) Classify(
+        TitleExecutionResult result,
+        ICollection<DiagnosticContextEntry> context)
     {
         var raw = result.DiagnosticCode;
-        if (raw is not null && DiagnosticCode.TryCreate(raw, out var elevated))
+        if (raw is not null)
         {
-            return (elevated, DiagnosticCategory.Runtime, RecoveryForRawCode(raw, result.State));
+            if (DiagnosticCode.TryCreate(raw, out var elevated))
+            {
+                return (elevated, DiagnosticCategory.Runtime, RecoveryForRawCode(raw, result.State));
+            }
+
+            // Keep the rejected subsystem classification available for diagnosis
+            // before falling back to the structured termination reason.
+            context.Add(new DiagnosticContextEntry(DiagnosticContextKeys.FailureKind, StringValue: raw));
         }
 
         return result.FinalSnapshot?.Termination switch

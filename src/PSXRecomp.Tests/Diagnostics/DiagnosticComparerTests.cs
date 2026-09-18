@@ -3,9 +3,10 @@ using PSXRecomp.Core.Diagnostics;
 namespace PSXRecomp.Tests.Diagnostics;
 
 /// <summary>
-/// Contract tests for <see cref="DiagnosticComparer"/>: ordering is a pure
-/// function of category, stage, code, and context-entry count, so a set of
-/// diagnostics always sorts the same way regardless of insertion order.
+/// Contract tests for <see cref="DiagnosticComparer"/>: the primary ordering
+/// groups by category, stage, code, and context-entry count, then canonical JSON
+/// breaks ties so a set of diagnostics sorts the same way regardless of
+/// insertion order.
 /// </summary>
 [Test]
 public sealed class DiagnosticComparerTests
@@ -54,6 +55,30 @@ public sealed class DiagnosticComparerTests
 
         firstOrder.Should().Equal(secondOrder);
         firstOrder.Should().Equal("ANALYZER_A", "RUNTIME_A", "RUNTIME_B");
+    }
+
+    [Fact]
+    public void Sort_DistinctDiagnosticsWithSamePrimaryKey_UsesCanonicalTieBreaker()
+    {
+        var first = Make(DiagnosticCategory.Runtime, DiagnosticStage.Execute, "RUNTIME_A") with
+        {
+            Message = "first",
+        };
+        var second = first with
+        {
+            Message = "second",
+        };
+
+        DiagnosticComparer.Instance.Compare(first, second).Should().NotBe(0);
+        DiagnosticComparer.Instance.Compare(first, second)
+            .Should().Be(-DiagnosticComparer.Instance.Compare(second, first));
+
+        var left = new[] { second, first };
+        var right = new[] { first, second };
+        Array.Sort(left, DiagnosticComparer.Instance);
+        Array.Sort(right, DiagnosticComparer.Instance);
+
+        left.Select(d => d.Message).Should().Equal(right.Select(d => d.Message));
     }
 
     [Fact]
