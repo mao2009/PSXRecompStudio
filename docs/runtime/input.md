@@ -119,6 +119,8 @@ console-agnostic mapping. Validation rules enforced on `Add`:
 - ids are non-empty (enforced by `PhysicalInputId` itself);
 - `default(InputBinding<TButton>)` and bindings to the zero (`None`) button are
   rejected;
+- a binding must target exactly one defined `TButton` member: a composite
+  (multi-bit) value or an undefined enum value is rejected;
 - a physical input already bound to a **different** button is rejected as
   ambiguous;
 - an identical duplicate binding is rejected;
