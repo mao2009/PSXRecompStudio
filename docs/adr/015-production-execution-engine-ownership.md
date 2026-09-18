@@ -1,6 +1,6 @@
 # ADR-015: The Production Execution Engine Is the Interpreter Backend, and It Lives in the Domain Layer
 
-- **Status**: Accepted (amended 2026-09-16 by Issue #409; amended 2026-09-18 by Issue #458)
+- **Status**: Accepted (amended 2026-09-16 by Issue #409; amended 2026-09-18 by Issue #458; amended 2026-09-18 by Issue #459)
 - **Date**: 2026-09-16
 - **Issue**: #380
 
@@ -152,6 +152,34 @@ path a production caller would. Sketch points 2–4 remain open: no
 `IExecutionEngineProvider`-shaped selector exists yet, no engine implementation
 consumes this service, and no Studio/CLI composition root resolves one. This
 Issue's explicit non-goal was the runtime entrypoint itself (#459) and CLI (#460).
+
+**Amended by Issue #459**: sketch point 1's remaining half — an engine that
+actually consumes `GeneratedHostBuildService` and a caller that runs it to a
+classified result — is now landed, in `PSXRecomp.Infrastructure`:
+`RecompiledHostExecutionEngine` implements `IRecompiledExecutionEngine` by
+building a runnable native artifact (`RecompiledArtifactCodeGen`, the
+production analogue of the differential harness's driver, appended to
+`RecompilerHostCodeGen`'s generated dispatch) and launching it as a real
+process, and `RecompiledArtifactLauncher` is the composition root that wires it
+through the existing `ExecutionOrchestrator` with a real `BiosHleRuntime`
+attached over the same host-transfer protocol Issue #362 proved (ADR-014) —
+promoted from `PSXRecomp.Tests`' `HostTransferSession` to production, not
+reimplemented. `RecompiledArtifactExitCode`/`RecompiledArtifactResult`
+(`PSXRecomp.Core.Execution`) give the run a stable three-way process-exit
+classification and canonical JSON result (via the existing `ArtifactJson`
+encoding) for #460 to consume. This milestone's engine intentionally supports
+exactly one `RunSegment` call per instance — no guest-RAM continuity across
+repeated artifact launches — since #459 only requires one classified run per
+artifact, not full multi-segment resumability; a caller drives it with
+`TitleExecutionRequest.OuterBudget` of 1.
+
+Sketch point 2 is still open: `RecompiledArtifactLauncher` is reachable from any
+Infrastructure-adjacent caller (a future CLI composition root, or tests), but
+the `Application → Infrastructure` forbidden edge means `PSXRecompStudio` still
+cannot resolve it directly — no `IExecutionEngineProvider`-shaped Domain
+selector exists yet, and `TitleExecutionService` is unchanged. That Studio
+wiring, and sketch points 3–4, remain future work; #459's own scope was the
+runtime entrypoint contract, explicitly not Studio/CLI integration.
 
 A sketch for whoever picks up the remaining points, so the analysis is not redone from scratch:
 
