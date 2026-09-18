@@ -66,6 +66,12 @@ public interface IHardwareComponent
 | GTE | IGte (COP2) | Coprocessor | None |
 | Cache Control | IMemoryBus | 0xFFFE0130 | None |
 
+The Controller/MemCard row is the SIO byte protocol, which remains unimplemented.
+Memory-card **storage** — the 128 KiB card file, its format, and the slot
+configuration that selects it — is a separate, implemented subsystem documented
+in [Memory Card Format and Storage Policy](memory-card.md). It supplies the card
+content this component would carry; it is not hardware emulation.
+
 ## Memory / Bus Model
 
 `IMemoryBus` routes physical addresses to the appropriate component.
