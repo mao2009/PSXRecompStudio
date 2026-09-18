@@ -22,7 +22,7 @@ namespace PSXRecomp.Infrastructure;
 public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
 {
     private const string DefaultCompiler = "gcc";
-    private const string DefaultCompilerArgs = "-std=c11 -O0 -Wall -Wextra";
+    private static readonly string[] DefaultCompilerArgTokens = ["-std=c11", "-O0", "-Wall", "-Wextra"];
     private const int ToolchainTimeoutMs = 30000;
     private const int ToolchainCleanupMs = 2000;
     private const int DiagnosticMessageMaxLength = 2000;
@@ -52,27 +52,49 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         }
 
         var compiler = request.CompilerExecutable ?? DefaultCompiler;
-        var extraArgs = request.ExtraCompilerArguments is { Count: > 0 }
-            ? " " + string.Join(' ', request.ExtraCompilerArguments)
-            : string.Empty;
 
         var objectPath = Path.Combine(request.OutputDirectory, request.BinaryName + ".o");
-        var compile = RunToolchain(
-            compiler, $"{DefaultCompilerArgs}{extraArgs} -c \"{sourcePath}\" -o \"{objectPath}\"", ToolchainTimeoutMs);
+        var compileArgs = new List<string>(DefaultCompilerArgTokens);
+        if (request.ExtraCompilerArguments is { Count: > 0 })
+        {
+            compileArgs.AddRange(request.ExtraCompilerArguments);
+        }
+        compileArgs.Add("-c");
+        compileArgs.Add(sourcePath);
+        compileArgs.Add("-o");
+        compileArgs.Add(objectPath);
+
+        var compile = RunToolchain(compiler, compileArgs, ToolchainTimeoutMs);
         if (compile.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(compile, GeneratedHostBuildStatus.CompileFailed, "COMPILE_FAILED", "Host compilation");
         }
 
+        if (!File.Exists(objectPath))
+        {
+            return GeneratedHostBuildResult.Failed(
+                GeneratedHostBuildStatus.CompileFailed,
+                "COMPILE_FAILED",
+                $"Host compilation reported success but produced no object file at '{objectPath}'.");
+        }
+
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
-        var link = RunToolchain(compiler, $"\"{objectPath}\" -o \"{binaryPath}\"", ToolchainTimeoutMs);
+        var link = RunToolchain(compiler, [objectPath, "-o", binaryPath], ToolchainTimeoutMs);
         if (link.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");
         }
 
-        return GeneratedHostBuildResult.Succeeded(
-            new GeneratedHostBuildArtifact(ResolveBinaryPath(binaryPath), sourcePath));
+        var resolvedBinaryPath = ResolveBinaryPath(binaryPath);
+        if (!File.Exists(resolvedBinaryPath))
+        {
+            return GeneratedHostBuildResult.Failed(
+                GeneratedHostBuildStatus.LinkFailed,
+                "LINK_FAILED",
+                $"Host link reported success but produced no binary at '{binaryPath}'.");
+        }
+
+        return GeneratedHostBuildResult.Succeeded(new GeneratedHostBuildArtifact(resolvedBinaryPath, sourcePath));
     }
 
     private static GeneratedHostBuildResult ToFailure(
@@ -132,22 +154,32 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
     /// input (the caller owns the output directory and the compiler to run).
     /// </summary>
     /// <param name="fileName">The compiler/linker executable to start.</param>
-    /// <param name="arguments">The argument string to pass to it.</param>
+    /// <param name="arguments">
+    /// The argument tokens to pass to it, each as one process argument (via
+    /// <see cref="ProcessStartInfo.ArgumentList"/>) so an argument containing
+    /// whitespace is not split into multiple arguments.
+    /// </param>
     /// <param name="timeoutMs">Bounded wait for the process to exit.</param>
     /// <param name="cleanupMs">
-    /// Bounded post-kill cleanup budget: how long to wait for the killed
-    /// process tree to release the redirected output/error streams.
+    /// Bounded cleanup budget: how long to wait for the redirected
+    /// output/error streams to finish, both after a normal exit (a
+    /// descendant can keep an inherited pipe handle open) and after a
+    /// post-timeout kill of the process tree.
     /// </param>
     internal static ToolchainResult RunToolchain(
-        string fileName, string arguments, int timeoutMs, int cleanupMs = ToolchainCleanupMs)
+        string fileName, IReadOnlyList<string> arguments, int timeoutMs, int cleanupMs = ToolchainCleanupMs)
     {
-        var psi = new ProcessStartInfo(fileName, arguments)
+        var psi = new ProcessStartInfo(fileName)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
 
         Process process;
         try
@@ -170,27 +202,29 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
             {
                 TryKill(process);
                 return new ToolchainResult(
-                    ToolchainOutcome.TimedOut, int.MinValue, ReadStderrWithinCleanupBudget(stderrTask, cleanupMs));
+                    ToolchainOutcome.TimedOut, int.MinValue, ReadStreamWithinCleanupBudget(stderrTask, cleanupMs));
             }
 
             process.WaitForExit();
-            _ = stdoutTask.Result;
+            _ = ReadStreamWithinCleanupBudget(stdoutTask, cleanupMs);
             return process.ExitCode == 0
                 ? new ToolchainResult(ToolchainOutcome.Success, 0, string.Empty)
-                : new ToolchainResult(ToolchainOutcome.Failed, process.ExitCode, stderrTask.Result);
+                : new ToolchainResult(
+                    ToolchainOutcome.Failed, process.ExitCode, ReadStreamWithinCleanupBudget(stderrTask, cleanupMs));
         }
     }
 
-    // ReadToEndAsync completes only at EOF. After Kill(true) the associated
-    // process is gone, but a descendant that inherited the stderr handle can
-    // keep the pipe open indefinitely, so a bare `.Result` here could block
-    // past the promised timeout. Consume stderr only if it completes within the
-    // bounded cleanup period; otherwise return minimal (empty) diagnostics.
-    // Internal for the timeout regression tests.
-    internal static string ReadStderrWithinCleanupBudget(Task<string> stderrTask, int cleanupMs)
+    // ReadToEndAsync completes only at EOF. Even after a normal exit (and,
+    // after Kill(true), once the associated process is gone), a descendant
+    // that inherited the stdout/stderr handle can keep the pipe open
+    // indefinitely, so a bare `.Result` here could block past the promised
+    // timeout. Consume the stream only if it completes within the bounded
+    // cleanup period; otherwise return minimal (empty) diagnostics.
+    // Internal for the cleanup-bound regression tests.
+    internal static string ReadStreamWithinCleanupBudget(Task<string> streamTask, int cleanupMs)
     {
-        return stderrTask.Wait(cleanupMs) && stderrTask.IsCompletedSuccessfully
-            ? stderrTask.Result
+        return streamTask.Wait(cleanupMs) && streamTask.IsCompletedSuccessfully
+            ? streamTask.Result
             : string.Empty;
     }
 

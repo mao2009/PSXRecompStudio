@@ -148,7 +148,7 @@ public sealed class GeneratedHostBuildServiceTests
         var stopwatch = Stopwatch.StartNew();
 
 #pragma warning disable AARC003
-        var result = GeneratedHostBuildService.RunToolchain(driver, "ignored", timeoutMs: 250, cleanupMs: 500);
+        var result = GeneratedHostBuildService.RunToolchain(driver, ["ignored"], timeoutMs: 250, cleanupMs: 500);
 #pragma warning restore AARC003
         stopwatch.Stop();
 
@@ -159,25 +159,117 @@ public sealed class GeneratedHostBuildServiceTests
     }
 
     [Fact]
-    public void TimeoutCleanup_StderrThatNeverCompletes_ReturnsEmptyWithoutBlocking()
+    public void CleanupBudget_StreamThatNeverCompletes_ReturnsEmptyWithoutBlocking()
     {
         var neverCompleting = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var stopwatch = Stopwatch.StartNew();
 
-        var stderr = GeneratedHostBuildService.ReadStderrWithinCleanupBudget(neverCompleting.Task, cleanupMs: 250);
+        var output = GeneratedHostBuildService.ReadStreamWithinCleanupBudget(neverCompleting.Task, cleanupMs: 250);
 
         stopwatch.Stop();
-        stderr.Should().BeEmpty();
+        output.Should().BeEmpty();
         stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
     }
 
     [Fact]
-    public void TimeoutCleanup_StderrThatCompletes_IsReturned()
+    public void CleanupBudget_StreamThatCompletes_IsReturned()
     {
         var completed = Task.FromResult("some diagnostics");
 
-        GeneratedHostBuildService.ReadStderrWithinCleanupBudget(completed, cleanupMs: 1000)
+        GeneratedHostBuildService.ReadStreamWithinCleanupBudget(completed, cleanupMs: 1000)
             .Should().Be("some diagnostics");
+    }
+
+    [Fact]
+    public void RunToolchain_ArgumentWithEmbeddedSpace_ArrivesAsSingleToken()
+    {
+        using var dir = new TempDirectory();
+        var driver = CompileArgvDumpDriver(dir);
+        var dumpFile = Path.Combine(dir.FullPath, "argv-dump.txt");
+        var arguments = new[] { dumpFile, "-I/path with spaces/include", "-DFOO=1" };
+
+#pragma warning disable AARC003
+        var result = GeneratedHostBuildService.RunToolchain(driver, arguments, timeoutMs: 5000);
+        result.Outcome.Should().Be(GeneratedHostBuildService.ToolchainOutcome.Success);
+        File.ReadAllLines(dumpFile).Should().Equal("-I/path with spaces/include", "-DFOO=1");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void Build_ExtraCompilerArgumentWithEmbeddedSpace_IsPassedAsSingleArgument()
+    {
+        using var dir = new TempDirectory();
+        var result = new GeneratedHostBuildService().Build(new GeneratedHostBuildRequest(
+            ValidSource, dir.FullPath, "program",
+            ExtraCompilerArguments: ["-I/does not exist/include"]));
+
+        // gcc tolerates an unused, nonexistent -I search path when reached as
+        // one token. If the argument boundary were lost (flattened into a
+        // string and re-split), gcc would instead treat "not"/"exist/include"
+        // as bogus input filenames and fail to compile.
+        result.Status.Should().Be(GeneratedHostBuildStatus.Succeeded);
+        result.Artifact.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Build_CompilerReportsSuccessWithoutObjectFile_ReturnsCompileFailed()
+    {
+        using var dir = new TempDirectory();
+        var fakeCompiler = CompileNoOpExecutable(dir, "fake-compiler");
+
+        var result = new GeneratedHostBuildService().Build(new GeneratedHostBuildRequest(
+            ValidSource, dir.FullPath, "program", CompilerExecutable: fakeCompiler));
+
+        result.Status.Should().Be(GeneratedHostBuildStatus.CompileFailed);
+        result.DiagnosticCode.Should().Be("COMPILE_FAILED");
+        result.Artifact.Should().BeNull();
+    }
+
+    [Fact]
+    public void Build_LinkerReportsSuccessWithoutBinary_ReturnsLinkFailed()
+    {
+        using var dir = new TempDirectory();
+        var fakeCompiler = CompileNoOpExecutable(dir, "fake-compiler");
+
+        // Pre-seed the object file the compile step is expected to produce so
+        // the no-op fake compiler's compile invocation still passes the
+        // object-existence check, isolating the link-stage check under test.
+#pragma warning disable AARC003
+        File.WriteAllText(Path.Combine(dir.FullPath, "program.o"), "not a real object file");
+#pragma warning restore AARC003
+
+        var result = new GeneratedHostBuildService().Build(new GeneratedHostBuildRequest(
+            ValidSource, dir.FullPath, "program", CompilerExecutable: fakeCompiler));
+
+        result.Status.Should().Be(GeneratedHostBuildStatus.LinkFailed);
+        result.DiagnosticCode.Should().Be("LINK_FAILED");
+        result.Artifact.Should().BeNull();
+    }
+
+    [Fact]
+    public void RunToolchain_ChildExitsButDescendantHoldsPipesOpen_ReturnsWithinBound()
+    {
+        using var dir = new TempDirectory();
+        var driver = CompileHangingDescendantDriver(dir);
+        var pidFile = Path.Combine(dir.FullPath, "descendant.pid");
+        var stopwatch = Stopwatch.StartNew();
+
+#pragma warning disable AARC003
+        var result = GeneratedHostBuildService.RunToolchain(driver, [pidFile], timeoutMs: 10000, cleanupMs: 300);
+#pragma warning restore AARC003
+        stopwatch.Stop();
+
+        try
+        {
+            // The immediate process exits normally; a hanging descendant that
+            // inherited the redirected pipes must not block the result.
+            result.Outcome.Should().Be(GeneratedHostBuildService.ToolchainOutcome.Success);
+            stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            KillDescendantIfRecorded(pidFile);
+        }
     }
 
     private const string HangDriverSource =
@@ -185,21 +277,109 @@ public sealed class GeneratedHostBuildServiceTests
         "int main(void) { fprintf(stderr, \"hanging driver\\n\"); fflush(stderr);" +
         " volatile unsigned long x = 0; for (;;) { x++; } }\n";
 
-    private static string CompileHangingDriver(TempDirectory dir)
+    private const string ArgvDumpDriverSource =
+        "#include <stdio.h>\n" +
+        "int main(int argc, char** argv) {\n" +
+        "    FILE* f = fopen(argv[1], \"w\");\n" +
+        "    if (!f) { return 1; }\n" +
+        "    for (int i = 2; i < argc; i++) { fprintf(f, \"%s\\n\", argv[i]); }\n" +
+        "    fclose(f);\n" +
+        "    return 0;\n" +
+        "}\n";
+
+    // Reproduces "child exits immediately, but a descendant it spawned keeps
+    // the inherited stdout/stderr pipe handle open": on first invocation
+    // (argv[1] is the pidfile) it spawns a detached copy of itself that
+    // inherits the redirected pipes, then returns immediately; the detached
+    // copy (argv[2] == "child") records its own pid and hangs forever.
+    private const string HangingDescendantDriverSource =
+        "#ifdef _WIN32\n" +
+        "#include <process.h>\n" +
+        "#include <stdio.h>\n" +
+        "static void hang_forever(const char* pidfile) {\n" +
+        "    FILE* f = fopen(pidfile, \"w\");\n" +
+        "    if (f) { fprintf(f, \"%d\", _getpid()); fclose(f); }\n" +
+        "    for (;;) { }\n" +
+        "}\n" +
+        "int main(int argc, char** argv) {\n" +
+        "    if (argc >= 3) { hang_forever(argv[1]); return 0; }\n" +
+        "    _spawnl(_P_DETACH, argv[0], argv[0], argv[1], \"child\", NULL);\n" +
+        "    return 0;\n" +
+        "}\n" +
+        "#else\n" +
+        "#include <unistd.h>\n" +
+        "#include <stdio.h>\n" +
+        "int main(int argc, char** argv) {\n" +
+        "    pid_t pid = fork();\n" +
+        "    if (pid == 0) {\n" +
+        "        FILE* f = fopen(argv[1], \"w\");\n" +
+        "        if (f) { fprintf(f, \"%d\", getpid()); fclose(f); }\n" +
+        "        for (;;) { }\n" +
+        "    }\n" +
+        "    return 0;\n" +
+        "}\n" +
+        "#endif\n";
+
+    private static string CompileHangingDriver(TempDirectory dir) =>
+        CompileCDriver(dir, "hang-driver", HangDriverSource);
+
+    private static string CompileArgvDumpDriver(TempDirectory dir) =>
+        CompileCDriver(dir, "argv-dump-driver", ArgvDumpDriverSource);
+
+    private static string CompileNoOpExecutable(TempDirectory dir, string name) =>
+        CompileCDriver(dir, name, ValidSource);
+
+    private static string CompileHangingDescendantDriver(TempDirectory dir) =>
+        CompileCDriver(dir, "hanging-descendant-driver", HangingDescendantDriverSource);
+
+    private static string CompileCDriver(TempDirectory dir, string name, string source)
     {
-        var sourcePath = Path.Combine(dir.FullPath, "hang-driver.c");
-        var binaryPath = Path.Combine(dir.FullPath, "hang-driver");
+        var sourcePath = Path.Combine(dir.FullPath, name + ".c");
+        var binaryPath = Path.Combine(dir.FullPath, name);
 #pragma warning disable AARC003
-        File.WriteAllText(sourcePath, HangDriverSource);
+        File.WriteAllText(sourcePath, source);
         using var gcc = Process.Start(new ProcessStartInfo("gcc", $"\"{sourcePath}\" -o \"{binaryPath}\"")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         })!;
-        gcc.WaitForExit(60000).Should().BeTrue("gcc must finish compiling the hang driver");
-        gcc.ExitCode.Should().Be(0, "hang driver must compile");
+        gcc.WaitForExit(60000).Should().BeTrue($"gcc must finish compiling {name}");
+        gcc.ExitCode.Should().Be(0, $"{name} must compile");
         return OperatingSystem.IsWindows() ? binaryPath + ".exe" : binaryPath;
 #pragma warning restore AARC003
+    }
+
+    // Best-effort cleanup for the detached/forked descendant that the hanging-
+    // descendant driver leaves running forever; it never affects the test
+    // result, which is already captured before this runs.
+    private static void KillDescendantIfRecorded(string pidFile)
+    {
+        try
+        {
+#pragma warning disable AARC003
+            // The descendant writes its pid shortly after the (already-returned)
+            // immediate process spawned it; poll briefly rather than leaving a
+            // busy-looping process behind on a lost race.
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (!File.Exists(pidFile) && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(50);
+            }
+
+            if (!File.Exists(pidFile))
+            {
+                return;
+            }
+
+            var pid = int.Parse(File.ReadAllText(pidFile).Trim());
+            using var descendant = Process.GetProcessById(pid);
+            descendant.Kill(true);
+#pragma warning restore AARC003
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or FormatException)
+        {
+            // Already exited, or never recorded (e.g. spawn/fork failed): nothing to clean up.
+        }
     }
 }
