@@ -115,7 +115,7 @@ Constraints:
   - [Test Specification](cpu/test-specification.md)
 - Decoder — planned
 - Analyzer — planned
-- Diagnostics — planned
+- [Diagnostics](architecture/diagnostics.md)
 - AI Analysis — planned
 - Harness — planned
 - Testing — planned

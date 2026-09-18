@@ -35,7 +35,7 @@ The GUI must not become the source of truth for architecture or analysis semanti
 | CPU / R3000A | CPU domain model and architectural semantics | Established / evolving |
 | Decoder | Instruction decoding | Established / evolving |
 | Analyzer | Static and architectural analysis | In development |
-| Diagnostics | Structured findings and severity | Planned / evolving |
+| [Diagnostics](diagnostics.md) | Structured findings, severity, and recovery contract | Established / evolving |
 | AI Analysis | Evidence-driven AI investigation | Planned / evolving |
 | Harness | Reproducible function/instruction validation | Planned / evolving |
 | Testing | Automated and compatibility validation | Planned / evolving |

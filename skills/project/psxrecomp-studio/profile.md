@@ -24,6 +24,7 @@ common skill is ported to another project.
 | Repository artifact policy | `docs/development/artifact-policy.md` (SSOT: `config/artifact-policy.json`) |
 | Real-ROM analysis flow (stages, failure kinds, artifacts, CI/SKIP policy) | `docs/development/real-rom-analysis.md` (procedure: `skills/project/psxrecomp-studio/real-rom-analysis/SKILL.md`) |
 | API documentation & docstring policy | `docs/development/documentation-policy.md` (ADR-011), measured by `scripts/docs/measure-docstring-coverage.ps1` |
+| Diagnostics & recovery contract | `docs/architecture/diagnostics.md` (ADR-019) |
 | Memory-card format, slot, and storage policy | `docs/runtime/memory-card.md` (ADR-018) |
 
 ## 2. ADR directory
@@ -52,6 +53,7 @@ Current records:
 | 016 | Generated-Host Execution Budget Semantics | Accepted |
 | 017 | Managed Host I/O Port-Adapter Boundary | Accepted |
 | 018 | Standard Raw 128 KiB PS1 Card Image as the Memory-Card Format | Accepted |
+| 019 | Diagnostics & Recovery Contract | Accepted |
 | 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
 | 021 | Real-ROM Coverage Measurement | Accepted |
 
