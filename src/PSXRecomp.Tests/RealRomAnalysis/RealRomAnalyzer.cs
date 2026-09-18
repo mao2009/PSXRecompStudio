@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
+using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 
@@ -158,7 +159,7 @@ public static class RealRomAnalyzer
         Record("CHD_META", "PASS",
             $"V{chdStats.Version} hunks={chdStats.TotalHunks} cdlz={chdStats.CdlzCount} cdzl={chdStats.CdzlCount}");
 
-        var artifacts = DeterministicArtifactBuilder.Build(new DeterministicArtifactInput
+        var input = new DeterministicArtifactInput
         {
             FixtureId = fixtureId,
             DiscImageFormat = DiscImageFormat,
@@ -167,7 +168,17 @@ public static class RealRomAnalyzer
             Chd = chdStats,
             Iso = isoStats,
             Report = outcome.Report,
-        });
+        };
+
+        // Issue #410: recompilation coverage is measured over the whole analyzed corpus and
+        // persisted next to the analysis. It is purely descriptive — RealRomCandidateSelector
+        // and the differential proof path are untouched by it — and the coverage document's
+        // `differential` section stays empty here, because this flow proves nothing: only a
+        // run that actually executed a differential may populate it.
+        var coverage = RealRomCoverageAnalyzer.Analyze(
+            outcome.Report, DeterministicArtifactBuilder.BuildFixtureIdentity(input));
+
+        var artifacts = DeterministicArtifactBuilder.Build(input with { Coverage = coverage });
 
         Record("ARTIFACTS", "PASS",
             $"Built {artifacts.Files.Count} deterministic artifacts (manifest schema v{artifacts.Manifest.SchemaVersion})");

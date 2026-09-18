@@ -104,6 +104,41 @@ public sealed class BiosHleContractTests
         Emit().Should().BeEquivalentTo(Emit(), static o => o.WithStrictOrdering());
     }
 
+    // A0:39 InitHeap(addr,size) has no documented return value (unlike puts or
+    // GetC0Table/GetB0Table), so $v0 must be left untouched (ReturnValue == null)
+    // rather than a fabricated echo — see BiosVectorDispatch, which only writes
+    // $v0 when a service actually produces a value.
+    [Fact]
+    public void InitHeap_Accepts_AddrAndSize_And_Reports_No_Return_Value()
+    {
+        BiosHleRuntime.InitHeapFunction.Should().Be(0x39);
+        IBiosRuntime runtime = CreateRuntime(new CapturedOutputSink());
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction, 0x80001000, [0x80010000u, 0x1000u]));
+
+        result.Status.Should().Be(BiosServiceStatus.Supported);
+        result.ReturnValue.Should().BeNull("InitHeap has no documented return value");
+        result.Diagnostic.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    public void InvalidInitHeapArgumentCounts_Are_Rejected_Explicitly(int argumentCount)
+    {
+        var arguments = Enumerable.Range(0, argumentCount).Select(static value => (uint)value).ToArray();
+
+        var result = CreateRuntime(new CapturedOutputSink()).Invoke(new BiosCallIdentity(
+            BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction, arguments: arguments));
+
+        result.Status.Should().Be(BiosServiceStatus.Unsupported);
+        result.ReturnValue.Should().BeNull();
+        result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
+        result.Diagnostic.Message.Should().Be("A0:39 InitHeap requires two arguments: addr and size.");
+    }
+
     [Fact]
     public void A0_09_Remains_Unsupported_In_Phase_1()
     {
@@ -164,6 +199,8 @@ public sealed class BiosHleContractTests
     }
 
     [Theory]
+    [InlineData(BiosCallFamily.A0, 0x38)] // the A0 slot just below InitHeap
+    [InlineData(BiosCallFamily.A0, 0x3A)] // the A0 slot just above InitHeap
     [InlineData(BiosCallFamily.A0, 0x3B)] // getchar, adjacent to putchar
     [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
     [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
@@ -479,6 +516,7 @@ public sealed class BiosHleContractTests
     // fresh instances still compute the identical sentinel and dispatch
     // identically.
     [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
@@ -533,6 +571,7 @@ public sealed class BiosHleContractTests
     // correctly (psx-spx's documented GetB0Table/GetC0Table "BIOS Patches" use:
     // games read a table entry before conditionally patching it).
     [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
@@ -845,6 +884,7 @@ public sealed class BiosHleContractTests
         Span<byte> entryBytes = stackalloc byte[4];
         foreach (var (family, function) in new[]
         {
+            (BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction),
             (BiosCallFamily.A0, BiosHleRuntime.PutCharFunction),
             (BiosCallFamily.A0, BiosHleRuntime.PutsFunction),
             (BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction),
@@ -931,6 +971,7 @@ public sealed class BiosHleContractTests
     // CodeRabbit fresh review on #364 (Finding A): the arity SSOT a live trap
     // queries before extracting ABI argument registers.
     [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction, 2)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, 1)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction, 1)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, 1)]

@@ -29,6 +29,15 @@ public sealed record DeterministicArtifactInput
 
     /// <summary>The existing runtime analysis result, reused verbatim rather than recomputed.</summary>
     public required DiscImageAnalysisReport Report { get; init; }
+
+    /// <summary>
+    /// Optional recompilation-coverage measurement (Issue #410), produced by
+    /// <c>RealRomCoverageAnalyzer</c>. It is passed in already computed rather than derived
+    /// here on purpose: measuring coverage means running the lowering stage, which is a
+    /// Recompiler responsibility, while this layer only serializes what it is handed.
+    /// <see langword="null"/> omits <c>coverage.json</c> entirely.
+    /// </summary>
+    public RealRomCoverageDocument? Coverage { get; init; }
 }
 
 /// <summary>
@@ -79,26 +88,42 @@ public static class DeterministicArtifactBuilder
         var instructions = BuildInstructions(input.Report, identity);
         var cfg = BuildCfg(input.Report, identity);
 
+        // The coverage document is handed in already measured, so its identity block is
+        // replaced with the one derived here: all five documents must attribute themselves
+        // to the same input, and a caller-supplied identity could disagree.
+        var coverage = input.Coverage is null ? null : input.Coverage with { Fixture = identity };
+
         var reportText = ArtifactJson.Serialize(report);
         var instructionsText = ArtifactJson.Serialize(instructions);
         var cfgText = ArtifactJson.Serialize(cfg);
+        var coverageText = coverage is null ? null : ArtifactJson.Serialize(coverage);
 
-        var manifest = BuildManifest(
-            input.Report,
-            identity,
+        var references = new List<ArtifactDocumentReference>
+        {
             Reference(AnalysisArtifactSchema.ReportFileName, AnalysisArtifactSchema.ReportArtifactKind, AnalysisArtifactSchema.ReportSchemaVersion, reportText),
             Reference(AnalysisArtifactSchema.InstructionsFileName, AnalysisArtifactSchema.InstructionsArtifactKind, AnalysisArtifactSchema.InstructionsSchemaVersion, instructionsText),
-            Reference(AnalysisArtifactSchema.CfgFileName, AnalysisArtifactSchema.CfgArtifactKind, AnalysisArtifactSchema.CfgSchemaVersion, cfgText));
-
-        var manifestText = ArtifactJson.Serialize(manifest);
+            Reference(AnalysisArtifactSchema.CfgFileName, AnalysisArtifactSchema.CfgArtifactKind, AnalysisArtifactSchema.CfgSchemaVersion, cfgText),
+        };
 
         var files = new List<ArtifactFile>
         {
             new() { FileName = AnalysisArtifactSchema.CfgFileName, Content = cfgText },
             new() { FileName = AnalysisArtifactSchema.InstructionsFileName, Content = instructionsText },
-            new() { FileName = AnalysisArtifactSchema.ManifestFileName, Content = manifestText },
             new() { FileName = AnalysisArtifactSchema.ReportFileName, Content = reportText },
         };
+
+        if (coverageText is not null)
+        {
+            references.Add(Reference(
+                AnalysisArtifactSchema.CoverageFileName, AnalysisArtifactSchema.CoverageArtifactKind,
+                AnalysisArtifactSchema.CoverageSchemaVersion, coverageText));
+            files.Add(new ArtifactFile { FileName = AnalysisArtifactSchema.CoverageFileName, Content = coverageText });
+        }
+
+        var manifest = BuildManifest(input.Report, identity, references);
+        var manifestText = ArtifactJson.Serialize(manifest);
+
+        files.Add(new ArtifactFile { FileName = AnalysisArtifactSchema.ManifestFileName, Content = manifestText });
         files.Sort(static (left, right) => string.CompareOrdinal(left.FileName, right.FileName));
 
         return new RealRomAnalysisArtifacts
@@ -107,6 +132,7 @@ public static class DeterministicArtifactBuilder
             Report = report,
             Instructions = instructions,
             Cfg = cfg,
+            Coverage = coverage,
             Files = files,
         };
     }
@@ -122,6 +148,18 @@ public static class DeterministicArtifactBuilder
             SizeBytes = bytes.Length,
             Sha256 = ArtifactJson.Sha256Hex(bytes),
         };
+    }
+
+    /// <summary>
+    /// Derives the shared identity block from an input. Public so a caller that must build a
+    /// document destined for <see cref="DeterministicArtifactInput.Coverage"/> can attribute
+    /// it to the same identity this builder will stamp on every sibling, instead of
+    /// assembling a second, possibly divergent one.
+    /// </summary>
+    public static ArtifactFixtureIdentity BuildFixtureIdentity(DeterministicArtifactInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        return BuildIdentity(input);
     }
 
     private static ArtifactFixtureIdentity BuildIdentity(DeterministicArtifactInput input)
@@ -142,7 +180,7 @@ public static class DeterministicArtifactBuilder
     private static AnalysisManifestDocument BuildManifest(
         DiscImageAnalysisReport report,
         ArtifactFixtureIdentity identity,
-        params ArtifactDocumentReference[] documents)
+        List<ArtifactDocumentReference> documents)
     {
         var ordered = documents.ToList();
         ordered.Sort(static (left, right) => string.CompareOrdinal(left.FileName, right.FileName));

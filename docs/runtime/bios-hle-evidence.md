@@ -11,10 +11,13 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds five
-registrations — A0:3C `putchar`, A0:3E `puts`, its real-ROM-evidence-selected
-B0:3F alias, B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
-documented behavior under the shared ADR-014 contract. Both parallel Runtime
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds six
+registrations — A0:39 `InitHeap` (the identity real-ROM analysis observed most
+broadly, 5 of 5 executables), A0:3C `putchar`, A0:3E `puts`, its
+real-ROM-evidence-selected B0:3F alias, B0:56 `GetC0Table`, and B0:57
+`GetB0Table` — each implementing its documented behavior under the shared
+ADR-014 contract (ADR-014 amendment 2026-09-17 "A0:39 InitHeap registered").
+Both parallel Runtime
 capabilities this document originally awaited have since landed: the
 **guest-memory read boundary** (`IGuestMemoryReader`, PR #350) and the
 **deterministic output sink** (`IRuntimeOutputSink`, PR #349, ADR-014 amendment
@@ -44,10 +47,13 @@ evidence-driven from #225 and later full-title bring-up").
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
 registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
-five entries**: `(A0, 0x3C)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
-`(B0, 0x3F)` → `InvokePuts`, `(B0, 0x56)` → `InvokeGetC0Table`, and
-`(B0, 0x57)` → `InvokeGetB0Table`. The first three are thin service bindings;
-the last two expose the guest-visible B0/C0 jump tables. Calls are canonicalized
+six entries**: `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
+`(A0, 0x3E)` → `InvokePuts`, `(B0, 0x3F)` → `InvokePuts`,
+`(B0, 0x56)` → `InvokeGetC0Table`, and `(B0, 0x57)` → `InvokeGetB0Table`.
+`InitHeap` validates argument shape only (no guest-observable heap state
+exists for this Runtime to model, since no malloc/free-family service is
+registered); the next two are thin service bindings; the last two expose the
+guest-visible B0/C0 jump tables. Calls are canonicalized
 by physical slot before registry lookup, so C0 high-range mirrors such as
 `C0:BF`, `C0:D6`, and `C0:D7` reach the registered `B0:3F`, `B0:56`, and
 `B0:57` handlers rather than falling through as unsupported. Any call whose
@@ -62,7 +68,7 @@ state before reaching the registry. If the 4-byte slot at
 that is not that physical slot's own HLE sentinel (`BiosJumpTables.HleSentinelTarget`,
 computed from the slot's canonical identity — see below), `BiosServiceResult.PatchedTarget`
 is returned instead — carrying the raw patched guest address in `ReturnValue`
-(ADR-014 amendment 2026-09-11 for #360). Each of the five registered slots is
+(ADR-014 amendment 2026-09-11 for #360). Each of the six registered slots is
 seeded with that sentinel at construction time (a required `IGuestMemoryWriter`
 constructor dependency) **only when that slot currently reads as zero** — a
 pre-existing guest patch or a save-state's restored content is never
@@ -89,6 +95,7 @@ canonical one (ADR-014's 2026-09-11 CodeRabbit follow-up amendment).
 ```text
 Observed (Analysis, §3.4):
   B0:3F puts — real-ROM call site, guest PC 0x800D0FF8, SLPM_869.24
+  A0:39 InitHeap — real-ROM call site, 5 of 5 locally available executables
 
 Verified (docs/REFERENCES.md, BiosCallNames):
   A0:3C/B0:3D putchar, A0:3E/B0:3F puts,
@@ -96,7 +103,8 @@ Verified (docs/REFERENCES.md, BiosCallNames):
   B0:4E _card_write, B0:50 _new_card, B0:56 GetC0Table, B0:57 GetB0Table
 
 Implemented (BiosHleRuntime registry):
-  A0:3C putchar, A0:3E puts, B0:3F puts, B0:56 GetC0Table, B0:57 GetB0Table
+  A0:39 InitHeap, A0:3C putchar, A0:3E puts, B0:3F puts, B0:56 GetC0Table,
+  B0:57 GetB0Table
 
 Implemented through C0 high-range physical-slot mirroring:
   C0:BF -> B0:3F puts
@@ -122,6 +130,7 @@ Implemented (ADR-014 amendment 2026-09-11 for #360).
 
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
+| InitHeap | A0:39 | **Registered `Supported` (full documented behavior)** — `InvokeInitHeap` validates the two-argument ABI shape; no return value is written (ADR-014 amendment 2026-09-17) | None — no malloc/free-family service is registered, so no guest-observable heap state exists to under-model | None; registered |
 | getchar | A0:3B | **Unregistered** — falls through to `BIOS_HLE_UNSUPPORTED_CALL` | TTY input read/consume; blocking wait for input | Input sink (no design yet) |
 | putchar | A0:3C | **Registered `Supported` (full documented behavior)** — `InvokePutChar` writes `arg & 0xFF` to the injected `IRuntimeOutputSink` *and* returns it | None — TTY output is now emitted (ADR-014 amendment 2026-09-10) | None; `BiosHleRuntime` takes the sink by constructor injection |
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink (no design yet). `IGuestMemoryWriter` is already a required `BiosHleRuntime` dependency for registered jump-table sentinel seeding, but `gets` itself does not consume the writer yet |
@@ -130,17 +139,19 @@ Implemented (ADR-014 amendment 2026-09-11 for #360).
 | puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11); also reachable as C0:BF through canonical physical-slot mirroring | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
 | GetC0Table | B0:56 | **Registered `Supported`** — returns `BiosJumpTables.C0TableAddress` (`0x674`); that address is backed by guest-visible RAM connected to dispatch; also reachable as C0:D6 | None for the documented behavior (return table base; base is now real and patchable) | None; registered. Note: `0x674` is this Runtime's design choice, not a primary-source-confirmed real-hardware fact — see ADR-014 amendment for #360 |
 | GetB0Table | B0:57 | **Registered `Supported`** — returns `BiosJumpTables.B0TableAddress` (`0x874`); same backing guarantee as GetC0Table; also reachable as C0:D7 | None | None; registered. Same caveat on `0x874` |
-| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the five registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
+| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the six registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 
-- `BiosHleRuntime.PutCharFunction == 0x3C`, `PutsFunction == 0x3E`,
-  `PutsAliasFunction == 0x3F`, `GetC0TableFunction == 0x56`, and
-  `GetB0TableFunction == 0x57`; the five registrations are
+- `BiosHleRuntime.InitHeapFunction == 0x39`, `PutCharFunction == 0x3C`,
+  `PutsFunction == 0x3E`, `PutsAliasFunction == 0x3F`,
+  `GetC0TableFunction == 0x56`, and `GetB0TableFunction == 0x57`; the six
+  registrations are `(BiosCallFamily.A0, InitHeapFunction)`,
   `(BiosCallFamily.A0, PutCharFunction)`, `(BiosCallFamily.A0, PutsFunction)`,
   `(BiosCallFamily.B0, PutsAliasFunction)`, `(BiosCallFamily.B0, GetC0TableFunction)`,
-  and `(BiosCallFamily.B0, GetB0TableFunction)`; the first three bind to
-  `InvokePutChar`/`InvokePuts`; the last two bind to `InvokeGetC0Table`/
+  and `(BiosCallFamily.B0, GetB0TableFunction)`; `InitHeapFunction` binds to
+  `InvokeInitHeap`; the next three bind to `InvokePutChar`/`InvokePuts`; the
+  last two bind to `InvokeGetC0Table`/
   `InvokeGetB0Table` respectively. C0 high-range calls are canonicalized before
   the registry lookup, so the B0 registrations are also reachable through their
   documented C0 mirrors while preserving the guest's original identity in results.
@@ -385,7 +396,7 @@ ADR-014's separate, evidence-and-prerequisite-gated decision (see §4 "Next cand
 
 | Identity | Observed in (of the 5 distinct executables) | Sites per executable | Verified? |
 |---|---|---|---|
-| `A0:39` | 5 | 1 | ✅ `InitHeap(addr,size)` |
+| `A0:39` | 5 | 1 | ✅ `InitHeap(addr,size)` — registered 2026-09-17 |
 | `A0:AB` | 4 | 1 | ✅ `_card_info(port)` |
 | `A0:AC` | 4 | 1 | ✅ `_card_load(port)` |
 | `B0:0A` | 4 | 1 | Not verified |
@@ -492,10 +503,20 @@ they unblocked have since been implemented:
    updated status. Executing patched targets, which this left open, was handled
    as follow-up Issue #362 and is now done on both execution paths (item 11).
 
+6. **A0:39 InitHeap** — ✅ **done (2026-09-17).** The most broadly observed
+   real-ROM identity to date (5 of 5 locally available executables, more than
+   any prior registration). It needed no new Runtime capability: its two
+   arguments are scalars (no guest-memory read), it has no documented return
+   value (`$v0` is left untouched), and no malloc/free-family service is
+   registered to consume the heap bookkeeping it documents, so argument-shape
+   validation is its complete guest-observable contract. See ADR-014's
+   2026-09-17 amendment.
+
 Rationale in one line: both output-side boundaries existed, so putchar
 completion and puts were wiring/registration tasks rather than capability work
-and are now complete; only input (getchar/gets) still needs a Runtime
-capability (an input sink) that does not exist yet.
+and are now complete; InitHeap needed no boundary at all and is now complete;
+only input (getchar/gets) still needs a Runtime capability (an input sink)
+that does not exist yet.
 
 ## 5. Dependency map
 
@@ -534,8 +555,8 @@ Two explicit guarantees:
   bytes written. The same bar applies unchanged to every service registered from
   here on.
 - **This document registers nothing.** It is an inventory; the registry in
-  `BiosHleRuntime` is `(A0, 0x3C)`, `(A0, 0x3E)`, `(B0, 0x3F)`, `(B0, 0x56)`,
-  and `(B0, 0x57)`, changed by the implementation tasks that added those services,
+  `BiosHleRuntime` is `(A0, 0x39)`, `(A0, 0x3C)`, `(A0, 0x3E)`, `(B0, 0x3F)`,
+  `(B0, 0x56)`, and `(B0, 0x57)`, changed by the implementation tasks that added those services,
   not by this document. Canonical C0 high-range mirrors resolve to those B0
   physical-slot identities before registry lookup. Any service added later is
   likewise a separate implementation task that adds code and updates

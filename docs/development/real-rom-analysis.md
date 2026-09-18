@@ -106,6 +106,7 @@ reports/real-rom/<fixture>/manifest.json       invocation identity + counts  (PA
 reports/real-rom/<fixture>/report.json         CHD/ISO/SYSTEM.CNF/decode data (PASS)
 reports/real-rom/<fixture>/instructions.json   decoded instruction listing     (PASS)
 reports/real-rom/<fixture>/cfg.json            basic blocks + control-flow     (PASS)
+reports/real-rom/<fixture>/coverage.json       recompilation coverage          (PASS)
 logs/real-rom/<fixture>/analysis.log.jsonl     per-stage detail, JSONL        (best effort)
 ```
 
@@ -114,6 +115,11 @@ logs/real-rom/<fixture>/analysis.log.jsonl     per-stage detail, JSONL        (b
   and content hashes of the sibling documents. Deterministic and diffable.
 - **`report.json` / `instructions.json` / `cfg.json`** — the #215 projection of the
   `DiscImageAnalysisReport` into stable, versioned documents.
+- **`coverage.json`** — how much of the analyzed corpus is currently recompilable and why
+  the rest is not (Issue #410), measured by `RealRomCoverageAnalyzer`. It is descriptive
+  only: `RealRomCandidateSelector` and the differential proof path are unaffected by it,
+  and "lowerable" is an upper bound that must never be read as "differentially validated".
+  See [Real-ROM Analysis Artifact Format](real-rom-analysis-artifacts.md).
 - **`analysis.log.jsonl`** — one JSON object per stage with the full detail text.
   It may be written even for a failing analysis (down to the stage that failed),
   but persistence is best-effort. Paths are redacted at this boundary.

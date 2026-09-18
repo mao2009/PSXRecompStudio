@@ -33,10 +33,49 @@ zero-extended on a load, truncated on a store — so signedness stays off the
 operation surface: a sign-extending guest load is expressed by the lowering as a
 `ShiftLeftLogical` / `ShiftRightArithmetic` pair. Translation (including KSEG),
 alignment, little-endian
-access, signedness, read/write ordering, MMIO policy, and the resolved memory
-image belong to the memory/runtime contract, not the IR or host backend. The
-ordered memory observations compared through `RecompilerStateSnapshot` describe
-guest-visible access, independent of these operations' lowering.
+access, signedness, and the resolved memory image belong to the memory/runtime
+contract, not the IR or host backend. The ordered memory observations compared
+through `RecompilerStateSnapshot` describe guest-visible access, independent of
+these operations' lowering.
+
+### Memory effect classification (ADR-020, Issue #411)
+
+Each memory operation carries a `RecompilerIrMemoryEffectKind`
+(`Unknown` / `Ordinary` / `Device`), an IR-level classification of the
+operation's address, distinct from the runtime MMIO *routing* the memory/
+runtime contract still owns:
+
+- `Unknown` (the default, value `0`) — the address was not established as
+  ordinary memory or a device register at IR-construction time. This is what
+  every real `MipsToIrLowerer` load/store carries, because a MIPS base+offset
+  effective address depends on a guest register value only known at execution
+  time. An `Unknown` effect must never be treated as ordinary by a consumer:
+  not reorderable, not dead-store-eliminable, not CSE-eligible.
+- `Ordinary` — the address is provably RAM or BIOS ROM
+  (`Ps1MemoryMap.ClassifyRegion` via `Ps1AddressTranslation`): no
+  device-visible side effect. This does not mean idempotent/pure — an
+  ordinary store still mutates guest memory that a later load or aliased
+  store can observe. Normal memory dependencies still apply: a load needs
+  alias-analysis proof before CSE, and a store needs liveness and alias
+  proof before dead-store elimination or reordering.
+- `Device` — the address is provably inside the PS1 hardware-register window
+  (`Ps1MemoryMap.HwRegBase`..`HwRegEnd`). A device read is not idempotent/pure
+  and a device write is not dead-store-eliminable; the relative order of
+  device operations, and of a device operation against any other observable
+  effect, must be preserved — operation order within a block already **is**
+  architectural side-effect order (see above), so this is a classification of
+  an existing ordering guarantee, not a new one.
+
+`RecompilerIrMemoryEffectClassifier.Classify(uint)` computes this from a
+compile-time-known guest address, reusing `Ps1AddressTranslation` and
+`Ps1MemoryMap.ClassifyRegion` rather than re-deriving PS1 memory-map
+knowledge; it returns `Unknown` for an untranslatable or otherwise unmapped
+address, never guessing `Ordinary`. `MipsToIrLowerer` does not call it: a real
+base+offset address is not known at lowering time, so leaving `Unknown` is the
+architecturally correct answer, not an omission. The runtime's actual RAM/MMIO
+*routing* (`MemoryBus`, `Ps1MemoryMap`, the DMA/timer/interrupt adapters)
+remains one layer below the generated block and is unaffected by this
+classification.
 
 ## Control flow
 
@@ -87,8 +126,10 @@ uses an undefined operation or flow kind; mis-shapes a memory, compare, shift,
 or existing arithmetic operation; writes GPR[0]; leaves a branch condition
 undefined or a successor missing; leaves a call target or its return-address
 next PC missing; places a flow on a non-success exit; uses a reserved flow;
-duplicates a function entry PC; or references a function block that is not in
-the program. The same discipline that rejects unsupported
+duplicates a function entry PC; references a function block that is not in
+the program; carries an undefined `RecompilerIrMemoryEffectKind` on a memory
+operation; or carries any non-default memory effect on a non-memory operation.
+The same discipline that rejects unsupported
 behavior extends to these structures: invalid state or operands fail fast rather
 than degrade.
 

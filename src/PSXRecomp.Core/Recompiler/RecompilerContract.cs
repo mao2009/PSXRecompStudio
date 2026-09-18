@@ -103,6 +103,49 @@ public enum RecompilerMemoryAccessKind : byte
     Write,
 }
 
+/// <summary>
+/// Classifies the guest-memory effect a Load8/16/32 or Store8/16/32 operation's
+/// address carries, when that address can be established. This is the IR-level
+/// effect contract (Issue #411): it distinguishes an ordinary guest-RAM access
+/// from an MMIO/device-visible one so a consumer — validator, codegen, or a
+/// future optimizer — never has to guess.
+/// </summary>
+[Domain]
+public enum RecompilerIrMemoryEffectKind : byte
+{
+    /// <summary>
+    /// The address was not established as ordinary memory or a device register
+    /// at IR-construction time. This is the default, and it is what every real
+    /// <see cref="MipsToIrLowerer"/> load/store carries: a MIPS base+offset
+    /// effective address depends on a guest register value that is only known
+    /// at execution time, not at lowering time. An unknown effect must never be
+    /// treated as ordinary — it is not reorderable, not dead-store-eliminable,
+    /// and not CSE-eligible.
+    /// </summary>
+    Unknown = 0,
+
+    /// <summary>
+    /// The address is provably ordinary guest memory (RAM or BIOS ROM, per
+    /// <see cref="Runtime.Ps1AddressTranslation"/> and
+    /// <see cref="Dma.Ps1MemoryMap.ClassifyRegion"/>): no device-visible side
+    /// effect. This does not mean idempotent/pure — an ordinary store still
+    /// mutates guest state that a later load or aliased store can observe, so
+    /// normal memory dependencies apply: a load still needs alias-analysis
+    /// proof before CSE, and a store still needs liveness and alias proof
+    /// before dead-store elimination or reordering.
+    /// </summary>
+    Ordinary = 1,
+
+    /// <summary>
+    /// The address is provably a PS1 hardware/device register (the
+    /// <see cref="Dma.Ps1MemoryMap.HwRegBase"/>..<see cref="Dma.Ps1MemoryMap.HwRegEnd"/>
+    /// window). A device read is not idempotent/pure and a device write is not
+    /// dead-store-eliminable; the relative order of device operations, and of a
+    /// device operation against any other observable effect, must be preserved.
+    /// </summary>
+    Device = 2,
+}
+
 [Domain]
 public readonly record struct RecompilerIrValue(int Id)
 {
@@ -119,7 +162,8 @@ public sealed record RecompilerIrOperation
         int inputValueB = -1,
         byte register = 0,
         byte shiftAmount = 0,
-        uint immediate = 0)
+        uint immediate = 0,
+        RecompilerIrMemoryEffectKind memoryEffect = RecompilerIrMemoryEffectKind.Unknown)
     {
         Kind = kind;
         ResultValueId = resultValueId;
@@ -128,6 +172,7 @@ public sealed record RecompilerIrOperation
         Register = register;
         ShiftAmount = shiftAmount;
         Immediate = immediate;
+        MemoryEffect = memoryEffect;
     }
 
     public RecompilerIrOperationKind Kind { get; }
@@ -137,6 +182,15 @@ public sealed record RecompilerIrOperation
     public byte Register { get; }
     public byte ShiftAmount { get; }
     public uint Immediate { get; }
+
+    /// <summary>
+    /// The memory-effect classification for a Load8/16/32 or Store8/16/32
+    /// operation (see <see cref="RecompilerIrMemoryEffectKind"/>). Meaningless
+    /// for any other operation kind, which must leave it at its
+    /// <see cref="RecompilerIrMemoryEffectKind.Unknown"/> default — the
+    /// validator enforces both.
+    /// </summary>
+    public RecompilerIrMemoryEffectKind MemoryEffect { get; }
 }
 
 /// <summary>
@@ -531,6 +585,7 @@ public static class RecompilerIrValidator
                 {
                     Add(diagnostics, RecompilerIrDiagnosticCode.InvalidMemoryAccess, "Load operations must not carry a register or shift amount.", blockIndex, operationIndex);
                 }
+                ValidateMemoryEffect(operation, diagnostics, blockIndex, operationIndex);
                 break;
             case RecompilerIrOperationKind.Store8:
             case RecompilerIrOperationKind.Store16:
@@ -540,6 +595,7 @@ public static class RecompilerIrValidator
                 {
                     Add(diagnostics, RecompilerIrDiagnosticCode.InvalidMemoryAccess, "Store operations must not carry a register.", blockIndex, operationIndex);
                 }
+                ValidateMemoryEffect(operation, diagnostics, blockIndex, operationIndex);
                 break;
             case RecompilerIrOperationKind.CompareEqual:
             case RecompilerIrOperationKind.CompareNotEqual:
@@ -555,6 +611,28 @@ public static class RecompilerIrValidator
             default:
                 Require(hasResult && hasA && hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
                 break;
+        }
+
+        var isMemoryAccess = operation.Kind is RecompilerIrOperationKind.Load8 or RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Load32
+            or RecompilerIrOperationKind.Store8 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32;
+        if (!isMemoryAccess && operation.MemoryEffect != RecompilerIrMemoryEffectKind.Unknown)
+        {
+            Add(diagnostics, RecompilerIrDiagnosticCode.InvalidMemoryAccess, "Only a memory-access operation may carry a memory effect.", blockIndex, operationIndex);
+        }
+    }
+
+    /// <summary>
+    /// Fails closed on a Load/Store operation whose memory effect is not one of
+    /// the defined <see cref="RecompilerIrMemoryEffectKind"/> values, rather than
+    /// letting a garbage byte silently pass through as if it meant something
+    /// (Issue #411: an unsupported/unclassifiable effect must be an explicit
+    /// diagnostic, never a silent fallback to "ordinary").
+    /// </summary>
+    private static void ValidateMemoryEffect(RecompilerIrOperation operation, List<RecompilerIrDiagnostic> diagnostics, int blockIndex, int operationIndex)
+    {
+        if (!Enum.IsDefined(operation.MemoryEffect))
+        {
+            Add(diagnostics, RecompilerIrDiagnosticCode.InvalidMemoryAccess, "Memory effect must be a defined value.", blockIndex, operationIndex);
         }
     }
 

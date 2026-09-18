@@ -50,10 +50,10 @@ Current records:
 | 014 | BIOS HLE Calls Cross a Shared Runtime Contract | Accepted |
 | 015 | Production Execution Engine Ownership | Accepted |
 | 016 | Generated-Host Execution Budget Semantics | Accepted |
+| 017 | Managed Host I/O Port-Adapter Boundary | Accepted |
 | 018 | Standard Raw 128 KiB PS1 Card Image as the Memory-Card Format | Accepted |
-
-017 is reserved by the in-review managed host-I/O boundary record (Issue #38);
-018 was taken next so the two do not collide.
+| 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
+| 021 | Real-ROM Coverage Measurement | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).
