@@ -35,6 +35,16 @@ public class DiscImageHostileSizeTests
     /// <summary>Mirrors ChdReader's compressed-map ceiling for a one-hunk image.</summary>
     private const int OneHunkMapLimit = ChdHeader.MapEntrySize + 64;
 
+    /// <summary>Mirrors ChdReader's independent ceiling for one hunk's compressed data.</summary>
+    private const uint MaxCompressedHunkBytes = 4096 * CdFrameSize;
+
+    // A hostile header pair: HunkBytes / UnitBytes = 200 stays under the frames-per-hunk
+    // ceiling (4096), so ReadHeader accepts it, yet HunkBytes itself (20,000,000) is well
+    // above MaxCompressedHunkBytes. This is only possible because HunkBytes carries no
+    // ceiling of its own — exactly the gap the independent cap closes.
+    private const uint HostileUnitBytes = 100_000;
+    private const uint HostileHunkBytes = HostileUnitBytes * 200;
+
     // ------------------------------------------------------------------ CHD header
 
     [Fact]
@@ -241,6 +251,45 @@ public class DiscImageHostileSizeTests
     }
 
     [Fact]
+    public void ReadSector_CompressedLengthAboveSupportedLimit_ThrowsBeforeAllocating()
+    {
+        // HunkBytes (20,000,000) alone would not catch this: it only rejects a length
+        // above the *declared* hunk size, and this length is well under that. Only the
+        // independent absolute cap does, because HunkBytes itself carries no ceiling of
+        // its own (a crafted UnitBytes lets it grow arbitrarily; see HostileHunkBytes).
+        var image = BuildCompressedMapChd(
+            compressedLength: MaxCompressedHunkBytes + 1,
+            hunkBytes: HostileHunkBytes,
+            unitBytes: HostileUnitBytes,
+            includeHunkData: false);
+
+        using var stream = new MemoryStream(image);
+        using var reader = ChdReader.Open(stream);
+
+        reader.Invoking(r => r.ReadSector(0)).Should().Throw<InvalidDataException>()
+            .WithMessage("*compressed length*");
+    }
+
+    [Fact]
+    public void ReadSector_CompressedLengthAtSupportedLimit_PassesSizeValidation()
+    {
+        // Exactly at the cap: the size validation must not reject it. The image carries
+        // no physical hunk data, so the read still fails, but only at the file-length
+        // check that runs after the cap — proving the cap itself let the value through.
+        var image = BuildCompressedMapChd(
+            compressedLength: MaxCompressedHunkBytes,
+            hunkBytes: HostileHunkBytes,
+            unitBytes: HostileUnitBytes,
+            includeHunkData: false);
+
+        using var stream = new MemoryStream(image);
+        using var reader = ChdReader.Open(stream);
+
+        reader.Invoking(r => r.ReadSector(0)).Should().Throw<InvalidDataException>()
+            .Which.Message.Should().Contain("hunk data").And.NotContain("compressed length");
+    }
+
+    [Fact]
     public void RunFromChd_HostileHunkLength_IsClassifiedInsteadOfExhaustingMemory()
     {
         // End to end: a hostile per-hunk length must reach the pipeline's classified
@@ -376,7 +425,21 @@ public class DiscImageHostileSizeTests
     /// <param name="mapBytesTarget">
     /// Declared (and physically present) compressed-map size; defaults to the encoded map.
     /// </param>
-    private static byte[] BuildCompressedMapChd(uint compressedLength, int? mapBytesTarget = null)
+    /// <param name="hunkBytes">Declared header HunkBytes; defaults to <see cref="ValidHunkBytes"/>.</param>
+    /// <param name="unitBytes">Declared header UnitBytes; defaults to <see cref="ValidUnitBytes"/>.</param>
+    /// <param name="logicalBytes">Declared header LogicalBytes; defaults to <paramref name="hunkBytes"/>.</param>
+    /// <param name="includeHunkData">
+    /// Whether to physically append hunk-data bytes after the map. False leaves the image
+    /// ending at the map, so a read that reaches past the resource bound hits SeekChecked's
+    /// file-length check instead of allocating <paramref name="compressedLength"/> bytes.
+    /// </param>
+    private static byte[] BuildCompressedMapChd(
+        uint compressedLength,
+        int? mapBytesTarget = null,
+        uint hunkBytes = ValidHunkBytes,
+        uint unitBytes = ValidUnitBytes,
+        ulong? logicalBytes = null,
+        bool includeHunkData = true)
     {
         var bits = new BitWriter();
 
@@ -401,9 +464,13 @@ public class DiscImageHostileSizeTests
         // The physical map region is always as long as the declared mapBytes, so a
         // rejected case is never rejected merely for running past the end of the file.
         int hunkDataOffset = MapOffset + 16 + Math.Max(mapBytes, mapData.Length);
-        var hunkData = new byte[ValidHunkBytes + 16];
-        hunkData[0] = 0xA5;
-        hunkData[1] = 0x5A;
+        var hunkData = Array.Empty<byte>();
+        if (includeHunkData)
+        {
+            hunkData = new byte[hunkBytes + 16];
+            hunkData[0] = 0xA5;
+            hunkData[1] = 0x5A;
+        }
 
         var mapHeader = BuildCompressedMapHeader((uint)mapBytes);
         PutUInt48BE(mapHeader, 4, (ulong)hunkDataOffset);
@@ -412,7 +479,9 @@ public class DiscImageHostileSizeTests
         mapHeader[14] = 8;  // parentBits
 
         var image = BuildChd(
-            logicalBytes: ValidHunkBytes,
+            logicalBytes: logicalBytes ?? hunkBytes,
+            hunkBytes: hunkBytes,
+            unitBytes: unitBytes,
             compressor0: Cdlz,
             trailing: [.. mapHeader, .. mapData, .. hunkData]);
         return image;

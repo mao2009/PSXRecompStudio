@@ -52,6 +52,21 @@ public sealed class ChdReader : IDisposable
     /// </summary>
     private const ulong MaxMapTreeBytes = 64;
 
+    /// <summary>
+    /// Independent upper bound for a single hunk's compressed data, used instead of
+    /// (not merely alongside) trusting <see cref="ChdHeader.HunkBytes"/> as the only
+    /// ceiling. <c>HunkBytes</c> itself carries no absolute limit: <see cref="ReadHeader"/>
+    /// only bounds the quotient <c>HunkBytes / UnitBytes</c> via
+    /// <see cref="MaxFramesPerHunk"/>, so a crafted image can pair a large declared
+    /// <c>UnitBytes</c> with a proportionally large <c>HunkBytes</c> and stay under that
+    /// quotient limit while <c>HunkBytes</c> itself is unbounded. Since chdman only stores
+    /// a hunk under a codec when the compressed form is smaller than the raw hunk, no
+    /// valid image's compressed length can exceed the largest raw CD hunk this reader
+    /// supports: <see cref="MaxFramesPerHunk"/> frames of <see cref="CdFrameSize"/> bytes
+    /// each, about 9.56 MiB.
+    /// </summary>
+    private const uint MaxCompressedHunkBytes = MaxFramesPerHunk * CdFrameSize;
+
     private const byte CompressionNone = 4;
     private const byte CompressionSelf = 5;
     private const byte CompressionParent = 6;
@@ -236,12 +251,15 @@ public sealed class ChdReader : IDisposable
         // stores a hunk under a codec only when the compressed form is smaller than the
         // raw hunk and writes CompressionNone otherwise, so HunkBytes cannot reject
         // anything a valid image contains — including the uncompressed map's entries,
-        // whose CompressedLength is exactly HunkBytes.
-        if (entry.CompressedLength > _header.HunkBytes)
+        // whose CompressedLength is exactly HunkBytes. HunkBytes is itself untrusted and
+        // carries no absolute ceiling (see MaxCompressedHunkBytes), so the effective
+        // limit is whichever of the two bounds is tighter.
+        uint maxCompressedLength = Math.Min(_header.HunkBytes, MaxCompressedHunkBytes);
+        if (entry.CompressedLength > maxCompressedLength)
         {
             throw new InvalidDataException(
                 $"CHD hunk {hunkIndex}: compressed length {entry.CompressedLength} is above the "
-                + $"{_header.HunkBytes}-byte hunk size.");
+                + $"{maxCompressedLength}-byte limit for this hunk.");
         }
 
         var compressed = ReadBytesAt(entry.FileOffset, entry.CompressedLength);
