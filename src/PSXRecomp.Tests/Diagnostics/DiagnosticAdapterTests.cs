@@ -62,6 +62,7 @@ public sealed class DiagnosticAdapterTests
     [InlineData(RomAnalysisStage.MipsDecode, DiagnosticCategory.Analysis, DiagnosticStage.Analysis)]
     [InlineData(RomAnalysisStage.BasicBlock, DiagnosticCategory.Analysis, DiagnosticStage.Analysis)]
     [InlineData(RomAnalysisStage.Report, DiagnosticCategory.Analysis, DiagnosticStage.Report)]
+    [InlineData(RomAnalysisStage.Manifest, DiagnosticCategory.Analysis, DiagnosticStage.Report)]
     public void RomAnalysisOutcome_Failure_PreservesCategoryAndStage(
         RomAnalysisStage stage, DiagnosticCategory expectedCategory, DiagnosticStage expectedStage)
     {
@@ -103,6 +104,40 @@ public sealed class DiagnosticAdapterTests
         diagnostic!.Code.Should().Be(DiagnosticCodes.DiscAnalysisFailed);
         diagnostic.Recovery.Action.Should().Be(DiagnosticRecoveryAction.ReportBug);
         diagnostic.Recovery.Retry.Should().Be(DiagnosticRetrySemantics.NotRetryable);
+    }
+
+    [Fact]
+    public void RomAnalysisOutcome_ManifestFailure_MapsLikeReportFailure()
+    {
+        // Persisting the report artifacts fails for the same reasons assembling
+        // them does (unreadable disc metadata, artifact I/O), and both are
+        // already classified as the Analysis/Report family, so the recovery must
+        // not diverge into "report a bug".
+        var report = DiagnosticAdapter.From(FailingOutcome(RomAnalysisStage.Report, "ReportFailure", "it broke"));
+        var manifest = DiagnosticAdapter.From(FailingOutcome(RomAnalysisStage.Manifest, "ArtifactPersistenceFailure", "it broke"));
+
+        manifest.Should().NotBeNull();
+        manifest!.Code.Should().Be(DiagnosticCodes.AnalyzerReportFailed);
+        manifest.Code.Should().Be(report!.Code);
+        manifest.Recovery.Should().Be(report.Recovery);
+        manifest.Recovery.Action.Should().Be(DiagnosticRecoveryAction.Reanalyze);
+        manifest.Recovery.Retry.Should().Be(DiagnosticRetrySemantics.RetryAfterUserChange);
+        manifest.IsValid().Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(RomAnalysisStage.Start)]
+    [InlineData(RomAnalysisStage.Complete)]
+    public void RomAnalysisOutcome_StageOutsideTheMapping_StillFallsBackToReportBug(RomAnalysisStage stage)
+    {
+        // Regression guard: adding Manifest to the Report branch must not widen
+        // the default branch, which stays reserved for stages that are not
+        // expected to fail this way.
+        var diagnostic = DiagnosticAdapter.From(FailingOutcome(stage, "Unclassified", "unexpected"));
+
+        diagnostic.Should().NotBeNull();
+        diagnostic!.Code.Should().Be(DiagnosticCodes.DiscAnalysisFailed);
+        diagnostic.Recovery.Action.Should().Be(DiagnosticRecoveryAction.ReportBug);
     }
 
     private static TitleExecutionResult CompletedResult() =>

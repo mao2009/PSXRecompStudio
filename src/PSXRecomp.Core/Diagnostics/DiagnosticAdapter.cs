@@ -137,7 +137,13 @@ public static class DiagnosticAdapter
                 => (DiagnosticCodes.DiscInvalidExecutable, DiagnosticRecovery.UserChangeThenRetry()),
             RomAnalysisStage.MipsDecode => (DiagnosticCodes.AnalyzerDecodeFailed, DiagnosticRecovery.UserChangeThenRetry(DiagnosticRecoveryAction.Reanalyze)),
             RomAnalysisStage.BasicBlock => (DiagnosticCodes.AnalyzerAnalysisFailed, DiagnosticRecovery.UserChangeThenRetry(DiagnosticRecoveryAction.Reanalyze)),
-            RomAnalysisStage.Report => (DiagnosticCodes.AnalyzerReportFailed, DiagnosticRecovery.UserChangeThenRetry(DiagnosticRecoveryAction.Reanalyze)),
+            // Manifest (persisting the report artifacts) fails for the same
+            // reasons Report does — unreadable disc metadata, artifact I/O — and
+            // CategoryForStage/ToDiagnosticStage already place it in the analysis
+            // report family. The default branch stays reserved for stage values
+            // that are not expected to fail this way (Start, Complete, future
+            // additions), which are genuinely a bug to report.
+            RomAnalysisStage.Report or RomAnalysisStage.Manifest => (DiagnosticCodes.AnalyzerReportFailed, DiagnosticRecovery.UserChangeThenRetry(DiagnosticRecoveryAction.Reanalyze)),
             _ => (DiagnosticCodes.DiscAnalysisFailed, DiagnosticRecovery.ReportBug()),
         };
     }
