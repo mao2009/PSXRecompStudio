@@ -34,11 +34,14 @@ public sealed class GpuDevice : IGpu, IDisposable
     private uint _infoLatch;
 
     private bool _cpuToVramActive;
+    private byte _cpuToVramOpcode;
     private int _txX;
     private int _txY;
     private int _txRowOffset;
     private int _txRowWidth;
     private int _txHalfwordsLeft;
+
+    private bool _discardUntilTerminator;
 
     public GpuDevice()
     {
@@ -57,14 +60,21 @@ public sealed class GpuDevice : IGpu, IDisposable
     /// <summary>Last decoded drawing-primitive packet, kept for Issue #441 rasterization.</summary>
     public GpuPrimitivePacket? LastPrimitive { get; private set; }
 
-    /// <summary>Whether the GPU is currently accumulating a packet or streaming transfer data.</summary>
-    public bool IsBusy => _pendingCommand is not null || _cpuToVramActive;
+    /// <summary>Whether the GPU is currently accumulating a packet, streaming transfer data, or discarding a variable-length payload.</summary>
+    public bool IsBusy => _pendingCommand is not null || _cpuToVramActive || _discardUntilTerminator;
 
     public void WriteGP0(uint word)
     {
         if (_cpuToVramActive)
         {
             ProcessCpuToVramDataWord(word);
+            return;
+        }
+
+        if (_discardUntilTerminator)
+        {
+            if (Gp0CommandDecoder.IsPolylineTerminator(word))
+                _discardUntilTerminator = false;
             return;
         }
 
@@ -241,6 +251,8 @@ public sealed class GpuDevice : IGpu, IDisposable
         _pendingParams.Clear();
         _pendingCommandWord = 0;
         _cpuToVramActive = false;
+        _cpuToVramOpcode = 0;
+        _discardUntilTerminator = false;
     }
 
     private void CompletePendingCommand()
@@ -253,14 +265,29 @@ public sealed class GpuDevice : IGpu, IDisposable
 
     private void CompleteCommand(in Gp0Command cmd, ReadOnlySpan<uint> param)
     {
+        if (cmd.DiscardUntilTerminator)
+        {
+            LastResult = cmd.Result;
+            LastResultOpcode = cmd.Opcode;
+            _discardUntilTerminator = true;
+            return;
+        }
+
         if (cmd.HasDataPhase)
         {
             if (param.Length < 2)
                 return;
-            if (cmd.Opcode == 0xA0)
+            if ((cmd.Opcode & 0xE0) == 0xA0)
+            {
+                _cpuToVramOpcode = cmd.Opcode;
                 BeginCpuToVram(param[0], param[1]);
+            }
             else
+            {
                 BeginVramToCpu(param[0], param[1]);
+                LastResult = GpuCommandResult.Executed;
+                LastResultOpcode = cmd.Opcode;
+            }
             return;
         }
 
@@ -371,7 +398,11 @@ public sealed class GpuDevice : IGpu, IDisposable
         }
 
         if (_txHalfwordsLeft == 0)
+        {
             _cpuToVramActive = false;
+            LastResult = GpuCommandResult.Executed;
+            LastResultOpcode = _cpuToVramOpcode;
+        }
     }
 
     private void BeginVramToCpu(uint coord, uint size)

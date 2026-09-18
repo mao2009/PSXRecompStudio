@@ -45,7 +45,8 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
 | RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests`; production PS-X EXE path via `TitleExecutionService.Run(PsxExe, ...)` (#409) |
 | BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 5 of 256+ services |
-| GPU / SPU / CD-ROM | ❌ Not implemented | Interface-only |
+| GPU | ⚠ Partial | Managed register/VRAM model (#440) — register/MMIO semantics + VRAM transfers; not wired into title execution, no rasterization |
+| SPU / CD-ROM | ❌ Not implemented | Interface-only |
 | TITLE_SCREEN | ❌ Not reached | — |
 
 The RUNTIME_EXECUTION row above is this gate's own real-ROM, fixture-gated test

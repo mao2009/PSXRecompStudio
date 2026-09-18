@@ -115,6 +115,10 @@ public enum GpuCommandResult
 /// words the packet occupies (command word + parameters). <see cref="HasDataPhase"/>
 /// marks streaming transfers whose bodies (after <see cref="HeaderWords"/>) are
 /// consumed one 32-bit word at a time rather than buffered.
+/// <see cref="DiscardUntilTerminator"/> marks variable-length packets (polyline)
+/// whose payload is consumed word-by-word until the
+/// <see cref="Gp0CommandDecoder.IsPolylineTerminator"/> rule fires; no fixed
+/// <see cref="TotalWords"/> exists for them.
 /// </summary>
 [Domain]
 public readonly struct Gp0Command
@@ -124,6 +128,7 @@ public readonly struct Gp0Command
     public int TotalWords { get; init; }
     public bool HasDataPhase { get; init; }
     public int HeaderWords { get; init; }
+    public bool DiscardUntilTerminator { get; init; }
 }
 
 /// <summary>

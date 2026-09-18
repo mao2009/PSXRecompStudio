@@ -29,6 +29,95 @@ public class GpuTransferTests
         gpu.Vram[6, 0].Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(0xA1)]
+    [InlineData(0xBF)]
+    public void CpuToVram_FamilyMirror_IsRoutedToCpuToVram(byte opcode)
+    {
+        using var gpu = new GpuDevice();
+        var addr = ((uint)opcode << 24) | 0x0000_00A1;
+
+        gpu.WriteGP0(addr);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010002);
+        gpu.WriteGP0(0xBBBBAAAA);
+
+        gpu.Vram[0, 0].Should().Be(0xAAAA);
+        gpu.Vram[1, 0].Should().Be(0xBBBB);
+    }
+
+    [Fact]
+    public void VramToCpu_FamilyMirror_IsRoutedToVramToCpu()
+    {
+        using var gpu = new GpuDevice();
+        gpu.Vram[0, 0] = 0x1111;
+        gpu.Vram[1, 0] = 0x2222;
+
+        gpu.WriteGP0(0xC1_000000);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010002);
+
+        gpu.IsBusy.Should().BeFalse();
+        ((gpu.ReadGpustat() >> 27) & 1).Should().Be(1u);
+        gpu.ReadGpuread().Should().Be(0x22221111);
+    }
+
+    [Fact]
+    public void CpuToVram_CompletesWithLastResultAfterDataPhase()
+    {
+        using var gpu = new GpuDevice();
+        gpu.WriteGP0(0x03000000); // prime LastResult to a distinguishable value
+        gpu.LastResult.Should().Be(GpuCommandResult.Unsupported);
+
+        gpu.WriteGP0(CpuToVram);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010002);
+        gpu.LastResult.Should().Be(GpuCommandResult.Unsupported); // still streaming
+        gpu.IsBusy.Should().BeTrue();
+
+        gpu.WriteGP0(0xBBBBAAAA);
+        gpu.IsBusy.Should().BeFalse();
+        gpu.LastResult.Should().Be(GpuCommandResult.Executed);
+        gpu.LastResultOpcode.Should().Be(0xA0);
+    }
+
+    [Fact]
+    public void VramToCpu_PublishesLastResultWhenBufferBecomesReady()
+    {
+        using var gpu = new GpuDevice();
+        gpu.Vram[0, 0] = 0x1111;
+        gpu.Vram[1, 0] = 0x2222;
+
+        gpu.WriteGP0(VramToCpu);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010002);
+
+        gpu.LastResult.Should().Be(GpuCommandResult.Executed);
+        gpu.LastResultOpcode.Should().Be(0xC0);
+        gpu.ReadGpuread().Should().Be(0x22221111);
+    }
+
+    [Fact]
+    public void VramToCpu_LastResultSurvivesUntilNextCommandStart()
+    {
+        using var gpu = new GpuDevice();
+        gpu.WriteGP0(VramToCpu);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010002);
+
+        gpu.ReadGpuread().Should().Be(0);
+        gpu.LastResult.Should().Be(GpuCommandResult.Executed);
+        gpu.LastResultOpcode.Should().Be(0xC0);
+
+        gpu.WriteGP0(CpuToVram);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010002);
+        gpu.LastResultOpcode.Should().Be(0xC0); // A0 publishes only at completion
+        gpu.LastResult.Should().Be(GpuCommandResult.Executed);
+        gpu.WriteGP0(0x1122_0000);
+        gpu.LastResultOpcode.Should().Be(0xA0);
+    }
+
     [Fact]
     public void CpuToVram_MultiRow_WrapsAtRowWidth()
     {

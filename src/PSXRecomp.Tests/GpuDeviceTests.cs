@@ -226,6 +226,58 @@ public class GpuDeviceTests
     }
 
     [Fact]
+    public void Gp0Polyline_PayloadWordsAreDiscardedUntilTerminator()
+    {
+        using var gpu = new GpuDevice();
+
+        gpu.WriteGP0(0x48000000); // polyline -> reported Unsupported, now discarding
+        gpu.LastResult.Should().Be(GpuCommandResult.Unsupported);
+        gpu.LastResultOpcode.Should().Be(0x48);
+        gpu.IsBusy.Should().BeTrue();
+
+        // Payload words that would decouple as GP0 commands (IRQ, env, fill) must be swallowed.
+        gpu.WriteGP0(0x1F000000); // would raise IRQ1
+        gpu.WriteGP0(0xE1000000 | 0x1234); // would set drawing mode
+        gpu.WriteGP0(0x020000FF); // fill command, would touch VRAM
+        gpu.IsBusy.Should().BeTrue();
+        ((gpu.ReadGpustat() >> 24) & 1).Should().Be(0u);
+        gpu.Vram[0, 0].Should().Be(0);
+
+        gpu.WriteGP0(0x55555555); // terminator
+        gpu.IsBusy.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Gp0Polyline_TerminatorInGouraudColorWord_EndsDiscard()
+    {
+        using var gpu = new GpuDevice();
+
+        gpu.WriteGP0(0x58000000); // Gouraud polyline
+        gpu.WriteGP0(0x00010002); // vertex 1
+        gpu.WriteGP0(0x55555555); // vertex-2 color doubles as terminator
+        gpu.IsBusy.Should().BeFalse();
+
+        // The very next word decodes as a fresh command.
+        gpu.WriteGP0(0x1F000000);
+        ((gpu.ReadGpustat() >> 24) & 1).Should().Be(1u);
+    }
+
+    [Fact]
+    public void Gp0Polyline_DiscardStateClearedByGp1ResetCommandBuffer()
+    {
+        using var gpu = new GpuDevice();
+
+        gpu.WriteGP0(0x48000000);
+        gpu.IsBusy.Should().BeTrue();
+
+        gpu.WriteGP1(0x01000000);
+        gpu.IsBusy.Should().BeFalse();
+
+        gpu.WriteGP0(0x1F000000); // decoded normally, not swallowed
+        ((gpu.ReadGpustat() >> 24) & 1).Should().Be(1u);
+    }
+
+    [Fact]
     public void Gp1ResetCommandBuffer_AbandonsPendingPacket()
     {
         using var gpu = new GpuDevice();
