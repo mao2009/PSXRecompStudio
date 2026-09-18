@@ -277,6 +277,29 @@ public class InputAbstractionTests
     }
 
     [Fact]
+    public void Add_DefinedCompositeMember_IsRejectedAsComposite()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new InputBindingMap<EnumWithDefinedComposite>().Add(
+                new InputBinding<EnumWithDefinedComposite>(Keyboard("Key.W"), EnumWithDefinedComposite.Both)));
+    }
+
+    [Fact]
+    public void Add_UndefinedSingleBitValue_IsRejected()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new InputBindingMap<Ps1Button>().Add(Binding(Keyboard("Key.W"), (Ps1Button)0x0002)));
+    }
+
+    [Fact]
+    public void Add_DefinedSingleBitValue_IsAccepted()
+    {
+        var map = new InputBindingMap<Ps1Button>().Add(Binding(Keyboard("Key.W"), Ps1Button.Up));
+
+        map.Bindings.Should().ContainSingle(b => b.Button == Ps1Button.Up);
+    }
+
+    [Fact]
     public void SetPressed_WithUndefinedPort_IsRejected()
     {
         var physical = new PhysicalControllerState<Ps1ControllerDeviceKind>();
@@ -407,5 +430,14 @@ public class InputAbstractionTests
         None = 0,
         A = 1,
         B = 2,
+    }
+
+    [Flags]
+    private enum EnumWithDefinedComposite : uint
+    {
+        None = 0,
+        A = 1,
+        B = 2,
+        Both = A | B,
     }
 }

@@ -69,6 +69,13 @@ public sealed class InputBindingMap<TButton>
                 $"A binding must target exactly one button; {binding.Button} is a composite flag value.", nameof(binding));
         }
 
+        if (!Enum.IsDefined(binding.Button))
+        {
+            throw new ArgumentException(
+                $"A binding must target a defined button; {binding.Button} is not a defined {typeof(TButton).Name} member.",
+                nameof(binding));
+        }
+
         foreach (var existing in _bindings)
         {
             if (existing.Input != binding.Input)
