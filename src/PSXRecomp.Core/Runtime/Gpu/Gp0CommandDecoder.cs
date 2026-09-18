@@ -47,7 +47,7 @@ public static class Gp0CommandDecoder
                 int _colorWords = _gouraud ? _vertices - 1 : 0;
                 return Rendering(_op, 1 + _vertexWords + _colorWords);
             }
-            case 2: // Line primitive (GP0 40h-4Fh)
+            case 2: // Line primitive (GP0 40h-5Fh; bit28 = Gouraud, bit27 = polyline)
             {
                 bool _gouraud = ((word >> 28) & 1) != 0;
                 bool _polyline = ((word >> 27) & 1) != 0;
@@ -62,11 +62,11 @@ public static class Gp0CommandDecoder
                 int _wordCount = 2 + (_textured ? 1 : 0) + (_size == 0 ? 1 : 0);
                 return Rendering(_op, _wordCount);
             }
-            case 4: // VRAM-to-VRAM blit (GP0 80h)
+            case 4: // VRAM-to-VRAM blit (GP0 80h-9Fh; 81h-9Fh mirror GP0(80h))
                 return new Gp0Command { Opcode = _op, Result = GpuCommandResult.RecognizedNotImplemented, TotalWords = 4 };
-            case 5: // CPU-to-VRAM blit (GP0 A0h)
+            case 5: // CPU-to-VRAM blit (GP0 A0h-BFh; A1h-BFh mirror GP0(A0h))
                 return new Gp0Command { Opcode = _op, Result = GpuCommandResult.Executed, TotalWords = 3, HasDataPhase = true, HeaderWords = 3 };
-            case 6: // VRAM-to-CPU blit (GP0 C0h)
+            case 6: // VRAM-to-CPU blit (GP0 C0h-DFh; C1h-DFh mirror GP0(C0h))
                 return new Gp0Command { Opcode = _op, Result = GpuCommandResult.Executed, TotalWords = 3, HasDataPhase = true, HeaderWords = 3 };
             default: // Environment commands (GP0 E0h-FFh)
                 return _op switch
