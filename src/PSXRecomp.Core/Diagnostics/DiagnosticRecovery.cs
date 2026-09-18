@@ -142,12 +142,20 @@ public readonly record struct DiagnosticRecovery(
     ///   (<see cref="DiagnosticRetrySemantics.RetrySameRequest"/>) or once
     ///   external state allows it
     ///   (<see cref="DiagnosticRetrySemantics.RetryAfterExternalChange"/>).</item>
-    ///   <item>Every remaining action names a change to make, and stays
-    ///   compatible with any retry semantics: a fallback or rebuild path can
-    ///   exist even when the original request is not itself retryable. Unknown
-    ///   future actions therefore stay valid rather than being rejected for
-    ///   lack of a rule.</item>
+    ///   <item>Every remaining action names something to change before
+    ///   retrying, so the request does not stay identical and
+    ///   <see cref="DiagnosticRetrySemantics.RetrySameRequest"/> cannot describe
+    ///   it. The other three semantics all stay open: a fallback or rebuild path
+    ///   can exist even when the original request is not itself retryable, and
+    ///   an action added later is valid by default rather than rejected for lack
+    ///   of a rule.</item>
     /// </list>
+    ///
+    /// <para>
+    /// This is the single action-to-retry compatibility matrix. The
+    /// parameterized factory methods below are checked against it, so no value
+    /// a factory returns can be one <see cref="IsValid"/> rejects.
+    /// </para>
     /// </summary>
     private static bool AdmitsRetry(DiagnosticRecoveryAction action, DiagnosticRetrySemantics retry) =>
         action switch
@@ -156,8 +164,23 @@ public readonly record struct DiagnosticRecovery(
             DiagnosticRecoveryAction.Retry => retry
                 is DiagnosticRetrySemantics.RetrySameRequest
                 or DiagnosticRetrySemantics.RetryAfterExternalChange,
-            _ => true,
+            _ => retry != DiagnosticRetrySemantics.RetrySameRequest,
         };
+
+    /// <summary>
+    /// Guards a parameterized factory against an action its fixed retry
+    /// semantics cannot describe. Supplying one is a programming error, not a
+    /// domain failure, so it throws rather than yielding a recovery that
+    /// <see cref="IsValid"/> would reject.
+    /// </summary>
+    private static void ThrowIfIncompatible(DiagnosticRecoveryAction action, DiagnosticRetrySemantics retry)
+    {
+        if (!Enum.IsDefined(action) || !AdmitsRetry(action, retry))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(action), action, $"Recovery action cannot be combined with {retry} retry semantics.");
+        }
+    }
 
     /// <summary>No recovery: the failure is not retryable and no action is available.</summary>
     public static DiagnosticRecovery NotRetryable() => new();
@@ -166,13 +189,30 @@ public readonly record struct DiagnosticRecovery(
     public static DiagnosticRecovery RetrySameRequest() =>
         new(DiagnosticRecoveryAction.Retry, DiagnosticRetrySemantics.RetrySameRequest, AutomaticRetryAllowed: true);
 
-    /// <summary>The requested input/configuration must change (user action), then the operation can retry.</summary>
-    public static DiagnosticRecovery UserChangeThenRetry(DiagnosticRecoveryAction action = DiagnosticRecoveryAction.ProvideInput) =>
-        new(action, DiagnosticRetrySemantics.RetryAfterUserChange, RequiresUserAction: true);
+    /// <summary>
+    /// The requested input/configuration must change (user action), then the
+    /// operation can retry. Throws <see cref="ArgumentOutOfRangeException"/> for
+    /// an action that cannot describe a user-change retry (for example
+    /// <see cref="DiagnosticRecoveryAction.ReportBug"/>, which offers no
+    /// recovery path at all).
+    /// </summary>
+    public static DiagnosticRecovery UserChangeThenRetry(DiagnosticRecoveryAction action = DiagnosticRecoveryAction.ProvideInput)
+    {
+        ThrowIfIncompatible(action, DiagnosticRetrySemantics.RetryAfterUserChange);
+        return new(action, DiagnosticRetrySemantics.RetryAfterUserChange, RequiresUserAction: true);
+    }
 
-    /// <summary>An external state must change first, then the same request is valid.</summary>
-    public static DiagnosticRecovery ExternalStateThenRetry(DiagnosticRecoveryAction action = DiagnosticRecoveryAction.UseFallback) =>
-        new(action, DiagnosticRetrySemantics.RetryAfterExternalChange);
+    /// <summary>
+    /// An external state must change first, then the same request is valid.
+    /// Throws <see cref="ArgumentOutOfRangeException"/> for an action that
+    /// cannot describe an external-change retry (for example
+    /// <see cref="DiagnosticRecoveryAction.None"/>).
+    /// </summary>
+    public static DiagnosticRecovery ExternalStateThenRetry(DiagnosticRecoveryAction action = DiagnosticRecoveryAction.UseFallback)
+    {
+        ThrowIfIncompatible(action, DiagnosticRetrySemantics.RetryAfterExternalChange);
+        return new(action, DiagnosticRetrySemantics.RetryAfterExternalChange);
+    }
 
     /// <summary>An unrecoverable failure that should be filed as a bug.</summary>
     public static DiagnosticRecovery ReportBug() =>

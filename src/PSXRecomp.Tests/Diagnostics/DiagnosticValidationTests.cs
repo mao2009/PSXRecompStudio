@@ -140,6 +140,82 @@ public sealed class DiagnosticValidationTests
         recovery.IsValid().Should().BeTrue();
     }
 
+    /// <summary>
+    /// The whole action domain, not selected examples: whatever a parameterized
+    /// factory accepts must satisfy <see cref="DiagnosticRecovery.IsValid"/>.
+    /// A factory and the validator disagreeing is the defect this guards.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EveryRecoveryAction))]
+    public void Recovery_ParameterizedFactories_NeverProduceAStateTheValidatorRejects(DiagnosticRecoveryAction action)
+    {
+        foreach (var factory in new Func<DiagnosticRecoveryAction, DiagnosticRecovery>[]
+                 {
+                     DiagnosticRecovery.UserChangeThenRetry,
+                     DiagnosticRecovery.ExternalStateThenRetry,
+                 })
+        {
+            DiagnosticRecovery recovery;
+            try
+            {
+                recovery = factory(action);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // Rejecting an incompatible action up front is the other allowed outcome.
+                continue;
+            }
+
+            recovery.IsValid().Should().BeTrue(
+                "{0} returned {1} for action {2}", factory.Method.Name, recovery, action);
+        }
+    }
+
+    public static TheoryData<DiagnosticRecoveryAction> EveryRecoveryAction()
+    {
+        var data = new TheoryData<DiagnosticRecoveryAction>();
+        foreach (var action in Enum.GetValues<DiagnosticRecoveryAction>())
+        {
+            data.Add(action);
+        }
+
+        return data;
+    }
+
+    [Fact]
+    public void Recovery_UserChangeThenRetryWithAnActionOfferingNoRecoveryPath_Throws()
+    {
+        var reportBug = () => DiagnosticRecovery.UserChangeThenRetry(DiagnosticRecoveryAction.ReportBug);
+        var none = () => DiagnosticRecovery.UserChangeThenRetry(DiagnosticRecoveryAction.None);
+
+        reportBug.Should().Throw<ArgumentOutOfRangeException>();
+        none.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Recovery_ExternalStateThenRetryWithAnActionOfferingNoRecoveryPath_Throws()
+    {
+        var none = () => DiagnosticRecovery.ExternalStateThenRetry(DiagnosticRecoveryAction.None);
+        var reportBug = () => DiagnosticRecovery.ExternalStateThenRetry(DiagnosticRecoveryAction.ReportBug);
+
+        none.Should().Throw<ArgumentOutOfRangeException>();
+        reportBug.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData(DiagnosticRecoveryAction.ProvideInput)]
+    [InlineData(DiagnosticRecoveryAction.ChangeConfiguration)]
+    [InlineData(DiagnosticRecoveryAction.RetryAfterChange)]
+    [InlineData(DiagnosticRecoveryAction.Reanalyze)]
+    [InlineData(DiagnosticRecoveryAction.Rebuild)]
+    [InlineData(DiagnosticRecoveryAction.UseFallback)]
+    public void Recovery_ChangeRequiringActionClaimingTheRequestIsUnchanged_IsInvalid(DiagnosticRecoveryAction action)
+    {
+        // The request cannot stay identical when the action itself names a change to make.
+        new DiagnosticRecovery(action, DiagnosticRetrySemantics.RetrySameRequest)
+            .IsValid().Should().BeFalse();
+    }
+
     [Theory]
     [InlineData(DiagnosticRetrySemantics.NotRetryable)]
     [InlineData(DiagnosticRetrySemantics.RetrySameRequest)]
