@@ -26,6 +26,19 @@ public sealed class ProjectMetadataSerializerTests
 
     private const string Sha256Sample = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
+    /// <summary>
+    /// A complete, otherwise-valid manifest whose <c>artifactKind</c> is the raw JSON
+    /// value <paramref name="artifactKindJson"/> (a quoted string, or <c>null</c>).
+    /// </summary>
+    private static string ManifestJson(string artifactKindJson) => $$"""
+        {
+          "schemaVersion": {{ProjectSchema.ProjectFormatVersion}},
+          "artifactKind": {{artifactKindJson}},
+          "projectId": "castlevania-sotn",
+          "inputSha256": "{{Sha256Sample}}"
+        }
+        """;
+
     [Fact]
     public void SaveThenLoad_IsSemanticallyEqual()
     {
@@ -120,6 +133,46 @@ public sealed class ProjectMetadataSerializerTests
         var act = () => ProjectMetadataSerializer.Deserialize(Encoding.UTF8.GetBytes(json));
 
         act.Should().Throw<NotSupportedException>();
+    }
+
+    [Fact]
+    public void Deserialize_AcceptsTheCanonicalArtifactKind()
+    {
+        var bytes = Encoding.UTF8.GetBytes(ManifestJson($"\"{ProjectSchema.ProjectArtifactKind}\""));
+
+        var document = ProjectMetadataSerializer.Deserialize(bytes);
+
+        document.ArtifactKind.Should().Be(ProjectSchema.ProjectArtifactKind);
+    }
+
+    /// <summary>
+    /// The artifact kind is the persisted discriminator, so it is matched exactly
+    /// (casing included) and a foreign value is rejected — never silently rewritten
+    /// into a project manifest.
+    /// </summary>
+    [Theory]
+    [InlineData("\"other\"")]
+    [InlineData("\"psxrecomp.real-rom-analysis.manifest\"")]
+    [InlineData("\"PSXRecomp.Project.Manifest\"")]
+    [InlineData("\"\"")]
+    [InlineData("null")]
+    public void Deserialize_RejectsForeignArtifactKindInsteadOfRepairingIt(string artifactKindJson)
+    {
+        var bytes = Encoding.UTF8.GetBytes(ManifestJson(artifactKindJson));
+
+        var act = () => ProjectMetadataSerializer.Deserialize(bytes);
+
+        act.Should().Throw<FormatException>();
+    }
+
+    [Fact]
+    public void Serialize_RejectsForeignArtifactKindInsteadOfRepairingIt()
+    {
+        var document = SampleDocument() with { ArtifactKind = "other" };
+
+        var act = () => ProjectMetadataSerializer.Serialize(document);
+
+        act.Should().Throw<FormatException>();
     }
 
     [Fact]

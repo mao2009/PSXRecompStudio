@@ -30,6 +30,7 @@ public static class ProjectMetadataSerializer
     /// this serializer writes.
     /// </exception>
     /// <exception cref="FormatException">
+    /// <see cref="ProjectManifestDocument.ArtifactKind"/>,
     /// <see cref="ProjectManifestDocument.ProjectId"/> or
     /// <see cref="ProjectManifestDocument.InputSha256"/> is invalid.
     /// </exception>
@@ -53,6 +54,8 @@ public static class ProjectMetadataSerializer
     /// version this serializer understands.
     /// </exception>
     /// <exception cref="FormatException">
+    /// <see cref="ProjectManifestDocument.ArtifactKind"/> is not
+    /// <see cref="ProjectSchema.ProjectArtifactKind"/>, or
     /// <see cref="ProjectManifestDocument.ProjectId"/> or
     /// <see cref="ProjectManifestDocument.InputSha256"/> is invalid.
     /// </exception>
@@ -67,8 +70,11 @@ public static class ProjectMetadataSerializer
     /// <summary>
     /// Checks every field's validity and returns a copy with identity fields in
     /// their canonical normalized form (lowercase SHA-256 hex). Never accepted
-    /// silently: an unsupported format version or an invalid identity field
-    /// throws rather than falling back to a default.
+    /// silently: an unsupported format version, a foreign artifact kind, or an
+    /// invalid identity field throws rather than falling back to a default. The
+    /// artifact-kind discriminator is compared exactly, before any normalization,
+    /// so a document of another kind is rejected instead of being rewritten into
+    /// a project manifest.
     /// </summary>
     private static ProjectManifestDocument Validate(ProjectManifestDocument document)
     {
@@ -77,6 +83,14 @@ public static class ProjectMetadataSerializer
             throw new NotSupportedException(
                 $"Unsupported project format version {document.SchemaVersion}; "
                 + $"this build understands version {ProjectSchema.ProjectFormatVersion} only.");
+        }
+
+        if (document.ArtifactKind != ProjectSchema.ProjectArtifactKind)
+        {
+            throw new FormatException(
+                $"Invalid artifact kind '{document.ArtifactKind}'; expected exactly "
+                + $"'{ProjectSchema.ProjectArtifactKind}'. A document of another kind is "
+                + "rejected, never rewritten into a project manifest.");
         }
 
         if (!AnalysisArtifactSchema.IsValidFixtureId(document.ProjectId))
@@ -91,7 +105,6 @@ public static class ProjectMetadataSerializer
 
         return document with
         {
-            ArtifactKind = ProjectSchema.ProjectArtifactKind,
             InputSha256 = normalizedInputSha256,
         };
     }
