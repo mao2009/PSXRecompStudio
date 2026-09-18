@@ -76,13 +76,18 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Marks the end of the stable state snapshot on stdout.</summary>
     public const string SnapshotEndMarker = "RSNAPSHOT_END";
 
-    /// <summary>The maximum init-memory entries the driver's input format accepts (matches <c>PSX_MAX_INIT</c>).</summary>
+    /// <summary>The maximum init-memory entries the driver's input format accepts.
+    /// The driver's <c>PSX_MAX_INIT</c> is emitted from this constant
+    /// (<see cref="Generate"/>), making it the source of truth for the C bound.</summary>
     public const int MaxInitEntries = 4096;
 
     /// <summary>
     /// Appends the production driver to <paramref name="generatedDispatch"/>'s
     /// source. Pure text concatenation: deterministic for identical input, and
-    /// independent of machine, locale, or filesystem state.
+    /// independent of machine, locale, or filesystem state. The driver's
+    /// <c>PSX_MAX_INIT</c> is emitted from <see cref="MaxInitEntries"/> (the
+    /// <c>Replace</c> below is the verbatim-string analogue of an interpolation), so
+    /// the C bound and the C# constant cannot drift.
     /// </summary>
     public static RecompiledArtifactCodeGenResult Generate(RecompilerHostCodeGenResult generatedDispatch)
     {
@@ -97,7 +102,12 @@ public static class RecompiledArtifactCodeGen
                 generatedDispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
         }
 
-        return new RecompiledArtifactCodeGenResult(true, generatedDispatch.Source + "\n" + DriverSource, null, null);
+        return new RecompiledArtifactCodeGenResult(
+            true,
+            generatedDispatch.Source + "\n" + DriverSource.Replace(
+                "#define PSX_MAX_INIT 4096u", $"#define PSX_MAX_INIT {MaxInitEntries}u", StringComparison.Ordinal),
+            null,
+            null);
     }
 
     // Self-contained artifact entrypoint. Reads one guest state from the input

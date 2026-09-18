@@ -29,6 +29,15 @@ namespace PSXRecomp.Infrastructure;
 /// across repeated launches is deliberately out of scope for Issue #459 (see
 /// its non-goals) and is follow-up work for the CLI/E2E issues that consume
 /// this engine.
+/// <para>
+/// Within that single launch, the artifact always runs from the state
+/// <see cref="RunSegment"/> is handed, never from the state <see cref="Load"/>
+/// was called with: the input file is written from
+/// <see cref="TitleExecutionSegmentRequest"/> immediately before each process
+/// launch, while <see cref="TitleExecutionRequest.InitialMemory"/> — the one
+/// input a segment request carries no field for — is retained from
+/// <see cref="Load"/> and re-applied to every rewrite.
+/// </para>
 /// </remarks>
 [Infrastructure]
 public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
@@ -42,6 +51,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly string _binaryPath;
     private readonly string _inputPath;
+
+    private IReadOnlyList<RecompilerInitialMemoryItem> _initialMemory =
+        Array.Empty<RecompilerInitialMemoryItem>();
 
     private bool _loaded;
     private bool _ran;
@@ -111,7 +123,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public void Load(TitleExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        WriteInputFile(request.EntryPc, request.InitialGpr, request.InitialHi, request.InitialLo, request.InitialMemory, request.SegmentBudget);
+        if (request.InitialMemory.Count > RecompiledArtifactCodeGen.MaxInitEntries)
+        {
+            // The artifact driver's own PSX_MAX_INIT bound (derived from
+            // MaxInitEntries — see RecompiledArtifactCodeGen.Generate) would
+            // otherwise reject the input file with an opaque process exit code;
+            // fail with a clear message here, where the request is prepared.
+            throw new InvalidOperationException(
+                $"Initial memory has {request.InitialMemory.Count} entries, exceeding the artifact driver's " +
+                $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
+        }
+
+        // Load retains only the initial-memory seed: it is the one input a
+        // TitleExecutionSegmentRequest carries no field for, so it is stored here
+        // and re-applied by RunSegment's file rewrite. The architectural state a
+        // run actually starts from (PC, GPRs, HI/LO, budget) is named by each
+        // RunSegment call, never frozen here.
+        _initialMemory = request.InitialMemory;
         _loaded = true;
     }
 
@@ -136,15 +164,32 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         _ran = true;
 
-        // ExecutionOrchestrator seeds this call's state directly from the same
-        // TitleExecutionRequest that Load already wrote to the input file (entry
-        // pc, initial registers, segment budget), so the file Load produced is
-        // already this run's input — including InitialMemory, which a
-        // TitleExecutionSegmentRequest carries no field for at all.
-        var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs);
-        var arguments = bridge is null ? $"\"{_inputPath}\"" : $"\"{_inputPath}\" {RecompiledArtifactCodeGen.HostTransferFlag}";
+        // The artifact must run from the state THIS call names — segmentRequest's
+        // PC, GPRs, HI/LO and budget — not the state Load was handed, so the input
+        // file is written here, immediately before launch. InitialMemory is the
+        // sole input a TitleExecutionSegmentRequest carries no field for: it is
+        // retained from Load and re-applied to this rewrite.
+        WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
-        var (exit, stdout, _) = RunProcess(_binaryPath, arguments, RunTimeoutMs, out var timedOut, bridge);
+        var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs);
+        var arguments = new List<string>(2) { _inputPath };
+        if (bridge is not null)
+        {
+            arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+        }
+
+        var (exit, stdout, _, hostProtocolFaulted) = RunProcess(_binaryPath, arguments, RunTimeoutMs, out var timedOut, bridge);
+
+        if (hostProtocolFaulted)
+        {
+            // A host-transfer pump fault (a BIOS factory, protocol, or stream
+            // failure) is an engine mechanism failure, classified here so it never
+            // surfaces as a raw exception past the launcher — and its details
+            // never leak into the result contract (Issue #459's stable JSON).
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed, "ARTIFACT_HOST_PROTOCOL_FAILED",
+                "The artifact host-transfer protocol failed.");
+        }
 
         if (timedOut)
         {
@@ -178,10 +223,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     {
         if (initialMemory.Count > RecompiledArtifactCodeGen.MaxInitEntries)
         {
-            // The driver's own PSX_MAX_INIT bound (kept numerically in sync with
-            // MaxInitEntries — a verbatim C string cannot interpolate a C#
-            // constant) would otherwise reject this input file with an opaque
-            // process exit code; fail with a clear message instead.
+            // The driver's own PSX_MAX_INIT bound (emitted from MaxInitEntries by
+            // RecompiledArtifactCodeGen.Generate) would otherwise reject this input
+            // file with an opaque process exit code; fail with a clear message
+            // instead. Load validates the same bound up front, so this is defense
+            // in depth for a direct-preparation path.
             throw new InvalidOperationException(
                 $"Initial memory has {initialMemory.Count} entries, exceeding the artifact driver's " +
                 $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
@@ -199,11 +245,26 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         File.WriteAllText(_inputPath, sb.ToString());
     }
 
-    /// <summary>Runs one process, optionally pumping <paramref name="bridge"/>'s host-transfer protocol.</summary>
-    private static (int ExitCode, string Stdout, string Stderr) RunProcess(
-        string fileName, string arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge)
+    /// <summary>
+    /// Runs one process, optionally pumping <paramref name="bridge"/>'s
+    /// host-transfer protocol. Arguments travel as a collection through
+    /// <see cref="ProcessStartInfo.ArgumentList"/> — never as a hand-quoted raw
+    /// <see cref="ProcessStartInfo.Arguments"/> string — so an input path
+    /// containing spaces or quotes is received by the artifact unchanged as one
+    /// argument.
+    /// </summary>
+    /// <returns>The process exit code, captured stdout/stderr, and whether the
+    /// host-transfer pump faulted. A pump fault (a BIOS factory exception, a
+    /// protocol parse failure, a stdin/stdout read-or-write failure, or a
+    /// transfer send failure) is a classified protocol failure, not a
+    /// caller-visible exception: the child is killed and drained here and the
+    /// fault indicator lets <see cref="RunSegment"/> map it to
+    /// <c>ARTIFACT_HOST_PROTOCOL_FAILED</c> without leaking the underlying
+    /// exception into the result contract.</returns>
+    private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted) RunProcess(
+        string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge)
     {
-        var psi = new ProcessStartInfo(fileName, arguments)
+        var psi = new ProcessStartInfo(fileName)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -211,6 +272,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
 
         using var process = Process.Start(psi)!;
         var stderrTask = process.StandardError.ReadToEndAsync();
@@ -222,12 +287,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 TryKillTree(process);
                 timedOut = true;
-                return (int.MinValue, stdoutTask.Result, stderrTask.Result);
+                return (int.MinValue, stdoutTask.Result, stderrTask.Result, false);
             }
 
             process.WaitForExit();
             timedOut = false;
-            return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
+            return (process.ExitCode, stdoutTask.Result, stderrTask.Result, false);
         }
 
         process.StandardInput.AutoFlush = true;
@@ -251,10 +316,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         {
             pumpCompleted = pump.Wait(timeoutMs);
         }
-        catch
+        catch (Exception exception)
         {
+            // The host-transfer pump faulted. Kill and drain the child, keep the
+            // exception out of the result contract (log it locally for
+            // diagnostics), and report the fault so RunSegment classifies it as
+            // ARTIFACT_HOST_PROTOCOL_FAILED instead of letting a raw exception
+            // escape the launcher. This is distinct from a timeout or a normal
+            // process-failure classification.
             TryKillTree(process);
-            throw;
+            try { pump.Wait(PumpDrainTimeoutMs); } catch { /* the fault verdict below stands regardless */ }
+            Trace.WriteLine($"Host-transfer pump failed: {exception}");
+            timedOut = false;
+            return (int.MinValue, output.ToString(), DrainWithinCleanupBudget(stderrTask), true);
         }
 
         if (!pumpCompleted)
@@ -262,19 +336,41 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             TryKillTree(process);
             try { pump.Wait(PumpDrainTimeoutMs); } catch { /* the timeout verdict below stands regardless */ }
             timedOut = true;
-            return (int.MinValue, output.ToString(), stderrTask.Result);
+            return (int.MinValue, output.ToString(), stderrTask.Result, false);
         }
 
         if (!process.WaitForExit(timeoutMs))
         {
             TryKillTree(process);
             timedOut = true;
-            return (int.MinValue, output.ToString(), stderrTask.Result);
+            return (int.MinValue, output.ToString(), stderrTask.Result, false);
         }
 
         process.WaitForExit();
         timedOut = false;
-        return (process.ExitCode, output.ToString(), stderrTask.Result);
+        return (process.ExitCode, output.ToString(), stderrTask.Result, false);
+    }
+
+    /// <summary>
+    /// Consumes a redirected stream within a bounded budget for the pump-fault
+    /// path. After the child is killed, a descendant that inherited the pipe
+    /// handle could otherwise keep the stream open past the promised drain
+    /// budget; anything that does not close in time is dropped. Diagnostics only —
+    /// the fault verdict stands and these bytes never enter the result contract.
+    /// </summary>
+    private static string DrainWithinCleanupBudget(Task<string> readTask)
+    {
+        try
+        {
+            return readTask.Wait(PumpDrainTimeoutMs) && readTask.IsCompletedSuccessfully
+                ? readTask.Result
+                : string.Empty;
+        }
+        catch
+        {
+            // A stream read failure on the drain path is likewise diagnostic-only.
+            return string.Empty;
+        }
     }
 
     private static void TryKillTree(Process process)

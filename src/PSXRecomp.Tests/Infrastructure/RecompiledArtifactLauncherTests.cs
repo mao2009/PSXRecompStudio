@@ -83,7 +83,7 @@ public sealed class RecompiledArtifactLauncherTests
         using var dir = new TempDirectory();
         var request = new TitleExecutionRequest(
             entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
-            initialMemory: [], outerBudget: 4, segmentBudget: 64);
+            initialMemory: [], outerBudget: 1, segmentBudget: 64);
 
         var outcome = new RecompiledArtifactLauncher().Launch(
             program, request, new ProgramEndHandoff(programEnd), dir.FullPath, resultRegister: (int)R3000aRegister.S1);
@@ -119,6 +119,155 @@ public sealed class RecompiledArtifactLauncherTests
         // silently restart from the first call's initial memory.
         var act = () => engine.RunSegment(segmentRequest);
         act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void Launch_OuterBudgetGreaterThanOne_ThrowsPreconditionBeforeEngineConstruction()
+    {
+        const uint entryPc = 0x80040000u;
+        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+
+        using var dir = new TempDirectory();
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 2, segmentBudget: 8);
+
+        // The launcher is one-shot (RecompiledHostExecutionEngine carries no
+        // guest-RAM continuity across repeated launches), so an OuterBudget above
+        // 1 is rejected up front — it is a launcher precondition, not a
+        // mid-orchestration engine surprise.
+        var act = () => new RecompiledArtifactLauncher().Launch(
+            program, request, handoff: null, dir.FullPath);
+        act.Should().Throw<InvalidOperationException>().WithMessage("*OuterBudget must be 1*");
+    }
+
+    [Fact]
+    public void RunSegment_ExecutesFromSegmentRequestState_NotFromStaleLoadState()
+    {
+        const uint entryPc = 0x80050000u;
+        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+
+        using var dir = new TempDirectory();
+        using var engine = new RecompiledHostExecutionEngine(program, new GeneratedHostBuildService(), dir.FullPath);
+
+        // Load must not freeze the architectural state the artifact runs from:
+        // its entry pc points at no compiled block and its budget of 0 would end
+        // the run before the first instruction, so a run driven from Load's
+        // input would never reach the generated block.
+        var loadGpr = new uint[TitleExecutionRequest.GprCount];
+        loadGpr[1] = 0x11111111u;
+        engine.Load(new TitleExecutionRequest(
+            entryPc + 0x1000, loadGpr, initialHi: 0x22222222, initialLo: 0x33333333,
+            initialMemory: [], outerBudget: 1, segmentBudget: 0));
+
+        // RunSegment's own named state — real block entry pc, live budget, and
+        // distinctive registers/HI/LO — is what must drive the artifact.
+        var segmentGpr = new uint[TitleExecutionRequest.GprCount];
+        segmentGpr[1] = 0xAAAAAAAAu;
+        var segment = new TitleExecutionSegmentRequest(segmentGpr, 0xBBBBBBBB, 0xCCCCCCCC, entryPc, 8);
+
+        var result = engine.RunSegment(segment);
+
+        // V0 holds the marker only the recompiled ori could produce, and the
+        // GPR/HI/LO snapshot reflects the segment request's values — proving the
+        // input file was rewritten from RunSegment's state, not Load's.
+        result.Status.Should().Be(RecompilerExecutionStatus.Completed);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(DiagnosticMarker);
+        result.Snapshot.Gpr[1].Should().Be(0xAAAAAAAAu);
+        result.Snapshot.HI.Should().Be(0xBBBBBBBBu);
+        result.Snapshot.LO.Should().Be(0xCCCCCCCCu);
+    }
+
+    [Fact]
+    public void Launch_InitialMemorySeededByLoad_IsVisibleToRunSegmentExecutedArtifact()
+    {
+        const uint entryPc = 0x80060000u;
+        const uint dataAddress = 0x80060F80u;
+        var words = new uint[]
+        {
+            0x3C018006u, // lui $at, 0x8006
+            0x34240F80u, // ori $a0, $at, 0x0F80  -> a0 = 0x80060F80
+            Immediate(OriOpcode, FunctionNumberRegister, BiosHleRuntime.PutsFunction),
+            (uint)JalOpcode << 26 | (BiosJumpTables.A0VectorAddress & 0x0FFFFFFCu) >> 2,
+            0u, // branch delay slot
+            Immediate(OriOpcode, MarkerRegister, DiagnosticMarker),
+        };
+        var program = Lower(entryPc, words);
+        var programEnd = entryPc + (uint)(words.Length * 4);
+
+        using var dir = new TempDirectory();
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [new RecompilerInitialMemoryItem(dataAddress, (byte)'P')],
+            outerBudget: 1, segmentBudget: 64);
+
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program, request, new ProgramEndHandoff(programEnd), dir.FullPath, resultRegister: (int)R3000aRegister.S1);
+
+        // Load's seed reached the artifact this RunSegment executed: A0:3E puts
+        // read the NUL-terminated string from guest memory at a0, which only the
+        // initial-memory item could have placed there.
+        outcome.Result.State.Should().Be(TitleExecutionState.Completed);
+        outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Success);
+        outcome.Result.ResultValue.Should().Be(DiagnosticMarker);
+        outcome.Output.Should().Equal((byte)'P');
+    }
+
+    [Fact]
+    public void RunSegment_InputPathWithSpacesAndQuotes_IsReceivedUnchangedAsOneArgument()
+    {
+        const uint entryPc = 0x80070000u;
+        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+
+        using var dir = new TempDirectory();
+        // A quote cannot be part of a Windows path; everywhere else both a space
+        // and a quote must survive the launch untouched (Windows-style quoting
+        // would have treated the quote as a quoting delimiter).
+        var working = OperatingSystem.IsWindows()
+            ? dir.CreateSubdirectory("path with space")
+            : dir.CreateSubdirectory("path with \"quote\" and space");
+        using var engine = new RecompiledHostExecutionEngine(program, new GeneratedHostBuildService(), working);
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 1, segmentBudget: 8);
+        engine.Load(request);
+
+        var result = engine.RunSegment(new TitleExecutionSegmentRequest(request.InitialGpr, 0, 0, entryPc, 8));
+
+        result.Status.Should().Be(RecompilerExecutionStatus.Completed);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(DiagnosticMarker);
+    }
+
+    [Fact]
+    public void Launch_HostTransferProtocolFault_IsClassifiedProtocolFailure_NotLeakedException()
+    {
+        const uint entryPc = 0x80080000u;
+        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+
+        using var dir = new TempDirectory();
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 1, segmentBudget: 8);
+
+        // The Runtime factory is invoked as the very first host-transfer
+        // handshake: a faulting factory exercises RunProcess's pump-fault path.
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program,
+            request,
+            handoff: null,
+            dir.FullPath,
+            resultRegister: (int)R3000aRegister.V0,
+            biosRuntimeFactory: (_, _) => throw new InvalidOperationException("simulated protocol fault"));
+
+        // A pump fault is an engine mechanism failure, classified and returned —
+        // the underlying exception must never escape the launcher nor leak its
+        // message into the stable machine-readable result.
+        outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Failure);
+        outcome.Result.State.Should().Be(TitleExecutionState.RuntimeFailure);
+        outcome.Result.DiagnosticCode.Should().Be("ARTIFACT_HOST_PROTOCOL_FAILED");
+        outcome.Result.DiagnosticMessage.Should().Be("The artifact host-transfer protocol failed.");
+        outcome.Json.Should().Contain("ARTIFACT_HOST_PROTOCOL_FAILED");
+        outcome.Json.Should().NotContain("simulated protocol fault");
     }
 
     private sealed class ProgramEndHandoff(uint programEnd) : ITitleExecutionHandoff

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Recompiler;
 using Xunit;
@@ -52,5 +54,23 @@ public sealed class RecompiledArtifactCodeGenTests
         result.Success.Should().BeFalse();
         result.Source.Should().BeNull();
         result.DiagnosticCode.Should().Be("SOME_CODE");
+    }
+
+    [Fact]
+    public void Generate_DriverInitLimit_IsEmittedFromMaxInitEntries_SoTheCBoundCannotDrift()
+    {
+        var dispatch = GenerateDispatch();
+
+        var source = RecompiledArtifactCodeGen.Generate(dispatch).Source!;
+
+        // The driver's PSX_MAX_INIT is emitted from MaxInitEntries (a verbatim
+        // string cannot interpolate, so Generate substitutes it) — the emitted C
+        // bound must equal the C# constant, in both directions, or this test
+        // fails and forces the drift to be resolved deliberately.
+        var emitted = Regex.Match(source, @"#define PSX_MAX_INIT (\d+)u");
+        emitted.Success.Should().BeTrue("the driver must define PSX_MAX_INIT in the generated source");
+        uint.Parse(emitted.Groups[1].Value, CultureInfo.InvariantCulture)
+            .Should().Be((uint)RecompiledArtifactCodeGen.MaxInitEntries);
+        source.Should().Contain($"#define PSX_MAX_INIT {RecompiledArtifactCodeGen.MaxInitEntries}u");
     }
 }
