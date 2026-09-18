@@ -139,7 +139,7 @@ An `[Analyzer]` attribute and an "Analyzer" layer existed while `PSXRecomp.Analy
 | `PSXRecompStudio` | `PSXRecompStudio` | Application (UI, ViewModels, orchestration) |
 | `PSXRecomp.Core` | `PSXRecomp.Core` | Domain logic + ports + C ABI interop (`NativeInterop`, `PSXCoreWrapper`) |
 | `PSXRecomp.Native` | *(C++; no managed namespace)* | Native emulation core; outside managed AARC layers |
-| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Managed host adapters (activated by Issue #458: `GeneratedHostBuildService`) |
+| `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` | Managed host adapters (activated by Issue #458: `GeneratedHostBuildService`; Issue #42: `FileProjectMetadataStore`) |
 | `PSXRecomp.Tests` / `PSXRecompStudio.Tests` | test roots | Test infrastructure |
 
 ## Mechanical Enforcement
@@ -189,7 +189,7 @@ Enforcement notes:
 1. **Repository Structure** ✅
    - `PSXRecompStudio` → `PSXRecomp.Core` is the normal managed production dependency.
    - `PSXRecomp.Core` → `PSXRecomp.Native` is only the documented P/Invoke/C ABI boundary.
-   - `PSXRecomp.Infrastructure` was activated by Issue #458 with its first concrete adapter, `GeneratedHostBuildService` (implements the Domain-owned `IGeneratedHostBuildService` port); no other production code depends on it yet.
+   - `PSXRecomp.Infrastructure` was activated by Issue #458 with its first concrete adapter, `GeneratedHostBuildService` (implements the Domain-owned `IGeneratedHostBuildService` port). Issue #42 added a second adapter, `FileProjectMetadataStore` (implements the Domain-owned `IProjectMetadataStore` port).
 
 2. **Dependency Matrix** ENFORCED — `AARC002` mechanically forbids Domain/Application from depending on concrete Infrastructure and forbids production → Test edges.
 
