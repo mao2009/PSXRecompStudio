@@ -48,6 +48,9 @@ public class DiscImageHostileSizeTests
     /// <summary>Mirrors Iso9660Reader's independent ceiling for a single file's extent.</summary>
     private const long IsoMaxReadableExtentBytes = 1L * 1024 * 1024 * 1024;
 
+    /// <summary>Frames per hunk in the hostile-extent CHD (matches ValidHunkBytes / ValidUnitBytes).</summary>
+    private const int ChdFramesPerHunk = 8;
+
     // ------------------------------------------------------------------ CHD header
 
     [Fact]
@@ -314,6 +317,42 @@ public class DiscImageHostileSizeTests
         outcome.FailureKind.Should().Be("ChdOpenFailure");
     }
 
+    [Fact]
+    public void RunFromChd_BootExecutableExtentAboveSupportedLimit_IsClassifiedBeforeAllocating()
+    {
+        // End to end through the CHD-backed sector path, which the plain-ISO entry point
+        // cannot exercise: a ~28 KB CHD whose map marks every hunk beyond its single real
+        // 8-sector block as a free CompressionParent hunk and aliases the claimed extent's
+        // final sector back to that block via CompressionSelf. Under the pre-cap
+        // implementation (int.MaxValue addressability only), the last-sector probe would
+        // have succeeded here and ReadRawFile would have allocated the full ~1 GiB extent;
+        // an OutOfMemoryException escapes IsClassifiableFailure and would break the
+        // classified-outcome contract. The extent cap must therefore reject the file
+        // before the probe runs, reaching the classified BootExecutableUnreadable failure.
+        var (chd, lastSector) = BuildHostileExtentChd((uint)(IsoMaxReadableExtentBytes + SectorSize));
+
+        // A few kilobytes on disk for a ~1 GiB logical extent claim.
+        chd.Length.Should().BeLessThan(1 << 20);
+
+        // Proof of the mechanism the plain-ISO tests cannot show: the tiny CHD really does
+        // serve the claimed extent's final sector (mode byte 1 => a valid ISO sector), so
+        // the probe succeeds against a zero-cost hunk and the pre-cap code reaches the
+        // allocation rather than failing at the probe.
+        using (var stream = new MemoryStream(chd))
+        using (var reader = ChdReader.Open(stream))
+        {
+            reader.ReadSector((int)lastSector)[15].Should().Be((byte)1);
+        }
+
+        var outcome = RomAnalysisPipeline.RunFromChd(chd, Sha);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Fail);
+        outcome.LastSuccessfulStage.Should().Be(RomAnalysisStage.SystemCnf);
+        outcome.FailedStage.Should().Be(RomAnalysisStage.BootExecutable);
+        outcome.FailureKind.Should().Be("BootExecutableUnreadable");
+        outcome.FailureReason.Should().Contain("not addressable");
+    }
+
     // ------------------------------------------------------------------------- ISO
 
     [Theory]
@@ -525,6 +564,135 @@ public class DiscImageHostileSizeTests
         return image;
     }
 
+    /// <summary>
+    /// Builds a CHD whose boot-executable extent claims <paramref name="exeSize"/> bytes above
+    /// the reader's file-extent cap. It is the end-to-end fixture for the CHD-backed sector
+    /// path the plain-ISO tests cannot reach: the ISO volume descriptor, root directory, and
+    /// SYSTEM.CNF all live in one real 8-frame raw hunk (hunk 2, frames = ISO sectors 16..23),
+    /// every other hunk is a zero-cost <see cref="ChdReader"/> CompressionParent hunk, and the
+    /// hunk holding the claimed extent's final sector is CompressionSelf referencing hunk 2 —
+    /// so the reader serves that far sector from the few kilobytes on disk without any file
+    /// data, and a last-sector probe against it succeeds under the pre-cap implementation.
+    /// </summary>
+    /// <returns>The CHD bytes and the claimed extent's final sector index.</returns>
+    private static (byte[] Chd, long LastSector) BuildHostileExtentChd(uint exeSize)
+    {
+        var iso = BuildIsoDisc();
+        PatchRootDirectoryEntrySize(iso, ExeIsoName, exeSize);
+        long exeLocation = RootDirectoryEntryLocation(iso, ExeIsoName);
+
+        long totalSectors = ((long)exeSize + SectorSize - 1) / SectorSize;
+        long lastSector = exeLocation + totalSectors - 1;
+        long lastHunk = lastSector / ChdFramesPerHunk;
+        int totalHunks = (int)(lastHunk + 1);
+        ulong logicalBytes = (ulong)totalHunks * ValidHunkBytes;
+
+        var bits = new BitWriter();
+
+        // Flat 16-symbol Huffman tree, the same encoding the other hostile-map helpers use.
+        for (int i = 0; i < 16; i++)
+        {
+            bits.Write(4, 4);
+        }
+
+        // Per-hunk compression types (first decode pass in DecompressV5Map).
+        bits.Write(6, 4);                                             // hunk 0: CompressionParent
+        bits.Write(6, 4);                                             // hunk 1: CompressionParent
+        bits.Write(1, 4);                                             // hunk 2: codec slot 1 (== raw)
+        bits.Write(6, 4);                                             // hunk 3: parent, anchors the RLE run
+        WriteParentRleRun(bits, totalHunks - 5);                      // hunks 4..totalHunks-2: all parent
+        bits.Write(5, 4);                                             // last hunk: CompressionSelf
+
+        // Per-hunk auxiliary data (second decode pass, in hunk order). parentBits = 1, so a
+        // parent entry costs a single bit; the codec entry carries length + CRC and the self
+        // entry an 8-bit back-reference to hunk 2.
+        bits.Write(0, 1);
+        bits.Write(0, 1);
+        bits.Write(ValidHunkBytes, 32);
+        bits.Write(0, 16);
+        for (int i = 0; i < totalHunks - 4; i++)
+        {
+            bits.Write(0, 1);
+        }
+        bits.Write(2, 8);
+
+        var mapData = bits.ToArray();
+        var hunkData = BuildFrameHunks(iso);
+        var firstOffs = (ulong)(MapOffset + 16 + mapData.Length);
+
+        var mapHeader = BuildCompressedMapHeader((uint)mapData.Length);
+        PutUInt48BE(mapHeader, 4, firstOffs);
+        mapHeader[12] = 32; // lengthBits
+        mapHeader[13] = 8;  // selfBits
+        mapHeader[14] = 1;  // parentBits
+
+        var image = BuildChd(
+            logicalBytes: logicalBytes,
+            hunkBytes: ValidHunkBytes,
+            unitBytes: ValidUnitBytes,
+            compressor0: Cdlz,
+            trailing: [.. mapHeader, .. mapData, .. hunkData]);
+        return (image, lastSector);
+    }
+
+    /// <summary>
+    /// Emits RLE runs (<c>RleLarge</c>, then possibly one <c>RleSmall</c>) that repeat the last
+    /// explicit compression type <paramref name="count"/> more times, exactly as DecompressV5Map
+    /// consumes them. The reader counts the event hunk itself, so a run covers
+    /// <c>repCount + 1</c> hunks: <c>RleLarge</c> (value <c>v</c>) covers <c>19 + v</c> hunks for
+    /// <c>v</c> in 0..255, and <c>RleSmall</c> (value <c>v</c>) covers <c>3 + v</c> hunks for
+    /// <c>v</c> in 0..15.
+    /// </summary>
+    private static void WriteParentRleRun(BitWriter bits, int count)
+    {
+        while (count >= 19)
+        {
+            int chunk = Math.Min(count, 274);
+            int value = chunk - 19;
+            bits.Write(8, 4);              // RleLarge
+            bits.Write((uint)(value >> 4), 4);
+            bits.Write((uint)(value & 0xF), 4);
+            count -= chunk;
+        }
+
+        if (count >= 3)
+        {
+            bits.Write(7, 4);              // RleSmall
+            bits.Write((uint)(count - 3), 4);
+        }
+        else
+        {
+            for (int i = 0; i < count; i++)
+            {
+                bits.Write(6, 4);          // too short for RLE: emit explicit parent entries
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the one 8-frame raw hunk that physically exists in the hostile CHD. Frames are
+    /// CD-ROM Mode 1 sectors whose 2048 bytes of user data are ISO sector <c>16 + frame</c>, the
+    /// layout <see cref="DiscImageAnalyzer.CreateIsoReader"/> expects (mode byte at offset 15).
+    /// </summary>
+    private static byte[] BuildFrameHunks(byte[] isoImage)
+    {
+        var hunk = new byte[ValidHunkBytes];
+        for (int frame = 0; frame < ChdFramesPerHunk; frame++)
+        {
+            var raw = new byte[CdFrameSize];
+            raw[15] = 1; // CD-ROM Mode 1: user data at offset 16
+            int src = (16 + frame) * SectorSize;
+            if (src + SectorSize <= isoImage.Length)
+            {
+                Buffer.BlockCopy(isoImage, src, raw, 16, SectorSize);
+            }
+
+            Buffer.BlockCopy(raw, 0, hunk, frame * (int)CdFrameSize, (int)CdFrameSize);
+        }
+
+        return hunk;
+    }
+
     /// <summary>Minimal big-endian bit writer matching ChdBitstream's read order.</summary>
     private sealed class BitWriter
     {
@@ -615,6 +783,13 @@ public class DiscImageHostileSizeTests
     /// <summary>Overwrites the size field of a named root-directory record.</summary>
     private static void PatchRootDirectoryEntrySize(byte[] image, string isoName, uint size)
     {
+        int offset = FindRootEntryOffset(image, isoName);
+        BitConverter.GetBytes(size).CopyTo(image, offset + 10);
+    }
+
+    /// <summary>Returns the image-file offset of a named root-directory record.</summary>
+    private static int FindRootEntryOffset(byte[] image, string isoName)
+    {
         int offset = (int)RootDirectorySector(image) * SectorSize;
         int end = offset + SectorSize;
 
@@ -629,8 +804,7 @@ public class DiscImageHostileSizeTests
             byte nameLength = image[offset + 32];
             if (Encoding.ASCII.GetString(image, offset + 33, nameLength) == isoName)
             {
-                BitConverter.GetBytes(size).CopyTo(image, offset + 10);
-                return;
+                return offset;
             }
 
             offset += recordLength;
@@ -638,6 +812,10 @@ public class DiscImageHostileSizeTests
 
         throw new InvalidOperationException($"Directory entry '{isoName}' not present in the synthetic image.");
     }
+
+    /// <summary>Returns the on-disc sector of a named root-directory record.</summary>
+    private static uint RootDirectoryEntryLocation(byte[] image, string isoName) =>
+        BitConverter.ToUInt32(image, FindRootEntryOffset(image, isoName) + 2);
 
     /// <summary>Overwrites the root directory record's size inside the Primary Volume Descriptor.</summary>
     private static void PatchPrimaryVolumeDescriptorRootSize(byte[] image, uint size) =>
