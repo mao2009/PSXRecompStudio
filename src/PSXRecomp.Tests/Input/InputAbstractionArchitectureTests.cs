@@ -35,8 +35,21 @@ public class InputAbstractionArchitectureTests
         .ToArray();
 
     private static readonly Type[] CommonTypes = InputTypes
-        .Where(t => t.Namespace == CommonNamespace)
+        .Where(t => IsCommonHostNamespace(t.Namespace))
         .ToArray();
+
+    /// <summary>
+    /// True for the common host namespace itself or any of its child namespaces,
+    /// excluding the PS1 console module's subtree and any namespace that merely
+    /// shares the common namespace's string prefix (e.g. an unrelated sibling
+    /// namespace).
+    /// </summary>
+    private static bool IsCommonHostNamespace(string? ns) =>
+        ns == CommonNamespace ||
+        (ns is not null &&
+         ns.StartsWith(CommonNamespace + ".", StringComparison.Ordinal) &&
+         ns != Ps1Namespace &&
+         !ns.StartsWith(Ps1Namespace + ".", StringComparison.Ordinal));
 
     [Fact]
     public void PublicContract_ReferencesNoDeviceOrOsBackendTypes()
@@ -81,6 +94,21 @@ public class InputAbstractionArchitectureTests
                     $"{type.FullName} must not reference the console module type {referenced.FullName}");
             }
         }
+    }
+
+    [Fact]
+    public void IsCommonHostNamespace_ClassifiesNamespacesCorrectly()
+    {
+        IsCommonHostNamespace(CommonNamespace).Should().BeTrue(
+            "the exact common namespace is host-owned");
+        IsCommonHostNamespace(CommonNamespace + ".Diagnostics").Should().BeTrue(
+            "a future common-layer child namespace must still be covered by the host contract test");
+        IsCommonHostNamespace(Ps1Namespace).Should().BeFalse(
+            "the PS1 console module namespace must be excluded from the host contract");
+        IsCommonHostNamespace(Ps1Namespace + ".Internal").Should().BeFalse(
+            "a PS1 child namespace must be excluded from the host contract");
+        IsCommonHostNamespace(CommonNamespace + "SomethingElse").Should().BeFalse(
+            "a namespace merely sharing the common namespace's string prefix must not be misclassified as a child namespace");
     }
 
     [Fact]
