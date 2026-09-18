@@ -30,6 +30,10 @@ public class DiscImageHostileSizeTests
     private const uint ValidUnitBytes = CdFrameSize;
     private const uint ValidHunkBytes = CdFrameSize * 8; // chdman's 8 frames per hunk
     private const int MapOffset = ChdHeader.V5HeaderSize;
+    private const uint Cdlz = 0x63646C7A; // "cdlz"
+
+    /// <summary>Mirrors ChdReader's compressed-map ceiling for a one-hunk image.</summary>
+    private const int OneHunkMapLimit = ChdHeader.MapEntrySize + 64;
 
     // ------------------------------------------------------------------ CHD header
 
@@ -87,14 +91,56 @@ public class DiscImageHostileSizeTests
     [Fact]
     public void Open_CompressedMapBytesPastEndOfFile_ThrowsBeforeAllocating()
     {
-        // mapBytes is a raw uint32 from the file; 4 GiB of it in a 140-byte image.
+        // Within the resource ceiling for one hunk, so this pins the file-length check
+        // specifically: 64 bytes of map declared in an image that ends at the map header.
         var image = BuildChd(
             logicalBytes: ValidHunkBytes,
-            compressor0: 0x63646C7A, // "cdlz"
-            trailing: BuildCompressedMapHeader(mapBytes: uint.MaxValue));
+            compressor0: Cdlz,
+            trailing: BuildCompressedMapHeader(mapBytes: 64));
 
         OpenChd(image).Should().Throw<InvalidDataException>()
             .WithMessage("*compressed map data*");
+    }
+
+    [Fact]
+    public void Open_CompressedMapBytesAtUIntMaxValue_IsRejectedByTheResourceBound()
+    {
+        // 4 GiB of declared map in a 140-byte image. Both checks would reject it, so
+        // the message pins the order: the resource ceiling runs ahead of SeekChecked's
+        // file-length check and therefore ahead of `new byte[mapBytes]`.
+        var image = BuildChd(
+            logicalBytes: ValidHunkBytes,
+            compressor0: Cdlz,
+            trailing: BuildCompressedMapHeader(mapBytes: uint.MaxValue));
+
+        OpenChd(image).Should().Throw<InvalidDataException>()
+            .Which.Message.Should().Contain("compressed map bytes").And.NotContain("compressed map data");
+    }
+
+    [Fact]
+    public void Open_CompressedMapBytesAboveTheRawMapLimit_ThrowsBeforeAllocating()
+    {
+        // One byte over the ceiling, and the image really does contain those bytes, so
+        // SeekChecked would accept it. Only the resource bound rejects it.
+        var image = BuildCompressedMapChd(
+            compressedLength: ValidHunkBytes, mapBytesTarget: OneHunkMapLimit + 1);
+
+        OpenChd(image).Should().Throw<InvalidDataException>()
+            .WithMessage("*compressed map bytes*");
+    }
+
+    [Fact]
+    public void Open_CompressedMapBytesAtTheRawMapLimit_StillParsesTheMap()
+    {
+        // Guards the ceiling against over-rejection at its exact value. The decoder
+        // stops after the single entry it needs, so the trailing padding is inert.
+        var image = BuildCompressedMapChd(
+            compressedLength: ValidHunkBytes, mapBytesTarget: OneHunkMapLimit);
+
+        using var stream = new MemoryStream(image);
+        using var reader = ChdReader.Open(stream);
+
+        reader.ReadSector(0)[0].Should().Be(0xA5);
     }
 
     [Fact]
@@ -141,6 +187,68 @@ public class DiscImageHostileSizeTests
         sector.Should().HaveCount(ChdCdCodec.CdSectorDataSize);
         sector[0].Should().Be(0xA5);
         sector[1].Should().Be(0x5A);
+    }
+
+    [Fact]
+    public void ReadSector_CompressedLengthAtTheHunkLimit_StillReadsTheSector()
+    {
+        // Guards the compressed-length ceiling against over-rejection at its exact
+        // value: a hunk stored raw is always exactly HunkBytes long.
+        var image = BuildCompressedMapChd(compressedLength: ValidHunkBytes);
+
+        using var stream = new MemoryStream(image);
+        using var reader = ChdReader.Open(stream);
+
+        var sector = reader.ReadSector(0);
+
+        sector.Should().HaveCount(ChdCdCodec.CdSectorDataSize);
+        sector[0].Should().Be(0xA5);
+        sector[1].Should().Be(0x5A);
+    }
+
+    [Fact]
+    public void ReadSector_CompressedLengthAboveTheHunkLimit_ThrowsBeforeAllocating()
+    {
+        // One byte over, and the image really does contain that byte, so SeekChecked
+        // would accept it. Only the resource bound rejects it.
+        var image = BuildCompressedMapChd(compressedLength: ValidHunkBytes + 1);
+
+        using var stream = new MemoryStream(image);
+        using var reader = ChdReader.Open(stream);
+
+        reader.Invoking(r => r.ReadSector(0)).Should().Throw<InvalidDataException>()
+            .WithMessage("*compressed length*");
+    }
+
+    [Theory]
+    // Near int range, where `new byte[length]` would still be a legal 2 GiB request.
+    [InlineData((uint)int.MaxValue)]
+    // The largest value the map's 32-bit length field can encode.
+    [InlineData(uint.MaxValue)]
+    public void ReadSector_CompressedLengthFarAboveTheHunkLimit_IsRejectedByTheResourceBound(
+        uint hostileLength)
+    {
+        // These also run past the end of the file, so the message pins the order: the
+        // ceiling runs ahead of SeekChecked ("hunk data") and therefore ahead of the
+        // `new byte[length]` allocation inside ReadBytesAt.
+        var image = BuildCompressedMapChd(compressedLength: hostileLength);
+
+        using var stream = new MemoryStream(image);
+        using var reader = ChdReader.Open(stream);
+
+        reader.Invoking(r => r.ReadSector(0)).Should().Throw<InvalidDataException>()
+            .Which.Message.Should().Contain("compressed length").And.NotContain("hunk data");
+    }
+
+    [Fact]
+    public void RunFromChd_HostileHunkLength_IsClassifiedInsteadOfExhaustingMemory()
+    {
+        // End to end: a hostile per-hunk length must reach the pipeline's classified
+        // failure contract, never an OutOfMemoryException.
+        var outcome = RomAnalysisPipeline.RunFromChd(
+            BuildCompressedMapChd(compressedLength: uint.MaxValue), Sha);
+
+        outcome.Status.Should().Be(RomAnalysisStatus.Fail);
     }
 
     [Fact]
@@ -257,6 +365,91 @@ public class DiscImageHostileSizeTests
         return image;
     }
 
+    /// <summary>
+    /// Builds a one-hunk CHD carrying a real V5 <em>compressed</em> map, which is the only
+    /// route by which an attacker-chosen <c>CompressedLength</c> or <c>mapBytes</c> reaches
+    /// the reader. The single map entry uses compression type 1, whose compressor slot is
+    /// left at 0, so ChdReader takes its raw-hunk path and no codec is exercised.
+    /// The hunk data is marked 0xA5 0x5A so a successful read is identifiable.
+    /// </summary>
+    /// <param name="compressedLength">The hunk length written into the map's length field.</param>
+    /// <param name="mapBytesTarget">
+    /// Declared (and physically present) compressed-map size; defaults to the encoded map.
+    /// </param>
+    private static byte[] BuildCompressedMapChd(uint compressedLength, int? mapBytesTarget = null)
+    {
+        var bits = new BitWriter();
+
+        // Flat 16-symbol Huffman tree: every code length is 4, so the canonical codes
+        // are 0..15 and symbol N is simply the 4-bit value N.
+        for (int i = 0; i < 16; i++)
+        {
+            bits.Write(4, 4);
+        }
+
+        bits.Write(1, 4);                  // compression type 1 => codec slot 1 (== 0, raw)
+        bits.Write(compressedLength, 32);  // lengthBits = 32, set in the map header below
+        bits.Write(0, 16);                 // per-hunk CRC, not verified by this reader
+
+        var mapData = bits.ToArray();
+        int mapBytes = mapBytesTarget ?? mapData.Length;
+        if (mapBytes > mapData.Length)
+        {
+            Array.Resize(ref mapData, mapBytes);
+        }
+
+        // The physical map region is always as long as the declared mapBytes, so a
+        // rejected case is never rejected merely for running past the end of the file.
+        int hunkDataOffset = MapOffset + 16 + Math.Max(mapBytes, mapData.Length);
+        var hunkData = new byte[ValidHunkBytes + 16];
+        hunkData[0] = 0xA5;
+        hunkData[1] = 0x5A;
+
+        var mapHeader = BuildCompressedMapHeader((uint)mapBytes);
+        PutUInt48BE(mapHeader, 4, (ulong)hunkDataOffset);
+        mapHeader[12] = 32; // lengthBits
+        mapHeader[13] = 8;  // selfBits
+        mapHeader[14] = 8;  // parentBits
+
+        var image = BuildChd(
+            logicalBytes: ValidHunkBytes,
+            compressor0: Cdlz,
+            trailing: [.. mapHeader, .. mapData, .. hunkData]);
+        return image;
+    }
+
+    /// <summary>Minimal big-endian bit writer matching ChdBitstream's read order.</summary>
+    private sealed class BitWriter
+    {
+        private readonly List<byte> _bytes = [];
+        private int _acc;
+        private int _accBits;
+
+        public void Write(uint value, int bits)
+        {
+            for (int i = bits - 1; i >= 0; i--)
+            {
+                _acc = (_acc << 1) | (int)((value >> i) & 1);
+                if (++_accBits == 8)
+                {
+                    _bytes.Add((byte)_acc);
+                    _acc = 0;
+                    _accBits = 0;
+                }
+            }
+        }
+
+        public byte[] ToArray()
+        {
+            var result = new List<byte>(_bytes);
+            if (_accBits > 0)
+            {
+                result.Add((byte)(_acc << (8 - _accBits)));
+            }
+            return [.. result];
+        }
+    }
+
     /// <summary>Builds the 16-byte V5 compressed-map header, of which only mapBytes matters here.</summary>
     private static byte[] BuildCompressedMapHeader(uint mapBytes)
     {
@@ -286,6 +479,14 @@ public class DiscImageHostileSizeTests
         buffer[offset + 1] = (byte)(value >> 16);
         buffer[offset + 2] = (byte)(value >> 8);
         buffer[offset + 3] = (byte)value;
+    }
+
+    private static void PutUInt48BE(byte[] buffer, int offset, ulong value)
+    {
+        for (int i = 0; i < 6; i++)
+        {
+            buffer[offset + i] = (byte)(value >> (8 * (5 - i)));
+        }
     }
 
     private static void PutUInt64BE(byte[] buffer, int offset, ulong value)

@@ -44,6 +44,14 @@ public sealed class ChdReader : IDisposable
     /// </summary>
     private const ulong MaxTotalHunks = MaxLogicalBytes / CdFrameSize;
 
+    /// <summary>
+    /// Slack added to the compressed-map bound for the RLE-coded Huffman tree that
+    /// precedes the per-hunk data. The tree is <c>ChdHuffmanDecoder</c>'s 16 code
+    /// lengths, each written as at most three 4-bit tokens, so 24 bytes; 64 leaves
+    /// room for bit padding without loosening the per-hunk term that matters.
+    /// </summary>
+    private const ulong MaxMapTreeBytes = 64;
+
     private const byte CompressionNone = 4;
     private const byte CompressionSelf = 5;
     private const byte CompressionParent = 6;
@@ -220,6 +228,22 @@ public sealed class ChdReader : IDisposable
         }
 
         var codec = _header.Compressors[entry.CompressionType];
+
+        // CompressedLength is decoded from the map's bit stream and is attacker
+        // controlled. SeekChecked only proves those bytes exist in the file, which a
+        // large sparse or padded image satisfies, so the value still has to be bounded
+        // as a *resource* before ReadBytesAt sizes `new byte[length]` from it. chdman
+        // stores a hunk under a codec only when the compressed form is smaller than the
+        // raw hunk and writes CompressionNone otherwise, so HunkBytes cannot reject
+        // anything a valid image contains — including the uncompressed map's entries,
+        // whose CompressedLength is exactly HunkBytes.
+        if (entry.CompressedLength > _header.HunkBytes)
+        {
+            throw new InvalidDataException(
+                $"CHD hunk {hunkIndex}: compressed length {entry.CompressedLength} is above the "
+                + $"{_header.HunkBytes}-byte hunk size.");
+        }
+
         var compressed = ReadBytesAt(entry.FileOffset, entry.CompressedLength);
 
         int frames = FramesPerHunk;
@@ -455,6 +479,21 @@ public sealed class ChdReader : IDisposable
         byte lengthBits = mapHeader[12];
         byte selfBits = mapHeader[13];
         byte parentBits = mapHeader[14];
+
+        // mapBytes is an untrusted uint32 and SeekChecked only proves the region exists
+        // in the file, which a large sparse or padded image satisfies. Bound it as a
+        // resource first: the compressed map carries the same per-hunk fields as the
+        // 12-byte raw map entry (type, length, offset, CRC) in strictly fewer bits, so
+        // the raw map size plus the Huffman tree is an upper bound no valid image
+        // exceeds. hunkCount is already capped at MaxTotalHunks by ReadHeader, so the
+        // product cannot overflow the ulong.
+        ulong maxMapBytes = (ulong)hunkCount * ChdHeader.MapEntrySize + MaxMapTreeBytes;
+        if (mapBytes > maxMapBytes)
+        {
+            throw new InvalidDataException(
+                $"CHD compressed map bytes: {mapBytes} declared for {hunkCount} hunks, "
+                + $"above the {maxMapBytes}-byte limit for a map of that size.");
+        }
 
         // Read compressed map data
         SeekChecked(stream, header.MapOffset + 16, mapBytes, "compressed map data");
