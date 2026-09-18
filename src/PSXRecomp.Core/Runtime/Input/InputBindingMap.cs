@@ -62,7 +62,7 @@ public sealed class InputBindingMap<TButton>
                 "A binding must target a real button, not the zero/None enum value.", nameof(binding));
         }
 
-        ulong buttonBits = Convert.ToUInt64(binding.Button);
+        ulong buttonBits = ToUInt64Bits(binding.Button);
         if ((buttonBits & (buttonBits - 1)) != 0)
         {
             throw new ArgumentException(
@@ -128,10 +128,24 @@ public sealed class InputBindingMap<TButton>
         {
             if (state.IsPressed(port, binding.Input))
             {
-                pressed |= Convert.ToUInt64(binding.Button);
+                pressed |= ToUInt64Bits(binding.Button);
             }
         }
 
         return (TButton)Enum.ToObject(typeof(TButton), pressed);
     }
+
+    private static ulong ToUInt64Bits(TButton value) =>
+        Type.GetTypeCode(Enum.GetUnderlyingType(typeof(TButton))) switch
+        {
+            TypeCode.SByte => unchecked((byte)Convert.ToSByte(value)),
+            TypeCode.Int16 => unchecked((ushort)Convert.ToInt16(value)),
+            TypeCode.Int32 => unchecked((uint)Convert.ToInt32(value)),
+            TypeCode.Int64 => unchecked((ulong)Convert.ToInt64(value)),
+            TypeCode.Byte => Convert.ToByte(value),
+            TypeCode.UInt16 => Convert.ToUInt16(value),
+            TypeCode.UInt32 => Convert.ToUInt32(value),
+            TypeCode.UInt64 => Convert.ToUInt64(value),
+            _ => throw new InvalidOperationException($"Unsupported enum underlying type for {typeof(TButton).Name}."),
+        };
 }
