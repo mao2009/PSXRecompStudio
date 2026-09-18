@@ -143,7 +143,9 @@ exists, with `GeneratedHostBuildService` (`[Infrastructure]`) implementing the
 Domain-owned `IGeneratedHostBuildService` port (`PSXRecomp.Core.Recompiler`) to
 compile and link generated host C source into a native artifact at a
 caller-selected output location, with structured (non-exception) failure
-classification. `RecompilerHostExecutor.CompileRecompiledBinary` (test-only)
+classification — including unusable output locations (`OutputFailed`) and
+invalid output file names, which are rejected rather than allowed to escape the
+caller-owned directory. `RecompilerHostExecutor.CompileRecompiledBinary` (test-only)
 now calls this production service instead of invoking gcc itself, so the
 differential harness and `HostTitleExecutionEngine` exercise the same compile/link
 path a production caller would. Sketch points 2–4 remain open: no

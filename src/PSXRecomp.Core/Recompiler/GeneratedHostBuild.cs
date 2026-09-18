@@ -25,6 +25,13 @@ public enum GeneratedHostBuildStatus : byte
 
     /// <summary>A compile or link step exceeded its bounded time budget.</summary>
     TimedOut,
+
+    /// <summary>
+    /// The output directory could not be created or the generated source could
+    /// not be written (e.g. an inaccessible path or a busy/locked file). The
+    /// caller-owned output location was not usable; no artifact was produced.
+    /// </summary>
+    OutputFailed,
 }
 
 /// <summary>The native artifact produced by a successful build.</summary>

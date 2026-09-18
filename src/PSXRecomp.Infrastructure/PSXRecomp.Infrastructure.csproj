@@ -9,4 +9,8 @@
   <ItemGroup>
     <ProjectReference Include="../PSXRecomp.Core/PSXRecomp.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PSXRecomp.Tests" />
+  </ItemGroup>
 </Project>
