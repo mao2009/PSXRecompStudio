@@ -134,7 +134,13 @@ public readonly struct Gp0Command
 /// <summary>
 /// A drawing primitive packet (polygon/line/rectangle) accumulated and decoded
 /// but not rasterized. Kept for Issue #441, which will consume
-/// <see cref="Command"/> and <see cref="Parameters"/> to render into VRAM.
+/// <see cref="Command"/>, <see cref="CommandWord"/> and
+/// <see cref="Parameters"/> to render into VRAM.
+///
+/// <see cref="CommandWord"/> is the unmodified first GP0 command word of the
+/// packet. It is preserved because the low 24 bits carry the primitive color
+/// of the first vertex (flat and Gouraud polygons) or the fill color
+/// (rectangles), and that color is not duplicated in <see cref="Parameters"/>.
 /// </summary>
 [Domain]
-public readonly record struct GpuPrimitivePacket(Gp0Command Command, IReadOnlyList<uint> Parameters);
+public readonly record struct GpuPrimitivePacket(Gp0Command Command, uint CommandWord, IReadOnlyList<uint> Parameters);

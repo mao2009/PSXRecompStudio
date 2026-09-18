@@ -293,7 +293,7 @@ public sealed class GpuDevice : IGpu, IDisposable
 
         if (cmd.Result == GpuCommandResult.DecodedPendingRasterization)
         {
-            LastPrimitive = new GpuPrimitivePacket(cmd, param.ToArray());
+            LastPrimitive = new GpuPrimitivePacket(cmd, _pendingCommandWord, param.ToArray());
             LastResult = cmd.Result;
             LastResultOpcode = cmd.Opcode;
             return;

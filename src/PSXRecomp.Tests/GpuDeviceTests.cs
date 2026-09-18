@@ -139,7 +139,66 @@ public class GpuDeviceTests
         gpu.LastResultOpcode.Should().Be(0x20);
         gpu.LastPrimitive.Should().NotBeNull();
         gpu.LastPrimitive!.Value.Command.Opcode.Should().Be(0x20);
+        gpu.LastPrimitive!.Value.CommandWord.Should().Be(0x200000FF);
         gpu.LastPrimitive!.Value.Parameters.Count.Should().Be(3);
+    }
+
+    [Fact]
+    public void Primitive_KeepsOriginalCommandWordWithFirstVertexColor()
+    {
+        using var gpu = new GpuDevice();
+
+        // Flat untextured triangle: the first vertex's color lives in the
+        // command word's low 24 bits; the parameters carry only the vertices.
+        gpu.WriteGP0(0x20000FFF); // green first color
+        gpu.WriteGP0(0x00010002);
+        gpu.WriteGP0(0x00030004);
+        gpu.WriteGP0(0x00050006);
+        gpu.LastResultOpcode.Should().Be(0x20);
+        gpu.LastPrimitive!.Value.CommandWord.Should().Be(0x20000FFF);
+        (gpu.LastPrimitive!.Value.CommandWord & 0xFFFFFF).Should().Be(0x000FFF);
+
+        // Same opcode, same parameter payload, different command-word color:
+        // the packet must be distinguishable by CommandWord alone.
+        gpu.WriteGP0(0x20FF0000); // red first color
+        gpu.WriteGP0(0x00010002);
+        gpu.WriteGP0(0x00030004);
+        gpu.WriteGP0(0x00050006);
+
+        var packet = gpu.LastPrimitive!.Value;
+        packet.Command.Opcode.Should().Be(0x20);
+        packet.CommandWord.Should().Be(0x20FF0000);
+        (packet.CommandWord & 0xFFFFFF).Should().Be(0xFF0000);
+        packet.Parameters.Should().Equal(new uint[] { 0x00010002, 0x00030004, 0x00050006 });
+    }
+
+    [Fact]
+    public void GouraudPrimitive_FirstColorInCommandWord_SubsequentColorsInParameters()
+    {
+        using var gpu = new GpuDevice();
+
+        // Gouraud triangle: command word carries the first vertex color; the
+        // remaining two vertex colors are separate parameter words.
+        gpu.WriteGP0(0x30FFFF00); // first vertex color in command word
+        gpu.WriteGP0(0x00010002); // vertex 1
+        gpu.WriteGP0(0x00FF00);   // color 2
+        gpu.WriteGP0(0x00030004); // vertex 2
+        gpu.WriteGP0(0xFF00);     // color 3
+        gpu.WriteGP0(0x00050006); // vertex 3
+
+        var packet = gpu.LastPrimitive!.Value;
+        packet.Command.Opcode.Should().Be(0x30);
+        packet.CommandWord.Should().Be(0x30FFFF00);
+        (packet.CommandWord & 0xFFFFFF).Should().Be(0xFFFF00);
+        packet.Parameters.Count.Should().Be(5);
+        packet.Parameters.Should().Equal(new uint[]
+        {
+            0x00010002, // vertex 1
+            0x00FF00,   // color 2
+            0x00030004, // vertex 2
+            0xFF00,     // color 3
+            0x00050006, // vertex 3
+        });
     }
 
     [Fact]
