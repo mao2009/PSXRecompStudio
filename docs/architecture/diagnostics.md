@@ -39,6 +39,11 @@ expected/domain failure or notable outcome:
 
 `Diagnostic.IsValid()` checks that `Code` is non-empty, every enum member is
 defined, and every `Context`/`Evidence` entry and `Recovery` is itself valid.
+It is the validation entry point for externally supplied documents, so it
+returns `false` for malformed-but-parseable data and never throws: a JSON
+payload can write `null` into `Context`/`Evidence`, or `null` elements into
+them, despite their non-nullable annotations, and such a document is reported
+invalid rather than raising.
 
 The model carries no timestamp, host name, username, or absolute path, so the
 same problem always serializes to the same document (see
@@ -100,7 +105,14 @@ same problem always serializes to the same document (see
   action button and automation can execute a recovery step, rather than
   parsing a free-form instruction string. `DiagnosticRecovery.IsValid()`
   enforces the internal consistency between `Action`, `Retry`, and
-  `RequiresUserAction`.
+  `RequiresUserAction`: the admissible retry semantics are derived from each
+  action's own meaning rather than from a list of known-bad pairs. `None` and
+  `ReportBug` declare that no local recovery path exists, so they admit only
+  `NotRetryable` and no `RequiresUserAction`; `Retry` means "the same request,
+  unchanged", so it admits only `RetrySameRequest` and
+  `RetryAfterExternalChange`. Every other action names a change to make and
+  stays compatible with any retry semantics, so an action added later is valid
+  by default instead of rejected for lack of a rule.
 
 ## 5. Determinism and JSON
 

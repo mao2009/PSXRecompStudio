@@ -56,7 +56,18 @@ public sealed record Diagnostic
     /// <summary>What the user or automation can do next, under what retry semantics.</summary>
     public DiagnosticRecovery Recovery { get; init; }
 
-    /// <summary>Whether the diagnostic is well-formed and all referenced parts are valid.</summary>
+    /// <summary>
+    /// Whether the diagnostic is well-formed and all referenced parts are valid.
+    ///
+    /// <para>
+    /// This is the validation entry point for externally supplied documents, so
+    /// it answers <c>false</c> for malformed-but-parseable data and never
+    /// throws. A JSON payload can populate <see cref="Context"/> /
+    /// <see cref="Evidence"/> with <c>null</c>, or with <c>null</c> elements,
+    /// despite their non-nullable annotations; such a document is invalid, not
+    /// an error to raise.
+    /// </para>
+    /// </summary>
     public bool IsValid()
     {
         if (Code.IsEmpty
@@ -67,8 +78,19 @@ public sealed record Diagnostic
             return false;
         }
 
-        return Context.All(entry => entry.IsValid())
-            && Evidence.All(reference => reference.IsValid())
+        return AllValid(Context, entry => entry.IsValid())
+            && AllValid(Evidence, reference => reference.IsValid())
             && Recovery.IsValid();
+    }
+
+    /// <summary>
+    /// Whether every element of a deserialized collection is present and valid.
+    /// The collection itself and its elements are treated as nullable because a
+    /// deserializer can write <c>null</c> into either regardless of annotation.
+    /// </summary>
+    private static bool AllValid<T>(IReadOnlyList<T>? items, Func<T, bool> isValid)
+        where T : class
+    {
+        return items is not null && items.All(item => item is not null && isValid(item));
     }
 }

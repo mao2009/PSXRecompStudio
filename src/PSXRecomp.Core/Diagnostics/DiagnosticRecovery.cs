@@ -92,8 +92,17 @@ public readonly record struct DiagnosticRecovery(
             return false;
         }
 
-        // A "no action" recovery must not claim a retry path.
-        if (Action == DiagnosticRecoveryAction.None && Retry != DiagnosticRetrySemantics.NotRetryable)
+        // The action's own contract decides which retry semantics can describe
+        // it (see AdmitsRetry); a combination outside that set is internally
+        // contradictory no matter how it was constructed.
+        if (!AdmitsRetry(Action, Retry))
+        {
+            return false;
+        }
+
+        // An action that offers no local recovery path also leaves the user
+        // nothing to do.
+        if (RequiresUserAction && OffersNoRecoveryPath(Action))
         {
             return false;
         }
@@ -110,6 +119,45 @@ public readonly record struct DiagnosticRecovery(
         return (Retry != DiagnosticRetrySemantics.RetrySameRequest || !RequiresUserAction)
             && (Retry != DiagnosticRetrySemantics.RetryAfterUserChange || RequiresUserAction);
     }
+
+    /// <summary>
+    /// Whether <paramref name="action"/> declares that nothing local can resolve
+    /// the failure: <see cref="DiagnosticRecoveryAction.None"/> (no action is
+    /// available) and <see cref="DiagnosticRecoveryAction.ReportBug"/> (not
+    /// recoverable by any local action).
+    /// </summary>
+    private static bool OffersNoRecoveryPath(DiagnosticRecoveryAction action) =>
+        action is DiagnosticRecoveryAction.None or DiagnosticRecoveryAction.ReportBug;
+
+    /// <summary>
+    /// Whether <paramref name="retry"/> can describe <paramref name="action"/>,
+    /// derived from each action's documented meaning rather than from a list of
+    /// known-bad pairs:
+    /// <list type="bullet">
+    ///   <item>An action offering no recovery path cannot claim one, so only
+    ///   <see cref="DiagnosticRetrySemantics.NotRetryable"/> fits it.</item>
+    ///   <item><see cref="DiagnosticRecoveryAction.Retry"/> means "retry the
+    ///   same request unchanged", so it fits only the two semantics under which
+    ///   the request itself stays unchanged — now
+    ///   (<see cref="DiagnosticRetrySemantics.RetrySameRequest"/>) or once
+    ///   external state allows it
+    ///   (<see cref="DiagnosticRetrySemantics.RetryAfterExternalChange"/>).</item>
+    ///   <item>Every remaining action names a change to make, and stays
+    ///   compatible with any retry semantics: a fallback or rebuild path can
+    ///   exist even when the original request is not itself retryable. Unknown
+    ///   future actions therefore stay valid rather than being rejected for
+    ///   lack of a rule.</item>
+    /// </list>
+    /// </summary>
+    private static bool AdmitsRetry(DiagnosticRecoveryAction action, DiagnosticRetrySemantics retry) =>
+        action switch
+        {
+            _ when OffersNoRecoveryPath(action) => retry == DiagnosticRetrySemantics.NotRetryable,
+            DiagnosticRecoveryAction.Retry => retry
+                is DiagnosticRetrySemantics.RetrySameRequest
+                or DiagnosticRetrySemantics.RetryAfterExternalChange,
+            _ => true,
+        };
 
     /// <summary>No recovery: the failure is not retryable and no action is available.</summary>
     public static DiagnosticRecovery NotRetryable() => new();
