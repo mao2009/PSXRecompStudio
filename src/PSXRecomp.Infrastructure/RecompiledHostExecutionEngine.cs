@@ -287,7 +287,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 TryKillTree(process);
                 timedOut = true;
-                return (int.MinValue, stdoutTask.Result, stderrTask.Result, false);
+                return (int.MinValue, DrainWithinCleanupBudget(stdoutTask), DrainWithinCleanupBudget(stderrTask), false);
             }
 
             process.WaitForExit();
@@ -336,14 +336,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             TryKillTree(process);
             try { pump.Wait(PumpDrainTimeoutMs); } catch { /* the timeout verdict below stands regardless */ }
             timedOut = true;
-            return (int.MinValue, output.ToString(), stderrTask.Result, false);
+            return (int.MinValue, output.ToString(), DrainWithinCleanupBudget(stderrTask), false);
         }
 
         if (!process.WaitForExit(timeoutMs))
         {
             TryKillTree(process);
             timedOut = true;
-            return (int.MinValue, output.ToString(), stderrTask.Result, false);
+            return (int.MinValue, output.ToString(), DrainWithinCleanupBudget(stderrTask), false);
         }
 
         process.WaitForExit();
