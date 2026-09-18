@@ -90,8 +90,10 @@ public class InputAbstractionArchitectureTests
             foreach (var referenced in DeclaredReferences(type))
             {
                 var ns = referenced.Namespace ?? string.Empty;
-                ns.Should().NotStartWith(Ps1Namespace,
-                    $"{type.FullName} must not reference the console module type {referenced.FullName}");
+                (ns == Ps1Namespace ||
+                 ns.StartsWith(Ps1Namespace + ".", StringComparison.Ordinal))
+                    .Should().BeFalse(
+                        $"{type.FullName} must not reference the console module type {referenced.FullName}");
             }
         }
     }
