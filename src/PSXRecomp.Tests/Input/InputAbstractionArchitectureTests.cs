@@ -48,8 +48,11 @@ public class InputAbstractionArchitectureTests
         ns == CommonNamespace ||
         (ns is not null &&
          ns.StartsWith(CommonNamespace + ".", StringComparison.Ordinal) &&
-         ns != Ps1Namespace &&
-         !ns.StartsWith(Ps1Namespace + ".", StringComparison.Ordinal));
+         !IsPs1ConsoleNamespace(ns));
+
+    private static bool IsPs1ConsoleNamespace(string ns) =>
+        ns == Ps1Namespace ||
+        ns.StartsWith(Ps1Namespace + ".", StringComparison.Ordinal);
 
     [Fact]
     public void PublicContract_ReferencesNoDeviceOrOsBackendTypes()
@@ -90,8 +93,7 @@ public class InputAbstractionArchitectureTests
             foreach (var referenced in DeclaredReferences(type))
             {
                 var ns = referenced.Namespace ?? string.Empty;
-                (ns == Ps1Namespace ||
-                 ns.StartsWith(Ps1Namespace + ".", StringComparison.Ordinal))
+                IsPs1ConsoleNamespace(ns)
                     .Should().BeFalse(
                         $"{type.FullName} must not reference the console module type {referenced.FullName}");
             }
@@ -111,6 +113,17 @@ public class InputAbstractionArchitectureTests
             "a PS1 child namespace must be excluded from the host contract");
         IsCommonHostNamespace(CommonNamespace + "SomethingElse").Should().BeFalse(
             "a namespace merely sharing the common namespace's string prefix must not be misclassified as a child namespace");
+    }
+
+    [Fact]
+    public void Ps1NamespaceBoundary_IsDotDelimitedNotRawPrefix()
+    {
+        IsPs1ConsoleNamespace(Ps1Namespace).Should().BeTrue();
+        IsPs1ConsoleNamespace(Ps1Namespace + ".Internal").Should().BeTrue();
+        IsPs1ConsoleNamespace(Ps1Namespace + "Tools").Should().BeFalse(
+            "a namespace that only shares the raw Ps1 prefix is not part of the PS1 console module");
+        IsCommonHostNamespace(Ps1Namespace + "Tools").Should().BeTrue(
+            "a prefix-sharing host child namespace must remain covered by the common-host architecture checks");
     }
 
     [Fact]
