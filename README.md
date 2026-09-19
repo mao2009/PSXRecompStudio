@@ -25,6 +25,7 @@ Its core differentiator is a **differentially validated recompiler path**: MIPS 
 - Shared BIOS A0/B0/C0 vector dispatch on both the interpreter and recompiled paths, currently covering 5 registered services (putchar, puts and its B0 alias, `GetB0Table`, `GetC0Table`) — not broad BIOS HLE coverage: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs).
 - Register-level DMA/interrupt/timer MMIO adapters and a memory bus with dedicated tests: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/) — not yet wired into any execution engine.
 - Standard raw 128 KiB PlayStation memory-card images, read and written without conversion so a card can be shared with other emulators, with slot 1 / slot 2 configuration, atomic saves, and external-modification detection: [`src/PSXRecomp.Core/MemoryCard/`](src/PSXRecomp.Core/MemoryCard/), [`FileMemoryCardStorage.cs`](src/PSXRecompStudio/Services/FileMemoryCardStorage.cs), [`docs/runtime/memory-card.md`](docs/runtime/memory-card.md) (#22). The memory-card SIO/IRQ7 protocol and any card UI are not implemented.
+- A minimal headless CLI, `psxrecomp`, exposing the recompiled-artifact build (#458) and runnable-artifact execution (#459) contracts: `psxrecomp recompile <input.exe> --output <dir>` and `psxrecomp run <input.exe>`, with deterministic JSON output and 0/1/2 exit codes: [`src/PSXRecomp.Cli/`](src/PSXRecomp.Cli/), [`docs/development/headless-cli.md`](docs/development/headless-cli.md) (#460). Not the general-purpose command framework (Issue #15).
 - Architecture layering mechanically enforced by `loach.ArchitectureAnalyzer` against [`architecture.contract.json`](src/architecture.contract.json).
 - An end-to-end reproduction workflow, the Persona E2E gate, chains disc discovery → analysis → recompiler slice → orchestrated execution against a legally user-supplied fixture and reports PASS/FAIL/SKIP per stage: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1), tracked in [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md). Its next generic runtime blocker toward an actual title screen is broader BIOS HLE coverage; GPU/SPU/CD-ROM producers remain required after the needed BIOS calls are supported.
 
@@ -71,7 +72,7 @@ A successful run verifies the current CPU/runtime/recompiler contracts, includin
 - Native per-instruction Golden Trace: [`src/PSXRecomp.Native/tests/golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h).
 - BIOS vector dispatch: [`BiosVectorDispatch.cs`](src/PSXRecomp.Core/Runtime/BiosVectorDispatch.cs).
 
-A general-purpose recompilation CLI is not available yet.
+A general-purpose recompilation CLI is not available yet; the minimal headless surface ([`docs/development/headless-cli.md`](docs/development/headless-cli.md)) covers the #458/#459 contracts only.
 
 ## Next milestones
 

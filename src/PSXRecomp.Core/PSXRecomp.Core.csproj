@@ -23,6 +23,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="PSXRecomp.Tests" />
     <InternalsVisibleTo Include="PSXRecomp.Infrastructure" />
+    <InternalsVisibleTo Include="psxrecomp" />
   </ItemGroup>
 
   <!--
