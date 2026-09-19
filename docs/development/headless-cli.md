@@ -64,9 +64,13 @@ the meaningful payload, and result fields taken verbatim from the production
   "artifact": "/abs/path/recompiled-artifact" }
 ```
 
-On failure the envelope additionally carries `errorCode` (`INVALID_INPUT`,
-`INPUT_NOT_FOUND`, `CODEGEN_FAILED`, `BUILD_FAILED`, `UNSUPPORTED_INPUT`,
-`TOOLING_FAILURE`) and a human-readable `message`; `success` is `false`.
+On failure the envelope additionally carries `errorCode`. Input and CLI
+composition failures use `INVALID_INPUT`, `INPUT_NOT_FOUND`, `UNSUPPORTED_INPUT`,
+`CODEGEN_FAILED`, `IO_FAILURE`, `BUILD_FAILED`, or `TOOLING_FAILURE`. Build
+service failures preserve their production diagnostic codes:
+`OUTPUT_FAILED`, `TOOLCHAIN_UNAVAILABLE`, `TOOLCHAIN_TIMEOUT`,
+`COMPILE_FAILED`, or `LINK_FAILED`. The envelope also includes a
+human-readable `message`; `success` is `false`.
 
 `run`:
 
