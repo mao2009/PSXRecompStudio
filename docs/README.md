@@ -101,6 +101,7 @@ Constraints:
 - [Recompiler IR / CPU Semantic Contract](development/recompiler-ir-contract.md)
 - [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)
 - [Recompiler Host Code Generation](development/recompiler-host-codegen.md)
+- [Headless CLI](development/headless-cli.md)
 - [References and Prior Art](REFERENCES.md)
 - [Architecture Decision Records](adr/)
 - CPU / R3000A

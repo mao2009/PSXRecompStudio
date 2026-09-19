@@ -21,7 +21,7 @@ Two documents together form the managed architecture SSOT, and they own differen
 |-------|----------------|----------------|----------|
 | **Domain** | Pure business logic, PSX concept model, deterministic computation, Domain-owned ports, and the C ABI/P/Invoke boundary | `PSXRecomp.Core` | `PSXRecomp.Core` |
 | **Application** | Avalonia UI, use-case orchestration, user interface, presentation | `PSXRecompStudio` | `PSXRecompStudio` |
-| **Infrastructure** | Concrete **managed host adapters**: filesystem/disc acquisition, process/toolchain execution, network integrations, logging/output sinks, and other host side effects | `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure` |
+| **Infrastructure** | Concrete **managed host adapters**: filesystem/disc acquisition, process/toolchain execution, network integrations, logging/output sinks, and other host side effects | `PSXRecomp.Infrastructure` | `PSXRecomp.Infrastructure`, `PSXRecomp.Cli` |
 | **Test** | Unit/integration tests and test-only host tooling | `PSXRecomp.Tests`, `PSXRecompStudio.Tests` | test projects |
 | **Generated** | Auto-generated code | `PSXRecomp.Generated` | *(planned)* |
 

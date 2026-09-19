@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Issue #460's minimal headless CLI. Lives in the Infrastructure layer via its
+    namespace root (PSXRecomp.Infrastructure.Cli descends from the Infrastructure
+    root in src/architecture.contract.json), so it needs no composition-root
+    suppression and no forbidden-API exemption: it may legitimately touch
+    System.Console / System.IO / System.Diagnostics on its way to the production
+    #458/#459 contracts. It is a thin composition root only — no compiler, build,
+    Runtime, or execution-loop semantics live here.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>psxrecomp</AssemblyName>
+    <RootNamespace>PSXRecomp.Infrastructure.Cli</RootNamespace>
+    <EnableArchitectureAnalyzer>true</EnableArchitectureAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PSXRecomp.Core/PSXRecomp.Core.csproj" />
+    <ProjectReference Include="../PSXRecomp.Infrastructure/PSXRecomp.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PSXRecomp.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="PSXRecompStudio/PSXRecompStudio.csproj" />
+  <Project Path="PSXRecomp.Cli/PSXRecomp.Cli.csproj" />
   <Project Path="PSXRecomp.Core/PSXRecomp.Core.csproj" />
   <Project Path="PSXRecomp.Infrastructure/PSXRecomp.Infrastructure.csproj" />
   <Project Path="PSXRecomp.Tests/PSXRecomp.Tests.csproj" />

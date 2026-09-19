@@ -27,6 +27,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 - interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
 - レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。ただしどの実行エンジンにも結線されていない。
 - 標準 raw 128 KiB PlayStation メモリーカードイメージを変換なしで読み書きし、他エミュレータとカードを共有可能。Slot 1 / Slot 2 の設定、アトミックな保存、外部変更の検出に対応: [`src/PSXRecomp.Core/MemoryCard/`](src/PSXRecomp.Core/MemoryCard/)、[`FileMemoryCardStorage.cs`](src/PSXRecompStudio/Services/FileMemoryCardStorage.cs)、[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)（#22）。メモリーカードの SIO/IRQ7 プロトコルおよびカード UI は未実装。
+- 最小構成のヘッドレス CLI `psxrecomp`。recompiled-artifact build 契約（#458）と runnable-artifact 実行契約（#459）を公開し、`psxrecomp recompile <input.exe> --output <dir>` / `psxrecomp run <input.exe>` を決定論的な JSON 出力と 0/1/2 の終了コードで提供: [`src/PSXRecomp.Cli/`](src/PSXRecomp.Cli/)、[`docs/development/headless-cli.md`](docs/development/headless-cli.md)（#460）。汎用コマンドフレームワーク（Issue #15）は対象外。
 - `loach.ArchitectureAnalyzer` が [`architecture.contract.json`](src/architecture.contract.json) に基づきアーキテクチャレイヤーを機械的に強制。
 - disc 発見 → 解析 → Recompiler slice → orchestrated execution を、ユーザーが合法的に用意した fixture に対して一気通貫で実行し、段階ごとに PASS/FAIL/SKIP を報告する Persona E2E gate: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1)、状況は [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md) で追跡。実際のタイトル画面への次なる generic runtime blocker は広範な BIOS HLE coverage で、必要な BIOS call がサポートされた後も GPU/SPU/CD-ROM producer が必要です。
 
@@ -73,7 +74,7 @@ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
 - Native の命令単位 Golden Trace: [`src/PSXRecomp.Native/tests/golden_trace.h`](src/PSXRecomp.Native/tests/golden_trace.h)。
 - BIOS vector dispatch: [`BiosVectorDispatch.cs`](src/PSXRecomp.Core/Runtime/BiosVectorDispatch.cs)。
 
-汎用的な再コンパイル CLI はまだ提供されていません。
+汎用的な再コンパイル CLI はまだ提供されていません。最小のヘッドレス surface（[`docs/development/headless-cli.md`](docs/development/headless-cli.md)）が #458/#459 の契約のみをカバーします。
 
 ## 次のマイルストーン
 
