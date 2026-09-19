@@ -65,7 +65,7 @@ public static class RunCommand
         }
         catch (Exception ex) when (
             ex is DirectoryNotFoundException or FileNotFoundException
-                or IOException or InvalidDataException
+                or UnauthorizedAccessException or IOException or InvalidDataException
                 or ArgumentException or InvalidOperationException)
         {
             // No production RecompiledArtifactResult exists for a tooling/input/
