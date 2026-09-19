@@ -89,7 +89,7 @@ public static class RecompileCommand
         }
         catch (Exception ex) when (
             ex is DirectoryNotFoundException or FileNotFoundException
-                or IOException or InvalidDataException
+                or UnauthorizedAccessException or IOException or InvalidDataException
                 or ArgumentException or InvalidOperationException)
         {
             var (status, code) = ClassifyException(ex);
@@ -130,7 +130,7 @@ public static class RecompileCommand
         InvalidDataException => ("InvalidInput", "INVALID_INPUT"),
         ArgumentException => ("InvalidInput", "INVALID_INPUT"),
         InvalidOperationException => ("UnsupportedInput", "UNSUPPORTED_INPUT"),
-        IOException => ("IOToolingFailure", "IO_FAILURE"),
+        UnauthorizedAccessException or IOException => ("IOToolingFailure", "IO_FAILURE"),
         _ => ("ToolingFailure", "TOOLING_FAILURE"),
     };
 }
