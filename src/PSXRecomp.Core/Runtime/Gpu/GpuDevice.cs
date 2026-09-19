@@ -161,6 +161,13 @@ public sealed class GpuDevice : IGpu, IDisposable
         bool _interlace = ((_s.DisplayMode >> 5) & 1) != 0;
         bool _idle = !IsBusy;
 
+        // Bit26 (ready to receive a *command word*) and bit28 (write-FIFO /
+        // DMA-block ready) are separate readiness axes (psx-spx GPUSTAT). During
+        // a CPU→VRAM data phase the GPU wants transfer data, not a new command,
+        // so bit26 clears while bit28 stays set so a feeding DMA (modes 1/2) can
+        // keep requesting.
+        bool _writeReady = _idle || _cpuToVramActive;
+
         uint st = 0;
 
         st |= _s.TexturePage & 0x0F;                                // texture page X base
@@ -185,15 +192,18 @@ public sealed class GpuDevice : IGpu, IDisposable
             st |= 1u << 27;                                          // ready to send VRAM to CPU
 
         if (_idle)
-            st |= (1u << 26) | (1u << 28);                           // ready to receive cmd word / DMA block
+            st |= 1u << 26;                                          // ready to receive a command word (GP0)
+
+        if (_writeReady)
+            st |= 1u << 28;                                          // write FIFO empty / ready to receive DMA block
 
         switch (_s.DmaDirection)
         {
             case GpuDmaDirection.Fifo:
-                if (_idle) st |= 1u << 25;                          // FIFO not full
+                if (_writeReady) st |= 1u << 25;                    // DRQ while write FIFO not more than half full
                 break;
             case GpuDmaDirection.CpuToGp0:
-                if (_idle) st |= 1u << 25;                          // same as bit28
+                if (_writeReady) st |= 1u << 25;                    // same as bit28
                 break;
             case GpuDmaDirection.GpureadToCpu:
                 if (_readWords.Count > 0) st |= 1u << 25;           // same as bit27
