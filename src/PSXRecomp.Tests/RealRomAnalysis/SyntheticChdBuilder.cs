@@ -10,9 +10,10 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// a copyrighted disc image.
 ///
 /// Layout: a V5 header and an uncompressed per-hunk map, then RAW Mode-1 CD frames, one
-/// frame per hunk, each stored at an absolute file offset that is the hunk-unit the map
-/// records (index + 1, because map offset 0 denotes an all-zero parent code). Built
-/// entirely in memory; never committed.
+/// frame per hunk, each stored at an absolute hunk-unit file offset recorded by the map.
+/// The data region begins after enough whole hunk units have been reserved for the complete
+/// map, so large synthetic images cannot overlap map entries with frame data. Built entirely
+/// in memory; never committed.
 /// </summary>
 [Test]
 public static class SyntheticChdBuilder
@@ -64,7 +65,10 @@ public static class SyntheticChdBuilder
         }
 
         int hunkCount = sectorCount; // one raw CD frame per hunk
-        var chd = new byte[(hunkCount + 1) * CdFrameSize];
+        int mapBytes = checked(4 * hunkCount);
+        int firstDataUnit = checked(
+            (MapOffset + mapBytes + (int)CdFrameSize - 1) / (int)CdFrameSize);
+        var chd = new byte[checked((long)(firstDataUnit + hunkCount) * CdFrameSize)];
 
         Encoding.ASCII.GetBytes("MComprHD").CopyTo(chd, 0);
         WriteUInt32(chd, 8, ChdHeader.V5HeaderSize); // header length
@@ -74,14 +78,14 @@ public static class SyntheticChdBuilder
         WriteUInt32(chd, 56, CdFrameSize);           // hunk bytes
         WriteUInt32(chd, 60, CdFrameSize);           // unit bytes
 
-        int mapBytes = 4 * hunkCount;
         for (int hunk = 0; hunk < hunkCount; hunk++)
         {
-            // Uncompressed map: absolute hunk-unit file offset. Stored as index + 1 so
-            // no entry is 0 (map offset 0 marks an all-zero parent hunk).
-            WriteUInt32(chd, MapOffset + 4 * hunk, (uint)(hunk + 1));
+            // Uncompressed map: absolute hunk-unit file offset. The data region starts
+            // after the complete map, aligned to a whole unit, so map entries can never
+            // overwrite frame data even when the synthetic image contains many sectors.
+            WriteUInt32(chd, MapOffset + 4 * hunk, (uint)(firstDataUnit + hunk));
             Buffer.BlockCopy(frames, hunk * (int)CdFrameSize, chd,
-                (hunk + 1) * (int)CdFrameSize, (int)CdFrameSize);
+                (firstDataUnit + hunk) * (int)CdFrameSize, (int)CdFrameSize);
         }
 
         return chd;
