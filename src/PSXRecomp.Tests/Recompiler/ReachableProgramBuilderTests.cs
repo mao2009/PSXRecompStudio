@@ -177,6 +177,21 @@ public sealed class ReachableProgramBuilderTests
             .Should().Equal(LoadAddress, LoadAddress + 4, LoadAddress + 8);
     }
 
+    [Fact]
+    public void ImageEndingAtAddressSpaceLimit_PreservesLastWordAsInImage()
+    {
+        const uint lastWordAddress = 0xFFFFFFFCu;
+
+        var lower = () => ReachableProgramBuilder.Build(
+            lastWordAddress,
+            [Word.Cop1Unusable],
+            lastWordAddress);
+
+        lower.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Cop1Unusable*")
+            .And.Message.Should().NotContain("outside the supplied text image");
+    }
+
     private static RecompilerIrProgram Build(params uint[] words) =>
         ReachableProgramBuilder.Build(LoadAddress, words, LoadAddress);
 
