@@ -27,6 +27,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 - interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
 - レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。ただしどの実行エンジンにも結線されていない。
 - 標準 raw 128 KiB PlayStation メモリーカードイメージを変換なしで読み書きし、他エミュレータとカードを共有可能。Slot 1 / Slot 2 の設定、アトミックな保存、外部変更の検出に対応: [`src/PSXRecomp.Core/MemoryCard/`](src/PSXRecomp.Core/MemoryCard/)、[`FileMemoryCardStorage.cs`](src/PSXRecompStudio/Services/FileMemoryCardStorage.cs)、[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)（#22）。メモリーカードの SIO/IRQ7 プロトコルおよびカード UI は未実装。
+- 最初の実走行可能な recompiled artifact の証明（Issue #461）: synthetic な PS-X EXE を production パイプライン全体 — `PsxExe.Load` → `PsxExeTitleInput.Build` → decode/lowering → host + artifact コード生成 → gcc build（#458）→ launcher 実行（#459）— で通し、generated/recompiled code が実際に実行されたこと、決定論的であること（生成ソースに至るまで）、分類済み境界でのみ停止すること（クラッシュ・静かな終了をしないこと）を検証。合法な実入力を扱う側はユーザー提供の `rom/*.exe` fixture に対して同一パスを実行し、無い場合は明示的に skip: [`RecompiledArtifactE2ETests.cs`](src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs)、[`RealExeE2ETests.cs`](src/PSXRecomp.Tests/E2E/RealExeE2ETests.cs)。
 - 最小構成のヘッドレス CLI `psxrecomp`。recompiled-artifact build 契約（#458）と runnable-artifact 実行契約（#459）を公開し、`psxrecomp recompile <input.exe> --output <dir>` / `psxrecomp run <input.exe>` を決定論的な JSON 出力と 0/1/2 の終了コードで提供: [`src/PSXRecomp.Cli/`](src/PSXRecomp.Cli/)、[`docs/development/headless-cli.md`](docs/development/headless-cli.md)（#460）。汎用コマンドフレームワーク（Issue #15）は対象外。
 - `loach.ArchitectureAnalyzer` が [`architecture.contract.json`](src/architecture.contract.json) に基づきアーキテクチャレイヤーを機械的に強制。
 - disc 発見 → 解析 → Recompiler slice → orchestrated execution を、ユーザーが合法的に用意した fixture に対して一気通貫で実行し、段階ごとに PASS/FAIL/SKIP を報告する Persona E2E gate: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1)、状況は [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md) で追跡。実際のタイトル画面への次なる generic runtime blocker は広範な BIOS HLE coverage で、必要な BIOS call がサポートされた後も GPU/SPU/CD-ROM producer が必要です。
@@ -54,6 +55,23 @@ Total tests: 3
 ```
 
 これは synthetic な MIPS → IR → 生成された host C → gcc build → bounded execution → interpreter state comparison の経路を、このリポジトリ上で実際に実行した結果です（Issue #209）。実 ROM 版は同一パイプラインをユーザー提供 ROM（`rom/` 配下）に対して実行し、ROM が存在しない場合は明示的に skip されます — 詳細は [`RealRomFixtures.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomFixtures.cs) を参照。
+
+### Evidence: 最初の実走行可能な recompiled artifact（Issue #461）
+
+```text
+$ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release \
+    --filter "FullyQualifiedName~PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests"
+
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_FullProductionChain_ExecutesGeneratedCodeToCompletion
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_RepeatedChain_IsDeterministicSourceAndStableBuildInput
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_UnresolvedJumpBoundary_IsClassifiedBlockedNotCrash
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_UnsupportedBiosBoundary_IsClassifiedFailureWithDiagnostic
+
+Total tests: 4
+     Passed: 4
+```
+
+これも同一の production パイプラインの垂直証明です（Issue #461）。synthetic な PS-X EXE 1 本を parse → input bridge → lowering → host/artifact コード生成 → gcc build（#458）→ launcher 実行（#459）で通し、generated/recompiled code が実際に実行されたことと、決定論的であること（繰り返し実行しても生成ソースが完全一致）、そして分類済み境界でのみ停止することを検証します。合法な実入力側は同一パスをユーザー提供の PS-X EXE（`rom/*.exe` 配下）に対して実行し、無い場合は明示的に skip されます — 詳細は [`RealExeE2ETests.cs`](src/PSXRecomp.Tests/E2E/RealExeE2ETests.cs) を参照。
 
 ## クイックスタート
 
@@ -107,6 +125,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 |---|---|
 | CPU 実行（decode/execute、Delay Slot、COP0、割り込み、KSEG、Golden Trace） | 実装済み — [`docs/cpu/`](docs/cpu/) |
 | Recompiler（synthetic + 最初の実 ROM 関数、差分検証） | 検証済み（bounded） — 汎用的な実 ROM 対応は未実装 |
+| 実走行可能な recompiled artifact の E2E（synthetic + 合法な実 EXE） | 実装済み — Issue #461 |
 | Disc / executable 解析（CHD → ISO 9660 → PS-X EXE → CFG） | 実装済み |
 | Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — 実 PS-X EXE のロードと interpreter 実行をサポート（#409）。広範な BIOS HLE ではない |
 | Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — 単体では実装・テスト済みだが、どの実行エンジンにも未結線 |

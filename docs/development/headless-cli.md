@@ -4,9 +4,10 @@
 
 **Authority:** Reference
 
-**Related Issues:** #460, #458, #459
+**Related Issues:** #460, #458, #459, #461
 
-**Related Components:** `src/PSXRecomp.Cli/`, `.github/workflows/ci.yml`
+**Related Components:** `src/PSXRecomp.Cli/`, `.github/workflows/ci.yml`,
+`src/PSXRecomp.Tests/E2E/`
 
 The headless command-line surface of PSXRecompStudio: a small, deterministic
 front end for the two production contracts from #458 (recompiled-host
@@ -111,3 +112,27 @@ those cases.
 The CLI is the smallest useful surface for #460. A general command framework —
 subcommand registration, shell completion, config files, persisted-artifact
 relaunch — belongs to Issue #15 and is deliberately absent here.
+
+## End-to-end proof (Issue #461)
+
+Issue #461's first-runnable-artifact gate is held by `PSXRecomp.Tests.E2E`, an
+always-run vertical proof plus a real-input gate, both driving the CLI's own
+composition root:
+
+- **`RecompiledArtifactE2ETests`** walks a synthetic PS-X EXE through the entire
+  *production* pipeline — `PsxExe.Load` → `PsxExeTitleInput.Build` → decode +
+  `MipsToIrLowerer` → `RecompilerHostCodeGen` → `RecompiledArtifactCodeGen` →
+  `GeneratedHostBuildService` (#458) → `RecompiledArtifactLauncher` (#459) — and
+  asserts the generated/recompiled code really executed (an observable result
+  marker and TTY bytes only the artifact's own blocks could produce), that a
+  repeated run is deterministic down to the generated source, and that both an
+  unresolved control-flow transfer (exit 2, `UNRESOLVED_TRANSFER`) and an
+  unregistered BIOS call (exit 1, `BIOS_HLE_UNSUPPORTED_CALL`) stop as classified
+  boundaries — never a crash or a silent exit.
+- **`RealExeE2ETests`** drives whatever legally user-supplied PS-X EXE exists
+  under `rom/*.exe` through `psxrecomp run` and requires a classified, honest
+  outcome every time: generated code that ran (production `engineName`), a
+  classified blocked stop, or a fail-closed diagnostic — and an explicit skip with
+  a reason when no fixture is present. Fixture discovery and the gitignore /
+  artifact-policy exclusion contract live in `RealExeFixtures`, so a passing run
+  can never smuggle a user's executable into the repository.
