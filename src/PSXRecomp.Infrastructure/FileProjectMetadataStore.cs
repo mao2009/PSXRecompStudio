@@ -29,9 +29,38 @@ public sealed class FileProjectMetadataStore : IProjectMetadataStore
     {
         ValidateDirectoryPath(directoryPath);
 
-        var path = Path.Combine(directoryPath, ProjectSchema.ProjectManifestFileName);
-        var bytes = File.ReadAllBytes(path);
+        // Distinguish the absence cases explicitly (and deterministically) before any
+        // file read, so the reopen contract's failure modes never depend on the subtle
+        // exception File.ReadAllBytes chooses for a given path shape.
+        if (!Directory.Exists(directoryPath))
+        {
+            throw new DirectoryNotFoundException(
+                $"Project directory '{directoryPath}' does not exist.");
+        }
+
+        var manifestPath = Path.Combine(directoryPath, ProjectSchema.ProjectManifestFileName);
+        if (!File.Exists(manifestPath))
+        {
+            throw new FileNotFoundException(
+                $"'{ProjectSchema.ProjectManifestFileName}' was not found under project "
+                + $"directory '{directoryPath}'; this directory is not a reopenable "
+                + "PSXRecomp project.",
+                manifestPath);
+        }
+
+        var bytes = File.ReadAllBytes(manifestPath);
         return ProjectMetadataSerializer.Deserialize(bytes);
+    }
+
+    public bool IsProjectDirectory(string directoryPath)
+    {
+        ValidateDirectoryPath(directoryPath);
+
+        // Presence-only: File.Exists is false for a missing directory, a non-directory
+        // path, a missing manifest, and a manifest that is actually a directory, so all
+        // "not a project" outcomes collapse to false without throwing.
+        return Directory.Exists(directoryPath)
+            && File.Exists(Path.Combine(directoryPath, ProjectSchema.ProjectManifestFileName));
     }
 
     private static void ValidateDirectoryPath(string directoryPath)
