@@ -4,16 +4,17 @@
 
 **Authority:** Reference
 
-**Related Issues:** #460, #458, #459, #461
+**Related Issues:** #460, #458, #459, #461, #457
 
 **Related Components:** `src/PSXRecomp.Cli/`, `.github/workflows/ci.yml`,
-`src/PSXRecomp.Tests/E2E/`
+`src/PSXRecomp.Tests/E2E/`, `src/PSXRecomp.Tests/Cli/`
 
 The headless command-line surface of PSXRecompStudio: a small, deterministic
 front end for the two production contracts from #458 (recompiled-host
 artifact build) and #459 (runnable recompiled-artifact execution). It exists
-so a PS-X EXE can be recompiled and executed without the GUI, under CI, or in
-scripts, while composing exactly the same pipelines the Studio uses.
+so a PS-X EXE or, since #457, a supported CHD disc image can be recompiled and
+executed without the GUI, under CI, or in scripts, while composing exactly the
+same pipelines the Studio uses.
 
 The CLI is deliberately a thin composition root. No compiler, build, Runtime,
 or execution-loop semantics live in `PSXRecomp.Cli`; every behavior is owned by
@@ -22,18 +23,35 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 ## Commands
 
 ```
-psxrecomp recompile <input.exe> --output <dir> [--json]
-psxrecomp run       <input.exe> [--output <dir>] [--segment-budget <n>] [--json]
+psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
+psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--json]
 ```
 
 `psxrecomp --help` prints usage, the option grammar, and the exit-code table.
 
+### Input
+
+The single input resolver is `CliInput.Load`, dispatched purely on the file
+extension (OrdinalIgnoreCase), so the CLI's interpretation never depends on
+file contents:
+
+- `*.chd` is routed through the production CHD analysis pipeline
+  (`RomAnalysisPipeline.RunFromChd` → the classified boot PS-X EXE →
+  `PsxExeTitleInput.Build`). A CHD that cannot be resolved to a bootable PS-X
+  EXE — an unreadable container, a disc with no `SYSTEM.CNF`, or a disc whose
+  boot path does not hold a PS-X EXE — fails closed with the pipeline's
+  `FailureKind`/`FailureReason` classifying the failure (recompile:
+  `InvalidInput` + `INVALID_INPUT`; run: stderr + exit 1). It is never misread
+  as an invalid PS-X EXE.
+- any other extension keeps the original PS-X EXE path (`PsxExe.Load`), with
+  its pre-#457 behavior unchanged.
+
 ### `recompile`
 
 Builds the recompiled-host artifact (`recompiled-artifact`) for the PS-X EXE
-into `<dir>`. `--output <dir>` is required. `--segment-budget` is not accepted
-for `recompile` (it is a run-time budget; the recompile contract does not
-execute the program).
+or CHD input into `<dir>`. `--output <dir>` is required. `--segment-budget` is
+not accepted for `recompile` (it is a run-time budget; the recompile contract
+does not execute the program).
 
 ### `run`
 
@@ -67,7 +85,9 @@ the meaningful payload, and result fields taken verbatim from the production
 
 On failure the envelope additionally carries `errorCode`. Input and CLI
 composition failures use `INVALID_INPUT`, `INPUT_NOT_FOUND`, `UNSUPPORTED_INPUT`,
-`CODEGEN_FAILED`, `IO_FAILURE`, `BUILD_FAILED`, or `TOOLING_FAILURE`. Build
+`CODEGEN_FAILED`, `IO_FAILURE`, `BUILD_FAILED`, or `TOOLING_FAILURE`; CHD inputs
+that fail to resolve a bootable PS-X EXE always classify as `INVALID_INPUT`.
+Build
 service failures preserve their production diagnostic codes:
 `OUTPUT_FAILED`, `TOOLCHAIN_UNAVAILABLE`, `TOOLCHAIN_TIMEOUT`,
 `COMPILE_FAILED`, or `LINK_FAILED`. The envelope also includes a
@@ -95,8 +115,8 @@ blocked (exit code 2), the JSON document is still emitted with
 
 ## Execution model
 
-`run` always rebuilds the artifact from the PS-X EXE using the #458 pipeline
-before launching it with #459. Relaunching a previously persisted artifact
+`run` always rebuilds the artifact from the input — a PS-X EXE or, since #457,
+a supported CHD — using the #458 pipeline before launching it with #459. Relaunching a previously persisted artifact
 alone is **not** supported: there is no `run <artifact>` mode and no manifest
 describing a solo artifact's request. That capability is out of scope for #460
 (the minimal CLI) and tracked under the #15 CLI framework discussion.

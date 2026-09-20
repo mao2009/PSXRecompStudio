@@ -6,13 +6,13 @@ using PSXRecomp.Infrastructure;
 namespace PSXRecomp.Infrastructure.Cli;
 
 /// <summary>
-/// <c>psxrecomp recompile</c>: reads a legally supplied PS-X EXE and drives the
-/// production #458 artifact-build path — lowering (<c>MipsToIrLowerer</c>),
-/// host-dispatch and artifact-driver code generation
-/// (<c>RecompilerHostCodeGen</c>/<c>RecompiledArtifactCodeGen</c>), and the toolchain
-/// build (<see cref="GeneratedHostBuildService"/>). On success it prints the final
-/// artifact path and exits 0; any input/lowering/codegen/build failure exits 1 with
-/// a diagnostic and never silently continues.
+/// <c>psxrecomp recompile</c>: reads a legally supplied input (a PS-X EXE or, via
+/// <see cref="CliInput.Load"/>, a supported CHD) and drives the production #458
+/// artifact-build path — lowering (<c>MipsToIrLowerer</c>), host-dispatch and
+/// artifact-driver code generation (<c>RecompilerHostCodeGen</c>/<c>RecompiledArtifactCodeGen</c>),
+/// and the toolchain build (<see cref="GeneratedHostBuildService"/>). On success it prints
+/// the final artifact path and exits 0; any input/lowering/codegen/build failure exits 1
+/// with a diagnostic and never silently continues.
 /// </summary>
 [Infrastructure]
 public static class RecompileCommand
@@ -29,7 +29,7 @@ public static class RecompileCommand
         var outputDirectory = Path.GetFullPath(arguments.OutputDirectory!);
         try
         {
-            var input = CliInput.LoadExe(arguments.Input!, outerBudget: 1, segmentBudget: 1);
+            var input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget: 1);
             var program = CliInput.Lower(input);
 
             var dispatch = RecompilerHostCodeGen.Generate(program);

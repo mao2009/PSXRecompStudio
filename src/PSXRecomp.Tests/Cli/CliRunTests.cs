@@ -18,6 +18,14 @@ namespace PSXRecomp.Tests.Cli;
 /// launcher, so every artifact path below is produced by real generated code,
 /// built with gcc and launched as a real native process — evidence that the CLI
 /// composes the production contracts rather than substituting mocks.
+///
+/// Issue #457's direct CHD input is covered here too, reusing the same successful
+/// fixture so the shared downstream path is proven byte-identical: the CHD case
+/// feeds <see cref="SyntheticChdBuilder"/> (a SYSTEM.CNF + this same program inside
+/// an uncompressed CHD the production reader opens), and the EXE case feeds the
+/// bare executable — both must resolve through <see cref="CliInput.Load"/> to
+/// exactly the same recompiled run. CHD failures are pinned to the pipeline's
+/// classification, never to <c>PsxExe.Load</c>'s "Invalid PS-X EXE magic".
 /// </summary>
 [Test]
 public sealed class CliRunTests
@@ -77,6 +85,16 @@ public sealed class CliRunTests
     private static string WriteSyntheticExe(TempDirectory dir, string name, uint[] words)
     {
         return dir.WriteFile(name, BuildSyntheticExe(words));
+    }
+
+    /// <summary>
+    /// A bootable synthetic disc: the same <see cref="SuccessfulProgram"/> program
+    /// embedded as the ISO's boot executable inside an uncompressed CHD, written as
+    /// a <c>.chd</c> file for the CLI's extension dispatch.
+    /// </summary>
+    private static string WriteSyntheticChd(TempDirectory dir, string name)
+    {
+        return dir.WriteFile(name, SyntheticChdBuilder.Build(BuildSyntheticExe(SuccessfulProgram())));
     }
 
     private static (int Exit, string Output, string Error) Invoke(params string[] args)
@@ -148,6 +166,153 @@ public sealed class CliRunTests
         root.GetProperty("success").GetBoolean().Should().BeFalse();
         root.GetProperty("errorCode").GetString().Should().Be("INVALID_INPUT");
         root.GetProperty("message").GetString().Should().Contain("Invalid PS-X EXE magic");
+    }
+
+    // ------------------------------------------------------------ CHD direct input (#457)
+
+    [Fact]
+    public void Recompile_ChdInput_BuildsArtifactAtCallerSelectedOutputDirectory()
+    {
+        using var dir = new TempDirectory();
+        var chdPath = WriteSyntheticChd(dir, "disc.chd");
+        var outDir = dir.CreateSubdirectory("caller-chosen");
+
+        var (exit, output, error) = Invoke("recompile", chdPath, "--output", outDir);
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+        output.Should().Contain("Build succeeded.");
+        output.Should().Contain("Artifact:");
+
+        var artifactPath = output[(output.IndexOf("Artifact:", StringComparison.Ordinal) + "Artifact:".Length)..].Trim();
+        Path.GetDirectoryName(artifactPath).Should().Be(Path.GetFullPath(outDir));
+        ArtifactExists(artifactPath).Should().BeTrue();
+        new FileInfo(artifactPath).Length.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void Recompile_ChdJson_KeepsTheExactSchemaOfTheExePath()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var chdPath = WriteSyntheticChd(dir, "disc.chd");
+
+        var (exeExit, exeOutput, _) = Invoke("recompile", exePath, "--output", dir.CreateSubdirectory("exe-out"), "--json");
+        var (chdExit, chdOutput, _) = Invoke("recompile", chdPath, "--output", dir.CreateSubdirectory("chd-out"), "--json");
+
+        exeExit.Should().Be(RecompiledArtifactExitCode.Success);
+        chdExit.Should().Be(RecompiledArtifactExitCode.Success);
+
+        using var chdJson = JsonDocument.Parse(chdOutput);
+        var chdRoot = chdJson.RootElement;
+        chdRoot.EnumerateObject().Select(static p => p.Name).Should().Equal(
+            "kind", "success", "status", "artifact", "errorCode", "message");
+        chdRoot.GetProperty("kind").GetString().Should().Be("recompile");
+        chdRoot.GetProperty("success").GetBoolean().Should().BeTrue();
+        chdRoot.GetProperty("status").GetString().Should().Be("Succeeded");
+        // Same envelope, same content as the EXE input, modulo the artifact path.
+        using var exeJson = JsonDocument.Parse(exeOutput);
+        chdRoot.GetProperty("success").GetRawText().Should().Be(
+            exeJson.RootElement.GetProperty("success").GetRawText());
+        chdRoot.GetProperty("status").GetRawText().Should().Be(
+            exeJson.RootElement.GetProperty("status").GetRawText());
+        chdRoot.GetProperty("errorCode").ValueKind.Should().Be(JsonValueKind.Null);
+        chdRoot.GetProperty("message").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public void Run_ChdInput_JsonSucceedsThroughTheSharedDownstreamPath()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var chdPath = WriteSyntheticChd(dir, "disc.chd");
+
+        var (exeExit, exeOutput, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("exe-out"), "--json");
+        var (chdExit, chdOutput, chdError) = Invoke("run", chdPath, "--output", dir.CreateSubdirectory("chd-out"), "--json");
+
+        chdExit.Should().Be(RecompiledArtifactExitCode.Success);
+        chdError.Should().BeEmpty();
+
+        using var chdJson = JsonDocument.Parse(chdOutput);
+        var chdRoot = chdJson.RootElement;
+        // The run JSON envelope is unchanged by the CHD path.
+        chdRoot.EnumerateObject().Select(static p => p.Name).Should().BeEquivalentTo(
+            "kind", "success", "artifact", "output", "result");
+        chdRoot.GetProperty("kind").GetString().Should().Be("run");
+        chdRoot.GetProperty("success").GetBoolean().Should().BeTrue();
+        var artifact = chdRoot.GetProperty("artifact").GetString();
+        artifact.Should().NotBeNullOrEmpty();
+        ArtifactExists(artifact!).Should().BeTrue();
+        // The guest executed through the production engine and reached shared Runtime.
+        chdRoot.GetProperty("output").EnumerateArray().Select(static e => (byte)e.GetInt32()).Should().Equal(DiagnosticCharacter);
+
+        // Shared downstream path: the CHD-derived input lands on exactly the same
+        // production termination result as the identical EXE input.
+        var chdResult = chdRoot.GetProperty("result");
+        var exeResult = JsonDocument.Parse(exeOutput).RootElement.GetProperty("result");
+        foreach (var field in new[] { "outcome", "exitCode", "state", "guestPc", "resultValue", "engineName", "diagnosticCode", "diagnosticMessage" })
+        {
+            chdResult.GetProperty(field).GetRawText().Should().Be(exeResult.GetProperty(field).GetRawText(), $"result field '{field}' must match the EXE path");
+        }
+        chdResult.GetProperty("engineName").GetString().Should().Be(RecompiledHostExecutionEngine.EngineName);
+        chdResult.GetProperty("state").GetInt32().Should().Be((int)TitleExecutionState.Completed);
+    }
+
+    [Fact]
+    public void Recompile_GarbageChd_IsClassifiedAsChdInputFailureNotAsExeMagic()
+    {
+        using var dir = new TempDirectory();
+        var garbage = dir.WriteFile("garbage.chd", new byte[300]);
+
+        var (exit, output, _) = Invoke("recompile", garbage, "--output", dir.CreateSubdirectory("out"), "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        using var json = JsonDocument.Parse(output);
+        var root = json.RootElement;
+        root.GetProperty("success").GetBoolean().Should().BeFalse();
+        root.GetProperty("status").GetString().Should().Be("InvalidInput");
+        root.GetProperty("errorCode").GetString().Should().Be("INVALID_INPUT");
+        var message = root.GetProperty("message").GetString();
+        message.Should().Contain("CHD input could not be resolved");
+        message.Should().Contain("ChdOpenFailure");
+        message.Should().NotContain("Invalid PS-X EXE magic");
+    }
+
+    [Fact]
+    public void Run_GarbageChd_ExitCodeOneWithClassifiedChdDiagnosticOnStderr()
+    {
+        using var dir = new TempDirectory();
+        var garbage = dir.WriteFile("garbage.chd", new byte[300]);
+
+        var (exit, output, error) = Invoke("run", garbage, "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        output.Should().BeEmpty();
+        error.Should().Contain("psxrecomp run:");
+        error.Should().Contain("ChdOpenFailure");
+        error.Should().NotContain("Invalid PS-X EXE magic");
+    }
+
+    [Fact]
+    public void Recompile_ChdWithoutSystemCnf_IsClassifiedAtTheFilesystemStage()
+    {
+        using var dir = new TempDirectory();
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("OTHER.TXT;1", System.Text.Encoding.ASCII.GetBytes("not a boot disc"))
+            .Build();
+        var chd = dir.WriteFile("no-cnf.chd", SyntheticChdBuilder.WrapInChd(iso));
+
+        var (exit, output, _) = Invoke("recompile", chd, "--output", dir.CreateSubdirectory("out"), "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        using var json = JsonDocument.Parse(output);
+        var root = json.RootElement;
+        root.GetProperty("errorCode").GetString().Should().Be("INVALID_INPUT");
+        var message = root.GetProperty("message").GetString();
+        // The CHD is a perfectly good disc container; the failure is the absence of a
+        // boot descriptor, classified by the pipeline — never an EXE-format failure.
+        message.Should().Contain("SystemCnfMissing");
+        message.Should().NotContain("Invalid PS-X EXE magic");
     }
 
     [Fact]
@@ -350,7 +515,7 @@ public sealed class CliRunTests
     {
         var (exit, _, error) = Invoke("run");
         exit.Should().Be(RecompiledArtifactExitCode.Failure);
-        error.Should().Contain("missing input PS-X EXE path.");
+        error.Should().Contain("missing input path.");
     }
 
     [Fact]

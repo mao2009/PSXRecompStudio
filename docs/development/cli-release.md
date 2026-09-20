@@ -14,8 +14,9 @@ download from GitHub Releases.
 3. On Linux/macOS, mark the binary executable if the archive permissions were not preserved:
    `chmod +x psxrecomp`.
 4. Run `psxrecomp --help`.
-5. To build or run a recompiled artifact, provide a legally supplied PS-X EXE:
-   `psxrecomp run <input.exe> --output ./out --json`.
+5. To build or run a recompiled artifact, provide a legally supplied PS-X EXE
+   or CHD disc image:
+   `psxrecomp run <input.exe|input.chd> --output ./out --json`.
 
 Early builds may stop with exit code 2 at an explicit unsupported/blocked
 boundary. That is a classified result, not a claim of full-title compatibility.
