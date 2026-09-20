@@ -279,12 +279,33 @@ public static class MipsToIrLowerer
         }
 
         var (next, nextPc) = instructions[index + 1];
+        return RequiresAdjacentLoadDelayPair(load, loadPc, next, nextPc);
+    }
+
+    /// <summary>
+    /// Reports whether two adjacent instructions require the load-delay fusion
+    /// performed by <see cref="LowerProgram"/>. Reachable-code discovery uses this
+    /// narrow query to avoid splitting an architecturally observable load pair
+    /// across CFG block entries; it does not reproduce load-delay semantics.
+    /// </summary>
+    internal static bool RequiresAdjacentLoadDelayPair(
+        R3000aInstruction load,
+        uint loadPc,
+        R3000aInstruction next,
+        uint nextPc)
+    {
+        if (!load.LoadDelayInfo.ProducesLoadDelay || load.LoadDelayInfo.TargetRegister == 0)
+        {
+            return false;
+        }
+
         if (nextPc != unchecked(loadPc + InstructionSize))
         {
             return false;
         }
 
-        return TryGetSourceRegisters(next, out var sources) && Array.IndexOf(sources, target) >= 0;
+        return TryGetSourceRegisters(next, out var sources)
+            && Array.IndexOf(sources, load.LoadDelayInfo.TargetRegister) >= 0;
     }
 
     /// <summary>
