@@ -1,0 +1,177 @@
+name: Release CLI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+      - "src/PSXRecomp.Cli/**"
+      - "src/PSXRecomp.Core/**"
+      - "src/PSXRecomp.Infrastructure/**"
+      - "src/PSXRecomp.Native/**"
+      - "docs/development/cli-release.md"
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package CLI (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            executable: psxrecomp
+            archive_ext: tar.gz
+          - os: windows-latest
+            rid: win-x64
+            executable: psxrecomp.exe
+            archive_ext: zip
+          - os: macos-latest
+            rid: osx-arm64
+            executable: psxrecomp
+            archive_ext: tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Publish self-contained single-file CLI
+        shell: pwsh
+        run: |
+          $publishDir = Join-Path $PWD "dist/publish/${{ matrix.rid }}"
+          dotnet publish src/PSXRecomp.Cli/PSXRecomp.Cli.csproj `
+            --configuration Release `
+            --runtime "${{ matrix.rid }}" `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:IncludeAllContentForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output $publishDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify single-file shape
+        shell: pwsh
+        run: |
+          $publishDir = Join-Path $PWD "dist/publish/${{ matrix.rid }}"
+          $exe = Join-Path $publishDir "${{ matrix.executable }}"
+          if (!(Test-Path $exe)) {
+            throw "Published CLI executable is missing: $exe"
+          }
+
+          $files = @(Get-ChildItem -Path $publishDir -File)
+          $files | ForEach-Object { Write-Host $_.FullName }
+
+          if ($files.Count -ne 1) {
+            throw "Expected a single-file publish, found $($files.Count) files."
+          }
+
+      - name: Smoke-test packaged CLI
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "dist/publish/${{ matrix.rid }}/${{ matrix.executable }}"
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged CLI --help smoke test failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Package Linux/macOS archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME:-ci}"
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
+            version="ci-${GITHUB_SHA::12}"
+          fi
+          mkdir -p dist/package
+          asset="psxrecomp-${version}-${{ matrix.rid }}.tar.gz"
+          tar -C "dist/publish/${{ matrix.rid }}" -czf "dist/package/${asset}" "${{ matrix.executable }}"
+          echo "Packaged dist/package/${asset}"
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "ci-" + $env:GITHUB_SHA.Substring(0, 12) }
+          $packageDir = Join-Path $PWD "dist/package"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          $asset = "psxrecomp-$version-${{ matrix.rid }}.zip"
+          Compress-Archive `
+            -Path (Join-Path $PWD "dist/publish/${{ matrix.rid }}/${{ matrix.executable }}") `
+            -DestinationPath (Join-Path $packageDir $asset)
+          Write-Host "Packaged dist/package/$asset"
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.rid }}
+          path: dist/package/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) -printf '%f\n' | sort | while read -r file; do
+            sha256sum "$file"
+          done > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+
+          prerelease=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --generate-notes \
+            "${prerelease[@]}" \
+            ./*.zip ./*.tar.gz ./SHA256SUMS.txt
