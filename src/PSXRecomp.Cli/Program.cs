@@ -6,7 +6,8 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// <summary>
 /// The minimal headless CLI introduced by Issue #460. It exposes the production
 /// recompiled-artifact build path (#458) and the runnable-artifact launch contract
-/// (#459) as two commands over a legally supplied PS-X EXE:
+/// (#459) as two commands over a legally supplied input — a PS-X EXE or, since
+/// Issue #457, a supported CHD disc image (see <see cref="CliInput.Load"/>):
 /// <c>recompile</c> and <c>run</c>. This assembly is Infrastructure-layer
 /// (<c>PSXRecomp.Infrastructure.Cli</c>) and only composes production contracts —
 /// it adds no compiler, build, Runtime, or execution-loop semantics of its own.
@@ -23,8 +24,8 @@ namespace PSXRecomp.Infrastructure.Cli;
 [Infrastructure]
 public static class Program
 {
-    private const string UsageRecompile = "usage: psxrecomp recompile <input.exe> --output <dir> [--json]";
-    private const string UsageRun = "usage: psxrecomp run <input.exe> [--output <dir>] [--segment-budget <n>] [--json]";
+    private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]";
+    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
 
@@ -175,7 +176,7 @@ public static class Program
         if (input is null)
         {
             parsed = default;
-            error = "missing input PS-X EXE path.";
+            error = "missing input path.";
             return false;
         }
 
@@ -202,8 +203,8 @@ public static class Program
         writer.WriteLine("usage: psxrecomp <command> [options]");
         writer.WriteLine();
         writer.WriteLine("commands:");
-        writer.WriteLine("  recompile   build a runnable recompiled host artifact from a PS-X EXE");
-        writer.WriteLine("  run         build and run a recompiled artifact from a PS-X EXE");
+        writer.WriteLine("  recompile   build a runnable recompiled host artifact from a PS-X EXE or CHD");
+        writer.WriteLine("  run         build and run a recompiled artifact from a PS-X EXE or CHD");
         writer.WriteLine();
         writer.WriteLine(UsageRecompile);
         writer.WriteLine(UsageRun);

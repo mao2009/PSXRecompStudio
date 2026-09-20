@@ -9,12 +9,13 @@ namespace PSXRecomp.Infrastructure.Cli;
 
 /// <summary>
 /// <c>psxrecomp run</c>: builds and launches one runnable recompiled artifact from a
-/// legally supplied PS-X EXE through the #459 <see cref="RecompiledArtifactLauncher"/>,
+/// legally supplied input (a PS-X EXE or, via <see cref="CliInput.Load"/>, a supported
+/// CHD) through the #459 <see cref="RecompiledArtifactLauncher"/>,
 /// reusing the natural-end handoff semantics <c>TitleExecutionService</c> establishes
 /// (running off the end of the guest's own text image is a natural exit; every other
 /// unresolved transfer is classified as unsupported). The launcher is single-shot
 /// (it builds and runs in one operation and does not accept an already-built binary),
-/// so <c>run</c> rebuilds from the EXE; persisted-artifact-only relaunch is outside
+/// so <c>run</c> rebuilds from the input; persisted-artifact-only relaunch is outside
 /// Issue #460. The production result maps onto the process exit code as-is:
 /// Success → 0, Blocked → 2, Failure/tooling → 1.
 /// </summary>
@@ -36,7 +37,7 @@ public static class RunCommand
 
         try
         {
-            var input = CliInput.LoadExe(arguments.Input!, outerBudget: 1, segmentBudget);
+            var input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget);
             var program = CliInput.Lower(input);
             var programEnd = unchecked(input.LoadAddress + (uint)input.InstructionWords.Count * 4u);
 
