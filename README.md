@@ -25,6 +25,7 @@ Its core differentiator is a **differentially validated recompiler path**: MIPS 
 - Shared BIOS A0/B0/C0 vector dispatch on both the interpreter and recompiled paths, currently covering 5 registered services (putchar, puts and its B0 alias, `GetB0Table`, `GetC0Table`) — not broad BIOS HLE coverage: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs).
 - Register-level DMA/interrupt/timer MMIO adapters and a memory bus with dedicated tests: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/) — not yet wired into any execution engine.
 - Standard raw 128 KiB PlayStation memory-card images, read and written without conversion so a card can be shared with other emulators, with slot 1 / slot 2 configuration, atomic saves, and external-modification detection: [`src/PSXRecomp.Core/MemoryCard/`](src/PSXRecomp.Core/MemoryCard/), [`FileMemoryCardStorage.cs`](src/PSXRecompStudio/Services/FileMemoryCardStorage.cs), [`docs/runtime/memory-card.md`](docs/runtime/memory-card.md) (#22). The memory-card SIO/IRQ7 protocol and any card UI are not implemented.
+- The first runnable-artifact proof (Issue #461): a synthetic PS-X EXE run through the entire production pipeline — `PsxExe.Load` → `PsxExeTitleInput.Build` → decode/lowering → host + artifact code generation → gcc build (#458) → launcher execution (#459) — asserting the generated/recompiled code really executed, deterministically (down to the generated source), and stopped only at classified boundaries; the legal real-input half runs the identical path against user-supplied `rom/*.exe` fixtures and skips explicitly when none is present: [`RecompiledArtifactE2ETests.cs`](src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs), [`RealExeE2ETests.cs`](src/PSXRecomp.Tests/E2E/RealExeE2ETests.cs).
 - A minimal headless CLI, `psxrecomp`, exposing the recompiled-artifact build (#458) and runnable-artifact execution (#459) contracts: `psxrecomp recompile <input.exe> --output <dir>` and `psxrecomp run <input.exe>`, with deterministic JSON output and 0/1/2 exit codes: [`src/PSXRecomp.Cli/`](src/PSXRecomp.Cli/), [`docs/development/headless-cli.md`](docs/development/headless-cli.md) (#460). Not the general-purpose command framework (Issue #15).
 - Architecture layering mechanically enforced by `loach.ArchitectureAnalyzer` against [`architecture.contract.json`](src/architecture.contract.json).
 - An end-to-end reproduction workflow, the Persona E2E gate, chains disc discovery → analysis → recompiler slice → orchestrated execution against a legally user-supplied fixture and reports PASS/FAIL/SKIP per stage: [`scripts/e2e/persona-e2e-gate.ps1`](scripts/e2e/persona-e2e-gate.ps1), tracked in [`docs/v0.1.0/persona-e2e-status.md`](docs/v0.1.0/persona-e2e-status.md). Its next generic runtime blocker toward an actual title screen is broader BIOS HLE coverage; GPU/SPU/CD-ROM producers remain required after the needed BIOS calls are supported.
@@ -52,6 +53,29 @@ Total tests: 3
 ```
 
 This is the synthetic MIPS → IR → generated host C → gcc build → bounded execution → interpreter-state comparison path, run directly from this repository (Issue #209). The real-ROM counterpart runs the identical pipeline against a user-supplied ROM under `rom/` and skips explicitly when none is present — see [`RealRomFixtures.cs`](src/PSXRecomp.Tests/RealRomAnalysis/RealRomFixtures.cs).
+
+### Evidence: the first runnable recompiled artifact (Issue #461)
+
+```text
+$ dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release \
+    --filter "FullyQualifiedName~PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests"
+
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_FullProductionChain_ExecutesGeneratedCodeToCompletion
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_RepeatedChain_IsDeterministicSourceAndStableBuildInput
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_UnresolvedJumpBoundary_IsClassifiedBlockedNotCrash
+Passed PSXRecomp.Tests.E2E.RecompiledArtifactE2ETests.SyntheticExe_UnsupportedBiosBoundary_IsClassifiedFailureWithDiagnostic
+
+Total tests: 4
+     Passed: 4
+```
+
+This is the same production pipeline's vertical proof (Issue #461): one synthetic
+PS-X EXE walks parse → input bridge → lowering → host/artifact code generation →
+gcc build (#458) → launcher execution (#459), asserting the generated/recompiled
+code really executed, deterministically (repeated runs are identical down to the
+generated source), and stopped only at classified boundaries. The legal real-input
+half runs the identical path against a user-supplied PS-X EXE under `rom/*.exe`
+and skips explicitly when none is present — see [`RealExeE2ETests.cs`](src/PSXRecomp.Tests/E2E/RealExeE2ETests.cs).
 
 ## Quick start
 
@@ -105,6 +129,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 |---|---|
 | CPU execution (decode/execute, delay slots, COP0, interrupts, KSEG, Golden Trace) | Implemented — [`docs/cpu/`](docs/cpu/) |
 | Recompiler (synthetic + first real-ROM function, differential validation) | Validated, bounded — general real-ROM coverage not implemented |
+| Runnable recompiled-artifact E2E (synthetic + legal real EXE) | Implemented — Issue #461 |
 | Disc / executable analysis (CHD → ISO 9660 → PS-X EXE → CFG) | Implemented |
 | Runtime / BIOS execution boundary (A0/B0/C0 dispatch, production interpreter engine wired into Studio) | Partial — real PS-X EXE loading and interpreter execution supported (#409); not broad BIOS HLE |
 | Hardware — DMA / interrupts / timers (MMIO adapters, memory bus) | Partial — implemented and tested standalone, not wired into any execution engine |
