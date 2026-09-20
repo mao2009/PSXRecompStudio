@@ -39,7 +39,12 @@ by every later GPU change:
    27 VRAM→CPU ready, 28 DMA-block-ready, 29-30 DMA direction, 31 drawing
    even/odd. Every bit is derived from named `GpuState` fields (plus transient
    packet flags), never from a magic status word. The documented power-on value
-   `0x14802000` (bits 13, 23, 26, 28) is reproduced at reset.
+   `0x14802000` (bits 13, 23, 26, 28) is reproduced at reset. The readiness
+   bits are tracked independently: bit 26 (ready to receive a *command word*)
+   clears whenever the GPU is busy or consuming transfer data, while bit 28
+   (write FIFO / DMA-block ready) stays set during a CPU→VRAM data phase so a
+   feeding DMA in GP1(04h) modes 1/2 can keep requesting; bit 27 (VRAM→CPU)
+   is set whenever GPUREAD has buffered data.
 
 3. **VRAM is not cleared by GPU reset.** `GpuVram` is deterministically zeroed
    at construction; `GpuDevice.Reset()` (GP1(00h)) resets registers and the
