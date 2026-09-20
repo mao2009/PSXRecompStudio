@@ -46,7 +46,7 @@ public static class ReachableProgramBuilder
             throw InvalidFlow($"text image at 0x{loadAddress:X8} overflows the 32-bit address space.");
         }
 
-        var endExclusive = (uint)imageEnd;
+        var endExclusive = imageEnd;
         if ((entryPc & (InstructionSize - 1)) != 0)
         {
             throw InvalidFlow($"entry point 0x{entryPc:X8} is not 4-byte aligned.");
@@ -324,7 +324,7 @@ public static class ReachableProgramBuilder
     {
         private readonly IReadOnlyList<uint> _words;
 
-        public InstructionImage(uint loadAddress, uint endExclusive, IReadOnlyList<uint> words)
+        public InstructionImage(uint loadAddress, ulong endExclusive, IReadOnlyList<uint> words)
         {
             LoadAddress = loadAddress;
             EndExclusive = endExclusive;
@@ -332,9 +332,9 @@ public static class ReachableProgramBuilder
         }
 
         public uint LoadAddress { get; }
-        public uint EndExclusive { get; }
+        public ulong EndExclusive { get; }
 
-        public bool ContainsAddress(uint pc) => pc >= LoadAddress && pc < EndExclusive;
+        public bool ContainsAddress(uint pc) => pc >= LoadAddress && (ulong)pc < EndExclusive;
 
         public bool Contains(uint pc) =>
             ContainsAddress(pc) && (ulong)(pc - LoadAddress) + InstructionSize <= (ulong)_words.Count * InstructionSize;
