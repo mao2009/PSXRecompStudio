@@ -141,9 +141,25 @@ public static class RecompilerStateDiff
             AddGpr(diffs, reference.Gpr[i], actual.Gpr[i], i);
         }
 
+        // A raised architectural exception ends the interpreter at the exception
+        // handler vector while the generated host parks PC at the faulting block's
+        // entry. Both positions are correct for their execution model, and the
+        // exception resolution (Excode, EPC/faultPc, BD) proved agreement above, so
+        // PC is not a comparable variable for this pair — comparing it would turn the
+        // matching BREAK runs of Issue #481 into false mismatches. Any run that does
+        // not end in a raised exception on both sides keeps the strict PC compare.
+        var bothEndedInRaisedException =
+            reference.Termination == RecompilerIrTerminationReason.Exception &&
+            actual.Termination == RecompilerIrTerminationReason.Exception &&
+            reference.Exception.IsRaised &&
+            actual.Exception.IsRaised;
+
         Add("hi", reference.HI, actual.HI, diffs);
         Add("lo", reference.LO, actual.LO, diffs);
-        Add("pc", reference.PC, actual.PC, diffs);
+        if (!bothEndedInRaisedException)
+        {
+            Add("pc", reference.PC, actual.PC, diffs);
+        }
         Add("termination", (byte)reference.Termination, (byte)actual.Termination, diffs);
         AddLoadDelay(diffs, reference.LoadDelay, actual.LoadDelay);
         AddException(diffs, reference.Exception, actual.Exception);

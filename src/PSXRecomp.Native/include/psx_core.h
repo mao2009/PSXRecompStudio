@@ -122,6 +122,12 @@ PSX_API void     PSXCore_ResetInterruptController(PSXCore* core);
 PSX_API int PSXCore_Step(PSXCore* core);
 /** Returns non-zero when the most recent PSXCore_Step() raised a guest exception. Reset by every step. */
 PSX_API int PSXCore_GetExceptionRaised(PSXCore* core);
+/** Returns the CAUSE Excode of the exception the most recent PSXCore_Step() raised (Issue #481). Meaningful only when PSXCore_GetExceptionRaised() is non-zero. */
+PSX_API uint32_t PSXCore_GetExceptionCode(PSXCore* core);
+/** Returns the faulting PC (EPC) of the exception the most recent PSXCore_Step() raised: the branch PC when the faulting instruction was in a branch delay slot, else the faulting instruction's own PC. Meaningful only when PSXCore_GetExceptionRaised() is non-zero. */
+PSX_API uint32_t PSXCore_GetExceptionFaultPc(PSXCore* core);
+/** Returns non-zero when the faulting instruction of the most recent exception was in a branch delay slot (BD, CAUSE bit 31). Meaningful only when PSXCore_GetExceptionRaised() is non-zero. */
+PSX_API int PSXCore_GetExceptionInDelaySlot(PSXCore* core);
 /** Executes up to `maxInstructions` instructions, stopping early on a native exception/halt condition. Returns the number of instructions actually executed, or a negative status on error. */
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

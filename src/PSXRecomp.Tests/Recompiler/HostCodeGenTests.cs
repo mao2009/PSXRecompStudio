@@ -1096,6 +1096,54 @@ int main() {
     }
 
     [Fact]
+    public void Exit_Exception_CarryingResolution_EmitsExceptionFields_BeforeTermination()
+    {
+        // Issue #481: a BREAK exit carries its statically-resolvable exception
+        // resolution; the emitted exit must reproduce Excode/EPC/BD in the host
+        // state so the runtime sees the faulting instruction without re-deriving
+        // it from the parked dispatch PC.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Exception,
+                    exception: new RecompilerExceptionState(isRaised: true, code: 0x09, faultPc: 0x80000000u, inDelaySlot: false))),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("state->exception_raised = 1u;");
+        result.Source.Should().Contain("state->exception_code = 9;");
+        // The immediate formatter renders 0x80000000 as decimal, like every other
+        // large PC/address constant the code generator emits.
+        result.Source.Should().Contain("state->exception_fault_pc = (2147483648u);");
+        result.Source.Should().Contain("state->exception_in_delay_slot = 0u;");
+        result.Source.Should().Contain("state->termination_reason = 6; return (int32_t)6u;");
+    }
+
+    [Fact]
+    public void Exit_Exception_WithoutResolution_EmitsTerminationOnly()
+    {
+        // The generic trapping exit (AddSigned overflow and friends) resolves at
+        // runtime, not at lowering time, so it writes no exception fields and
+        // keeps the historical shape: termination only. The runtime still derives
+        // the fault from the parked dispatch PC, unchanged by Issue #481.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Exception)),
+        });
+
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+        result.Source.Should().Contain("state->termination_reason = 6; return (int32_t)6u;");
+        result.Source.Should().NotContain("state->exception_raised");
+        result.Source.Should().NotContain("state->exception_code");
+        result.Source.Should().NotContain("state->exception_fault_pc");
+        result.Source.Should().NotContain("state->exception_in_delay_slot");
+    }
+
+    [Fact]
     public void Unsupported_Empty_Program_Is_Refused()
     {
         var result = RecompilerHostCodeGen.Generate(new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>()));

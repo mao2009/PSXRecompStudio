@@ -64,6 +64,20 @@ uses this same operation inside the fused branch/jump block; an overflow stops
 the block before its transfer exit is applied. Wrapping `ADDU`, `SUBU`, and
 `ADDIU` continue to use `Add` / `Subtract` and do not trap.
 
+### Trapping instructions
+
+`BREAK` (Issue #481) lowers to a single empty block whose exit carries
+`RecompilerIrTerminationReason.Exception` plus a statically-baked
+`RecompilerExceptionState`:
+
+- **Standalone BREAK**: `faultPc = <own PC>`, `inDelaySlot = false`.
+- **BREAK in a delay slot**: the owning branch/JAL block still retires the
+  architectural link write (JAL/JALR) first, then suppresses its transfer exit
+  and faults with `faultPc = <owning branch PC>`, `inDelaySlot = true` — the
+  hardware EPC/CAUSE.BD values. The block ends with no flow and no `next_pc`.
+
+`SYSCALL` remains deferred (see the Deferred table).
+
 ### Control flow
 
 A control-transfer instruction and the instruction in its branch delay slot lower
@@ -290,7 +304,7 @@ report it as such.
 | BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branch encodings (`0x06`-`0x07`, `0x01`) have no decoder entry yet; the signed comparison IR now exists (`CompareLessThanSigned`), so lowering them is a decoder + lowering extension. |
 | LWL / LWR, SWL / SWR | Unaligned pair access with the special ADR-004 load-delay pairing. |
 | ADDI / SUB / ADD, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
-| COP0 / COP2, SYSCALL / BREAK | Coprocessor and exception semantics. |
+| COP0 / COP2, SYSCALL | Coprocessor and exception semantics. |
 | Chained load delay, and a load in a branch delay slot | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
 | Pending load delay across a program boundary | `RecompilerStateSnapshot.LoadDelay` can carry it, but no IR operation queues one. |
 | Misalignment and address exceptions | Alignment and translation belong to the memory/runtime contract, not the IR. |

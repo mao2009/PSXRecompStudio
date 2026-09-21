@@ -38,6 +38,13 @@ public static class MipsToIrLowerer
     private const uint InstructionSize = 4;
 
     /// <summary>
+    /// CAUSE Excode for the BREAK instruction (Bp, docs/cpu/exceptions.md).
+    /// Shared with the interpreter executor so both execution paths agree on
+    /// which trap exception the lowering models (Issue #481).
+    /// </summary>
+    public const uint BreakExcode = 0x09;
+
+    /// <summary>
     /// Lowers one straight-line instruction into its own block.
     /// An instruction that owns a delay slot is rejected here; use
     /// <see cref="LowerControlTransfer"/> for it.
@@ -51,6 +58,22 @@ public static class MipsToIrLowerer
                 RecompilerIrDiagnosticCode.InvalidFlow,
                 $"Opcode '{instruction.Opcode}' owns a branch delay slot and cannot be lowered as a standalone block; " +
                 "lower it together with its delay-slot instruction via LowerControlTransfer.");
+        }
+
+        if (instruction.Opcode == R3000aOpcode.Break)
+        {
+            // BREAK raises a synchronous Bp exception (Excode 0x09) before any
+            // later instruction retires; it reads and writes no registers, so an
+            // empty operation list fully describes it. The block carries the
+            // exception details so the host code generator can reproduce EPC/BD
+            // exactly instead of leaving the runtime to re-derive them from the
+            // dispatch PC (Issue #481).
+            return MipsToIrLoweringResult.Success(new RecompilerIrBlock(
+                entryPc,
+                Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.Exception,
+                    exception: CreateBreakException(entryPc, inDelaySlot: false))));
         }
 
         var builder = new BlockBuilder();
@@ -446,10 +469,18 @@ public static class MipsToIrLowerer
         var right = builder.ReadGpr(control.Operand1.Register);
         var condition = builder.Binary(compareKind, left, right);
 
-        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
         if (failure is not null)
         {
             return failure;
+        }
+
+        if (trapExit is not null)
+        {
+            // The delay slot raised a BREAK: the pending transfer never applies,
+            // so the block stops at the exception instead of flowing.
+            exit = trapExit;
+            return null;
         }
 
         exit = new RecompilerIrExit(
@@ -473,10 +504,16 @@ public static class MipsToIrLowerer
             return UnresolvedTarget(control, controlPc, "jump");
         }
 
-        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
         if (failure is not null)
         {
             return failure;
+        }
+
+        if (trapExit is not null)
+        {
+            exit = trapExit;
+            return null;
         }
 
         exit = new RecompilerIrExit(
@@ -518,10 +555,18 @@ public static class MipsToIrLowerer
 
         EmitLinkWrite(builder, control, returnAddress);
 
-        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
         if (failure is not null)
         {
             return failure;
+        }
+
+        if (trapExit is not null)
+        {
+            // JAL's link write above still retires before the delay slot raises
+            // its BREAK — on hardware the branch links, then the fault applies.
+            exit = trapExit;
+            return null;
         }
 
         exit = new RecompilerIrExit(
@@ -565,10 +610,16 @@ public static class MipsToIrLowerer
             EmitLinkWrite(builder, control, returnAddress);
         }
 
-        var failure = TryEmitDelaySlot(builder, control, delaySlot, pendingLoad);
+        var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
         if (failure is not null)
         {
             return failure;
+        }
+
+        if (trapExit is not null)
+        {
+            exit = trapExit;
+            return null;
         }
 
         exit = new RecompilerIrExit(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
@@ -588,12 +639,31 @@ public static class MipsToIrLowerer
             $"The {kind} target of '{control.Opcode}' at PC 0x{controlPc:X8} could not be resolved from the decoded operands.");
 
     private static MipsToIrLoweringResult? TryEmitDelaySlot(
-        BlockBuilder builder, R3000aInstruction control, R3000aInstruction delaySlot, PendingLoadCommit? pendingLoad)
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit? trapExit)
     {
+        trapExit = null;
+
         // The transfer has retired at this point, so an owed load-delay commit
         // lands here — before the delay-slot instruction, which therefore reads
         // the loaded value while the transfer read the pre-load one.
         pendingLoad?.Emit(builder);
+
+        // A BREAK delay slot raises the exception at its own retirement, before
+        // the pending transfer applies. It reads no registers, so nothing else is
+        // emitted; the exception carries the owning branch's PC and BD=1, and the
+        // caller suppresses the transfer flow (Issue #481).
+        if (delaySlot.Opcode == R3000aOpcode.Break)
+        {
+            trapExit = new RecompilerIrExit(
+                RecompilerIrTerminationReason.Exception,
+                exception: CreateBreakException(controlPc, inDelaySlot: true));
+            return null;
+        }
 
         var failure = TryEmitInstruction(builder, delaySlot);
         if (failure is null)
@@ -606,6 +676,9 @@ public static class MipsToIrLowerer
             failure.DiagnosticCode ?? RecompilerIrDiagnosticCode.InvalidOperationShape,
             $"The delay-slot instruction of '{control.Opcode}' could not be lowered: {failure.DiagnosticMessage}");
     }
+
+    private static RecompilerExceptionState CreateBreakException(uint faultPc, bool inDelaySlot) =>
+        new(isRaised: true, code: BreakExcode, faultPc: faultPc, inDelaySlot: inDelaySlot);
 
     /// <summary>
     /// Reports the GPRs an instruction reads, for the opcodes this stage lowers.

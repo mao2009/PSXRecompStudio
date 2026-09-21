@@ -271,6 +271,49 @@ public sealed class PSXCoreWrapper : IDisposable
         }
     }
 
+    /// <summary>
+    /// The CAUSE Excode of the exception the most recent <see cref="Step"/>
+    /// raised (Issue #481). Meaningful only while <see cref="ExceptionRaised"/>
+    /// is true; an unraised step leaves it at zero.
+    /// </summary>
+    public uint ExceptionCode
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetExceptionCode(_handle);
+        }
+    }
+
+    /// <summary>
+    /// The faulting PC (EPC) of the exception the most recent <see cref="Step"/>
+    /// raised (Issue #481): the owning branch PC when the faulting instruction
+    /// was in a branch delay slot, else the faulting instruction's own PC.
+    /// Meaningful only while <see cref="ExceptionRaised"/> is true.
+    /// </summary>
+    public uint ExceptionFaultPc
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetExceptionFaultPc(_handle);
+        }
+    }
+
+    /// <summary>
+    /// Whether the faulting instruction of the most recent <see cref="Step"/>'s
+    /// exception was in a branch delay slot (Issue #481). Meaningful only while
+    /// <see cref="ExceptionRaised"/> is true.
+    /// </summary>
+    public bool ExceptionInDelaySlot
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetExceptionInDelaySlot(_handle) != 0;
+        }
+    }
+
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>
     public int Run(uint maxInstructions)

@@ -353,6 +353,42 @@ internal static class RecompilerFixtures
             budgetsAreShared: true);
 
     /// <summary>
+    /// A single standalone BREAK (Issue #481): its only instruction raises a Bp
+    /// exception (Excode 0x09) before anything else retires. The interpreter parks
+    /// PC at the BEV=0 vector (0x80000080) while the generated host parks PC at the
+    /// faulting block's entry (0x80000000) — a divergence the differential
+    /// classifier reconciles through the shared exception resolution (faultPc),
+    /// not by comparing PC.
+    /// </summary>
+    public static RecompilerDifferentialFixture BreakStandalone() =>
+        new(
+            "break-standalone",
+            encodedInstructions: new[] { MipsEncoding.Break() },
+            entryPc: EntryPc,
+            stepBudget: 1);
+
+    /// <summary>
+    /// A BREAK in the delay slot of a JAL (Issue #481). JAL links $ra = PC+8 and
+    /// only then does the delay-slot BREAK raise, so the exception points at the
+    /// JAL (EPC/faultPc = 0x80000004, BD=1) while the JAL's link write still
+    /// retires. The callee is never reached.
+    /// </summary>
+    public static RecompilerDifferentialFixture BreakInJalDelaySlot() =>
+        new(
+            "break-in-jal-delay-slot",
+            encodedInstructions: new[]
+            {
+                MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),        // 0x00 ADDIU $t0, $zero, 1
+                MipsEncoding.JumpAndLink(EntryPc + 0x10),                // 0x04 JAL
+                MipsEncoding.Break(),                                    // 0x08 delay slot -> Bp, EPC=0x80000004, BD
+                MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),   // 0x0C $t3 (never executed)
+                MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),        // 0x10 callee (never executed)
+            },
+            entryPc: EntryPc,
+            stepBudget: 2,
+            referenceStepBudget: 4);
+
+    /// <summary>
     /// An unbounded BEQ loop that never exits. Both sides must stop on their budget
     /// with the identical state (termination ExecutionBudgetExceeded, PC parked at
     /// the loop body) rather than spin or fall through. Issue #375's strict

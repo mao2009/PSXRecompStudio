@@ -292,6 +292,10 @@ int main(int argc, char** argv) {
     printf(""hi=0x%08X\n"", state.hi);
     printf(""lo=0x%08X\n"", state.lo);
     for (i = 0; i < 32; i++) printf(""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
+    printf(""exception.raised=%d\n"", (int)state.exception_raised);
+    printf(""exception.code=0x%08X\n"", state.exception_code);
+    printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
+    printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
     printf(""RSNAPSHOT_END\n"");
 
     return (int)state.termination_reason;

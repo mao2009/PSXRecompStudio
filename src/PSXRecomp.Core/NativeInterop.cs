@@ -149,6 +149,18 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetExceptionRaised(IntPtr core);
 
+    /// <summary>Returns the CAUSE Excode of the exception the most recent <see cref="PSXCore_Step"/> raised (Issue #481). Meaningful only while <see cref="PSXCore_GetExceptionRaised"/> reports one.</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetExceptionCode(IntPtr core);
+
+    /// <summary>Returns the faulting PC (EPC) of the exception the most recent <see cref="PSXCore_Step"/> raised (Issue #481). Meaningful only while <see cref="PSXCore_GetExceptionRaised"/> reports one.</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetExceptionFaultPc(IntPtr core);
+
+    /// <summary>Returns non-zero when the faulting instruction of the most recent exception was in a branch delay slot (Issue #481). Meaningful only while <see cref="PSXCore_GetExceptionRaised"/> reports one.</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetExceptionInDelaySlot(IntPtr core);
+
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>
     [LibraryImport(LibName)]

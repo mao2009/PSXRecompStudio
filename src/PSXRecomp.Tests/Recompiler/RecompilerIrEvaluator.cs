@@ -80,7 +80,8 @@ internal sealed record RecompilerIrEvaluationResult(
     IReadOnlyList<uint> Gpr,
     uint Pc,
     RecompilerIrTerminationReason Termination,
-    uint BlocksRetired);
+    uint BlocksRetired,
+    RecompilerExceptionState? Exception = null);
 
 /// <summary>
 /// A reference evaluator for the IR, used only by the lowering tests as an
@@ -139,7 +140,7 @@ internal static class RecompilerIrEvaluator
             var exit = block.Exit;
             if (exit.Reason != RecompilerIrTerminationReason.Success)
             {
-                return new RecompilerIrEvaluationResult(gpr, pc, exit.Reason, retired);
+                return new RecompilerIrEvaluationResult(gpr, pc, exit.Reason, retired, exit.Exception);
             }
 
             pc = NextPc(exit, values);

@@ -60,6 +60,13 @@ public:
     // instead. Reset at the start of every Step().
     bool ExceptionRaised() const { return exception_raised_; }
 
+    // Exception resolution captured when the most recent Step() raised an
+    // exception (Issue #481). Meaningful only while ExceptionRaised() is true:
+    // an unraised step leaves them at their last cleared value.
+    uint32_t GetLastExceptionCode() const { return last_exception_code_; }
+    uint32_t GetLastExceptionFaultPc() const { return last_exception_fault_pc_; }
+    bool GetLastExceptionInDelaySlot() const { return last_exception_in_delay_slot_; }
+
     // Golden Trace GPR write-event recording (Issue #157). A single MIPS I step
     // retires at most kMaxGprWritesPerStep writes: one instruction-result write
     // (SetGPR) plus at most one load-delay commit (ADR-004), so the recorder
@@ -103,6 +110,17 @@ private:
     bool exception_raised_;          // An exception was raised during the current step.
     uint32_t executing_instr_addr_;  // Address of the instruction currently executing.
     bool executing_in_delay_slot_;   // Whether the current instruction is in a branch delay slot.
+
+    // Exception resolution captured at raise time (Issue #481): the CAUSE
+    // Excode, the faulting PC (EPC = the branch PC when the faulting instruction
+    // was in a delay slot, else the faulting instruction's own PC) and whether
+    // the faulting instruction was in a delay slot. Kept as stable snapshots
+    // because the per-step fields they derive from are reused by the next step;
+    // they are meaningful only while ExceptionRaised() is true and are cleared
+    // at the start of every Step() and in Reset().
+    uint32_t last_exception_code_ = 0;
+    uint32_t last_exception_fault_pc_ = 0;
+    bool last_exception_in_delay_slot_ = false;
 
     // Interrupt controller state (Issue #144). Sampled by the caller via
     // SetHardwareInterruptPending() before each Step() call; mirrored onto

@@ -20,6 +20,10 @@ public static class RecompilerHostCodeGen
     private const string Sra32Helper = "recompiler_sra32";
     private const string TerminationField = "termination_reason";
     private const string NextPcField = "next_pc";
+    private const string ExceptionRaisedField = "exception_raised";
+    private const string ExceptionCodeField = "exception_code";
+    private const string ExceptionFaultPcField = "exception_fault_pc";
+    private const string ExceptionInDelaySlotField = "exception_in_delay_slot";
     private const string PcField = "pc";
     private const string HostTransferField = "host_transfer";
     private const string HostTransferFnType = "recompiler_host_transfer_fn";
@@ -247,6 +251,14 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t pc;");
         sb.AppendLine("  int32_t " + TerminationField + ";");
         sb.AppendLine("  uint32_t " + NextPcField + ";");
+        sb.AppendLine("  /* Exception resolution carried by an Exception exit (Issue #481):");
+        sb.AppendLine("     CAUSE Excode, faulting PC (EPC) and the delay-slot flag of the");
+        sb.AppendLine("     instruction that raised. Written by the emitted block exit only");
+        sb.AppendLine("     when the IR carries exception state; otherwise left as read. */");
+        sb.AppendLine("  uint32_t exception_raised;");
+        sb.AppendLine("  uint32_t exception_code;");
+        sb.AppendLine("  uint32_t exception_fault_pc;");
+        sb.AppendLine("  uint32_t exception_in_delay_slot;");
         sb.AppendLine("  void* " + CoreField + ";");
         sb.AppendLine("  " + HostTransferFnType + " " + HostTransferField + ";");
         sb.AppendLine("} " + StateStruct + ";");
@@ -459,7 +471,22 @@ public static class RecompilerHostCodeGen
         }
 
         var reason = (byte)exit.Reason;
-        return $"{StateParam}->{TerminationField} = {reason}; return (int32_t){reason}u;";
+        var termination = $"{StateParam}->{TerminationField} = {reason}; return (int32_t){reason}u;";
+        if (exit.Exception is { } exception)
+        {
+            // An exception exit that carries IR exception state reproduces its
+            // resolution (Excode, EPC, BD) in the state so the runtime sees the
+            // faulting instruction without re-deriving it from the parked PC
+            // (Issue #481). The generic Exception exits produced by trapping
+            // operations such as AddSigned overflow carry no state and keep
+            // writing termination only, exactly as before.
+            return $"{StateParam}->{ExceptionRaisedField} = {(exception.IsRaised ? "1u" : "0u")}; " +
+                   $"{StateParam}->{ExceptionCodeField} = {FormatImmediate(exception.Code)}; " +
+                   $"{StateParam}->{ExceptionFaultPcField} = {FormatImmediate(exception.FaultPc)}; " +
+                   $"{StateParam}->{ExceptionInDelaySlotField} = {(exception.InDelaySlot ? "1u" : "0u")}; " + termination;
+        }
+
+        return termination;
     }
 
     private static string EmitBranchExit(RecompilerIrFlow flow, RecompilerIrExit exit)
