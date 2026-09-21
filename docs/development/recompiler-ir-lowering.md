@@ -68,7 +68,7 @@ the block before its transfer exit is applied. Wrapping `ADDU`, `SUBU`, and
 
 `BREAK` (Issue #481) lowers to a single empty block whose exit carries
 `RecompilerIrTerminationReason.Exception` plus a statically-baked
-`RecompilerIrExceptionState`:
+`RecompilerExceptionState`:
 
 - **Standalone BREAK**: `faultPc = <own PC>`, `inDelaySlot = false`.
 - **BREAK in a delay slot**: the owning branch/JAL block still retires the
