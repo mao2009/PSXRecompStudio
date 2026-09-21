@@ -51,6 +51,9 @@ void PSXCpu::Reset() {
     exception_raised_ = false;
     executing_instr_addr_ = 0;
     executing_in_delay_slot_ = false;
+    last_exception_code_ = 0;
+    last_exception_fault_pc_ = 0;
+    last_exception_in_delay_slot_ = false;
     hardware_interrupt_pending_ = false;
 }
 
@@ -260,6 +263,9 @@ int PSXCpu::Step(PSXMemory& memory) {
     executing_instr_addr_ = instr_addr;
     executing_in_delay_slot_ = in_delay_slot;
     exception_raised_ = false;
+    last_exception_code_ = 0;
+    last_exception_fault_pc_ = 0;
+    last_exception_in_delay_slot_ = false;
 
     uint32_t instruction = 0;
     if (FetchInstruction(memory, instruction)) {
@@ -1084,6 +1090,13 @@ void PSXCpu::RaiseException(uint32_t excode, uint32_t ce) {
     // PC = exception vector (BEV is SR bit 22).
     bool bev = (cop0_[12] >> 22) & 1;
     pc_ = bev ? 0xBFC00180u : 0x80000080u;
+
+    // Snapshot the exception resolution (Issue #481): the per-step fields the
+    // handler computed above get reused by the next step, so a caller that asks
+    // after Step() returns reads these stable values instead.
+    last_exception_code_ = excode;
+    last_exception_fault_pc_ = epc;
+    last_exception_in_delay_slot_ = bd;
 
     exception_raised_ = true;
     branch_pending_ = false;

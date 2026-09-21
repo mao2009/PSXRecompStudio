@@ -73,6 +73,43 @@ public class RecompilerContractTests
     }
 
     [Fact]
+    public void Validator_AcceptsExceptionExitWithoutCarriedState()
+    {
+        // A trapping operation such as AddSigned overflow produces an Exception
+        // exit with no exception state (the resolution is runtime data the IR
+        // cannot precompute). That shape must remain valid, exactly as before
+        // Issue #481 taught the exit to also carry statically-resolvable state.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Exception)),
+        });
+
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validator_RejectsExceptionStateOnANonExceptionExit()
+    {
+        // Regulation for Issue #481: the carried exception resolution is only
+        // meaningful on an Exception exit. Plant it on a plain unsupported exit and
+        // the validator must refuse — the resolution would otherwise silently ride
+        // along on a fallback the runtime never interprets.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(
+                    RecompilerIrTerminationReason.UnsupportedInstruction,
+                    exception: new RecompilerExceptionState(isRaised: true, code: 0x09, faultPc: 0x80000000, inDelaySlot: false))),
+        });
+
+        var result = RecompilerIrValidator.Validate(program);
+
+        result.IsValid.Should().BeFalse();
+        result.Diagnostics.Select(diagnostic => diagnostic.Code).Should().Contain(RecompilerIrDiagnosticCode.IllegalTermination);
+    }
+
+    [Fact]
     public void StateSnapshot_EnforcesZeroAndHasDeterministicSerialization()
     {
         var registers = Enumerable.Range(0, 32).Select(value => (uint)value).ToArray();

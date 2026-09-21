@@ -28,6 +28,10 @@ typedef struct RecompilerState {
   uint32_t pc;
   int32_t termination_reason;
   uint32_t next_pc;
+  uint32_t exception_raised;
+  uint32_t exception_code;
+  uint32_t exception_fault_pc;
+  uint32_t exception_in_delay_slot;
   void* core;
   recompiler_host_transfer_fn host_transfer;
 } RecompilerState;
@@ -61,6 +65,25 @@ static int32_t recompiler_block_0x<entryPc>(RecompilerState* state);
   code otherwise).
 - Returns 0 on Success (with `state->next_pc` set), or the termination reason
   code as a non-zero `int32_t`.
+
+### Exception exits (Issue #481)
+
+A block whose exit carries a statically-baked
+`RecompilerIrExceptionState` (BREAK) also writes the four `exception_*` fields
+*before* writing `termination_reason` and returning:
+
+```c
+state->exception_raised = 1u;
+state->exception_code = 9;                 /* Bp, Excode 0x09 */
+state->exception_fault_pc = <faultPc>;     /* EPC: faulting PC, or owning branch PC in a delay slot */
+state->exception_in_delay_slot = <0|1>;    /* CAUSE.BD */
+state->termination_reason = 6;             /* RecompilerIrTerminationReason.Exception */
+return (int32_t)6;
+```
+
+Exits without an exception resolution (e.g. the runtime AddSigned overflow exit)
+leave the `exception_*` fields untouched — the dispatcher and runners must not
+read them unless `termination_reason == 6` and `exception_raised == 1`.
 
 ### Dispatch function
 

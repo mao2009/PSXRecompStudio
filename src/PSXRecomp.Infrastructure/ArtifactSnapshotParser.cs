@@ -7,9 +7,12 @@ namespace PSXRecomp.Infrastructure;
 /// <summary>
 /// Parses the stable snapshot <see cref="RecompiledArtifactCodeGen"/>'s driver
 /// prints on stdout (<c>termination=</c>/<c>pc=</c>/<c>hi=</c>/<c>lo=</c>/<c>gpr[N]=</c>
-/// between <see cref="RecompiledArtifactCodeGen.SnapshotBeginMarker"/> and
+/// and, when the run raised, <c>exception.raised=</c>/<c>exception.code=</c>/
+/// <c>exception.faultPc=</c>/<c>exception.inDelaySlot=</c> between
+/// <see cref="RecompiledArtifactCodeGen.SnapshotBeginMarker"/> and
 /// <see cref="RecompiledArtifactCodeGen.SnapshotEndMarker"/>) back into a
-/// <see cref="RecompilerStateSnapshot"/>.
+/// <see cref="RecompilerStateSnapshot"/>. The exception keys are optional: a
+/// snapshot without them carries the default exception state.
 /// </summary>
 [Infrastructure]
 internal static class ArtifactSnapshotParser
@@ -30,6 +33,9 @@ internal static class ArtifactSnapshotParser
         int? termination = null;
         uint? pc = null, hi = null, lo = null;
         var gpr = new uint?[32];
+        bool? exceptionRaised = null;
+        uint? exceptionCode = null, exceptionFaultPc = null;
+        bool? exceptionInDelaySlot = null;
 
         foreach (var rawLine in body.Split('\n'))
         {
@@ -62,6 +68,26 @@ internal static class ArtifactSnapshotParser
                 if (!TryParseHex(value, out var v)) return null;
                 lo = v;
             }
+            else if (key == "exception.raised")
+            {
+                if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) return null;
+                exceptionRaised = v != 0;
+            }
+            else if (key == "exception.code")
+            {
+                if (!TryParseHex(value, out var v)) return null;
+                exceptionCode = v;
+            }
+            else if (key == "exception.faultPc")
+            {
+                if (!TryParseHex(value, out var v)) return null;
+                exceptionFaultPc = v;
+            }
+            else if (key == "exception.inDelaySlot")
+            {
+                if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) return null;
+                exceptionInDelaySlot = v != 0;
+            }
             else if (key.StartsWith("gpr[", StringComparison.Ordinal) && key.EndsWith(']'))
             {
                 if (!int.TryParse(key.AsSpan(4, key.Length - 5), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
@@ -84,11 +110,20 @@ internal static class ArtifactSnapshotParser
             return null;
         }
 
+        var exception = exceptionRaised is null
+            ? null
+            : new RecompilerExceptionState(
+                exceptionRaised.Value,
+                exceptionCode ?? 0,
+                exceptionFaultPc ?? 0,
+                exceptionInDelaySlot ?? false);
+
         return new RecompilerStateSnapshot(
             gpr.Select(static g => g!.Value),
             hi.Value,
             lo.Value,
             pc.Value,
+            exception: exception,
             termination: (RecompilerIrTerminationReason)termination.Value);
     }
 

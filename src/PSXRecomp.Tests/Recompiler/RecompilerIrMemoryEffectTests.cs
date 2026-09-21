@@ -319,6 +319,89 @@ public class RecompilerIrMemoryEffectTests
         result.Block.Should().BeNull();
     }
 
+    // Issue #481: a reachable BREAK raises a synchronous Bp exception (Excode
+    // 0x09). Unlike ADD/ADDI overflow it does not depend on runtime data, so the
+    // exception is fully resolvable at lowering time and is carried on the exit
+    // rather than being silently folded into a NOP, a bare Success, or an
+    // unsupported failure.
+
+    [Fact]
+    public void Break_LowersToAnExceptionExit_CarryingTheBpResolution()
+    {
+        var instruction = R3000aDecoder.Decode(MipsEncoding.Break());
+        instruction.Opcode.Should().Be(R3000aOpcode.Break);
+
+        var result = MipsToIrLowerer.Lower(instruction, EntryPc);
+
+        result.IsSupported.Should().BeTrue($"lowering failed: [{result.DiagnosticCode}] {result.DiagnosticMessage}");
+        var block = result.Block!;
+        block.EntryPc.Should().Be(EntryPc);
+        block.Operations.Should().BeEmpty();
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Exception);
+        block.Exit.Flow.Should().BeNull();
+        block.Exit.NextPc.Should().BeNull();
+
+        block.Exit.Exception.Should().NotBeNull();
+        block.Exit.Exception!.IsRaised.Should().BeTrue();
+        block.Exit.Exception.Code.Should().Be(MipsToIrLowerer.BreakExcode);
+        block.Exit.Exception.FaultPc.Should().Be(EntryPc);
+        block.Exit.Exception.InDelaySlot.Should().BeFalse();
+
+        // A standalone BREAK block is valid IR on its own: an exception exit
+        // carrying its resolution validates (no implicit fallback is invented).
+        ValidatesAsSingleBlockProgram(block).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Break_AsADelaySlot_LowersTheOwningTransferToAnExceptionExit()
+    {
+        // JAL links PC+8 into $ra before its delay slot runs; the delay-slot
+        // BREAK then raises with EPC/BD pointing at the JAL, so the link write
+        // must still be emitted and the transfer's call flow must be suppressed.
+        var control = R3000aDecoder.Decode(MipsEncoding.JumpAndLink(0x80002000u));
+        var delaySlot = R3000aDecoder.Decode(MipsEncoding.Break());
+        var result = MipsToIrLowerer.LowerControlTransfer(control, EntryPc, delaySlot);
+
+        result.IsSupported.Should().BeTrue($"lowering failed: [{result.DiagnosticCode}] {result.DiagnosticMessage}");
+        var block = result.Block!;
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Exception);
+        block.Exit.Flow.Should().BeNull();
+        block.Exit.NextPc.Should().BeNull();
+
+        block.Exit.Exception.IsRaised.Should().BeTrue();
+        block.Exit.Exception.Code.Should().Be(MipsToIrLowerer.BreakExcode);
+        block.Exit.Exception.FaultPc.Should().Be(EntryPc); // EPC = the owning JAL's PC
+        block.Exit.Exception.InDelaySlot.Should().BeTrue();
+
+        // The JAL's link still retires before the fault (the IR carries the
+        // write; the call flow it would otherwise start is dropped).
+        block.Operations.Should().Contain(op =>
+            op.Kind == RecompilerIrOperationKind.Constant &&
+            op.Immediate == EntryPc + 8); // $ra = PC + 8
+        block.Operations.Should().Contain(op =>
+            op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 31);
+        ValidatesAsSingleBlockProgram(block).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Break_AsADelaySlot_SuppressesTheBranchTransferFlow()
+    {
+        // A delay-slot BREAK behind a branch suppresses the pending taken/fall
+        // transfer: the block stops at the exception instead of flowing.
+        var control = R3000aDecoder.Decode(MipsEncoding.Branch(0x04, rs: 8, rt: 9, pc: EntryPc, target: 0x80002000u));
+        var delaySlot = R3000aDecoder.Decode(MipsEncoding.Break());
+        var result = MipsToIrLowerer.LowerControlTransfer(control, EntryPc, delaySlot);
+
+        result.IsSupported.Should().BeTrue($"lowering failed: [{result.DiagnosticCode}] {result.DiagnosticMessage}");
+        var block = result.Block!;
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Exception);
+        block.Exit.Flow.Should().BeNull();
+        block.Exit.Exception.IsRaised.Should().BeTrue();
+        block.Exit.Exception.FaultPc.Should().Be(EntryPc);
+        block.Exit.Exception.InDelaySlot.Should().BeTrue();
+        ValidatesAsSingleBlockProgram(block).Should().BeTrue();
+    }
+
     // --- 10/11: deterministic IR serialization and generated C -------------
 
     [Fact]

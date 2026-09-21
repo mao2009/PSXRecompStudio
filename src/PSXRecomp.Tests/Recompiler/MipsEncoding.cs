@@ -40,6 +40,12 @@ internal static class MipsEncoding
 
     public static uint JumpAndLinkRegister(byte rd, byte rs) => R(0x09, rd: rd, rs: rs, rt: 0, shamt: 0);
 
+    /// <summary>
+    /// Encodes a BREAK (SPECIAL funct 0x0D), which raises a synchronous Bp
+    /// exception — Excode 0x09, docs/cpu/exceptions.md.
+    /// </summary>
+    public static uint Break() => R(0x0D, rd: 0, rs: 0, rt: 0, shamt: 0);
+
     private static byte MemoryOpcodeField(R3000aOpcode opcode) => opcode switch
     {
         R3000aOpcode.Lb => 0x20,

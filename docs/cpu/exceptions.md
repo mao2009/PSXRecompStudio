@@ -80,6 +80,32 @@ handler installed:
   `RuntimeFailure` / `CPU_EXCEPTION` rather than being handed to the handoff,
   which would classify a faulted title as `Completed`.
 
+### Carrying a fault through the recompiler (Issue #481)
+
+BREAK is the first trap lowered by the recompiler as a first-class architectural
+exception (Excode 0x09, Bp). The interpreter oracle populates a snapshot-level
+exception resolution for BREAK only; every other modelled trap keeps its default
+(unraised) resolution, so existing single-difference guarantees (e.g. the CpU
+contract in Issue #377) are preserved:
+
+- A standalone BREAK lowers to an exception-terminated IR block whose
+  resolution carries `faultPc = <own PC>` and `inDelaySlot = false`. The host
+  block writes `state->exception_raised/exception_code/exception_fault_pc/
+  exception_in_delay_slot` before terminating with reason
+  `RecompilerIrTerminationReason.Exception` (byte 6).
+- A BREAK in a branch/JAL delay slot suppresses the owning transfer: the
+  architectural link write (JAL/JALR) is still retired first, then the fault is
+  taken with `faultPc = <owning branch PC>` and `inDelaySlot = true` — the EPC
+  and CAUSE.BD values the hardware produces, per the EPC rules above.
+- The 4-tuple is part of the snapshot protocol: both the production and test
+  drivers emit `exception.raised/code/faultPc/inDelaySlot` lines that both
+  parsers (strict and lenient) reconstruct.
+- Because the raised fault parks the host PC at the faulting block while the
+  interpreter moves to the exception vector (0x80000080), `RecompilerStateDiff`
+  waives the `pc` difference **only** when both sides terminate `Exception` with
+  a raised resolution — the agreement then lives in `exception.faultPc`. An
+  unraised exception keeps the strict `pc` compare.
+
 ## Exception Vectors
 
 | Exception | BEV=0 | BEV=1 |

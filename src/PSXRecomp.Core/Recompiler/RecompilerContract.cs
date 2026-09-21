@@ -259,16 +259,29 @@ public sealed record RecompilerIrExit
     public RecompilerIrExit(
         RecompilerIrTerminationReason reason,
         uint? nextPc = null,
-        RecompilerIrFlow? flow = null)
+        RecompilerIrFlow? flow = null,
+        RecompilerExceptionState? exception = null)
     {
         Reason = reason;
         NextPc = nextPc;
         Flow = flow;
+        Exception = exception;
     }
 
     public RecompilerIrTerminationReason Reason { get; }
     public uint? NextPc { get; }
     public RecompilerIrFlow? Flow { get; }
+
+    /// <summary>
+    /// The exception state an <see cref="RecompilerIrTerminationReason.Exception"/>
+    /// exit carries with it (e.g. a BREAK's Excode, faulting PC and delay-slot
+    /// flag). Null when the exit terminates without carrying exception details —
+    /// the generic Exception exit a trapping operation such as <c>AddSigned</c>
+    /// overflow produces, which only traps to the runtime and identifies the
+    /// faulting instruction by the dispatch-time PC. Only valid on an Exception
+    /// exit (see <see cref="RecompilerIrValidator"/>).
+    /// </summary>
+    public RecompilerExceptionState? Exception { get; }
 }
 
 [Domain]
@@ -416,6 +429,12 @@ public static class RecompilerIrValidator
         if (!Enum.IsDefined(exit.Reason))
         {
             Add(diagnostics, RecompilerIrDiagnosticCode.IllegalTermination, "Termination reason must be a defined value.", blockIndex);
+            return;
+        }
+
+        if (exit.Exception is not null && exit.Reason != RecompilerIrTerminationReason.Exception)
+        {
+            Add(diagnostics, RecompilerIrDiagnosticCode.IllegalTermination, "An exit carrying exception state must terminate with the Exception reason.", blockIndex);
             return;
         }
 

@@ -67,6 +67,68 @@ public sealed class RecompilerDifferentialTests
         Assert.Contains(diffWithPcTerm.Differences, d => d.FieldPath == "termination");
     }
 
+    // Issue #481: a raised architectural exception ends the interpreter at the
+    // BEV=0 vector while the generated host parks PC at the faulting block's
+    // entry. Both positions are correct for their model, so a Matching pair that
+    // agrees on the exception resolution (Excode, faultPc, BD) must not be
+    // reported as a PC mismatch.
+
+    [Fact]
+    public void RaisedException_OnBothSides_DiffersInParkedPc_Yet_Matches()
+    {
+        // Reference: interpreter parked at the exception vector. Actual: host
+        // parked at the BREAK's block entry. Same resolution, different PCs.
+        var reference = ExceptionSnapshotAt(pc: 0x80000080u);
+        var actual = ExceptionSnapshotAt(pc: 0x80000000u);
+
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
+
+        Assert.Equal(RecompilerComparisonClassification.Match, diff.Classification);
+        Assert.True(diff.IsMatch, diff.Describe());
+        Assert.Empty(diff.Differences);
+    }
+
+    [Fact]
+    public void RaisedException_WithDivergentFaultPc_IsStillAMismatch()
+    {
+        // The pc field is waived only because the exception resolution carries the
+        // agreement; a divergent faultPc is a real behavioral divergence and must
+        // stay a hard mismatch (with faultPc localized, not hidden behind pc).
+        var reference = ExceptionSnapshotAt(pc: 0x80000080u, faultPc: 0x80000000u);
+        var actual = ExceptionSnapshotAt(pc: 0x80000000u, faultPc: 0x80000040u);
+
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsMatch);
+        Assert.Contains(diff.Differences, d => d.FieldPath == "exception.faultPc");
+    }
+
+    [Fact]
+    public void UnraisedException_OnBothSides_KeepsTheStrictPcCompare()
+    {
+        // A generic Exception termination with no carried resolution (e.g. the
+        // AddSigned overflow exit) parks PC differently on both sides too, but
+        // with nothing proving agreement the strict pc compare must stay.
+        var reference = ExceptionSnapshotAt(pc: 0x80000080u, raised: false);
+        var actual = ExceptionSnapshotAt(pc: 0x80000000u, raised: false);
+
+        var diff = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: true, staticBlockEntryPcs: new HashSet<uint>(actual.PcTrace));
+
+        Assert.Equal(RecompilerComparisonClassification.Mismatch, diff.Classification);
+        Assert.False(diff.IsMatch);
+        Assert.Contains(diff.Differences, d => d.FieldPath == "pc");
+    }
+
+    private static RecompilerStateSnapshot ExceptionSnapshotAt(uint pc, bool raised = true, uint faultPc = 0x80000000u)
+    {
+        var gpr = new uint[32];
+        return new RecompilerStateSnapshot(
+            gpr, hi: 0, lo: 0, pc: pc,
+            exception: new RecompilerExceptionState(isRaised: raised, code: 0x09, faultPc: faultPc, inDelaySlot: false),
+            termination: RecompilerIrTerminationReason.Exception);
+    }
+
     [Fact]
     public void BudgetCutOff_BothExhausted_TailOnlyDivergence_IsBudgetInconclusive()
     {

@@ -1749,6 +1749,55 @@ static void test_exception_raised_flag() {
     PASS();
 }
 
+// Issue #481: the recompiler needs the faulting instruction's resolution
+// (Excode, EPC, delay-slot flag) without re-deriving it. The CPU captures it
+// when it raises and the API surfaces it scalarly.
+static void test_trap_resolution_break_standalone_getters() {
+    TEST("BREAK resolution getters report Excode=0x09, EPC, BD=0 for a standalone trap (Issue #481)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0x14, 0x0000000Du); // BREAK (SPECIAL funct 0x0D)
+    PSXCore_SetPC(core, 0x14);
+
+    ASSERT_EQ(PSXCore_Step(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0x09u);
+    ASSERT_EQ(PSXCore_GetExceptionFaultPc(core), 0x14u); // EPC = the BREAK's own address
+    ASSERT_EQ(PSXCore_GetExceptionInDelaySlot(core), 0);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+
+    // The captured resolution is per-step like ExceptionRaised: the next clean
+    // step clears it, so a stale BREAK can never leak into a later instruction.
+    PSXCore_WriteMemory32(core, 0x80, 0x00000000u); // NOP at the vector
+    ASSERT_EQ(PSXCore_Step(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0u);
+    ASSERT_EQ(PSXCore_GetExceptionFaultPc(core), 0u);
+    ASSERT_EQ(PSXCore_GetExceptionInDelaySlot(core), 0);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_trap_resolution_break_in_delay_slot_getters() {
+    TEST("BREAK in a delay slot captures EPC=owning branch PC, BD=1 (Issue #481)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0x10, 0x08000008u); // J (region-relative target)
+    PSXCore_WriteMemory32(core, 0x14, 0x0000000Du); // BREAK in the delay slot
+    PSXCore_SetPC(core, 0x10);
+
+    ASSERT_EQ(PSXCore_Step(core), 0); // J retires, enters the delay slot
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_Step(core), 0); // the delay-slot BREAK raises
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0x09u);
+    ASSERT_EQ(PSXCore_GetExceptionFaultPc(core), 0x10u); // EPC points at the J, not the BREAK
+    ASSERT_EQ(PSXCore_GetExceptionInDelaySlot(core), 1);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_cause_ce_cleared_by_non_cpu_exception() {
     TEST("CAUSE.CE is cleared by a following non-CpU exception");
     PSXCore* core = PSXCore_Create();
@@ -2522,6 +2571,8 @@ int main() {
     test_cpu_unusable_lwc2();
     test_cpu_unusable_swc2();
     test_exception_raised_flag();
+    test_trap_resolution_break_standalone_getters();
+    test_trap_resolution_break_in_delay_slot_getters();
     test_cause_ce_cleared_by_non_cpu_exception();
     test_adel_misaligned_lh();
     test_adel_misaligned_lhu();

@@ -113,6 +113,7 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         RecompilerIrTerminationReason termination = RecompilerIrTerminationReason.Success;
         string? diagnosticCode = null;
         string? diagnosticMessage = null;
+        RecompilerExceptionState? exceptionState = null;
         var pcTrace = new List<uint>((int)fixture.ReferenceStepBudget);
         for (uint step = 0; step < fixture.ReferenceStepBudget; step++)
         {
@@ -152,6 +153,21 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             if (status != 0 || core.ExceptionRaised)
             {
                 termination = RecompilerIrTerminationReason.Exception;
+                // Exception details are populated only for the trap exceptions
+                // this lowering stage models (currently BREAK, Excode 0x09) — a
+                // deliberate scope bound: a GTE/CpU, AdEL/AdES or Overflow fault
+                // still carries default exception state so the existing
+                // fault-classification tests keep their single difference
+                // (Issue #481 design, approach c).
+                if (status == 0 && core.ExceptionRaised && core.ExceptionCode == MipsToIrLowerer.BreakExcode)
+                {
+                    exceptionState = new RecompilerExceptionState(
+                        isRaised: true,
+                        code: core.ExceptionCode,
+                        faultPc: core.ExceptionFaultPc,
+                        inDelaySlot: core.ExceptionInDelaySlot);
+                }
+
                 break;
             }
         }
@@ -189,6 +205,7 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             hi: core.Hi,
             lo: core.Lo,
             pc: core.Pc,
+            exception: exceptionState ?? new RecompilerExceptionState(),
             termination: termination,
             memory: memory,
             pcTrace: pcTrace);
