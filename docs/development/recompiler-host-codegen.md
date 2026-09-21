@@ -69,7 +69,7 @@ static int32_t recompiler_block_0x<entryPc>(RecompilerState* state);
 ### Exception exits (Issue #481)
 
 A block whose exit carries a statically-baked
-`RecompilerIrExceptionState` (BREAK) also writes the four `exception_*` fields
+`RecompilerExceptionState` (BREAK) also writes the four `exception_*` fields
 *before* writing `termination_reason` and returning:
 
 ```c
