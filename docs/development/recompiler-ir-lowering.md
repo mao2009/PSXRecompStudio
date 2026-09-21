@@ -20,6 +20,7 @@ relies on (see [Load width and signedness](#load-width-and-signedness)).
 |---|---|---|
 | NOP (SLL r0,r0,0) | `Nop` | Detected as SLL with all-zero operands |
 | ADDU rd,rs,rt | `ReadGpr`×2 → `Add` → `WriteGpr` | 32-bit wrap semantics |
+| ADDI rt,rs,imm | `ReadGpr` + `Constant(sign-ext imm)` → `AddSigned` → `WriteGpr` | Signed 32-bit addition; overflow terminates with `Exception` and suppresses the write |
 | SUBU rd,rs,rt | `ReadGpr`×2 → `Subtract` → `WriteGpr` | 32-bit wrap semantics |
 | ADDIU rt,rs,imm | `ReadGpr` + `Constant(sign-ext imm)` → `Add` → `WriteGpr` | 16-bit imm sign-extended |
 | LUI rt,imm | `Constant(imm << 16)` → `WriteGpr` | Direct constant mapping |
@@ -51,6 +52,17 @@ prove is ordinary RAM or a device register. `RecompilerIrMemoryEffectClassifier`
 exists for a caller that does know the address ahead of time (tests over a
 synthetic, statically-known address; a future lowering stage that can prove a
 constant effective address) — this stage is not that caller.
+
+### Trapping signed addition
+
+`ADDI` is distinct from `ADDIU`: both sign-extend the 16-bit immediate, but only
+`ADDI` traps on signed overflow. The `AddSigned` IR operation computes the same
+two's-complement overflow predicate as the R3000A. On overflow, execution ends
+with `RecompilerIrTerminationReason.Exception` before the following
+`WriteGpr`, so the destination retains its previous value. A delay-slot `ADDI`
+uses this same operation inside the fused branch/jump block; an overflow stops
+the block before its transfer exit is applied. Wrapping `ADDU`, `SUBU`, and
+`ADDIU` continue to use `Add` / `Subtract` and do not trap.
 
 ### Control flow
 

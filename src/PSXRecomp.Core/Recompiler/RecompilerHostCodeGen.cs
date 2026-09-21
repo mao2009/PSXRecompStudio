@@ -136,6 +136,7 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.CompareNotEqual => true,
         RecompilerIrOperationKind.CompareLessThanSigned => true,
         RecompilerIrOperationKind.CompareLessThanUnsigned => true,
+        RecompilerIrOperationKind.AddSigned => true,
         RecompilerIrOperationKind.Load8 => true,
         RecompilerIrOperationKind.Load16 => true,
         RecompilerIrOperationKind.Load32 => true,
@@ -188,6 +189,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("/* RecompilerIrTerminationReason byte values (RecompilerContract). */");
         sb.AppendLine($"#define RECOMPILER_REASON_SUCCESS {(byte)RecompilerIrTerminationReason.Success}");
         sb.AppendLine($"#define RECOMPILER_REASON_UNSUPPORTED_IR {(byte)RecompilerIrTerminationReason.UnsupportedIr}");
+        sb.AppendLine($"#define RECOMPILER_REASON_EXCEPTION {(byte)RecompilerIrTerminationReason.Exception}");
         sb.AppendLine($"#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED {(byte)RecompilerIrTerminationReason.ExecutionBudgetExceeded}");
         sb.AppendLine();
     }
@@ -317,6 +319,19 @@ public static class RecompilerHostCodeGen
 
             case RecompilerIrOperationKind.Subtract:
                 return EmitBinaryOp(result, op, "uint32_t", "-", valueNames);
+
+            case RecompilerIrOperationKind.AddSigned:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                var _left = ResolveValue(op.InputValueA, valueNames);
+                var _right = ResolveValue(op.InputValueB, valueNames);
+                return $"uint32_t v{op.ResultValueId}_left = {_left}; " +
+                       $"uint32_t v{op.ResultValueId}_right = {_right}; " +
+                       $"{result} = v{op.ResultValueId}_left + v{op.ResultValueId}_right; " +
+                       $"if (((v{op.ResultValueId}_left ^ v{op.ResultValueId}) & " +
+                       $"(v{op.ResultValueId}_right ^ v{op.ResultValueId}) & 0x80000000u) != 0u) " +
+                       $"{{ {StateParam}->{TerminationField} = RECOMPILER_REASON_EXCEPTION; " +
+                       $"return (int32_t)RECOMPILER_REASON_EXCEPTION; }}";
 
             case RecompilerIrOperationKind.And:
                 return EmitBinaryOp(result, op, "uint32_t", "&", valueNames);

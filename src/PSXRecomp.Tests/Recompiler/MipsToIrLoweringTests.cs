@@ -113,6 +113,39 @@ public class MipsToIrLoweringTests
     }
 
     [Fact]
+    public void Addi_UsesSignedAddOperationAndSignExtendsImmediate()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x08, 8, 9, 0xFFFF));
+        instruction.Opcode.Should().Be(R3000aOpcode.Addi);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80004500);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(9);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0xFFFFFFFFu);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.AddSigned);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(8);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Addi_ZeroRegisterDestination_ProducesNoWriteGpr()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeI(0x08, 0, 0, 1));
+        var result = MipsToIrLowerer.Lower(instruction, 0x80004600);
+
+        result.IsSupported.Should().BeTrue();
+        result.Block!.Operations.Should().NotContain(op => op.Kind == RecompilerIrOperationKind.WriteGpr);
+        ValidateProgram(result.Block!);
+    }
+
+    [Fact]
     public void And_ProducesReadReadAndWrite()
     {
         var instruction = R3000aDecoder.Decode(EncodeR(0x24, 10, 8, 9, 0));

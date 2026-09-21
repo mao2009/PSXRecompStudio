@@ -791,6 +791,9 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Addiu:
                 EmitAddiu(builder, instruction);
                 return null;
+            case R3000aOpcode.Addi:
+                EmitAddi(builder, instruction);
+                return null;
             case R3000aOpcode.Lui:
                 EmitLui(builder, instruction);
                 return null;
@@ -853,6 +856,14 @@ public static class MipsToIrLowerer
         var immediate = builder.Constant(SignExtend16To32((ushort)instruction.Operand2.Value));
         var result = builder.Binary(RecompilerIrOperationKind.Add, left, immediate);
         builder.WriteGpr(instruction.Operand0.Register, result);
+    }
+
+    private static void EmitAddi(BlockBuilder builder, R3000aInstruction instruction)
+    {
+        var _left = builder.ReadGpr(instruction.Operand1.Register);
+        var _immediate = builder.Constant(SignExtend16To32((ushort)instruction.Operand2.Value));
+        var _result = builder.Binary(RecompilerIrOperationKind.AddSigned, _left, _immediate);
+        builder.WriteGpr(instruction.Operand0.Register, _result);
     }
 
     private static void EmitLui(BlockBuilder builder, R3000aInstruction instruction)

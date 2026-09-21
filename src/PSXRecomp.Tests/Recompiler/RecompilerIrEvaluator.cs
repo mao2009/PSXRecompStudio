@@ -127,7 +127,11 @@ internal static class RecompilerIrEvaluator
             var values = new Dictionary<int, uint>();
             foreach (var operation in block.Operations)
             {
-                Execute(operation, gpr, values, memory);
+                if (!Execute(operation, gpr, values, memory))
+                {
+                    return new RecompilerIrEvaluationResult(
+                        gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1);
+                }
             }
 
             retired++;
@@ -161,7 +165,7 @@ internal static class RecompilerIrEvaluator
         };
     }
 
-    private static void Execute(
+    private static bool Execute(
         RecompilerIrOperation operation,
         uint[] gpr,
         Dictionary<int, uint> values,
@@ -170,28 +174,42 @@ internal static class RecompilerIrEvaluator
         switch (operation.Kind)
         {
             case RecompilerIrOperationKind.Nop:
-                return;
+                return true;
             case RecompilerIrOperationKind.Constant:
                 values[operation.ResultValueId] = operation.Immediate;
-                return;
+                return true;
             case RecompilerIrOperationKind.ReadGpr:
                 values[operation.ResultValueId] = gpr[operation.Register];
-                return;
+                return true;
             case RecompilerIrOperationKind.WriteGpr:
                 gpr[operation.Register] = values[operation.InputValueA];
-                return;
+                return true;
             case RecompilerIrOperationKind.Store8:
                 memory.Write8(values[operation.InputValueA], (byte)values[operation.InputValueB]);
-                return;
+                return true;
             case RecompilerIrOperationKind.Store16:
                 memory.Write16(values[operation.InputValueA], (ushort)values[operation.InputValueB]);
-                return;
+                return true;
             case RecompilerIrOperationKind.Store32:
                 memory.Write32(values[operation.InputValueA], values[operation.InputValueB]);
-                return;
+                return true;
             default:
+                if (operation.Kind == RecompilerIrOperationKind.AddSigned)
+                {
+                    var left = values[operation.InputValueA];
+                    var right = values[operation.InputValueB];
+                    var result = unchecked(left + right);
+                    if (((left ^ result) & (right ^ result) & 0x80000000u) != 0)
+                    {
+                        return false;
+                    }
+
+                    values[operation.ResultValueId] = result;
+                    return true;
+                }
+
                 values[operation.ResultValueId] = Evaluate(operation, values, memory);
-                return;
+                return true;
         }
     }
 

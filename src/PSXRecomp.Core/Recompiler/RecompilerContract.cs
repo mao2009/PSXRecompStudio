@@ -59,6 +59,14 @@ public enum RecompilerIrOperationKind : byte
     /// <summary>Produces 1 when the unsigned value of input A is less than the
     /// unsigned value of input B, otherwise 0.</summary>
     CompareLessThanUnsigned,
+
+    /// <summary>
+    /// Adds two 32-bit operands as signed R3000A values. On signed overflow the
+    /// operation terminates the current execution with an Overflow exception
+    /// instead of producing a wrapped result; consumers must not execute later
+    /// operations in the block in that case.
+    /// </summary>
+    AddSigned,
 }
 
 [Domain]
