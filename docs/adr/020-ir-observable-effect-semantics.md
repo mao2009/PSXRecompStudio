@@ -34,10 +34,13 @@ An audit of the current implementation (not the issue text alone) found:
   an IR-lowering one, and stays there.
 - **Already explicit (fail-closed)**: unsupported / exception-producing
   operations. `MipsToIrLowerer.TryEmitInstruction` only lowers a fixed opcode
-  subset; the overflow-trapping `ADD`/`SUB`/`ADDI`, `SYSCALL`, `BREAK`,
-  `MFC0`/`MTC0`/`RFE`, and the COP1/COP2/COP3 opcodes all fall through to the
-  `default` arm and return `MipsToIrLoweringResult.Unsupported(...)` — an
-  explicit lowering failure, never a silent approximation.
+  subset; `ADD`/`SUB`, `SYSCALL`, `BREAK`, `MFC0`/`MTC0`/`RFE`, and the
+  COP1/COP2/COP3 opcodes still fall through to the `default` arm and return
+  `MipsToIrLoweringResult.Unsupported(...)` — an explicit lowering failure,
+  never a silent approximation. `ADDI` is the supported exception-producing
+  exception: it lowers to the explicit `AddSigned` operation, which terminates
+  with `RecompilerIrTerminationReason.Exception` before the destination write
+  when signed overflow is detected.
 - **Implicit / missing**: ordinary RAM vs. MMIO/device memory. `Load8/16/32`
   and `Store8/16/32` carried no address-space classification at all. The
   generated C backend calls the same `recompiler_read_mem*`/
@@ -88,14 +91,13 @@ already carries.
    `recompiler_read_mem*`/`recompiler_write_mem*` implementation
    (`MemoryBus`/`Ps1MemoryMap`), and that boundary is untouched by this
    change.
-6. **No new IR node, no optimizer.** Indirect/unresolved flow, BIOS/runtime
-   transfer, and unsupported/exception-producing operations already satisfy
-   the issue's minimum conditions through existing IR shapes (§ Context); this
-   decision adds only the one genuinely missing classification (memory
-   effect) and formalizes the rest in documentation and tests rather than in
-   new code. No optimizer exists in this codebase today, so there is nothing
-   to make effect-aware; the contract is fixed in the IR and locked by tests
-   so a future optimizer cannot ignore it.
+6. **One explicit trapping arithmetic operation, no optimizer.** `AddSigned`
+   is added to the existing operation enum rather than aliasing `ADDI` to the
+   wrapping `Add` used by `ADDU`/`ADDIU`. Its consumer contract is to stop the
+   current block with `Exception` before later operations when the signed
+   overflow predicate is true. No optimizer exists in this codebase today, so
+   there is nothing to make effect-aware; the contract is fixed in the IR and
+   locked by tests so a future optimizer cannot ignore it.
 
 ## Consequences
 
@@ -160,12 +162,12 @@ proven-ordinary access) needs it.
 
 ### Add alignment/exception-effect encoding to `Load`/`Store`
 
-Rejected for this change: no lowered opcode today can produce an
-alignment-faulting or overflow-trapping IR operation — those opcodes
-(`ADD`/`SUB`/`ADDI`, unaligned-access-capable forms) are already unsupported
-and fail lowering explicitly. Adding exception-effect encoding without an
-opcode that could ever set it would be speculative surface with no lowering
-that exercises it.
+Rejected for this change: alignment faults and their EPC/BD details remain
+outside the current lowered IR operation surface. `ADDI` is handled by the
+separate `AddSigned` operation because it is a reachable arithmetic blocker and
+its minimum required contract is an explicit `Exception` termination with no
+destination write; broader exception metadata for every IR operation remains a
+separate design concern.
 
 ## Related ADRs
 

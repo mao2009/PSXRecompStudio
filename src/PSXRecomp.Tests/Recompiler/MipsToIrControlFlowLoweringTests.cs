@@ -106,6 +106,28 @@ public class MipsToIrControlFlowLoweringTests
     }
 
     [Fact]
+    public void Branch_AddiDelaySlotUsesTheSameSignedLowering()
+    {
+        var block = LowerControlTransfer(
+            MipsEncoding.Branch(BeqOpcodeField, rs: 8, rt: 9, pc: EntryPc, target: EntryPc + 0x10),
+            MipsEncoding.I(0x08, rt: 10, rs: 0, immediate: 1));
+
+        block.Operations.Should().Contain(op => op.Kind == RecompilerIrOperationKind.AddSigned);
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Branch);
+    }
+
+    [Fact]
+    public void Jal_AddiDelaySlotUsesTheSameSignedLowering()
+    {
+        var block = LowerControlTransfer(
+            MipsEncoding.JumpAndLink(0x80002000u),
+            MipsEncoding.I(0x08, rt: 10, rs: 0, immediate: 1));
+
+        block.Operations.Should().Contain(op => op.Kind == RecompilerIrOperationKind.AddSigned);
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Call);
+    }
+
+    [Fact]
     public void J_ProducesAJumpFlowWithNoNextPc()
     {
         var target = 0x80002000u;
