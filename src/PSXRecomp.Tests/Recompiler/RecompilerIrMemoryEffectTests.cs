@@ -425,7 +425,117 @@ public class RecompilerIrMemoryEffectTests
         runs.Should().OnlyContain(r => r.Source == runs[0].Source);
     }
 
+    // --- 12: observable ordering survives codegen (no merge, no reorder) ---
+
+    [Fact]
+    public void DeviceReadWriteRead_SameAddress_CodegenEmitsEveryAccessInIrOrder()
+    {
+        // MMIO read / MMIO write / MMIO read of the same register. A device read
+        // is not idempotent, so the second read must not be CSE'd into the first
+        // and neither read may move across the write.
+        var effect = RecompilerIrMemoryEffectClassifier.Classify(Ps1MemoryMap.IStat);
+        var block = new RecompilerIrBlock(EntryPc, new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: Ps1MemoryMap.IStat),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0, memoryEffect: effect),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 2, immediate: 0u),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Store32, inputValueA: 0, inputValueB: 2, memoryEffect: effect),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 3, inputValueA: 0, memoryEffect: effect),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 1, register: 8),
+            new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, inputValueA: 3, register: 9),
+        }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, EntryPc + 4));
+
+        var generated = RecompilerHostCodeGen.Generate(new RecompilerIrProgram(new[] { block }));
+        generated.Success.Should().BeTrue();
+
+        var body = BlockFunctionBody(generated.Source!, EntryPc);
+        var accesses = body.Split('\n')
+            .Where(line => line.Contains("recompiler_read_mem32(") || line.Contains("recompiler_write_mem32("))
+            .Select(line => line.Trim())
+            .ToArray();
+
+        accesses.Should().HaveCount(3);
+        accesses[0].Should().StartWith("uint32_t v1 = recompiler_read_mem32(");
+        accesses[1].Should().StartWith("recompiler_write_mem32(");
+        accesses[2].Should().StartWith("uint32_t v3 = recompiler_read_mem32(");
+        body.Should().Contain("state->gpr[8] = v1;").And.Contain("state->gpr[9] = v3;");
+    }
+
+    // --- 13: the backend never silently lowers an unsupported effect -------
+
+    [Fact]
+    public void Codegen_RejectsAnUndefinedMemoryEffect_InsteadOfEmittingAnAccess()
+    {
+        var block = new RecompilerIrBlock(EntryPc, new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: Ps1MemoryMap.IStat),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0, memoryEffect: (RecompilerIrMemoryEffectKind)255),
+            WriteResult(1),
+        }, new RecompilerIrExit(RecompilerIrTerminationReason.Success, EntryPc + 4));
+
+        var generated = RecompilerHostCodeGen.Generate(new RecompilerIrProgram(new[] { block }));
+
+        generated.Success.Should().BeFalse();
+        generated.Source.Should().BeNull();
+        generated.DiagnosticCode.Should().Be("IR_VALIDATION_FAILED");
+    }
+
+    [Theory]
+    [InlineData(RecompilerIrMemoryEffectKind.Unknown)]
+    [InlineData(RecompilerIrMemoryEffectKind.Ordinary)]
+    [InlineData(RecompilerIrMemoryEffectKind.Device)]
+    public void Codegen_RoutesEveryMemoryEffectThroughTheRuntimeMemoryHook_NeverADirectRamAccess(RecompilerIrMemoryEffectKind effect)
+    {
+        // The generated block owns no guest memory image: every classified
+        // access goes through the host hook, where the runtime's MemoryBus
+        // performs the real RAM/MMIO routing. There is no RAM fast path for an
+        // Unknown or Device access to silently fall back to.
+        var generated = RecompilerHostCodeGen.Generate(new RecompilerIrProgram(new[] { BuildLoadBlock(Ps1MemoryMap.IStat, effect) }));
+
+        generated.Success.Should().BeTrue();
+        var body = BlockFunctionBody(generated.Source!, EntryPc);
+        body.Should().Contain("recompiler_read_mem32(state->core, v0)");
+        body.Should().NotContain("[v0]");
+    }
+
+    // --- 14: a differential stop names its category boundary machine-readably
+
+    [Fact]
+    public void DifferentialDiff_ReportsTheStopCategoryAsTheStableTerminationField()
+    {
+        // Interpreter stopped at an indirect/runtime transfer, the recompiled
+        // path at an exception: the diff must localize that as the stable
+        // "termination" field carrying the enum bytes, not a message string.
+        var reference = new RecompilerStateSnapshot(new uint[32], 0, 0, EntryPc, termination: RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        var actual = new RecompilerStateSnapshot(new uint[32], 0, 0, EntryPc, termination: RecompilerIrTerminationReason.Exception);
+
+        var first = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: false, staticBlockEntryPcs: null);
+        var second = RecompilerStateDiff.Compare(reference, actual, budgetsAreShared: false, staticBlockEntryPcs: null);
+
+        first.IsMatch.Should().BeFalse();
+        var termination = first.Differences.Should().ContainSingle(d => d.FieldPath == "termination").Subject;
+        termination.ExpectedText.Should().NotBe(termination.ActualText);
+        first.ToMachineReadable().Should().Be(second.ToMachineReadable());
+    }
+
+    [Fact]
+    public void DeviceEffect_IsPartOfTheDeterministicIrSerialization()
+    {
+        var program = new RecompilerIrProgram(new[] { BuildDeviceSequenceBlock(readFirst: true) });
+
+        RecompilerIrSerializer.Serialize(program).Should().Contain("memoryEffect");
+    }
+
     // --- helpers -------------------------------------------------------
+
+    private static string BlockFunctionBody(string source, uint entryPc)
+    {
+        source = source.ReplaceLineEndings("\n");
+        var start = source.IndexOf($"static int32_t recompiler_block_0x{entryPc:X8}(", StringComparison.Ordinal);
+        start.Should().BeGreaterThanOrEqualTo(0);
+        var end = source.IndexOf("\n}\n", start, StringComparison.Ordinal);
+        return source[start..end];
+    }
 
     private static RecompilerIrOperation WriteResult(int valueId) =>
         new(RecompilerIrOperationKind.WriteGpr, inputValueA: valueId, register: 8);
