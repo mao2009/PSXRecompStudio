@@ -92,12 +92,18 @@ state the CPU left behind:
 | Runtime failure | Everything else: Sys, Bp, RI, CpU, Ov, AdEL, AdES, and a software interrupt (INT raised only by CAUSE.IP0/IP1) | End the segment with `Exception` → `RuntimeFailure` / `CPU_EXCEPTION`, unchanged |
 
 For the continuable case the engine lets execution leave the program image
-until the CPU reports that the handler executed RFE
-(`PSXCore_GetRfeExecuted()`): the handler at 0x80000080 (or wherever it
+until the handler actually returns: the handler at 0x80000080 (or wherever it
 branches) is guest code, not an unresolved transfer, even after it calls a
-helper inside the image and returns from it. EPC, CAUSE, SR, vector selection
-and RFE stay in `PSXCpu`; the guest's own `MFC0 EPC` / `JR` / `RFE` does the
-return. The INT step retires no instruction, so it advances no device time.
+helper inside the image and returns from it, or keeps running after RFE before
+its own return jump. `PSXCore_GetRfeExecuted()` only *arms* the return check —
+RFE restores SR, not PC (return is the guest's own `MFC0 EPC` / `JR`
+responsibility, ADR-005) — so the engine also waits for PC to actually land
+back inside the program image before treating the handler as finished. This
+covers a nested handler for free: a nested handler's own RFE and return land
+PC back in the *outer* handler, still outside the image, so only the
+outermost handler's real return satisfies both conditions. EPC, CAUSE, SR,
+vector selection and RFE stay in `PSXCpu`. The INT step retires no
+instruction, so it advances no device time.
 
 A segment the budget cuts mid-handler is continued on the same live core
 without re-seeding it, so an in-flight `MFC0` load delay or `JR` branch delay
