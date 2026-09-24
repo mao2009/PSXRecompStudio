@@ -119,11 +119,13 @@ public sealed class CliRunTests
 
     private static bool ArtifactExists(string artifactPath) => new FileInfo(artifactPath).Exists;
 
+#pragma warning disable AARC003 // Test-only fixture I/O; production host I/O remains Infrastructure-owned.
     private static string Sha256File(string path)
     {
         using var stream = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
+#pragma warning restore AARC003
 
     private static string ReadZipEntry(ZipArchive archive, string name)
     {
@@ -410,7 +412,7 @@ public sealed class CliRunTests
 
         var bundlePath = root.GetProperty("diagnosticBundle").GetString();
         bundlePath.Should().Be(Path.Combine(Path.GetFullPath(outDir), RunCommand.DiagnosticBundleFileName));
-        File.Exists(bundlePath!).Should().BeTrue();
+        ArtifactExists(bundlePath!).Should().BeTrue();
 
         using var archive = ZipFile.OpenRead(bundlePath!);
         archive.Entries.Select(static entry => entry.FullName).Should().Equal(
@@ -451,7 +453,7 @@ public sealed class CliRunTests
         error.Should().BeEmpty();
         var bundlePath = Path.Combine(Path.GetFullPath(outDir), RunCommand.DiagnosticBundleFileName);
         output.Should().Contain($"Diagnostic report: {bundlePath}");
-        File.Exists(bundlePath).Should().BeTrue();
+        ArtifactExists(bundlePath).Should().BeTrue();
     }
 
     [Fact]
@@ -469,7 +471,7 @@ public sealed class CliRunTests
 
         using var json = JsonDocument.Parse(output);
         var bundlePath = json.RootElement.GetProperty("diagnosticBundle").GetString();
-        File.Exists(bundlePath!).Should().BeTrue();
+        ArtifactExists(bundlePath!).Should().BeTrue();
 
         using var archive = ZipFile.OpenRead(bundlePath!);
         using var reportJson = JsonDocument.Parse(
@@ -497,7 +499,7 @@ public sealed class CliRunTests
 
         using var json = JsonDocument.Parse(output);
         var bundlePath = json.RootElement.GetProperty("diagnosticBundle").GetString();
-        File.Exists(bundlePath!).Should().BeTrue();
+        ArtifactExists(bundlePath!).Should().BeTrue();
 
         using var archive = ZipFile.OpenRead(bundlePath!);
         using var reportJson = JsonDocument.Parse(
@@ -549,7 +551,7 @@ public sealed class CliRunTests
         using var json = JsonDocument.Parse(output);
         json.RootElement.EnumerateObject().Select(static p => p.Name).Should().Equal(
             "kind", "success", "artifact", "output", "result");
-        File.Exists(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName)).Should().BeFalse();
+        ArtifactExists(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName)).Should().BeFalse();
     }
 
     [Fact]
