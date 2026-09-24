@@ -26,6 +26,8 @@ common skill is ported to another project.
 | API documentation & docstring policy | `docs/development/documentation-policy.md` (ADR-011), measured by `scripts/docs/measure-docstring-coverage.ps1` |
 | Diagnostics & recovery contract | `docs/architecture/diagnostics.md` (ADR-019) |
 | Memory-card format, slot, and storage policy | `docs/runtime/memory-card.md` (ADR-018) |
+| Native library build/staging (C++ and Rust) | `docs/development/native-library-build.md` |
+| Rust FFI rules for C++ -> Rust migrations | `docs/development/rust-ffi-contract.md` (ADR-023) |
 
 ## 2. ADR directory
 
@@ -56,6 +58,8 @@ Current records:
 | 019 | Diagnostics & Recovery Contract | Accepted |
 | 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
 | 021 | Real-ROM Coverage Measurement | Accepted |
+| 022 | GPU Runtime Is a Pure Managed Model | Accepted |
+| 023 | Rust Coexists Inside the Existing Native Shared Library | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).
@@ -93,15 +97,19 @@ dotnet test src/PSXRecomp.Tests --filter "<FullyQualifiedName~ChangedArea>"
 # 2. Full .NET test suite (Release)
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj -c Release
 
-# 3. Native core (C ABI)
+# 3. Rust substrate unit tests (run from the crate so the toolchain pin applies)
+Push-Location src/PSXRecomp.Native/rust; cargo test; Pop-Location
+
+# 4. Native core (C ABI); the CMake build also runs cargo build --release
 cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/native --parallel
 ctest --test-dir build/native --output-on-failure
 ```
 
-CI (GitHub Actions, ubuntu-latest): artifact contamination gate → native
-build+ctest → .NET 10 restore, NuGet vulnerability gate (High/Critical fails),
-Release build, both test projects, aggregate CI Gate job.
+CI (GitHub Actions, ubuntu-latest): artifact contamination gate → Rust
+`cargo test` + native build+ctest → .NET 10 restore, NuGet vulnerability gate
+(High/Critical fails), Release build, both test projects, aggregate CI Gate
+job. The same native+.NET pair also runs on windows-latest and macos-latest.
 
 ## 5. Known environment caveats
 
@@ -109,7 +117,11 @@ Release build, both test projects, aggregate CI Gate job.
   can behave differently on Windows locally; when results are ambiguous, trust
   CI (Linux) as the authoritative result.
 - Sync local main only with fast-forward: `git pull --ff-only`.
-- Do not commit anything under `build/`, `bin/`, `obj/`; ROM/BIOS files under
+- `cargo` is required to build the native library (ADR-023). On Windows with a
+  MinGW/GCC front-end, also run `rustup target add x86_64-pc-windows-gnu`; MSVC
+  builds need no extra target. See `docs/development/native-library-build.md`.
+- Do not commit anything under `build/`, `bin/`, `obj/`, or
+  `src/PSXRecomp.Native/rust/target/`; ROM/BIOS files under
   `rom/` are gitignored. The artifact policy gate
   (`pwsh ./scripts/ci/check-artifact-policy.ps1`) enforces this mechanically;
   run it before committing binary-ish files.

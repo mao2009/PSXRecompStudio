@@ -194,9 +194,9 @@ PSX タイトル（ROM/EXE、ユーザーが用意） → 逆アセンブル・�
 
 - **UI**: Avalonia UI / C#、MVVM
 - **Runtime**: .NET 10+
-- **Native Core**: C++17 / CMake / Ninja、C ABI 境界
+- **Native Core**: C++17 / CMake / Ninja、C ABI 境界。加えて同一ライブラリへリンクされる Rust 共存基盤（Cargo、`staticlib`）
 - **アーキテクチャ強制**: Roslyn Analyzer
-- **テスト**: xUnit（C#）、CTest（C++）、Avalonia Headless UI テスト
+- **テスト**: xUnit（C#）、CTest（C++）、`cargo test`（Rust）、Avalonia Headless UI テスト
 - **設定**: YAML（予定: タイトル固有差分定義）
 - **AI 連携**: MCP（予定）
 - **リバースエンジニアリング**: Ghidra（予定）
@@ -231,7 +231,7 @@ PSXRecompStudio/
 dotnet build src/PSXRecompStudio.slnx --configuration Release
 ```
 
-### Native Core（C++）
+### Native Core（C++ と Rust）
 
 ```bash
 cd src/PSXRecomp.Native
@@ -239,11 +239,16 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-`PSXRecomp.Core` は通常の `dotnet build` の一部として Native Core のビルドをトリガーし、生成された共有ライブラリを自身の出力ディレクトリへコピーします。OS ごとの成果物命名・解決規則の詳細は [`docs/development/native-library-build.md`](docs/development/native-library-build.md) を参照してください。
+**Rust ツールチェーン（`cargo`）が必須です**。Native ライブラリは `src/PSXRecomp.Native/rust/` からビルドされる Rust の `staticlib` をリンクしており、`cargo build` は CMake が自動で実行します（手動コピーは不要です）。Windows で MinGW/GCC フロントエンドを使う場合は `rustup target add x86_64-pc-windows-gnu` も実行してください。
+
+`PSXRecomp.Core` は通常の `dotnet build` の一部として Native Core のビルドをトリガーし、生成された共有ライブラリを自身の出力ディレクトリへコピーします。OS ごとの成果物命名・解決規則の詳細は [`docs/development/native-library-build.md`](docs/development/native-library-build.md) を、Rust 側が従う FFI 規約は [`docs/development/rust-ffi-contract.md`](docs/development/rust-ffi-contract.md) を参照してください。
 
 ## テスト
 
 ```bash
+# Rust 基盤の単体テスト（ツールチェーン pin を効かせるため crate 内で実行）
+(cd src/PSXRecomp.Native/rust && cargo test)
+
 # Native Core 単体テスト（CMake/CTest）
 ctest --test-dir src/PSXRecomp.Native/build --output-on-failure
 
