@@ -43,10 +43,16 @@
 //! proven in range by that check before it is used, so no slice index here
 //! can panic (matching the panic-free style already established by
 //! [`crate::dma`]/[`crate::timer`]/[`crate::interrupt`], which need no
-//! `catch_unwind` for the same reason). The only unsafety is dereferencing
-//! the caller-supplied handle/controller pointers, isolated to the thin
-//! `unsafe extern "C"` wrappers at the bottom of this file; the address
-//! decode and buffer access logic above them is plain safe Rust.
+//! `catch_unwind` for the same reason). Allocation uses the global allocator
+//! through two small fallible helpers so `psx_memory_create` can honor its
+//! documented null-on-allocation-failure contract instead of invoking Rust's
+//! infallible allocation path. Other unsafety is limited to dereferencing the
+//! caller-supplied handle/controller pointers in the thin `unsafe extern "C"`
+ //! wrappers at the bottom of this file; address decoding and memory semantics
+//! remain plain safe Rust.
+
+use std::alloc::{alloc, alloc_zeroed, Layout};
+use std::ptr;
 
 use crate::dma::{psx_dma_read_register, psx_dma_write_register, DmaState};
 use crate::interrupt::{psx_interrupt_read_register, psx_interrupt_write_register, InterruptState};
@@ -222,14 +228,45 @@ pub struct PsxMemory {
     hw_regs: Box<[u8]>,
 }
 
+fn try_zeroed_bytes(len: usize) -> Option<Box<[u8]>> {
+    let layout = Layout::array::<u8>(len).ok()?;
+
+    // SAFETY: `layout` is a valid non-zero byte-array layout. The returned
+    // allocation comes from the global allocator, which is exactly what
+    // Box<[u8]> expects when it later deallocates the slice.
+    let raw = unsafe { alloc_zeroed(layout) };
+    if raw.is_null() {
+        return None;
+    }
+
+    // SAFETY: `raw` points to `len` initialized zero bytes allocated with
+    // the global allocator using the matching array layout above.
+    Some(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(raw, len)) })
+}
+
 impl PsxMemory {
-    fn new() -> Self {
-        Self {
-            ram: vec![0u8; PSX_RAM_SIZE as usize].into_boxed_slice(),
-            scratchpad: vec![0u8; PSX_SCRATCHPAD_SIZE as usize].into_boxed_slice(),
-            bios: vec![0u8; PSX_BIOS_SIZE as usize].into_boxed_slice(),
-            hw_regs: vec![0u8; PSX_HW_REG_SIZE as usize].into_boxed_slice(),
+    fn try_new() -> Option<*mut Self> {
+        let value = Self {
+            ram: try_zeroed_bytes(PSX_RAM_SIZE as usize)?,
+            scratchpad: try_zeroed_bytes(PSX_SCRATCHPAD_SIZE as usize)?,
+            bios: try_zeroed_bytes(PSX_BIOS_SIZE as usize)?,
+            hw_regs: try_zeroed_bytes(PSX_HW_REG_SIZE as usize)?,
+        };
+
+        let layout = Layout::new::<Self>();
+
+        // SAFETY: `layout` is the exact layout Box<Self> uses with the global
+        // allocator. A null result is reported to the C++ caller as allocation
+        // failure instead of going through Rust's infallible Box::new path.
+        let raw = unsafe { alloc(layout) }.cast::<Self>();
+        if raw.is_null() {
+            return None;
         }
+
+        // SAFETY: `raw` is valid, properly aligned storage for one Self and
+        // is currently uninitialized. Ownership of `value` moves into it.
+        unsafe { ptr::write(raw, value) };
+        Some(raw)
     }
 
     /// Zeroes RAM, scratchpad, BIOS, and the HW-register fallback store.
@@ -411,7 +448,7 @@ impl PsxMemory {
 /// exactly once via [`psx_memory_destroy`].
 #[no_mangle]
 pub extern "C" fn psx_memory_create() -> *mut PsxMemory {
-    Box::into_raw(Box::new(PsxMemory::new()))
+    PsxMemory::try_new().unwrap_or(ptr::null_mut())
 }
 
 /// Releases a handle previously returned by [`psx_memory_create`]. A null
