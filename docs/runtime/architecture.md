@@ -161,8 +161,10 @@ GPUSTAT is derived from named state (see ADR-022), VRAM is 1024x512x16b, and
 unimplemented GP0 opcodes are reported explicitly rather than silently ignored.
 
 Not yet implemented: primitive rasterization and display output (#441),
-VRAM→VRAM blit, VBlank/IRQ0 scheduling (#442), and DMA channel 2 (GPU)
-consumption of the DMA controller.
+VRAM→VRAM blit, and DMA channel 2 (GPU) consumption of the DMA controller.
+VBlank IRQ0 is raised by the device scheduler (see
+[Device Scheduling](#device-scheduling-issue-442)), not by `GpuDevice`, because
+the GPU is not yet part of the production engine; `IGpu.HasVblank` stays false.
 
 ## SPU Model
 
@@ -262,6 +264,36 @@ Three hardware timers.
 - Hardware events are processed at cycle boundaries.
 - DMA runs in parallel with CPU execution but stalls on bus contention.
 - Timers count in synchronization with CPU cycles.
+
+### Device Scheduling (Issue #442)
+
+`PSXRecomp.Core.Runtime.DeviceScheduler` is what advances devices during a real
+run. Responsibilities are split so no device behavior is duplicated:
+
+- **Elapsed time comes from the engine.** `InterpreterTitleExecutionEngine`
+  calls `Advance(CyclesPerInstruction)` after every retired `Step()`. The native
+  interpreter has no cycle model, so its retired-instruction count is the time
+  source (1 instruction = 1 cycle). The scheduler keeps no clock of its own —
+  only the phase inside the current VBlank interval and the DMA IRQ line's last
+  level. BIOS HLE vector dispatch retires no instruction and advances nothing.
+- **Device semantics stay native/Rust.** Timers advance via `PSXCore_TickTimers`
+  and DMA via `PSXCore_TickDma`; IRQs are raised through
+  `IInterruptController.Raise` onto the Rust interrupt controller, and the CPU
+  consumes the aggregate line through the existing #144 per-step resampling.
+- **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
+  raised as IRQ4-6) → DMA (IRQ3 on a rising edge of DICR bit 31) → VBlank
+  (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
+- **DMA completion model:** a started channel (CHCR bit 24, DPCR enable, and bit
+  28 for sync mode 0) completes after one cycle per word (sync 0: BCR[15:0];
+  sync 1: size × count; linked list: one word, since its length lives in guest
+  RAM). Completion clears CHCR bits 24/28 and sets the channel's DICR flag when
+  enabled. No data is transferred; device-backed transfers (GPU DMA2, OTC
+  clearing, CD-ROM, SPU, MDEC) remain device work.
+
+Not modelled: cycle-exact timing, HBlank, Timer 0/1 blank sync lines, and GPU
+IRQ1. The generated-host engine (`HostTitleExecutionEngine`, test-only) carries
+guest MMIO as a flat register window across processes and has no native device
+state to schedule, so it is not wired.
 
 ## Recompiled Code ↔ Runtime ABI
 
