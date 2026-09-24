@@ -232,6 +232,28 @@ than taking an out-parameter pointer.
 | `psx_timer_get_interrupt_pending` | `uint32_t(PSXTimerState, int32_t timer)` | 1 when `timer`'s IRQ is latched, else 0; 0 for `timer` outside 0–2. |
 | `psx_timer_clear_interrupt` | `PSXTimerState(PSXTimerState, int32_t timer)` | Clears `timer`'s IRQ latch; `timer` outside 0–2 ignored. |
 
+### DMA controller (#488)
+
+`rust/src/dma.rs` implements the DMA controller registers (per-channel
+MADR/BCR/CHCR, DPCR, DICR), register semantics only — no transfer is ever
+performed, so DICR flags are only ever cleared by software writes, never set.
+Its exports are **internal** to `PSXRecomp.Native`: `src/psx_api.cpp` calls
+them (declared in `src/psx_dma.h`) to implement the unchanged
+`PSXCore_*Dma*` functions of `include/psx_core.h`, so neither `psx_core.h`,
+`NativeInterop.cs`, nor `ABI_VERSION` changed. The state
+(`PSXDmaState`, seven `PSXDmaChannelState` values plus DPCR and DICR) is
+`#[repr(C)]`, POD, and passed/returned by value: no pointers, no allocation,
+no `unsafe`, and no operation that can panic (address decoding and channel
+indexing are range-checked), so every export is infallible (§5) and returns
+its result directly.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_dma_reset` | `PSXDmaState(void)` | Power-on state: all 7 channels zero, DPCR `0x07654321`, DICR zero. |
+| `psx_dma_read_register` | `uint32_t(PSXDmaState, uint32_t address)` | Per-channel MADR/BCR/CHCR at base + `channel * 0x10` + 0/4/8; DPCR as stored; DICR with derived bit 31; else 0. |
+| `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced; DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
+| `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)

@@ -75,6 +75,7 @@ add_custom_command(
     WORKING_DIRECTORY ${PSX_RUST_DIR}
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
             ${PSX_RUST_DIR}/src/interrupt.rs
+            ${PSX_RUST_DIR}/src/dma.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
@@ -87,7 +88,6 @@ add_library(PSXRecomp.Native SHARED
     src/psx_api.cpp
     src/psx_cpu.cpp
     src/psx_memory.cpp
-    src/psx_dma.cpp
     src/psx_rust_abi.cpp
 )
 
@@ -131,7 +131,6 @@ enable_testing()
 add_executable(psx_native_tests
     src/psx_cpu.cpp
     src/psx_memory.cpp
-    src/psx_dma.cpp
     tests/test_psx_core.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)
