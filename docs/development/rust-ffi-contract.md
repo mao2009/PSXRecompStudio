@@ -263,6 +263,50 @@ The DICR bit layout (flags 0–6, enables 24–30) is the one migrated from the 
 controller; psx-spx places enables at 16–22 and flags at 24–30. Reconciling it
 is a separate change, since it alters guest-visible register semantics.
 
+### Guest memory (#492)
+
+`rust/src/memory.rs` implements `PSXMemory`'s RAM/scratchpad/BIOS/HW-register
+storage and address decode (2 MiB RAM + its low-8-MiB mirror, the 1 KiB
+scratchpad, the BIOS backing store, and the HW-register fallback store),
+migrated from the C++ `class PSXMemory` (Issue #386's mirror/scratchpad/DICR
+semantics, preserved exactly). Unlike Interrupt/Timer/DMA, this storage
+(~2.6 MiB) is too large to pass by value, so it follows the
+`PSXCore_Create`/`PSXCore_Destroy` opaque-handle pattern (§3) instead: a
+`PsxMemoryHandle*` created by `psx_memory_create` and released exactly once by
+`psx_memory_destroy`. Its exports are **internal** to `PSXRecomp.Native`:
+`src/psx_memory.h` declares and calls them so `class PSXMemory` keeps its
+existing public C++ interface unchanged (`Reset`, `GetRAM`, `GetRAMSize`,
+`AttachControllers`, `Read8/16/32`, `Write8/16/32`), so `PSXCpu`, `PSXCore`,
+`psx_api.cpp`, `include/psx_core.h`, `NativeInterop.cs`, and `ABI_VERSION` are
+all unchanged.
+
+DMA/Timer/Interrupt register semantics are not duplicated here: the HW-register
+window's MMIO ranges are serviced by `memory.rs` calling straight into the
+existing `dma`/`timer`/`interrupt` modules' functions (same crate, not a
+second FFI hop). The three controller-state pointers `PSXMemory::AttachControllers`
+has always taken are threaded through unchanged — each is independently
+nullable, and an unattached controller falls back to the flat HW-register
+store, exactly as before. A timer read can mutate `*timers` (reading MODE
+clears its target/overflow flags), matching the pre-migration behavior.
+
+Every read/write export takes the handle and (for the HW-register window) up
+to three raw, independently-nullable controller-state pointers, so — unlike
+Interrupt/Timer/DMA — these are not infallible-by-value functions per §5:
+each is `unsafe extern "C"`, null-checks its handle (returning a documented
+default: 0 for reads, no-op for writes), and documents the validity/exclusive-
+borrow contract on every pointer parameter per §4. The address-decode and
+buffer-access logic underneath is bounds-checked, panic-free safe Rust (§8);
+`unsafe` is confined to converting the incoming raw pointers to references.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_memory_create` | `PsxMemoryHandle*(void)` | Allocates a zeroed backing store; null on allocation failure. |
+| `psx_memory_destroy` | `void(PsxMemoryHandle*)` | Releases a handle; null is a no-op. |
+| `psx_memory_reset` | `void(PsxMemoryHandle*)` | Zeroes RAM/scratchpad/BIOS/HW-register storage; null is a no-op. |
+| `psx_memory_ram_ptr` | `uint8_t*(PsxMemoryHandle*)` | RAM buffer pointer, stable for the handle's lifetime; null when the handle is null. |
+| `psx_memory_read{8,16,32}` | `uintN_t(PsxMemoryHandle*, uint32_t address, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | RAM (mirrored), scratchpad, BIOS, or HW-register (controller-routed, else flat store) little-endian read; 0 outside every mapped region or on a null handle. |
+| `psx_memory_write{8,16,32}` | `void(PsxMemoryHandle*, uint32_t address, uintN_t value, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | Matching write; a sub-word write to a controller register preserves DICR's write-1-to-clear flag bits exactly as the pre-migration C++ implementation did (PR #491's fix). No-op outside every mapped region or on a null handle. |
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)
