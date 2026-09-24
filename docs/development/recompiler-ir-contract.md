@@ -2,7 +2,7 @@
 
 Status: Stable
 Authority: SSOT
-Related Issues: #205, #206, #207, #208, #211
+Related Issues: #205, #206, #207, #208, #211, #411
 
 ## Scope
 
@@ -51,7 +51,7 @@ runtime contract still owns:
   effective address depends on a guest register value only known at execution
   time. An `Unknown` effect must never be treated as ordinary by a consumer:
   not reorderable, not dead-store-eliminable, not CSE-eligible.
-- `Ordinary` — the address is provably RAM or BIOS ROM
+- `Ordinary` — the address is provably RAM, scratchpad, or BIOS ROM
   (`Ps1MemoryMap.ClassifyRegion` via `Ps1AddressTranslation`): no
   device-visible side effect. This does not mean idempotent/pure — an
   ordinary store still mutates guest memory that a later load or aliased
@@ -76,6 +76,35 @@ architecturally correct answer, not an omission. The runtime's actual RAM/MMIO
 *routing* (`MemoryBus`, `Ps1MemoryMap`, the DMA/timer/interrupt adapters)
 remains one layer below the generated block and is unaffected by this
 classification.
+
+### Observable effect categories (ADR-020, Issue #411)
+
+Every observable-effect category the IR must keep distinct maps onto an
+existing, machine-readable representation. No category has a silent fallback
+to ordinary RAM access or ordinary direct control flow.
+
+| Category | IR representation | Stop identifier (`RecompilerIrTerminationReason` → title diagnostic) |
+|---|---|---|
+| Ordinary guest memory | `Load*`/`Store*` with `MemoryEffect = Ordinary` (or `Unknown` when not statically known) | none; the access retires normally |
+| MMIO / device access | `Load*`/`Store*` with `MemoryEffect = Device` (or `Unknown`) | none; the access retires through the host memory hook. `UnsupportedMmio` → `RUNTIME_UNSUPPORTED_MMIO` is the reserved stop reason (already mapped by `DiagnosticAdapter`, with no producer yet; device semantics belong to the runtime) |
+| BIOS / runtime transfer | JR/JALR exit `UnresolvedIndirectFlow` (no flow); the host resolves it via the generated `host_transfer` hook / runtime dispatch (ADR-014) | `UnresolvedIndirectFlow` → runtime handoff, or the runtime's own code (e.g. BIOS dispatch failure) |
+| Indirect / unresolved control flow | same `UnresolvedIndirectFlow` exit; never a guessed `Jump`/`Call`; a host-unclaimed unknown PC stops the dispatcher | `UnresolvedIndirectFlow` at the JR/JALR block; landing on a PC that has no block and no handoff rule → `UNRESOLVED_TRANSFER` at title level |
+| Exception-producing operation | `AddSigned` (ADDI) traps before its destination write; BREAK lowers to an `Exception` exit carrying Excode/EPC/BD; ADD/SUB/SYSCALL/COP0 and other not-yet-modelled trapping opcodes fail lowering | `Exception` → `CPU_EXCEPTION` |
+| Unsupported operation / effect | `MipsToIrLoweringResult.Unsupported`; codegen `Success=false` (`IR_VALIDATION_FAILED`, `UNSUPPORTED_OPERATION_KIND`, `UNSUPPORTED_FLOW_KIND`); an undefined `MemoryEffect` fails validation | `UnsupportedInstruction` / `UnsupportedIr` / `UnsupportedMemory` → `RECOMP_UNSUPPORTED_*` |
+
+The differential harness compares the reference (interpreter) and recompiled
+stop through the snapshot's `termination` field. `RecompilerStateDiff` reports a
+category mismatch as the stable field path `termination` carrying the enum byte
+values, not as a human-readable message.
+
+**Optimization contract.** No optimizer exists yet, but a future pass must
+treat operation order within a block as architectural side-effect order. It
+must not reorder, eliminate, merge, CSE, or speculatively execute a `Device`
+or `Unknown` access, an `AddSigned`, or any operation across an exception or
+unresolved exit, unless it has a proof. `Ordinary` removes only the
+device-visible concern; normal alias and liveness proof is still required. The
+backend already honours this: it emits one host memory-hook call per IR memory
+operation, in IR order, for every effect kind.
 
 ## Control flow
 
