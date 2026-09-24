@@ -279,13 +279,13 @@ run. Responsibilities are split so no device behavior is duplicated:
 - **Device semantics stay native/Rust.** Timers advance via `PSXCore_TickTimers`
   and DMA via `PSXCore_TickDma`; IRQs are raised through
   `IInterruptController.Raise` onto the Rust interrupt controller.
-- **IRQs latch but are not taken as CPU exceptions.** The engine steps with
-  `PSXCore_StepWithoutInterrupts`, which holds the CPU's hardware interrupt
-  input low (CAUSE.IP2 reads 0). The engine cannot yet continue into the
-  exception handler at 0x80000080. So an INT exception taken for a guest that
-  unmasked I_MASK and set SR IEc/IM2 would end the run as `CPU_EXCEPTION` one
-  VBlank in. The guest still sees every IRQ by polling I_STAT. Other exceptions
-  (SYSCALL, faults, software interrupts) still end the segment as before.
+- **IRQs are taken as CPU interrupts (Issue #499).** The engine steps with
+  `PSXCore_Step`, so a guest that unmasks I_MASK and sets SR IEc/IM2 takes an
+  INT exception and its handler at 0x80000080 runs, acknowledges I_STAT and
+  returns through `MFC0 EPC` / `JR` / `RFE`. With IEc clear the IRQ only
+  latches in I_STAT, where the guest can poll it. Only a hardware INT
+  continues; other exceptions (SYSCALL, BREAK, faults, software interrupts)
+  still end the segment as `CPU_EXCEPTION`. See `docs/cpu/exceptions.md`.
 - **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
   raised as IRQ4-6) → DMA (IRQ3 on a rising edge of DICR bit 31) → VBlank
   (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
