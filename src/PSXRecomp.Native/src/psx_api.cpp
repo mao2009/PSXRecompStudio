@@ -15,7 +15,11 @@ void* PSXCoreGetCpuForTrace(PSXCore* core) {
 
 PSXCore* PSXCore_Create(void) {
     try {
-        return new PSXCore();
+        PSXCore* core = new PSXCore();
+        // Route hardware-register reads/writes to the controller states this
+        // core owns (Issue #386); pointers stay valid for the core's lifetime.
+        core->memory.AttachControllers(&core->dma, &core->timers, &core->interrupts);
+        return core;
     } catch (...) {
         return nullptr;
     }

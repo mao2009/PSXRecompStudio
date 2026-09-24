@@ -1,5 +1,6 @@
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
+using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
 
@@ -33,6 +34,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly PSXCoreWrapper _core = new();
+    private readonly MemoryBus _bus;
     private bool _loaded;
 
     /// <summary>
@@ -98,6 +100,17 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _loadAddress = loadAddress;
         _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
+
+        // Wire the managed MMIO layer (DMA/timers/interrupt controller) into
+        // the production engine so it is reachable from the real execution path
+        // instead of only from unit tests (Issue #386). The BIOS runtime seam
+        // travels through this bus, so guest RAM/mirror/device semantics all
+        // come from one routing point while the interpreter drives the same
+        // native core.
+        _bus = new MemoryBus(_core);
+        _bus.AttachDmaAdapter(new DmaMmioAdapter(_core));
+        _bus.AttachTimerAdapter(new TimerMmioAdapter(_core));
+        _bus.AttachInterruptControllerAdapter(new InterruptControllerMmioAdapter(_core));
     }
 
     /// <inheritdoc />
@@ -143,8 +156,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _core.Pc = segmentRequest.Pc;
 
         var biosRuntime = _biosRuntimeFactory?.Invoke(
-            new GuestMemoryReader(_core.ReadMemory8),
-            new GuestMemoryWriter(_core.WriteMemory8));
+            new GuestMemoryReader(_bus.Read8),
+            new GuestMemoryWriter(_bus.Write8));
 
         var termination = RecompilerIrTerminationReason.Success;
         string? diagnosticCode = null;
@@ -211,9 +224,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             RecompilerExecutionStatus.Completed, snapshot, diagnosticCode, diagnosticMessage);
     }
 
-    /// <summary>Releases the native core this engine owns.</summary>
+    /// <summary>Releases the native core and memory bus this engine owns.</summary>
     public void Dispose()
     {
+        _bus.Dispose();
         _core.Dispose();
         GC.SuppressFinalize(this);
     }

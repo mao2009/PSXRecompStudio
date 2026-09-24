@@ -65,34 +65,49 @@ public sealed class GuestMemoryReaderTests
     }
 
     [Fact]
-    public void TryReadByte_KusegNonRam_IsUnmapped()
+    public void TryReadByte_KusegBeyondMirrorWindow_IsUnmapped()
     {
         var reader = new GuestMemoryReader(new RecompilerGuestMemory().Read8);
 
-        var result = reader.TryReadByte(0x00200000, out var value);
+        var result = reader.TryReadByte(0x00800000, out var value);
 
         result.Should().BeFalse();
         value.Should().Be(0);
     }
 
     [Fact]
-    public void TryRead_CrossingRamEnd_IsRejectedAtomically()
+    public void TryReadByte_MirrorWindow_AliasesLow2MiB()
+    {
+        var ram = new RecompilerGuestMemory();
+        ram.Write8(0x00000100, 0x4D);
+        var reader = new GuestMemoryReader(ram.Read8);
+
+        // Physical 0x00200100 falls inside the mirror window (2 MiB above the
+        // canonical byte); the reader folds it back into the low 2 MiB (#386).
+        var mirrored = reader.TryReadByte(0x00200100, out var mirroredValue);
+
+        mirrored.Should().BeTrue();
+        mirroredValue.Should().Be(0x4D, "the mirror window must alias the low 2 MiB RAM");
+    }
+
+    [Fact]
+    public void TryRead_CrossingMirrorWindowEnd_IsRejectedAtomically()
     {
         var ram = new RecompilerGuestMemory();
         var reader = new GuestMemoryReader(ram.Read8);
         Span<byte> buffer = stackalloc byte[4];
 
-        var result = reader.TryRead(RecompilerGuestMemory.RamSize - 1, buffer);
+        var result = reader.TryRead(4 * RecompilerGuestMemory.RamSize - 1, buffer);
 
         result.Should().BeFalse();
     }
 
     [Fact]
-    public void TryReadByte_AtRamEnd_IsUnmapped()
+    public void TryReadByte_AtMirrorWindowEnd_IsUnmapped()
     {
         var reader = new GuestMemoryReader(new RecompilerGuestMemory().Read8);
 
-        var result = reader.TryReadByte(RecompilerGuestMemory.RamSize, out var value);
+        var result = reader.TryReadByte(4 * RecompilerGuestMemory.RamSize, out var value);
 
         result.Should().BeFalse();
         value.Should().Be(0);
@@ -162,7 +177,9 @@ public sealed class GuestMemoryReaderTests
         var reader = new GuestMemoryReader(ram.Read8);
         Span<byte> buffer = stackalloc byte[2] { 0xFF, 0xFF };
 
-        var result = reader.TryRead(0x001FFFFF, buffer);
+        // Guest 0x007FFFFF is the last byte of the mirror window; the next byte
+        // (0x00800000) lies past it, so the read rejects atomically.
+        var result = reader.TryRead(0x007FFFFF, buffer);
 
         result.Should().BeFalse();
         buffer[0].Should().Be(0xFF, "buffer must not be modified on partial failure");
@@ -196,7 +213,7 @@ public sealed class GuestMemoryReaderTests
     }
 
     [Fact]
-    public void TryRead_LengthGreaterThanRamSize_IsRejectedWithoutPhysicalAccess()
+    public void TryRead_LengthGreaterThanMirrorWindow_IsRejectedWithoutPhysicalAccess()
     {
         var physicalReads = 0;
         var reader = new GuestMemoryReader(_ =>
@@ -204,7 +221,7 @@ public sealed class GuestMemoryReaderTests
             physicalReads++;
             return 0;
         });
-        var buffer = new byte[RecompilerGuestMemory.RamSize + 1];
+        var buffer = new byte[4 * RecompilerGuestMemory.RamSize + 1];
         buffer.AsSpan().Fill(0xFF);
 
         var result = reader.TryRead(0x00000000, buffer);
@@ -215,15 +232,15 @@ public sealed class GuestMemoryReaderTests
     }
 
     [Fact]
-    public void TryRead_LengthAtRamLimitFromNonZeroStart_FailsAtomically()
+    public void TryRead_LengthAtMirrorWindowEndFromNonZeroStart_FailsAtomically()
     {
         var ram = new RecompilerGuestMemory();
         ram.Write8(RecompilerGuestMemory.RamSize - 1, 0xAA);
         var reader = new GuestMemoryReader(ram.Read8);
-        var buffer = new byte[RecompilerGuestMemory.RamSize];
+        var buffer = new byte[4 * RecompilerGuestMemory.RamSize];
         buffer.AsSpan().Fill(0xFF);
 
-        var result = reader.TryRead(RecompilerGuestMemory.RamSize - 1, buffer);
+        var result = reader.TryRead(4 * RecompilerGuestMemory.RamSize - 1, buffer);
 
         result.Should().BeFalse();
         buffer.Should().OnlyContain(b => b == 0xFF, "buffer must not be modified on partial failure");

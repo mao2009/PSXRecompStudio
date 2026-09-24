@@ -12,9 +12,16 @@ public static class Ps1MemoryMap
     public const uint RamSize = 2 * 1024 * 1024;
     public const uint RamEnd = RamBase + RamSize;
 
+    /// <summary>End of the physical window in which main RAM aliases (Issue #386). An address in this window maps to the physical byte <c>address &amp; (RamSize - 1)</c>.</summary>
+    public const uint RamMirrorEnd = 0x00800000;
+
     public const uint BiosBase = 0x1FC00000;
     public const uint BiosSize = 512 * 1024;
     public const uint BiosEnd = BiosBase + BiosSize;
+
+    public const uint ScratchpadBase = 0x1F800000;
+    public const uint ScratchpadSize = 0x400;
+    public const uint ScratchpadEnd = ScratchpadBase + ScratchpadSize;
 
     public const uint HwRegBase = 0x1F801000;
     public const uint HwRegEnd = 0x1F802000;
@@ -129,8 +136,10 @@ public static class Ps1MemoryMap
 
     public static MemoryRegionClass ClassifyRegion(uint address)
     {
-        if (address < RamEnd)
+        if (address < RamMirrorEnd)
             return MemoryRegionClass.Ram;
+        if (address >= ScratchpadBase && address < ScratchpadEnd)
+            return MemoryRegionClass.Scratchpad;
         if (address >= BiosBase && address < BiosEnd)
             return MemoryRegionClass.Bios;
         if (address >= HwRegBase && address < HwRegEnd)
@@ -195,6 +204,7 @@ public enum MemoryRegionClass
 {
     Unmapped = 0,
     Ram,
+    Scratchpad,
     Bios,
     HardwareRegisters,
 }

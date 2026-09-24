@@ -50,24 +50,38 @@ public sealed class GuestMemoryWriterTests
     }
 
     [Fact]
-    public void TryWriteByte_KusegNonRam_IsUnmapped()
+    public void TryWriteByte_KusegBeyondMirrorWindow_IsUnmapped()
     {
         var writes = 0;
         var writer = new GuestMemoryWriter((_, _) => writes++);
 
-        var result = writer.TryWriteByte(0x00200000, 0x11);
+        var result = writer.TryWriteByte(0x00800000, 0x11);
 
         result.Should().BeFalse();
         writes.Should().Be(0, "an out-of-RAM address must never reach the physical write path");
     }
 
     [Fact]
-    public void TryWriteByte_AtRamEnd_IsUnmapped()
+    public void TryWriteByte_MirrorWindow_AliasesLow2MiB()
     {
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
 
-        var result = writer.TryWriteByte(RecompilerGuestMemory.RamSize, 0x11);
+        // Physical 0x00600000 falls inside the mirror window; the writer folds
+        // it into the low 2 MiB (Issue #386).
+        var result = writer.TryWriteByte(0x00600000, 0x4D);
+
+        result.Should().BeTrue();
+        ram.Read8(0x00000000).Should().Be(0x4D, "the mirror window must alias the low 2 MiB RAM");
+    }
+
+    [Fact]
+    public void TryWriteByte_AtMirrorWindowEnd_IsUnmapped()
+    {
+        var ram = new RecompilerGuestMemory();
+        var writer = new GuestMemoryWriter(ram.Write8);
+
+        var result = writer.TryWriteByte(4 * RecompilerGuestMemory.RamSize, 0x11);
 
         result.Should().BeFalse();
     }
@@ -136,17 +150,19 @@ public sealed class GuestMemoryWriterTests
     }
 
     [Fact]
-    public void TryWrite_RangePartiallyOutOfRam_IsAllOrNothingRejected()
+    public void TryWrite_RangePartiallyPastMirrorWindow_IsAllOrNothingRejected()
     {
         var ram = new RecompilerGuestMemory();
         var writer = new GuestMemoryWriter(ram.Write8);
 
-        // Write a sentinel at an in-bound address so we can verify it was not touched.
+        // Sentinel at the last low-2MiB byte (the masked alias of 0x007FFFFF).
         ram.Write8(RecompilerGuestMemory.RamSize - 1, 0xAA);
 
-        // The range straddles the RAM boundary: first byte is in-bound, second is not.
+        // The range straddles the mirror window end: first byte (guest
+        // 0x007FFFFF) aliases over the sentinel, second (0x00800000) is rejected,
+        // so nothing is written.
         Span<byte> buffer = stackalloc byte[2] { 0xBB, 0xCC };
-        var result = writer.TryWrite(RecompilerGuestMemory.RamSize - 1, buffer);
+        var result = writer.TryWrite(0x007FFFFF, buffer);
 
         result.Should().BeFalse();
         ram.Read8(RecompilerGuestMemory.RamSize - 1).Should().Be(0xAA, "a rejected write must not touch any byte");
@@ -165,11 +181,11 @@ public sealed class GuestMemoryWriterTests
     }
 
     [Fact]
-    public void TryWrite_LengthGreaterThanRamSize_IsRejected()
+    public void TryWrite_LengthGreaterThanMirrorWindow_IsRejected()
     {
         var writes = 0;
         var writer = new GuestMemoryWriter((_, _) => writes++);
-        var buffer = new byte[RecompilerGuestMemory.RamSize + 1];
+        var buffer = new byte[4 * RecompilerGuestMemory.RamSize + 1];
 
         var result = writer.TryWrite(0x00000000, buffer);
 

@@ -8,7 +8,8 @@ namespace PSXRecomp.Core.Runtime;
 /// addresses through the canonical KUSEG/KSEG rule, rejects unmapped physical
 /// addresses, and reads bytes from the injected existing physical-memory path.
 /// This adds a bounded read boundary only — it does not build new memory
-/// semantics, mirrors, or caching.
+/// semantics or caching; main-RAM mirror aliasing is honored by folding the
+/// physical address into the 2 MiB RAM window (Issue #386).
 /// </summary>
 [Domain]
 public sealed class GuestMemoryReader : IGuestMemoryReader
@@ -21,8 +22,10 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
     /// <param name="readPhysicalByte">
     /// Reads one physical byte from the existing memory path (for example
     /// <c>memoryBus.Read8</c> or a test RAM window). It receives a translated
-    /// physical address shown to be within RAM by <see cref="TryTranslate"/> and
-    /// the <see cref="DmaMemoryMap.RamSize"/> bound.
+    /// physical address shown to be within the RAM mirror window by
+    /// <see cref="TryTranslate"/> and the <see cref="DmaMemoryMap.RamMirrorEnd"/>
+    /// bound, folded into the low 2 MiB RAM via
+    /// <see cref="DmaMemoryMap.RamSize"/>.
     /// </param>
     public GuestMemoryReader(Func<uint, byte> readPhysicalByte)
     {
@@ -42,8 +45,9 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
 
     /// <summary>
     /// Reads a single byte from guest memory. Untranslatable addresses and
-    /// physical addresses outside RAM are rejected: the value is set to zero and
-    /// false is returned, so a stored zero byte can still be read as success.
+    /// physical addresses outside the RAM mirror window are rejected: the value
+    /// is set to zero and false is returned, so a stored zero byte can still be
+    /// read as success.
     /// </summary>
     /// <param name="address">Guest virtual address to read.</param>
     /// <param name="value">The byte read; set to zero when the read fails.</param>
@@ -56,13 +60,15 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
             return false;
         }
 
-        if (physical >= DmaMemoryMap.RamSize)
+        if (physical >= DmaMemoryMap.RamMirrorEnd)
         {
             value = 0;
             return false;
         }
 
-        value = _readPhysicalByte(physical);
+        // Main RAM aliases across the mirror window (Issue #386); the sink
+        // only needs the low 2 MiB physical byte.
+        value = _readPhysicalByte(physical & (DmaMemoryMap.RamSize - 1));
         return true;
     }
 
@@ -82,7 +88,7 @@ public sealed class GuestMemoryReader : IGuestMemoryReader
             return false;
         }
 
-        if (length > DmaMemoryMap.RamSize)
+        if (length > DmaMemoryMap.RamMirrorEnd)
         {
             return false;
         }

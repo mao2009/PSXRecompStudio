@@ -88,7 +88,7 @@ public sealed class PutsServiceTests
         var sink = new CapturedOutputSink();
 
         var result = PutsService.Invoke(
-            Identity(0x00200000), new GuestMemoryReader(new RecompilerGuestMemory().Read8), sink);
+            Identity(0x00800000), new GuestMemoryReader(new RecompilerGuestMemory().Read8), sink);
 
         AssertUnsupportedState(result);
         sink.Bytes.Should().BeEmpty();
@@ -97,9 +97,10 @@ public sealed class PutsServiceTests
     [Fact]
     public void Invoke_UnreadableByteMidString_WritesNothingAtAll()
     {
-        // Three readable bytes at the very end of RAM, then an unmapped byte
-        // where the terminator would be: the atomicity guarantee means the
-        // readable prefix must never reach the sink.
+        // Three readable bytes at the very end of the mirror window, then an
+        // unmapped byte where the terminator would be (0x00800000 lies past the
+        // window): the atomicity guarantee means the readable prefix must never
+        // reach the sink.
         var ram = new RecompilerGuestMemory();
         ram.Write8(RecompilerGuestMemory.RamSize - 3, (byte)'a');
         ram.Write8(RecompilerGuestMemory.RamSize - 2, (byte)'b');
@@ -107,7 +108,7 @@ public sealed class PutsServiceTests
         var sink = new CapturedOutputSink();
 
         var result = PutsService.Invoke(
-            Identity(RecompilerGuestMemory.RamSize - 3), new GuestMemoryReader(ram.Read8), sink);
+            Identity(4 * RecompilerGuestMemory.RamSize - 3), new GuestMemoryReader(ram.Read8), sink);
 
         AssertUnsupportedState(result);
         sink.Bytes.Should().BeEmpty("a partially readable string must produce no partial TTY output");

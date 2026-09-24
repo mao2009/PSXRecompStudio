@@ -209,6 +209,61 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_LiveGuestProgramReachesDmaScratchpadAndRamMirror()
+    {
+        // Issue #386: the Production backend (InterpreterTitleExecutionEngine over
+        // the native core, driven by the orchestrator) must make the DMA/timer/
+        // interrupt MMIO layer, the scratchpad and the low 8 MiB RAM mirror
+        // reachable from a real guest program — not only from unit tests. This one
+        // guest run round-trips a value through all three surfaces the issue
+        // names, through real memory instructions:
+        //
+        //   SW/LW to DMA MADR 0x1F801080   -> the attached DMA controller
+        //   SW via mirror 0x00200200, LW from 0x00000200 -> the 2 MiB alias
+        //   SW/LW to scratchpad 0x1F800000 -> the private 1 KiB SRAM
+        //
+        // If the native memory-routing work were missing, the DMA read would see
+        // a flat hw_regs word (state that would not round-trip a controller
+        // register with side effects) and the mirror/scratchpad reads would be
+        // unmapped zeros.
+        var words = new uint[]
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: 0xDEAD),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: (byte)R3000aRegister.T0, immediate: 0xBEEF),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: 0x1080),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T0, baseRegister: (byte)R3000aRegister.T1, offset: 0),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S1, baseRegister: (byte)R3000aRegister.T1, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0020),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: (byte)R3000aRegister.T2, immediate: 0x0200),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T0, baseRegister: (byte)R3000aRegister.T2, offset: 0),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0200),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S2, baseRegister: (byte)R3000aRegister.T2, offset: 0),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: (byte)R3000aRegister.T3, immediate: 0x0000),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T0, baseRegister: (byte)R3000aRegister.T3, offset: 0),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S3, baseRegister: (byte)R3000aRegister.T3, offset: 0),
+            MipsEncoding.Nop,
+        };
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 8, segment: 64));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        var snapshot = result.FinalSnapshot!;
+        snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0xDEADBEEFu,
+            "a guest SW/LW pair must round-trip through the DMA MMIO layer reachable from the real execution path");
+        snapshot.Gpr[(int)R3000aRegister.S2].Should().Be(0xDEADBEEFu,
+            "a guest SW through the 0x00200000 mirror must alias the low 2 MiB RAM");
+        snapshot.Gpr[(int)R3000aRegister.S3].Should().Be(0xDEADBEEFu,
+            "a guest SW/LW pair must round-trip through the scratchpad");
+    }
+
+    [Fact]
     public void Interpreter_UnsupportedBiosService_IsARuntimeFailure()
     {
         var words = new uint[]

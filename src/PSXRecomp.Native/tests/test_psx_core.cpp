@@ -2492,6 +2492,88 @@ static void test_run_interrupt_taken() {
     PASS();
 }
 
+// Issue #386: the low 8 MiB of the physical address space alias the main 2 MiB
+// RAM — address & (RAM_SIZE - 1) selects the byte, for every access width.
+static void test_ram_mirror_window() {
+    TEST("RAM mirror: low 8MiB aliases main 2MiB RAM (8/16/32-bit)");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    // Base byte at physical 0x00000010 is visible at +2 MiB and +4 MiB.
+    PSXCore_WriteMemory8(core, 0x00000010, 0xAB);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00200010), 0xABu);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00400010), 0xABu);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00600010), 0xABu);
+
+    // Writes through a mirror address land in the low 2 MiB.
+    PSXCore_WriteMemory32(core, 0x00400020, 0xDEADBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x00000020), 0xDEADBEEFu);
+    PSXCore_WriteMemory16(core, 0x00600024, 0xCAFEu);
+    ASSERT_EQ(PSXCore_ReadMemory16(core, 0x00000024), 0xCAFEu);
+
+    // Mirror window edge: physical 0x00800000 and above are unmapped.
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00800000), 0u);
+    PSXCore_WriteMemory8(core, 0x00800000, 0x77); // ignored
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00800000), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// Issue #386: the scratchpad (0x1F800000..0x1F8003FF) is a private 1 KiB SRAM,
+// reachable for every access width and separate from main RAM.
+static void test_scratchpad_access() {
+    TEST("Scratchpad: 0x1F800000 8/16/32-bit round-trip and RAM isolation");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    PSXCore_WriteMemory32(core, 0x1F800000, 0x13371337u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F800000), 0x13371337u);
+    PSXCore_WriteMemory32(core, 0x1F800004, 0x12345678u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F800004), 0x12345678u);
+    PSXCore_WriteMemory16(core, 0x1F800008, 0xBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory16(core, 0x1F800008), 0xBEEFu);
+    PSXCore_WriteMemory8(core, 0x1F80000A, 0x5Au);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x1F80000A), 0x5Au);
+
+    // The scratchpad is its own storage: RAM sees nothing of it.
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00000000), 0u);
+
+    // The last scratchpad word is inside the region; past it is unmapped.
+    PSXCore_WriteMemory32(core, 0x1F8003FC, 0xCAFEBABEu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F8003FC), 0xCAFEBABEu);
+    PSXCore_WriteMemory8(core, 0x1F800400, 0x21); // first byte past the scratchpad
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x1F800400), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// Issue #386: the hardware-register window routes to the Rust controllers
+// through the memory bus, reachable via the core's Read/WriteMemory API.
+static void test_mmio_routing_through_memory() {
+    TEST("MMIO routing: DMA/timer/interrupt reachable via Read/WriteMemory");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    // DMA MADR (0x1F801080) round-trips through the memory bus to the Rust DMA.
+    PSXCore_WriteMemory32(core, 0x1F801080, 0xDEADBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F801080), 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 0x1F801080, 0);
+
+    // Timer 0 value register (0x1F801100) is readable; halfword access aligns.
+    PSXCore_WriteMemory16(core, 0x1F801100, 0);
+    // 16-bit access via the controller does not corrupt the neighbouring word.
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F801100) & 0xFFFF0000u, 0u);
+
+    // Interrupt I_MASK (0x1F801074) accepts a written mask.
+    PSXCore_WriteMemory32(core, 0x1F801074, 0x00000001u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F801074), 0x00000001u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -2506,6 +2588,9 @@ int main() {
     test_cpu_hi_lo_set_get();
     test_ram_size();
     test_ram_access();
+    test_ram_mirror_window();
+    test_scratchpad_access();
+    test_mmio_routing_through_memory();
     test_reset();
     test_null_safety();
     test_step_basic();

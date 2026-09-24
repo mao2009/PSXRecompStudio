@@ -386,4 +386,84 @@ public class MemoryBusTests : IDisposable
     {
         _memoryBus.Read(Ps1MemoryMap.IStat - 4).Should().Be(0u);
     }
+
+    // --- Issue #386: low 8 MiB RAM mirror --------------------------------------
+
+    [Fact]
+    public void Write32_ViaMirror_AliasesLowRam()
+    {
+        _memoryBus.Write32(0x00200000u, 0x11223344u);
+        _memoryBus.Read32(0x00000000u).Should().Be(0x11223344u);
+        _memoryBus.Read32(0x00400000u).Should().Be(0x11223344u);
+        _memoryBus.Read32(0x00600000u).Should().Be(0x11223344u);
+    }
+
+    [Fact]
+    public void Write8_ViaMirror_LandsInLowRam()
+    {
+        _memoryBus.Write8(0x00400010u, 0xAB);
+        _memoryBus.Read8(0x00200010u).Should().Be(0xAB);
+        _memoryBus.Read8(0x00000010u).Should().Be(0xAB);
+    }
+
+    [Fact]
+    public void Write16_ViaMirror_LandsInLowRam()
+    {
+        _memoryBus.Write16(0x00600020u, 0xCAFE);
+        _memoryBus.Read16(0x00200020u).Should().Be(0xCAFE);
+        _memoryBus.Read16(0x00000020u).Should().Be(0xCAFE);
+    }
+
+    [Fact]
+    public void MirrorWrite_IsVisibleToNativeCoreAtLowAddress()
+    {
+        _memoryBus.Write32(0x00400030u, 0x55667788u);
+        _core.ReadMemory32(0x00000030u).Should().Be(0x55667788u);
+    }
+
+    [Fact]
+    public void Read_AtMirrorEnd_IsUnmapped()
+    {
+        _memoryBus.Read(0x00800000u).Should().Be(0u);
+        _memoryBus.Read8(0x00800000u).Should().Be(0);
+    }
+
+    // --- Issue #386: scratchpad (0x1F800000..0x1F8003FF) -----------------------
+
+    [Fact]
+    public void Scratchpad_32Bit_RoundTrips()
+    {
+        _memoryBus.Write32(0x1F800000u, 0x12345678u);
+        _memoryBus.Read32(0x1F800000u).Should().Be(0x12345678u);
+    }
+
+    [Fact]
+    public void Scratchpad_8Bit_AppliesByteMask()
+    {
+        _memoryBus.Write8(0x1F800004u, 0xAB);
+        _memoryBus.Read32(0x1F800004u).Should().Be(0xABu);
+        _memoryBus.Write8(0x1F800005u, 0xCD);
+        _memoryBus.Read32(0x1F800004u).Should().Be(0xCDABu);
+    }
+
+    [Fact]
+    public void Scratchpad_16Bit_AppliesHalfwordMask()
+    {
+        _memoryBus.Write16(0x1F800008u, 0xCAFE);
+        _memoryBus.Read32(0x1F800008u).Should().Be(0xCAFEu);
+    }
+
+    [Fact]
+    public void Scratchpad_IsSeparateFromRam()
+    {
+        _memoryBus.Write32(0x1F800000u, 0xDEADBEEFu);
+        _memoryBus.Read32(0x00000000u).Should().Be(0u);
+    }
+
+    [Fact]
+    public void Write_BeyondScratchpadEnd_IsIgnored()
+    {
+        _memoryBus.Write32(0x1F800400u, 0x12345678u);
+        _memoryBus.Read32(0x1F800400u).Should().Be(0u);
+    }
 }
