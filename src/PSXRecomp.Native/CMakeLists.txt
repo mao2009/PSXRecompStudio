@@ -74,6 +74,7 @@ add_custom_command(
     # manifest path, so the pin only applies when cargo runs inside the crate.
     WORKING_DIRECTORY ${PSX_RUST_DIR}
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
+            ${PSX_RUST_DIR}/src/cpu_alu.rs
             ${PSX_RUST_DIR}/src/interrupt.rs
             ${PSX_RUST_DIR}/src/cpu_ops.rs
             ${PSX_RUST_DIR}/src/cpu_hilo.rs

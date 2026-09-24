@@ -389,6 +389,25 @@ semantic value. They stay entirely in C++.
 | `psx_cpu_hilo_div` | `PSXMulDivResult(uint32_t dividend, uint32_t divisor)` | Signed division/remainder (each operand reinterpreted as `int32_t`). `divisor == 0`: LO = `dividend >= 0 ? 0xFFFFFFFF : 1`, HI = `dividend`. `dividend == INT32_MIN && divisor == -1`: LO = `0x80000000`, HI = `0` (PS1-specific, not a trap). Else: LO = truncating quotient, HI = truncating remainder. |
 | `psx_cpu_hilo_divu` | `PSXMulDivResult(uint32_t dividend, uint32_t divisor)` | Unsigned division/remainder. `divisor == 0`: LO = `0xFFFFFFFF`, HI = `dividend`. Else: LO = quotient, HI = remainder. |
 
+### PSXCpu ALU overflow-checked arithmetic (#495)
+
+`rust/src/cpu_alu.rs` implements the overflow-checked sum/difference
+computation for `ADD`/`ADDI`/`SUB` only — the smallest, pure slice of the
+`PSXCpu` decomposition (#471). Its exports are **internal** to
+`PSXRecomp.Native`: `src/psx_cpu.cpp` calls them (declared in
+`src/psx_cpu_alu.h`) from `ExecAdd`/`ExecAddi`/`ExecSub`, which keep owning
+GPR reads/writes, `ADDI`'s sign extension, and raising the `Ov` exception
+(CAUSE Excode 0x0C) — so `include/psx_core.h`, `NativeInterop.cs`, and
+`ABI_VERSION` are all unchanged. `AluResult` is `#[repr(C)]`, POD, and
+returned by value: no pointers, no allocation, no `unsafe`, and no operation
+that can panic, so every export is infallible (§5) and returns its result
+directly.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_cpu_alu_add` | `AluResult(uint32_t a, uint32_t b)` | `a + b` (two's-complement 32-bit) with MIPS I signed-overflow detection; used by both `ADD` and `ADDI` (the caller sign-extends `ADDI`'s immediate first). |
+| `psx_cpu_alu_sub` | `AluResult(uint32_t a, uint32_t b)` | `a - b` (two's-complement 32-bit) with MIPS I signed-overflow detection. |
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)

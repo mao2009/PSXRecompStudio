@@ -215,6 +215,55 @@ static void test_step_sub_subu() {
     PASS();
 }
 
+static void test_step_add_addi_sub_overflow_traps() {
+    TEST("ADD/ADDI/SUB signed overflow raises Ov and leaves destination unwritten (Issue #495)");
+    PSXCore* core = PSXCore_Create();
+
+    // ADD $3, $1, $2 (0x00221820): INT_MAX + 1 overflows.
+    PSXCore_SetGPR(core, 1, 0x7FFFFFFFu);
+    PSXCore_SetGPR(core, 2, 1u);
+    PSXCore_SetGPR(core, 3, 0xDEADBEEFu); // sentinel: must survive the trap
+    PSXCore_WriteMemory32(core, 0, 0x00221820u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0x0Cu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xDEADBEEFu);
+
+    // ADDI $4, $1, 1 (0x20240001): INT_MAX + 1 overflows.
+    PSXCore_SetGPR(core, 4, 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 0x80, 0x20240001u);
+    PSXCore_SetPC(core, 0x80);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0x0Cu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0xDEADBEEFu);
+
+    // SUB $5, $1, $2 (0x002218A2... recompute): INT_MIN - 1 overflows.
+    // SUB $5, $6, $7: rs=6, rt=7, rd=5, funct=0x22 -> 0x00C72822.
+    PSXCore_SetGPR(core, 6, 0x80000000u);
+    PSXCore_SetGPR(core, 7, 1u);
+    PSXCore_SetGPR(core, 5, 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 0x100, 0x00C72822u);
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0x0Cu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xDEADBEEFu);
+
+    // Non-overflowing ADDI still commits normally: ADDI $8, $1, 1 with $1 back
+    // to a small value.
+    PSXCore_SetGPR(core, 1, 10u);
+    PSXCore_WriteMemory32(core, 0x180, 0x20280005u); // ADDI $8, $1, 5
+    PSXCore_SetPC(core, 0x180);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 15u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_step_logic() {
     TEST("AND/OR/XOR/NOR instructions");
     PSXCore* core = PSXCore_Create();
@@ -2907,6 +2956,7 @@ int main() {
     test_step_basic();
     test_step_add_addu();
     test_step_sub_subu();
+    test_step_add_addi_sub_overflow_traps();
     test_step_logic();
     test_step_slt_sltu();
     test_step_sltiu();
