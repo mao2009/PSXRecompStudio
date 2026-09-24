@@ -307,6 +307,59 @@ buffer-access logic underneath is bounds-checked, panic-free safe Rust (§8);
 | `psx_memory_read{8,16,32}` | `uintN_t(PsxMemoryHandle*, uint32_t address, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | RAM (mirrored), scratchpad, BIOS, or HW-register (controller-routed, else flat store) little-endian read; 0 outside every mapped region or on a null handle. |
 | `psx_memory_write{8,16,32}` | `void(PsxMemoryHandle*, uint32_t address, uintN_t value, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | Matching write; a sub-word write to a controller register preserves DICR's write-1-to-clear flag bits exactly as the pre-migration C++ implementation did (PR #491's fix). No-op outside every mapped region or on a null handle. |
 
+### PSXCpu non-trapping ALU / logic / shift arithmetic (#501)
+
+`rust/src/cpu_ops.rs` implements the pure `u32 -> u32` computation of
+`PSXCpu`'s non-trapping ALU instructions, migrated from the C++
+`PSXCpu::Exec*` handlers. Its exports are **internal** to `PSXRecomp.Native`:
+`src/psx_cpu.cpp` calls them (declared in `src/psx_cpu_ops.h`), so
+`include/psx_core.h`, `NativeInterop.cs`, and `ABI_VERSION` are all unchanged.
+`PSXCpu` keeps owning instruction decode, GPR reads (`gpr_[rs]`/`gpr_[rt]`),
+`SetGPR` (including `$zero` protection), PC/pipeline/delay-slot/load-delay
+state, and the 16-bit immediate extension of the I-type forms. Every export
+takes and returns plain `u32` values, performs no allocation, dereferences no
+pointer, uses no `unsafe`, and retains no state. Nothing can panic: add/sub
+use `wrapping_*`, and shifts use `wrapping_shl`/`wrapping_shr`, which mask the
+amount to its low 5 bits rather than panicking on `>= 32`. So every export is
+infallible (§5) and returns its result directly.
+
+| Export | Signature | Semantics | Used by |
+|---|---|---|---|
+| `psx_cpu_ops_addu` | `uint32_t(uint32_t a, uint32_t b)` | `a + b`, wrapping (never traps). | `ADDU`; `ADDIU` with `SignExtend16(imm)` |
+| `psx_cpu_ops_subu` | `uint32_t(uint32_t a, uint32_t b)` | `a - b`, wrapping (never traps). | `SUBU` |
+| `psx_cpu_ops_and` | `uint32_t(uint32_t a, uint32_t b)` | `a & b` | `AND`; `ANDI` with `ZeroExtend16(imm)` |
+| `psx_cpu_ops_or` | `uint32_t(uint32_t a, uint32_t b)` | `a \| b` | `OR`; `ORI` with `ZeroExtend16(imm)` |
+| `psx_cpu_ops_xor` | `uint32_t(uint32_t a, uint32_t b)` | `a ^ b` | `XOR`; `XORI` with `ZeroExtend16(imm)` |
+| `psx_cpu_ops_nor` | `uint32_t(uint32_t a, uint32_t b)` | `~(a \| b)` | `NOR` |
+| `psx_cpu_ops_slt` | `uint32_t(uint32_t a, uint32_t b)` | `1` if `int32_t(a) < int32_t(b)`, else `0` | `SLT`; `SLTI` with `SignExtend16(imm)` |
+| `psx_cpu_ops_sltu` | `uint32_t(uint32_t a, uint32_t b)` | `1` if `a < b` unsigned, else `0` | `SLTU`; `SLTIU` with `SignExtend16(imm)` |
+| `psx_cpu_ops_sll` | `uint32_t(uint32_t value, uint32_t amount)` | `value << (amount & 0x1F)` | `SLL` (`shamt`); `SLLV` (`gpr_[rs]`, unmasked); `LUI` as `sll(ZeroExtend16(imm), 16)` |
+| `psx_cpu_ops_srl` | `uint32_t(uint32_t value, uint32_t amount)` | logical `value >> (amount & 0x1F)` | `SRL`; `SRLV` |
+| `psx_cpu_ops_sra` | `uint32_t(uint32_t value, uint32_t amount)` | arithmetic (sign-filling) `int32_t(value) >> (amount & 0x1F)` | `SRA`; `SRAV` |
+
+Semantics notes, each checked against the previous C++ on `main`:
+
+- `SLTI` compared `ToSigned(gpr_[rs]) < imm` with `imm` an `int16_t`
+  (promoted, so sign-extended). Passing `SignExtend16(imm)` to the signed
+  compare gives the same result.
+- `SLTIU` **sign**-extends its immediate and then compares unsigned (standard
+  MIPS I, pinned by Issue #306 / `test_step_sltiu`). It does not zero-extend.
+- `ANDI`/`ORI`/`XORI` zero-extend their immediate; `LUI` places the raw
+  16 bits in the upper half.
+- The decoder already masks `SLL`/`SRL`/`SRA`'s `shamt` to 5 bits, and the C++
+  masked `SLLV`/`SRLV`/`SRAV`'s `gpr_[rs] & 0x1F`. The Rust side now applies
+  that mask for both forms, which is idempotent for `shamt`.
+- C++17 leaves `int32_t >> n` on a negative value implementation-defined, but
+  every supported compiler (GCC, Clang, MSVC) shifts arithmetically. Rust
+  defines `i32 >> n` as arithmetic, so the results are identical. A unit test
+  also checks `SRA` against an explicit sign-fill reference that does not use
+  `i32 >>`.
+
+`ADD`/`ADDI`/`SUB` (overflow-trapping) and the HI/LO multiply/divide group are
+separate slices (#495, #497). `MFHI`/`MFLO`/`MTHI`/`MTLO`, branches/jumps,
+loads/stores (including their address arithmetic), COP0, and exception raising
+all stay in C++.
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)

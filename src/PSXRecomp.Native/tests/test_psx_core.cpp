@@ -327,6 +327,115 @@ static void test_step_shift() {
     PASS();
 }
 
+// Issue #501: the non-trapping ALU/logic/compare/shift handlers compute their
+// result in Rust (psx_cpu_ops.h). These drive each group end-to-end through
+// PSXCore_Step -> PSXCpu -> Rust -> SetGPR.
+static void step_ops_instr(PSXCore* core, uint32_t pc, uint32_t instr) {
+    PSXCore_WriteMemory32(core, pc, instr);
+    PSXCore_SetPC(core, pc);
+    PSXCore_Step(core);
+}
+
+static void test_step_ops_wrapping_arith() {
+    TEST("ADDU/SUBU/ADDIU wrap without trapping; $zero write discarded (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu);
+    PSXCore_SetGPR(core, 2, 1u);
+
+    step_ops_instr(core, 0x00, 0x00221821u); // ADDU $3, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u);
+    step_ops_instr(core, 0x04, 0x00412023u); // SUBU $4, $2, $1
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 2u);
+    step_ops_instr(core, 0x08, 0x2425FFFFu); // ADDIU $5, $1, -1
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xFFFFFFFEu);
+    step_ops_instr(core, 0x0C, 0x00210021u); // ADDU $0, $1, $1
+    ASSERT_EQ(PSXCore_GetGPR(core, 0), 0u);
+
+    // Signed overflow wraps and never raises Ov for ADDU.
+    PSXCore_SetGPR(core, 1, 0x7FFFFFFFu);
+    step_ops_instr(core, 0x10, 0x00221821u); // ADDU $3, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x80000000u);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_ops_logic_and_immediates() {
+    TEST("AND/OR/XOR/NOR, zero-extended ANDI/ORI/XORI, and LUI (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xAAAA5555u);
+    PSXCore_SetGPR(core, 2, 0x0F0FF0F0u);
+
+    step_ops_instr(core, 0x00, 0x00225024u); // AND $10, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 10), 0x0A0A5050u);
+    step_ops_instr(core, 0x04, 0x00225825u); // OR $11, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 11), 0xAFAFF5F5u);
+    step_ops_instr(core, 0x08, 0x00226026u); // XOR $12, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 12), 0xA5A5A5A5u);
+    step_ops_instr(core, 0x0C, 0x00226827u); // NOR $13, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 13), 0x50500A0Au);
+
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu);
+    step_ops_instr(core, 0x10, 0x30238000u); // ANDI $3, $1, 0x8000
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x00008000u);
+    step_ops_instr(core, 0x14, 0x34048000u); // ORI $4, $0, 0x8000
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0x00008000u);
+    step_ops_instr(core, 0x18, 0x3825FFFFu); // XORI $5, $1, 0xFFFF
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xFFFF0000u);
+    step_ops_instr(core, 0x1C, 0x3C068001u); // LUI $6, 0x8001
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 0x80010000u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_ops_compare() {
+    TEST("SLT signed vs SLTU unsigned; SLTI/SLTIU sign-extend the immediate (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu); // -1
+    PSXCore_SetGPR(core, 2, 1u);
+
+    step_ops_instr(core, 0x00, 0x0022182Au); // SLT $3, $1, $2: -1 < 1
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 1u);
+    step_ops_instr(core, 0x04, 0x0022202Bu); // SLTU $4, $1, $2: 0xFFFFFFFF < 1
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0u);
+    step_ops_instr(core, 0x08, 0x2825FFFFu); // SLTI $5, $1, -1: -1 < -1
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0u);
+    step_ops_instr(core, 0x0C, 0x28468000u); // SLTI $6, $2, -32768: 1 < -32768
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 0u);
+    step_ops_instr(core, 0x10, 0x2C478000u); // SLTIU $7, $2, 0x8000: 1 < 0xFFFF8000
+    ASSERT_EQ(PSXCore_GetGPR(core, 7), 1u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_ops_shifts() {
+    TEST("SRA sign-fills; SLLV/SRLV/SRAV use the low 5 bits of rs (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x80000000u);
+    PSXCore_SetGPR(core, 2, 1u);
+    PSXCore_SetGPR(core, 5, 33u); // -> 1
+    PSXCore_SetGPR(core, 7, 63u); // -> 31
+
+    step_ops_instr(core, 0x00, 0x00011903u); // SRA $3, $1, 4
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xF8000000u);
+    step_ops_instr(core, 0x04, 0x00014FC2u); // SRL $9, $1, 31
+    ASSERT_EQ(PSXCore_GetGPR(core, 9), 1u);
+    step_ops_instr(core, 0x08, 0x000277C0u); // SLL $14, $2, 31
+    ASSERT_EQ(PSXCore_GetGPR(core, 14), 0x80000000u);
+    step_ops_instr(core, 0x0C, 0x00A22004u); // SLLV $4, $2, $5
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 2u);
+    step_ops_instr(core, 0x10, 0x00E13006u); // SRLV $6, $1, $7
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 1u);
+    step_ops_instr(core, 0x14, 0x00E14007u); // SRAV $8, $1, $7
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0xFFFFFFFFu);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_step_branch() {
     TEST("BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ instructions");
     PSXCore* core = PSXCore_Create();
@@ -2712,6 +2821,10 @@ int main() {
     test_step_slt_sltu();
     test_step_sltiu();
     test_step_shift();
+    test_step_ops_wrapping_arith();
+    test_step_ops_logic_and_immediates();
+    test_step_ops_compare();
+    test_step_ops_shifts();
     test_step_branch();
     test_step_jump();
     test_step_branch_delay_slot();

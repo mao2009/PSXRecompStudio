@@ -8,6 +8,7 @@
 //! Migrated subsystems:
 //! - [`interrupt`]: the I_STAT/I_MASK interrupt controller (Issue #484).
 //! - [`timer`]: the Root Counter (Timer) controller (Issue #486).
+//! - [`cpu_ops`]: `PSXCpu` non-trapping ALU/logic/shift arithmetic (Issue #501).
 //! - [`dma`]: the DMA controller registers (Issue #488).
 //! - [`memory`]: guest RAM/scratchpad/BIOS/HW-register storage (Issue #492).
 //!
@@ -26,6 +27,7 @@ pub mod dma;
 pub mod interrupt;
 pub mod memory;
 pub mod timer;
+pub mod cpu_ops;
 
 /// Version of the Rust substrate's C ABI contract.
 ///
