@@ -264,6 +264,81 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_LiveGuestObservesTimer2Irq_AtTheCycleTheSchedulerRaisedIt()
+    {
+        // Issue #442: nothing but the production path advances devices here. The
+        // guest arms Timer 2 (target 100, IRQ on target) through real stores,
+        // then polls I_STAT through real loads. IRQ6 can only appear if
+        // InterpreterTitleExecutionEngine feeds retired instructions into the
+        // DeviceScheduler, which ticks the Rust timer and raises the line.
+        //
+        // One cycle per instruction: the mode SW's own advance brings the counter
+        // to 1, and each 5-instruction poll adds 5, so the LW of poll k sees
+        // 1 + 5(k-1) cycles. The first k with >= 100 is 21, which the delay-slot
+        // counter in $s0 records.
+        const ushort target = 100;
+        var result = RunPollingProgram(
+            setup:
+            [
+                MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: target),
+                MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1128),
+                MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0010),
+                MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1124),
+            ],
+            iStatBit: 1 << 6,
+            segment: 1024);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.T3].Should().Be(1u << 6, "only Timer 2's IRQ6 is latched");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(21u);
+    }
+
+    [Fact]
+    public void Interpreter_LiveGuestObservesVblankIrq0_AfterOneVblankInterval()
+    {
+        // Issue #442: VBlank (IRQ0) fires during a real run, at the scheduler's
+        // fixed interval. The LUI costs one cycle and each poll five, so the
+        // first poll that sees IRQ0 is k = ceil((interval - 1) / 5) + 1.
+        const uint pollLength = 5;
+        var expectedPolls = ((DeviceScheduler.VblankIntervalCycles - 1 + pollLength - 1) / pollLength) + 1;
+
+        var result = RunPollingProgram(setup: [], iStatBit: 1 << 0, segment: 1_000_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.T3].Should().Be(1u, "only VBlank's IRQ0 is latched");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(expectedPolls);
+    }
+
+    /// <summary>
+    /// Runs <c>$t1 = 0x1F800000; setup; do { $t3 = I_STAT; $s0++ } while (!($t3 &amp; bit))</c>
+    /// on the production interpreter through the orchestrator; the guest then
+    /// runs off its program image and completes.
+    /// </summary>
+    private static TitleExecutionResult RunPollingProgram(uint[] setup, ushort iStatBit, uint segment)
+    {
+        const byte andiOpcodeField = 0x0C;
+        const byte beqOpcodeField = 0x04;
+
+        var words = new List<uint>
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+        };
+        words.AddRange(setup);
+        var poll = Entry + (uint)words.Count * 4u;
+        words.AddRange(
+        [
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.T3, baseRegister: (byte)R3000aRegister.T1, offset: 0x1070),
+            MipsEncoding.Nop,
+            MipsEncoding.I(andiOpcodeField, rt: (byte)R3000aRegister.T4, rs: (byte)R3000aRegister.T3, immediate: iStatBit),
+            MipsEncoding.Branch(beqOpcodeField, (byte)R3000aRegister.T4, 0, poll + 12u, poll),
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S0, rs: (byte)R3000aRegister.S0, immediate: 1),
+        ]);
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        return new ExecutionOrchestrator().Execute(engine, ExitHandoff(), Request(Entry, outer: 1, segment));
+    }
+
+    [Fact]
     public void Interpreter_UnsupportedBiosService_IsARuntimeFailure()
     {
         var words = new uint[]
