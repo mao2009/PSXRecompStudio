@@ -198,9 +198,9 @@ Candidate selection is deliberately conservative: a window is accepted only when
 
 - **UI**: Avalonia UI / C#, MVVM
 - **Runtime**: .NET 10+
-- **Native Core**: C++17 / CMake / Ninja, C ABI boundary
+- **Native Core**: C++17 / CMake / Ninja, C ABI boundary, plus a Rust coexistence substrate (Cargo, `staticlib`) linked into the same library
 - **Architecture enforcement**: Roslyn Analyzer
-- **Testing**: xUnit (C#), CTest (C++), Avalonia headless UI tests
+- **Testing**: xUnit (C#), CTest (C++), `cargo test` (Rust), Avalonia headless UI tests
 - **Configuration**: YAML (planned: per-title difference definitions)
 - **AI integration**: MCP (planned)
 - **Reverse engineering**: Ghidra (planned)
@@ -235,7 +235,7 @@ PSXRecompStudio/
 dotnet build src/PSXRecompStudio.slnx --configuration Release
 ```
 
-### Native Core (C++)
+### Native Core (C++ and Rust)
 
 ```bash
 cd src/PSXRecomp.Native
@@ -243,11 +243,16 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-`PSXRecomp.Core` triggers the native build and copies the resulting shared library into its own output directory as part of a normal `dotnet build`; see [`docs/development/native-library-build.md`](docs/development/native-library-build.md) for the exact artifact-naming and resolution rules per OS.
+A **Rust toolchain (`cargo`) is required**: the native library links a Rust `staticlib` built from `src/PSXRecomp.Native/rust/`, and CMake runs `cargo build` for you — there is no manual copy step. On Windows with a MinGW/GCC front-end, CMake also installs the `x86_64-pc-windows-gnu` Rust target via `rustup` at configure time.
+
+`PSXRecomp.Core` triggers the native build and copies the resulting shared library into its own output directory as part of a normal `dotnet build`; see [`docs/development/native-library-build.md`](docs/development/native-library-build.md) for the exact artifact-naming and resolution rules per OS, and [`docs/development/rust-ffi-contract.md`](docs/development/rust-ffi-contract.md) for the FFI rules the Rust side follows.
 
 ## Test
 
 ```bash
+# Rust substrate unit tests (run from the crate so the toolchain pin applies)
+(cd src/PSXRecomp.Native/rust && cargo test)
+
 # Native Core unit tests (CMake/CTest)
 ctest --test-dir src/PSXRecomp.Native/build --output-on-failure
 

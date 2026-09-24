@@ -4,9 +4,9 @@
 
 **Authority:** Reference
 
-**Related Issues:** #100
+**Related Issues:** #100, #473
 
-**Related Components:** `src/PSXRecomp.Native/CMakeLists.txt`, `src/PSXRecomp.Core/PSXRecomp.Core.csproj`, `src/PSXRecomp.Core/NativeLibraryResolver.cs`, `src/PSXRecomp.Tests/PSXRecomp.Tests.csproj`, `.github/workflows/ci.yml`
+**Related Components:** `src/PSXRecomp.Native/CMakeLists.txt`, `src/PSXRecomp.Native/rust/`, `src/PSXRecomp.Core/PSXRecomp.Core.csproj`, `src/PSXRecomp.Core/NativeLibraryResolver.cs`, `src/PSXRecomp.Tests/PSXRecomp.Tests.csproj`, `.github/workflows/ci.yml`
 
 ## Purpose
 
@@ -98,10 +98,59 @@ common case — the default P/Invoke probing already finds the correctly
 named file — but keeps behavior correct if a future toolchain change
 reintroduces a naming mismatch.
 
+## Rust substrate (Issue #473)
+
+The native library also links a Rust `staticlib` built from
+`src/PSXRecomp.Native/rust/` (ADR-023). It is a build-level detail of the same
+artifact, not a second library:
+
+- `cargo` is a **required** prerequisite for the native build on every
+  platform. `find_program(CARGO_EXECUTABLE cargo REQUIRED)` turns a missing
+  toolchain into a configure-time error rather than a link failure.
+- A CMake custom command runs `cargo build --release` before the shared library
+  links, with `--target-dir` pointing inside the CMake binary directory, so no
+  manual copy step exists and nothing lands in the source tree.
+- The `release` cargo profile is always used, independent of
+  `CMAKE_BUILD_TYPE`/`--config`, so the artifact path is the same under
+  single- and multi-config generators.
+- `rust/rust-toolchain.toml` pins the toolchain. rustup resolves it from the
+  **working directory**, so cargo is always invoked with its working directory
+  set to the crate.
+- **Windows with a MinGW/GCC front-end** builds Rust for the
+  `x86_64-pc-windows-gnu` target. rustc's Windows host default is the MSVC
+  triple, and a MinGW linker cannot consume an MSVC static library, so CMake
+  selects the GNU triple automatically when `MINGW` is set (which also moves
+  cargo's output under a per-triple subdirectory). Because that triple is not
+  the host, its standard library is usually absent; CMake therefore runs
+  `rustup target add x86_64-pc-windows-gnu` at configure time — idempotent, and
+  a no-op once installed. Without it the failure is the unhelpful
+  `can't find crate for 'std'`. Run that command manually if `rustup` is not on
+  `PATH` (CMake then only prints a status message). MSVC builds use the host
+  default and need no extra target.
+
+  This is not a Windows-developer-only concern: `windows-latest` CI runners
+  resolve `cmake -G Ninja` to `C:/mingw64/bin/c++.exe`, so the `.NET Build and
+  Test (Windows)` and `Package CLI (win-x64)` jobs take this path too.
+
+The exported Rust symbols are defined by the thin re-export layer in
+`src/psx_rust_abi.cpp` and declared in `include/psx_core.h`; see
+[Rust FFI Safety Contract](rust-ffi-contract.md) for the rules they follow.
+
 ## Local verification (per OS)
 
 ```powershell
-# 1. Native build + native unit tests
+# 0. Rust unit tests. Run from inside the crate so rustup applies the
+#    toolchain pin (it resolves rust-toolchain.toml from the working directory).
+Push-Location src/PSXRecomp.Native/rust
+try {
+    cargo test
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    Pop-Location
+}
+
+# 1. Native build + native unit tests (also runs cargo build --release)
 cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/native --parallel
 ctest --test-dir build/native --output-on-failure
@@ -140,3 +189,10 @@ copy for the Tests project's output).
 The same `native*` → `dotnet*` job pair is repeated on `windows-latest` and
 `macos-latest` under OS-scoped artifact names, so each OS's managed tests load
 that OS's own ctest-verified library rather than another platform's.
+
+`cargo build` therefore runs on all three platforms as part of each `native*`
+job's CMake build, and the Rust artifact reaches the managed tests through the
+existing per-OS upload/download of `PSXRecomp.Native`. `cargo test` runs once,
+in the Linux `native` job, because the crate's unit tests are
+platform-independent. All of these jobs are already required by the `ci` gate,
+so a Rust failure blocks the merge like any other.

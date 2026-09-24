@@ -129,3 +129,11 @@ build/
 *.lib
 *.o
 *.obj
+
+# ====================
+# Rust
+# ====================
+# The CMake build directs cargo's output into the (already ignored) CMake
+# binary directory; this covers a bare `cargo build`/`cargo test` run inside
+# the crate, which uses the default local target directory instead.
+src/PSXRecomp.Native/rust/target/

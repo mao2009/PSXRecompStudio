@@ -1,0 +1,7 @@
+# Pinned toolchain for reproducible local and CI builds of the Rust substrate.
+# rustup resolves this file from the working directory, so every cargo
+# invocation (CMake's custom command and CI's `cargo test`) runs with its
+# working directory set to this crate.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"

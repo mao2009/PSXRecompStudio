@@ -38,6 +38,7 @@ Development
 ├── Agent Guide
 ├── Repository Artifact Policy
 ├── API Documentation & Docstring Policy
+├── Rust FFI Safety Contract
 ├── README Auto-Update
 ├── Real-ROM Analysis Flow
 └── Terminology
@@ -97,6 +98,7 @@ Constraints:
 - [API Documentation & Docstring Policy](development/documentation-policy.md)
 - [README Auto-Update](development/readme-autoupdate.md)
 - [Native Library Build and Test Execution](development/native-library-build.md)
+- [Rust FFI Safety Contract](development/rust-ffi-contract.md)
 - [Real-ROM Analysis Flow](development/real-rom-analysis.md)
 - [Recompiler IR / CPU Semantic Contract](development/recompiler-ir-contract.md)
 - [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)

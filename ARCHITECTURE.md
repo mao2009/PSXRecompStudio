@@ -26,7 +26,7 @@ Future goals:
 src/
 ├── PSXRecompStudio/           # Avalonia UI application
 ├── PSXRecomp.Core/            # C# Core: P/Invoke bindings + wrappers
-├── PSXRecomp.Native/          # C++ Core: PSX emulation core (C ABI)
+├── PSXRecomp.Native/          # Native Core: PSX emulation core (C ABI); C++ plus the Rust substrate in rust/
 ├── architecture.contract.json # SSOT for enforced architecture rules (read by loach.ArchitectureAnalyzer)
 ├── PSXRecomp.Runtime/         # Future: PSX runtime management
 ├── PSXRecomp.Recompiler/      # Future: recompiler
@@ -72,10 +72,19 @@ C# (PSXRecomp.Core)
   ↓ P/Invoke
 C ABI (psx_core.h)
   ↓
-C++ (PSXRecomp.Native)
+C++ (PSXRecomp.Native) ── linked with ──> Rust (PSXRecomp.Native/rust, staticlib)
 ```
 
 C++ classes are not exposed directly to C#.
+
+Since Issue #473 the native library also links a Rust `staticlib`, so both
+languages ship inside the one artifact managed code already loads. The
+boundary itself is unchanged: Rust reaches C# through the same C ABI header and
+the same `[LibraryImport("PSXRecomp.Native")]` bindings, and no Rust type is
+visible above it. The current Rust surface is an ABI smoke function only — no
+subsystem has been migrated. See
+[ADR-023](docs/adr/023-rust-native-coexistence-substrate.md) and the
+[Rust FFI Safety Contract](docs/development/rust-ffi-contract.md).
 
 ## C ABI
 
@@ -320,13 +329,15 @@ YAML is used to define title-specific differences:
 
 Rust was also considered, but C++ was chosen as the primary option because of existing PSX-emulator knowledge and its compatibility with C# P/Invoke.
 
+That choice is being revisited incrementally rather than reversed (Issue #471). A Rust `staticlib` now links into the same native library (Issue #473, [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md)), so individual subsystems can migrate one at a time behind the unchanged C ABI. No subsystem has migrated yet, and removing C++ is not a goal.
+
 ## Build Structure
 
 ```text
-Native Core:    CMake + Ninja → .so / .dll / .dylib
+Native Core:    CMake + Ninja (+ cargo, linked in) → .so / .dll / .dylib
 C# Core:        dotnet build → .dll
 UI:             dotnet build → executable
-Tests:          dotnet test (C#) + ctest (C++)
+Tests:          dotnet test (C#) + ctest (C++) + cargo test (Rust)
 ```
 
 ## Future Components
