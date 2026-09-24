@@ -254,6 +254,35 @@ its result directly.
 | `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced; DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
 | `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
 
+### PSXCpu HI/LO multiply/divide (#497)
+
+`rust/src/cpu_hilo.rs` implements the pure 64-bit-product / division
+arithmetic of `MULT`/`MULTU`/`DIV`/`DIVU`, migrated from the C++
+`PSXCpu::ExecMult`/`ExecMultu`/`ExecDiv`/`ExecDivu`. Its exports are
+**internal** to `PSXRecomp.Native`: `src/psx_cpu.cpp` calls them (declared
+in `src/psx_cpu_hilo.h`) and assigns the returned HI/LO pair to `hi_`/`lo_`,
+so neither `psx_core.h`, `NativeInterop.cs`, nor `ABI_VERSION` changed
+(these `Exec*` methods are private `PSXCpu` members, never part of any C
+ABI to begin with). `PSXCpu` keeps owning GPR reads (`gpr_[rs]`/`gpr_[rt]`),
+HI/LO storage, and `Reset()`. Every export takes only `u32` values, performs
+no allocation, dereferences no pointer, and contains no operation that can
+panic — the divisor-zero and `i32::MIN / -1` cases are checked before any
+native `/`/`%` (Rust's checked division panics on both in every build
+profile, unlike C++'s well-defined-but-PS1-special-cased behavior) — so
+every export is infallible per §5 and returns its result directly.
+
+`MFHI`/`MFLO`/`MTHI`/`MTLO` are intentionally **not** migrated: they are
+plain HI/LO ↔ GPR state moves with no arithmetic, so there is nothing for
+Rust to compute and crossing the FFI boundary would add a call with no
+semantic value. They stay entirely in C++.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_cpu_hilo_mult` | `PSXMulDivResult(uint32_t a, uint32_t b)` | Signed 64-bit product of `a`/`b` (each reinterpreted as `int32_t`); HI = upper 32 bits, LO = lower 32 bits. |
+| `psx_cpu_hilo_multu` | `PSXMulDivResult(uint32_t a, uint32_t b)` | Unsigned 64-bit product of `a`/`b`; HI/LO split the same way. |
+| `psx_cpu_hilo_div` | `PSXMulDivResult(uint32_t dividend, uint32_t divisor)` | Signed division/remainder (each operand reinterpreted as `int32_t`). `divisor == 0`: LO = `dividend >= 0 ? 0xFFFFFFFF : 1`, HI = `dividend`. `dividend == INT32_MIN && divisor == -1`: LO = `0x80000000`, HI = `0` (PS1-specific, not a trap). Else: LO = truncating quotient, HI = truncating remainder. |
+| `psx_cpu_hilo_divu` | `PSXMulDivResult(uint32_t dividend, uint32_t divisor)` | Unsigned division/remainder. `divisor == 0`: LO = `0xFFFFFFFF`, HI = `dividend`. Else: LO = quotient, HI = remainder. |
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)

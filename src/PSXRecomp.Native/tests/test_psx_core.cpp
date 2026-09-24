@@ -2632,6 +2632,103 @@ static void test_dicr_write16_preserves_w1c_flags() {
     PASS();
 }
 
+// MULT/MULTU/DIVU native regression tests (Issue #497's Rust HI/LO migration).
+// DIV's divide-by-zero and INT32_MIN/-1 edge cases are already covered above
+// by test_div_by_zero_positive/negative, test_div_overflow, and
+// test_divu_by_zero; these fill the previously-missing MULT/MULTU coverage
+// and DIVU's normal-case path, end-to-end through PSXCore_Step.
+static void test_mult_signed_positive_times_negative() {
+    TEST("MULT: signed positive * negative HI/LO split");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 1000);
+    PSXCore_SetGPR(core, 2, 0xFFFFFFFFu); // -1
+
+    // MULT $1, $2 (opcode=0, rs=1, rt=2, funct=0x18): 0x00220018
+    PSXCore_WriteMemory32(core, 0, 0x00220018u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    // 1000 * -1 = -1000; entirely in LO, HI is sign-extension.
+    ASSERT_EQ(PSXCore_GetLO(core), static_cast<uint32_t>(-1000));
+    ASSERT_EQ(PSXCore_GetHI(core), 0xFFFFFFFFu);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_mult_signed_negative_times_negative() {
+    TEST("MULT: signed negative * negative HI/LO split");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFBu); // -5
+    PSXCore_SetGPR(core, 2, 0xFFFFFFFDu); // -3
+
+    PSXCore_WriteMemory32(core, 0, 0x00220018u); // MULT $1, $2
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    // -5 * -3 = 15.
+    ASSERT_EQ(PSXCore_GetLO(core), 15u);
+    ASSERT_EQ(PSXCore_GetHI(core), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_multu_upper_lower_split() {
+    TEST("MULTU: unsigned product requiring a non-zero HI");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x00010000u);
+    PSXCore_SetGPR(core, 2, 0x00010000u);
+
+    // MULTU $1, $2 (opcode=0, rs=1, rt=2, funct=0x19): 0x00220019
+    PSXCore_WriteMemory32(core, 0, 0x00220019u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    // 0x10000 * 0x10000 = 0x1_0000_0000: HI=1, LO=0.
+    ASSERT_EQ(PSXCore_GetHI(core), 1u);
+    ASSERT_EQ(PSXCore_GetLO(core), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_multu_uint32_max_squared() {
+    TEST("MULTU: UINT32_MAX * UINT32_MAX");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu);
+    PSXCore_SetGPR(core, 2, 0xFFFFFFFFu);
+
+    PSXCore_WriteMemory32(core, 0, 0x00220019u); // MULTU $1, $2
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    // 0xFFFFFFFF^2 = 0xFFFFFFFE_00000001.
+    ASSERT_EQ(PSXCore_GetHI(core), 0xFFFFFFFEu);
+    ASSERT_EQ(PSXCore_GetLO(core), 0x00000001u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_divu_normal() {
+    TEST("DIVU normal operation");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 100);
+    PSXCore_SetGPR(core, 2, 7);
+
+    // DIVU $1, $2 (opcode=0, rs=1, rt=2, funct=0x1B): 0x0022001B
+    PSXCore_WriteMemory32(core, 0, 0x0022001Bu);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    ASSERT_EQ(PSXCore_GetLO(core), 14u); // 100 / 7 = 14
+    ASSERT_EQ(PSXCore_GetHI(core), 2u);  // 100 % 7 = 2
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -2757,6 +2854,12 @@ int main() {
     test_step_interrupt_nested_sr_stack();
     test_step_interrupt_vblank_full_flow();
     test_run_interrupt_taken();
+
+    test_mult_signed_positive_times_negative();
+    test_mult_signed_negative_times_negative();
+    test_multu_upper_lower_split();
+    test_multu_uint32_max_squared();
+    test_divu_normal();
 
     printf("\n======================\n");
     printf("Results: %d/%d passed\n", tests_passed, tests_run);

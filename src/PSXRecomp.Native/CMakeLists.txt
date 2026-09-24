@@ -76,6 +76,7 @@ add_custom_command(
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
             ${PSX_RUST_DIR}/src/interrupt.rs
             ${PSX_RUST_DIR}/src/dma.rs
+            ${PSX_RUST_DIR}/src/cpu_hilo.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
