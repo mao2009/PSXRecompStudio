@@ -11,8 +11,8 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// environment data. The run envelope nests the production
 /// <see cref="RecompiledArtifactResult"/> — <em>the</em> #459 termination
 /// representation — rather than defining a CLI-specific termination model; the
-/// only caller-selected value it carries is the artifact path the command was
-/// asked to produce.
+/// ordinary run envelope keeps the pre-report field set unchanged; the
+/// report-aware variant adds only the caller-visible diagnostic bundle path.
 /// </summary>
 [Infrastructure]
 internal static class CliJson
