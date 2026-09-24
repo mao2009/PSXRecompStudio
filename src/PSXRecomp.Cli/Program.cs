@@ -239,7 +239,7 @@ public static class Program
 
 /// <summary>
 /// The parsed, validated surface of one command invocation. Shared by both
-/// commands; the run-only <c>--segment-budget</c> option is gated during parsing.
+/// commands; the run-only <c>--segment-budget</c> and <c>--report</c> options are gated during parsing.
 /// </summary>
 [Infrastructure]
 internal sealed record ParsedArguments(
