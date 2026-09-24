@@ -161,9 +161,9 @@ public static class GpuRasterizer
     private static long EdgeFunction((int X, int Y) a, (int X, int Y) b, (int X, int Y) p) =>
         (long)(b.X - a.X) * (p.Y - a.Y) - (long)(b.Y - a.Y) * (p.X - a.X);
 
-    /// <summary>Vertex word: low 16 bits X, high 16 bits Y, each a signed value (psx-spx 11-bit signed field stored in a 16-bit slot), plus the GP0(E5h) drawing offset.</summary>
+    /// <summary>Vertex word: low 16 bits X, high 16 bits Y, each carrying an 11-bit signed coordinate; bits 11-15 of each slot are ignored, then GP0(E5h) drawing offset is applied.</summary>
     private static (int X, int Y) DecodeVertex(uint word, (int X, int Y) offset) =>
-        ((short)(word & 0xFFFF) + offset.X, (short)(word >> 16) + offset.Y);
+        (SignExtend11(word & 0x7FF) + offset.X, SignExtend11((word >> 16) & 0x7FF) + offset.Y);
 
     /// <summary>Primitive color word: bits 0-7 R, 8-15 G, 16-23 B (8-bit), truncated to the 5-bit VRAM channel width (same convention as <see cref="GpuDevice"/>'s Quick Rectangle Fill).</summary>
     private static (int R, int G, int B) DecodeColor5(uint word) =>
