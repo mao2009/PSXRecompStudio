@@ -445,6 +445,56 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_HandlerRfeBeforeItsReturnJump_StillReturnsToTheGuest()
+    {
+        // CodeRabbit on PR #502: ExecRfe (psx_cpu.cpp) only restores SR, never PC
+        // (PC restore is a JR responsibility, ADR-005). Clearing the handler-region
+        // permission on RfeExecuted alone assumed RFE always shares its step with
+        // the completing return JR (the jr $ra / rfe delay-slot idiom every other
+        // test here uses); a handler that runs RFE as a standalone instruction,
+        // before a separate return JR, is equally legal MIPS I and left PC outside
+        // the program image for one more step, which the old code then reported as
+        // an unresolved transfer instead of still-running handler code.
+        var result = RunInterruptProgram(
+            InterruptHandlerRfeBeforeReturnJump(acknowledge: true),
+            EnableInterruptsThenWaitForHandler(sr: SrIm2 | SrIec),
+            segment: DeviceScheduler.VblankIntervalCycles + 10_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.DiagnosticCode.Should().BeNull();
+        var gpr = result.FinalSnapshot!.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        gpr[(int)R3000aRegister.S6].Should().Be(1u, "the handler kept running after RFE, before its return JR");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (WaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the interrupted code resumed after RFE and the return JR");
+    }
+
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(2u)]
+    [InlineData(3u)]
+    [InlineData(5u)]
+    public void Interpreter_HandlerRfeBeforeReturnJumpSplitAcrossTinySegments_StillResumesTheGuest(uint segment)
+    {
+        // Same CodeRabbit finding as above, cut into tiny segments so a boundary
+        // lands exactly between the standalone RFE and its return JR at least
+        // once (guaranteed for segment=1, likely for the others).
+        var result = RunInterruptProgram(
+            InterruptHandlerRfeBeforeReturnJump(acknowledge: true),
+            Timer2InterruptThenWaitForHandler(),
+            segment,
+            outer: 1_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, $"segment={segment}: {Describe(result)}");
+        result.FinalSnapshot!.PC.Should().Be(TimerProgramEnd);
+        var gpr = result.FinalSnapshot.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        gpr[(int)R3000aRegister.S6].Should().Be(1u, "the handler kept running after RFE, before its return JR");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (TimerWaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the interrupted code resumed after RFE");
+    }
+
+    [Fact]
     public void Interpreter_Mfc0LoadDelayInFlightAtASegmentBoundary_StillCommits()
     {
         // CodeRabbit on PR #502: re-seeding the core for the next segment flushed
@@ -557,6 +607,28 @@ public sealed class ExecutionOrchestratorTests
         MipsEncoding.Nop,
         MipsEncoding.JumpRegister((byte)R3000aRegister.K1),
         0x42000010u, // RFE
+    ];
+
+    /// <summary>
+    /// A handler like <see cref="InterruptHandler"/>, but RFE executes as a
+    /// standalone instruction, separated from the return JR by <c>$s6</c>'s
+    /// increment, instead of sharing the JR's delay slot. Proves the engine
+    /// still recognizes handler code between a standalone RFE and its return.
+    /// </summary>
+    private static uint[] InterruptHandlerRfeBeforeReturnJump(bool acknowledge) =>
+    [
+        MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.K0, rs: 0, immediate: 0x1F80),
+        Mfc0(R3000aRegister.S4, 13), // CAUSE
+        acknowledge
+            ? MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.K0, offset: 0x1070) // I_STAT &= 0
+            : MipsEncoding.Nop,
+        MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.S1, immediate: 1),
+        Mfc0(R3000aRegister.K1, 14), // EPC, load-delayed
+        MipsEncoding.Nop,
+        0x42000010u, // RFE, standalone: not in a branch delay slot
+        MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S6, rs: (byte)R3000aRegister.S6, immediate: 1),
+        MipsEncoding.JumpRegister((byte)R3000aRegister.K1),
+        MipsEncoding.Nop,
     ];
 
     private const uint TimerWaitLoopIndex = 9;
