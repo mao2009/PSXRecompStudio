@@ -160,11 +160,27 @@ The register/VRAM contract is implemented as a pure managed Domain model in
 GPUSTAT is derived from named state (see ADR-022), VRAM is 1024x512x16b, and
 unimplemented GP0 opcodes are reported explicitly rather than silently ignored.
 
-Not yet implemented: primitive rasterization and display output (#441),
-VRAM→VRAM blit, and DMA channel 2 (GPU) consumption of the DMA controller.
+### Rasterization and frame snapshot (Issue #441, partial)
+
+`GpuRasterizer` renders flat and Gouraud-shaded triangles and flat rectangles
+(non-textured, non-quad) into `GpuVram` synchronously when `GpuDevice`
+completes a GP0 drawing-primitive command; texture mapping and quads are
+recognized but explicitly reported as `GpuRasterOutcome.UnsupportedFeature`
+rather than mis-rendered. `FrameSnapshot.Capture` (also reachable via
+`GpuDevice.CaptureFrame`) is a pure function of the current VRAM and the
+GP1(05h)/display-resolution state that returns a deterministic,
+presentation-agnostic capture of the configured display region, plus a
+SHA-256 stable-content hash — independent of VBlank/scheduler timing.
+
 VBlank IRQ0 is raised by the device scheduler (see
 [Device Scheduling](#device-scheduling-issue-442)), not by `GpuDevice`, because
 the GPU is not yet part of the production engine; `IGpu.HasVblank` stays false.
+
+Not yet implemented: texture mapping, quads, line primitives,
+semi-transparency blending, dithering, mask-bit checking, VRAM→VRAM blit, and
+DMA channel 2 (GPU) consumption of the DMA controller. No CLI/headless export
+path consumes `FrameSnapshot` yet, and the GPU device itself is not wired into
+`DeviceScheduler` or any production execution engine.
 
 ## SPU Model
 
