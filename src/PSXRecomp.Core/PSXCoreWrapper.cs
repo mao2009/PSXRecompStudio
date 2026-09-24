@@ -150,6 +150,13 @@ public sealed class PSXCoreWrapper : IDisposable
         return NativeInterop.PSXCore_GetDmaInterruptPending(_handle) != 0;
     }
 
+    /// <summary>Advances started DMA transfers by <paramref name="cycles"/> CPU clock cycles; a transfer completes after its modelled duration (Issue #442).</summary>
+    public void TickDma(uint cycles)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_TickDma(_handle, cycles);
+    }
+
     /// <summary>Reads a timer (0-2) register at the given absolute address.</summary>
     public uint ReadTimerRegister(uint address)
     {

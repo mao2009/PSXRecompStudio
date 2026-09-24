@@ -88,6 +88,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetDmaInterruptPending(IntPtr core);
 
+    /// <summary>Advances started DMA transfers by <paramref name="cycles"/> CPU clock cycles; a transfer completes after its modelled duration (Issue #442).</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_TickDma(IntPtr core, uint cycles);
+
     /// <summary>Reads a timer (0-2) register at the given absolute address.</summary>
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_ReadTimerRegister(IntPtr core, uint address);

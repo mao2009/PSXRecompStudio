@@ -2147,6 +2147,32 @@ static void test_timer_reset_timers() {
     PASS();
 }
 
+// Issue #442: a manually triggered channel completes after its modelled word
+// count through the public C ABI and raises the DICR IRQ line.
+static void test_dma_tick_completes_transfer() {
+    TEST("PSXCore_TickDma completes a started transfer after its word count");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    PSXCore_WriteDmaRegister(core, 0x1F8010F0u, 0x07654321u | (1u << 27)); // DPCR: enable ch6
+    PSXCore_WriteDmaRegister(core, 0x1F8010F4u, (1u << 23) | (1u << 30));  // DICR: master + ch6
+    PSXCore_WriteDmaRegister(core, 0x1F8010E4u, 4u);                        // ch6 BCR: 4 words
+    PSXCore_WriteDmaRegister(core, 0x1F8010E8u, 0x11000002u);               // ch6 CHCR: start+trigger
+
+    PSXCore_TickDma(core, 3);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010E8u) & (1u << 24), 1u << 24);
+    ASSERT_EQ(PSXCore_GetDmaInterruptPending(core), 0);
+
+    PSXCore_TickDma(core, 1);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010E8u), 0x00000002u);
+    ASSERT_EQ(PSXCore_GetDmaInterruptPending(core), 1);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010F4u) >> 31, 1u);
+
+    PSXCore_TickDma(nullptr, 1);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_timer_null_safety() {
     TEST("Timer null pointer safety");
     ASSERT_EQ(PSXCore_ReadTimerRegister(nullptr, 0x1F801100u), 0u);
@@ -2741,6 +2767,7 @@ int main() {
     test_timer_sync_arm_timer0();
     test_timer_reset_timers();
     test_timer_null_safety();
+    test_dma_tick_completes_transfer();
 
     test_interrupt_registers();
     test_interrupt_pending();

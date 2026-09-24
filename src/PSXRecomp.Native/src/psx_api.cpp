@@ -112,6 +112,11 @@ int PSXCore_GetDmaInterruptPending(PSXCore* core) {
     return psx_dma_get_interrupt_pending(core->dma) != 0 ? 1 : 0;
 }
 
+void PSXCore_TickDma(PSXCore* core, uint32_t cycles) {
+    if (!core) return;
+    core->dma = psx_dma_tick(core->dma, cycles);
+}
+
 uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
     PSXTimerReadResult result = psx_timer_read_register(core->timers, address);

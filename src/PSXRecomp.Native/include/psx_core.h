@@ -81,6 +81,13 @@ PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 PSX_API void     PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value);
 /** Returns non-zero when a DMA-triggered interrupt is pending. */
 PSX_API int      PSXCore_GetDmaInterruptPending(PSXCore* core);
+/**
+ * Advances started DMA transfers by `cycles` CPU clock cycles (Issue #442). A
+ * transfer completes after its modelled duration (one cycle per word; no data
+ * moves): CHCR bits 24/28 clear and its DICR flag sets when that channel's
+ * DICR enable is set.
+ */
+PSX_API void     PSXCore_TickDma(PSXCore* core, uint32_t cycles);
 
 /** Reads a timer (0-2) register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address);
