@@ -54,15 +54,26 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private DeviceScheduler? _scheduler;
     private bool _loaded;
 
-    // Set when the CPU takes a hardware interrupt, cleared when the CPU reports
-    // the handler executed RFE. Entering the program image does not clear it: a
+    // Set when the CPU takes a hardware interrupt, cleared once the handler has
+    // actually returned. Entering the program image alone does not clear it: a
     // handler may call a helper there and return to handler code outside it.
     // While set, a PC outside the image is the guest's own interrupt handler
     // rather than an unresolved transfer. This is only an execution-region
     // permission: EPC/CAUSE/SR stay owned by the native CPU.
-    // ponytail: one level, not a depth count; a handler that re-enables IEc and
-    // nests, or an RFE outside a JR delay slot, needs a count / later clear.
     private bool _inInterruptHandler;
+
+    // Set when the CPU reports the handler executed RFE (ExecRfe, psx_cpu.cpp):
+    // RFE only restores SR, it never moves PC (PC restore is a JR responsibility,
+    // ADR-005), so RFE alone does not mean the handler has returned. This arms
+    // the check below instead of clearing _inInterruptHandler outright, so a
+    // handler that keeps running after a standalone RFE (not sharing its return
+    // JR's delay slot) is still recognized as handler code (CodeRabbit, PR #502).
+    // This also covers nested handlers without tracking depth: a nested
+    // handler's own RFE+return lands PC back inside the *outer* handler, still
+    // outside the program image, so it can never satisfy the check below by
+    // itself — only the outermost handler's true return does, regardless of how
+    // many RFEs ran in between.
+    private bool _rfePending;
 
     // Set when the last segment ended ExecutionBudgetExceeded: the core still
     // holds that segment's live state, including in-flight load-delay and
@@ -173,6 +184,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
         _inInterruptHandler = false;
+        _rfePending = false;
         _resumable = false;
         _loaded = true;
     }
@@ -267,10 +279,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 continue;
             }
 
-            // The handler's JR + RFE has returned to the interrupted code.
+            // RFE armed the return check; it lands only once PC is actually back
+            // inside the program image, whether that happens in this same step
+            // (RFE sharing the return JR's delay slot) or several steps later (a
+            // standalone RFE ahead of a separate return JR).
             if (_core.RfeExecuted)
             {
+                _rfePending = true;
+            }
+            if (_rfePending && PcWithinProgram(_core.Pc))
+            {
                 _inInterruptHandler = false;
+                _rfePending = false;
             }
 
             // Devices advance by the time the retired instruction took, so
