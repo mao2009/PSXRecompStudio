@@ -735,8 +735,13 @@ public sealed class BiosHleContractTests
         BiosJumpTables.EntryAddress(BiosCallFamily.C0, c0Function)
             .Should().Be(BiosJumpTables.EntryAddress(BiosCallFamily.B0, b0Function), "sanity-check: same physical slot");
 
+        var isPutChar = b0Function == BiosHleRuntime.PutCharAliasFunction;
         var isPuts = b0Function == BiosHleRuntime.PutsAliasFunction;
-        var arguments = isPuts ? new[] { 0x00000400u } : Array.Empty<uint>();
+        var arguments = isPutChar
+            ? new[] { (uint)'A' }
+            : isPuts
+                ? new[] { 0x00000400u }
+                : Array.Empty<uint>();
 
         var ramForAlias = new RecompilerGuestMemory();
         if (isPuts) WriteCString(ramForAlias, 0x00000400, "hi");
@@ -759,6 +764,7 @@ public sealed class BiosHleContractTests
     // Sentinel consistency: the same physical slot uses exactly one sentinel
     // value, regardless of which identity computes it.
     [Theory]
+    [InlineData((byte)0xBD, BiosHleRuntime.PutCharAliasFunction)]
     [InlineData((byte)0xBF, BiosHleRuntime.PutsAliasFunction)]
     [InlineData((byte)0xD6, BiosHleRuntime.GetC0TableFunction)]
     [InlineData((byte)0xD7, BiosHleRuntime.GetB0TableFunction)]
