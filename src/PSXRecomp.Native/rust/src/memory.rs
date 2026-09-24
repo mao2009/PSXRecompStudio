@@ -48,7 +48,7 @@
 //! documented null-on-allocation-failure contract instead of invoking Rust's
 //! infallible allocation path. Other unsafety is limited to dereferencing the
 //! caller-supplied handle/controller pointers in the thin `unsafe extern "C"`
- //! wrappers at the bottom of this file; address decoding and memory semantics
+//! wrappers at the bottom of this file; address decoding and memory semantics
 //! remain plain safe Rust.
 
 use std::alloc::{alloc, alloc_zeroed, Layout};
