@@ -141,7 +141,14 @@ The exported Rust symbols are defined by the thin re-export layer in
 ```powershell
 # 0. Rust unit tests. Run from inside the crate so rustup applies the
 #    toolchain pin (it resolves rust-toolchain.toml from the working directory).
-Push-Location src/PSXRecomp.Native/rust; cargo test; Pop-Location
+Push-Location src/PSXRecomp.Native/rust
+try {
+    cargo test
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    Pop-Location
+}
 
 # 1. Native build + native unit tests (also runs cargo build --release)
 cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
