@@ -2574,6 +2574,64 @@ static void test_mmio_routing_through_memory() {
     PASS();
 }
 
+// DICR bits 0-6 are write-1-to-clear flags. A sub-word Write8/Write16 to
+// PSXMemory first reads the full 32-bit register back (echoing any set flag
+// as a 1), merges in the target byte/halfword, and writes the full word
+// back; without masking those echoed flag bits back to 0 first, that merged
+// write clears flags the caller never touched (CodeRabbit PR #491). These
+// exercise PSXMemory directly (heap-allocated: RAM+BIOS+hw_regs are ~2.6 MiB,
+// too large for a stack frame) since the Rust DMA model only ever clears
+// flags through its public write API, never sets them - a direct PSXDmaState
+// field assignment is the only way to seed a "flags pending" fixture.
+static void test_dicr_write8_preserves_w1c_flags() {
+    TEST("DICR Write8: sub-word write to a control byte preserves pending W1C flags");
+    auto* memory = new PSXMemory();
+    PSXDmaState dma = psx_dma_reset();
+    dma.dicr = 0x7Fu; // All 7 channel flags pending.
+    memory->AttachControllers(&dma, nullptr, nullptr);
+
+    // Byte 2 (bits 16-23) carries the master-enable bit (bit 23) but none of
+    // the flag bits; writing 0x80 there must not disturb the pending flags.
+    memory->Write8(PSX_DMA_REGION_END + 2u, 0x80u);
+    uint32_t afterControlWrite = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterControlWrite & 0x7Fu, 0x7Fu);         // Flags still pending.
+    ASSERT_EQ(afterControlWrite & (1u << 23), 1u << 23); // Master enable applied.
+
+    // An intentional write-1-to-clear through the same byte path still works:
+    // clearing flag 0 only must leave flags 1-6 pending.
+    memory->Write8(PSX_DMA_REGION_END, 0x01u);
+    uint32_t afterClear = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterClear & 0x7Fu, 0x7Eu);
+
+    delete memory;
+    PASS();
+}
+
+static void test_dicr_write16_preserves_w1c_flags() {
+    TEST("DICR Write16: sub-word write to enable bits preserves pending W1C flags");
+    auto* memory = new PSXMemory();
+    PSXDmaState dma = psx_dma_reset();
+    dma.dicr = 0x7Fu; // All 7 channel flags pending.
+    memory->AttachControllers(&dma, nullptr, nullptr);
+
+    // The high halfword (bits 16-31) carries master-enable (bit 23) and the
+    // per-channel enables (bits 24-30); writing channel-0/2 enables plus
+    // master-enable there must not clear any pending flag.
+    memory->Write16(PSX_DMA_REGION_END + 2u, 0x0580u);
+    uint32_t afterControlWrite = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterControlWrite & 0x7Fu, 0x7Fu);         // Flags still pending.
+    ASSERT_EQ(afterControlWrite & (1u << 23), 1u << 23); // Master enable applied.
+    ASSERT_EQ((afterControlWrite >> 24) & 0x7Fu, 0x05u); // Enables applied.
+
+    // An intentional write-1-to-clear through the low halfword still works.
+    memory->Write16(PSX_DMA_REGION_END, 0x0003u);
+    uint32_t afterClear = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterClear & 0x7Fu, 0x7Cu);
+
+    delete memory;
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -2591,6 +2649,8 @@ int main() {
     test_ram_mirror_window();
     test_scratchpad_access();
     test_mmio_routing_through_memory();
+    test_dicr_write8_preserves_w1c_flags();
+    test_dicr_write16_preserves_w1c_flags();
     test_reset();
     test_null_safety();
     test_step_basic();

@@ -242,6 +242,12 @@ inline void PSXMemory::Write16(uint32_t address, uint16_t value) {
         uint32_t wordAddr = address & ~2u;
         uint32_t value32;
         if (ReadController32(wordAddr, value32)) {
+            // DICR bits 0-6 are write-1-to-clear interrupt flags: the read-back
+            // echoes any currently-set flag back as a 1, which a full-word write
+            // would then clear. Zero them here so a sub-word write to another
+            // DICR field leaves flags untouched unless the caller's own byte/
+            // halfword targets them.
+            if (wordAddr == PSX_DMA_REGION_END) value32 &= ~0x7Fu;
             uint32_t shift = 8u * (address & 2u);
             WriteController32(wordAddr, (value32 & ~(0xFFFFu << shift)) | (static_cast<uint32_t>(value) << shift));
             return;
@@ -291,6 +297,8 @@ inline void PSXMemory::Write8(uint32_t address, uint8_t value) {
         uint32_t wordAddr = address & ~3u;
         uint32_t value32;
         if (ReadController32(wordAddr, value32)) {
+            // See the matching comment in Write16: preserve DICR's W1C flag bits.
+            if (wordAddr == PSX_DMA_REGION_END) value32 &= ~0x7Fu;
             uint32_t shift = 8u * (address & 3u);
             WriteController32(wordAddr, (value32 & ~(0xFFu << shift)) | (static_cast<uint32_t>(value) << shift));
             return;
