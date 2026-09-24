@@ -31,6 +31,14 @@ jobs:
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
+      # The Rust substrate is linked into PSXRecomp.Native, so `cargo build`
+      # runs as part of the CMake build below on every platform (ADR-023). The
+      # crate's unit tests are platform-independent, so they run once, here,
+      # in a job the CI Gate already requires.
+      - name: Rust unit tests
+        working-directory: src/PSXRecomp.Native/rust
+        run: cargo test --verbose
+
       - name: Configure
         run: cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
 
