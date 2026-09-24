@@ -1,4 +1,5 @@
 #include "psx_cpu.h"
+#include "psx_cpu_alu.h"
 #include "psx_memory.h"
 #include <cassert>
 #include <cstdint>
@@ -595,15 +596,14 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
 
 // Arithmetic/Logical
 void PSXCpu::ExecAdd(uint32_t rd, uint32_t rs, uint32_t rt) {
-    uint32_t a = gpr_[rs];
-    uint32_t b = gpr_[rt];
-    uint32_t sum = a + b;
-    // Signed overflow (MIPS I): sign of a and b equal and differ from sign of sum.
-    if (((a ^ sum) & (b ^ sum)) & 0x80000000) {
+    // Overflow-checked sum computed by Rust (Issue #495); C++ still owns the
+    // GPR read/write and exception raising.
+    PSXAluResult r = psx_cpu_alu_add(gpr_[rs], gpr_[rt]);
+    if (r.overflow) {
         RaiseException(0x0C); // Ov
         return; // result is NOT written to the GPR
     }
-    SetGPR(rd, sum);
+    SetGPR(rd, r.result);
 }
 
 void PSXCpu::ExecAddu(uint32_t rd, uint32_t rs, uint32_t rt) {
@@ -611,15 +611,14 @@ void PSXCpu::ExecAddu(uint32_t rd, uint32_t rs, uint32_t rt) {
 }
 
 void PSXCpu::ExecSub(uint32_t rd, uint32_t rs, uint32_t rt) {
-    uint32_t a = gpr_[rs];
-    uint32_t b = gpr_[rt];
-    uint32_t diff = a - b;
-    // Signed overflow (MIPS I): signs differ and result sign differs from minuend.
-    if (((a ^ b) & (a ^ diff)) & 0x80000000) {
+    // Overflow-checked difference computed by Rust (Issue #495); C++ still
+    // owns the GPR read/write and exception raising.
+    PSXAluResult r = psx_cpu_alu_sub(gpr_[rs], gpr_[rt]);
+    if (r.overflow) {
         RaiseException(0x0C); // Ov
         return; // result is NOT written to the GPR
     }
-    SetGPR(rd, diff);
+    SetGPR(rd, r.result);
 }
 
 void PSXCpu::ExecSubu(uint32_t rd, uint32_t rs, uint32_t rt) {
@@ -652,15 +651,14 @@ void PSXCpu::ExecSltu(uint32_t rd, uint32_t rs, uint32_t rt) {
 
 // Immediate arithmetic
 void PSXCpu::ExecAddi(uint32_t rt, uint32_t rs, int16_t imm) {
-    uint32_t a = gpr_[rs];
-    uint32_t s = SignExtend16(imm);
-    uint32_t sum = a + s;
-    // Signed overflow (MIPS I): sign of a and sign-extended imm equal and differ from sum.
-    if (((a ^ sum) & (s ^ sum)) & 0x80000000) {
+    // ADDI is ADD with a sign-extended immediate (Issue #495); C++ still
+    // owns the sign extension, GPR read/write, and exception raising.
+    PSXAluResult r = psx_cpu_alu_add(gpr_[rs], SignExtend16(imm));
+    if (r.overflow) {
         RaiseException(0x0C); // Ov
         return; // result is NOT written to the GPR
     }
-    SetGPR(rt, sum);
+    SetGPR(rt, r.result);
 }
 
 void PSXCpu::ExecAddiu(uint32_t rt, uint32_t rs, int16_t imm) {

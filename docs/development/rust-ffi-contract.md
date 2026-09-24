@@ -254,6 +254,25 @@ its result directly.
 | `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced; DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
 | `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
 
+### PSXCpu ALU overflow-checked arithmetic (#495)
+
+`rust/src/cpu_alu.rs` implements the overflow-checked sum/difference
+computation for `ADD`/`ADDI`/`SUB` only — the smallest, pure slice of the
+`PSXCpu` decomposition (#471). Its exports are **internal** to
+`PSXRecomp.Native`: `src/psx_cpu.cpp` calls them (declared in
+`src/psx_cpu_alu.h`) from `ExecAdd`/`ExecAddi`/`ExecSub`, which keep owning
+GPR reads/writes, `ADDI`'s sign extension, and raising the `Ov` exception
+(CAUSE Excode 0x0C) — so `include/psx_core.h`, `NativeInterop.cs`, and
+`ABI_VERSION` are all unchanged. `AluResult` is `#[repr(C)]`, POD, and
+returned by value: no pointers, no allocation, no `unsafe`, and no operation
+that can panic, so every export is infallible (§5) and returns its result
+directly.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_cpu_alu_add` | `AluResult(uint32_t a, uint32_t b)` | `a + b` (two's-complement 32-bit) with MIPS I signed-overflow detection; used by both `ADD` and `ADDI` (the caller sign-extends `ADDI`'s immediate first). |
+| `psx_cpu_alu_sub` | `AluResult(uint32_t a, uint32_t b)` | `a - b` (two's-complement 32-bit) with MIPS I signed-overflow detection. |
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)
