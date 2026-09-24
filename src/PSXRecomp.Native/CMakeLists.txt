@@ -23,9 +23,7 @@ set(PSX_RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust)
 # cargo builds for rustc's host triple by default, which matches the C++
 # toolchain everywhere except Windows: there the host default is the MSVC
 # triple, and a MinGW/GCC front-end cannot link an MSVC static library. Select
-# the GNU triple explicitly in that case (requires
-# `rustup target add x86_64-pc-windows-gnu`, see
-# docs/development/native-library-build.md). Passing --target also moves the
+# the GNU triple explicitly in that case. Passing --target also moves the
 # output under a per-triple directory, so the two paths differ.
 set(PSX_RUST_CARGO_TARGET_ARGS)
 set(PSX_RUST_PROFILE_DIR ${PSX_RUST_TARGET_DIR}/release)
@@ -33,6 +31,34 @@ if(MINGW)
     set(PSX_RUST_TARGET_TRIPLE x86_64-pc-windows-gnu)
     set(PSX_RUST_CARGO_TARGET_ARGS --target ${PSX_RUST_TARGET_TRIPLE})
     set(PSX_RUST_PROFILE_DIR ${PSX_RUST_TARGET_DIR}/${PSX_RUST_TARGET_TRIPLE}/release)
+
+    # Because the GNU triple is not rustc's Windows host, its standard library
+    # is usually absent — on a developer machine and on a CI runner alike,
+    # where it surfaces as a confusing "can't find crate for `std`". Install it
+    # at configure time: `rustup target add` is idempotent and a no-op once the
+    # target is present. The working directory matters, because it is what
+    # rustup resolves rust-toolchain.toml (and therefore the toolchain to add
+    # the target to) from.
+    find_program(RUSTUP_EXECUTABLE rustup)
+    if(RUSTUP_EXECUTABLE)
+        execute_process(
+            COMMAND ${RUSTUP_EXECUTABLE} target add ${PSX_RUST_TARGET_TRIPLE}
+            WORKING_DIRECTORY ${PSX_RUST_DIR}
+            RESULT_VARIABLE PSX_RUST_TARGET_ADD_RESULT
+            OUTPUT_VARIABLE PSX_RUST_TARGET_ADD_OUTPUT
+            ERROR_VARIABLE PSX_RUST_TARGET_ADD_OUTPUT
+        )
+        if(NOT PSX_RUST_TARGET_ADD_RESULT EQUAL 0)
+            message(WARNING
+                "rustup could not add the ${PSX_RUST_TARGET_TRIPLE} target; the Rust "
+                "build will fail if it is not already installed. Output:\n"
+                "${PSX_RUST_TARGET_ADD_OUTPUT}")
+        endif()
+    else()
+        message(STATUS
+            "rustup not found; assuming the ${PSX_RUST_TARGET_TRIPLE} Rust target "
+            "is provided by the environment.")
+    endif()
 endif()
 
 set(PSX_RUST_STATICLIB

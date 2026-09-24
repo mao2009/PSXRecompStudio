@@ -116,12 +116,21 @@ artifact, not a second library:
 - `rust/rust-toolchain.toml` pins the toolchain. rustup resolves it from the
   **working directory**, so cargo is always invoked with its working directory
   set to the crate.
-- **Windows with a MinGW/GCC front-end** additionally needs
-  `rustup target add x86_64-pc-windows-gnu`. rustc's Windows host default is
-  the MSVC triple, and a MinGW linker cannot consume an MSVC static library;
-  CMake selects the GNU triple automatically when `MINGW` is set, which also
-  moves cargo's output under a per-triple subdirectory. MSVC builds use the
-  host default and need no extra target.
+- **Windows with a MinGW/GCC front-end** builds Rust for the
+  `x86_64-pc-windows-gnu` target. rustc's Windows host default is the MSVC
+  triple, and a MinGW linker cannot consume an MSVC static library, so CMake
+  selects the GNU triple automatically when `MINGW` is set (which also moves
+  cargo's output under a per-triple subdirectory). Because that triple is not
+  the host, its standard library is usually absent; CMake therefore runs
+  `rustup target add x86_64-pc-windows-gnu` at configure time — idempotent, and
+  a no-op once installed. Without it the failure is the unhelpful
+  `can't find crate for 'std'`. Run that command manually if `rustup` is not on
+  `PATH` (CMake then only prints a status message). MSVC builds use the host
+  default and need no extra target.
+
+  This is not a Windows-developer-only concern: `windows-latest` CI runners
+  resolve `cmake -G Ninja` to `C:/mingw64/bin/c++.exe`, so the `.NET Build and
+  Test (Windows)` and `Package CLI (win-x64)` jobs take this path too.
 
 The exported Rust symbols are defined by the thin re-export layer in
 `src/psx_rust_abi.cpp` and declared in `include/psx_core.h`; see

@@ -84,11 +84,14 @@ must not change emulator behaviour, and must not block the v0.1.0 bring-up
   subsystem, not the boundary.
 - `cargo` becomes a build prerequisite for the native library on every platform.
   `find_program(... REQUIRED)` makes a missing toolchain a configure-time error
-  rather than a confusing link failure. Contributors using a MinGW/GCC front-end
-  on Windows additionally need `rustup target add x86_64-pc-windows-gnu`,
-  because rustc's Windows host default is the MSVC triple and MinGW cannot link
-  an MSVC static library; CMake selects the GNU triple automatically in that
-  configuration.
+  rather than a confusing link failure. Where the C++ toolchain is a MinGW/GCC
+  front-end on Windows — including `windows-latest` CI runners, which resolve
+  `cmake -G Ninja` to MinGW — CMake selects the `x86_64-pc-windows-gnu` Rust
+  target, because rustc's Windows host default is the MSVC triple and MinGW
+  cannot link an MSVC static library. Since that triple is not the host, CMake
+  also installs it via `rustup` at configure time; the alternative was leaving
+  every MinGW user and two CI jobs with a `can't find crate for 'std'` error and
+  a manual setup step.
 - Rust and C++ objects share one address space and one process-wide allocator
   contract, which is why the FFI contract's "the allocator frees" rule is not
   optional.

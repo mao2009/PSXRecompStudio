@@ -243,7 +243,7 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-A **Rust toolchain (`cargo`) is required**: the native library links a Rust `staticlib` built from `src/PSXRecomp.Native/rust/`, and CMake runs `cargo build` for you — there is no manual copy step. On Windows with a MinGW/GCC front-end, also run `rustup target add x86_64-pc-windows-gnu`.
+A **Rust toolchain (`cargo`) is required**: the native library links a Rust `staticlib` built from `src/PSXRecomp.Native/rust/`, and CMake runs `cargo build` for you — there is no manual copy step. On Windows with a MinGW/GCC front-end, CMake also installs the `x86_64-pc-windows-gnu` Rust target via `rustup` at configure time.
 
 `PSXRecomp.Core` triggers the native build and copies the resulting shared library into its own output directory as part of a normal `dotnet build`; see [`docs/development/native-library-build.md`](docs/development/native-library-build.md) for the exact artifact-naming and resolution rules per OS, and [`docs/development/rust-ffi-contract.md`](docs/development/rust-ffi-contract.md) for the FFI rules the Rust side follows.
 

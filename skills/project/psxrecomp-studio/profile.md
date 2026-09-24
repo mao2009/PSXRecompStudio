@@ -118,8 +118,10 @@ job. The same native+.NET pair also runs on windows-latest and macos-latest.
   CI (Linux) as the authoritative result.
 - Sync local main only with fast-forward: `git pull --ff-only`.
 - `cargo` is required to build the native library (ADR-023). On Windows with a
-  MinGW/GCC front-end, also run `rustup target add x86_64-pc-windows-gnu`; MSVC
-  builds need no extra target. See `docs/development/native-library-build.md`.
+  MinGW/GCC front-end (which is also what `windows-latest` CI resolves for
+  `cmake -G Ninja`), CMake installs the `x86_64-pc-windows-gnu` Rust target via
+  `rustup` at configure time; MSVC builds need no extra target. See
+  `docs/development/native-library-build.md`.
 - Do not commit anything under `build/`, `bin/`, `obj/`, or
   `src/PSXRecomp.Native/rust/target/`; ROM/BIOS files under
   `rom/` are gitignored. The artifact policy gate

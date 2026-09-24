@@ -239,7 +239,7 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-**Rust ツールチェーン（`cargo`）が必須です**。Native ライブラリは `src/PSXRecomp.Native/rust/` からビルドされる Rust の `staticlib` をリンクしており、`cargo build` は CMake が自動で実行します（手動コピーは不要です）。Windows で MinGW/GCC フロントエンドを使う場合は `rustup target add x86_64-pc-windows-gnu` も実行してください。
+**Rust ツールチェーン（`cargo`）が必須です**。Native ライブラリは `src/PSXRecomp.Native/rust/` からビルドされる Rust の `staticlib` をリンクしており、`cargo build` は CMake が自動で実行します（手動コピーは不要です）。Windows で MinGW/GCC フロントエンドを使う場合、`x86_64-pc-windows-gnu` ターゲットは CMake の configure 時に `rustup` で自動導入されます。
 
 `PSXRecomp.Core` は通常の `dotnet build` の一部として Native Core のビルドをトリガーし、生成された共有ライブラリを自身の出力ディレクトリへコピーします。OS ごとの成果物命名・解決規則の詳細は [`docs/development/native-library-build.md`](docs/development/native-library-build.md) を、Rust 側が従う FFI 規約は [`docs/development/rust-ffi-contract.md`](docs/development/rust-ffi-contract.md) を参照してください。
 
