@@ -97,13 +97,19 @@ branches) is guest code, not an unresolved transfer, even after it calls a
 helper inside the image and returns from it, or keeps running after RFE before
 its own return jump. `PSXCore_GetRfeExecuted()` only *arms* the return check —
 RFE restores SR, not PC (return is the guest's own `MFC0 EPC` / `JR`
-responsibility, ADR-005) — so the engine also waits for PC to actually land
-back inside the program image before treating the handler as finished. This
-covers a nested handler for free: a nested handler's own RFE and return land
-PC back in the *outer* handler, still outside the image, so only the
-outermost handler's real return satisfies both conditions. EPC, CAUSE, SR,
-vector selection and RFE stay in `PSXCpu`. The INT step retires no
-instruction, so it advances no device time.
+responsibility, ADR-005) — so the engine also waits for PC to land back on the
+exact EPC the interrupt captured (`_handlerEpc`, a private copy of cop0 EPC
+taken at the outermost hardware-interrupt step) before treating the handler as
+finished. It does **not** treat "back inside the program image" as the return:
+a handler that runs a standalone RFE and then calls an in-image helper has its
+PC on the helper, not on the captured EPC, so handler permission survives the
+helper trip. A nested handler needs no depth tracking: a nested take overwrites
+cop0 EPC inside the handler (with the preempted handler PC) and always plays
+out inside the handler region, so its RFE and return land PC back in the
+*outer* handler — never on the captured EPC — and only the outermost handler's
+real return satisfies both conditions. EPC, CAUSE, SR, vector selection and RFE
+stay in `PSXCpu`. The INT step retires no instruction, so it advances no device
+time.
 
 A segment the budget cuts mid-handler is continued on the same live core
 without re-seeding it, so an in-flight `MFC0` load delay or `JR` branch delay
