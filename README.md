@@ -132,7 +132,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Runnable recompiled-artifact E2E (synthetic + legal real EXE) | Implemented — Issue #461 |
 | Disc / executable analysis (CHD → ISO 9660 → PS-X EXE → CFG) | Implemented |
 | Runtime / BIOS execution boundary (A0/B0/C0 dispatch, production interpreter engine wired into Studio) | Partial — real PS-X EXE loading and interpreter execution supported (#409); not broad BIOS HLE |
-| Hardware — DMA / interrupts / timers (MMIO adapters, memory bus) | Partial — implemented and tested standalone, not wired into any execution engine |
+| Hardware — DMA / interrupts / timers (MMIO adapters, memory bus) | Partial — advanced by `DeviceScheduler` in the production interpreter (#442): IRQs latch in I_STAT but are not yet taken as CPU interrupt exceptions; not cycle-exact, DMA completion moves no data |
 | Hardware — GPU / SPU / CD-ROM / MDEC / GTE | Planned — interface contracts only |
 | Memory cards (standard raw 128 KiB image, slot 1/2 configuration, safe saves) | Partial — storage and format implemented ([`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)); SIO/IRQ7 protocol and card UI not implemented |
 | Full-title static recompilation | Not implemented |
