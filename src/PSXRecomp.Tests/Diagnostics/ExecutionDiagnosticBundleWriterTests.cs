@@ -48,8 +48,8 @@ public sealed class ExecutionDiagnosticBundleWriterTests
             .Should().Be(ExecutionIssueMarkdown.Format(report));
 
         archive.Entries.Should().OnlyContain(
-            static entry => entry.LastWriteTime
-                == new DateTimeOffset(1980, 1, 1, 0, 0, 0, TimeSpan.Zero));
+            static entry => entry.LastWriteTime.DateTime
+                == new DateTime(1980, 1, 1, 0, 0, 0, DateTimeKind.Unspecified));
     }
 
     [Fact]
