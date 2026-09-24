@@ -343,6 +343,19 @@ public sealed class PSXCoreWrapper : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether the most recent <see cref="Step"/> executed RFE, i.e. the guest
+    /// returned from an exception handler (PR #502). Reset by every step.
+    /// </summary>
+    public bool RfeExecuted
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetRfeExecuted(_handle) != 0;
+        }
+    }
+
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>
     public int Run(uint maxInstructions)

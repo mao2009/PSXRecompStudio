@@ -91,12 +91,13 @@ state the CPU left behind:
 | Continuable | Excode 0x00 INT **and** `CAUSE & SR & (1 << 10)` (the hardware line IP2 is pending and enabled by IM2) | Keep stepping: the guest's handler at the vector runs |
 | Runtime failure | Everything else: Sys, Bp, RI, CpU, Ov, AdEL, AdES, and a software interrupt (INT raised only by CAUSE.IP0/IP1) | End the segment with `Exception` → `RuntimeFailure` / `CPU_EXCEPTION`, unchanged |
 
-For the continuable case the engine only lets execution leave the program image
-until control comes back into it: the handler at 0x80000080 (or wherever it
-branches) is guest code, not an unresolved transfer. EPC, CAUSE, SR, vector
-selection and RFE stay in `PSXCpu`; the guest's own `MFC0 EPC` / `JR` / `RFE`
-does the return. The INT step retires no instruction, so it advances no device
-time.
+For the continuable case the engine lets execution leave the program image
+until the CPU reports that the handler executed RFE
+(`PSXCore_GetRfeExecuted()`): the handler at 0x80000080 (or wherever it
+branches) is guest code, not an unresolved transfer, even after it calls a
+helper inside the image and returns from it. EPC, CAUSE, SR, vector selection
+and RFE stay in `PSXCpu`; the guest's own `MFC0 EPC` / `JR` / `RFE` does the
+return. The INT step retires no instruction, so it advances no device time.
 
 A handler that returns without acknowledging I_STAT leaves the line pending, so
 the CPU takes the interrupt again right after RFE and the guest never

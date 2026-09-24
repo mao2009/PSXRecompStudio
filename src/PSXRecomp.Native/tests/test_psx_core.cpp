@@ -2551,6 +2551,7 @@ static void test_step_interrupt_guest_handler_round_trip() {
     for (int i = 0; i < 6; i++) { // the six handler instructions
         ASSERT_EQ(PSXCore_Step(core), 0);
         ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+        ASSERT_EQ(PSXCore_GetRfeExecuted(core), i == 5 ? 1 : 0); // only the delay-slot RFE
     }
     ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u); // acked by the SW
     ASSERT_EQ(PSXCore_GetGPR(core, 27), 0x2000u);                // $k1 = EPC
@@ -2559,6 +2560,7 @@ static void test_step_interrupt_guest_handler_round_trip() {
 
     ASSERT_EQ(PSXCore_Step(core), 0); // the interrupted ORI now runs, no re-entry
     ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetRfeExecuted(core), 0); // reset by the next step
     ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x55u);
     ASSERT_EQ(PSXCore_GetPC(core), 0x2004u);
     PSXCore_Destroy(core);

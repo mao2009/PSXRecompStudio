@@ -402,6 +402,63 @@ public sealed class ExecutionOrchestratorTests
         result.FinalSnapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u, $"{kind}: the handler never ran");
     }
 
+    [Fact]
+    public void Interpreter_HandlerCallingAHelperInsideTheProgram_StillReturnsThroughRfe()
+    {
+        // CodeRabbit on PR #502: the handler-region permission was dropped the
+        // moment PC entered the program image, so a handler that JALs a helper
+        // inside the image lost it when the helper returned, and the handler's
+        // next instruction ended the segment as an unresolved transfer.
+        var result = RunInterruptProgram(
+            InterruptHandler(acknowledge: true, callInProgram: TimerHelper),
+            Timer2InterruptThenWaitForHandler(),
+            segment: 10_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.PC.Should().Be(TimerProgramEnd);
+        var gpr = result.FinalSnapshot.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        gpr[(int)R3000aRegister.S5].Should().Be(1u, "the helper inside the program ran");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (TimerWaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the interrupted code resumed after RFE");
+    }
+
+    [Fact]
+    public void Interpreter_HandlerCodeAfterAHelperReturns_IsNotAnUnresolvedTransfer()
+    {
+        // Same guest: the handoff is consulted only for a real unresolved
+        // transfer. Handler code the helper returns into, before RFE, must not
+        // be one, so the only consultation is at the program end.
+        var consulted = new List<uint>();
+        var result = RunInterruptProgram(
+            InterruptHandler(acknowledge: true, callInProgram: TimerHelper),
+            Timer2InterruptThenWaitForHandler(),
+            segment: 10_000,
+            handoff: new FunctionHandoff(snapshot =>
+            {
+                consulted.Add(snapshot.PC);
+                return TitleExecutionHandoffResult.Exit();
+            }));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        consulted.Should().Equal([TimerProgramEnd], "no handler PC may be handed off before RFE");
+    }
+
+    [Fact]
+    public void Interpreter_JumpOutsideTheProgramWithoutAnInterrupt_IsStillAnUnresolvedTransfer()
+    {
+        using var engine = new InterpreterTitleExecutionEngine(
+            [MipsEncoding.Jump(UncompiledTarget), MipsEncoding.Nop], Entry);
+
+        var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, outer: 4, segment: 64));
+
+        result.State.Should().Be(TitleExecutionState.UnsupportedTransfer, Describe(result));
+        result.DiagnosticCode.Should().Be("UNRESOLVED_TRANSFER");
+        result.SegmentsRetired.Should().Be(1);
+        result.FinalSnapshot!.PC.Should().Be(UncompiledTarget);
+        result.FinalSnapshot.Termination.Should().Be(RecompilerIrTerminationReason.Success);
+    }
+
     private const uint ExceptionVector = 0x80000080u;
     private const ushort SrIec = 0x0002; // SR bit 1 (docs/cpu/cop0.md)
     private const ushort SrIm2 = 0x0400; // SR bit 10; also CAUSE.IP2's bit
@@ -410,10 +467,10 @@ public sealed class ExecutionOrchestratorTests
     /// <summary>
     /// The guest interrupt handler placed at the exception vector: reads CAUSE
     /// into <c>$s4</c>, optionally acknowledges every I_STAT bit, counts itself
-    /// in <c>$s1</c>, then returns to EPC (left in <c>$k1</c>) with RFE in the
-    /// JR delay slot.
+    /// in <c>$s1</c>, optionally JALs <paramref name="callInProgram"/>, then
+    /// returns to EPC (left in <c>$k1</c>) with RFE in the JR delay slot.
     /// </summary>
-    private static uint[] InterruptHandler(bool acknowledge) =>
+    private static uint[] InterruptHandler(bool acknowledge, uint? callInProgram = null) =>
     [
         MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.K0, rs: 0, immediate: 0x1F80),
         Mfc0(R3000aRegister.S4, 13), // CAUSE
@@ -421,11 +478,51 @@ public sealed class ExecutionOrchestratorTests
             ? MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.K0, offset: 0x1070) // I_STAT &= 0
             : MipsEncoding.Nop,
         MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.S1, immediate: 1),
+        .. callInProgram is uint helper ? new[] { MipsEncoding.JumpAndLink(helper), MipsEncoding.Nop } : [],
         Mfc0(R3000aRegister.K1, 14), // EPC
         MipsEncoding.Nop,
         MipsEncoding.JumpRegister((byte)R3000aRegister.K1),
         0x42000010u, // RFE
     ];
+
+    private const uint TimerWaitLoopIndex = 9;
+    private const uint TimerHelper = Entry + (16 * 4u);
+    private const uint TimerProgramEnd = Entry + (19 * 4u);
+
+    /// <summary>
+    /// Arms Timer 2 (target 100, IRQ6 on target) with I_MASK = IRQ6 and SR =
+    /// IM2 | IEc, spins on <c>$s1 == 0</c> until the handler has run, sets
+    /// <c>$s2</c>, then jumps to <see cref="TimerProgramEnd"/>. A helper that
+    /// counts itself in <c>$s5</c> and returns through <c>$ra</c> sits at
+    /// <see cref="TimerHelper"/>, inside the image but off the main path.
+    /// </summary>
+    private static uint[] Timer2InterruptThenWaitForHandler()
+    {
+        const byte beqOpcodeField = 0x04;
+        var wait = Entry + (TimerWaitLoopIndex * 4u);
+        return
+        [
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0040),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1074),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 100),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1128),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0010),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1124),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: SrIm2 | SrIec),
+            Mtc0(R3000aRegister.T2, 12), // SR
+            MipsEncoding.Branch(beqOpcodeField, (byte)R3000aRegister.S1, 0, wait, wait), // TimerWaitLoopIndex
+            MipsEncoding.Nop,
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S2, rs: 0, immediate: ReturnedMarker),
+            MipsEncoding.Nop,
+            MipsEncoding.Nop,
+            MipsEncoding.Jump(TimerProgramEnd),
+            MipsEncoding.Nop,
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S5, rs: (byte)R3000aRegister.S5, immediate: 1), // TimerHelper
+            MipsEncoding.JumpRegister((byte)R3000aRegister.Ra),
+            MipsEncoding.Nop,
+        ];
+    }
 
     /// <summary><c>$t1 = 0x1F800000; I_MASK = IRQ0; SR = sr</c> — five instructions.</summary>
     private static uint[] EnableInterrupts(ushort sr) =>
@@ -462,7 +559,8 @@ public sealed class ExecutionOrchestratorTests
     /// seeded at the exception vector as initial memory (the guest has no BIOS
     /// to install one). A guest that runs off its program image completes.
     /// </summary>
-    private static TitleExecutionResult RunInterruptProgram(uint[] handler, uint[] main, uint segment)
+    private static TitleExecutionResult RunInterruptProgram(
+        uint[] handler, uint[] main, uint segment, uint outer = 1, ITitleExecutionHandoff? handoff = null)
     {
         var memory = new List<RecompilerInitialMemoryItem>();
         for (var i = 0; i < handler.Length; i++)
@@ -476,7 +574,7 @@ public sealed class ExecutionOrchestratorTests
 
         using var engine = new InterpreterTitleExecutionEngine(main, Entry);
         return new ExecutionOrchestrator().Execute(
-            engine, ExitHandoff(), Request(Entry, outer: 1, segment, initialMemory: memory));
+            engine, handoff ?? ExitHandoff(), Request(Entry, outer, segment, initialMemory: memory));
     }
 
     private static uint Mfc0(R3000aRegister rt, byte rd) => 0x40000000u | ((uint)rt << 16) | ((uint)rd << 11);

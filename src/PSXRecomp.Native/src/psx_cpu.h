@@ -67,6 +67,11 @@ public:
     uint32_t GetLastExceptionFaultPc() const { return last_exception_fault_pc_; }
     bool GetLastExceptionInDelaySlot() const { return last_exception_in_delay_slot_; }
 
+    // True when the most recent Step() executed RFE (PR #502): the guest popped
+    // the SR exception stack, so a caller tracking an exception handler it let
+    // run knows the handler returned. Reset at the start of every Step().
+    bool RfeExecuted() const { return rfe_executed_; }
+
     // Golden Trace GPR write-event recording (Issue #157). A single MIPS I step
     // retires at most kMaxGprWritesPerStep writes: one instruction-result write
     // (SetGPR) plus at most one load-delay commit (ADR-004), so the recorder
@@ -121,6 +126,7 @@ private:
     uint32_t last_exception_code_ = 0;
     uint32_t last_exception_fault_pc_ = 0;
     bool last_exception_in_delay_slot_ = false;
+    bool rfe_executed_ = false;
 
     // Interrupt controller state (Issue #144). Sampled by the caller via
     // SetHardwareInterruptPending() before each Step() call; mirrored onto

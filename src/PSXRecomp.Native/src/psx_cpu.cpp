@@ -54,6 +54,7 @@ void PSXCpu::Reset() {
     last_exception_code_ = 0;
     last_exception_fault_pc_ = 0;
     last_exception_in_delay_slot_ = false;
+    rfe_executed_ = false;
     hardware_interrupt_pending_ = false;
 }
 
@@ -218,6 +219,7 @@ int PSXCpu::Step(PSXMemory& memory) {
     if (gpr_write_trace_ != nullptr && load_delay_reg_ >= 0) {
         RecordGprWrite(load_delay_reg_, gpr_[load_delay_reg_], load_delay_value_);
     }
+    rfe_executed_ = false;
 
     // CAUSE.IP2 (bit 10) mirrors the Interrupt Controller's aggregate pending
     // line every step, independent of delay-slot state, so that CAUSE reads
@@ -1047,6 +1049,7 @@ void PSXCpu::ExecRfe() {
     sr &= ~0x0Fu;
     sr |= (kup) | (iep << 1) | (kuo << 2) | (ieo << 3);
     cop0_[12] = sr;
+    rfe_executed_ = true;
 }
 
 void PSXCpu::RaiseAddressError(uint32_t excode, uint32_t addr) {

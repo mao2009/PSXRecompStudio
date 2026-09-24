@@ -141,6 +141,8 @@ PSX_API uint32_t PSXCore_GetExceptionCode(PSXCore* core);
 PSX_API uint32_t PSXCore_GetExceptionFaultPc(PSXCore* core);
 /** Returns non-zero when the faulting instruction of the most recent exception was in a branch delay slot (BD, CAUSE bit 31). Meaningful only when PSXCore_GetExceptionRaised() is non-zero. */
 PSX_API int PSXCore_GetExceptionInDelaySlot(PSXCore* core);
+/** Returns non-zero when the most recent PSXCore_Step() executed RFE, i.e. the guest returned from an exception handler (PR #502). Reset by every step. */
+PSX_API int PSXCore_GetRfeExecuted(PSXCore* core);
 /** Executes up to `maxInstructions` instructions, stopping early on a native exception/halt condition. Returns the number of instructions actually executed, or a negative status on error. */
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

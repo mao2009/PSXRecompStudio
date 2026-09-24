@@ -173,6 +173,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetExceptionInDelaySlot(IntPtr core);
 
+    /// <summary>Returns non-zero when the most recent <see cref="PSXCore_Step"/> executed RFE (PR #502). Reset by every step.</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetRfeExecuted(IntPtr core);
+
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>
     [LibraryImport(LibName)]

@@ -54,10 +54,14 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private DeviceScheduler? _scheduler;
     private bool _loaded;
 
-    // Set when the CPU takes a hardware interrupt, cleared once control is back
-    // inside the program image. While set, a PC outside the image is the guest's
-    // own interrupt handler rather than an unresolved transfer. This is only an
-    // execution-region permission: EPC/CAUSE/SR stay owned by the native CPU.
+    // Set when the CPU takes a hardware interrupt, cleared when the CPU reports
+    // the handler executed RFE. Entering the program image does not clear it: a
+    // handler may call a helper there and return to handler code outside it.
+    // While set, a PC outside the image is the guest's own interrupt handler
+    // rather than an unresolved transfer. This is only an execution-region
+    // permission: EPC/CAUSE/SR stay owned by the native CPU.
+    // ponytail: one level, not a depth count; a handler that re-enables IEc and
+    // nests, or an RFE outside a JR delay slot, needs a count / later clear.
     private bool _inInterruptHandler;
 
     /// <summary>
@@ -218,11 +222,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 continue;
             }
 
-            if (PcWithinProgram(_core.Pc))
-            {
-                _inInterruptHandler = false;
-            }
-            else if (!_inInterruptHandler)
+            if (!PcWithinProgram(_core.Pc) && !_inInterruptHandler)
             {
                 break;
             }
@@ -252,6 +252,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // MFC0 EPC / JR / RFE. No instruction retired, so no device time.
                 _inInterruptHandler = true;
                 continue;
+            }
+
+            // The handler's JR + RFE has returned to the interrupted code.
+            if (_core.RfeExecuted)
+            {
+                _inInterruptHandler = false;
             }
 
             // Devices advance by the time the retired instruction took, so
