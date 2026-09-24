@@ -1,4 +1,5 @@
 #include "psx_cpu.h"
+#include "psx_cpu_hilo.h"
 #include "psx_memory.h"
 #include "psx_cpu_ops.h"
 #include <cassert>
@@ -719,51 +720,31 @@ void PSXCpu::ExecSrav(uint32_t rd, uint32_t rt, uint32_t rs) {
     SetGPR(rd, psx_cpu_ops_sra(gpr_[rt], gpr_[rs])); // Rust masks to low 5 bits
 }
 
-// Multiply/Divide
+// Multiply/Divide. The 64-bit product / division arithmetic is implemented in
+// Rust (psx_cpu_hilo.h, Issue #497); this class keeps owning the GPR reads
+// and HI/LO assignment.
 void PSXCpu::ExecMult(uint32_t rs, uint32_t rt) {
-    int64_t result = static_cast<int64_t>(ToSigned(gpr_[rs])) * static_cast<int64_t>(ToSigned(gpr_[rt]));
-    hi_ = static_cast<uint32_t>(result >> 32);
-    lo_ = static_cast<uint32_t>(result & 0xFFFFFFFF);
+    PSXMulDivResult result = psx_cpu_hilo_mult(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecMultu(uint32_t rs, uint32_t rt) {
-    uint64_t result = static_cast<uint64_t>(gpr_[rs]) * static_cast<uint64_t>(gpr_[rt]);
-    hi_ = static_cast<uint32_t>(result >> 32);
-    lo_ = static_cast<uint32_t>(result & 0xFFFFFFFF);
+    PSXMulDivResult result = psx_cpu_hilo_multu(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecDiv(uint32_t rs, uint32_t rt) {
-    int32_t dividend = ToSigned(gpr_[rs]);
-    int32_t divisor = ToSigned(gpr_[rt]);
-    if (divisor == 0) {
-        // PS1-specific: division by zero
-        if (dividend >= 0) {
-            lo_ = 0xFFFFFFFF;
-        } else {
-            lo_ = 1;
-        }
-        hi_ = static_cast<uint32_t>(dividend);
-    } else if (dividend == static_cast<int32_t>(0x80000000) && divisor == -1) {
-        // PS1-specific: overflow
-        lo_ = 0x80000000;
-        hi_ = 0;
-    } else {
-        lo_ = static_cast<uint32_t>(dividend / divisor);
-        hi_ = static_cast<uint32_t>(dividend % divisor);
-    }
+    PSXMulDivResult result = psx_cpu_hilo_div(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecDivu(uint32_t rs, uint32_t rt) {
-    uint32_t dividend = gpr_[rs];
-    uint32_t divisor = gpr_[rt];
-    if (divisor == 0) {
-        // PS1-specific: division by zero
-        lo_ = 0xFFFFFFFF;
-        hi_ = dividend;
-    } else {
-        lo_ = dividend / divisor;
-        hi_ = dividend % divisor;
-    }
+    PSXMulDivResult result = psx_cpu_hilo_divu(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecMfhi(uint32_t rd) {
