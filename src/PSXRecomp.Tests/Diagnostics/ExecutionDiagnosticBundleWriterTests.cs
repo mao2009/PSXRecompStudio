@@ -97,7 +97,7 @@ public sealed class ExecutionDiagnosticBundleWriterTests
         };
 
         var bytes = WriteBundle(report, environment, [diagnostic]);
-        var bundleText = Encoding.UTF8.GetString(bytes);
+        var bundleText = ReadAllEntries(bytes);
 
         bundleText.Should().NotContain(privatePath);
         bundleText.Should().NotContain(privatePayload);
@@ -191,6 +191,15 @@ public sealed class ExecutionDiagnosticBundleWriterTests
         using var buffer = new MemoryStream();
         ExecutionDiagnosticBundleWriter.Write(buffer, report, environment, diagnostics);
         return buffer.ToArray();
+    }
+
+    private static string ReadAllEntries(byte[] bytes)
+    {
+        using var buffer = new MemoryStream(bytes);
+        using var archive = new ZipArchive(buffer, ZipArchiveMode.Read);
+
+        return string.Concat(
+            archive.Entries.Select(entry => ReadEntry(archive, entry.FullName)));
     }
 
     private static ZipArchive OpenArchive(MemoryStream buffer)
