@@ -309,6 +309,34 @@ public sealed class ExecutionOrchestratorTests
         result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(expectedPolls);
     }
 
+    [Fact]
+    public void Interpreter_GuestWithCpuInterruptsEnabled_RunsPastVblankWithoutCpuException()
+    {
+        // CodeRabbit on PR #493: with I_MASK bit 0 and SR IEc/IM2 set, a scheduled
+        // IRQ0 made the CPU take an INT exception the engine cannot continue from,
+        // so the run became RuntimeFailure/CPU_EXCEPTION. The production engine
+        // keeps the CPU interrupt input low: IRQ0 still latches in I_STAT and the
+        // guest's poll still sees it at the same cycle.
+        const uint pollLength = 5;
+        const uint prelude = 5; // LUI + the four setup instructions
+        var expectedPolls = ((DeviceScheduler.VblankIntervalCycles - prelude + pollLength - 1) / pollLength) + 1;
+
+        var result = RunPollingProgram(
+            setup:
+            [
+                MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0001),
+                MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1074),
+                MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0402),
+                0x408A6000u, // MTC0 $t2, SR: IM2 | IEc (bit 1, docs/cpu/cop0.md)
+            ],
+            iStatBit: 1 << 0,
+            segment: 1_000_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.T3].Should().Be(1u, "only VBlank's IRQ0 is latched");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(expectedPolls);
+    }
+
     /// <summary>
     /// Runs <c>$t1 = 0x1F800000; setup; do { $t3 = I_STAT; $s0++ } while (!($t3 &amp; bit))</c>
     /// on the production interpreter through the orchestrator; the guest then
