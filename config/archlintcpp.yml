@@ -27,6 +27,13 @@ layers:
     paths:
       - /src/PSXRecomp.Native/src/psx_interrupt
 
+  # Re-export layer for the Rust substrate (Issue #473, ADR-023). It is
+  # infrastructure: it must never reach into an emulation subsystem, which is
+  # what would turn the Rust ABI into a second runtime abstraction.
+  - name: RustAbiBridge
+    paths:
+      - /src/PSXRecomp.Native/src/psx_rust_abi
+
 rules:
   - from: PublicApi
     must_not_depend_on:
@@ -56,3 +63,12 @@ rules:
   - from: Interrupt
     must_not_depend_on:
       - ApiBridge
+
+  - from: RustAbiBridge
+    must_not_depend_on:
+      - ApiBridge
+      - Cpu
+      - Memory
+      - Dma
+      - Timer
+      - Interrupt

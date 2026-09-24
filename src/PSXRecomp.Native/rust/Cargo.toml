@@ -1,0 +1,29 @@
+# Rust coexistence substrate for the PSXRecompStudio native runtime (Issue #473).
+#
+# This package is deliberately a standalone workspace root so that a future
+# root-level Cargo.toml cannot silently absorb it, and so that `cargo` can be
+# run from this directory alone. See docs/development/rust-ffi-contract.md.
+[workspace]
+
+[package]
+name = "psxrecomp_rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Minimal Rust/C++ coexistence substrate linked into PSXRecomp.Native."
+
+[lib]
+name = "psxrecomp_rust"
+# `staticlib` is what CMake links into the existing PSXRecomp.Native shared
+# library; `rlib` exists only so `cargo test` builds the unit-test harness the
+# normal way.
+crate-type = ["staticlib", "rlib"]
+
+# No third-party crates: the FFI contract must stay auditable (ADR-023).
+[dependencies]
+
+[profile.release]
+# Keep unwinding enabled so the exported functions can convert a panic into an
+# ABI-safe error code via catch_unwind instead of aborting the host process.
+panic = "unwind"

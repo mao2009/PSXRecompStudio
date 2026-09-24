@@ -144,6 +144,35 @@ PSX_API uint8_t PSXCore_ReadMemory8(PSXCore* core, uint32_t address);
 /** Writes an 8-bit value to the CPU address space. */
 PSX_API void PSXCore_WriteMemory8(PSXCore* core, uint32_t address, uint8_t value);
 
+/*
+ * Rust coexistence substrate (Issue #473).
+ *
+ * Infrastructure only: these two functions prove that Rust code linked into
+ * this library is reachable across the existing C ABI. They carry no emulator
+ * state, are unrelated to PSXCore, and must not grow into a runtime
+ * abstraction. Their implementation is a thin re-export of the Rust crate in
+ * `rust/` (see `src/psx_rust_abi.cpp`); the FFI rules every migration must
+ * follow are in `docs/development/rust-ffi-contract.md` (ADR-023).
+ */
+
+/** Status: the Rust call succeeded and wrote its out-parameter. */
+#define PSX_RUST_OK 0
+/** Status: a required out-parameter pointer was NULL; nothing was written. */
+#define PSX_RUST_ERR_NULL_ARGUMENT (-1)
+/** Status: a Rust panic was contained at the boundary; the out-parameter is unspecified. */
+#define PSX_RUST_ERR_PANIC (-2)
+
+/** Returns the Rust substrate's C ABI contract version (currently 1). Infallible. */
+PSX_API uint32_t PSXRecompRust_AbiVersion(void);
+/**
+ * Writes `value ^ 0x5A5A5A5A` to `out_result`.
+ *
+ * Returns PSX_RUST_OK, PSX_RUST_ERR_NULL_ARGUMENT when `out_result` is NULL, or
+ * PSX_RUST_ERR_PANIC when a panic was contained. `out_result` stays owned by
+ * the caller and is borrowed only for the duration of the call.
+ */
+PSX_API int32_t PSXRecompRust_RoundTrip(uint32_t value, uint32_t* out_result);
+
 #ifdef __cplusplus
 }
 #endif

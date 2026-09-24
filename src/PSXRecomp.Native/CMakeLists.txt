@@ -9,6 +9,53 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# --- Rust coexistence substrate (Issue #473, ADR-023) ------------------------
+# The Rust crate is compiled by cargo as a `staticlib` and linked into the same
+# PSXRecomp.Native shared library the managed side already loads, so no second
+# native artifact and no second native-loading path is introduced. cargo always
+# builds the `release` profile: the crate is tiny, and pinning one profile keeps
+# the output path identical under single- and multi-config generators.
+find_program(CARGO_EXECUTABLE cargo REQUIRED)
+
+set(PSX_RUST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust)
+set(PSX_RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust)
+
+# cargo builds for rustc's host triple by default, which matches the C++
+# toolchain everywhere except Windows: there the host default is the MSVC
+# triple, and a MinGW/GCC front-end cannot link an MSVC static library. Select
+# the GNU triple explicitly in that case (requires
+# `rustup target add x86_64-pc-windows-gnu`, see
+# docs/development/native-library-build.md). Passing --target also moves the
+# output under a per-triple directory, so the two paths differ.
+set(PSX_RUST_CARGO_TARGET_ARGS)
+set(PSX_RUST_PROFILE_DIR ${PSX_RUST_TARGET_DIR}/release)
+if(MINGW)
+    set(PSX_RUST_TARGET_TRIPLE x86_64-pc-windows-gnu)
+    set(PSX_RUST_CARGO_TARGET_ARGS --target ${PSX_RUST_TARGET_TRIPLE})
+    set(PSX_RUST_PROFILE_DIR ${PSX_RUST_TARGET_DIR}/${PSX_RUST_TARGET_TRIPLE}/release)
+endif()
+
+set(PSX_RUST_STATICLIB
+    ${PSX_RUST_PROFILE_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}psxrecomp_rust${CMAKE_STATIC_LIBRARY_SUFFIX})
+
+add_custom_command(
+    OUTPUT ${PSX_RUST_STATICLIB}
+    COMMAND ${CARGO_EXECUTABLE} build --release
+            ${PSX_RUST_CARGO_TARGET_ARGS}
+            --manifest-path ${PSX_RUST_DIR}/Cargo.toml
+            --target-dir ${PSX_RUST_TARGET_DIR}
+    # rustup reads rust-toolchain.toml from the working directory, not from the
+    # manifest path, so the pin only applies when cargo runs inside the crate.
+    WORKING_DIRECTORY ${PSX_RUST_DIR}
+    DEPENDS ${PSX_RUST_DIR}/src/lib.rs
+            ${PSX_RUST_DIR}/Cargo.toml
+            ${PSX_RUST_DIR}/Cargo.lock
+            ${PSX_RUST_DIR}/rust-toolchain.toml
+    COMMENT "Building Rust substrate (cargo build --release)"
+    VERBATIM
+)
+add_custom_target(psx_rust_substrate DEPENDS ${PSX_RUST_STATICLIB})
+
 add_library(PSXRecomp.Native SHARED
     src/psx_api.cpp
     src/psx_cpu.cpp
@@ -16,7 +63,19 @@ add_library(PSXRecomp.Native SHARED
     src/psx_dma.cpp
     src/psx_timer.cpp
     src/psx_interrupt.cpp
+    src/psx_rust_abi.cpp
 )
+
+add_dependencies(PSXRecomp.Native psx_rust_substrate)
+target_link_libraries(PSXRecomp.Native PRIVATE ${PSX_RUST_STATICLIB})
+
+if(UNIX)
+    # Rust's std pulls in pthread and dlopen symbols; on Windows the equivalent
+    # system libraries are requested by the linker directives rustc embeds in
+    # the archive's objects.
+    find_package(Threads REQUIRED)
+    target_link_libraries(PSXRecomp.Native PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
 
 target_include_directories(PSXRecomp.Native
     PUBLIC  include

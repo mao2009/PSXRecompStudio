@@ -189,4 +189,33 @@ internal static partial class NativeInterop
     /// <summary>Writes an 8-bit value to the CPU address space.</summary>
     [LibraryImport(LibName)]
     internal static partial void PSXCore_WriteMemory8(IntPtr core, uint address, byte value);
+
+    // ----- Rust coexistence substrate (Issue #473) ---------------------------
+    // Infrastructure only: these two entry points exist to prove that Rust code
+    // linked into the same native library is reachable through the existing
+    // P/Invoke boundary. They carry no emulator state and must not grow into a
+    // runtime abstraction. Rules: docs/development/rust-ffi-contract.md
+    // (ADR-023); native declarations: src/PSXRecomp.Native/include/psx_core.h.
+
+    /// <summary>Status returned by <see cref="PSXRecompRust_RoundTrip"/> when the call succeeded and wrote its out-parameter.</summary>
+    internal const int RustOk = 0;
+
+    /// <summary>Status returned by <see cref="PSXRecompRust_RoundTrip"/> when the out-parameter pointer was null; nothing was written.</summary>
+    internal const int RustErrNullArgument = -1;
+
+    /// <summary>Status returned by <see cref="PSXRecompRust_RoundTrip"/> when a Rust panic was contained at the boundary; the out-parameter is unspecified.</summary>
+    internal const int RustErrPanic = -2;
+
+    /// <summary>Returns the Rust substrate's C ABI contract version. Infallible.</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXRecompRust_AbiVersion();
+
+    /// <summary>
+    /// Writes <paramref name="value"/> XOR <c>0x5A5A5A5A</c> to
+    /// <paramref name="outResult"/>, which stays owned by the caller and is
+    /// borrowed only for the duration of the call.
+    /// </summary>
+    /// <returns><see cref="RustOk"/>, <see cref="RustErrNullArgument"/> when <paramref name="outResult"/> is null, or <see cref="RustErrPanic"/>.</returns>
+    [LibraryImport(LibName)]
+    internal static unsafe partial int PSXRecompRust_RoundTrip(uint value, uint* outResult);
 }
