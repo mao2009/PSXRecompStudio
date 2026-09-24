@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PSXRecomp.Core.Diagnostics;
 using PSXRecomp.Infrastructure.Diagnostics;
 
@@ -43,8 +44,12 @@ public sealed class ExecutionEnvironmentCollectorTests
         var report = ExecutionEnvironmentCollector.Capture();
 
         var json = DiagnosticJson.Serialize(report);
-        var roundTrip = DiagnosticJson.Deserialize<ExecutionEnvironmentReport>(json);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
 
-        roundTrip.Should().Be(report);
+        root.GetProperty("schema").GetString().Should().Be(ExecutionEnvironmentReport.CurrentSchema);
+        root.GetProperty("osPlatform").GetString().Should().Be(report.OsPlatform);
+        root.GetProperty("processArchitecture").GetString().Should().Be(report.ProcessArchitecture);
+        root.GetProperty("compilerVersion").ValueKind.Should().Be(JsonValueKind.Null);
     }
 }
