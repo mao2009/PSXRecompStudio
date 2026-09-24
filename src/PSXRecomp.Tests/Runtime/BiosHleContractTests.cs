@@ -64,6 +64,23 @@ public sealed class BiosHleContractTests
     }
 
     [Fact]
+    public void PutCharAlias_Uses_The_Same_Output_And_Return_Semantics()
+    {
+        var sink = new CapturedOutputSink();
+        IBiosRuntime runtime = CreateRuntime(sink);
+
+        BiosHleRuntime.PutCharAliasFunction.Should().Be(0x3D);
+
+        var result = runtime.Invoke(new BiosCallIdentity(
+            BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction, 0x80001234, new[] { 0x141u }));
+
+        result.Status.Should().Be(BiosServiceStatus.Supported);
+        result.ReturnValue.Should().Be(0x41u);
+        result.Diagnostic.Should().BeNull();
+        sink.Bytes.Should().BeEquivalentTo(new byte[] { 0x41 }, static o => o.WithStrictOrdering());
+    }
+
+    [Fact]
     public void PutChar_Writes_Every_Invocation_To_The_Sink_In_Call_Order()
     {
         var sink = new CapturedOutputSink();
@@ -180,19 +197,23 @@ public sealed class BiosHleContractTests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(2)]
-    public void InvalidPutCharArgumentCounts_Are_Rejected_Explicitly(int argumentCount)
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, "A0:3C", 0)]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, "A0:3C", 2)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction, "B0:3D", 0)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction, "B0:3D", 2)]
+    public void InvalidPutCharArgumentCounts_Are_Rejected_Explicitly(
+        BiosCallFamily family, byte function, string expectedKey, int argumentCount)
     {
         var arguments = Enumerable.Range(0, argumentCount).Select(static value => (uint)value).ToArray();
         var sink = new CapturedOutputSink();
         var result = CreateRuntime(sink).Invoke(new BiosCallIdentity(
-            BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, arguments: arguments));
+            family, function, arguments: arguments));
 
         result.Status.Should().Be(BiosServiceStatus.Unsupported);
         result.ReturnValue.Should().BeNull();
         result.Diagnostic!.Code.Should().Be("BIOS_HLE_INVALID_ARGUMENTS");
-        result.Diagnostic.Message.Should().Be("A0:3C putchar requires one character argument.");
+        result.Diagnostic.Identity.StableKey.Should().Be(expectedKey);
+        result.Diagnostic.Message.Should().Be($"{expectedKey} putchar requires one character argument.");
 
         // A rejected call must have no side effect: nothing reaches the sink.
         sink.Bytes.Should().BeEmpty();
@@ -204,7 +225,6 @@ public sealed class BiosHleContractTests
     [InlineData(BiosCallFamily.A0, 0x3B)] // getchar, adjacent to putchar
     [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
     [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
-    [InlineData(BiosCallFamily.B0, 0x3D)] // the B0 putchar alias, deliberately unregistered
     [InlineData(BiosCallFamily.B0, 0x3E)] // the B0 slot just below the puts alias
     [InlineData(BiosCallFamily.B0, 0x40)] // the next B0 slot above the puts alias
     public void NeighbouringFunctionNumbers_Are_Not_Caught_By_The_Registry(
@@ -518,6 +538,7 @@ public sealed class BiosHleContractTests
     [Theory]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction)]
@@ -573,6 +594,7 @@ public sealed class BiosHleContractTests
     [Theory]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction)]
@@ -704,6 +726,7 @@ public sealed class BiosHleContractTests
     // be reachable through its C0 alias, dispatching exactly as the direct B0
     // call does — not misreported as PatchedTarget and not left Unsupported.
     [Theory]
+    [InlineData((byte)0xBD, BiosHleRuntime.PutCharAliasFunction)]
     [InlineData((byte)0xBF, BiosHleRuntime.PutsAliasFunction)] // C0:BF -> B0:3F puts
     [InlineData((byte)0xD6, BiosHleRuntime.GetC0TableFunction)] // C0:D6 -> B0:56 GetC0Table
     [InlineData((byte)0xD7, BiosHleRuntime.GetB0TableFunction)] // C0:D7 -> B0:57 GetB0Table
@@ -712,8 +735,13 @@ public sealed class BiosHleContractTests
         BiosJumpTables.EntryAddress(BiosCallFamily.C0, c0Function)
             .Should().Be(BiosJumpTables.EntryAddress(BiosCallFamily.B0, b0Function), "sanity-check: same physical slot");
 
+        var isPutChar = b0Function == BiosHleRuntime.PutCharAliasFunction;
         var isPuts = b0Function == BiosHleRuntime.PutsAliasFunction;
-        var arguments = isPuts ? new[] { 0x00000400u } : Array.Empty<uint>();
+        var arguments = isPutChar
+            ? new[] { (uint)'A' }
+            : isPuts
+                ? new[] { 0x00000400u }
+                : Array.Empty<uint>();
 
         var ramForAlias = new RecompilerGuestMemory();
         if (isPuts) WriteCString(ramForAlias, 0x00000400, "hi");
@@ -736,6 +764,7 @@ public sealed class BiosHleContractTests
     // Sentinel consistency: the same physical slot uses exactly one sentinel
     // value, regardless of which identity computes it.
     [Theory]
+    [InlineData((byte)0xBD, BiosHleRuntime.PutCharAliasFunction)]
     [InlineData((byte)0xBF, BiosHleRuntime.PutsAliasFunction)]
     [InlineData((byte)0xD6, BiosHleRuntime.GetC0TableFunction)]
     [InlineData((byte)0xD7, BiosHleRuntime.GetB0TableFunction)]
@@ -973,6 +1002,7 @@ public sealed class BiosHleContractTests
     [Theory]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.InitHeapFunction, 2)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction, 1)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction, 1)]
     [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutsFunction, 1)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutsAliasFunction, 1)]
     [InlineData(BiosCallFamily.B0, BiosHleRuntime.GetC0TableFunction, 0)]
