@@ -81,8 +81,9 @@ Since Issue #473 the native library also links a Rust `staticlib`, so both
 languages ship inside the one artifact managed code already loads. The
 boundary itself is unchanged: Rust reaches C# through the same C ABI header and
 the same `[LibraryImport("PSXRecomp.Native")]` bindings, and no Rust type is
-visible above it. The current Rust surface is an ABI smoke function only — no
-subsystem has been migrated. See
+visible above it. Besides the ABI smoke functions, the interrupt controller
+(I_STAT/I_MASK) is implemented in Rust behind the unchanged
+`PSXCore_*Interrupt*` functions (Issue #484); all other subsystems are C++. See
 [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md) and the
 [Rust FFI Safety Contract](docs/development/rust-ffi-contract.md).
 

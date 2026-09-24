@@ -37,7 +37,7 @@ public:
     // CPU interrupt input (CAUSE.IP2, bit 10). The caller (PSXCore_Step /
     // PSXCore_Run) is responsible for sampling the controller and calling
     // this before every individual Step(); PSXCpu itself has no dependency
-    // on PSXInterruptController so it stays independently testable.
+    // on the Interrupt Controller so it stays independently testable.
     void SetHardwareInterruptPending(bool pending);
 
     // Instruction execution. There is deliberately no PSXCpu::Run/multi-step

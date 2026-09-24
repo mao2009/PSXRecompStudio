@@ -31,7 +31,7 @@ void PSXCore_Reset(PSXCore* core) {
     core->memory.Reset();
     core->dma.Reset();
     core->timers.Reset();
-    core->interrupts.Reset();
+    core->interrupts = psx_interrupt_reset();
 }
 
 uint32_t PSXCore_GetGPR(PSXCore* core, int index) {
@@ -145,40 +145,40 @@ void PSXCore_ResetTimers(PSXCore* core) {
 
 uint32_t PSXCore_ReadInterruptControllerRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
-    return core->interrupts.ReadRegister(address);
+    return psx_interrupt_read_register(core->interrupts, address);
 }
 
 void PSXCore_WriteInterruptControllerRegister(PSXCore* core, uint32_t address, uint32_t value) {
     if (!core) return;
-    core->interrupts.WriteRegister(address, value);
+    core->interrupts = psx_interrupt_write_register(core->interrupts, address, value);
 }
 
 int PSXCore_GetInterruptPending(PSXCore* core) {
     if (!core) return 0;
-    return core->interrupts.GetInterruptPending() ? 1 : 0;
+    return psx_interrupt_pending(core->interrupts) != 0 ? 1 : 0;
 }
 
 void PSXCore_RaiseInterrupt(PSXCore* core, int irq) {
     if (!core) return;
-    core->interrupts.Raise(irq);
+    core->interrupts = psx_interrupt_raise(core->interrupts, irq);
 }
 
 void PSXCore_ClearInterrupt(PSXCore* core, int irq) {
     if (!core) return;
-    core->interrupts.Clear(irq);
+    core->interrupts = psx_interrupt_clear(core->interrupts, irq);
 }
 
 void PSXCore_ResetInterruptController(PSXCore* core) {
     if (!core) return;
-    core->interrupts.Reset();
+    core->interrupts = psx_interrupt_reset();
 }
 
 int PSXCore_Step(PSXCore* core) {
     if (!core) return -1;
     // Feed the Interrupt Controller's aggregate pending line into the CPU
     // before stepping (Issue #144); PSXCpu itself stays decoupled from
-    // PSXInterruptController.
-    core->cpu.SetHardwareInterruptPending(core->interrupts.GetInterruptPending());
+    // the Interrupt Controller.
+    core->cpu.SetHardwareInterruptPending(psx_interrupt_pending(core->interrupts) != 0);
     return core->cpu.Step(core->memory);
 }
 
@@ -209,7 +209,7 @@ int PSXCore_Run(PSXCore* core, uint32_t maxInstructions) {
     // pending state, and a multi-instruction Run() must behave identically to
     // that many individual PSXCore_Step() calls (Issue #144).
     for (uint32_t i = 0; i < maxInstructions; i++) {
-        core->cpu.SetHardwareInterruptPending(core->interrupts.GetInterruptPending());
+        core->cpu.SetHardwareInterruptPending(psx_interrupt_pending(core->interrupts) != 0);
         int result = core->cpu.Step(core->memory);
         if (result != 0) {
             return result;

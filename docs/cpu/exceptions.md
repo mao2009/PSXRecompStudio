@@ -163,7 +163,7 @@ Interrupt mask register. R/W.
 
 ## Interrupt Processing
 
-1. If I_STAT & I_MASK is non-zero, an interrupt is pending at the Interrupt Controller aggregate line (`PSXInterruptController::GetInterruptPending()`).
+1. If I_STAT & I_MASK is non-zero, an interrupt is pending at the Interrupt Controller aggregate line (`psx_interrupt_pending()` in `src/PSXRecomp.Native/rust/src/interrupt.rs`, Issue #484).
 2. On every CPU `Step()`, that aggregate pending state is reflected into COP0 CAUSE.IP2 (bit 10; see IP in `docs/cpu/cop0.md`).
 3. If `(CAUSE.IP & SR.IM) != 0 && SR.IEc == 1`, process an INT exception (Excode 0x00). The SR 3-level stack is pushed, and EPC/CAUSE.BD are set according to the same #141 model used for other exceptions. Interrupts are not checked while executing a branch delay slot; they are evaluated only after the branch + delay-slot pair completes (Issue #144, ADR-004/ADR-005).
 
