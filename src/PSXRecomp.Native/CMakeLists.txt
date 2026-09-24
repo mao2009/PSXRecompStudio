@@ -75,6 +75,7 @@ add_custom_command(
     WORKING_DIRECTORY ${PSX_RUST_DIR}
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
             ${PSX_RUST_DIR}/src/interrupt.rs
+            ${PSX_RUST_DIR}/src/cpu_ops.rs
             ${PSX_RUST_DIR}/src/dma.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock

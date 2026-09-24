@@ -8,6 +8,7 @@
 //! Migrated subsystems:
 //! - [`interrupt`]: the I_STAT/I_MASK interrupt controller (Issue #484).
 //! - [`timer`]: the Root Counter (Timer) controller (Issue #486).
+//! - [`cpu_ops`]: `PSXCpu` non-trapping ALU/logic/shift arithmetic (Issue #501).
 //! - [`dma`]: the DMA controller registers (Issue #488).
 //!
 //! The crate is compiled as a `staticlib` and linked into the existing
@@ -24,6 +25,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub mod dma;
 pub mod interrupt;
 pub mod timer;
+pub mod cpu_ops;
 
 /// Version of the Rust substrate's C ABI contract.
 ///
