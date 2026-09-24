@@ -266,6 +266,18 @@ public sealed class PSXCoreWrapper : IDisposable
     }
 
     /// <summary>
+    /// <see cref="Step"/> with the CPU's hardware interrupt input held low: device
+    /// IRQs stay latched in I_STAT but raise no INT exception, and CAUSE.IP2 reads 0.
+    /// For a caller that cannot continue into the exception handler.
+    /// </summary>
+    /// <returns>As <see cref="Step"/>.</returns>
+    public int StepWithoutInterrupts()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_StepWithoutInterrupts(_handle);
+    }
+
+    /// <summary>
     /// Whether the most recent <see cref="Step"/> raised a guest exception
     /// (INT, SYSCALL, RI/CpU/AdEL/AdES). Reset by every step.
     /// </summary>

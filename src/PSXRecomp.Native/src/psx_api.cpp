@@ -193,6 +193,12 @@ int PSXCore_Step(PSXCore* core) {
     return core->cpu.Step(core->memory);
 }
 
+int PSXCore_StepWithoutInterrupts(PSXCore* core) {
+    if (!core) return -1;
+    core->cpu.SetHardwareInterruptPending(false);
+    return core->cpu.Step(core->memory);
+}
+
 int PSXCore_GetExceptionRaised(PSXCore* core) {
     if (!core) return 0;
     return core->cpu.ExceptionRaised() ? 1 : 0;

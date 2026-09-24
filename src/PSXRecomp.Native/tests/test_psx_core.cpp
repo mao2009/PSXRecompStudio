@@ -2330,6 +2330,32 @@ static void test_step_interrupt_taken_when_enabled() {
     PASS();
 }
 
+static void test_step_without_interrupts_holds_line_low() {
+    TEST("StepWithoutInterrupts: pending + enabled interrupt is not taken, I_STAT kept");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 20);
+    PSXCore_WriteMemory32(core, 0x1000u, 0x00221820u); // ADD $3,$1,$2
+    PSXCore_SetPC(core, 0x1000u);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 1u);
+    PSXCore_RaiseInterrupt(core, 0);
+
+    ASSERT_EQ(PSXCore_StepWithoutInterrupts(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 30u);         // the instruction executed
+    ASSERT_EQ(PSXCore_GetPC(core), 0x1004u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & (1u << 10), 0u); // CAUSE.IP2 held low
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 1); // I_STAT & I_MASK untouched
+
+    PSXCore_Step(core); // the ordinary step still takes it
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    ASSERT_EQ(PSXCore_StepWithoutInterrupts(nullptr), -1);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_step_interrupt_masked_by_iec() {
     TEST("Pending interrupt with IEc=0 is not taken");
     PSXCore* core = PSXCore_Create();
@@ -2777,6 +2803,7 @@ int main() {
 
     test_step_no_interrupt_baseline();
     test_step_interrupt_taken_when_enabled();
+    test_step_without_interrupts_holds_line_low();
     test_step_interrupt_masked_by_iec();
     test_step_interrupt_masked_by_im();
     test_step_interrupt_cause_ip_tracks_controller();

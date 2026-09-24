@@ -20,8 +20,10 @@ namespace PSXRecomp.Core.Runtime;
 /// </para>
 /// <para>
 /// Fixed order within one <see cref="Advance"/>, each stage raising its own
-/// line: Timers (IRQ4-6) → DMA (IRQ3) → VBlank (IRQ0). The CPU samples the
-/// aggregate line before its next instruction (<c>PSXCore_Step</c>, Issue #144).
+/// line: Timers (IRQ4-6) → DMA (IRQ3) → VBlank (IRQ0). Whether the CPU takes
+/// the aggregate line as an INT exception is the stepping caller's choice:
+/// <c>PSXCore_Step</c> samples it (Issue #144), while
+/// <see cref="PSXCoreWrapper.StepWithoutInterrupts"/> holds it low.
 /// </para>
 /// </remarks>
 [Domain]

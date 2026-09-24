@@ -216,7 +216,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // (Issue #377) a faulting segment left the program bounds on the next
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
-            if (_core.Step() != 0 || _core.ExceptionRaised)
+            // The CPU's hardware interrupt input is held low: this engine cannot
+            // continue into the exception handler, so a scheduled IRQ taken as an
+            // INT exception would end the run as CPU_EXCEPTION (PR #493). Device
+            // IRQs still latch in I_STAT, where the guest can poll them.
+            if (_core.StepWithoutInterrupts() != 0 || _core.ExceptionRaised)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;

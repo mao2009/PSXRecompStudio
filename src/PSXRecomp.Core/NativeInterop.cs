@@ -149,6 +149,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_Step(IntPtr core);
 
+    /// <summary><see cref="PSXCore_Step"/> with the CPU's hardware interrupt input held low (I_STAT/I_MASK untouched).</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_StepWithoutInterrupts(IntPtr core);
+
     /// <summary>Returns non-zero when the most recent <see cref="PSXCore_Step"/> raised a guest exception. Reset by every step.</summary>
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetExceptionRaised(IntPtr core);
