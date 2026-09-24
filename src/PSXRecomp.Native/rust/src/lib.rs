@@ -8,6 +8,7 @@
 //! Migrated subsystems:
 //! - [`interrupt`]: the I_STAT/I_MASK interrupt controller (Issue #484).
 //! - [`timer`]: the Root Counter (Timer) controller (Issue #486).
+//! - [`dma`]: the DMA controller registers (Issue #488).
 //!
 //! The crate is compiled as a `staticlib` and linked into the existing
 //! `PSXRecomp.Native` shared library, whose thin `extern "C"` re-export layer
@@ -20,6 +21,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+pub mod dma;
 pub mod interrupt;
 pub mod timer;
 

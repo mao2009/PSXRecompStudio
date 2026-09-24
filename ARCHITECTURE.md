@@ -81,11 +81,11 @@ Since Issue #473 the native library also links a Rust `staticlib`, so both
 languages ship inside the one artifact managed code already loads. The
 boundary itself is unchanged: Rust reaches C# through the same C ABI header and
 the same `[LibraryImport("PSXRecomp.Native")]` bindings, and no Rust type is
-visible above it. The interrupt controller (I_STAT/I_MASK, Issue #484) and the
-timer controller (Root Counters, Issue #486) are implemented in Rust behind the
-unchanged `PSXCore_*Interrupt*` / `PSXCore_*Timer*` functions; all remaining
-subsystems are C++. See [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md)
-and the [Rust FFI Safety Contract](docs/development/rust-ffi-contract.md).
+visible above it. The interrupt controller (I_STAT/I_MASK, Issue #484), the
+timer controller (Root Counters, Issue #486) and the DMA controller registers
+(Issue #488) are implemented in Rust behind the unchanged `PSXCore_*Interrupt*`
+/ `PSXCore_*Timer*` / `PSXCore_*Dma*` functions; all remaining subsystems are
+C++. See [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md) and the
 
 ## C ABI
 
@@ -330,7 +330,7 @@ YAML is used to define title-specific differences:
 
 Rust was also considered, but C++ was chosen as the primary option because of existing PSX-emulator knowledge and its compatibility with C# P/Invoke.
 
-That choice is being revisited incrementally rather than reversed (Issue #471). A Rust `staticlib` now links into the same native library (Issue #473, [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md)), so individual subsystems migrate one at a time behind the unchanged C ABI: the interrupt controller (Issue #484) and the timer controller (Issue #486) are now implemented in Rust, and removing C++ is not a goal.
+That choice is being revisited incrementally rather than reversed (Issue #471). A Rust `staticlib` now links into the same native library (Issue #473, [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md)), so individual subsystems migrate one at a time behind the unchanged C ABI: the interrupt controller (Issue #484), the timer controller (Issue #486) and the DMA controller registers (Issue #488) are now implemented in Rust, and removing C++ is not a goal.
 
 ## Build Structure
 

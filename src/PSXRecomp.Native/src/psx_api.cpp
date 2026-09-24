@@ -29,7 +29,7 @@ void PSXCore_Reset(PSXCore* core) {
     if (!core) return;
     core->cpu.Reset();
     core->memory.Reset();
-    core->dma.Reset();
+    core->dma = psx_dma_reset();
     core->timers = psx_timer_reset();
     core->interrupts = psx_interrupt_reset();
 }
@@ -95,17 +95,17 @@ uint32_t PSXCore_GetRAMSize(void) {
 
 uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
-    return core->dma.ReadRegister(address);
+    return psx_dma_read_register(core->dma, address);
 }
 
 void PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value) {
     if (!core) return;
-    core->dma.WriteRegister(address, value);
+    core->dma = psx_dma_write_register(core->dma, address, value);
 }
 
 int PSXCore_GetDmaInterruptPending(PSXCore* core) {
     if (!core) return 0;
-    return core->dma.GetInterruptPending() ? 1 : 0;
+    return psx_dma_get_interrupt_pending(core->dma) != 0 ? 1 : 0;
 }
 
 uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {
