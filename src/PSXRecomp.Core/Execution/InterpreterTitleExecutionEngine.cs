@@ -37,6 +37,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public const uint CyclesPerInstruction = 1;
 
+    private const uint InterruptExcode = 0x00; // INT, docs/cpu/exceptions.md
+    private const int Cop0Status = 12;
+    private const int Cop0Cause = 13;
+    private const uint HardwareInterruptBit = 1u << 10; // CAUSE.IP2 / SR.IM2
+
     private readonly IReadOnlyList<uint> _instructions;
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
@@ -48,6 +53,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
     private DeviceScheduler? _scheduler;
     private bool _loaded;
+
+    // Set when the CPU takes a hardware interrupt, cleared once control is back
+    // inside the program image. While set, a PC outside the image is the guest's
+    // own interrupt handler rather than an unresolved transfer. This is only an
+    // execution-region permission: EPC/CAUSE/SR stay owned by the native CPU.
+    private bool _inInterruptHandler;
 
     /// <summary>
     /// Creates an engine over the guest program <paramref name="instructions"/>,
@@ -152,6 +163,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
+        _inInterruptHandler = false;
         _loaded = true;
     }
 
@@ -206,7 +218,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 continue;
             }
 
-            if (!PcWithinProgram(_core.Pc))
+            if (PcWithinProgram(_core.Pc))
+            {
+                _inInterruptHandler = false;
+            }
+            else if (!_inInterruptHandler)
             {
                 break;
             }
@@ -216,14 +232,26 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // (Issue #377) a faulting segment left the program bounds on the next
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
-            // The CPU's hardware interrupt input is held low: this engine cannot
-            // continue into the exception handler, so a scheduled IRQ taken as an
-            // INT exception would end the run as CPU_EXCEPTION (PR #493). Device
-            // IRQs still latch in I_STAT, where the guest can poll them.
-            if (_core.StepWithoutInterrupts() != 0 || _core.ExceptionRaised)
+            if (_core.Step() != 0)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;
+            }
+
+            if (_core.ExceptionRaised)
+            {
+                if (!TookHardwareInterrupt())
+                {
+                    termination = RecompilerIrTerminationReason.Exception;
+                    break;
+                }
+
+                // Issue #499: a device IRQ taken as INT is ordinary guest control
+                // flow. The CPU has already set EPC/CAUSE/SR and vectored; the
+                // guest's handler runs from here and returns with its own
+                // MFC0 EPC / JR / RFE. No instruction retired, so no device time.
+                _inInterruptHandler = true;
+                continue;
             }
 
             // Devices advance by the time the retired instruction took, so
@@ -231,7 +259,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _scheduler!.Advance(CyclesPerInstruction);
         }
 
-        var stillRunning = PcWithinProgram(_core.Pc) ||
+        var stillRunning = PcWithinProgram(_core.Pc) || _inInterruptHandler ||
                            (biosRuntime is not null && BiosJumpTables.TryResolveVectorFamily(_core.Pc, out _));
         if (termination == RecompilerIrTerminationReason.Success && stillRunning)
         {
@@ -274,6 +302,16 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     }
 
     private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
+
+    /// <summary>
+    /// Whether the exception the last step raised is an INT the hardware
+    /// interrupt line (CAUSE.IP2, enabled by SR.IM2) caused. SYSCALL, BREAK,
+    /// faults and software interrupts (CAUSE.IP0/IP1) are not, and still end the
+    /// segment. Reads the state the CPU left; decides nothing the CPU owns.
+    /// </summary>
+    private bool TookHardwareInterrupt() =>
+        _core.ExceptionCode == InterruptExcode &&
+        (_core.GetCop0(Cop0Cause) & _core.GetCop0(Cop0Status) & HardwareInterruptBit) != 0;
 
     private static uint TranslateAddress(uint virtualAddress)
     {

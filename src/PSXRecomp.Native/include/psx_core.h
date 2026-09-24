@@ -5,10 +5,10 @@
  * This header is the interop boundary named by the project documentation
  * policy (docs/development/documentation-policy.md): most functions here
  * are mirrored one-to-one by a P/Invoke declaration in
- * `src/PSXRecomp.Core/NativeInterop.cs`. The one exception is the COP0
- * read/write pair (PSXCore_GetCop0/PSXCore_SetCop0), which is exercised
- * only from the native test suite and has no C# binding yet; add one there
- * when a managed caller needs it. Keep the mirrored subset in lockstep
+ * `src/PSXRecomp.Core/NativeInterop.cs`. The one exception is
+ * PSXCore_SetCop0, which is exercised only from the native test suite and
+ * has no C# binding yet; add one there when a managed caller needs it
+ * (PSXCore_GetCop0 gained one for Issue #499). Keep the mirrored subset in lockstep
  * with the C# side when changing a signature or its documented semantics.
  *
  * Ownership: `PSXCore_Create` returns an opaque handle owned by the caller;

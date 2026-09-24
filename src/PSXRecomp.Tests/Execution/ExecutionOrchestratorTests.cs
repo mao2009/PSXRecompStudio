@@ -310,32 +310,109 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
-    public void Interpreter_GuestWithCpuInterruptsEnabled_RunsPastVblankWithoutCpuException()
+    public void Interpreter_VblankInterrupt_RunsTheGuestHandler_ThenResumesAfterRfe()
     {
-        // CodeRabbit on PR #493: with I_MASK bit 0 and SR IEc/IM2 set, a scheduled
-        // IRQ0 made the CPU take an INT exception the engine cannot continue from,
-        // so the run became RuntimeFailure/CPU_EXCEPTION. The production engine
-        // keeps the CPU interrupt input low: IRQ0 still latches in I_STAT and the
-        // guest's poll still sees it at the same cycle.
-        const uint pollLength = 5;
-        const uint prelude = 5; // LUI + the four setup instructions
-        var expectedPolls = ((DeviceScheduler.VblankIntervalCycles - prelude + pollLength - 1) / pollLength) + 1;
-
-        var result = RunPollingProgram(
-            setup:
-            [
-                MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0001),
-                MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1074),
-                MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0402),
-                0x408A6000u, // MTC0 $t2, SR: IM2 | IEc (bit 1, docs/cpu/cop0.md)
-            ],
-            iStatBit: 1 << 0,
-            segment: 1_000_000);
+        // Issue #499: with I_MASK bit 0 and SR IEc/IM2 set, the scheduled IRQ0 is
+        // taken as an INT exception. The guest's handler at 0x80000080 must run,
+        // acknowledge I_STAT, return to EPC through JR + RFE, and the interrupted
+        // wait loop must then finish. PR #493 could not continue here and held the
+        // interrupt input low instead, so the handler never ran.
+        var result = RunInterruptProgram(
+            InterruptHandler(acknowledge: true),
+            EnableInterruptsThenWaitForHandler(sr: SrIm2 | SrIec),
+            segment: DeviceScheduler.VblankIntervalCycles + 10_000);
 
         result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
-        result.FinalSnapshot!.Gpr[(int)R3000aRegister.T3].Should().Be(1u, "only VBlank's IRQ0 is latched");
-        result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(expectedPolls);
+        result.DiagnosticCode.Should().BeNull();
+        var gpr = result.FinalSnapshot!.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        ((gpr[(int)R3000aRegister.S4] >> 2) & 0x1Fu).Should().Be(0u, "the handler saw CAUSE.ExcCode = INT");
+        (gpr[(int)R3000aRegister.S4] & SrIm2).Should().Be(SrIm2, "the handler saw CAUSE.IP2 pending");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (WaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "normal code after the wait loop ran");
+        (gpr[(int)R3000aRegister.S3] & (SrIm2 | SrIec)).Should().Be(SrIm2 | SrIec, "RFE restored IEc");
     }
+
+    private const uint ExceptionVector = 0x80000080u;
+    private const ushort SrIec = 0x0002; // SR bit 1 (docs/cpu/cop0.md)
+    private const ushort SrIm2 = 0x0400; // SR bit 10; also CAUSE.IP2's bit
+    private const uint WaitLoopIndex = 5;
+
+    /// <summary>
+    /// The guest interrupt handler placed at the exception vector: reads CAUSE
+    /// into <c>$s4</c>, optionally acknowledges every I_STAT bit, counts itself
+    /// in <c>$s1</c>, then returns to EPC (left in <c>$k1</c>) with RFE in the
+    /// JR delay slot.
+    /// </summary>
+    private static uint[] InterruptHandler(bool acknowledge) =>
+    [
+        MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.K0, rs: 0, immediate: 0x1F80),
+        Mfc0(R3000aRegister.S4, 13), // CAUSE
+        acknowledge
+            ? MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.K0, offset: 0x1070) // I_STAT &= 0
+            : MipsEncoding.Nop,
+        MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.S1, immediate: 1),
+        Mfc0(R3000aRegister.K1, 14), // EPC
+        MipsEncoding.Nop,
+        MipsEncoding.JumpRegister((byte)R3000aRegister.K1),
+        0x42000010u, // RFE
+    ];
+
+    /// <summary><c>$t1 = 0x1F800000; I_MASK = IRQ0; SR = sr</c> — five instructions.</summary>
+    private static uint[] EnableInterrupts(ushort sr) =>
+    [
+        MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F80),
+        MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: 0x0001),
+        MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T1, offset: 0x1074),
+        MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T2, rs: 0, immediate: sr),
+        Mtc0(R3000aRegister.T2, 12), // SR
+    ];
+
+    /// <summary>
+    /// <see cref="EnableInterrupts"/>, then spin on <c>$s1 == 0</c> until the
+    /// handler has run, then set <c>$s2</c> and read SR into <c>$s3</c>.
+    /// </summary>
+    private static uint[] EnableInterruptsThenWaitForHandler(ushort sr)
+    {
+        const byte beqOpcodeField = 0x04;
+        var wait = Entry + (WaitLoopIndex * 4u);
+        return
+        [
+            .. EnableInterrupts(sr),
+            MipsEncoding.Branch(beqOpcodeField, (byte)R3000aRegister.S1, 0, wait, wait),
+            MipsEncoding.Nop,
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S2, rs: 0, immediate: ReturnedMarker),
+            Mfc0(R3000aRegister.S3, 12), // SR
+            MipsEncoding.Nop,
+        ];
+    }
+
+    /// <summary>
+    /// Runs <paramref name="main"/> at <see cref="Entry"/> on the production
+    /// interpreter through the orchestrator, with <paramref name="handler"/>
+    /// seeded at the exception vector as initial memory (the guest has no BIOS
+    /// to install one). A guest that runs off its program image completes.
+    /// </summary>
+    private static TitleExecutionResult RunInterruptProgram(uint[] handler, uint[] main, uint segment)
+    {
+        var memory = new List<RecompilerInitialMemoryItem>();
+        for (var i = 0; i < handler.Length; i++)
+        {
+            for (var b = 0; b < 4; b++)
+            {
+                memory.Add(new RecompilerInitialMemoryItem(
+                    ExceptionVector + (uint)(i * 4 + b), (byte)(handler[i] >> (8 * b))));
+            }
+        }
+
+        using var engine = new InterpreterTitleExecutionEngine(main, Entry);
+        return new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 1, segment, initialMemory: memory));
+    }
+
+    private static uint Mfc0(R3000aRegister rt, byte rd) => 0x40000000u | ((uint)rt << 16) | ((uint)rd << 11);
+
+    private static uint Mtc0(R3000aRegister rt, byte rd) => 0x40800000u | ((uint)rt << 16) | ((uint)rd << 11);
 
     /// <summary>
     /// Runs <c>$t1 = 0x1F800000; setup; do { $t3 = I_STAT; $s0++ } while (!($t3 &amp; bit))</c>
