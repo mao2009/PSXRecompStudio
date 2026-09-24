@@ -148,13 +148,13 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | CPU interrupt integration | Implemented |
 | DMA | Partially implemented (register-level model + IRQ + C# MMIO adapter + tests; transfer engine / MemoryBus wiring on the native execution path is not implemented) |
 | Timers | Partially implemented (register-level model + tick + IRQ + C# MMIO adapter + tests; GPU-derived dotclock / HBlank signal wiring is not implemented) |
-| GPU | Planned (interface contract only) |
+| GPU | Partially implemented (register/VRAM model + flat/Gouraud rectangle/triangle rasterization + deterministic frame snapshot, C# only; texture mapping and quads are not implemented; not wired into `DeviceScheduler` or DMA2) |
 | SPU | Planned (interface contract only) |
 | CD-ROM | Planned (interface contract only) |
 | MDEC | Planned (interface contract only) |
 | GTE | Planned (interface contract only) |
 
-The Interrupt Controller has its register model, C ABI, C# adapter, and native tests implemented, as well as CPU interrupt integration that reflects the aggregate pending state into CAUSE.IP2 on every CPU Step/Run; see [docs/cpu/exceptions.md](docs/cpu/exceptions.md). DMA / Timers are implemented through their register-level models, with C# `MemoryBus` MMIO routing adapters and native tests, while complete wiring from the native execution path (`PSXMemory`'s `hw_regs` region) to each controller remains in progress. GPU / SPU / CD-ROM / MDEC / GTE have interface contracts in `PSXRecomp.Core/Runtime` only; no native implementations exist.
+The Interrupt Controller has its register model, C ABI, C# adapter, and native tests implemented, as well as CPU interrupt integration that reflects the aggregate pending state into CAUSE.IP2 on every CPU Step/Run; see [docs/cpu/exceptions.md](docs/cpu/exceptions.md). DMA / Timers are implemented through their register-level models, with C# `MemoryBus` MMIO routing adapters and native tests, while complete wiring from the native execution path (`PSXMemory`'s `hw_regs` region) to each controller remains in progress. GPU has a managed C# register/VRAM/rasterization/frame-snapshot model, but is not yet wired into `DeviceScheduler` or DMA2 and has no native implementation. SPU / CD-ROM / MDEC / GTE have interface contracts in `PSXRecomp.Core/Runtime` only; no native implementations exist.
 
 ## Runtime
 
