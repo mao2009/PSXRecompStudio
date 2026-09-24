@@ -148,7 +148,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | CPU interrupt integration | Implemented |
 | DMA | Partially implemented (register-level model + IRQ + C# MMIO adapter + tests; transfer engine / MemoryBus wiring on the native execution path is not implemented) |
 | Timers | Partially implemented (register-level model + tick + IRQ + C# MMIO adapter + tests; GPU-derived dotclock / HBlank signal wiring is not implemented) |
-| GPU | Planned (interface contract only) |
+| GPU | Partially implemented (register/VRAM model + flat/Gouraud rectangle/triangle rasterization + deterministic frame snapshot, C# only; texture mapping and quads are not implemented; not wired into `DeviceScheduler` or DMA2) |
 | SPU | Planned (interface contract only) |
 | CD-ROM | Planned (interface contract only) |
 | MDEC | Planned (interface contract only) |
