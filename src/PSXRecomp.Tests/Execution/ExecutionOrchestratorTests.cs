@@ -333,6 +333,75 @@ public sealed class ExecutionOrchestratorTests
         (gpr[(int)R3000aRegister.S3] & (SrIm2 | SrIec)).Should().Be(SrIm2 | SrIec, "RFE restored IEc");
     }
 
+    [Fact]
+    public void Interpreter_VblankInterruptNeverAcknowledged_RetakesTheInterrupt_UntilTheBudgetEnds()
+    {
+        // A handler that returns without clearing I_STAT leaves the line pending,
+        // so RFE re-enables IEc and the CPU takes the interrupt again before the
+        // interrupted instruction runs. That is the hardware behavior: the guest
+        // never progresses, the engine never fails the run, and only the budget
+        // stops it.
+        var result = RunInterruptProgram(
+            InterruptHandler(acknowledge: false),
+            EnableInterruptsThenWaitForHandler(sr: SrIm2 | SrIec),
+            segment: DeviceScheduler.VblankIntervalCycles + 10_000);
+
+        result.State.Should().Be(TitleExecutionState.BudgetExhausted, Describe(result));
+        result.DiagnosticCode.Should().Be("OUTER_BUDGET_EXHAUSTED");
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.S1].Should().BeGreaterThan(1u, "the handler was re-entered");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S2].Should().Be(0u, "the interrupted code never resumed");
+    }
+
+    [Fact]
+    public void Interpreter_VblankWithCpuInterruptsDisabled_LatchesInIStat_WithoutEnteringTheHandler()
+    {
+        // I_MASK and SR.IM2 are set but SR.IEc is not: IRQ0 must latch in I_STAT
+        // where the guest polls it, and the installed handler must never run.
+        const byte andiOpcodeField = 0x0C;
+        const byte beqOpcodeField = 0x04;
+        var main = new List<uint>(EnableInterrupts(sr: SrIm2));
+        var poll = Entry + (uint)main.Count * 4u;
+        main.AddRange(
+        [
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.T3, baseRegister: (byte)R3000aRegister.T1, offset: 0x1070),
+            MipsEncoding.Nop,
+            MipsEncoding.I(andiOpcodeField, rt: (byte)R3000aRegister.T4, rs: (byte)R3000aRegister.T3, immediate: 1),
+            MipsEncoding.Branch(beqOpcodeField, (byte)R3000aRegister.T4, 0, poll + 12u, poll),
+            MipsEncoding.Nop,
+        ]);
+
+        var result = RunInterruptProgram(
+            InterruptHandler(acknowledge: true), [.. main], segment: DeviceScheduler.VblankIntervalCycles + 10_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.T3].Should().Be(1u, "VBlank's IRQ0 is latched");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u, "the handler never ran");
+    }
+
+    [Theory]
+    [InlineData("SYSCALL", new uint[] { 0x0000000Cu })]
+    [InlineData("BREAK", new uint[] { 0x0000000Du })]
+    [InlineData("RI", new uint[] { 0xFC000000u })] // reserved primary opcode 0x3F
+    [InlineData("AdEL", new uint[] { 0x8C080001u })] // LW $t0, 1($zero): misaligned
+    [InlineData("Ov", new uint[] { 0x3C087FFFu, 0x01084020u })] // LUI $t0, 0x7FFF; ADD $t0, $t0, $t0
+    // Software interrupt: SR = IM0 | IEc, CAUSE.IP0 set by MTC0. It is an INT
+    // exception, but not one the hardware interrupt line raised.
+    [InlineData("software INT", new uint[] { 0x340A0102u, 0x408A6000u, 0x340A0100u, 0x408A6800u, 0x00000000u })]
+    public void Interpreter_NonHardwareInterruptException_StillFails_EvenWithAHandlerInstalled(string kind, uint[] words)
+    {
+        // Issue #499 continues only hardware interrupts. Every other exception —
+        // including a software interrupt — must still end the run as
+        // RuntimeFailure/CPU_EXCEPTION, never reach the handler, and never be
+        // classified Completed, even though a handler is installed at the vector.
+        var result = RunInterruptProgram(InterruptHandler(acknowledge: true), words, segment: 64);
+
+        result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{kind}: {Describe(result)}");
+        result.DiagnosticCode.Should().Be("CPU_EXCEPTION", kind);
+        result.FinalSnapshot!.Termination.Should().Be(RecompilerIrTerminationReason.Exception, kind);
+        result.FinalSnapshot.PC.Should().Be(0x80000080u, kind);
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u, $"{kind}: the handler never ran");
+    }
+
     private const uint ExceptionVector = 0x80000080u;
     private const ushort SrIec = 0x0002; // SR bit 1 (docs/cpu/cop0.md)
     private const ushort SrIm2 = 0x0400; // SR bit 10; also CAUSE.IP2's bit
