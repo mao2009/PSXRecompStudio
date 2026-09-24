@@ -8,6 +8,6 @@ struct PSXCore {
     PSXCpu cpu;
     PSXMemory memory;
     PSXDmaController dma;
-    PSXTimerController timers;
+    PSXTimerState timers = psx_timer_reset();
     PSXInterruptState interrupts = psx_interrupt_reset();
 };

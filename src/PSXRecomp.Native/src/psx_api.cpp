@@ -30,7 +30,7 @@ void PSXCore_Reset(PSXCore* core) {
     core->cpu.Reset();
     core->memory.Reset();
     core->dma.Reset();
-    core->timers.Reset();
+    core->timers = psx_timer_reset();
     core->interrupts = psx_interrupt_reset();
 }
 
@@ -110,37 +110,39 @@ int PSXCore_GetDmaInterruptPending(PSXCore* core) {
 
 uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
-    return core->timers.ReadRegister(address);
+    PSXTimerReadResult result = psx_timer_read_register(core->timers, address);
+    core->timers = result.state;
+    return result.value;
 }
 
 void PSXCore_WriteTimerRegister(PSXCore* core, uint32_t address, uint32_t value) {
     if (!core) return;
-    core->timers.WriteRegister(address, value);
+    core->timers = psx_timer_write_register(core->timers, address, value);
 }
 
 void PSXCore_TickTimers(PSXCore* core, uint32_t cycles) {
     if (!core) return;
-    core->timers.Tick(cycles);
+    core->timers = psx_timer_tick(core->timers, cycles);
 }
 
 int PSXCore_GetTimerInterruptPending(PSXCore* core, int timer) {
     if (!core) return 0;
-    return core->timers.GetInterruptPending(timer) ? 1 : 0;
+    return psx_timer_get_interrupt_pending(core->timers, timer) != 0 ? 1 : 0;
 }
 
 void PSXCore_ClearTimerInterrupt(PSXCore* core, int timer) {
     if (!core) return;
-    core->timers.ClearInterrupt(timer);
+    core->timers = psx_timer_clear_interrupt(core->timers, timer);
 }
 
 void PSXCore_SetTimerSync(PSXCore* core, int timer, int active) {
     if (!core) return;
-    core->timers.SetSyncLine(timer, active != 0);
+    core->timers = psx_timer_set_sync_line(core->timers, timer, active != 0 ? 1 : 0);
 }
 
 void PSXCore_ResetTimers(PSXCore* core) {
     if (!core) return;
-    core->timers.Reset();
+    core->timers = psx_timer_reset();
 }
 
 uint32_t PSXCore_ReadInterruptControllerRegister(PSXCore* core, uint32_t address) {

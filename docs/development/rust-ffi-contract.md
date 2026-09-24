@@ -208,6 +208,30 @@ panic, so every export is infallible (§5) and returns its result directly.
 | `psx_interrupt_clear` | `PSXInterruptState(PSXInterruptState, int32_t irq)` | Clears I_STAT bit `irq`; `irq` outside 0..10 ignored. |
 | `psx_interrupt_pending` | `uint32_t(PSXInterruptState)` | 1 when `I_STAT & I_MASK != 0`, else 0. |
 
+### Timer controller (#486)
+
+`rust/src/timer.rs` implements the three Root Counter timers. Its exports are
+**internal** to `PSXRecomp.Native`: `src/psx_api.cpp` calls them (declared in
+`src/psx_timer.h`) to implement the unchanged `PSXCore_*Timer*` functions of
+`include/psx_core.h`, so neither `psx_core.h`, `NativeInterop.cs`, nor
+`ABI_VERSION` changed. The state (`PSXTimerState`, three `PSXTimerChannel`
+values) is `#[repr(C)]`, POD, and passed/returned by value: no pointers, no
+allocation, no `unsafe`, and no operation that can panic, so every export is
+infallible (§5). A register read can have a side effect (reading MODE clears
+its target/overflow flags), so `psx_timer_read_register` returns
+`PSXTimerReadResult` — the evolved state bundled with the read value — rather
+than taking an out-parameter pointer.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_timer_reset` | `PSXTimerState(void)` | Power-on state (all fields zero). |
+| `psx_timer_read_register` | `PSXTimerReadResult(PSXTimerState, uint32_t address)` | COUNT/MODE/TARGET, else 0; reading MODE clears its target/overflow flags. |
+| `psx_timer_write_register` | `PSXTimerState(PSXTimerState, uint32_t address, uint32_t value)` | COUNT/TARGET replaced; MODE masked, forces IRQ_REQUEST set, and resets the channel's counter/toggle/frac/sync-arm/irq state. |
+| `psx_timer_tick` | `PSXTimerState(PSXTimerState, uint32_t cycles)` | Advances all three timers by `cycles`, applying clock divisor, sync gating, and target/overflow IRQ semantics. |
+| `psx_timer_set_sync_line` | `PSXTimerState(PSXTimerState, int32_t timer, int32_t active)` | Updates the Hblank/Vblank sync line and its edge side effects; `timer` outside 0–2 ignored. |
+| `psx_timer_get_interrupt_pending` | `uint32_t(PSXTimerState, int32_t timer)` | 1 when `timer`'s IRQ is latched, else 0; 0 for `timer` outside 0–2. |
+| `psx_timer_clear_interrupt` | `PSXTimerState(PSXTimerState, int32_t timer)` | Clears `timer`'s IRQ latch; `timer` outside 0–2 ignored. |
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)
