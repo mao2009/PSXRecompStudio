@@ -98,7 +98,14 @@ dotnet test src/PSXRecomp.Tests --filter "<FullyQualifiedName~ChangedArea>"
 dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj -c Release
 
 # 3. Rust substrate unit tests (run from the crate so the toolchain pin applies)
-Push-Location src/PSXRecomp.Native/rust; cargo test; Pop-Location
+Push-Location src/PSXRecomp.Native/rust
+try {
+    cargo test
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    Pop-Location
+}
 
 # 4. Native core (C ABI); the CMake build also runs cargo build --release
 cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
