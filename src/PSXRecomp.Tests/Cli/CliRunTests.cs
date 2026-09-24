@@ -67,6 +67,14 @@ public sealed class CliRunTests
         0u, // delay slot
     };
 
+    private static uint[] UnsupportedBiosProgram() => new uint[]
+    {
+        Immediate(OriOpcode, (byte)R3000aRegister.T1, 0x10u),
+        Immediate(OriOpcode, (byte)R3000aRegister.A0, 0u),
+        (uint)JalOpcode << 26 | (BiosJumpTables.A0VectorAddress & 0x0FFFFFFFu) >> 2,
+        0u, // branch delay slot
+    };
+
     private static byte[] BuildSyntheticExe(uint[] words, uint textStart = EntryPc, uint? entryPoint = null)
     {
         var fileContent = new byte[PsxExeHeader.HeaderSize + words.Length * 4];
@@ -472,6 +480,58 @@ public sealed class CliRunTests
         report.GetProperty("state").GetInt32()
             .Should().Be((int)TitleExecutionState.UnsupportedTransfer);
         report.GetProperty("guestPc").GetUInt32().Should().Be(UncompiledTarget);
+    }
+
+    [Fact]
+    public void Run_Report_RuntimeFailureStillGeneratesBundle()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "unsupported-bios.exe", UnsupportedBiosProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit, output, error) = Invoke(
+            "run", exePath, "--output", outDir, "--report", "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        error.Should().BeEmpty();
+
+        using var json = JsonDocument.Parse(output);
+        var bundlePath = json.RootElement.GetProperty("diagnosticBundle").GetString();
+        File.Exists(bundlePath!).Should().BeTrue();
+
+        using var archive = ZipFile.OpenRead(bundlePath!);
+        using var reportJson = JsonDocument.Parse(
+            ReadZipEntry(archive, ExecutionDiagnosticBundleWriter.ReportEntryName));
+        var report = reportJson.RootElement;
+        report.GetProperty("outcome").GetInt32()
+            .Should().Be((int)RecompiledArtifactOutcome.Failure);
+        report.GetProperty("state").GetInt32()
+            .Should().Be((int)TitleExecutionState.RuntimeFailure);
+        report.GetProperty("diagnosticCode").GetString()
+            .Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+    }
+
+    [Fact]
+    public void Run_ChdReport_UsesTheChdContainerSha256Identity()
+    {
+        using var dir = new TempDirectory();
+        var chdPath = WriteSyntheticChd(dir, "disc.chd");
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit, output, error) = Invoke(
+            "run", chdPath, "--output", outDir, "--report", "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+
+        using var json = JsonDocument.Parse(output);
+        var bundlePath = json.RootElement.GetProperty("diagnosticBundle").GetString();
+        using var archive = ZipFile.OpenRead(bundlePath!);
+        using var reportJson = JsonDocument.Parse(
+            ReadZipEntry(archive, ExecutionDiagnosticBundleWriter.ReportEntryName));
+
+        reportJson.RootElement.GetProperty("inputSha256").GetString()
+            .Should().Be(Sha256File(chdPath));
     }
 
     [Fact]
