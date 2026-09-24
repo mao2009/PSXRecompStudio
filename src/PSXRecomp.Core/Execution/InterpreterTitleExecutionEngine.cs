@@ -40,6 +40,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private const uint InterruptExcode = 0x00; // INT, docs/cpu/exceptions.md
     private const int Cop0Status = 12;
     private const int Cop0Cause = 13;
+    private const int Cop0Epc = 14;
     private const uint HardwareInterruptBit = 1u << 10; // CAUSE.IP2 / SR.IM2
 
     private readonly IReadOnlyList<uint> _instructions;
@@ -62,17 +63,23 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     // permission: EPC/CAUSE/SR stay owned by the native CPU.
     private bool _inInterruptHandler;
 
+    // The PC of the interrupted instruction (cop0 EPC) captured when the first —
+    // outermost — hardware interrupt of the current handler nesting was taken.
+    // It is the PC the handler must finally return to: a nested interrupt
+    // overwrites cop0 EPC inside the handler, so re-reading EPC after nesting
+    // would lose the outermost return target, but this private copy never does.
+    // It is always inside the program image, because the engine only steps the
+    // CPU while PC is inside the image (or inside a handler it already knows),
+    // so a *nested* take is the only way EPC lands outside the image and that
+    // take never overwrites this value.
+    private uint _handlerEpc;
+
     // Set when the CPU reports the handler executed RFE (ExecRfe, psx_cpu.cpp):
     // RFE only restores SR, it never moves PC (PC restore is a JR responsibility,
     // ADR-005), so RFE alone does not mean the handler has returned. This arms
     // the check below instead of clearing _inInterruptHandler outright, so a
     // handler that keeps running after a standalone RFE (not sharing its return
     // JR's delay slot) is still recognized as handler code (CodeRabbit, PR #502).
-    // This also covers nested handlers without tracking depth: a nested
-    // handler's own RFE+return lands PC back inside the *outer* handler, still
-    // outside the program image, so it can never satisfy the check below by
-    // itself — only the outermost handler's true return does, regardless of how
-    // many RFEs ran in between.
     private bool _rfePending;
 
     // Set when the last segment ended ExecutionBudgetExceeded: the core still
@@ -185,6 +192,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
         _inInterruptHandler = false;
         _rfePending = false;
+        _handlerEpc = 0;
         _resumable = false;
         _loaded = true;
     }
@@ -275,19 +283,33 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // flow. The CPU has already set EPC/CAUSE/SR and vectored; the
                 // guest's handler runs from here and returns with its own
                 // MFC0 EPC / JR / RFE. No instruction retired, so no device time.
+                var wasInHandler = _inInterruptHandler;
                 _inInterruptHandler = true;
+                if (!wasInHandler)
+                {
+                    // First — outermost — take of this handler nesting: record the
+                    // interrupted PC the handler must return to. A nested take
+                    // overwrites cop0 EPC inside the handler, so it must not
+                    // re-capture (and must not erase a still-pending RFE arm).
+                    _handlerEpc = _core.GetCop0(Cop0Epc);
+                    _rfePending = false;
+                }
                 continue;
             }
 
             // RFE armed the return check; it lands only once PC is actually back
-            // inside the program image, whether that happens in this same step
-            // (RFE sharing the return JR's delay slot) or several steps later (a
-            // standalone RFE ahead of a separate return JR).
+            // on the EPC the interrupt captured — whether that happens in this
+            // same step (RFE sharing the return JR's delay slot) or several steps
+            // later (a standalone RFE ahead of a separate return JR). Comparing
+            // against that EPC instead of "inside the program image" is what
+            // keeps handler permission while the handler runs a helper in the
+            // image after a standalone RFE: the helper entry lands on the helper,
+            // not on the interrupted PC, so it cannot look like the return.
             if (_core.RfeExecuted)
             {
                 _rfePending = true;
             }
-            if (_rfePending && PcWithinProgram(_core.Pc))
+            if (_rfePending && _core.Pc == _handlerEpc)
             {
                 _inInterruptHandler = false;
                 _rfePending = false;
