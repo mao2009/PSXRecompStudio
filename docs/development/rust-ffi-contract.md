@@ -229,7 +229,7 @@ than taking an out-parameter pointer.
 | `psx_timer_write_register` | `PSXTimerState(PSXTimerState, uint32_t address, uint32_t value)` | COUNT/TARGET replaced; MODE masked, forces IRQ_REQUEST set, and resets the channel's counter/toggle/frac/sync-arm/irq state. |
 | `psx_timer_tick` | `PSXTimerState(PSXTimerState, uint32_t cycles)` | Advances all three timers by `cycles`, applying clock divisor, sync gating, and target/overflow IRQ semantics. |
 | `psx_timer_set_sync_line` | `PSXTimerState(PSXTimerState, int32_t timer, int32_t active)` | Updates the Hblank/Vblank sync line and its edge side effects; `timer` outside 0..3 ignored. |
-| `psx_timer_get_interrupt_pending` | `uint32_t(PSXTimerState, int32_t timer)` | 1 when `timer`'s IRQ is latched, else 0. |
+| `psx_timer_get_interrupt_pending` | `uint32_t(PSXTimerState, int32_t timer)` | 1 when `timer`'s IRQ is latched, else 0; 0 for `timer` outside 0..3. |
 | `psx_timer_clear_interrupt` | `PSXTimerState(PSXTimerState, int32_t timer)` | Clears `timer`'s IRQ latch; `timer` outside 0..3 ignored. |
 
 ## Related
