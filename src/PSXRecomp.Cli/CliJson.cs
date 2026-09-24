@@ -37,5 +37,19 @@ internal static class CliJson
         IReadOnlyList<byte> Output,
         RecompiledArtifactResult Result);
 
+    /// <summary>
+    /// Extended run envelope used only when <c>--report</c> is requested.
+    /// Keeping it separate preserves the exact pre-#457 JSON field set for
+    /// ordinary <c>run --json</c> invocations.
+    /// </summary>
+    [Infrastructure]
+    public sealed record RunResultWithDiagnosticBundle(
+        string Kind,
+        bool Success,
+        string? Artifact,
+        IReadOnlyList<byte> Output,
+        RecompiledArtifactResult Result,
+        string DiagnosticBundle);
+
     public static string Serialize<T>(T document) => ArtifactJson.Serialize(document);
 }
