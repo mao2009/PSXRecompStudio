@@ -10,8 +10,9 @@ namespace PSXRecomp.Core.Runtime.Gpu;
 ///
 /// Scope: register contract, packet decoding, VRAM storage, and CPU-to-VRAM /
 /// VRAM-to-CPU transfers. Rasterization of decoded primitives is deferred to
-/// Issue #441 (<see cref="LastPrimitive"/>); VBlank scheduling is deferred to
-/// Issue #442 (<see cref="HasVblank"/> is always false).
+/// Issue #441 (<see cref="LastPrimitive"/>). VBlank IRQ0 is raised by
+/// <see cref="DeviceScheduler"/> (Issue #442), not by this device, so
+/// <see cref="HasVblank"/> is always false.
 ///
 /// Integration disclosure: this device is reachable through
 /// <c>GpuMmioAdapter</c> + <c>MemoryBus</c>, but it is NOT yet wired into any
@@ -228,7 +229,7 @@ public sealed class GpuDevice : IGpu, IDisposable
         return ((ushort)_width, (ushort)_height);
     }
 
-    /// <summary>Always false: no VBlank/VSYNC model in Issue #440 (deferred to Issue #442).</summary>
+    /// <summary>Always false: VBlank IRQ0 comes from <see cref="DeviceScheduler"/> (Issue #442), since this device is not yet wired into a production engine.</summary>
     public bool HasVblank => false;
 
     public void AcknowledgeVblank()

@@ -2147,6 +2147,32 @@ static void test_timer_reset_timers() {
     PASS();
 }
 
+// Issue #442: a manually triggered channel completes after its modelled word
+// count through the public C ABI and raises the DICR IRQ line.
+static void test_dma_tick_completes_transfer() {
+    TEST("PSXCore_TickDma completes a started transfer after its word count");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    PSXCore_WriteDmaRegister(core, 0x1F8010F0u, 0x07654321u | (1u << 27)); // DPCR: enable ch6
+    PSXCore_WriteDmaRegister(core, 0x1F8010F4u, (1u << 23) | (1u << 30));  // DICR: master + ch6
+    PSXCore_WriteDmaRegister(core, 0x1F8010E4u, 4u);                        // ch6 BCR: 4 words
+    PSXCore_WriteDmaRegister(core, 0x1F8010E8u, 0x11000002u);               // ch6 CHCR: start+trigger
+
+    PSXCore_TickDma(core, 3);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010E8u) & (1u << 24), 1u << 24);
+    ASSERT_EQ(PSXCore_GetDmaInterruptPending(core), 0);
+
+    PSXCore_TickDma(core, 1);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010E8u), 0x00000002u);
+    ASSERT_EQ(PSXCore_GetDmaInterruptPending(core), 1);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010F4u) >> 31, 1u);
+
+    PSXCore_TickDma(nullptr, 1);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_timer_null_safety() {
     TEST("Timer null pointer safety");
     ASSERT_EQ(PSXCore_ReadTimerRegister(nullptr, 0x1F801100u), 0u);
@@ -2300,6 +2326,32 @@ static void test_step_interrupt_taken_when_enabled() {
     ASSERT_EQ(PSXCore_GetCop0(core, 14), 0x1000u); // EPC = the not-yet-executed instruction
     ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u); // ADD never executed
     ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u); // exception vector (BEV=0)
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_without_interrupts_holds_line_low() {
+    TEST("StepWithoutInterrupts: pending + enabled interrupt is not taken, I_STAT kept");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 20);
+    PSXCore_WriteMemory32(core, 0x1000u, 0x00221820u); // ADD $3,$1,$2
+    PSXCore_SetPC(core, 0x1000u);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 1u);
+    PSXCore_RaiseInterrupt(core, 0);
+
+    ASSERT_EQ(PSXCore_StepWithoutInterrupts(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 30u);         // the instruction executed
+    ASSERT_EQ(PSXCore_GetPC(core), 0x1004u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & (1u << 10), 0u); // CAUSE.IP2 held low
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 1); // I_STAT & I_MASK untouched
+
+    PSXCore_Step(core); // the ordinary step still takes it
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    ASSERT_EQ(PSXCore_StepWithoutInterrupts(nullptr), -1);
     PSXCore_Destroy(core);
     PASS();
 }
@@ -2741,6 +2793,7 @@ int main() {
     test_timer_sync_arm_timer0();
     test_timer_reset_timers();
     test_timer_null_safety();
+    test_dma_tick_completes_transfer();
 
     test_interrupt_registers();
     test_interrupt_pending();
@@ -2750,6 +2803,7 @@ int main() {
 
     test_step_no_interrupt_baseline();
     test_step_interrupt_taken_when_enabled();
+    test_step_without_interrupts_holds_line_low();
     test_step_interrupt_masked_by_iec();
     test_step_interrupt_masked_by_im();
     test_step_interrupt_cause_ip_tracks_controller();

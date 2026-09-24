@@ -85,7 +85,9 @@ visible above it. The interrupt controller (I_STAT/I_MASK, Issue #484), the
 timer controller (Root Counters, Issue #486) and the DMA controller registers
 (Issue #488) are implemented in Rust behind the unchanged `PSXCore_*Interrupt*`
 / `PSXCore_*Timer*` / `PSXCore_*Dma*` functions; all remaining subsystems are
-C++. See [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md) and the
+C++. When those devices advance during execution is decided on the managed side
+by `DeviceScheduler` (Issue #442, see
+[Device Scheduling](docs/runtime/architecture.md#device-scheduling-issue-442)). See [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md) and the
 
 ## C ABI
 

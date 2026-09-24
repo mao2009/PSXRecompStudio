@@ -235,13 +235,17 @@ than taking an out-parameter pointer.
 ### DMA controller (#488)
 
 `rust/src/dma.rs` implements the DMA controller registers (per-channel
-MADR/BCR/CHCR, DPCR, DICR), register semantics only — no transfer is ever
-performed, so DICR flags are only ever cleared by software writes, never set.
+MADR/BCR/CHCR, DPCR, DICR) and, since Issue #442, a transfer-duration model:
+`psx_dma_tick` completes a started channel after a deterministic cycle count
+and sets its DICR flag. No data is ever moved.
 Its exports are **internal** to `PSXRecomp.Native`: `src/psx_api.cpp` calls
-them (declared in `src/psx_dma.h`) to implement the unchanged
-`PSXCore_*Dma*` functions of `include/psx_core.h`, so neither `psx_core.h`,
-`NativeInterop.cs`, nor `ABI_VERSION` changed. The state
-(`PSXDmaState`, seven `PSXDmaChannelState` values plus DPCR and DICR) is
+them (declared in `src/psx_dma.h`) to implement the `PSXCore_*Dma*` functions
+of `include/psx_core.h`. #442 added one public entry point,
+`PSXCore_TickDma(PSXCore*, uint32_t cycles)`, mirrored in `NativeInterop.cs`;
+`ABI_VERSION` (which versions the `PSXRecompRust_*` substrate exports) is
+unchanged. The state
+(`PSXDmaState`, seven `PSXDmaChannelState` values, DPCR, DICR, and a
+seven-`u32` `remaining` array of per-channel cycles left, 120 bytes) is
 `#[repr(C)]`, POD, and passed/returned by value: no pointers, no allocation,
 no `unsafe`, and no operation that can panic (address decoding and channel
 indexing are range-checked), so every export is infallible (§5) and returns
@@ -251,8 +255,13 @@ its result directly.
 |---|---|---|
 | `psx_dma_reset` | `PSXDmaState(void)` | Power-on state: all 7 channels zero, DPCR `0x07654321`, DICR zero. |
 | `psx_dma_read_register` | `uint32_t(PSXDmaState, uint32_t address)` | Per-channel MADR/BCR/CHCR at base + `channel * 0x10` + 0/4/8; DPCR as stored; DICR with derived bit 31; else 0. |
-| `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced; DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
+| `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced (a CHCR write also resets that channel's `remaining`); DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
 | `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
+| `psx_dma_tick` | `PSXDmaState(PSXDmaState, uint32_t cycles)` | Each started channel (CHCR bit 24, its DPCR enable bit `3 + 4*ch`, and bit 28 for sync mode 0) counts down one cycle per word (sync 0: BCR[15:0]; sync 1: BCR[15:0] × BCR[31:16]; zero field = 0x10000; sync 2/3: one word). On completion CHCR bits 24/28 clear and DICR flag `ch` is set when DICR enable `24 + ch` is set. Excess cycles are discarded. |
+
+The DICR bit layout (flags 0–6, enables 24–30) is the one migrated from the C++
+controller; psx-spx places enables at 16–22 and flags at 24–30. Reconciling it
+is a separate change, since it alters guest-visible register semantics.
 
 ## Related
 

@@ -29,6 +29,14 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>The diagnostic-facing backend name this engine reports as <see cref="Name"/>.</summary>
     public const string EngineName = "interpreter-native-full-title";
 
+    /// <summary>
+    /// CPU cycles each retired <see cref="PSXCoreWrapper.Step"/> reports to the
+    /// <see cref="DeviceScheduler"/>. The native interpreter has no cycle model,
+    /// so its retired-instruction count is the elapsed-time source and one
+    /// instruction is costed as one cycle (Issue #442; not cycle-exact).
+    /// </summary>
+    public const uint CyclesPerInstruction = 1;
+
     private readonly IReadOnlyList<uint> _instructions;
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
@@ -38,6 +46,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly DmaMmioAdapter _dmaAdapter;
     private readonly TimerMmioAdapter _timerAdapter;
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
+    private DeviceScheduler? _scheduler;
     private bool _loaded;
 
     /// <summary>
@@ -141,6 +150,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _core.WriteMemory32(ramOffset + unchecked((uint)i * 4u), _instructions[i]);
         }
 
+        // Fresh device timing for the freshly reset core (Issue #442).
+        _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
         _loaded = true;
     }
 
@@ -205,11 +216,19 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // (Issue #377) a faulting segment left the program bounds on the next
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
-            if (_core.Step() != 0 || _core.ExceptionRaised)
+            // The CPU's hardware interrupt input is held low: this engine cannot
+            // continue into the exception handler, so a scheduled IRQ taken as an
+            // INT exception would end the run as CPU_EXCEPTION (PR #493). Device
+            // IRQs still latch in I_STAT, where the guest can poll them.
+            if (_core.StepWithoutInterrupts() != 0 || _core.ExceptionRaised)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;
             }
+
+            // Devices advance by the time the retired instruction took, so
+            // Timer/DMA/VBlank interrupts reach the CPU during a real run.
+            _scheduler!.Advance(CyclesPerInstruction);
         }
 
         var stillRunning = PcWithinProgram(_core.Pc) ||

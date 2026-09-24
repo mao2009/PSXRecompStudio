@@ -21,13 +21,15 @@ struct PSXDmaState {
     PSXDmaChannelState channels[7];
     uint32_t dpcr;
     uint32_t dicr;
+    uint32_t remaining[7]; // Modelled cycles left per in-flight transfer (Issue #442).
 };
 
-static_assert(sizeof(PSXDmaState) == 92, "PSXDmaState must match DmaState in dma.rs");
+static_assert(sizeof(PSXDmaState) == 120, "PSXDmaState must match DmaState in dma.rs");
 
 extern "C" {
 PSXDmaState psx_dma_reset(void);
 uint32_t psx_dma_read_register(PSXDmaState state, uint32_t address);
 PSXDmaState psx_dma_write_register(PSXDmaState state, uint32_t address, uint32_t value);
 uint32_t psx_dma_get_interrupt_pending(PSXDmaState state);
+PSXDmaState psx_dma_tick(PSXDmaState state, uint32_t cycles);
 }
