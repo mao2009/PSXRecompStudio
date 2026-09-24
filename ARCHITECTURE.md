@@ -266,10 +266,12 @@ without changing the host layer. See [docs/runtime/input.md](docs/runtime/input.
   (ADR-013, Issue #225).
 - A Load/Store IR operation carries an explicit `RecompilerIrMemoryEffectKind`
   (`Unknown`/`Ordinary`/`Device`), fail-closed to `Unknown` unless the address
-  is provably RAM/BIOS (`Ordinary`) or a hardware register (`Device`); indirect
-  control flow, the BIOS/runtime transfer boundary, and unsupported/
-  exception-producing opcodes were already explicit before this addition
-  (ADR-020, Issue #411).
+  is provably RAM/scratchpad/BIOS (`Ordinary`) or a hardware register
+  (`Device`); indirect control flow, the BIOS/runtime transfer boundary, and
+  unsupported/exception-producing opcodes were already explicit before this
+  addition (ADR-020, Issue #411). The six observable-effect categories, their
+  termination/diagnostic identifiers, and the optimization contract are
+  tabulated in `docs/development/recompiler-ir-contract.md`.
 
 ## Debugger (Future)
 
