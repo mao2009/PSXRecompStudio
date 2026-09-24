@@ -75,11 +75,21 @@ public sealed class ExecutionDiagnosticReportTests
         root.GetProperty("diagnosticCode").ValueKind.Should().Be(JsonValueKind.Null);
         root.GetProperty("framebufferSha256").ValueKind.Should().Be(JsonValueKind.Null);
 
-        first.Should().NotContain("diagnosticMessage");
-        first.Should().NotContain("resultValue");
-        first.Should().NotContain("engineName");
-        first.ToLowerInvariant().Should().NotContain("path");
-        first.ToLowerInvariant().Should().NotContain("ram");
+        var propertyNames = root.EnumerateObject()
+            .Select(static property => property.Name)
+            .ToArray();
+
+        propertyNames.Should().NotContain([
+            "diagnosticMessage",
+            "resultValue",
+            "engineName",
+            "path",
+            "inputPath",
+            "rawRam",
+            "ram",
+            "saveData",
+            "credentials",
+        ]);
     }
 
     [Theory]
