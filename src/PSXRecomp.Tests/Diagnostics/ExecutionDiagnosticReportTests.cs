@@ -78,8 +78,8 @@ public sealed class ExecutionDiagnosticReportTests
         first.Should().NotContain("diagnosticMessage");
         first.Should().NotContain("resultValue");
         first.Should().NotContain("engineName");
-        first.Should().NotContain("path", StringComparison.OrdinalIgnoreCase);
-        first.Should().NotContain("ram", StringComparison.OrdinalIgnoreCase);
+        first.ToLowerInvariant().Should().NotContain("path");
+        first.ToLowerInvariant().Should().NotContain("ram");
     }
 
     [Theory]
