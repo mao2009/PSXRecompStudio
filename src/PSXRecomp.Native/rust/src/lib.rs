@@ -21,6 +21,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+pub mod cpu_alu;
 pub mod dma;
 pub mod interrupt;
 pub mod timer;
