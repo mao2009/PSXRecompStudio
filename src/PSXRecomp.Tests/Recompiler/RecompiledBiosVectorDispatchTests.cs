@@ -73,13 +73,20 @@ public sealed class RecompiledBiosVectorDispatchTests
         snapshot.Termination.Should().Be(RecompilerIrTerminationReason.Success);
     }
 
-    [Fact]
-    public void GeneratedPath_OneArgumentService_UsesOnlyA0_AndProducesTheServicesOutput()
+    [Theory]
+    // A0:3C putchar, its B0:3D alias, and the C0 high-range mirror of that
+    // same physical slot (C0:BD -> B0:3D) must all consume exactly one ABI
+    // argument and produce the same return value/output through generated code.
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction)]
+    [InlineData(BiosCallFamily.C0, (byte)0xBD)]
+    public void GeneratedPath_PutChar_ReachesOneImplementation_ThroughEveryRegisteredIdentity(
+        BiosCallFamily family, byte function)
     {
         var sink = new CapturedOutputSink();
         var result = RunGenerated(
             CallProgram(
-                Kseg0EntryPc, BiosJumpTables.A0VectorAddress, BiosHleRuntime.PutCharFunction,
+                Kseg0EntryPc, VectorAddressOf(family), function,
                 a0: (uint)'Z', a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu),
             sink);
 
@@ -282,6 +289,21 @@ public sealed class RecompiledBiosVectorDispatchTests
     {
         AssertParity(PatchProgram(
             Kseg0EntryPc, BiosJumpTables.A0VectorAddress, BiosCallFamily.A0, UnregisteredA0Function));
+    }
+
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction)]
+    [InlineData(BiosCallFamily.C0, (byte)0xBD)]
+    public void PutCharDispatch_Matches_BetweenTheInterpreterAndTheRecompiledPath(
+        BiosCallFamily family, byte function)
+    {
+        var (interpreterSink, hostSink) = AssertParity(CallProgram(
+            Kseg0EntryPc, VectorAddressOf(family), function,
+            a0: (uint)'Z', a1: 0xDEADBEEFu, a2: 0xDEADBEEFu, a3: 0xDEADBEEFu));
+
+        hostSink.Bytes.Should().BeEquivalentTo(interpreterSink.Bytes, static o => o.WithStrictOrdering());
+        hostSink.Bytes.Should().BeEquivalentTo(new byte[] { (byte)'Z' }, static o => o.WithStrictOrdering());
     }
 
     [Fact]
