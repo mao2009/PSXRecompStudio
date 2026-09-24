@@ -26,6 +26,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 - title-agnostic な bounded full-title 実行ループ [`ExecutionOrchestrator`](src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs) が、Domain 層の production interpreter engine によって駆動され、Studio UI から到達可能（[ADR-015](docs/adr/015-production-execution-engine-ownership.md)）。Studio は分類済み実行結果へ 2 つの独立したアクションで到達する:`RunDiagnosticTitleCommand`（組み込み診断プログラム）と、Issue #409 による `RunRealTitleCommand`（real-ROM 製品フロー。読み込んだ disc image を解析し、解析済み PS-X EXE（EXE ヘッダ由来の entry PC・SP・GP・text segment）を `RomAnalysisOutcome.Executable` から保持し、その同一の executable を `TitleExecutionService.Run(PsxExe, ...)` → `ExecutionOrchestrator` → `InterpreterTitleExecutionEngine` へ渡す。`RealRomProductionFlowTests` で end-to-end 検証済み）。生成 C（recompiled）engine は現時点でも test 専用のまま。
 - interpreter / recompiled の両パスから共有 `BiosVectorDispatch` semantics で A0/B0/C0 vector を dispatch 可能。現在登録済みの service は5個（putchar、puts とその B0 alias、`GetB0Table`、`GetC0Table`）に限られ、広範な BIOS HLE ではない: [`BiosHleRuntime.cs`](src/PSXRecomp.Core/Runtime/BiosHleRuntime.cs)。
 - レジスタレベルの DMA / interrupt / timer MMIO adapter と memory bus が専用テスト付きで実装済み: [`src/PSXRecomp.Core/Dma/`](src/PSXRecomp.Core/Dma/)。production interpreter engine から到達可能（#386）。決定的な CPU cycle 駆動の [`DeviceScheduler`](src/PSXRecomp.Core/Runtime/DeviceScheduler.cs) が Rust 実装の timer と DMA channel を進め、実行中に Timer（IRQ4-6）、DMA（IRQ3）、固定間隔の VBlank（IRQ0）を発生させる（#442）。cycle-exact ではなく、DMA 完了はデータを転送しない。
+- 純粋な managed GPU モデル — GP0/GP1/GPUSTAT レジスタ、1024x512x16b の VRAM バッファ、flat / Gouraud shading の矩形・三角形を VRAM へラスタライズする機能 — に加え、scheduler に依存しない決定論的な `FrameSnapshot`（設定済み表示領域の raw pixel と SHA-256 安定ハッシュ）: [`src/PSXRecomp.Core/Runtime/Gpu/`](src/PSXRecomp.Core/Runtime/Gpu/)（#440、#441）。texture mapping、quad、semi-transparency は未実装。GPU デバイス自体は `DeviceScheduler` にもどの実行エンジンにも結線されておらず、`IGpu.HasVblank` は常に false、DMA2 も未結線。
 - 標準 raw 128 KiB PlayStation メモリーカードイメージを変換なしで読み書きし、他エミュレータとカードを共有可能。Slot 1 / Slot 2 の設定、アトミックな保存、外部変更の検出に対応: [`src/PSXRecomp.Core/MemoryCard/`](src/PSXRecomp.Core/MemoryCard/)、[`FileMemoryCardStorage.cs`](src/PSXRecompStudio/Services/FileMemoryCardStorage.cs)、[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)（#22）。メモリーカードの SIO/IRQ7 プロトコルおよびカード UI は未実装。
 - 最初の実走行可能な recompiled artifact の証明（Issue #461）: synthetic な PS-X EXE を production パイプライン全体 — `PsxExe.Load` → `PsxExeTitleInput.Build` → decode/lowering → host + artifact コード生成 → gcc build（#458）→ launcher 実行（#459）— で通し、generated/recompiled code が実際に実行されたこと、決定論的であること（生成ソースに至るまで）、分類済み境界でのみ停止すること（クラッシュ・静かな終了をしないこと）を検証。合法な実入力を扱う側はユーザー提供の `rom/*.exe` fixture に対して同一パスを実行し、無い場合は明示的に skip: [`RecompiledArtifactE2ETests.cs`](src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs)、[`RealExeE2ETests.cs`](src/PSXRecomp.Tests/E2E/RealExeE2ETests.cs)。
 - 最小構成のヘッドレス CLI `psxrecomp`。recompiled-artifact build 契約（#458）と runnable-artifact 実行契約（#459）を公開し、`psxrecomp recompile <input.exe|input.chd> --output <dir>` / `psxrecomp run <input.exe|input.chd>` を決定論的な JSON 出力と 0/1/2 の終了コードで提供。Issue #457 より `.chd` 入力は拡張子で振り分けられ、production `RomAnalysisPipeline`（CHD → ISO 9660 → SYSTEM.CNF → boot PS-X EXE → `PsxExeTitleInput`）を通じて解決されるため、正規の CHD は EXE と同じ下流パイプラインを実行する。それ以外の拡張子は従来どおり EXE 専用パス。CHD の失敗はパイプラインが分類し、無効な PS-X EXE としては報告されない: [`src/PSXRecomp.Cli/`](src/PSXRecomp.Cli/)、[`docs/development/headless-cli.md`](docs/development/headless-cli.md)（#460）。汎用コマンドフレームワーク（Issue #15）は対象外。
@@ -36,7 +37,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の**静的再コンパイル�
 
 - 汎用的な実 ROM 関数再コンパイル — 候補選定は意図的に保守的（[再コンパイルワークフロー](#再コンパイルワークフロー) 参照）。
 - 商用 PS1 タイトル全体の end-to-end 静的再コンパイルと実行。
-- GPU、SPU、CD-ROM、MDEC、GTE — インターフェース定義のみで、実装・利用する側は存在しない（例: [`IGte.cs`](src/PSXRecomp.Core/Runtime/IGte.cs)）。
+- SPU、CD-ROM、MDEC、GTE — インターフェース定義のみで、実装・利用する側は存在しない（例: [`IGte.cs`](src/PSXRecomp.Core/Runtime/IGte.cs)）。GPU はレジスタ/VRAM/ラスタライズのモデルを持つ（上記参照）が、texture mapping・quad・表示フレームの presentation は未実装で、どの実行エンジンにも結線されていない。
 - 広範な BIOS HLE service coverage。
 - 汎用的なプロダクト CLI。
 
@@ -129,7 +130,8 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | Disc / executable 解析（CHD → ISO 9660 → PS-X EXE → CFG） | 実装済み |
 | Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — 実 PS-X EXE のロードと interpreter 実行をサポート（#409）。広範な BIOS HLE ではない |
 | Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — production interpreter で `DeviceScheduler` が駆動（#442）。IRQ は I_STAT にラッチされ、SR の IEc/IM2 が有効なら CPU の割り込み例外として受理され、guest の handler が実行されて RFE で復帰する（#499）。cycle-exact ではなく、DMA 完了はデータを転送しない |
-| Hardware — GPU / SPU / CD-ROM / MDEC / GTE | 予定 — インターフェース定義のみ |
+| Hardware — GPU | 部分実装 — レジスタ/VRAM モデル、flat / Gouraud 矩形・三角形ラスタライズ、決定論的 frame snapshot（C#、`DeviceScheduler` にもどの実行エンジンにも未結線） |
+| Hardware — SPU / CD-ROM / MDEC / GTE | 予定 — インターフェース定義のみ |
 | メモリーカード（標準 raw 128 KiB イメージ、Slot 1/2 設定、安全な保存） | 部分実装 — ストレージとフォーマットは実装済み（[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)）。SIO/IRQ7 プロトコルとカード UI は未実装 |
 | フルタイトルの静的再コンパイル | 未実装 |
 | アーキテクチャ強制（Roslyn Analyzer、Artifact Contamination Gate） | 実装済み・CI で強制 |
