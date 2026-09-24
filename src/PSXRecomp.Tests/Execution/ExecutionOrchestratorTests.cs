@@ -495,6 +495,104 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_HandlerRfeThenHelperCall_StillReturnsToTheGuest()
+    {
+        // CodeRabbit on PR #502 (discussion_r4092339097): a handler that runs a
+        // standalone RFE and *then* JALs a helper inside the program image must
+        // keep its handler-region permission. The helper entry alone must not
+        // look like the handler's return; only landing back on the EPC the
+        // interrupt captured completes the handler.
+        var result = RunInterruptProgram(
+            InterruptHandlerRfeBeforeHelperCall(acknowledge: true),
+            Timer2InterruptThenWaitForHandler(),
+            segment: 10_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.DiagnosticCode.Should().BeNull();
+        result.FinalSnapshot!.PC.Should().Be(TimerProgramEnd);
+        var gpr = result.FinalSnapshot.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        gpr[(int)R3000aRegister.S5].Should().Be(1u, "the helper inside the program ran");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (TimerWaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the interrupted code resumed after the handler returned");
+    }
+
+    [Fact]
+    public void Interpreter_RfeThenHelperReturn_HandlerCodeIsNotHandedOff()
+    {
+        // Same guest: the handoff is consulted only for a real unresolved
+        // transfer. Handler code the helper returns into, after a standalone
+        // RFE but before the return JR, must not be one, so the only
+        // consultation is at the program end.
+        var consulted = new List<uint>();
+        var result = RunInterruptProgram(
+            InterruptHandlerRfeBeforeHelperCall(acknowledge: true),
+            Timer2InterruptThenWaitForHandler(),
+            segment: 10_000,
+            handoff: new FunctionHandoff(snapshot =>
+            {
+                consulted.Add(snapshot.PC);
+                return TitleExecutionHandoffResult.Exit();
+            }));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        consulted.Should().Equal([TimerProgramEnd], "no handler PC may be handed off before the program end");
+    }
+
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(2u)]
+    [InlineData(3u)]
+    [InlineData(5u)]
+    public void Interpreter_RfeThenHelperCallSplitAcrossTinySegments_StillResumesTheGuest(uint segment)
+    {
+        // Same CodeRabbit finding as above, cut into tiny segments so a boundary
+        // lands between the standalone RFE, the helper call and the return JR at
+        // least once (guaranteed for segment=1, likely for the others).
+        var result = RunInterruptProgram(
+            InterruptHandlerRfeBeforeHelperCall(acknowledge: true),
+            Timer2InterruptThenWaitForHandler(),
+            segment,
+            outer: 1_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, $"segment={segment}: {Describe(result)}");
+        result.FinalSnapshot!.PC.Should().Be(TimerProgramEnd);
+        var gpr = result.FinalSnapshot.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        gpr[(int)R3000aRegister.S5].Should().Be(1u, "the helper inside the program ran");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (TimerWaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the interrupted code resumed after the handler returned");
+    }
+
+    [Fact]
+    public void Interpreter_NestedInterruptAfterAStandaloneRfe_StillReturnsThroughTheOuterHandler()
+    {
+        // A handler that returns without clearing I_STAT is re-taken on its own
+        // RFE-before-JR sequence: the nested interrupt preempts the outer return
+        // JR and overwrites cop0 EPC with an address inside the handler region.
+        // The engine must still recognize the nested handler as handler code, and
+        // must only conclude the handler has returned once PC is back on the EPC
+        // the *outermost* take captured (which its private copy preserves). The
+        // nested handler also runs a standalone RFE followed by the in-image
+        // helper (PR #502, CodeRabbit), so the helper entry must not read as the
+        // return either.
+        var result = RunInterruptProgram(
+            NestedInterruptHandler(),
+            Timer2InterruptThenWaitForHandler(),
+            segment: 10_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.DiagnosticCode.Should().BeNull();
+        result.FinalSnapshot!.PC.Should().Be(TimerProgramEnd);
+        var gpr = result.FinalSnapshot.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(2u, "entry ran twice: the original take and the nested one");
+        gpr[(int)R3000aRegister.S5].Should().Be(1u, "the helper ran inside the nested entry");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (TimerWaitLoopIndex * 4u), "outer EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.K0].Should().Be(ExceptionVector + (8u * 4u), "nested EPC is the preempted outer JR");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the mainline resumed only after the outer return");
+    }
+
+    [Fact]
     public void Interpreter_Mfc0LoadDelayInFlightAtASegmentBoundary_StillCommits()
     {
         // CodeRabbit on PR #502: re-seeding the core for the next segment flushed
@@ -630,6 +728,75 @@ public sealed class ExecutionOrchestratorTests
         MipsEncoding.JumpRegister((byte)R3000aRegister.K1),
         MipsEncoding.Nop,
     ];
+
+    /// <summary>
+    /// A handler like <see cref="InterruptHandlerRfeBeforeReturnJump"/>, but it
+    /// runs a standalone RFE and *then* JALs the in-image helper
+    /// (<see cref="TimerHelper"/>) before its return JR. The helper returns into
+    /// the handler, which then reads EPC and returns. Proves the engine keeps
+    /// handler permission across a standalone RFE followed by a helper call
+    /// (CodeRabbit, PR #502): the helper entry inside the program image is not
+    /// the handler's return.
+    /// </summary>
+    private static uint[] InterruptHandlerRfeBeforeHelperCall(bool acknowledge)
+    {
+        // JAL is word 5 and its delay slot word 6, so the helper's $ra lands on
+        // word 7 (MFC0 EPC), where the handler resumes after the helper returns.
+        return
+        [
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.K0, rs: 0, immediate: 0x1F80),
+            Mfc0(R3000aRegister.S4, 13), // CAUSE
+            acknowledge
+                ? MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.K0, offset: 0x1070) // I_STAT &= 0
+                : MipsEncoding.Nop,
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.S1, immediate: 1),
+            0x42000010u, // RFE, standalone: way before the return JR
+            MipsEncoding.JumpAndLink(TimerHelper),
+            MipsEncoding.Nop, // JAL delay slot
+            Mfc0(R3000aRegister.K1, 14), // EPC, load-delayed; the helper returns here
+            MipsEncoding.Nop,
+            MipsEncoding.JumpRegister((byte)R3000aRegister.K1),
+            MipsEncoding.Nop,
+        ];
+    }
+
+    /// <summary>
+    /// A handler that is deliberately re-taken once: the first entry does not
+    /// clear I_STAT, so its standalone RFE lets the CPU take the interrupt again
+    /// and preempt its own return JR. The nested entry acknowledges, then runs a
+    /// standalone RFE followed by the in-image helper (PR #502, CodeRabbit), and
+    /// returns to the preempted JR's address (the nested EPC). The outer return
+    /// JR then resumes the guest. The outer EPC is kept in <c>$k1</c>, the nested
+    /// EPC in <c>$k0</c>, so both survive to the final snapshots.
+    /// </summary>
+    private static uint[] NestedInterruptHandler()
+    {
+        const byte bneOpcodeField = 0x05;
+        var second = ExceptionVector + (10u * 4u); // BNE taken: skip the first-entry tail
+        var branchPc = ExceptionVector + (2u * 4u);
+        return
+        [
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.K0, rs: 0, immediate: 0x1F80),
+            Mfc0(R3000aRegister.S4, 13), // CAUSE
+            MipsEncoding.Branch(bneOpcodeField, (byte)R3000aRegister.S1, 0, branchPc, second), // already entered?
+            MipsEncoding.Nop,
+            Mfc0(R3000aRegister.K1, 14), // outer EPC, load-delayed
+            MipsEncoding.Nop,
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.S1, immediate: 1),
+            0x42000010u, // RFE, standalone: I_STAT still pending, so the next step re-takes
+            MipsEncoding.JumpRegister((byte)R3000aRegister.K1), // preempted by the nested INT
+            MipsEncoding.Nop,
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.K0, offset: 0x1070), // I_STAT &= 0
+            MipsEncoding.I(AdduiOpcodeField, rt: (byte)R3000aRegister.S1, rs: (byte)R3000aRegister.S1, immediate: 1),
+            0x42000010u, // RFE, standalone, before the helper call
+            MipsEncoding.JumpAndLink(TimerHelper),
+            MipsEncoding.Nop, // JAL delay slot; $ra lands on the MFC0 below
+            Mfc0(R3000aRegister.K0, 14), // nested EPC, load-delayed; the helper returned here
+            MipsEncoding.Nop,
+            MipsEncoding.JumpRegister((byte)R3000aRegister.K0),
+            MipsEncoding.Nop,
+        ];
+    }
 
     private const uint TimerWaitLoopIndex = 9;
     private const uint TimerHelper = Entry + (16 * 4u);
