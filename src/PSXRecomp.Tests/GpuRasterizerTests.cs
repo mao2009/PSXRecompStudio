@@ -116,6 +116,38 @@ public sealed class GpuRasterizerTests
     }
 
     [Fact]
+    public void Rectangle_VertexCoordinates_AreSigned11BitValues()
+    {
+        using var gpu = NewGpuWithFullDrawArea();
+        ushort pixel = Rgb555(0xF8, 0x00, 0x00);
+
+        // Raw 0x7FF is -1 in the GPU's 11-bit signed coordinate field.
+        // A +2,+2 drawing offset therefore places the pixel at (1,1).
+        gpu.WriteGP0(0xE5000000 | 2u | (2u << 11));
+        gpu.WriteGP0(0x68000000 | Color(0xF8, 0x00, 0x00));
+        gpu.WriteGP0(0x07FF07FF);
+
+        gpu.Vram[1, 1].Should().Be(pixel);
+        gpu.Vram[2, 2].Should().Be(0);
+    }
+
+    [Fact]
+    public void Rectangle_VertexCoordinates_IgnoreUnusedUpperBitsInEachSlot()
+    {
+        using var gpu = NewGpuWithFullDrawArea();
+        ushort pixel = Rgb555(0x00, 0xF8, 0x00);
+
+        // Bits 11-15 are outside the PS1 GPU coordinate field and must not
+        // affect the decoded position. Low 11 bits are still x=5, y=6.
+        const uint rawVertex = 0xF806F805u;
+        gpu.WriteGP0(0x68000000 | Color(0x00, 0xF8, 0x00));
+        gpu.WriteGP0(rawVertex);
+
+        gpu.Vram[5, 6].Should().Be(pixel);
+        gpu.Vram[0, 0].Should().Be(0);
+    }
+
+    [Fact]
     public void Rectangle_KnownColor_PacksExpectedRgb555()
     {
         using var gpu = NewGpuWithFullDrawArea();
