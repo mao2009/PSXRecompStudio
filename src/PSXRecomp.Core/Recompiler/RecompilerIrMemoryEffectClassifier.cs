@@ -43,6 +43,7 @@ public static class RecompilerIrMemoryEffectClassifier
         return Ps1MemoryMap.ClassifyRegion(physical) switch
         {
             MemoryRegionClass.Ram => RecompilerIrMemoryEffectKind.Ordinary,
+            MemoryRegionClass.Scratchpad => RecompilerIrMemoryEffectKind.Ordinary,
             MemoryRegionClass.Bios => RecompilerIrMemoryEffectKind.Ordinary,
             MemoryRegionClass.HardwareRegisters => RecompilerIrMemoryEffectKind.Device,
             _ => RecompilerIrMemoryEffectKind.Unknown,

@@ -135,4 +135,13 @@ add_executable(psx_native_tests
 )
 target_include_directories(psx_native_tests PRIVATE src include)
 target_link_libraries(psx_native_tests PRIVATE PSXRecomp.Native)
+# psx_cpu.cpp now routes the hardware-register window to the Rust controllers
+# (Issue #386); the shared library's import library does not re-export those
+# symbols, so the test executable links the Rust staticlib itself, exactly as
+# the shared library does.
+add_dependencies(psx_native_tests psx_rust_substrate)
+target_link_libraries(psx_native_tests PRIVATE ${PSX_RUST_STATICLIB})
+if(UNIX)
+    target_link_libraries(psx_native_tests PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
 add_test(NAME psx_native_tests COMMAND psx_native_tests)

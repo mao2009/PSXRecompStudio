@@ -2492,6 +2492,146 @@ static void test_run_interrupt_taken() {
     PASS();
 }
 
+// Issue #386: the low 8 MiB of the physical address space alias the main 2 MiB
+// RAM — address & (RAM_SIZE - 1) selects the byte, for every access width.
+static void test_ram_mirror_window() {
+    TEST("RAM mirror: low 8MiB aliases main 2MiB RAM (8/16/32-bit)");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    // Base byte at physical 0x00000010 is visible at +2 MiB and +4 MiB.
+    PSXCore_WriteMemory8(core, 0x00000010, 0xAB);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00200010), 0xABu);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00400010), 0xABu);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00600010), 0xABu);
+
+    // Writes through a mirror address land in the low 2 MiB.
+    PSXCore_WriteMemory32(core, 0x00400020, 0xDEADBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x00000020), 0xDEADBEEFu);
+    PSXCore_WriteMemory16(core, 0x00600024, 0xCAFEu);
+    ASSERT_EQ(PSXCore_ReadMemory16(core, 0x00000024), 0xCAFEu);
+
+    // Mirror window edge: physical 0x00800000 and above are unmapped.
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00800000), 0u);
+    PSXCore_WriteMemory8(core, 0x00800000, 0x77); // ignored
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00800000), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// Issue #386: the scratchpad (0x1F800000..0x1F8003FF) is a private 1 KiB SRAM,
+// reachable for every access width and separate from main RAM.
+static void test_scratchpad_access() {
+    TEST("Scratchpad: 0x1F800000 8/16/32-bit round-trip and RAM isolation");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    PSXCore_WriteMemory32(core, 0x1F800000, 0x13371337u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F800000), 0x13371337u);
+    PSXCore_WriteMemory32(core, 0x1F800004, 0x12345678u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F800004), 0x12345678u);
+    PSXCore_WriteMemory16(core, 0x1F800008, 0xBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory16(core, 0x1F800008), 0xBEEFu);
+    PSXCore_WriteMemory8(core, 0x1F80000A, 0x5Au);
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x1F80000A), 0x5Au);
+
+    // The scratchpad is its own storage: RAM sees nothing of it.
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x00000000), 0u);
+
+    // The last scratchpad word is inside the region; past it is unmapped.
+    PSXCore_WriteMemory32(core, 0x1F8003FC, 0xCAFEBABEu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F8003FC), 0xCAFEBABEu);
+    PSXCore_WriteMemory8(core, 0x1F800400, 0x21); // first byte past the scratchpad
+    ASSERT_EQ(PSXCore_ReadMemory8(core, 0x1F800400), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// Issue #386: the hardware-register window routes to the Rust controllers
+// through the memory bus, reachable via the core's Read/WriteMemory API.
+static void test_mmio_routing_through_memory() {
+    TEST("MMIO routing: DMA/timer/interrupt reachable via Read/WriteMemory");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    // DMA MADR (0x1F801080) round-trips through the memory bus to the Rust DMA.
+    PSXCore_WriteMemory32(core, 0x1F801080, 0xDEADBEEFu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F801080), 0xDEADBEEFu);
+    PSXCore_WriteMemory32(core, 0x1F801080, 0);
+
+    // Timer 0 value register (0x1F801100) is readable; halfword access aligns.
+    PSXCore_WriteMemory16(core, 0x1F801100, 0);
+    // 16-bit access via the controller does not corrupt the neighbouring word.
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F801100) & 0xFFFF0000u, 0u);
+
+    // Interrupt I_MASK (0x1F801074) accepts a written mask.
+    PSXCore_WriteMemory32(core, 0x1F801074, 0x00000001u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x1F801074), 0x00000001u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+// DICR bits 0-6 are write-1-to-clear flags. A sub-word Write8/Write16 to
+// PSXMemory first reads the full 32-bit register back (echoing any set flag
+// as a 1), merges in the target byte/halfword, and writes the full word
+// back; without masking those echoed flag bits back to 0 first, that merged
+// write clears flags the caller never touched (CodeRabbit PR #491). These
+// exercise PSXMemory directly (heap-allocated: RAM+BIOS+hw_regs are ~2.6 MiB,
+// too large for a stack frame) since the Rust DMA model only ever clears
+// flags through its public write API, never sets them - a direct PSXDmaState
+// field assignment is the only way to seed a "flags pending" fixture.
+static void test_dicr_write8_preserves_w1c_flags() {
+    TEST("DICR Write8: sub-word write to a control byte preserves pending W1C flags");
+    auto* memory = new PSXMemory();
+    PSXDmaState dma = psx_dma_reset();
+    dma.dicr = 0x7Fu; // All 7 channel flags pending.
+    memory->AttachControllers(&dma, nullptr, nullptr);
+
+    // Byte 2 (bits 16-23) carries the master-enable bit (bit 23) but none of
+    // the flag bits; writing 0x80 there must not disturb the pending flags.
+    memory->Write8(PSX_DMA_REGION_END + 2u, 0x80u);
+    uint32_t afterControlWrite = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterControlWrite & 0x7Fu, 0x7Fu);         // Flags still pending.
+    ASSERT_EQ(afterControlWrite & (1u << 23), 1u << 23); // Master enable applied.
+
+    // An intentional write-1-to-clear through the same byte path still works:
+    // clearing flag 0 only must leave flags 1-6 pending.
+    memory->Write8(PSX_DMA_REGION_END, 0x01u);
+    uint32_t afterClear = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterClear & 0x7Fu, 0x7Eu);
+
+    delete memory;
+    PASS();
+}
+
+static void test_dicr_write16_preserves_w1c_flags() {
+    TEST("DICR Write16: sub-word write to enable bits preserves pending W1C flags");
+    auto* memory = new PSXMemory();
+    PSXDmaState dma = psx_dma_reset();
+    dma.dicr = 0x7Fu; // All 7 channel flags pending.
+    memory->AttachControllers(&dma, nullptr, nullptr);
+
+    // The high halfword (bits 16-31) carries master-enable (bit 23) and the
+    // per-channel enables (bits 24-30); writing channel-0/2 enables plus
+    // master-enable there must not clear any pending flag.
+    memory->Write16(PSX_DMA_REGION_END + 2u, 0x0580u);
+    uint32_t afterControlWrite = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterControlWrite & 0x7Fu, 0x7Fu);         // Flags still pending.
+    ASSERT_EQ(afterControlWrite & (1u << 23), 1u << 23); // Master enable applied.
+    ASSERT_EQ((afterControlWrite >> 24) & 0x7Fu, 0x05u); // Enables applied.
+
+    // An intentional write-1-to-clear through the low halfword still works.
+    memory->Write16(PSX_DMA_REGION_END, 0x0003u);
+    uint32_t afterClear = psx_dma_read_register(dma, PSX_DMA_REGION_END);
+    ASSERT_EQ(afterClear & 0x7Fu, 0x7Cu);
+
+    delete memory;
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -2506,6 +2646,11 @@ int main() {
     test_cpu_hi_lo_set_get();
     test_ram_size();
     test_ram_access();
+    test_ram_mirror_window();
+    test_scratchpad_access();
+    test_mmio_routing_through_memory();
+    test_dicr_write8_preserves_w1c_flags();
+    test_dicr_write16_preserves_w1c_flags();
     test_reset();
     test_null_safety();
     test_step_basic();

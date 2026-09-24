@@ -8,8 +8,9 @@ namespace PSXRecomp.Core.Runtime;
 /// addresses through the canonical KUSEG/KSEG rule, rejects unmapped physical
 /// addresses, and writes bytes through the injected existing physical-memory
 /// path. This adds a bounded write boundary only — it does not build new memory
-/// semantics, mirrors, or caching. The write-side mirror of
-/// <see cref="GuestMemoryReader"/>.
+/// semantics or caching; main-RAM mirror aliasing is honored by folding the
+/// physical address into the 2 MiB RAM window (Issue #386). The write-side
+/// mirror of <see cref="GuestMemoryReader"/>.
 /// </summary>
 [Domain]
 public sealed class GuestMemoryWriter : IGuestMemoryWriter
@@ -22,9 +23,10 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
     /// <param name="writePhysicalByte">
     /// Writes one physical byte through the existing memory path (for example
     /// <c>memoryBus.Write8</c> or a test RAM window). It receives a translated
-    /// physical address shown to be within RAM by
+    /// physical address shown to be within the RAM mirror window by
     /// <see cref="Ps1AddressTranslation.TryTranslate"/> and the
-    /// <see cref="DmaMemoryMap.RamSize"/> bound.
+    /// <see cref="DmaMemoryMap.RamMirrorEnd"/> bound, folded into the low 2 MiB
+    /// RAM via <see cref="DmaMemoryMap.RamSize"/>.
     /// </param>
     public GuestMemoryWriter(Action<uint, byte> writePhysicalByte)
     {
@@ -46,12 +48,14 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
             return false;
         }
 
-        if (physical >= DmaMemoryMap.RamSize)
+        if (physical >= DmaMemoryMap.RamMirrorEnd)
         {
             return false;
         }
 
-        _writePhysicalByte(physical, value);
+        // Main RAM aliases across the mirror window (Issue #386); the sink
+        // only needs the low 2 MiB physical byte.
+        _writePhysicalByte(physical & (DmaMemoryMap.RamSize - 1), value);
         return true;
     }
 
@@ -72,7 +76,7 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
             return false;
         }
 
-        if (length > DmaMemoryMap.RamSize)
+        if (length > DmaMemoryMap.RamMirrorEnd)
         {
             return false;
         }
@@ -83,7 +87,7 @@ public sealed class GuestMemoryWriter : IGuestMemoryWriter
         for (var i = 0; i < buffer.Length; i++)
         {
             if (!Ps1AddressTranslation.TryTranslate(address + (uint)i, out var physical) ||
-                physical >= DmaMemoryMap.RamSize)
+                physical >= DmaMemoryMap.RamMirrorEnd)
             {
                 return false;
             }

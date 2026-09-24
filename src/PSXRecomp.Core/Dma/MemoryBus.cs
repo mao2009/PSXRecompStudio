@@ -52,63 +52,66 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     public ushort Read16(uint address)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+        var region = Ps1MemoryMap.ClassifyRegion(address);
+        if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
             return (ushort)(Read(address) & 0xFFFF);
-        uint _word = ReadRam(address & ~3u);
-        return (ushort)((_word >> (8 * (int)(address & 2))) & 0xFFFF);
+        uint word = ReadWord(address & ~3u);
+        return (ushort)((word >> (8 * (int)(address & 2))) & 0xFFFF);
     }
 
     public void Write16(uint address, ushort value)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var _region = Ps1MemoryMap.ClassifyRegion(address);
-        if (_region == MemoryRegionClass.HardwareRegisters)
+        var region = Ps1MemoryMap.ClassifyRegion(address);
+        if (region == MemoryRegionClass.HardwareRegisters)
         {
             WriteMmio(address, value);
             return;
         }
-        if (_region != MemoryRegionClass.Ram)
+        if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
             return;
-        uint word = ReadRam(address & ~3u);
-        int _shift = 8 * (int)(address & 2);
-        word = (word & ~(0xFFFFu << _shift)) | ((uint)value << _shift);
-        WriteRam(address & ~3u, word);
+        uint word = ReadWord(address & ~3u);
+        int shift = 8 * (int)(address & 2);
+        word = (word & ~(0xFFFFu << shift)) | ((uint)value << shift);
+        WriteWord(address & ~3u, word);
     }
 
     public byte Read8(uint address)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (Ps1MemoryMap.ClassifyRegion(address) != MemoryRegionClass.Ram)
+        var region = Ps1MemoryMap.ClassifyRegion(address);
+        if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
             return (byte)(Read(address) & 0xFF);
-        uint _word = ReadRam(address & ~3u);
-        return (byte)((_word >> (8 * (int)(address & 3))) & 0xFF);
+        uint word = ReadWord(address & ~3u);
+        return (byte)((word >> (8 * (int)(address & 3))) & 0xFF);
     }
 
     public void Write8(uint address, byte value)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var _region = Ps1MemoryMap.ClassifyRegion(address);
-        if (_region == MemoryRegionClass.HardwareRegisters)
+        var region = Ps1MemoryMap.ClassifyRegion(address);
+        if (region == MemoryRegionClass.HardwareRegisters)
         {
             WriteMmio(address, value);
             return;
         }
-        if (_region != MemoryRegionClass.Ram)
+        if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
             return;
-        uint word = ReadRam(address & ~3u);
-        int _shift = 8 * (int)(address & 3);
-        word = (word & ~(0xFFu << _shift)) | ((uint)value << _shift);
-        WriteRam(address & ~3u, word);
+        uint word = ReadWord(address & ~3u);
+        int shift = 8 * (int)(address & 3);
+        word = (word & ~(0xFFu << shift)) | ((uint)value << shift);
+        WriteWord(address & ~3u, word);
     }
 
     public uint Read(uint address)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var _region = Ps1MemoryMap.ClassifyRegion(address);
-        return _region switch
+        var region = Ps1MemoryMap.ClassifyRegion(address);
+        return region switch
         {
             MemoryRegionClass.Ram => ReadRam(address),
+            MemoryRegionClass.Scratchpad => _core.ReadMemory32(address),
             MemoryRegionClass.HardwareRegisters => ReadMmio(address),
             _ => 0,
         };
@@ -118,11 +121,14 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var _region = Ps1MemoryMap.ClassifyRegion(address);
-        switch (_region)
+        var region = Ps1MemoryMap.ClassifyRegion(address);
+        switch (region)
         {
             case MemoryRegionClass.Ram:
                 WriteRam(address, value);
+                break;
+            case MemoryRegionClass.Scratchpad:
+                _core.WriteMemory32(address, value);
                 break;
             case MemoryRegionClass.HardwareRegisters:
                 WriteMmio(address, value);
@@ -147,9 +153,11 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         unsafe
         {
-            var _ptr = (uint*)_core.RamPointer;
-            var _offset = address / sizeof(uint);
-            return _ptr[_offset];
+            var ptr = (uint*)_core.RamPointer;
+            // Main RAM aliases across the low mirror window (Issue #386): drop
+            // the mirror bit instead of indexing past the 2 MiB buffer.
+            var offset = (address & (Ps1MemoryMap.RamSize - 1)) / sizeof(uint);
+            return ptr[offset];
         }
     }
 
@@ -157,10 +165,23 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         unsafe
         {
-            var _ptr = (uint*)_core.RamPointer;
-            var _offset = address / sizeof(uint);
-            _ptr[_offset] = value;
+            var ptr = (uint*)_core.RamPointer;
+            var offset = (address & (Ps1MemoryMap.RamSize - 1)) / sizeof(uint);
+            ptr[offset] = value;
         }
+    }
+
+    private uint ReadWord(uint address) =>
+        Ps1MemoryMap.ClassifyRegion(address) == MemoryRegionClass.Scratchpad
+            ? _core.ReadMemory32(address)
+            : ReadRam(address);
+
+    private void WriteWord(uint address, uint value)
+    {
+        if (Ps1MemoryMap.ClassifyRegion(address) == MemoryRegionClass.Scratchpad)
+            _core.WriteMemory32(address, value);
+        else
+            WriteRam(address, value);
     }
 
     private uint ReadMmio(uint address)
