@@ -99,6 +99,11 @@ helper inside the image and returns from it. EPC, CAUSE, SR, vector selection
 and RFE stay in `PSXCpu`; the guest's own `MFC0 EPC` / `JR` / `RFE` does the
 return. The INT step retires no instruction, so it advances no device time.
 
+A segment the budget cuts mid-handler is continued on the same live core
+without re-seeding it, so an in-flight `MFC0` load delay or `JR` branch delay
+survives the segment boundary; only a fresh dispatch (first segment, a handoff
+`ContinueAt`) seeds the core and flushes the pipeline.
+
 A handler that returns without acknowledging I_STAT leaves the line pending, so
 the CPU takes the interrupt again right after RFE and the guest never
 progresses; the run ends as `BudgetExhausted`, as on hardware. A guest that

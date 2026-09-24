@@ -64,6 +64,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     // nests, or an RFE outside a JR delay slot, needs a count / later clear.
     private bool _inInterruptHandler;
 
+    // Set when the last segment ended ExecutionBudgetExceeded: the core still
+    // holds that segment's live state, including in-flight load-delay and
+    // branch-delay state that re-seeding it (SetGpr/SetPC) would flush.
+    private bool _resumable;
+
     /// <summary>
     /// Creates an engine over the guest program <paramref name="instructions"/>,
     /// loaded at guest address <paramref name="loadAddress"/>. Execution starts
@@ -168,6 +173,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
         _inInterruptHandler = false;
+        _resumable = false;
         _loaded = true;
     }
 
@@ -180,13 +186,20 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             throw new InvalidOperationException("Load must complete before the first segment runs.");
         }
 
-        for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+        // A continuation of a budget-cut segment with the state it returned runs
+        // on as is. Anything else (first segment, a handoff's ContinueAt, a
+        // caller-modified state) is a fresh dispatch and is seeded, which
+        // flushes the native pipeline exactly as a jump to a new PC must.
+        if (!(_resumable && CoreHolds(segmentRequest)))
         {
-            _core.SetGpr(i, segmentRequest.Gpr[i]);
+            for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+            {
+                _core.SetGpr(i, segmentRequest.Gpr[i]);
+            }
+            _core.Hi = segmentRequest.Hi;
+            _core.Lo = segmentRequest.Lo;
+            _core.Pc = segmentRequest.Pc;
         }
-        _core.Hi = segmentRequest.Hi;
-        _core.Lo = segmentRequest.Lo;
-        _core.Pc = segmentRequest.Pc;
 
         var biosRuntime = _biosRuntimeFactory?.Invoke(
             new GuestMemoryReader(_bus.Read8),
@@ -271,6 +284,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             termination = RecompilerIrTerminationReason.ExecutionBudgetExceeded;
         }
+        _resumable = termination == RecompilerIrTerminationReason.ExecutionBudgetExceeded;
 
         var snapshot = new RecompilerStateSnapshot(
             ReadGpr(),
@@ -305,6 +319,23 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             gpr[i] = _core.GetGpr(i);
         }
         return gpr;
+    }
+
+    private bool CoreHolds(TitleExecutionSegmentRequest request)
+    {
+        if (_core.Pc != request.Pc || _core.Hi != request.Hi || _core.Lo != request.Lo)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+        {
+            if (_core.GetGpr(i) != request.Gpr[i])
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;

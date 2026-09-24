@@ -445,6 +445,80 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_Mfc0LoadDelayInFlightAtASegmentBoundary_StillCommits()
+    {
+        // CodeRabbit on PR #502: re-seeding the core for the next segment flushed
+        // the pipeline. A one-instruction segment ends right after MFC0 EPC; the
+        // delay-slot OR must still read the old $k1 and the next OR the EPC.
+        const byte orFunct = 0x25;
+        uint[] words =
+        [
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: 0x1234),
+            Mtc0(R3000aRegister.T0, 14), // EPC
+            Mfc0(R3000aRegister.K1, 14), // EPC, load-delayed
+            MipsEncoding.R(orFunct, rd: (byte)R3000aRegister.S6, rs: (byte)R3000aRegister.K1, rt: 0, shamt: 0),
+            MipsEncoding.R(orFunct, rd: (byte)R3000aRegister.S0, rs: (byte)R3000aRegister.K1, rt: 0, shamt: 0),
+        ];
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        var result = new ExecutionOrchestrator().Execute(engine, ExitHandoff(), Request(Entry, outer: 64, segment: 1));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.S6].Should().Be(0u, "the load-delay slot reads the old $k1");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(0x1234u, "the MFC0 result committed across the boundary");
+    }
+
+    [Fact]
+    public void Interpreter_JrPendingAtASegmentBoundary_StillLandsOnItsTarget()
+    {
+        // A one-instruction segment ends right after JR: the delay slot runs in
+        // the next segment and the JR target, not the fall-through, follows it.
+        var target = Entry + 20u;
+        uint[] words =
+        [
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: (ushort)(target >> 16)),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: (byte)R3000aRegister.T0, immediate: (ushort)target),
+            MipsEncoding.JumpRegister((byte)R3000aRegister.T0),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S0, rs: 0, immediate: 0x11), // delay slot
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S1, rs: 0, immediate: 0x22), // skipped
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S2, rs: 0, immediate: 0x33), // target
+        ];
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        var result = new ExecutionOrchestrator().Execute(engine, ExitHandoff(), Request(Entry, outer: 64, segment: 1));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        result.FinalSnapshot!.Gpr[(int)R3000aRegister.S0].Should().Be(0x11u, "the delay slot ran");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u, "the fall-through was skipped");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S2].Should().Be(0x33u, "the JR target ran");
+    }
+
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(2u)]
+    [InlineData(3u)]
+    [InlineData(5u)]
+    public void Interpreter_InterruptReturnSplitAcrossTinySegments_StillResumesTheGuest(uint segment)
+    {
+        // The whole INT -> helper call -> MFC0 EPC / JR / RFE sequence, cut into
+        // segments of a few instructions so boundaries land inside the handler's
+        // load-delay and branch-delay slots.
+        var result = RunInterruptProgram(
+            InterruptHandler(acknowledge: true, callInProgram: TimerHelper),
+            Timer2InterruptThenWaitForHandler(),
+            segment,
+            outer: 1_000);
+
+        result.State.Should().Be(TitleExecutionState.Completed, $"segment={segment}: {Describe(result)}");
+        result.FinalSnapshot!.PC.Should().Be(TimerProgramEnd);
+        var gpr = result.FinalSnapshot.Gpr;
+        gpr[(int)R3000aRegister.S1].Should().Be(1u, "the handler ran exactly once");
+        gpr[(int)R3000aRegister.S5].Should().Be(1u, "the helper ran exactly once");
+        gpr[(int)R3000aRegister.K1].Should().Be(Entry + (TimerWaitLoopIndex * 4u), "EPC is the interrupted BEQ");
+        gpr[(int)R3000aRegister.S2].Should().Be(ReturnedMarker, "the interrupted code resumed after RFE");
+    }
+
+    [Fact]
     public void Interpreter_JumpOutsideTheProgramWithoutAnInterrupt_IsStillAnUnresolvedTransfer()
     {
         using var engine = new InterpreterTitleExecutionEngine(
