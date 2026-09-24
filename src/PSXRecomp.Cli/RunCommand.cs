@@ -20,7 +20,9 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// unresolved transfer is classified as unsupported). The launcher is single-shot
 /// (it builds and runs in one operation and does not accept an already-built binary),
 /// so <c>run</c> rebuilds from the input; persisted-artifact-only relaunch is outside
-/// Issue #460. The production result maps onto the process exit code as-is:
+/// Issue #460. With <c>--report</c>, the command also packages the existing
+/// privacy-safe #457 diagnostic contracts after a production result exists.
+/// The production result maps onto the process exit code as-is:
 /// Success → 0, Blocked → 2, Failure/tooling → 1.
 /// </summary>
 [Infrastructure]
@@ -33,6 +35,7 @@ public static class RunCommand
     /// timeout kills it.
     /// </summary>
     public const uint DefaultSegmentBudget = 1_000_000u;
+    /// <summary>Stable filename used by <c>run --report</c> inside the output directory.</summary>
     public const string DiagnosticBundleFileName = "diagnostic-report.zip";
 
     internal static int Run(ParsedArguments arguments, TextWriter standardOutput, TextWriter standardError)
