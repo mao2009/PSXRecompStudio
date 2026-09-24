@@ -1,10 +1,14 @@
+using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text.Json;
 using PSXRecomp.Core.Cpu;
+using PSXRecomp.Core.Diagnostics;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Cli;
+using PSXRecomp.Infrastructure.Diagnostics;
 using PSXRecomp.Tests.RealRomAnalysis;
 
 namespace PSXRecomp.Tests.Cli;
@@ -106,6 +110,22 @@ public sealed class CliRunTests
     }
 
     private static bool ArtifactExists(string artifactPath) => new FileInfo(artifactPath).Exists;
+
+    private static string Sha256File(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
+    private static string ReadZipEntry(ZipArchive archive, string name)
+    {
+        var entry = archive.GetEntry(name);
+        entry.Should().NotBeNull();
+
+        using var stream = entry!.Open();
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
 
     [Fact]
     public void Recompile_SyntheticExe_BuildsArtifactAtCallerSelectedOutputDirectory()
@@ -363,6 +383,116 @@ public sealed class CliRunTests
     }
 
     [Fact]
+    public void Run_Report_JsonGeneratesPrivacySafeDiagnosticBundle()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit, output, error) = Invoke(
+            "run", exePath, "--output", outDir, "--report", "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+
+        using var json = JsonDocument.Parse(output);
+        var root = json.RootElement;
+        root.EnumerateObject().Select(static p => p.Name).Should().Equal(
+            "kind", "success", "artifact", "output", "result", "diagnosticBundle");
+
+        var bundlePath = root.GetProperty("diagnosticBundle").GetString();
+        bundlePath.Should().Be(Path.Combine(Path.GetFullPath(outDir), RunCommand.DiagnosticBundleFileName));
+        File.Exists(bundlePath!).Should().BeTrue();
+
+        using var archive = ZipFile.OpenRead(bundlePath!);
+        archive.Entries.Select(static entry => entry.FullName).Should().Equal(
+            ExecutionDiagnosticBundleWriter.ReportEntryName,
+            ExecutionDiagnosticBundleWriter.EnvironmentEntryName,
+            ExecutionDiagnosticBundleWriter.DiagnosticsEntryName,
+            ExecutionDiagnosticBundleWriter.IssueEntryName);
+
+        var reportText = ReadZipEntry(archive, ExecutionDiagnosticBundleWriter.ReportEntryName);
+        using var reportJson = JsonDocument.Parse(reportText);
+        var report = reportJson.RootElement;
+        report.GetProperty("schema").GetString().Should().Be(ExecutionDiagnosticReport.CurrentSchema);
+        report.GetProperty("inputSha256").GetString().Should().Be(Sha256File(exePath));
+        report.GetProperty("artifactIdentity").GetString()
+            .Should().Be($"sha256:{Sha256File(root.GetProperty("artifact").GetString()!)}");
+        report.GetProperty("segmentBudget").GetUInt32().Should().Be(RunCommand.DefaultSegmentBudget);
+
+        ReadZipEntry(archive, ExecutionDiagnosticBundleWriter.DiagnosticsEntryName)
+            .Should().BeEmpty();
+
+        var bundleText = string.Concat(
+            archive.Entries.Select(entry => ReadZipEntry(archive, entry.FullName)));
+        bundleText.Should().NotContain(exePath);
+        bundleText.Should().NotContain(Path.GetFullPath(outDir));
+        bundleText.Should().NotContain(root.GetProperty("artifact").GetString()!);
+    }
+
+    [Fact]
+    public void Run_Report_HumanOutputReportsBundlePath()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit, output, error) = Invoke("run", exePath, "--output", outDir, "--report");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+        var bundlePath = Path.Combine(Path.GetFullPath(outDir), RunCommand.DiagnosticBundleFileName);
+        output.Should().Contain($"Diagnostic report: {bundlePath}");
+        File.Exists(bundlePath).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Run_Report_BlockedOutcomeStillGeneratesBundle()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "jump.exe", UnresolvedJumpProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit, output, error) = Invoke(
+            "run", exePath, "--output", outDir, "--report", "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Blocked);
+        error.Should().BeEmpty();
+
+        using var json = JsonDocument.Parse(output);
+        var bundlePath = json.RootElement.GetProperty("diagnosticBundle").GetString();
+        File.Exists(bundlePath!).Should().BeTrue();
+
+        using var archive = ZipFile.OpenRead(bundlePath!);
+        using var reportJson = JsonDocument.Parse(
+            ReadZipEntry(archive, ExecutionDiagnosticBundleWriter.ReportEntryName));
+        var report = reportJson.RootElement;
+        report.GetProperty("outcome").GetInt32()
+            .Should().Be((int)RecompiledArtifactOutcome.Blocked);
+        report.GetProperty("state").GetInt32()
+            .Should().Be((int)TitleExecutionState.UnsupportedTransfer);
+        report.GetProperty("guestPc").GetUInt32().Should().Be(UncompiledTarget);
+    }
+
+    [Fact]
+    public void Run_WithoutReport_PreservesExistingJsonEnvelopeAndCreatesNoBundle()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit, output, error) = Invoke("run", exePath, "--output", outDir, "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+
+        using var json = JsonDocument.Parse(output);
+        json.RootElement.EnumerateObject().Select(static p => p.Name).Should().Equal(
+            "kind", "success", "artifact", "output", "result");
+        File.Exists(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName)).Should().BeFalse();
+    }
+
+    [Fact]
     public void Run_SyntheticExe_HumanOutputReportsCompletionAndArtifactPath()
     {
         using var dir = new TempDirectory();
@@ -516,6 +646,14 @@ public sealed class CliRunTests
         var (exit, _, error) = Invoke("run");
         exit.Should().Be(RecompiledArtifactExitCode.Failure);
         error.Should().Contain("missing input path.");
+    }
+
+    [Fact]
+    public void Recompile_ReportOptionIsRejectedWithExitCodeOne()
+    {
+        var (exit, _, error) = Invoke("recompile", "input.exe", "--output", "out", "--report");
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        error.Should().Contain("'--report' is only valid for 'run'.");
     }
 
     [Fact]
