@@ -48,6 +48,10 @@ the single `[LibraryImport("PSXRecomp.Native")]` boundary it already has.
   imports and stay one-to-one with the Rust exports, with no logic of their own.
   They exist because a static archive member is only linked in when referenced,
   and on Windows only a `dllexport`ed *definition* reaches the import library.
+- A Rust function that only C++ inside this library calls (not P/Invoked) needs
+  no thunk: declare it in an internal `src/*.h` header next to its C++ caller
+  and keep it out of `include/psx_core.h`. It still obeys sections 2–9. See
+  [Migrated subsystems](#migrated-subsystems).
 
 ### 2. ABI-visible types
 
@@ -175,12 +179,34 @@ a C++ or C# caller has.
 
 ## Current substrate surface
 
-Infrastructure only (#473); no emulator behaviour. See `rust/src/lib.rs`.
+Infrastructure (#473), managed-visible. See `rust/src/lib.rs`.
 
 | Export | Signature | Semantics |
 |---|---|---|
 | `PSXRecompRust_AbiVersion` | `uint32_t(void)` | Returns `ABI_VERSION` (1). Infallible. |
 | `PSXRecompRust_RoundTrip` | `int32_t(uint32_t value, uint32_t* out_result)` | Writes `value ^ 0x5A5A5A5A`. `PSX_RUST_OK` / `PSX_RUST_ERR_NULL_ARGUMENT` / `PSX_RUST_ERR_PANIC`. `out_result` stays caller-owned. |
+
+## Migrated subsystems
+
+### Interrupt controller (#484)
+
+`rust/src/interrupt.rs` implements I_STAT/I_MASK. Its exports are **internal**
+to `PSXRecomp.Native`: `src/psx_api.cpp` calls them (declared in
+`src/psx_interrupt.h`) to implement the unchanged `PSXCore_*Interrupt*`
+functions of `include/psx_core.h`, so neither `psx_core.h`, `NativeInterop.cs`,
+nor `ABI_VERSION` changed. The state is a `#[repr(C)]` two-`u32` value
+(`InterruptState` / `PSXInterruptState`) stored inline in `PSXCore` and passed
+by value: no pointers, no allocation, no `unsafe`, and no operation that can
+panic, so every export is infallible (§5) and returns its result directly.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_interrupt_reset` | `PSXInterruptState(void)` | Power-on state (both zero). |
+| `psx_interrupt_read_register` | `uint32_t(PSXInterruptState, uint32_t address)` | I_STAT, I_MASK, else 0. |
+| `psx_interrupt_write_register` | `PSXInterruptState(PSXInterruptState, uint32_t address, uint32_t value)` | I_STAT write-0-to-clear (`&=`); I_MASK replaced; other addresses ignored. |
+| `psx_interrupt_raise` | `PSXInterruptState(PSXInterruptState, int32_t irq)` | Sets I_STAT bit `irq`; `irq` outside 0..10 ignored. |
+| `psx_interrupt_clear` | `PSXInterruptState(PSXInterruptState, int32_t irq)` | Clears I_STAT bit `irq`; `irq` outside 0..10 ignored. |
+| `psx_interrupt_pending` | `uint32_t(PSXInterruptState)` | 1 when `I_STAT & I_MASK != 0`, else 0. |
 
 ## Related
 

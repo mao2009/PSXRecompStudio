@@ -9,5 +9,5 @@ struct PSXCore {
     PSXMemory memory;
     PSXDmaController dma;
     PSXTimerController timers;
-    PSXInterruptController interrupts;
+    PSXInterruptState interrupts = psx_interrupt_reset();
 };

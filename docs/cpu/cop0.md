@@ -100,7 +100,7 @@ Bit  Name    Description
 | IP[2] | Hardware: Interrupt Controller aggregate line (R only) |
 | IP[3]-IP[7] | Hardware: unused (unconnected, always 0) in this emulator's model |
 
-On real R3000A/PSX hardware, all peripheral interrupts such as VBlank/GPU/CD-ROM/DMA/TMR0-2 are aggregated by the Interrupt Controller (I_STAT/I_MASK; see `docs/cpu/exceptions.md`) and delivered to the CPU through a single hardware interrupt line (CPU IRQ2 = CAUSE.IP2, bit 10). There is no dedicated CAUSE.IP bit for each individual peripheral. The Interrupt Controller's `GetInterruptPending()` result (`I_STAT & I_MASK != 0`) is this aggregate pending state and is reflected into CAUSE.IP2 on every CPU `Step()` (Issue #144). Software enables this aggregate interrupt line by enabling SR.IM2 (bit 10).
+On real R3000A/PSX hardware, all peripheral interrupts such as VBlank/GPU/CD-ROM/DMA/TMR0-2 are aggregated by the Interrupt Controller (I_STAT/I_MASK; see `docs/cpu/exceptions.md`) and delivered to the CPU through a single hardware interrupt line (CPU IRQ2 = CAUSE.IP2, bit 10). There is no dedicated CAUSE.IP bit for each individual peripheral. The Interrupt Controller's pending result (`psx_interrupt_pending()`, implemented in Rust since Issue #484) (`I_STAT & I_MASK != 0`) is this aggregate pending state and is reflected into CAUSE.IP2 on every CPU `Step()` (Issue #144). Software enables this aggregate interrupt line by enabling SR.IM2 (bit 10).
 
 ## EPC (Exception Program Counter) - cop0r14
 

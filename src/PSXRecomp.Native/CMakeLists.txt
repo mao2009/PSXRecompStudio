@@ -74,6 +74,7 @@ add_custom_command(
     # manifest path, so the pin only applies when cargo runs inside the crate.
     WORKING_DIRECTORY ${PSX_RUST_DIR}
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
+            ${PSX_RUST_DIR}/src/interrupt.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
@@ -88,7 +89,6 @@ add_library(PSXRecomp.Native SHARED
     src/psx_memory.cpp
     src/psx_dma.cpp
     src/psx_timer.cpp
-    src/psx_interrupt.cpp
     src/psx_rust_abi.cpp
 )
 
@@ -134,7 +134,6 @@ add_executable(psx_native_tests
     src/psx_memory.cpp
     src/psx_dma.cpp
     src/psx_timer.cpp
-    src/psx_interrupt.cpp
     tests/test_psx_core.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)

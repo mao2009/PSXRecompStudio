@@ -1,9 +1,12 @@
 //! Minimal Rust coexistence substrate for the PSXRecompStudio native runtime.
 //!
-//! This crate exists to prove that Rust can be built, linked, called and tested
-//! alongside the existing C++ native core (Issue #473). It implements **no**
-//! emulator behaviour and must never grow into a runtime abstraction of its
-//! own; the first real C++ -> Rust migration lands as a separate change.
+//! This crate was introduced to prove that Rust can be built, linked, called
+//! and tested alongside the existing C++ native core (Issue #473). It hosts
+//! individual subsystems migrated from C++ (Issue #471), each in its own
+//! module, and must never grow into a runtime abstraction of its own.
+//!
+//! Migrated subsystems:
+//! - [`interrupt`]: the I_STAT/I_MASK interrupt controller (Issue #484).
 //!
 //! The crate is compiled as a `staticlib` and linked into the existing
 //! `PSXRecomp.Native` shared library, whose thin `extern "C"` re-export layer
@@ -15,6 +18,8 @@
 #![deny(missing_docs)]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+
+pub mod interrupt;
 
 /// Version of the Rust substrate's C ABI contract.
 ///
