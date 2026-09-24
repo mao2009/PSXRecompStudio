@@ -8,10 +8,12 @@ namespace PSXRecomp.Core.Runtime.Gpu;
 /// <see cref="GpuState"/> register file, a GP0 command packet state machine,
 /// and a GPUSTAT register derived entirely from named state.
 ///
-/// Scope: register contract, packet decoding, VRAM storage, and CPU-to-VRAM /
-/// VRAM-to-CPU transfers. Rasterization of decoded primitives is deferred to
-/// Issue #441 (<see cref="LastPrimitive"/>); VBlank scheduling is deferred to
-/// Issue #442 (<see cref="HasVblank"/> is always false).
+/// Scope: register contract, packet decoding, VRAM storage, CPU-to-VRAM /
+/// VRAM-to-CPU transfers, and (Issue #441) synchronous rasterization of flat
+/// and Gouraud rectangle/triangle primitives via <see cref="GpuRasterizer"/>
+/// (<see cref="LastPrimitive"/>, <see cref="LastRasterOutcome"/>). VBlank IRQ0
+/// is raised by <see cref="DeviceScheduler"/> (Issue #442), not by this
+/// device, so <see cref="HasVblank"/> is always false.
 ///
 /// Integration disclosure: this device is reachable through
 /// <c>GpuMmioAdapter</c> + <c>MemoryBus</c>, but it is NOT yet wired into any
@@ -57,8 +59,16 @@ public sealed class GpuDevice : IGpu, IDisposable
     /// <summary>Opcode of the most recently completed GP0 command.</summary>
     public byte LastResultOpcode { get; private set; }
 
-    /// <summary>Last decoded drawing-primitive packet, kept for Issue #441 rasterization.</summary>
+    /// <summary>Last decoded drawing-primitive packet, kept for introspection/tests.</summary>
     public GpuPrimitivePacket? LastPrimitive { get; private set; }
+
+    /// <summary>
+    /// Outcome of rasterizing <see cref="LastPrimitive"/> (Issue #441): whether
+    /// it was drawn into <see cref="Vram"/> or recognized as an unsupported
+    /// feature (texture mapping, quads) and left untouched. Independent of
+    /// <see cref="LastResult"/>, which classifies GP0 command decoding itself.
+    /// </summary>
+    public GpuRasterOutcome LastRasterOutcome { get; private set; }
 
     /// <summary>Whether the GPU is currently accumulating a packet, streaming transfer data, or discarding a variable-length payload.</summary>
     public bool IsBusy => _pendingCommand is not null || _cpuToVramActive || _discardUntilTerminator;
@@ -219,6 +229,14 @@ public sealed class GpuDevice : IGpu, IDisposable
 
     public IntPtr GetVramPointer() => Vram.Pointer;
 
+    /// <summary>
+    /// Captures the currently configured display region as a deterministic,
+    /// presentation-agnostic <see cref="FrameSnapshot"/> (Issue #441). Pure
+    /// function of the current GPU/VRAM state; independent of scheduler/VBlank
+    /// timing (Issue #442).
+    /// </summary>
+    public FrameSnapshot CaptureFrame() => FrameSnapshot.Capture(Vram, _state, GetDisplayResolution());
+
     public (ushort Width, ushort Height) GetDisplayResolution()
     {
         int _width = ((_state.DisplayMode >> 6) & 1) == 1
@@ -228,7 +246,7 @@ public sealed class GpuDevice : IGpu, IDisposable
         return ((ushort)_width, (ushort)_height);
     }
 
-    /// <summary>Always false: no VBlank/VSYNC model in Issue #440 (deferred to Issue #442).</summary>
+    /// <summary>Always false: VBlank IRQ0 comes from <see cref="DeviceScheduler"/> (Issue #442), since this device is not yet wired into a production engine.</summary>
     public bool HasVblank => false;
 
     public void AcknowledgeVblank()
@@ -303,7 +321,9 @@ public sealed class GpuDevice : IGpu, IDisposable
 
         if (cmd.Result == GpuCommandResult.DecodedPendingRasterization)
         {
-            LastPrimitive = new GpuPrimitivePacket(cmd, _pendingCommandWord, param.ToArray());
+            var _primitive = new GpuPrimitivePacket(cmd, _pendingCommandWord, param.ToArray());
+            LastPrimitive = _primitive;
+            LastRasterOutcome = GpuRasterizer.Rasterize(_primitive, _state, Vram);
             LastResult = cmd.Result;
             LastResultOpcode = cmd.Opcode;
             return;

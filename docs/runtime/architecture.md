@@ -160,9 +160,27 @@ The register/VRAM contract is implemented as a pure managed Domain model in
 GPUSTAT is derived from named state (see ADR-022), VRAM is 1024x512x16b, and
 unimplemented GP0 opcodes are reported explicitly rather than silently ignored.
 
-Not yet implemented: primitive rasterization and display output (#441),
-VRAM→VRAM blit, VBlank/IRQ0 scheduling (#442), and DMA channel 2 (GPU)
-consumption of the DMA controller.
+### Rasterization and frame snapshot (Issue #441, partial)
+
+`GpuRasterizer` renders flat and Gouraud-shaded triangles and flat rectangles
+(non-textured, non-quad) into `GpuVram` synchronously when `GpuDevice`
+completes a GP0 drawing-primitive command; texture mapping and quads are
+recognized but explicitly reported as `GpuRasterOutcome.UnsupportedFeature`
+rather than mis-rendered. `FrameSnapshot.Capture` (also reachable via
+`GpuDevice.CaptureFrame`) is a pure function of the current VRAM and the
+GP1(05h)/display-resolution state that returns a deterministic,
+presentation-agnostic capture of the configured display region, plus a
+SHA-256 stable-content hash — independent of VBlank/scheduler timing.
+
+VBlank IRQ0 is raised by the device scheduler (see
+[Device Scheduling](#device-scheduling-issue-442)), not by `GpuDevice`, because
+the GPU is not yet part of the production engine; `IGpu.HasVblank` stays false.
+
+Not yet implemented: texture mapping, quads, line primitives,
+semi-transparency blending, dithering, mask-bit checking, VRAM→VRAM blit, and
+DMA channel 2 (GPU) consumption of the DMA controller. No CLI/headless export
+path consumes `FrameSnapshot` yet, and the GPU device itself is not wired into
+`DeviceScheduler` or any production execution engine.
 
 ## SPU Model
 
@@ -262,6 +280,42 @@ Three hardware timers.
 - Hardware events are processed at cycle boundaries.
 - DMA runs in parallel with CPU execution but stalls on bus contention.
 - Timers count in synchronization with CPU cycles.
+
+### Device Scheduling (Issue #442)
+
+`PSXRecomp.Core.Runtime.DeviceScheduler` is what advances devices during a real
+run. Responsibilities are split so no device behavior is duplicated:
+
+- **Elapsed time comes from the engine.** `InterpreterTitleExecutionEngine`
+  calls `Advance(CyclesPerInstruction)` after every retired `Step()`. The native
+  interpreter has no cycle model, so its retired-instruction count is the time
+  source (1 instruction = 1 cycle). The scheduler keeps no clock of its own —
+  only the phase inside the current VBlank interval and the DMA IRQ line's last
+  level. BIOS HLE vector dispatch retires no instruction and advances nothing.
+- **Device semantics stay native/Rust.** Timers advance via `PSXCore_TickTimers`
+  and DMA via `PSXCore_TickDma`; IRQs are raised through
+  `IInterruptController.Raise` onto the Rust interrupt controller.
+- **IRQs latch but are not taken as CPU exceptions.** The engine steps with
+  `PSXCore_StepWithoutInterrupts`, which holds the CPU's hardware interrupt
+  input low (CAUSE.IP2 reads 0). The engine cannot yet continue into the
+  exception handler at 0x80000080. So an INT exception taken for a guest that
+  unmasked I_MASK and set SR IEc/IM2 would end the run as `CPU_EXCEPTION` one
+  VBlank in. The guest still sees every IRQ by polling I_STAT. Other exceptions
+  (SYSCALL, faults, software interrupts) still end the segment as before.
+- **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
+  raised as IRQ4-6) → DMA (IRQ3 on a rising edge of DICR bit 31) → VBlank
+  (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
+- **DMA completion model:** a started channel (CHCR bit 24, DPCR enable, and bit
+  28 for sync mode 0) completes after one cycle per word (sync 0: BCR[15:0];
+  sync 1: size × count; linked list: one word, since its length lives in guest
+  RAM). Completion clears CHCR bits 24/28 and sets the channel's DICR flag when
+  enabled. No data is transferred; device-backed transfers (GPU DMA2, OTC
+  clearing, CD-ROM, SPU, MDEC) remain device work.
+
+Not modelled: cycle-exact timing, HBlank, Timer 0/1 blank sync lines, and GPU
+IRQ1. The generated-host engine (`HostTitleExecutionEngine`, test-only) carries
+guest MMIO as a flat register window across processes and has no native device
+state to schedule, so it is not wired.
 
 ## Recompiled Code ↔ Runtime ABI
 

@@ -23,6 +23,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
+    /// <summary>B0:3D putchar, the verified B0-table alias of A0:3C.</summary>
+    public const byte PutCharAliasFunction = 0x3D;
+
     /// <summary>A0:3E puts, the first service that reads guest memory.</summary>
     public const byte PutsFunction = 0x3E;
 
@@ -107,6 +110,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
         {
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
+            [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.A0, PutsFunction)] = (1, InvokePuts),
             [(BiosCallFamily.B0, PutsAliasFunction)] = (1, InvokePuts),
             [(BiosCallFamily.B0, GetC0TableFunction)] = (0, InvokeGetC0Table),
@@ -264,7 +268,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
         if (identity.Arguments.Count != 1)
         {
             return BiosServiceResult.InvalidArguments(
-                identity, "A0:3C putchar requires one character argument.");
+                identity, $"{identity.StableKey} putchar requires one character argument.");
         }
 
         _outputSink.WriteByte((byte)(identity.Arguments[0] & 0xFFu));

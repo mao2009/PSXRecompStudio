@@ -75,8 +75,10 @@ add_custom_command(
     WORKING_DIRECTORY ${PSX_RUST_DIR}
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
             ${PSX_RUST_DIR}/src/interrupt.rs
-            ${PSX_RUST_DIR}/src/dma.rs
+            ${PSX_RUST_DIR}/src/cpu_ops.rs
             ${PSX_RUST_DIR}/src/cpu_hilo.rs
+            ${PSX_RUST_DIR}/src/dma.rs
+            ${PSX_RUST_DIR}/src/memory.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
@@ -101,6 +103,21 @@ if(UNIX)
     # the archive's objects.
     find_package(Threads REQUIRED)
     target_link_libraries(PSXRecomp.Native PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
+if(WIN32)
+    # `cargo rustc -- --print native-static-libs` for the staticlib reports
+    # these system libraries (Issue #492's heap-allocating memory.rs module
+    # pulls in more of std than the previous POD-only DMA/Timer/Interrupt
+    # modules did, which is what first surfaced this). A `staticlib` archive
+    # carries no linker-flag metadata the way `cargo build`'s own rustc
+    # invocation would auto-apply for an executable/cdylib, so the consuming
+    # CMake target must list them explicitly. This applies to both Windows
+    # toolchains this project builds with (MinGW/GCC and MSVC, the CI
+    # `native-windows` job's default generator): the required Windows API
+    # surface (Winsock, userenv, ntdll, dbghelp) is the same either way, and
+    # CMake resolves the plain names to each toolchain's own import library.
+    target_link_libraries(PSXRecomp.Native PRIVATE ws2_32 userenv dbghelp ntdll)
 endif()
 
 target_include_directories(PSXRecomp.Native
@@ -144,5 +161,8 @@ add_dependencies(psx_native_tests psx_rust_substrate)
 target_link_libraries(psx_native_tests PRIVATE ${PSX_RUST_STATICLIB})
 if(UNIX)
     target_link_libraries(psx_native_tests PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(psx_native_tests PRIVATE ws2_32 userenv dbghelp ntdll)
 endif()
 add_test(NAME psx_native_tests COMMAND psx_native_tests)

@@ -78,7 +78,10 @@ handler installed:
   one, which is the false-match risk the oracle exists to rule out.
 - `InterpreterTitleExecutionEngine` — reaching `ExecutionOrchestrator` as
   `RuntimeFailure` / `CPU_EXCEPTION` rather than being handed to the handoff,
-  which would classify a faulted title as `Completed`.
+  which would classify a faulted title as `Completed`. It steps with
+  `PSXCore_StepWithoutInterrupts()`, which holds the hardware interrupt input
+  low, so a scheduled device IRQ stays latched in I_STAT instead of raising an
+  INT exception it cannot continue from (PR #493).
 
 ### Carrying a fault through the recompiler (Issue #481)
 
