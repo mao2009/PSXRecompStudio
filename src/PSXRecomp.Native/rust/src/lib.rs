@@ -8,7 +8,11 @@
 //! Migrated subsystems:
 //! - [`interrupt`]: the I_STAT/I_MASK interrupt controller (Issue #484).
 //! - [`timer`]: the Root Counter (Timer) controller (Issue #486).
+//! - [`cpu_ops`]: `PSXCpu` non-trapping ALU/logic/shift arithmetic (Issue #501).
+//! - [`cpu_hilo`]: `PSXCpu` HI/LO multiply/divide arithmetic (Issue #497).
+//! - [`cpu_alu`]: `PSXCpu` overflow-checked ADD/ADDI/SUB arithmetic (Issue #495).
 //! - [`dma`]: the DMA controller registers (Issue #488).
+//! - [`memory`]: guest RAM/scratchpad/BIOS/HW-register storage (Issue #492).
 //!
 //! The crate is compiled as a `staticlib` and linked into the existing
 //! `PSXRecomp.Native` shared library, whose thin `extern "C"` re-export layer
@@ -21,10 +25,13 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-pub mod cpu_alu;
 pub mod dma;
 pub mod interrupt;
+pub mod memory;
 pub mod timer;
+pub mod cpu_ops;
+pub mod cpu_hilo;
+pub mod cpu_alu;
 
 /// Version of the Rust substrate's C ABI contract.
 ///

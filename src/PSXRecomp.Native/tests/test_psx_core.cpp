@@ -376,6 +376,115 @@ static void test_step_shift() {
     PASS();
 }
 
+// Issue #501: the non-trapping ALU/logic/compare/shift handlers compute their
+// result in Rust (psx_cpu_ops.h). These drive each group end-to-end through
+// PSXCore_Step -> PSXCpu -> Rust -> SetGPR.
+static void step_ops_instr(PSXCore* core, uint32_t pc, uint32_t instr) {
+    PSXCore_WriteMemory32(core, pc, instr);
+    PSXCore_SetPC(core, pc);
+    PSXCore_Step(core);
+}
+
+static void test_step_ops_wrapping_arith() {
+    TEST("ADDU/SUBU/ADDIU wrap without trapping; $zero write discarded (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu);
+    PSXCore_SetGPR(core, 2, 1u);
+
+    step_ops_instr(core, 0x00, 0x00221821u); // ADDU $3, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u);
+    step_ops_instr(core, 0x04, 0x00412023u); // SUBU $4, $2, $1
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 2u);
+    step_ops_instr(core, 0x08, 0x2425FFFFu); // ADDIU $5, $1, -1
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xFFFFFFFEu);
+    step_ops_instr(core, 0x0C, 0x00210021u); // ADDU $0, $1, $1
+    ASSERT_EQ(PSXCore_GetGPR(core, 0), 0u);
+
+    // Signed overflow wraps and never raises Ov for ADDU.
+    PSXCore_SetGPR(core, 1, 0x7FFFFFFFu);
+    step_ops_instr(core, 0x10, 0x00221821u); // ADDU $3, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x80000000u);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_ops_logic_and_immediates() {
+    TEST("AND/OR/XOR/NOR, zero-extended ANDI/ORI/XORI, and LUI (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xAAAA5555u);
+    PSXCore_SetGPR(core, 2, 0x0F0FF0F0u);
+
+    step_ops_instr(core, 0x00, 0x00225024u); // AND $10, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 10), 0x0A0A5050u);
+    step_ops_instr(core, 0x04, 0x00225825u); // OR $11, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 11), 0xAFAFF5F5u);
+    step_ops_instr(core, 0x08, 0x00226026u); // XOR $12, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 12), 0xA5A5A5A5u);
+    step_ops_instr(core, 0x0C, 0x00226827u); // NOR $13, $1, $2
+    ASSERT_EQ(PSXCore_GetGPR(core, 13), 0x50500A0Au);
+
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu);
+    step_ops_instr(core, 0x10, 0x30238000u); // ANDI $3, $1, 0x8000
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x00008000u);
+    step_ops_instr(core, 0x14, 0x34048000u); // ORI $4, $0, 0x8000
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0x00008000u);
+    step_ops_instr(core, 0x18, 0x3825FFFFu); // XORI $5, $1, 0xFFFF
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xFFFF0000u);
+    step_ops_instr(core, 0x1C, 0x3C068001u); // LUI $6, 0x8001
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 0x80010000u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_ops_compare() {
+    TEST("SLT signed vs SLTU unsigned; SLTI/SLTIU sign-extend the immediate (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu); // -1
+    PSXCore_SetGPR(core, 2, 1u);
+
+    step_ops_instr(core, 0x00, 0x0022182Au); // SLT $3, $1, $2: -1 < 1
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 1u);
+    step_ops_instr(core, 0x04, 0x0022202Bu); // SLTU $4, $1, $2: 0xFFFFFFFF < 1
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0u);
+    step_ops_instr(core, 0x08, 0x2825FFFFu); // SLTI $5, $1, -1: -1 < -1
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0u);
+    step_ops_instr(core, 0x0C, 0x28468000u); // SLTI $6, $2, -32768: 1 < -32768
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 0u);
+    step_ops_instr(core, 0x10, 0x2C478000u); // SLTIU $7, $2, 0x8000: 1 < 0xFFFF8000
+    ASSERT_EQ(PSXCore_GetGPR(core, 7), 1u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_ops_shifts() {
+    TEST("SRA sign-fills; SLLV/SRLV/SRAV use the low 5 bits of rs (Issue #501)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x80000000u);
+    PSXCore_SetGPR(core, 2, 1u);
+    PSXCore_SetGPR(core, 5, 33u); // -> 1
+    PSXCore_SetGPR(core, 7, 63u); // -> 31
+
+    step_ops_instr(core, 0x00, 0x00011903u); // SRA $3, $1, 4
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xF8000000u);
+    step_ops_instr(core, 0x04, 0x00014FC2u); // SRL $9, $1, 31
+    ASSERT_EQ(PSXCore_GetGPR(core, 9), 1u);
+    step_ops_instr(core, 0x08, 0x000277C0u); // SLL $14, $2, 31
+    ASSERT_EQ(PSXCore_GetGPR(core, 14), 0x80000000u);
+    step_ops_instr(core, 0x0C, 0x00A22004u); // SLLV $4, $2, $5
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 2u);
+    step_ops_instr(core, 0x10, 0x00E13006u); // SRLV $6, $1, $7
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 1u);
+    step_ops_instr(core, 0x14, 0x00E14007u); // SRAV $8, $1, $7
+    ASSERT_EQ(PSXCore_GetGPR(core, 8), 0xFFFFFFFFu);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_step_branch() {
     TEST("BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ instructions");
     PSXCore* core = PSXCore_Create();
@@ -2196,6 +2305,32 @@ static void test_timer_reset_timers() {
     PASS();
 }
 
+// Issue #442: a manually triggered channel completes after its modelled word
+// count through the public C ABI and raises the DICR IRQ line.
+static void test_dma_tick_completes_transfer() {
+    TEST("PSXCore_TickDma completes a started transfer after its word count");
+    PSXCore* core = PSXCore_Create();
+    assert(core != nullptr);
+
+    PSXCore_WriteDmaRegister(core, 0x1F8010F0u, 0x07654321u | (1u << 27)); // DPCR: enable ch6
+    PSXCore_WriteDmaRegister(core, 0x1F8010F4u, (1u << 23) | (1u << 30));  // DICR: master + ch6
+    PSXCore_WriteDmaRegister(core, 0x1F8010E4u, 4u);                        // ch6 BCR: 4 words
+    PSXCore_WriteDmaRegister(core, 0x1F8010E8u, 0x11000002u);               // ch6 CHCR: start+trigger
+
+    PSXCore_TickDma(core, 3);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010E8u) & (1u << 24), 1u << 24);
+    ASSERT_EQ(PSXCore_GetDmaInterruptPending(core), 0);
+
+    PSXCore_TickDma(core, 1);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010E8u), 0x00000002u);
+    ASSERT_EQ(PSXCore_GetDmaInterruptPending(core), 1);
+    ASSERT_EQ(PSXCore_ReadDmaRegister(core, 0x1F8010F4u) >> 31, 1u);
+
+    PSXCore_TickDma(nullptr, 1);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_timer_null_safety() {
     TEST("Timer null pointer safety");
     ASSERT_EQ(PSXCore_ReadTimerRegister(nullptr, 0x1F801100u), 0u);
@@ -2349,6 +2484,32 @@ static void test_step_interrupt_taken_when_enabled() {
     ASSERT_EQ(PSXCore_GetCop0(core, 14), 0x1000u); // EPC = the not-yet-executed instruction
     ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u); // ADD never executed
     ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u); // exception vector (BEV=0)
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_step_without_interrupts_holds_line_low() {
+    TEST("StepWithoutInterrupts: pending + enabled interrupt is not taken, I_STAT kept");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetGPR(core, 1, 10);
+    PSXCore_SetGPR(core, 2, 20);
+    PSXCore_WriteMemory32(core, 0x1000u, 0x00221820u); // ADD $3,$1,$2
+    PSXCore_SetPC(core, 0x1000u);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 1u);
+    PSXCore_RaiseInterrupt(core, 0);
+
+    ASSERT_EQ(PSXCore_StepWithoutInterrupts(core), 0);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 30u);         // the instruction executed
+    ASSERT_EQ(PSXCore_GetPC(core), 0x1004u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & (1u << 10), 0u); // CAUSE.IP2 held low
+    ASSERT_EQ(PSXCore_GetInterruptPending(core), 1); // I_STAT & I_MASK untouched
+
+    PSXCore_Step(core); // the ordinary step still takes it
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    ASSERT_EQ(PSXCore_StepWithoutInterrupts(nullptr), -1);
     PSXCore_Destroy(core);
     PASS();
 }
@@ -2681,6 +2842,96 @@ static void test_dicr_write16_preserves_w1c_flags() {
     PASS();
 }
 
+// MULT/MULTU/DIVU native regression tests (Issue #497's Rust HI/LO migration).
+// DIV's divide-by-zero and INT32_MIN/-1 edge cases are already covered above
+// by test_div_by_zero_positive/negative, test_div_overflow, and
+// test_divu_by_zero; these fill the previously-missing MULT/MULTU coverage
+// and DIVU's normal-case path, end-to-end through PSXCore_Step.
+static void test_mult_signed_positive_times_negative() {
+    TEST("MULT: signed positive * negative HI/LO split");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 1000);
+    PSXCore_SetGPR(core, 2, 0xFFFFFFFFu); // -1
+
+    PSXCore_WriteMemory32(core, 0, 0x00220018u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    ASSERT_EQ(PSXCore_GetLO(core), static_cast<uint32_t>(-1000));
+    ASSERT_EQ(PSXCore_GetHI(core), 0xFFFFFFFFu);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_mult_signed_negative_times_negative() {
+    TEST("MULT: signed negative * negative HI/LO split");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFBu);
+    PSXCore_SetGPR(core, 2, 0xFFFFFFFDu);
+
+    PSXCore_WriteMemory32(core, 0, 0x00220018u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    ASSERT_EQ(PSXCore_GetLO(core), 15u);
+    ASSERT_EQ(PSXCore_GetHI(core), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_multu_upper_lower_split() {
+    TEST("MULTU: unsigned product requiring a non-zero HI");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x00010000u);
+    PSXCore_SetGPR(core, 2, 0x00010000u);
+
+    PSXCore_WriteMemory32(core, 0, 0x00220019u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    ASSERT_EQ(PSXCore_GetHI(core), 1u);
+    ASSERT_EQ(PSXCore_GetLO(core), 0u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_multu_uint32_max_squared() {
+    TEST("MULTU: UINT32_MAX * UINT32_MAX");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0xFFFFFFFFu);
+    PSXCore_SetGPR(core, 2, 0xFFFFFFFFu);
+
+    PSXCore_WriteMemory32(core, 0, 0x00220019u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    ASSERT_EQ(PSXCore_GetHI(core), 0xFFFFFFFEu);
+    ASSERT_EQ(PSXCore_GetLO(core), 0x00000001u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_divu_normal() {
+    TEST("DIVU normal operation");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 100);
+    PSXCore_SetGPR(core, 2, 7);
+
+    PSXCore_WriteMemory32(core, 0, 0x0022001Bu);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+
+    ASSERT_EQ(PSXCore_GetLO(core), 14u);
+    ASSERT_EQ(PSXCore_GetHI(core), 2u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 int main() {
     printf("PSXRecomp.Native Tests\n");
     printf("======================\n");
@@ -2710,6 +2961,10 @@ int main() {
     test_step_slt_sltu();
     test_step_sltiu();
     test_step_shift();
+    test_step_ops_wrapping_arith();
+    test_step_ops_logic_and_immediates();
+    test_step_ops_compare();
+    test_step_ops_shifts();
     test_step_branch();
     test_step_jump();
     test_step_branch_delay_slot();
@@ -2791,6 +3046,7 @@ int main() {
     test_timer_sync_arm_timer0();
     test_timer_reset_timers();
     test_timer_null_safety();
+    test_dma_tick_completes_transfer();
 
     test_interrupt_registers();
     test_interrupt_pending();
@@ -2800,6 +3056,7 @@ int main() {
 
     test_step_no_interrupt_baseline();
     test_step_interrupt_taken_when_enabled();
+    test_step_without_interrupts_holds_line_low();
     test_step_interrupt_masked_by_iec();
     test_step_interrupt_masked_by_im();
     test_step_interrupt_cause_ip_tracks_controller();
@@ -2807,6 +3064,12 @@ int main() {
     test_step_interrupt_nested_sr_stack();
     test_step_interrupt_vblank_full_flow();
     test_run_interrupt_taken();
+
+    test_mult_signed_positive_times_negative();
+    test_mult_signed_negative_times_negative();
+    test_multu_upper_lower_split();
+    test_multu_uint32_max_squared();
+    test_divu_normal();
 
     printf("\n======================\n");
     printf("Results: %d/%d passed\n", tests_passed, tests_run);

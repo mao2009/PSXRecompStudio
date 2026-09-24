@@ -1,6 +1,8 @@
 #include "psx_cpu.h"
 #include "psx_cpu_alu.h"
+#include "psx_cpu_hilo.h"
 #include "psx_memory.h"
+#include "psx_cpu_ops.h"
 #include <cassert>
 #include <cstdint>
 
@@ -607,7 +609,7 @@ void PSXCpu::ExecAdd(uint32_t rd, uint32_t rs, uint32_t rt) {
 }
 
 void PSXCpu::ExecAddu(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, gpr_[rs] + gpr_[rt]);
+    SetGPR(rd, psx_cpu_ops_addu(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecSub(uint32_t rd, uint32_t rs, uint32_t rt) {
@@ -622,31 +624,31 @@ void PSXCpu::ExecSub(uint32_t rd, uint32_t rs, uint32_t rt) {
 }
 
 void PSXCpu::ExecSubu(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, gpr_[rs] - gpr_[rt]);
+    SetGPR(rd, psx_cpu_ops_subu(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecAnd(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, gpr_[rs] & gpr_[rt]);
+    SetGPR(rd, psx_cpu_ops_and(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecOr(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, gpr_[rs] | gpr_[rt]);
+    SetGPR(rd, psx_cpu_ops_or(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecXor(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, gpr_[rs] ^ gpr_[rt]);
+    SetGPR(rd, psx_cpu_ops_xor(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecNor(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, ~(gpr_[rs] | gpr_[rt]));
+    SetGPR(rd, psx_cpu_ops_nor(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecSlt(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, ToSigned(gpr_[rs]) < ToSigned(gpr_[rt]) ? 1 : 0);
+    SetGPR(rd, psx_cpu_ops_slt(gpr_[rs], gpr_[rt]));
 }
 
 void PSXCpu::ExecSltu(uint32_t rd, uint32_t rs, uint32_t rt) {
-    SetGPR(rd, gpr_[rs] < gpr_[rt] ? 1 : 0);
+    SetGPR(rd, psx_cpu_ops_sltu(gpr_[rs], gpr_[rt]));
 }
 
 // Immediate arithmetic
@@ -662,105 +664,85 @@ void PSXCpu::ExecAddi(uint32_t rt, uint32_t rs, int16_t imm) {
 }
 
 void PSXCpu::ExecAddiu(uint32_t rt, uint32_t rs, int16_t imm) {
-    SetGPR(rt, gpr_[rs] + SignExtend16(imm));
+    SetGPR(rt, psx_cpu_ops_addu(gpr_[rs], SignExtend16(imm)));
 }
 
 void PSXCpu::ExecAndi(uint32_t rt, uint32_t rs, uint16_t imm) {
-    SetGPR(rt, gpr_[rs] & ZeroExtend16(imm));
+    SetGPR(rt, psx_cpu_ops_and(gpr_[rs], ZeroExtend16(imm)));
 }
 
 void PSXCpu::ExecOri(uint32_t rt, uint32_t rs, uint16_t imm) {
-    SetGPR(rt, gpr_[rs] | ZeroExtend16(imm));
+    SetGPR(rt, psx_cpu_ops_or(gpr_[rs], ZeroExtend16(imm)));
 }
 
 void PSXCpu::ExecXori(uint32_t rt, uint32_t rs, uint16_t imm) {
-    SetGPR(rt, gpr_[rs] ^ ZeroExtend16(imm));
+    SetGPR(rt, psx_cpu_ops_xor(gpr_[rs], ZeroExtend16(imm)));
 }
 
 void PSXCpu::ExecLui(uint32_t rt, uint16_t imm) {
-    SetGPR(rt, static_cast<uint32_t>(imm) << 16);
+    SetGPR(rt, psx_cpu_ops_sll(ZeroExtend16(imm), 16));
 }
 
 void PSXCpu::ExecSlti(uint32_t rt, uint32_t rs, int16_t imm) {
-    SetGPR(rt, ToSigned(gpr_[rs]) < imm ? 1 : 0);
+    SetGPR(rt, psx_cpu_ops_slt(gpr_[rs], SignExtend16(imm)));
 }
 
 void PSXCpu::ExecSltiu(uint32_t rt, uint32_t rs, int16_t imm) {
     // SLTIU sign-extends the 16-bit immediate to 32 bits, then compares unsigned
     // (MIPS I semantics) — it does not zero-extend.
-    SetGPR(rt, gpr_[rs] < SignExtend16(imm) ? 1 : 0);
+    SetGPR(rt, psx_cpu_ops_sltu(gpr_[rs], SignExtend16(imm)));
 }
 
 // Shift
 void PSXCpu::ExecSll(uint32_t rd, uint32_t rt, uint32_t shamt) {
-    SetGPR(rd, gpr_[rt] << shamt);
+    SetGPR(rd, psx_cpu_ops_sll(gpr_[rt], shamt));
 }
 
 void PSXCpu::ExecSrl(uint32_t rd, uint32_t rt, uint32_t shamt) {
-    SetGPR(rd, gpr_[rt] >> shamt);
+    SetGPR(rd, psx_cpu_ops_srl(gpr_[rt], shamt));
 }
 
 void PSXCpu::ExecSra(uint32_t rd, uint32_t rt, uint32_t shamt) {
-    SetGPR(rd, static_cast<uint32_t>(static_cast<int32_t>(gpr_[rt]) >> shamt));
+    SetGPR(rd, psx_cpu_ops_sra(gpr_[rt], shamt));
 }
 
 void PSXCpu::ExecSllv(uint32_t rd, uint32_t rt, uint32_t rs) {
-    SetGPR(rd, gpr_[rt] << (gpr_[rs] & 0x1F));
+    SetGPR(rd, psx_cpu_ops_sll(gpr_[rt], gpr_[rs])); // Rust masks to low 5 bits
 }
 
 void PSXCpu::ExecSrlv(uint32_t rd, uint32_t rt, uint32_t rs) {
-    SetGPR(rd, gpr_[rt] >> (gpr_[rs] & 0x1F));
+    SetGPR(rd, psx_cpu_ops_srl(gpr_[rt], gpr_[rs])); // Rust masks to low 5 bits
 }
 
 void PSXCpu::ExecSrav(uint32_t rd, uint32_t rt, uint32_t rs) {
-    SetGPR(rd, static_cast<uint32_t>(static_cast<int32_t>(gpr_[rt]) >> (gpr_[rs] & 0x1F)));
+    SetGPR(rd, psx_cpu_ops_sra(gpr_[rt], gpr_[rs])); // Rust masks to low 5 bits
 }
 
-// Multiply/Divide
+// Multiply/Divide. The 64-bit product / division arithmetic is implemented in
+// Rust (psx_cpu_hilo.h, Issue #497); this class keeps owning the GPR reads
+// and HI/LO assignment.
 void PSXCpu::ExecMult(uint32_t rs, uint32_t rt) {
-    int64_t result = static_cast<int64_t>(ToSigned(gpr_[rs])) * static_cast<int64_t>(ToSigned(gpr_[rt]));
-    hi_ = static_cast<uint32_t>(result >> 32);
-    lo_ = static_cast<uint32_t>(result & 0xFFFFFFFF);
+    PSXMulDivResult result = psx_cpu_hilo_mult(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecMultu(uint32_t rs, uint32_t rt) {
-    uint64_t result = static_cast<uint64_t>(gpr_[rs]) * static_cast<uint64_t>(gpr_[rt]);
-    hi_ = static_cast<uint32_t>(result >> 32);
-    lo_ = static_cast<uint32_t>(result & 0xFFFFFFFF);
+    PSXMulDivResult result = psx_cpu_hilo_multu(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecDiv(uint32_t rs, uint32_t rt) {
-    int32_t dividend = ToSigned(gpr_[rs]);
-    int32_t divisor = ToSigned(gpr_[rt]);
-    if (divisor == 0) {
-        // PS1-specific: division by zero
-        if (dividend >= 0) {
-            lo_ = 0xFFFFFFFF;
-        } else {
-            lo_ = 1;
-        }
-        hi_ = static_cast<uint32_t>(dividend);
-    } else if (dividend == static_cast<int32_t>(0x80000000) && divisor == -1) {
-        // PS1-specific: overflow
-        lo_ = 0x80000000;
-        hi_ = 0;
-    } else {
-        lo_ = static_cast<uint32_t>(dividend / divisor);
-        hi_ = static_cast<uint32_t>(dividend % divisor);
-    }
+    PSXMulDivResult result = psx_cpu_hilo_div(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecDivu(uint32_t rs, uint32_t rt) {
-    uint32_t dividend = gpr_[rs];
-    uint32_t divisor = gpr_[rt];
-    if (divisor == 0) {
-        // PS1-specific: division by zero
-        lo_ = 0xFFFFFFFF;
-        hi_ = dividend;
-    } else {
-        lo_ = dividend / divisor;
-        hi_ = dividend % divisor;
-    }
+    PSXMulDivResult result = psx_cpu_hilo_divu(gpr_[rs], gpr_[rt]);
+    hi_ = result.hi;
+    lo_ = result.lo;
 }
 
 void PSXCpu::ExecMfhi(uint32_t rd) {

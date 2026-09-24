@@ -13,8 +13,10 @@
 //! declared in `src/psx_dma.h`) calls them to implement the unchanged
 //! `PSXCore_*Dma*` C ABI. They are not P/Invoked by managed code.
 //!
-//! Only register state is modelled; no transfer is ever performed, so DICR
-//! flags are never set here, only cleared by software writes.
+//! No data is ever moved: no device backs a channel yet. [`psx_dma_tick`]
+//! models only a started channel's *duration* and completion (Issue #442), so
+//! a transfer finishes after a deterministic cycle count, clears its CHCR
+//! start bits, and sets its DICR flag when that channel's enable bit is set.
 
 /// Number of DMA channels (0..6).
 pub const PSX_DMA_CHANNEL_COUNT: usize = 7;
@@ -34,6 +36,17 @@ pub const PSX_DMA_DICR: u32 = 0x1F80_10F4;
 
 /// DPCR power-on value.
 pub const PSX_DMA_DPCR_RESET: u32 = 0x0765_4321;
+
+/// CPU cycles a modelled transfer spends per word. Not cycle-exact (Issue
+/// #442): only a deterministic, non-zero duration is required.
+pub const PSX_DMA_CYCLES_PER_WORD: u64 = 1;
+
+/// CHCR bits 9-10: sync mode (0 manual/burst, 1 block, 2 linked list).
+const CHCR_SYNC_SHIFT: u32 = 9;
+/// CHCR bit 24: start/busy.
+const CHCR_START_BUSY: u32 = 1 << 24;
+/// CHCR bit 28: start/trigger (required to start sync mode 0).
+const CHCR_START_TRIGGER: u32 = 1 << 28;
 
 /// DICR bits 0-6: per-channel interrupt flags (write-1-to-clear).
 const DICR_FLAGS_MASK: u32 = 0x0000_007F;
@@ -75,6 +88,9 @@ pub struct DmaState {
     pub dpcr: u32,
     /// DICR as stored (bit 31 is computed on read, never stored).
     pub dicr: u32,
+    /// Cycles left on each channel's in-flight transfer; 0 means the current
+    /// start has not been costed yet. Not register-visible.
+    pub remaining: [u32; PSX_DMA_CHANNEL_COUNT],
 }
 
 /// Returns the power-on state: channels zero, DPCR `0x07654321`, DICR zero.
@@ -85,6 +101,7 @@ pub extern "C" fn psx_dma_reset() -> DmaState {
         channels: [DmaChannelState::default(); PSX_DMA_CHANNEL_COUNT],
         dpcr: PSX_DMA_DPCR_RESET,
         dicr: 0,
+        remaining: [0; PSX_DMA_CHANNEL_COUNT],
     }
 }
 
@@ -152,11 +169,80 @@ pub extern "C" fn psx_dma_write_register(state: DmaState, address: u32, value: u
                     match offset {
                         0 => c.madr = value,
                         4 => c.bcr = value,
-                        8 => c.chcr = value,
+                        8 => {
+                            c.chcr = value;
+                            // A CHCR write (re)starts or stops the channel, so
+                            // any in-flight duration is re-costed.
+                            if let Some(r) = s.remaining.get_mut(ch) {
+                                *r = 0;
+                            }
+                        }
                         _ => {}
                     }
                 }
             }
+        }
+    }
+    s
+}
+
+/// Whether channel `ch` is started: CHCR start/busy set, its DPCR enable bit
+/// set, and, for sync mode 0, its start/trigger bit set.
+fn channel_started(dpcr: u32, ch: u32, chcr: u32) -> bool {
+    let dpcr_enable = 1u32.checked_shl(3 + 4 * ch).unwrap_or(0);
+    let sync = (chcr >> CHCR_SYNC_SHIFT) & 3;
+    chcr & CHCR_START_BUSY != 0
+        && dpcr & dpcr_enable != 0
+        && (sync != 0 || chcr & CHCR_START_TRIGGER != 0)
+}
+
+/// Modelled duration of `channel`'s transfer in cycles, at least 1.
+///
+/// Word count per psx-spx: sync 0 uses BCR bits 0-15, sync 1 multiplies block
+/// size (bits 0-15) by block count (bits 16-31), a zero field meaning 0x10000.
+/// A linked list's length lives in guest RAM, which this state cannot see, so
+/// sync 2/3 is costed as one word (GPU DMA2 is Issue #440's remainder).
+fn transfer_cycles(channel: &DmaChannelState) -> u32 {
+    let field = |v: u32| if v == 0 { 0x1_0000u64 } else { u64::from(v) };
+    let words = match (channel.chcr >> CHCR_SYNC_SHIFT) & 3 {
+        0 => field(channel.bcr & 0xFFFF),
+        1 => field(channel.bcr & 0xFFFF) * field(channel.bcr >> 16),
+        _ => 1,
+    };
+    u32::try_from(words.saturating_mul(PSX_DMA_CYCLES_PER_WORD))
+        .unwrap_or(u32::MAX)
+        .max(1)
+}
+
+/// Returns `state` after `cycles` CPU cycles of DMA progress (Issue #442).
+///
+/// Every started channel counts down its modelled duration; on reaching zero
+/// it completes: CHCR start/busy (bit 24) and start/trigger (bit 28) clear,
+/// and its DICR flag (bit `ch`) is set when its DICR enable (bit 24 + `ch`) is
+/// set. Cycles past completion are discarded and no data is transferred. A
+/// channel whose DPCR enable is cleared mid-transfer pauses. Infallible.
+#[no_mangle]
+pub extern "C" fn psx_dma_tick(state: DmaState, cycles: u32) -> DmaState {
+    let mut s = state;
+    if cycles == 0 {
+        return s;
+    }
+    for (ch, (channel, remaining)) in s.channels.iter_mut().zip(s.remaining.iter_mut()).enumerate() {
+        let bit = 1u32 << ch;
+        if !channel_started(s.dpcr, ch as u32, channel.chcr) {
+            continue;
+        }
+        if *remaining == 0 {
+            *remaining = transfer_cycles(channel);
+        }
+        if cycles < *remaining {
+            *remaining -= cycles;
+            continue;
+        }
+        *remaining = 0;
+        channel.chcr &= !(CHCR_START_BUSY | CHCR_START_TRIGGER);
+        if s.dicr & (bit << 24) != 0 {
+            s.dicr |= bit;
         }
     }
     s
@@ -184,7 +270,7 @@ mod tests {
     #[test]
     fn layout_matches_cpp_mirror() {
         assert_eq!(std::mem::size_of::<DmaChannelState>(), 12);
-        assert_eq!(std::mem::size_of::<DmaState>(), 92);
+        assert_eq!(std::mem::size_of::<DmaState>(), 120);
     }
 
     #[test]
@@ -321,5 +407,98 @@ mod tests {
         let s = psx_dma_write_register(s, PSX_DMA_DICR, 0x01 | (0x01 << 24) | DICR_MASTER_EN);
         assert_eq!(psx_dma_get_interrupt_pending(s), 0);
         assert_eq!(s.dicr, (0x01 << 24) | DICR_MASTER_EN);
+    }
+
+    /// Channel 6 (OTC) armed for a manual (sync 0) transfer of `words` words,
+    /// with DPCR enable and, when `irq`, DICR master + channel 6 enable.
+    fn armed_otc(words: u32, irq: bool) -> DmaState {
+        let mut s = psx_dma_reset();
+        s = psx_dma_write_register(s, PSX_DMA_DPCR, PSX_DMA_DPCR_RESET | (1 << (3 + 4 * 6)));
+        if irq {
+            s = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | (0x40 << 24));
+        }
+        s = psx_dma_write_register(s, chan_addr(6, 4), words);
+        psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
+    }
+
+    #[test]
+    fn tick_completes_after_modelled_word_count_and_flags_enabled_channel() {
+        let mut s = psx_dma_tick(armed_otc(8, true), 7);
+        assert_ne!(s.channels[6].chcr & CHCR_START_BUSY, 0, "one cycle early");
+        assert_eq!(psx_dma_get_interrupt_pending(s), 0);
+        s = psx_dma_tick(s, 1);
+        assert_eq!(s.channels[6].chcr & (CHCR_START_BUSY | CHCR_START_TRIGGER), 0);
+        assert_eq!(s.channels[6].chcr & 0x2, 0x2, "other CHCR bits untouched");
+        assert_eq!(s.dicr & DICR_FLAGS_MASK, 0x40);
+        assert_eq!(psx_dma_get_interrupt_pending(s), 1);
+        assert_eq!(s.remaining[6], 0);
+        // A completed channel stays idle.
+        assert_eq!(psx_dma_tick(s, 100), s);
+    }
+
+    #[test]
+    fn tick_completion_without_enable_sets_no_flag() {
+        let s = psx_dma_tick(armed_otc(4, false), 4);
+        assert_eq!(s.channels[6].chcr & CHCR_START_BUSY, 0);
+        assert_eq!(s.dicr, 0);
+        assert_eq!(psx_dma_get_interrupt_pending(s), 0);
+    }
+
+    #[test]
+    fn tick_ignores_unstarted_channels() {
+        let no_dpcr = psx_dma_write_register(armed_otc(1, true), PSX_DMA_DPCR, PSX_DMA_DPCR_RESET);
+        assert_eq!(psx_dma_tick(no_dpcr, 100), no_dpcr);
+        let no_trigger = psx_dma_write_register(armed_otc(1, true), chan_addr(6, 8), CHCR_START_BUSY);
+        assert_eq!(psx_dma_tick(no_trigger, 100), no_trigger);
+        let armed = armed_otc(1, true);
+        assert_eq!(psx_dma_tick(armed, 0), armed);
+    }
+
+    #[test]
+    fn tick_costs_block_mode_as_size_times_count_and_zero_as_0x10000() {
+        let mut s = psx_dma_write_register(psx_dma_reset(), PSX_DMA_DPCR, 1 << 3);
+        s = psx_dma_write_register(s, chan_addr(0, 4), (3 << 16) | 4);
+        s = psx_dma_write_register(s, chan_addr(0, 8), CHCR_START_BUSY | (1 << CHCR_SYNC_SHIFT));
+        s = psx_dma_tick(s, 11);
+        assert_ne!(s.channels[0].chcr & CHCR_START_BUSY, 0);
+        s = psx_dma_tick(s, 1);
+        assert_eq!(s.channels[0].chcr & CHCR_START_BUSY, 0);
+
+        let s = armed_otc(0, false);
+        assert_ne!(psx_dma_tick(s, 0xFFFF).channels[6].chcr & CHCR_START_BUSY, 0);
+        assert_eq!(psx_dma_tick(s, 0x1_0000).channels[6].chcr & CHCR_START_BUSY, 0);
+    }
+
+    #[test]
+    fn tick_costs_linked_list_as_one_word() {
+        let mut s = psx_dma_write_register(psx_dma_reset(), PSX_DMA_DPCR, 1 << (3 + 4 * 2));
+        s = psx_dma_write_register(s, chan_addr(2, 8), CHCR_START_BUSY | (2 << CHCR_SYNC_SHIFT));
+        assert_eq!(psx_dma_tick(s, 1).channels[2].chcr & CHCR_START_BUSY, 0);
+    }
+
+    #[test]
+    fn chcr_rewrite_recosts_an_in_flight_transfer() {
+        let mut s = psx_dma_tick(armed_otc(8, true), 5);
+        assert_eq!(s.remaining[6], 3);
+        s = psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER);
+        assert_eq!(s.remaining[6], 0);
+        s = psx_dma_tick(s, 7);
+        assert_ne!(s.channels[6].chcr & CHCR_START_BUSY, 0);
+        s = psx_dma_tick(s, 1);
+        assert_eq!(s.channels[6].chcr & CHCR_START_BUSY, 0);
+    }
+
+    #[test]
+    fn repeated_tick_sequences_are_deterministic() {
+        let run = || {
+            let mut s = armed_otc(37, true);
+            let mut trace = Vec::new();
+            for i in 0..16u32 {
+                s = psx_dma_tick(s, i % 5);
+                trace.push((s, psx_dma_get_interrupt_pending(s)));
+            }
+            trace
+        };
+        assert_eq!(run(), run());
     }
 }

@@ -137,6 +137,12 @@ extern void     recompiler_write_mem32(void* core, uint32_t address, uint32_t va
 - Narrow loads zero-extend to `uint32_t`.
 - Narrow stores write only the specified width (little-endian).
 - The `core` pointer is `state->core`.
+- Every IR memory operation emits exactly one helper call, in IR order,
+  whatever its `MemoryEffect` (`Unknown`/`Ordinary`/`Device`). The block has
+  no RAM fast path. RAM/MMIO routing belongs to the host helper (`MemoryBus`),
+  so an `Unknown` or `Device` access can never fall back to a plain RAM access
+  (ADR-020). An undefined `MemoryEffect` is rejected via
+  `IR_VALIDATION_FAILED`.
 
 ### Comparisons (Phase 3C)
 

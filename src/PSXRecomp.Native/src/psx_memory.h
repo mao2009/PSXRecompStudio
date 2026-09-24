@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <cstring>
+#include <new>
 #include "psx_cpu.h"
 #include "psx_dma.h"
 #include "psx_timer.h"
@@ -26,9 +26,61 @@ static constexpr uint32_t PSX_DMA_REGION_END = 0x1F8010F4u; // DICR
 static constexpr uint32_t PSX_TIMER_BASE = 0x1F801100u;
 static constexpr uint32_t PSX_TIMER_REGION_END = PSX_TIMER_BASE + 3u * 0x10u - 1u; // 0x1F80112F
 
+/*
+ * Guest RAM/scratchpad/BIOS/HW-register storage and access semantics.
+ * Implemented in Rust (`../rust/src/memory.rs`, Issue #492); this header
+ * declares that crate's internal C ABI for use by PSXMemory below.
+ *
+ * The backing storage (~2.6 MiB) is too large to pass by value the way the
+ * DMA/Timer/Interrupt PODs are, so it is owned by an opaque handle following
+ * the PSXCore_Create/PSXCore_Destroy pattern (rust-ffi-contract.md §3):
+ * PSXMemory creates one handle in its constructor and releases it exactly
+ * once in its destructor. The handle's fields are not part of the ABI.
+ *
+ * DMA/Timer/Interrupt register semantics are not reimplemented here or in
+ * memory.rs: the Read/Write functions below take the same three
+ * independently-nullable controller-state pointers PSXMemory::AttachControllers
+ * has always taken, and memory.rs calls straight into the existing
+ * psx_dma_, psx_timer_, and psx_interrupt_ functions to service the
+ * HW-register window's MMIO ranges. An unattached (null) controller pointer
+ * falls back to the flat HW-register store, matching the pre-Rust-memory
+ * behavior exactly.
+ */
+struct PsxMemoryHandle;
+
+extern "C" {
+PsxMemoryHandle* psx_memory_create(void);
+void psx_memory_destroy(PsxMemoryHandle* mem);
+void psx_memory_reset(PsxMemoryHandle* mem);
+uint8_t* psx_memory_ram_ptr(PsxMemoryHandle* mem);
+
+uint32_t psx_memory_read32(PsxMemoryHandle* mem, uint32_t address,
+                            PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+void psx_memory_write32(PsxMemoryHandle* mem, uint32_t address, uint32_t value,
+                         PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+uint16_t psx_memory_read16(PsxMemoryHandle* mem, uint32_t address,
+                            PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+void psx_memory_write16(PsxMemoryHandle* mem, uint32_t address, uint16_t value,
+                         PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+uint8_t psx_memory_read8(PsxMemoryHandle* mem, uint32_t address,
+                          PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+void psx_memory_write8(PsxMemoryHandle* mem, uint32_t address, uint8_t value,
+                        PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+}
+
 class PSXMemory {
 public:
     PSXMemory();
+    ~PSXMemory();
+
+    // The Rust-owned handle has single-ownership, non-copyable semantics;
+    // PSXMemory is only ever heap-allocated directly (native tests) or
+    // embedded by value in the never-copied, never-moved PSXCore, so no
+    // caller needs copy or move.
+    PSXMemory(const PSXMemory&) = delete;
+    PSXMemory& operator=(const PSXMemory&) = delete;
+    PSXMemory(PSXMemory&&) = delete;
+    PSXMemory& operator=(PSXMemory&&) = delete;
 
     void Reset();
 
@@ -51,35 +103,28 @@ public:
     uint8_t Read8(uint32_t address);
     void Write8(uint32_t address, uint8_t value);
 
-    uint8_t bios[PSX_BIOS_SIZE];
-    uint8_t hw_regs[PSX_HW_REG_SIZE];
-
 private:
-    uint8_t ram_[PSX_RAM_SIZE];
-    uint8_t scratchpad_[PSX_SCRATCHPAD_SIZE];
+    PsxMemoryHandle* handle_;
     PSXDmaState* dma_ = nullptr;
     PSXTimerState* timers_ = nullptr;
     PSXInterruptState* interrupts_ = nullptr;
-
-    bool ReadController32(uint32_t address, uint32_t& value);
-    bool WriteController32(uint32_t address, uint32_t value);
-
-    static uint32_t Load32LE(const uint8_t* p);
-    static void Store32LE(uint8_t* p, uint32_t value);
 };
 
-inline PSXMemory::PSXMemory() {
-    Reset();
+inline PSXMemory::PSXMemory() : handle_(psx_memory_create()) {
+    if (!handle_) {
+        throw std::bad_alloc();
+    }
+}
+
+inline PSXMemory::~PSXMemory() {
+    psx_memory_destroy(handle_);
 }
 
 inline void PSXMemory::Reset() {
-    std::memset(ram_, 0, PSX_RAM_SIZE);
-    std::memset(scratchpad_, 0, PSX_SCRATCHPAD_SIZE);
-    std::memset(bios, 0, PSX_BIOS_SIZE);
-    std::memset(hw_regs, 0, PSX_HW_REG_SIZE);
+    psx_memory_reset(handle_);
 }
 
-inline uint8_t* PSXMemory::GetRAM() { return ram_; }
+inline uint8_t* PSXMemory::GetRAM() { return psx_memory_ram_ptr(handle_); }
 inline uint32_t PSXMemory::GetRAMSize() const { return PSX_RAM_SIZE; }
 
 inline void PSXMemory::AttachControllers(PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts) {
@@ -88,222 +133,26 @@ inline void PSXMemory::AttachControllers(PSXDmaState* dma, PSXTimerState* timers
     interrupts_ = interrupts;
 }
 
-inline uint32_t PSXMemory::Load32LE(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) |
-           (static_cast<uint32_t>(p[1]) << 8) |
-           (static_cast<uint32_t>(p[2]) << 16) |
-           (static_cast<uint32_t>(p[3]) << 24);
-}
-
-inline void PSXMemory::Store32LE(uint8_t* p, uint32_t value) {
-    p[0] = static_cast<uint8_t>(value & 0xFF);
-    p[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-    p[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
-    p[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
-}
-
-inline bool PSXMemory::ReadController32(uint32_t address, uint32_t& value) {
-    if (address == PSX_INTR_I_STAT || address == PSX_INTR_I_MASK) {
-        if (!interrupts_) return false;
-        value = psx_interrupt_read_register(*interrupts_, address);
-        return true;
-    }
-    if (address >= PSX_DMA_BASE && address <= PSX_DMA_REGION_END) {
-        if (!dma_) return false;
-        value = psx_dma_read_register(*dma_, address);
-        return true;
-    }
-    if (address >= PSX_TIMER_BASE && address <= PSX_TIMER_REGION_END) {
-        if (!timers_) return false;
-        // Timer count reads can toggle the counter's sync line, so the read
-        // returns a new state that must be written back in place.
-        PSXTimerReadResult result = psx_timer_read_register(*timers_, address);
-        *timers_ = result.state;
-        value = result.value;
-        return true;
-    }
-    return false;
-}
-
-inline bool PSXMemory::WriteController32(uint32_t address, uint32_t value) {
-    if (address == PSX_INTR_I_STAT || address == PSX_INTR_I_MASK) {
-        if (!interrupts_) return false;
-        *interrupts_ = psx_interrupt_write_register(*interrupts_, address, value);
-        return true;
-    }
-    if (address >= PSX_DMA_BASE && address <= PSX_DMA_REGION_END) {
-        if (!dma_) return false;
-        *dma_ = psx_dma_write_register(*dma_, address, value);
-        return true;
-    }
-    if (address >= PSX_TIMER_BASE && address <= PSX_TIMER_REGION_END) {
-        if (!timers_) return false;
-        *timers_ = psx_timer_write_register(*timers_, address, value);
-        return true;
-    }
-    return false;
-}
-
 inline uint32_t PSXMemory::Read32(uint32_t address) {
-    if (address < PSX_RAM_MIRROR_END) {
-        uint32_t idx = address & (PSX_RAM_SIZE - 1u);
-        if (idx > PSX_RAM_SIZE - 4u) return 0;
-        return Load32LE(ram_ + idx);
-    }
-    if (address >= PSX_SCRATCHPAD_BASE && address <= PSX_SCRATCHPAD_BASE + PSX_SCRATCHPAD_SIZE - 4u) {
-        uint32_t idx = address - PSX_SCRATCHPAD_BASE;
-        return Load32LE(scratchpad_ + idx);
-    }
-    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 4u) {
-        return Load32LE(bios + (address - PSX_BIOS_BASE));
-    }
-    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 4u) {
-        uint32_t value;
-        if (ReadController32(address, value)) return value;
-        return Load32LE(hw_regs + (address - PSX_HW_REG_BASE));
-    }
-    return 0;
+    return psx_memory_read32(handle_, address, dma_, timers_, interrupts_);
 }
 
 inline void PSXMemory::Write32(uint32_t address, uint32_t value) {
-    if (address < PSX_RAM_MIRROR_END) {
-        uint32_t idx = address & (PSX_RAM_SIZE - 1u);
-        if (idx > PSX_RAM_SIZE - 4u) return;
-        Store32LE(ram_ + idx, value);
-        return;
-    }
-    if (address >= PSX_SCRATCHPAD_BASE && address <= PSX_SCRATCHPAD_BASE + PSX_SCRATCHPAD_SIZE - 4u) {
-        uint32_t idx = address - PSX_SCRATCHPAD_BASE;
-        Store32LE(scratchpad_ + idx, value);
-        return;
-    }
-    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 4u) {
-        Store32LE(bios + (address - PSX_BIOS_BASE), value);
-        return;
-    }
-    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 4u) {
-        if (WriteController32(address, value)) return;
-        Store32LE(hw_regs + (address - PSX_HW_REG_BASE), value);
-        return;
-    }
+    psx_memory_write32(handle_, address, value, dma_, timers_, interrupts_);
 }
 
 inline uint16_t PSXMemory::Read16(uint32_t address) {
-    if (address < PSX_RAM_MIRROR_END) {
-        uint32_t idx = address & (PSX_RAM_SIZE - 1u);
-        if (idx > PSX_RAM_SIZE - 2u) return 0;
-        return static_cast<uint16_t>(ram_[idx]) |
-               static_cast<uint16_t>(static_cast<uint16_t>(ram_[idx + 1]) << 8);
-    }
-    if (address >= PSX_SCRATCHPAD_BASE && address <= PSX_SCRATCHPAD_BASE + PSX_SCRATCHPAD_SIZE - 2u) {
-        uint32_t idx = address - PSX_SCRATCHPAD_BASE;
-        return static_cast<uint16_t>(scratchpad_[idx]) |
-               static_cast<uint16_t>(static_cast<uint16_t>(scratchpad_[idx + 1]) << 8);
-    }
-    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 2u) {
-        uint32_t idx = address - PSX_BIOS_BASE;
-        return static_cast<uint16_t>(bios[idx]) |
-               static_cast<uint16_t>(static_cast<uint16_t>(bios[idx + 1]) << 8);
-    }
-    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 2u) {
-        uint32_t idx = address - PSX_HW_REG_BASE;
-        // A 32-bit controller read covers any halfword inside the register.
-        uint32_t value;
-        if (ReadController32(address & ~2u, value)) {
-            return static_cast<uint16_t>((value >> (8 * (address & 2))) & 0xFFFF);
-        }
-        return static_cast<uint16_t>(hw_regs[idx]) |
-               static_cast<uint16_t>(static_cast<uint16_t>(hw_regs[idx + 1]) << 8);
-    }
-    return 0;
+    return psx_memory_read16(handle_, address, dma_, timers_, interrupts_);
 }
 
 inline void PSXMemory::Write16(uint32_t address, uint16_t value) {
-    if (address < PSX_RAM_MIRROR_END) {
-        uint32_t idx = address & (PSX_RAM_SIZE - 1u);
-        if (idx > PSX_RAM_SIZE - 2u) return;
-        ram_[idx] = static_cast<uint8_t>(value & 0xFF);
-        ram_[idx + 1] = static_cast<uint8_t>(value >> 8);
-        return;
-    }
-    if (address >= PSX_SCRATCHPAD_BASE && address <= PSX_SCRATCHPAD_BASE + PSX_SCRATCHPAD_SIZE - 2u) {
-        uint32_t idx = address - PSX_SCRATCHPAD_BASE;
-        scratchpad_[idx] = static_cast<uint8_t>(value & 0xFF);
-        scratchpad_[idx + 1] = static_cast<uint8_t>(value >> 8);
-        return;
-    }
-    if (address >= PSX_BIOS_BASE && address <= PSX_BIOS_BASE + PSX_BIOS_SIZE - 2u) {
-        uint32_t idx = address - PSX_BIOS_BASE;
-        bios[idx] = static_cast<uint8_t>(value & 0xFF);
-        bios[idx + 1] = static_cast<uint8_t>(value >> 8);
-        return;
-    }
-    if (address >= PSX_HW_REG_BASE && address <= PSX_HW_REG_BASE + PSX_HW_REG_SIZE - 2u) {
-        uint32_t wordAddr = address & ~2u;
-        uint32_t value32;
-        if (ReadController32(wordAddr, value32)) {
-            // DICR bits 0-6 are write-1-to-clear interrupt flags: the read-back
-            // echoes any currently-set flag back as a 1, which a full-word write
-            // would then clear. Zero them here so a sub-word write to another
-            // DICR field leaves flags untouched unless the caller's own byte/
-            // halfword targets them.
-            if (wordAddr == PSX_DMA_REGION_END) value32 &= ~0x7Fu;
-            uint32_t shift = 8u * (address & 2u);
-            WriteController32(wordAddr, (value32 & ~(0xFFFFu << shift)) | (static_cast<uint32_t>(value) << shift));
-            return;
-        }
-        uint32_t idx = address - PSX_HW_REG_BASE;
-        hw_regs[idx] = static_cast<uint8_t>(value & 0xFF);
-        hw_regs[idx + 1] = static_cast<uint8_t>(value >> 8);
-        return;
-    }
+    psx_memory_write16(handle_, address, value, dma_, timers_, interrupts_);
 }
 
 inline uint8_t PSXMemory::Read8(uint32_t address) {
-    if (address < PSX_RAM_MIRROR_END) {
-        return ram_[address & (PSX_RAM_SIZE - 1u)];
-    }
-    if (address >= PSX_SCRATCHPAD_BASE && address < PSX_SCRATCHPAD_BASE + PSX_SCRATCHPAD_SIZE) {
-        return scratchpad_[address - PSX_SCRATCHPAD_BASE];
-    }
-    if (address >= PSX_BIOS_BASE && address < PSX_BIOS_BASE + PSX_BIOS_SIZE) {
-        return bios[address - PSX_BIOS_BASE];
-    }
-    if (address >= PSX_HW_REG_BASE && address < PSX_HW_REG_BASE + PSX_HW_REG_SIZE) {
-        // A 32-bit controller read covers any byte inside the register.
-        uint32_t value;
-        if (ReadController32(address & ~3u, value)) {
-            return static_cast<uint8_t>((value >> (8 * (address & 3))) & 0xFF);
-        }
-        return hw_regs[address - PSX_HW_REG_BASE];
-    }
-    return 0;
+    return psx_memory_read8(handle_, address, dma_, timers_, interrupts_);
 }
 
 inline void PSXMemory::Write8(uint32_t address, uint8_t value) {
-    if (address < PSX_RAM_MIRROR_END) {
-        ram_[address & (PSX_RAM_SIZE - 1u)] = value;
-        return;
-    }
-    if (address >= PSX_SCRATCHPAD_BASE && address < PSX_SCRATCHPAD_BASE + PSX_SCRATCHPAD_SIZE) {
-        scratchpad_[address - PSX_SCRATCHPAD_BASE] = value;
-        return;
-    }
-    if (address >= PSX_BIOS_BASE && address < PSX_BIOS_BASE + PSX_BIOS_SIZE) {
-        bios[address - PSX_BIOS_BASE] = value;
-        return;
-    }
-    if (address >= PSX_HW_REG_BASE && address < PSX_HW_REG_BASE + PSX_HW_REG_SIZE) {
-        uint32_t wordAddr = address & ~3u;
-        uint32_t value32;
-        if (ReadController32(wordAddr, value32)) {
-            // See the matching comment in Write16: preserve DICR's W1C flag bits.
-            if (wordAddr == PSX_DMA_REGION_END) value32 &= ~0x7Fu;
-            uint32_t shift = 8u * (address & 3u);
-            WriteController32(wordAddr, (value32 & ~(0xFFu << shift)) | (static_cast<uint32_t>(value) << shift));
-            return;
-        }
-        hw_regs[address - PSX_HW_REG_BASE] = value;
-        return;
-    }
+    psx_memory_write8(handle_, address, value, dma_, timers_, interrupts_);
 }

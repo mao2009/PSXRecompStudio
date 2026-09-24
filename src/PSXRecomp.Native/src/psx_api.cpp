@@ -112,6 +112,11 @@ int PSXCore_GetDmaInterruptPending(PSXCore* core) {
     return psx_dma_get_interrupt_pending(core->dma) != 0 ? 1 : 0;
 }
 
+void PSXCore_TickDma(PSXCore* core, uint32_t cycles) {
+    if (!core) return;
+    core->dma = psx_dma_tick(core->dma, cycles);
+}
+
 uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
     PSXTimerReadResult result = psx_timer_read_register(core->timers, address);
@@ -185,6 +190,12 @@ int PSXCore_Step(PSXCore* core) {
     // before stepping (Issue #144); PSXCpu itself stays decoupled from
     // the Interrupt Controller.
     core->cpu.SetHardwareInterruptPending(psx_interrupt_pending(core->interrupts) != 0);
+    return core->cpu.Step(core->memory);
+}
+
+int PSXCore_StepWithoutInterrupts(PSXCore* core) {
+    if (!core) return -1;
+    core->cpu.SetHardwareInterruptPending(false);
     return core->cpu.Step(core->memory);
 }
 

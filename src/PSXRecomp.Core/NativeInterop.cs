@@ -88,6 +88,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetDmaInterruptPending(IntPtr core);
 
+    /// <summary>Advances started DMA transfers by <paramref name="cycles"/> CPU clock cycles; a transfer completes after its modelled duration (Issue #442).</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_TickDma(IntPtr core, uint cycles);
+
     /// <summary>Reads a timer (0-2) register at the given absolute address.</summary>
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_ReadTimerRegister(IntPtr core, uint address);
@@ -144,6 +148,10 @@ internal static partial class NativeInterop
     /// <returns>Zero when the step was taken; a negative status when the handle is null. A guest exception is not reported here — see <see cref="PSXCore_GetExceptionRaised"/>.</returns>
     [LibraryImport(LibName)]
     internal static partial int PSXCore_Step(IntPtr core);
+
+    /// <summary><see cref="PSXCore_Step"/> with the CPU's hardware interrupt input held low (I_STAT/I_MASK untouched).</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_StepWithoutInterrupts(IntPtr core);
 
     /// <summary>Returns non-zero when the most recent <see cref="PSXCore_Step"/> raised a guest exception. Reset by every step.</summary>
     [LibraryImport(LibName)]

@@ -81,6 +81,13 @@ PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 PSX_API void     PSXCore_WriteDmaRegister(PSXCore* core, uint32_t address, uint32_t value);
 /** Returns non-zero when a DMA-triggered interrupt is pending. */
 PSX_API int      PSXCore_GetDmaInterruptPending(PSXCore* core);
+/**
+ * Advances started DMA transfers by `cycles` CPU clock cycles (Issue #442). A
+ * transfer completes after its modelled duration (one cycle per word; no data
+ * moves): CHCR bits 24/28 clear and its DICR flag sets when that channel's
+ * DICR enable is set.
+ */
+PSX_API void     PSXCore_TickDma(PSXCore* core, uint32_t cycles);
 
 /** Reads a timer (0-2) register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address);
@@ -120,6 +127,12 @@ PSX_API void     PSXCore_ResetInterruptController(PSXCore* core);
  * Use PSXCore_GetExceptionRaised() to ask whether the step faulted (Issue #377).
  */
 PSX_API int PSXCore_Step(PSXCore* core);
+/**
+ * PSXCore_Step() with the CPU's hardware interrupt input held low: I_STAT and
+ * I_MASK are untouched, but no INT exception is taken for them and CAUSE.IP2
+ * reads 0. For callers that cannot continue into an exception handler (PR #493).
+ */
+PSX_API int PSXCore_StepWithoutInterrupts(PSXCore* core);
 /** Returns non-zero when the most recent PSXCore_Step() raised a guest exception. Reset by every step. */
 PSX_API int PSXCore_GetExceptionRaised(PSXCore* core);
 /** Returns the CAUSE Excode of the exception the most recent PSXCore_Step() raised (Issue #481). Meaningful only when PSXCore_GetExceptionRaised() is non-zero. */
