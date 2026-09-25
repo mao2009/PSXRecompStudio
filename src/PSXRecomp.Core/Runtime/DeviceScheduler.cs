@@ -20,10 +20,10 @@ namespace PSXRecomp.Core.Runtime;
 /// </para>
 /// <para>
 /// Fixed order within one <see cref="Advance"/>, each stage raising its own
-/// line: Timers (IRQ4-6) → DMA (IRQ3) → VBlank (IRQ0). Whether the CPU takes
-/// the aggregate line as an INT exception is the stepping caller's choice:
-/// <c>PSXCore_Step</c> samples it (Issue #144) — the production interpreter
-/// steps that way and runs the guest's handler (Issue #499) — while
+/// line: Timers (IRQ4-6) → DMA (IRQ3) → SIO0 (IRQ7) → VBlank (IRQ0). Whether
+/// the CPU takes the aggregate line as an INT exception is the stepping
+/// caller's choice: <c>PSXCore_Step</c> samples it (Issue #144) — the production
+/// interpreter steps that way and runs the guest's handler (Issue #499) — while
 /// <see cref="PSXCoreWrapper.StepWithoutInterrupts"/> holds it low.
 /// </para>
 /// </remarks>
@@ -44,6 +44,9 @@ public sealed class DeviceScheduler
 
     /// <summary>Timer 0 interrupt line; Timer <c>n</c> raises <c>Timer0Irq + n</c>.</summary>
     public const int Timer0Irq = 4;
+
+    /// <summary>SIO0 (controller/memory-card, "byte received") interrupt line (Issue #543).</summary>
+    public const int Sio0Irq = 7;
 
     private const int TimerCount = 3;
 
@@ -91,6 +94,14 @@ public sealed class DeviceScheduler
             _interrupts.Raise(DmaIrq);
         }
         _dmaIrqLine = dmaLine;
+
+        // SIO0: no clock of its own (Issue #543 is event-driven off DATA
+        // writes, not cycle count), so this is a bare poll/clear, not a Tick.
+        if (_core.GetSio0InterruptPending())
+        {
+            _core.ClearSio0Interrupt();
+            _interrupts.Raise(Sio0Irq);
+        }
 
         // VBlank: several intervals elapsed in one call still latch one IRQ0.
         var phase = (ulong)_cyclesSinceVblank + cycles;
