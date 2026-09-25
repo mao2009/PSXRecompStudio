@@ -152,6 +152,14 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial void PSXCore_ClearSio0Interrupt(IntPtr core);
 
+    /// <summary>Returns SIO0's last-transaction command classification (Issue #543): 0 = none seen since the last transaction reset, 1 = recognized, 2 = unsupported.</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetSio0CommandStatus(IntPtr core);
+
+    /// <summary>Returns the command byte last classified unsupported (Issue #543); only meaningful when <see cref="PSXCore_GetSio0CommandStatus"/> reports 2.</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetSio0LastCommandByte(IntPtr core);
+
     /// <summary>Executes a single instruction, honoring branch/load-delay slot semantics.</summary>
     /// <returns>Zero when the step was taken; a negative status when the handle is null. A guest exception is not reported here — see <see cref="PSXCore_GetExceptionRaised"/>.</returns>
     [LibraryImport(LibName)]

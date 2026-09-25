@@ -402,4 +402,56 @@ public class Sio0CpuEndToEndTests : IDisposable
         _core.GetGpr(T2).Should().Be(0xFFu);
         _core.GetSio0InterruptPending().Should().BeTrue("the reselected transaction signals its own IRQ");
     }
+
+    // Issue #543 review finding: the command-recognized/unrecognized
+    // classification sio0.rs computes internally must be production-visible,
+    // not only observable from Rust's own #[cfg(test)] unit tests. These
+    // drive the same real CPU Step()/PSXMemory production path as above and
+    // read the classification back through PSXCoreWrapper.
+
+    private const uint Sio0CommandStatusNone = 0;
+    private const uint Sio0CommandStatusRecognized = 1;
+    private const uint Sio0CommandStatusUnsupported = 2;
+
+    [Fact]
+    public void RecognizedCommand_ReportsRecognizedStatus_ThroughPSXCoreWrapper()
+    {
+        _core.GetSio0CommandStatus().Should().Be(Sio0CommandStatusNone, "no command byte has been sent yet");
+
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001), // address byte
+            Sb(T1, T0, (ushort)DataOffset));
+        _core.GetSio0CommandStatus().Should().Be(Sio0CommandStatusNone, "the address byte alone must not flip the classification");
+
+        Run(
+            Ori(T1, Zero, 0x0042), // command byte: recognized (read pad)
+            Sb(T1, T0, (ushort)DataOffset),
+            Lbu(T2, T0, (ushort)DataOffset));
+        _core.GetSio0CommandStatus().Should().Be(Sio0CommandStatusRecognized);
+        _core.GetGpr(T2).Should().Be(0xFFu, "the disconnected response is unchanged by recognition");
+        _core.GetSio0InterruptPending().Should().BeTrue("the transaction still completed and signaled IRQ7");
+    }
+
+    [Fact]
+    public void UnknownCommand_ReportsUnsupportedStatusAndTheActualByte_ThroughPSXCoreWrapper()
+    {
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001), // address byte
+            Sb(T1, T0, (ushort)DataOffset),
+            Ori(T1, Zero, 0x0099), // command byte: unrecognized
+            Sb(T1, T0, (ushort)DataOffset),
+            Lbu(T2, T0, (ushort)DataOffset));
+
+        _core.GetSio0CommandStatus().Should().Be(Sio0CommandStatusUnsupported, "0x99 is not the recognized command byte");
+        _core.GetSio0LastCommandByte().Should().Be(0x99, "the actual unrecognized byte is retained, not just a flag");
+
+        // The classification must not change any previously verified
+        // behavior: response, RX-ready, or IRQ7.
+        _core.GetGpr(T2).Should().Be(0xFFu, "the transaction still completed deterministically, not hung");
+        _core.GetSio0InterruptPending().Should().BeTrue("IRQ7 still latches for an unrecognized command, same as a recognized one");
+    }
 }

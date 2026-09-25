@@ -194,6 +194,16 @@ void PSXCore_ClearSio0Interrupt(PSXCore* core) {
     core->memory.ClearSio0Interrupt();
 }
 
+uint32_t PSXCore_GetSio0CommandStatus(PSXCore* core) {
+    if (!core) return 0;
+    return core->memory.GetSio0CommandStatus();
+}
+
+uint32_t PSXCore_GetSio0LastCommandByte(PSXCore* core) {
+    if (!core) return 0;
+    return core->memory.GetSio0LastCommandByte();
+}
+
 int PSXCore_Step(PSXCore* core) {
     if (!core) return -1;
     // Feed the Interrupt Controller's aggregate pending line into the CPU

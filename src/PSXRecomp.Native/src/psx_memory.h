@@ -75,6 +75,15 @@ void psx_memory_write8(PsxMemoryHandle* mem, uint32_t address, uint8_t value,
 // psx_dma_get_interrupt_pending/psx_timer_get_interrupt_pending use.
 uint8_t psx_memory_get_sio0_interrupt_pending(const PsxMemoryHandle* mem);
 void psx_memory_clear_sio0_interrupt(PsxMemoryHandle* mem);
+
+// SIO0 last-transaction command diagnostic (Issue #543): makes the
+// unrecognized-command classification sio0.rs already computes internally
+// production-visible, not just observable from Rust unit tests. Status: 0 =
+// none seen since the last transaction reset, 1 = recognized, 2 =
+// unsupported (see sio0.rs's CommandClassification). The command byte is
+// only meaningful when status is 2.
+uint8_t psx_memory_get_sio0_command_status(const PsxMemoryHandle* mem);
+uint8_t psx_memory_get_sio0_last_command_byte(const PsxMemoryHandle* mem);
 }
 
 class PSXMemory {
@@ -117,6 +126,11 @@ public:
     // Timer/DMA interrupts are (see DeviceScheduler.Advance).
     bool GetSio0InterruptPending() const;
     void ClearSio0Interrupt();
+
+    // SIO0 last-transaction command diagnostic (Issue #543): see
+    // psx_memory_get_sio0_command_status/psx_memory_get_sio0_last_command_byte above.
+    uint8_t GetSio0CommandStatus() const;
+    uint8_t GetSio0LastCommandByte() const;
 
 private:
     PsxMemoryHandle* handle_;
@@ -178,4 +192,12 @@ inline bool PSXMemory::GetSio0InterruptPending() const {
 
 inline void PSXMemory::ClearSio0Interrupt() {
     psx_memory_clear_sio0_interrupt(handle_);
+}
+
+inline uint8_t PSXMemory::GetSio0CommandStatus() const {
+    return psx_memory_get_sio0_command_status(handle_);
+}
+
+inline uint8_t PSXMemory::GetSio0LastCommandByte() const {
+    return psx_memory_get_sio0_last_command_byte(handle_);
 }

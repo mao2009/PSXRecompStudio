@@ -548,6 +548,43 @@ pub unsafe extern "C" fn psx_memory_clear_sio0_interrupt(mem: *mut PsxMemory) {
     crate::sio0::clear_interrupt_pending(&mut mem.sio0);
 }
 
+/// Returns SIO0's last-transaction command classification (Issue #543
+/// diagnostic observability): `0` = no command byte seen since the last
+/// transaction reset, `1` = recognized (the one supported command), `2` =
+/// unsupported/unrecognized — see
+/// [`crate::sio0::CommandClassification`]/[`crate::sio0::command_status_code`].
+/// `0` when `mem` is null. Not P/Invoked directly: called only from
+/// `PSXMemory::GetSio0CommandStatus` (`psx_memory.h`).
+///
+/// # Safety
+///
+/// `mem` must be either null or a valid, live handle for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn psx_memory_get_sio0_command_status(mem: *const PsxMemory) -> u8 {
+    // SAFETY: caller's documented contract above.
+    match unsafe { mem.as_ref() } {
+        Some(mem) => crate::sio0::command_status_code(&mem.sio0),
+        None => 0,
+    }
+}
+
+/// Returns the command byte last classified unsupported (Issue #543); only
+/// meaningful when [`psx_memory_get_sio0_command_status`] reports `2` (`0`
+/// is also a legitimate byte value when it *is* unsupported, so callers must
+/// check the status first). `0` when `mem` is null.
+///
+/// # Safety
+///
+/// `mem` must be either null or a valid, live handle for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn psx_memory_get_sio0_last_command_byte(mem: *const PsxMemory) -> u8 {
+    // SAFETY: caller's documented contract above.
+    match unsafe { mem.as_ref() } {
+        Some(mem) => crate::sio0::last_unsupported_command_byte(&mem.sio0),
+        None => 0,
+    }
+}
+
 /// Returns a pointer to the RAM backing store, stable for the handle's
 /// lifetime (until it is destroyed), or null when `mem` is null.
 ///

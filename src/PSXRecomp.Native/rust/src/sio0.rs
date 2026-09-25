@@ -64,8 +64,8 @@ const CONTROL_SELECT_BIT: u16 = 0x0002;
 
 /// The only controller command this component recognizes (`0x42`, "read
 /// pad", psx-spx / nocash PSX docs). Any other command byte is classified
-/// unrecognized (see [`Sio0State::last_command_recognized`]); the response
-/// byte is identical either way (see [`handle_data_write`]).
+/// [`CommandClassification::UnsupportedCommand`]; the response byte is
+/// identical either way (see [`handle_data_write`]).
 const COMMAND_READ_PAD: u8 = 0x42;
 
 /// The byte a disconnected port's data line reads back for every
@@ -85,6 +85,46 @@ const STATUS_TX_READY_2: u32 = 1 << 2;
 /// Hardware RX FIFO depth in bytes.
 pub const RX_FIFO_CAPACITY: usize = 8;
 
+/// Diagnostic classification of the current transaction's command byte
+/// (Issue #543 acceptance criteria: an unrecognized command must be
+/// classified explicitly — production-visible, not silently treated as
+/// known). Never affects the disconnected-slot response byte itself, which
+/// is always `0xFF` regardless of this value — see [`handle_data_write`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandClassification {
+    /// No command byte has been seen since the last transaction reset
+    /// (selection edge or `SIO_CTRL.6`).
+    None,
+    /// The command byte was [`COMMAND_READ_PAD`].
+    RecognizedReadPad,
+    /// The command byte was anything else. Carries the actual byte so a
+    /// production caller can log/inspect it, not just the fact of mismatch.
+    UnsupportedCommand(u8),
+}
+
+impl CommandClassification {
+    /// The discriminant (`0`/`1`/`2`) exposed across the native boundary by
+    /// [`crate::memory::psx_memory_get_sio0_command_status`].
+    fn status_code(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::RecognizedReadPad => 1,
+            Self::UnsupportedCommand(_) => 2,
+        }
+    }
+
+    /// The unsupported command byte, or `0` when not
+    /// [`Self::UnsupportedCommand`] (callers must check
+    /// [`Self::status_code`]/the status accessor first — `0` is also a
+    /// legitimate byte value when it *is* unsupported).
+    fn unsupported_byte(self) -> u8 {
+        match self {
+            Self::UnsupportedCommand(byte) => byte,
+            Self::None | Self::RecognizedReadPad => 0,
+        }
+    }
+}
+
 /// SIO0 register file. See the module documentation for the ownership
 /// rationale (owned inline by `PsxMemory`, no C++-visible counterpart).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,11 +140,9 @@ pub struct Sio0State {
     /// Bytes sent since the current selection edge (Issue #543); saturates,
     /// since only 0 (address byte) and 1 (command byte) are inspected.
     transfer_byte_index: u8,
-    /// Diagnostic (Issue #543 acceptance criteria): whether the transaction's
-    /// command byte (`transfer_byte_index == 1`) was [`COMMAND_READ_PAD`].
-    /// `true` before a command byte has been seen. Does not affect the
-    /// response byte — see [`handle_data_write`].
-    last_command_recognized: bool,
+    /// Diagnostic classification of the transaction's command byte
+    /// (`transfer_byte_index == 1`). See [`CommandClassification`].
+    last_command: CommandClassification,
     /// Unacknowledged "byte received" (IRQ7) latch (Issue #543), mirroring
     /// `TimerChannel::irq_flag`'s edge-latch pattern.
     irq_pending: bool,
@@ -124,7 +162,7 @@ impl Sio0State {
             rx_len: 0,
             last_rx_data: 0,
             transfer_byte_index: 0,
-            last_command_recognized: true,
+            last_command: CommandClassification::None,
             irq_pending: false,
         }
     }
@@ -156,13 +194,6 @@ impl Sio0State {
         }
     }
 
-    /// Diagnostic accessor (Issue #543 acceptance criteria: an unrecognized
-    /// command must be classified explicitly, never silently guessed) for
-    /// this module's own tests; not part of any guest-visible register.
-    #[cfg(test)]
-    pub(crate) fn last_command_recognized(&self) -> bool {
-        self.last_command_recognized
-    }
 }
 
 impl Default for Sio0State {
@@ -241,7 +272,11 @@ fn handle_data_write(state: &mut Sio0State, byte: u8) {
     }
 
     if state.transfer_byte_index == 1 {
-        state.last_command_recognized = byte == COMMAND_READ_PAD;
+        state.last_command = if byte == COMMAND_READ_PAD {
+            CommandClassification::RecognizedReadPad
+        } else {
+            CommandClassification::UnsupportedCommand(byte)
+        };
     }
     state.transfer_byte_index = state.transfer_byte_index.saturating_add(1);
 
@@ -280,7 +315,7 @@ fn handle_control_write(state: &mut Sio0State, value: u16) {
     let is_selected = state.control & CONTROL_SELECT_BIT != 0;
     if was_selected != is_selected {
         state.transfer_byte_index = 0;
-        state.last_command_recognized = true;
+        state.last_command = CommandClassification::None;
     }
 }
 
@@ -293,6 +328,30 @@ pub fn is_interrupt_pending(state: &Sio0State) -> bool {
 /// Clears SIO0's "byte received" (IRQ7) latch (Issue #543).
 pub fn clear_interrupt_pending(state: &mut Sio0State) {
     state.irq_pending = false;
+}
+
+/// Production-visible diagnostic accessor (Issue #543 acceptance criteria:
+/// an unrecognized command must be classified explicitly, not silently
+/// treated as known). See [`CommandClassification`].
+pub fn last_command_classification(state: &Sio0State) -> CommandClassification {
+    state.last_command
+}
+
+/// The discriminant [`crate::memory::psx_memory_get_sio0_command_status`]
+/// exposes across the native boundary: `0` = [`CommandClassification::None`],
+/// `1` = [`CommandClassification::RecognizedReadPad`], `2` =
+/// [`CommandClassification::UnsupportedCommand`].
+pub fn command_status_code(state: &Sio0State) -> u8 {
+    state.last_command.status_code()
+}
+
+/// The command byte [`crate::memory::psx_memory_get_sio0_last_command_byte`]
+/// exposes: the actual byte when the classification is
+/// [`CommandClassification::UnsupportedCommand`], else `0` (callers must
+/// check [`command_status_code`] first: `0` is also a legitimate byte value
+/// when it *is* unsupported).
+pub fn last_unsupported_command_byte(state: &Sio0State) -> u8 {
+    state.last_command.unsupported_byte()
 }
 
 #[cfg(test)]
@@ -476,7 +535,8 @@ mod tests {
         assert_eq!(read_register(&mut s, STAT), IDLE_STATUS, "RX-ready clears once the byte is read");
 
         write_register(&mut s, DATA, COMMAND_READ_PAD as u32); // command byte
-        assert!(s.last_command_recognized());
+        assert_eq!(last_command_classification(&s), CommandClassification::RecognizedReadPad);
+        assert_eq!(command_status_code(&s), 1);
         assert!(is_interrupt_pending(&s));
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
     }
@@ -487,15 +547,24 @@ mod tests {
         write_register(&mut s, CTRL, SELECT);
 
         write_register(&mut s, DATA, 0x01); // address byte, never classified
-        assert!(s.last_command_recognized(), "the address byte alone must not flip the classification");
+        assert_eq!(
+            last_command_classification(&s),
+            CommandClassification::None,
+            "the address byte alone must not flip the classification"
+        );
 
         write_register(&mut s, DATA, 0x99); // unrecognized command
-        assert!(!s.last_command_recognized());
+        assert_eq!(last_command_classification(&s), CommandClassification::UnsupportedCommand(0x99));
+        assert_eq!(command_status_code(&s), 2, "production-visible status code for Unsupported");
+        assert_eq!(last_unsupported_command_byte(&s), 0x99, "the actual command byte is retained, not just a flag");
 
         // Disconnected response never depends on recognition: nothing ever
         // responds, known command or not.
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
+        // Deterministic completion: the transaction did not hang, and IRQ7
+        // still latched exactly as it does for a recognized command.
+        assert!(is_interrupt_pending(&s));
     }
 
     #[test]
@@ -504,30 +573,31 @@ mod tests {
         write_register(&mut s, CTRL, SELECT);
         write_register(&mut s, DATA, 0x01); // byte 0 (address)
         write_register(&mut s, DATA, 0x99); // byte 1 (command) -> unrecognized
-        assert!(!s.last_command_recognized());
+        assert_eq!(last_command_classification(&s), CommandClassification::UnsupportedCommand(0x99));
 
         write_register(&mut s, CTRL, DESELECT); // deselect: abandon the transaction
         clear_interrupt_pending(&mut s);
 
         write_register(&mut s, CTRL, SELECT); // reselect: fresh transaction
         write_register(&mut s, DATA, 0x99); // byte 0 (address) of the NEW transaction
-        assert!(
-            s.last_command_recognized(),
+        assert_eq!(
+            last_command_classification(&s),
+            CommandClassification::None,
             "a fresh transaction must not inherit the previous one's classification"
         );
         write_register(&mut s, DATA, COMMAND_READ_PAD as u32); // byte 1 (command)
-        assert!(s.last_command_recognized());
+        assert_eq!(last_command_classification(&s), CommandClassification::RecognizedReadPad);
     }
 
     #[test]
     fn repeated_transaction_after_reset_behaves_identically() {
-        fn run_transaction(s: &mut Sio0State) -> (u32, u32, bool) {
+        fn run_transaction(s: &mut Sio0State) -> (u32, u32, CommandClassification) {
             write_register(s, CTRL, SELECT);
             write_register(s, DATA, 0x01);
             let first = read_register(s, DATA);
             write_register(s, DATA, COMMAND_READ_PAD as u32);
             let second = read_register(s, DATA);
-            let recognized = s.last_command_recognized();
+            let recognized = last_command_classification(s);
             write_register(s, CTRL, CONTROL_RESET_BIT as u32); // full reset between polls
             (first, second, recognized)
         }
@@ -538,7 +608,11 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(
             a,
-            (DISCONNECTED_RESPONSE_BYTE as u32, DISCONNECTED_RESPONSE_BYTE as u32, true)
+            (
+                DISCONNECTED_RESPONSE_BYTE as u32,
+                DISCONNECTED_RESPONSE_BYTE as u32,
+                CommandClassification::RecognizedReadPad
+            )
         );
     }
 }
