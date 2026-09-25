@@ -7,7 +7,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の静的再コンパイルと
 
 現在は PS-X EXE / CHD の解析、MIPS から決定論的な再コンパイルパイプラインへの lowering、実行可能なホスト成果物の生成、bounded な実行結果と interpreter の比較まで動作します。ただし、まだ研究段階であり、商用 PS1 タイトル全体の静的再コンパイルは **未実装** です。
 
-[English README](README.md) · [Project website](https://mao2009.github.io/PSXRecompStudio/) · [Latest release](https://github.com/mao2009/PSXRecompStudio/releases/latest)
+*[English README (Canonical / SSOT)](README.md)* · [Project website](https://mao2009.github.io/PSXRecompStudio/) · [Latest release](https://github.com/mao2009/PSXRecompStudio/releases/latest)
 
 ## 現在できること
 
