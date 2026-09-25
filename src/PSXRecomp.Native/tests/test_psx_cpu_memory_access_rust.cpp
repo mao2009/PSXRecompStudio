@@ -6,6 +6,7 @@
 // already wire this file in.
 
 #include "psx_core.h"
+#include "psx_cpu_memory_access.h"
 #include "test_harness.h"
 
 static void test_step_memory() {
@@ -245,7 +246,148 @@ static void test_aligned_halfword_word_access_unaffected() {
     PASS();
 }
 
+// ---- Issue #527: Rust-backed address semantics ----
+
+static void test_mem_access_rust_exports() {
+    TEST("Rust mem-access exports: translate/is_mapped/classify/extend_load");
+    ASSERT_EQ(sizeof(PSXMemAccess), 12u);
+    ASSERT_EQ(psx_cpu_mem_translate(0x00001000u), 0x00001000u);
+    ASSERT_EQ(psx_cpu_mem_translate(0x801FFFFFu), 0x001FFFFFu);
+    ASSERT_EQ(psx_cpu_mem_translate(0xBFC00000u), 0x1FC00000u);
+    ASSERT_EQ(psx_cpu_mem_translate(0xC0000000u), 0xFFFFFFFFu);
+    ASSERT_EQ(psx_cpu_mem_is_mapped(0xFFFFFFFFu), 0u);
+    ASSERT_EQ(psx_cpu_mem_is_mapped(0u), 1u);
+
+    PSXMemAccess a = psx_cpu_mem_classify(0x1000u, -4, 4);
+    ASSERT_EQ(a.vaddr, 0x0FFCu);
+    ASSERT_EQ(a.phys, 0x0FFCu);
+    ASSERT_EQ(a.status, PSX_MEM_ACCESS_OK);
+    a = psx_cpu_mem_classify(0xFFFFFFFCu, 8, 4); // wraps past 0xFFFFFFFF
+    ASSERT_EQ(a.vaddr, 4u);
+    ASSERT_EQ(a.status, PSX_MEM_ACCESS_OK);
+    a = psx_cpu_mem_classify(0x1000u, 1, 2);
+    ASSERT_EQ(a.vaddr, 0x1001u);
+    ASSERT_EQ(a.status, PSX_MEM_ACCESS_MISALIGNED);
+    ASSERT_EQ(psx_cpu_mem_classify(0x1000u, 2, 4).status, PSX_MEM_ACCESS_MISALIGNED);
+    ASSERT_EQ(psx_cpu_mem_classify(0x1001u, 0, 1).status, PSX_MEM_ACCESS_OK);
+    ASSERT_EQ(psx_cpu_mem_classify(0xC0000001u, 0, 2).status, PSX_MEM_ACCESS_MISALIGNED);
+    a = psx_cpu_mem_classify(0xC0000000u, 0, 4);
+    ASSERT_EQ(a.phys, 0xFFFFFFFFu);
+    ASSERT_EQ(a.status, PSX_MEM_ACCESS_UNMAPPED);
+
+    ASSERT_EQ(psx_cpu_mem_extend_load(0xEFu, 1, 1), 0xFFFFFFEFu);
+    ASSERT_EQ(psx_cpu_mem_extend_load(0xEFu, 1, 0), 0x000000EFu);
+    ASSERT_EQ(psx_cpu_mem_extend_load(0xABCDu, 2, 1), 0xFFFFABCDu);
+    ASSERT_EQ(psx_cpu_mem_extend_load(0xABCDu, 2, 0), 0x0000ABCDu);
+    ASSERT_EQ(psx_cpu_mem_extend_load(0x87654321u, 4, 1), 0x87654321u);
+    PASS();
+}
+
+static void test_negative_offset_and_wrap() {
+    TEST("Effective address sign-extends the offset and wraps at 32 bits");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0x1000u, 0x11223344u);
+    PSXCore_WriteMemory32(core, 0x0004u, 0x55667788u);
+
+    PSXCore_SetGPR(core, 29, 0x1004u);
+    PSXCore_WriteMemory32(core, 0x100, 0x8FA1FFFCu); // LW $1, -4($29) -> 0x1000
+    PSXCore_WriteMemory32(core, 0x104, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x11223344u);
+
+    PSXCore_SetGPR(core, 29, 0xFFFFFFFCu);
+    PSXCore_WriteMemory32(core, 0x108, 0x8FA20008u); // LW $2, 8($29) -> wraps to 0x4
+    PSXCore_WriteMemory32(core, 0x10C, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0x108);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0x55667788u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_unmapped_load_queues_zero() {
+    TEST("Unmapped LW/LH/LB queue 0 through the load delay (no exception)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0x2000u, 0xDEADBEEFu); // what a bad 0x1FFFFFFF mask would hit
+    PSXCore_SetGPR(core, 29, 0xC0002000u);
+    const uint32_t loads[] = {0x8FA10000u, 0x87A10000u, 0x97A10000u, 0x83A10000u, 0x93A10000u};
+    for (uint32_t op : loads) {
+        PSXCore_SetGPR(core, 1, 0xCAFEBABEu);
+        PSXCore_WriteMemory32(core, 0x100, op);          // L* $1, 0($29)
+        PSXCore_WriteMemory32(core, 0x104, 0x00000000u); // NOP
+        PSXCore_SetPC(core, 0x100);
+        PSXCore_Step(core);
+        ASSERT_EQ(PSXCore_GetGPR(core, 1), 0xCAFEBABEu); // load delay
+        PSXCore_Step(core);
+        ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u);
+        ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0u);
+        ASSERT_EQ(PSXCore_GetPC(core), 0x108u);
+    }
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_unmapped_store_is_noop() {
+    TEST("Unmapped SB/SH/SW are dropped (no exception, no memory write)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0x2000u, 0x11223344u);
+    PSXCore_SetGPR(core, 29, 0xC0002000u);
+    PSXCore_SetGPR(core, 2, 0xDEADBEEFu);
+    const uint32_t stores[] = {0xA3A20000u, 0xA7A20000u, 0xAFA20000u};
+    for (uint32_t op : stores) {
+        PSXCore_WriteMemory32(core, 0x100, op); // S* $2, 0($29)
+        PSXCore_SetPC(core, 0x100);
+        ASSERT_EQ(PSXCore_Step(core), 0);
+        ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0u);
+        ASSERT_EQ(PSXCore_GetPC(core), 0x104u);
+        ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2000u), 0x11223344u);
+    }
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_misaligned_unmapped_raises_adel() {
+    TEST("Misaligned LH at unmapped KSEG2 raises AdEL (alignment wins)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0xC0000000u);
+    PSXCore_WriteMemory32(core, 0, 0x87A10001u); // LH $1, 1($29)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x04u, 0u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0xC0000001u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_kseg1_stores_translate() {
+    TEST("SB/SH/SW through KSEG1 write the translated physical address");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0xA0002000u);
+    PSXCore_SetGPR(core, 2, 0x12345678u);
+    PSXCore_WriteMemory32(core, 0x100, 0xAFA20000u); // SW $2, 0($29)
+    PSXCore_WriteMemory32(core, 0x104, 0xA7A20004u); // SH $2, 4($29)
+    PSXCore_WriteMemory32(core, 0x108, 0xA3A20006u); // SB $2, 6($29)
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2000u), 0x12345678u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2004u), 0x00785678u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_memory_access_rust_tests() {
+    test_mem_access_rust_exports();
+    test_negative_offset_and_wrap();
+    test_unmapped_load_queues_zero();
+    test_unmapped_store_is_noop();
+    test_misaligned_unmapped_raises_adel();
+    test_kseg1_stores_translate();
     test_step_memory();
     test_kseg_translation();
     test_kseg_ram_end_bios();
