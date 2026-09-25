@@ -11,8 +11,8 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// environment data. The run envelope nests the production
 /// <see cref="RecompiledArtifactResult"/> — <em>the</em> #459 termination
 /// representation — rather than defining a CLI-specific termination model; the
-/// only caller-selected value it carries is the artifact path the command was
-/// asked to produce.
+/// ordinary run envelope keeps the pre-report field set unchanged; the
+/// report-aware variant adds only the caller-visible diagnostic bundle path.
 /// </summary>
 [Infrastructure]
 internal static class CliJson
@@ -36,6 +36,20 @@ internal static class CliJson
         string? Artifact,
         IReadOnlyList<byte> Output,
         RecompiledArtifactResult Result);
+
+    /// <summary>
+    /// Extended run envelope used only when <c>--report</c> is requested.
+    /// Keeping it separate preserves the exact pre-#457 JSON field set for
+    /// ordinary <c>run --json</c> invocations.
+    /// </summary>
+    [Infrastructure]
+    public sealed record RunResultWithDiagnosticBundle(
+        string Kind,
+        bool Success,
+        string? Artifact,
+        IReadOnlyList<byte> Output,
+        RecompiledArtifactResult Result,
+        string DiagnosticBundle);
 
     public static string Serialize<T>(T document) => ArtifactJson.Serialize(document);
 }

@@ -47,6 +47,24 @@ internal static class CliInput
     }
 
     /// <summary>
+    /// Resolves an input exactly as <see cref="Load"/> does while also returning
+    /// the SHA-256 identity of the bytes/container used for the run. The EXE path
+    /// hashes the same byte array passed to <see cref="PsxExe.Load"/>; the CHD
+    /// path reuses the streaming identity already required by
+    /// <c>RomAnalysisPipeline.RunFromChd</c>.
+    /// </summary>
+    public static (PsxExeTitleExecution Execution, string Sha256) LoadWithIdentity(
+        string inputPath,
+        uint outerBudget,
+        uint segmentBudget)
+    {
+        ArgumentNullException.ThrowIfNull(inputPath);
+        return Path.GetExtension(inputPath).Equals(".chd", StringComparison.OrdinalIgnoreCase)
+            ? LoadChdWithIdentity(inputPath, outerBudget, segmentBudget)
+            : LoadExeWithIdentity(inputPath, outerBudget, segmentBudget);
+    }
+
+    /// <summary>
     /// Existing PS-X EXE path: whole-file read, <see cref="PsxExe.Load"/>,
     /// <see cref="PsxExeTitleInput.Build"/>. Behavior-compatible with the
     /// pre-#457 CLI; a malformed EXE still fails as <c>PsxExe.Load</c> raises.
@@ -58,6 +76,17 @@ internal static class CliInput
         return PsxExeTitleInput.Build(exe, outerBudget, segmentBudget);
     }
 
+    private static (PsxExeTitleExecution Execution, string Sha256) LoadExeWithIdentity(
+        string exePath,
+        uint outerBudget,
+        uint segmentBudget)
+    {
+        var bytes = File.ReadAllBytes(exePath);
+        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var exe = PsxExe.Load(bytes, exePath);
+        return (PsxExeTitleInput.Build(exe, outerBudget, segmentBudget), sha256);
+    }
+
     /// <summary>
     /// CHD path, following <see cref="RealRomAnalyzer"/>'s two-open pattern: the whole
     /// CHD is never buffered into memory. Pass 1 streams the file through SHA-256 for
@@ -65,7 +94,13 @@ internal static class CliInput
     /// <c>RomAnalysisPipeline.RunFromChd</c>, which manages only its own
     /// <see cref="ChdReader"/> lifetime and never disposes this stream.
     /// </summary>
-    private static PsxExeTitleExecution LoadChd(string chdPath, uint outerBudget, uint segmentBudget)
+    private static PsxExeTitleExecution LoadChd(string chdPath, uint outerBudget, uint segmentBudget) =>
+        LoadChdWithIdentity(chdPath, outerBudget, segmentBudget).Execution;
+
+    private static (PsxExeTitleExecution Execution, string Sha256) LoadChdWithIdentity(
+        string chdPath,
+        uint outerBudget,
+        uint segmentBudget)
     {
         string sha256;
         using (var hashStream = File.OpenRead(chdPath))
@@ -87,7 +122,7 @@ internal static class CliInput
                 outcome.FailureReason);
         }
 
-        return PsxExeTitleInput.Build(outcome.Executable, outerBudget, segmentBudget);
+        return (PsxExeTitleInput.Build(outcome.Executable, outerBudget, segmentBudget), sha256);
     }
 
     public static RecompilerIrProgram Lower(PsxExeTitleExecution input)

@@ -24,7 +24,7 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 
 ```
 psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
-psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--json]
+psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--report] [--json]
 ```
 
 `psxrecomp --help` prints usage, the option grammar, and the exit-code table.
@@ -58,8 +58,13 @@ does not execute the program).
 Rebuilds the artifact and launches it against the recompiled-host execution
 engine. `--output <dir>` is optional and defaults to the current directory.
 `--segment-budget <n>` sets the per-segment instruction budget (a positive
-integer). `--json` (valid for both commands) emits the machine-readable
-envelope (see below) as the sole stdout document.
+integer). `--report` writes a privacy-safe `diagnostic-report.zip` into the
+selected output directory after the production launcher returns a
+`RecompiledArtifactResult`. The bundle is generated for successful and blocked
+runs (and for a classified runtime failure that returns a result); input/build/
+launcher failures that produce no result do not fabricate one. `--json` (valid
+for both commands) emits the machine-readable envelope (see below) as the sole
+stdout document.
 
 ### Exit codes
 
@@ -112,6 +117,42 @@ failure on stderr and exits `1`; it does not fabricate a `result` object,
 because no production result exists to serialize. When the run succeeds but is
 blocked (exit code 2), the JSON document is still emitted with
 `"success": false`.
+
+Without `--report`, the run JSON field set is unchanged. With `--report`,
+the same envelope adds one final field:
+
+```json
+{ "kind": "run", "...": "...",
+  "diagnosticBundle": "/abs/path/diagnostic-report.zip" }
+```
+
+The path is presentation metadata only; it is not embedded inside the diagnostic
+bundle itself.
+
+### Diagnostic report bundle
+
+`run --report` writes exactly four UTF-8 entries:
+
+```text
+diagnostic-report.zip
+  report.json
+  environment.json
+  diagnostics.log
+  issue.md
+```
+
+`report.json` carries the input SHA-256, artifact SHA-256 identity, execution
+classification, guest PC/diagnostic code when available, and segment budget.
+`environment.json` contains the bounded host/toolchain metadata allowed by the
+#457 privacy contract. `diagnostics.log` uses the existing bounded sanitized
+diagnostic-log contract; it may be empty when the launcher exposes no structured
+diagnostic sequence beyond the production result. `issue.md` is generated from
+the same sanitized report.
+
+The bundle does **not** include the input EXE/CHD bytes, generated artifact
+contents, raw RAM, memory-card/save data, credentials, usernames, or local
+absolute paths. Nothing is uploaded automatically; the user inspects and shares
+the bundle manually.
 
 ## Execution model
 

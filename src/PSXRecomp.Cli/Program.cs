@@ -25,7 +25,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 public static class Program
 {
     private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]";
-    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--json]";
+    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--report] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
 
@@ -48,8 +48,8 @@ public static class Program
         var rest = args[1..];
         return command switch
         {
-            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, requireOutput: true, standardOutput, standardError),
-            "run" => Dispatch("run", rest, allowSegmentBudget: true, requireOutput: false, standardOutput, standardError),
+            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowReport: false, requireOutput: true, standardOutput, standardError),
+            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowReport: true, requireOutput: false, standardOutput, standardError),
             "--help" or "-h" => Usage(standardOutput),
             _ => UnknownCommand(command, standardError),
         };
@@ -59,11 +59,12 @@ public static class Program
         string command,
         IReadOnlyList<string> arguments,
         bool allowSegmentBudget,
+        bool allowReport,
         bool requireOutput,
         TextWriter standardOutput,
         TextWriter standardError)
     {
-        if (!TryParse(arguments, allowSegmentBudget, requireOutput, out var parsed, out var error))
+        if (!TryParse(arguments, allowSegmentBudget, allowReport, requireOutput, out var parsed, out var error))
         {
             standardError.WriteLine($"psxrecomp {command}: {error}");
             WriteCommandUsage(command, standardError);
@@ -89,6 +90,7 @@ public static class Program
     private static bool TryParse(
         IReadOnlyList<string> arguments,
         bool allowSegmentBudget,
+        bool allowReport,
         bool requireOutput,
         out ParsedArguments parsed,
         out string? error)
@@ -96,6 +98,7 @@ public static class Program
         string? input = null;
         string? outputDirectory = null;
         var json = false;
+        var report = false;
         uint? segmentBudget = null;
         var help = false;
 
@@ -138,6 +141,15 @@ public static class Program
                     }
                     segmentBudget = budget;
                     break;
+                case "--report":
+                    if (!allowReport)
+                    {
+                        parsed = default;
+                        error = "'--report' is only valid for 'run'.";
+                        return false;
+                    }
+                    report = true;
+                    break;
                 case "--json":
                     json = true;
                     break;
@@ -161,7 +173,7 @@ public static class Program
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, Help: true);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, Help: true);
             error = null;
             return true;
         }
@@ -180,7 +192,7 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, Help: false);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, Help: false);
         error = null;
         return true;
     }
@@ -227,7 +239,7 @@ public static class Program
 
 /// <summary>
 /// The parsed, validated surface of one command invocation. Shared by both
-/// commands; the run-only <c>--segment-budget</c> option is gated during parsing.
+/// commands; the run-only <c>--segment-budget</c> and <c>--report</c> options are gated during parsing.
 /// </summary>
 [Infrastructure]
 internal sealed record ParsedArguments(
@@ -235,4 +247,5 @@ internal sealed record ParsedArguments(
     string? OutputDirectory,
     bool Json,
     uint? SegmentBudget,
+    bool Report,
     bool Help);

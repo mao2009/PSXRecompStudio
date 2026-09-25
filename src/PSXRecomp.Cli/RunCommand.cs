@@ -1,9 +1,13 @@
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
+using PSXRecomp.Core.Diagnostics;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure;
+using PSXRecomp.Infrastructure.Diagnostics;
 
 namespace PSXRecomp.Infrastructure.Cli;
 
@@ -16,7 +20,9 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// unresolved transfer is classified as unsupported). The launcher is single-shot
 /// (it builds and runs in one operation and does not accept an already-built binary),
 /// so <c>run</c> rebuilds from the input; persisted-artifact-only relaunch is outside
-/// Issue #460. The production result maps onto the process exit code as-is:
+/// Issue #460. With <c>--report</c>, the command also packages the existing
+/// privacy-safe #457 diagnostic contracts after a production result exists.
+/// The production result maps onto the process exit code as-is:
 /// Success → 0, Blocked → 2, Failure/tooling → 1.
 /// </summary>
 [Infrastructure]
@@ -29,6 +35,8 @@ public static class RunCommand
     /// timeout kills it.
     /// </summary>
     public const uint DefaultSegmentBudget = 1_000_000u;
+    /// <summary>Stable filename used by <c>run --report</c> inside the output directory.</summary>
+    public const string DiagnosticBundleFileName = "diagnostic-report.zip";
 
     internal static int Run(ParsedArguments arguments, TextWriter standardOutput, TextWriter standardError)
     {
@@ -37,7 +45,19 @@ public static class RunCommand
 
         try
         {
-            var input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget);
+            string? inputSha256 = null;
+            PSXRecomp.Core.Execution.PsxExeTitleExecution input;
+            if (arguments.Report)
+            {
+                var resolved = CliInput.LoadWithIdentity(arguments.Input!, outerBudget: 1, segmentBudget);
+                input = resolved.Execution;
+                inputSha256 = resolved.Sha256;
+            }
+            else
+            {
+                input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget);
+            }
+
             var program = CliInput.Lower(input);
             var programEnd = unchecked(input.LoadAddress + (uint)input.InstructionWords.Count * 4u);
 
@@ -48,18 +68,58 @@ public static class RunCommand
                 outputDirectory,
                 resultRegister: (int)R3000aRegister.V0);
 
+            var artifactPath = ResolveArtifactPath(outputDirectory);
+            string? diagnosticBundlePath = null;
+            if (arguments.Report)
+            {
+                try
+                {
+                    diagnosticBundlePath = WriteDiagnosticBundle(
+                        outputDirectory,
+                        artifactPath,
+                        inputSha256!,
+                        segmentBudget,
+                        outcome.Result);
+                }
+                catch (Exception ex) when (
+                    ex is DirectoryNotFoundException or FileNotFoundException
+                        or UnauthorizedAccessException or IOException or InvalidDataException
+                        or ArgumentException or InvalidOperationException)
+                {
+                    standardError.WriteLine(
+                        $"psxrecomp run: diagnostic report could not be written: {ex.Message}");
+                }
+            }
+
             if (arguments.Json)
             {
-                standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResult(
-                    Kind: CliJson.RunKind,
-                    Success: outcome.Result.Outcome == RecompiledArtifactOutcome.Success,
-                    Artifact: ResolveArtifactPath(outputDirectory),
-                    Output: outcome.Output,
-                    Result: outcome.Result)));
+                if (diagnosticBundlePath is null)
+                {
+                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResult(
+                        Kind: CliJson.RunKind,
+                        Success: outcome.Result.Outcome == RecompiledArtifactOutcome.Success,
+                        Artifact: artifactPath,
+                        Output: outcome.Output,
+                        Result: outcome.Result)));
+                }
+                else
+                {
+                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithDiagnosticBundle(
+                        Kind: CliJson.RunKind,
+                        Success: outcome.Result.Outcome == RecompiledArtifactOutcome.Success,
+                        Artifact: artifactPath,
+                        Output: outcome.Output,
+                        Result: outcome.Result,
+                        DiagnosticBundle: diagnosticBundlePath)));
+                }
             }
             else
             {
-                WriteHumanOutcome(outcome, ResolveArtifactPath(outputDirectory), standardOutput);
+                WriteHumanOutcome(outcome, artifactPath, standardOutput);
+                if (diagnosticBundlePath is not null)
+                {
+                    standardOutput.WriteLine($"Diagnostic report: {diagnosticBundlePath}");
+                }
             }
 
             return outcome.Result.ExitCode;
@@ -76,6 +136,44 @@ public static class RunCommand
             return RecompiledArtifactExitCode.Failure;
         }
     }
+
+    private static string WriteDiagnosticBundle(
+        string outputDirectory,
+        string artifactPath,
+        string inputSha256,
+        uint segmentBudget,
+        RecompiledArtifactResult result)
+    {
+        var report = ExecutionDiagnosticReport.From(
+            result,
+            inputSha256,
+            segmentBudget,
+            productRevision: GetProductRevision(),
+            artifactIdentity: $"sha256:{ComputeSha256(artifactPath)}");
+
+        var environment = ExecutionEnvironmentCollector.Capture();
+        var bundlePath = Path.Combine(outputDirectory, DiagnosticBundleFileName);
+
+        using var destination = File.Create(bundlePath);
+        ExecutionDiagnosticBundleWriter.Write(
+            destination,
+            report,
+            environment,
+            Array.Empty<Diagnostic>());
+
+        return bundlePath;
+    }
+
+    private static string ComputeSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
+    private static string? GetProductRevision() =>
+        typeof(RunCommand).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
 
     /// <summary>
     /// The artifact path a launcher run just produced in <paramref name="outputDirectory"/>
