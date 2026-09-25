@@ -193,6 +193,11 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
             MmioTarget.Timer => _timerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.InterruptController => _interruptControllerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.Gpu => _gpuAdapter?.ReadRegister(address) ?? 0,
+            // SIO0 register semantics are native/Rust-owned (Issue #542 /
+            // CodeRabbit finding on PR #548): route straight to the same
+            // psx_memory_read32 the guest CPU's LW/LH/LB use, instead of a
+            // managed adapter that would duplicate the semantics.
+            MmioTarget.Sio0 => _core.ReadMemory32(address),
             _ => 0,
         };
     }
@@ -213,6 +218,9 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
                 break;
             case MmioTarget.Gpu:
                 _gpuAdapter?.WriteRegister(address, value);
+                break;
+            case MmioTarget.Sio0:
+                _core.WriteMemory32(address, value);
                 break;
         }
     }

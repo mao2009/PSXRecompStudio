@@ -58,7 +58,7 @@ public interface IHardwareComponent
 | Interrupt Controller | IInterruptController | 0x1F801070-0x1F801074 | Central |
 | DMA Controller | IDmaController | 0x1F801080-0x1F8010FF | IRQ3 |
 | Timer 0-2 | ITimer | 0x1F801100-0x1F801128 | IRQ4-6 |
-| Controller/MemCard | (future) | 0x1F801040-0x1F80105E | IRQ7 |
+| Controller/MemCard | native/Rust `crate::sio0` (register model only, Issue #542) | 0x1F801040-0x1F80105E | IRQ7 (interface only, never driven) |
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
 | MDEC | IMdec | 0x1F801820-0x1F801824 | None |
@@ -66,7 +66,29 @@ public interface IHardwareComponent
 | GTE | IGte (COP2) | Coprocessor | None |
 | Cache Control | IMemoryBus | 0xFFFE0130 | None |
 
-The Controller/MemCard row is the SIO byte protocol, which remains unimplemented.
+The Controller/MemCard row is SIO0. `crate::sio0` (native Rust, owned inline
+by `PsxMemory`; see `docs/development/rust-ffi-contract.md`'s "Guest memory
+(#492)" section) implements only the guest-visible register file:
+deterministic SIO_DATA/SIO_STAT/SIO_MODE/SIO_CTRL/SIO_BAUD read/write
+semantics and a fixed idle value for reserved addresses in the window. No
+serial transfer or controller/memory-card protocol is modeled, so no byte
+ever reaches the RX FIFO in production and IRQ7 is never raised; that is
+tracked separately as a child of #443.
+
+SIO0 was originally a pure managed model (`Sio0Device`/`Sio0State`/
+`Sio0MmioAdapter`, the GPU precedent, ADR-022), reachable only through the
+managed `MemoryBus` test/BIOS-HLE seam — not from a real guest CPU
+`LW/SW/LH/SH/LB/SB`, which executes through the native interpreter
+(`InterpreterTitleExecutionEngine` → `PSXCoreWrapper` → native `PSXCpu` →
+native `PSXMemory`) without ever going through `MemoryBus`. A CodeRabbit
+review on PR #548 caught this gap; the fix moved the register semantics into
+native Rust (this component has no controller/memory-card protocol or IRQ7 in
+scope, unlike DMA/Timer/Interrupt, so it needed no `PSXCore`-owned state or
+`AttachControllers`-style pointer — see the FFI contract doc). `MemoryBus`'s
+SIO0 case now calls `PSXCoreWrapper.ReadMemory32`/`WriteMemory32` (the same
+native entry point the CPU step path uses) instead of a managed adapter, so
+the managed test/BIOS-HLE seam and the production CPU path observe one SSOT.
+
 Memory-card **storage** — the 128 KiB card file, its format, and the slot
 configuration that selects it — is a separate, implemented subsystem documented
 in [Memory Card Format and Storage Policy](memory-card.md). It supplies the card
@@ -84,6 +106,7 @@ Physical Address
 │ 0x1F000000-0x1F07FFFF: Expansion Region 1          │
 │ 0x1F800000-0x1F8003FF: Scratchpad (1KB Fast RAM)  │
 │ 0x1F801000-0x1F801FFF: I/O Ports                   │
+│   0x1F801040-0x1F80105E: SIO0 (Controller/MemCard) │
 │   0x1F801070-0x1F801074: Interrupt                 │
 │   0x1F801080-0x1F8010FF: DMA                      │
 │   0x1F801100-0x1F801128: Timers                   │
