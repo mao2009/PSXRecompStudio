@@ -289,26 +289,43 @@ nullable, and an unattached controller falls back to the flat HW-register
 store, exactly as before. A timer read can mutate `*timers` (reading MODE
 clears its target/overflow flags), matching the pre-migration behavior.
 
-SIO0 (Issue #542, fixed for production reachability by a CodeRabbit finding
-on PR #548) is serviced the same way but is not threaded through a
+SIO0 (register file: Issue #542, fixed for production reachability by a
+CodeRabbit finding on PR #548; minimal controller serial protocol: Issue
+#543) is serviced the same way but is not threaded through a
 `PSXMemory::AttachControllers` pointer: `rust/src/sio0.rs`'s `Sio0State` is a
 field owned directly by `PsxMemory` (see its module documentation), because —
-unlike DMA/Timer/Interrupt — nothing else in native code needs to observe or
-drive SIO0 state in this scope (no controller/memory-card protocol, no IRQ7).
-`memory.rs`'s `read{8,16,32}`/`write{8,16,32}` dispatch a SIO0-range address to
+unlike DMA/Timer/Interrupt — nothing else in native code needs to *drive*
+SIO0 state (no `PSXCore`-owned pointer, no `AttachControllers` change). It
+does now raise an interrupt (IRQ7, "byte received"), but through a poll/clear
+pair at the `PsxMemory` handle boundary — `psx_memory_get_sio0_interrupt_pending`/
+`psx_memory_clear_sio0_interrupt`, wrapped by `PSXMemory::GetSio0InterruptPending`/
+`ClearSio0Interrupt` in `psx_memory.h` — the same shape
+`psx_dma_get_interrupt_pending`/`psx_timer_get_interrupt_pending` already use,
+not a shared `PSXInterruptState*` pointer. `memory.rs`'s
+`read{8,16,32}`/`write{8,16,32}` dispatch a SIO0-range address to
 `crate::sio0::read_register`/`write_register` at the exact address requested
 (not word-realigned like the DMA/Timer/Interrupt dispatch), matching the
 managed `Sio0MmioAdapter`/`Ps1MemoryMap.GetSio0RegisterType` semantics it
-replaced byte-for-byte. `sio0.rs`'s functions are not `extern "C"` and add no
-new FFI surface: they are plain same-crate Rust calls from `memory.rs`, so
-this fix needed no `PSXMemory::AttachControllers` signature change, no
-`include/psx_core.h` / `NativeInterop.cs` change, and no `ABI_VERSION` bump.
-The managed `Sio0State`/`Sio0Device`/`Sio0MmioAdapter` classes this replaced
-were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case now calls
+replaced byte-for-byte. `sio0.rs`'s register-file functions are not
+`extern "C"` and add no FFI surface: they are plain same-crate Rust calls
+from `memory.rs`. The Rust SIO0 poll/diagnostic accessors are `extern "C"`
+functions on the opaque `PsxMemoryHandle`; `psx_api.cpp` wraps them in
+`PSXCore_GetSio0InterruptPending`, `PSXCore_ClearSio0Interrupt`,
+`PSXCore_GetSio0CommandStatus`, and `PSXCore_GetSio0LastCommandByte`.
+Those C++ implementations have C linkage through `include/psx_core.h`'s
+`extern "C"` block and are mirrored by `NativeInterop.cs`. They are new
+entry points, not changed signatures on existing ones, so no `ABI_VERSION`
+bump is required (§1). The
+managed `Sio0State`/`Sio0Device`/`Sio0MmioAdapter` classes Issue #542's fix
+replaced were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case calls
 `PSXCoreWrapper.ReadMemory32`/`WriteMemory32` — the same native entry point
 the guest CPU's `LW`/`SW` use — instead of a managed adapter, so there is a
 single SSOT reachable from both the managed test/BIOS-HLE seam and the
-production CPU path.
+production CPU path. `PSXRecomp.Core.Runtime.DeviceScheduler.Advance` polls
+`GetSio0InterruptPending`/clears/raises `IRQ7`, in the same fixed stage order
+as Timer/DMA, after ticking DMA and before VBlank; unlike Timer/DMA this
+stage needs no `Tick` call first, since SIO0 has no clock of its own — it is
+purely event-driven off `SIO_DATA` writes.
 
 Every read/write export takes the handle and (for the HW-register window) up
 to three raw, independently-nullable controller-state pointers, so — unlike
@@ -327,6 +344,10 @@ buffer-access logic underneath is bounds-checked, panic-free safe Rust (§8);
 | `psx_memory_ram_ptr` | `uint8_t*(PsxMemoryHandle*)` | RAM buffer pointer, stable for the handle's lifetime; null when the handle is null. |
 | `psx_memory_read{8,16,32}` | `uintN_t(PsxMemoryHandle*, uint32_t address, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | RAM (mirrored), scratchpad, BIOS, or HW-register (controller-routed, else flat store) little-endian read; 0 outside every mapped region or on a null handle. |
 | `psx_memory_write{8,16,32}` | `void(PsxMemoryHandle*, uint32_t address, uintN_t value, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | Matching write; a sub-word write to a controller register preserves DICR's write-1-to-clear flag bits exactly as the pre-migration C++ implementation did (PR #491's fix). No-op outside every mapped region or on a null handle. |
+| `psx_memory_get_sio0_interrupt_pending` | `uint8_t(const PsxMemoryHandle*)` | 1 when SIO0's IRQ7 latch is set, else 0; 0 on a null handle. |
+| `psx_memory_clear_sio0_interrupt` | `void(PsxMemoryHandle*)` | Clears SIO0's IRQ7 latch; null is a no-op. |
+| `psx_memory_get_sio0_command_status` | `uint8_t(const PsxMemoryHandle*)` | 0 = none, 1 = recognized (`0x42`), 2 = unsupported; 0 on a null handle. |
+| `psx_memory_get_sio0_last_command_byte` | `uint8_t(const PsxMemoryHandle*)` | Unsupported command byte when status is 2, else 0; 0 on a null handle. |
 
 ### PSXCpu non-trapping ALU / logic / shift arithmetic (#501)
 
