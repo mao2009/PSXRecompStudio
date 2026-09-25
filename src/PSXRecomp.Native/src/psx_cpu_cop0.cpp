@@ -2,6 +2,7 @@
 // psx_cpu.cpp (Issue #524); owned by the COP0 Rust migration slice (#529).
 
 #include "psx_cpu.h"
+#include "psx_cpu_cop0.h"
 #include <cstdint>
 
 // System
@@ -24,25 +25,17 @@ void PSXCpu::ExecMfc0(uint32_t rt, uint32_t rd) {
 void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {
     if (rd >= PSX_COP0_COUNT) return;
     if (rd == 13) {
-        // CAUSE: only IP[1:0] (bits 8-9, software interrupt pending) are R/W.
-        uint32_t ip = gpr_[rt] & 0x300;
-        cop0_[13] = (cop0_[13] & ~0x300u) | ip;
+        // CAUSE: only IP[1:0] (bits 8-9, software interrupt pending) are R/W
+        // (Rust, psx_cpu_cop0.h, Issue #529).
+        cop0_[13] = psx_cpu_cop0_write_cause(cop0_[13], gpr_[rt]);
     } else {
         cop0_[rd] = gpr_[rt];
     }
 }
 
 void PSXCpu::ExecRfe() {
-    // RFE pops the SR 3-level stack (docs/cpu/cop0.md):
-    //   KUc<--KUp, IEc<--IEp; KUp<--KUo, IEp<--IEo
-    // KUo/IEo (bits 4-5) are left unchanged by RFE (PSX hardware: psx-spx).
+    // RFE pops the SR 3-level KU/IE stack, leaving KUo/IEo unchanged
+    // (docs/cpu/cop0.md; Rust, psx_cpu_cop0.h, Issue #529).
     // PC restore is a software (JR) responsibility and out of scope (ADR-005).
-    uint32_t sr = cop0_[12];
-    uint32_t kup = (sr >> 2) & 1;
-    uint32_t iep = (sr >> 3) & 1;
-    uint32_t kuo = (sr >> 4) & 1;
-    uint32_t ieo = (sr >> 5) & 1;
-    sr &= ~0x0Fu;
-    sr |= (kup) | (iep << 1) | (kuo << 2) | (ieo << 3);
-    cop0_[12] = sr;
+    cop0_[12] = psx_cpu_cop0_rfe(cop0_[12]);
 }
