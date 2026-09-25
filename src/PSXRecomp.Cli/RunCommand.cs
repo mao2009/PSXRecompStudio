@@ -69,14 +69,27 @@ public static class RunCommand
                 resultRegister: (int)R3000aRegister.V0);
 
             var artifactPath = ResolveArtifactPath(outputDirectory);
-            var diagnosticBundlePath = arguments.Report
-                ? WriteDiagnosticBundle(
-                    outputDirectory,
-                    artifactPath,
-                    inputSha256!,
-                    segmentBudget,
-                    outcome.Result)
-                : null;
+            string? diagnosticBundlePath = null;
+            if (arguments.Report)
+            {
+                try
+                {
+                    diagnosticBundlePath = WriteDiagnosticBundle(
+                        outputDirectory,
+                        artifactPath,
+                        inputSha256!,
+                        segmentBudget,
+                        outcome.Result);
+                }
+                catch (Exception ex) when (
+                    ex is DirectoryNotFoundException or FileNotFoundException
+                        or UnauthorizedAccessException or IOException or InvalidDataException
+                        or ArgumentException or InvalidOperationException)
+                {
+                    standardError.WriteLine(
+                        $"psxrecomp run: diagnostic report could not be written: {ex.Message}");
+                }
+            }
 
             if (arguments.Json)
             {
