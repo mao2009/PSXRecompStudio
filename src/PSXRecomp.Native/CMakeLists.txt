@@ -88,9 +88,22 @@ add_custom_command(
 )
 add_custom_target(psx_rust_substrate DEPENDS ${PSX_RUST_STATICLIB})
 
+# PSXCpu translation units, one per Rust migration slice (Issue #524). Shared
+# by the library and the native test executable.
+set(PSX_CPU_SOURCES
+    src/psx_cpu.cpp
+    src/psx_cpu_decode.cpp
+    src/psx_cpu_control.cpp
+    src/psx_cpu_memory_access.cpp
+    src/psx_cpu_unaligned.cpp
+    src/psx_cpu_cop0.cpp
+    src/psx_cpu_exception.cpp
+    src/psx_cpu_pipeline.cpp
+)
+
 add_library(PSXRecomp.Native SHARED
     src/psx_api.cpp
-    src/psx_cpu.cpp
+    ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     src/psx_rust_abi.cpp
 )
@@ -148,7 +161,7 @@ endif()
 
 enable_testing()
 add_executable(psx_native_tests
-    src/psx_cpu.cpp
+    ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     tests/test_psx_core.cpp
 )
