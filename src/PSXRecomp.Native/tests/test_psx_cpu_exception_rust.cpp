@@ -178,7 +178,56 @@ static void test_cause_ce_cleared_by_non_cpu_exception() {
     PASS();
 }
 
+// Issue #530: the EPC/CAUSE/SR/vector arithmetic moved to Rust
+// (rust/src/cpu_exception.rs); these pin the paths it feeds end to end.
+static void test_cause_software_ip_preserved() {
+    TEST("Exception preserves CAUSE software IP[1:0] and clears a stale Excode/BD");
+    PSXCore* core = PSXCore_Create();
+    // IP1|IP0 set, stale Excode 0x1F and BD; SR IEc=0 so no interrupt is taken.
+    PSXCore_SetCop0(core, 13, 0x80000300u | 0x7Cu);
+    PSXCore_WriteMemory32(core, 0, 0x0000000Cu); // SYSCALL
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13), 0x00000300u | (0x08u << 2));
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_cpu_exception_sets_ce() {
+    TEST("CpU sets CAUSE.CE to the coprocessor number");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, 0x4C010000u); // MFC3 -> CpU, CE=3
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x0Bu, 0u);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) >> 28) & 3u, 3u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ades_in_delay_slot_badvaddr() {
+    TEST("AdES in a delay slot sets BadVaddr, BD=1, EPC=branch addr");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000u);
+    PSXCore_WriteMemory32(core, 0x20, 0x10000001u); // BEQ $0,$0,+1
+    PSXCore_WriteMemory32(core, 0x24, 0xAFA20003u); // SW $2, 3($29) -> 0x1003
+    PSXCore_SetPC(core, 0x20);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0x05u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 13) & 0x80000000u, 0x80000000u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0x20u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 8), 0x1003u);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_exception_rust_tests() {
+    test_cause_software_ip_preserved();
+    test_cpu_exception_sets_ce();
+    test_ades_in_delay_slot_badvaddr();
     test_exception_vector_bev1();
     test_sr_stack_shift();
     test_exception_nested_sr();
