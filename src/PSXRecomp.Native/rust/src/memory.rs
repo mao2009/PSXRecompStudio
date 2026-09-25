@@ -57,6 +57,7 @@ use std::ptr;
 use crate::dma::{psx_dma_read_register, psx_dma_write_register, DmaState};
 use crate::interrupt::{psx_interrupt_read_register, psx_interrupt_write_register, InterruptState};
 use crate::sio0::{is_sio0_register, read_register as sio0_read_register, write_register as sio0_write_register, Sio0State};
+use crate::spu::{is_spu_register, read8 as spu_read8, read16 as spu_read16, read32 as spu_read32, write8 as spu_write8, write16 as spu_write16, write32 as spu_write32, SpuState};
 use crate::timer::{psx_timer_read_register, psx_timer_write_register, TimerState};
 
 /// PS1 main RAM size (2 MiB). Must match `PSX_RAM_SIZE` in `psx_cpu.h`.
@@ -230,6 +231,9 @@ pub struct PsxMemory {
     /// SIO0 register-only model (Issue #542). Owned here rather than by the
     /// C++ `PSXCore` — see `crate::sio0`'s module documentation for why.
     sio0: Sio0State,
+    /// Register-only SPU model (Issue #445), owned inline so the production
+    /// CPU memory path and managed MemoryBus observe one Rust SSOT.
+    spu: SpuState,
 }
 
 fn try_zeroed_bytes(len: usize) -> Option<Box<[u8]>> {
@@ -256,6 +260,7 @@ impl PsxMemory {
             bios: try_zeroed_bytes(PSX_BIOS_SIZE as usize)?,
             hw_regs: try_zeroed_bytes(PSX_HW_REG_SIZE as usize)?,
             sio0: Sio0State::power_on(),
+            spu: SpuState::power_on(),
         };
 
         let layout = Layout::new::<Self>();
@@ -281,6 +286,7 @@ impl PsxMemory {
         self.bios.fill(0);
         self.hw_regs.fill(0);
         self.sio0.reset();
+        self.spu.reset();
     }
 
     /// Reads a little-endian 32-bit value; 0 outside every mapped region.
@@ -296,7 +302,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => load32_le(&self.scratchpad[i..i + 4]),
             Region::Bios(i) => load32_le(&self.bios[i..i + 4]),
             Region::HwReg(i) => {
-                if is_sio0_register(address) {
+                if is_spu_register(address) {
+                    spu_read32(&self.spu, address)
+                } else if is_sio0_register(address) {
                     sio0_read_register(&mut self.sio0, address)
                 } else {
                     match read_controller32(address, dma, timers, interrupts) {
@@ -323,7 +331,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => store32_le(&mut self.scratchpad[i..i + 4], value),
             Region::Bios(i) => store32_le(&mut self.bios[i..i + 4], value),
             Region::HwReg(i) => {
-                if is_sio0_register(address) {
+                if is_spu_register(address) {
+                    spu_write32(&mut self.spu, address, value);
+                } else if is_sio0_register(address) {
                     sio0_write_register(&mut self.sio0, address, value);
                 } else if !write_controller32(address, value, dma, timers, interrupts) {
                     store32_le(&mut self.hw_regs[i..i + 4], value);
@@ -349,7 +359,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => load16_le(&self.scratchpad[i..i + 2]),
             Region::Bios(i) => load16_le(&self.bios[i..i + 2]),
             Region::HwReg(i) => {
-                if is_sio0_register(address) {
+                if is_spu_register(address) {
+                    spu_read16(&self.spu, address)
+                } else if is_sio0_register(address) {
                     (sio0_read_register(&mut self.sio0, address) & 0xFFFF) as u16
                 } else {
                     let word_addr = address & !2u32;
@@ -384,7 +396,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => store16_le(&mut self.scratchpad[i..i + 2], value),
             Region::Bios(i) => store16_le(&mut self.bios[i..i + 2], value),
             Region::HwReg(i) => {
-                if is_sio0_register(address) {
+                if is_spu_register(address) {
+                    spu_write16(&mut self.spu, address, value);
+                } else if is_sio0_register(address) {
                     sio0_write_register(&mut self.sio0, address, value as u32);
                 } else {
                     let word_addr = address & !2u32;
@@ -421,7 +435,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => self.scratchpad[i],
             Region::Bios(i) => self.bios[i],
             Region::HwReg(i) => {
-                if is_sio0_register(address) {
+                if is_spu_register(address) {
+                    spu_read8(&self.spu, address)
+                } else if is_sio0_register(address) {
                     (sio0_read_register(&mut self.sio0, address) & 0xFF) as u8
                 } else {
                     let word_addr = address & !3u32;
@@ -451,7 +467,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => self.scratchpad[i] = value,
             Region::Bios(i) => self.bios[i] = value,
             Region::HwReg(i) => {
-                if is_sio0_register(address) {
+                if is_spu_register(address) {
+                    spu_write8(&mut self.spu, address, value);
+                } else if is_sio0_register(address) {
                     sio0_write_register(&mut self.sio0, address, value as u32);
                 } else {
                     let word_addr = address & !3u32;
