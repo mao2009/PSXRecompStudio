@@ -6,6 +6,7 @@
 // already wire this file in.
 
 #include "psx_core.h"
+#include "psx_cpu_decode.h"
 #include "test_harness.h"
 
 // RI / CpU / AdEL / AdES exception tests (Issue #376).
@@ -109,6 +110,100 @@ static void test_cpu_unusable_swc2() {
     assert_cpu_unusable(0xE8010000u, 2u); // SWC2 $1, 0($0)
 }
 
+// ---------------------------------------------------------------------------
+// Rust decoder (Issue #525).
+// ---------------------------------------------------------------------------
+
+// Calls the Rust export directly through the C++ mirror, so a drift between
+// PSXDecodeOp / PSXDecodedInstruction and cpu_decode.rs fails here.
+static void test_rust_decode_classification_and_fields() {
+    TEST("Rust psx_cpu_decode classifies and extracts fields through the C++ mirror");
+    struct Case { uint32_t word; PSXDecodeOp op; };
+    const Case cases[] = {
+        {0x00000000u, PSXDecodeOp::Sll},      {0x00221821u, PSXDecodeOp::Addu},
+        {0x0000002Bu, PSXDecodeOp::Sltu},     {0x00000014u, PSXDecodeOp::Reserved},
+        {0x0000000Cu, PSXDecodeOp::Syscall},  {0x0000000Du, PSXDecodeOp::Break},
+        {0x04000000u, PSXDecodeOp::Bltz},     {0x04110000u, PSXDecodeOp::Bgezal},
+        {0x04020000u, PSXDecodeOp::Reserved}, {0x04120000u, PSXDecodeOp::Reserved},
+        {0x08000000u, PSXDecodeOp::J},        {0x0C000000u, PSXDecodeOp::Jal},
+        {0x3C000000u, PSXDecodeOp::Lui},      {0x8C000000u, PSXDecodeOp::Lw},
+        {0xB8000000u, PSXDecodeOp::Swr},      {0x9C000000u, PSXDecodeOp::Reserved},
+        {0x40000000u, PSXDecodeOp::Mfc0},     {0x40800000u, PSXDecodeOp::Mtc0},
+        {0x42000010u, PSXDecodeOp::Rfe},      {0x42000001u, PSXDecodeOp::Reserved},
+        {0x40410000u, PSXDecodeOp::Reserved}, {0x4A180001u, PSXDecodeOp::CopUnusable},
+        {0xC0000000u, PSXDecodeOp::Reserved}, {0xE0000000u, PSXDecodeOp::Reserved},
+        {0xEC000000u, PSXDecodeOp::CopUnusable}, {0xFFFFFFFFu, PSXDecodeOp::Reserved},
+    };
+    for (const Case& c : cases) {
+        ASSERT_EQ(static_cast<uint32_t>(psx_cpu_decode(c.word).op), static_cast<uint32_t>(c.op));
+    }
+
+    const PSXDecodedInstruction ones = psx_cpu_decode(0xFFFFFFFFu);
+    ASSERT_EQ(ones.rs, 31u);
+    ASSERT_EQ(ones.rt, 31u);
+    ASSERT_EQ(ones.rd, 31u);
+    ASSERT_EQ(ones.shamt, 31u);
+    ASSERT_EQ(ones.imm, 0xFFFFu);
+    ASSERT_EQ(ones.target, 0x03FFFFFFu);
+    ASSERT_EQ(ones.cop, 3u);
+
+    const PSXDecodedInstruction lw = psx_cpu_decode(0x8FA8FFFCu); // LW $8, -4($29)
+    ASSERT_EQ(lw.rs, 29u);
+    ASSERT_EQ(lw.rt, 8u);
+    ASSERT_EQ(static_cast<int16_t>(lw.imm), -4);
+    PASS();
+}
+
+static void assert_reserved(const char* name, uint32_t instruction) {
+    TEST(name);
+    PSXCore* core = PSXCore_Create();
+    PSXCore_WriteMemory32(core, 0, instruction);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EXCEPTION(core, 0x0Au, 0u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_ri_reserved_encoding_boundaries() {
+    assert_reserved("LWC0 raises RI, not CpU", 0xC0000000u);
+    assert_reserved("SWC0 raises RI, not CpU", 0xE0000000u);
+    assert_reserved("REGIMM rt=0x12 (not BLTZAL/BGEZAL) raises RI", 0x04120000u);
+    assert_reserved("COP0 rs=0x10 with funct!=0x10 (TLBR) raises RI", 0x42000001u);
+    assert_reserved("Opcode 0x3F raises RI", 0xFC000000u);
+}
+
+static void test_cpu_unusable_every_form() {
+    const uint32_t opcodes[] = {0x11u, 0x12u, 0x13u, 0x31u, 0x32u, 0x33u, 0x39u, 0x3Au, 0x3Bu};
+    for (uint32_t opcode : opcodes) {
+        TEST("COPz/LWCz/SWCz raises CpU with CAUSE.CE = opcode & 3");
+        assert_cpu_unusable(opcode << 26, opcode & 3u);
+    }
+}
+
+// Each operand field reaches the handler argument the pre-#525 switch gave it.
+static void test_dispatch_routes_operand_fields() {
+    TEST("Dispatch routes rs/rt/rd/shamt/immediate to the right handler arguments");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 1, 0x80000000u);
+    PSXCore_SetGPR(core, 2, 4u);
+    PSXCore_WriteMemory32(core, 0x00, 0x00011903u); // SRA   $3, $1, 4   (shamt)
+    PSXCore_WriteMemory32(core, 0x04, 0x00412007u); // SRAV  $4, $1, $2  (rs)
+    PSXCore_WriteMemory32(core, 0x08, 0x24058000u); // ADDIU $5, $0, 0x8000 (sign-extend)
+    PSXCore_WriteMemory32(core, 0x0C, 0x34068000u); // ORI   $6, $0, 0x8000 (zero-extend)
+    PSXCore_WriteMemory32(core, 0x10, 0x3C078000u); // LUI   $7, 0x8000
+    PSXCore_SetPC(core, 0);
+    for (int i = 0; i < 5; ++i) PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0xF8000000u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 4), 0xF8000000u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xFFFF8000u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 6), 0x00008000u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 7), 0x80000000u);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x14u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_decode_rust_tests() {
     test_ri_undefined_opcode();
     test_ri_undefined_special_funct();
@@ -119,4 +214,8 @@ void run_psx_cpu_decode_rust_tests() {
     test_cpu_unusable_cop3();
     test_cpu_unusable_lwc2();
     test_cpu_unusable_swc2();
+    test_rust_decode_classification_and_fields();
+    test_ri_reserved_encoding_boundaries();
+    test_cpu_unusable_every_form();
+    test_dispatch_routes_operand_fields();
 }
