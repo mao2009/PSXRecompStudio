@@ -3,12 +3,13 @@ using PSXRecomp.Architecture;
 namespace PSXRecomp.Core.Runtime;
 
 /// <summary>
-/// PS1 Sound Processing Unit (SPU) interface.
+/// PS1 Sound Processing Unit (SPU) higher-level interface.
 ///
-/// 24 voices with pitch, volume, ADSR envelope.
-/// Main volume, reverb, CD audio input, noise generator.
-/// Register space: 0x1F801C00-0x1F801DFF.
-/// Triggers IRQ8 when sound buffer crosses IRQ address.
+/// Issue #445 implements the guest-visible 0x1F801C00-0x1F801DFF register
+/// store in native Rust behind PSXMemory; this interface remains the future
+/// behavior seam for 24-voice synthesis, ADSR/pitch, reverb, CD audio input,
+/// sound-RAM behavior, and IRQ9. The register-only slice does not synthesize
+/// audio or raise the interrupt.
 /// </summary>
 [Domain]
 public interface ISpu
