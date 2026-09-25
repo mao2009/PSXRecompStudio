@@ -117,6 +117,25 @@ PSX_API void     PSXCore_ClearInterrupt(PSXCore* core, int irq);
 /** Resets the interrupt controller (I_STAT/I_MASK) to its power-on state. */
 PSX_API void     PSXCore_ResetInterruptController(PSXCore* core);
 
+/** Returns non-zero when SIO0 has an unacknowledged "byte received" (IRQ7) latch (Issue #543). */
+PSX_API int      PSXCore_GetSio0InterruptPending(PSXCore* core);
+/** Acknowledges/clears SIO0's pending "byte received" (IRQ7) latch. */
+PSX_API void     PSXCore_ClearSio0Interrupt(PSXCore* core);
+
+/**
+ * Returns SIO0's last-transaction command classification (Issue #543): 0 = no
+ * command byte seen since the last transaction reset, 1 = recognized (the one
+ * supported command), 2 = unsupported/unrecognized.
+ */
+PSX_API uint32_t PSXCore_GetSio0CommandStatus(PSXCore* core);
+/**
+ * Returns the command byte last classified unsupported (Issue #543); only
+ * meaningful when PSXCore_GetSio0CommandStatus reports 2 (0 is also a
+ * legitimate byte value when it *is* unsupported, so callers must check the
+ * status first).
+ */
+PSX_API uint32_t PSXCore_GetSio0LastCommandByte(PSXCore* core);
+
 /**
  * Executes a single instruction, honoring branch/load-delay slot semantics.
  * Returns zero when the step was taken, or a negative status when `core` is NULL.
