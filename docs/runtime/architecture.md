@@ -62,7 +62,7 @@ public interface IHardwareComponent
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
 | MDEC | IMdec | 0x1F801820-0x1F801824 | None |
-| SPU | ISpu | 0x1F801C00-0x1F801DFF | IRQ9 |
+| SPU | native/Rust `crate::spu` register store (Issue #445; `ISpu` remains the higher-level contract) | 0x1F801C00-0x1F801DFF | IRQ9 (not yet driven) |
 | GTE | IGte (COP2) | Coprocessor | None |
 | Cache Control | IMemoryBus | 0xFFFE0130 | None |
 
@@ -222,13 +222,27 @@ path consumes `FrameSnapshot` yet, and the GPU device itself is not wired into
 
 ## SPU Model
 
-A 24-voice audio synthesis engine.
+The first SPU slice (Issue #445) is deliberately **register/MMIO only**. The
+guest-visible `0x1F801C00-0x1F801DFF` window is backed by native Rust
+`crate::spu::SpuState`, owned inline by `PsxMemory` so real CPU load/store
+instructions and the managed `MemoryBus` seam observe the same state.
 
-- **Register space**: 0x1F801C00-0x1F801DFF.
-- **Voices**: ADPCM decoding, ADSR envelope, pitch control.
-- **Main volume/reverb**: stereo output control.
-- **CD audio input**: receives audio data directly from the CD-ROM.
-- **IRQ9**: raised when the sound buffer crosses the IRQ address.
+- **Register space**: 0x1F801C00-0x1F801DFF, 256 deterministic 16-bit registers.
+- **Voice range**: 0x1F801C00-0x1F801D7F.
+- **Global/control range**: 0x1F801D80-0x1F801DBF.
+- **Reverb-register range**: 0x1F801DC0-0x1F801DFF.
+- **Access widths**: byte lanes, aligned 16-bit registers, and aligned 32-bit pairs are preserved little-endian.
+- **Reset**: all modeled register storage returns to zero.
+- **No audio semantics yet**: ADPCM decode, ADSR, pitch stepping, mixing,
+  reverb DSP, sound RAM transfer behavior, CD audio, and host audio output are
+  not implemented or claimed.
+- **IRQ9**: not modeled in this slice; the `ISpu` interrupt surface remains a
+  future behavior seam.
+
+This is intentionally a storage/observability contract rather than a fake
+audio implementation: BIOS/game initialization writes no longer disappear into
+the generic hardware-register fallback, while unsupported sound behavior is
+still absent rather than guessed.
 
 ## CD-ROM Model
 
