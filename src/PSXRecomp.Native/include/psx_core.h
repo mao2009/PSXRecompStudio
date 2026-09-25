@@ -5,10 +5,10 @@
  * This header is the interop boundary named by the project documentation
  * policy (docs/development/documentation-policy.md): most functions here
  * are mirrored one-to-one by a P/Invoke declaration in
- * `src/PSXRecomp.Core/NativeInterop.cs`. The one exception is the COP0
- * read/write pair (PSXCore_GetCop0/PSXCore_SetCop0), which is exercised
- * only from the native test suite and has no C# binding yet; add one there
- * when a managed caller needs it. Keep the mirrored subset in lockstep
+ * `src/PSXRecomp.Core/NativeInterop.cs`. The one exception is
+ * PSXCore_SetCop0, which is exercised only from the native test suite and
+ * has no C# binding yet; add one there when a managed caller needs it
+ * (PSXCore_GetCop0 gained one for Issue #499). Keep the mirrored subset in lockstep
  * with the C# side when changing a signature or its documented semantics.
  *
  * Ownership: `PSXCore_Create` returns an opaque handle owned by the caller;
@@ -160,6 +160,8 @@ PSX_API uint32_t PSXCore_GetExceptionCode(PSXCore* core);
 PSX_API uint32_t PSXCore_GetExceptionFaultPc(PSXCore* core);
 /** Returns non-zero when the faulting instruction of the most recent exception was in a branch delay slot (BD, CAUSE bit 31). Meaningful only when PSXCore_GetExceptionRaised() is non-zero. */
 PSX_API int PSXCore_GetExceptionInDelaySlot(PSXCore* core);
+/** Returns non-zero when the most recent PSXCore_Step() executed RFE, i.e. the guest returned from an exception handler (PR #502). Reset by every step. */
+PSX_API int PSXCore_GetRfeExecuted(PSXCore* core);
 /** Executes up to `maxInstructions` instructions, stopping early on a native exception/halt condition. Returns the number of instructions actually executed, or a negative status on error. */
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

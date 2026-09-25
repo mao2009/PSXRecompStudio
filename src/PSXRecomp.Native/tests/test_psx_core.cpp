@@ -1684,6 +1684,50 @@ static void test_step_interrupt_vblank_full_flow() {
     PASS();
 }
 
+// Issue #499: the same flow with the handler written as guest instructions and
+// driven only by PSXCore_Step — the path InterpreterTitleExecutionEngine uses.
+// The ack is a real SW to I_STAT and the return is MFC0 EPC / JR / RFE.
+static void test_step_interrupt_guest_handler_round_trip() {
+    TEST("Guest handler: INT -> SW ack I_STAT -> MFC0 EPC -> JR + RFE -> resumes (Step only)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_WriteMemory32(core, 0x2000u, 0x34030055u); // main: ORI $3,$0,0x55
+    PSXCore_WriteMemory32(core, 0x80u, 0x3C1A1F80u);   // LUI  $k0,0x1F80
+    PSXCore_WriteMemory32(core, 0x84u, 0xAF401070u);   // SW   $0,0x1070($k0)  (I_STAT &= 0)
+    PSXCore_WriteMemory32(core, 0x88u, 0x401B7000u);   // MFC0 $k1,EPC
+    PSXCore_WriteMemory32(core, 0x8Cu, 0x00000000u);   // NOP  (MFC0 load delay)
+    PSXCore_WriteMemory32(core, 0x90u, 0x03600008u);   // JR   $k1
+    PSXCore_WriteMemory32(core, 0x94u, 0x42000010u);   // RFE  (delay slot)
+    PSXCore_SetPC(core, 0x2000u);
+    PSXCore_WriteInterruptControllerRegister(core, 0x1F801074u, 1u);
+    PSXCore_RaiseInterrupt(core, 0);
+
+    ASSERT_EQ(PSXCore_Step(core), 0); // INT preempts the ORI
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionCode(core), 0x00u);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0x2000u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0u);
+
+    for (int i = 0; i < 6; i++) { // the six handler instructions
+        ASSERT_EQ(PSXCore_Step(core), 0);
+        ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+        ASSERT_EQ(PSXCore_GetRfeExecuted(core), i == 5 ? 1 : 0); // only the delay-slot RFE
+    }
+    ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u); // acked by the SW
+    ASSERT_EQ(PSXCore_GetGPR(core, 27), 0x2000u);                // $k1 = EPC
+    ASSERT_EQ(PSXCore_GetPC(core), 0x2000u);                     // JR applied after RFE
+    ASSERT_EQ(PSXCore_GetCop0(core, 12), 0x2u | (1u << 10));     // RFE popped IEc back
+
+    ASSERT_EQ(PSXCore_Step(core), 0); // the interrupted ORI now runs, no re-entry
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetRfeExecuted(core), 0); // reset by the next step
+    ASSERT_EQ(PSXCore_GetGPR(core, 3), 0x55u);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x2004u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_run_interrupt_taken() {
     TEST("PSXCore_Run() checks the pending interrupt on every instruction, not just the first");
     PSXCore* core = PSXCore_Create();
@@ -2025,6 +2069,7 @@ int main() {
     test_step_interrupt_deferred_across_delay_slot();
     test_step_interrupt_nested_sr_stack();
     test_step_interrupt_vblank_full_flow();
+    test_step_interrupt_guest_handler_round_trip();
     test_run_interrupt_taken();
 
     test_mult_signed_positive_times_negative();

@@ -22,7 +22,8 @@ namespace PSXRecomp.Core.Runtime;
 /// Fixed order within one <see cref="Advance"/>, each stage raising its own
 /// line: Timers (IRQ4-6) → DMA (IRQ3) → SIO0 (IRQ7) → VBlank (IRQ0). Whether
 /// the CPU takes the aggregate line as an INT exception is the stepping
-/// caller's choice: <c>PSXCore_Step</c> samples it (Issue #144), while
+/// caller's choice: <c>PSXCore_Step</c> samples it (Issue #144) — the production
+/// interpreter steps that way and runs the guest's handler (Issue #499) — while
 /// <see cref="PSXCoreWrapper.StepWithoutInterrupts"/> holds it low.
 /// </para>
 /// </remarks>

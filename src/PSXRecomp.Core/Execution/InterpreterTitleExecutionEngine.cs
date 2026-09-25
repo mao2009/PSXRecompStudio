@@ -37,6 +37,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public const uint CyclesPerInstruction = 1;
 
+    private const uint InterruptExcode = 0x00; // INT, docs/cpu/exceptions.md
+    private const int Cop0Status = 12;
+    private const int Cop0Cause = 13;
+    private const int Cop0Epc = 14;
+    private const uint HardwareInterruptBit = 1u << 10; // CAUSE.IP2 / SR.IM2
+
     private readonly IReadOnlyList<uint> _instructions;
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
@@ -48,6 +54,38 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
     private DeviceScheduler? _scheduler;
     private bool _loaded;
+
+    // Set when the CPU takes a hardware interrupt, cleared once the handler has
+    // actually returned. Entering the program image alone does not clear it: a
+    // handler may call a helper there and return to handler code outside it.
+    // While set, a PC outside the image is the guest's own interrupt handler
+    // rather than an unresolved transfer. This is only an execution-region
+    // permission: EPC/CAUSE/SR stay owned by the native CPU.
+    private bool _inInterruptHandler;
+
+    // The PC of the interrupted instruction (cop0 EPC) captured when the first —
+    // outermost — hardware interrupt of the current handler nesting was taken.
+    // It is the PC the handler must finally return to: a nested interrupt
+    // overwrites cop0 EPC inside the handler, so re-reading EPC after nesting
+    // would lose the outermost return target, but this private copy never does.
+    // It is always inside the program image, because the engine only steps the
+    // CPU while PC is inside the image (or inside a handler it already knows),
+    // so a *nested* take is the only way EPC lands outside the image and that
+    // take never overwrites this value.
+    private uint _handlerEpc;
+
+    // Set when the CPU reports the handler executed RFE (ExecRfe, psx_cpu.cpp):
+    // RFE only restores SR, it never moves PC (PC restore is a JR responsibility,
+    // ADR-005), so RFE alone does not mean the handler has returned. This arms
+    // the check below instead of clearing _inInterruptHandler outright, so a
+    // handler that keeps running after a standalone RFE (not sharing its return
+    // JR's delay slot) is still recognized as handler code (CodeRabbit, PR #502).
+    private bool _rfePending;
+
+    // Set when the last segment ended ExecutionBudgetExceeded: the core still
+    // holds that segment's live state, including in-flight load-delay and
+    // branch-delay state that re-seeding it (SetGpr/SetPC) would flush.
+    private bool _resumable;
 
     /// <summary>
     /// Creates an engine over the guest program <paramref name="instructions"/>,
@@ -157,6 +195,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
+        _inInterruptHandler = false;
+        _rfePending = false;
+        _handlerEpc = 0;
+        _resumable = false;
         _loaded = true;
     }
 
@@ -169,13 +211,20 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             throw new InvalidOperationException("Load must complete before the first segment runs.");
         }
 
-        for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+        // A continuation of a budget-cut segment with the state it returned runs
+        // on as is. Anything else (first segment, a handoff's ContinueAt, a
+        // caller-modified state) is a fresh dispatch and is seeded, which
+        // flushes the native pipeline exactly as a jump to a new PC must.
+        if (!(_resumable && CoreHolds(segmentRequest)))
         {
-            _core.SetGpr(i, segmentRequest.Gpr[i]);
+            for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+            {
+                _core.SetGpr(i, segmentRequest.Gpr[i]);
+            }
+            _core.Hi = segmentRequest.Hi;
+            _core.Lo = segmentRequest.Lo;
+            _core.Pc = segmentRequest.Pc;
         }
-        _core.Hi = segmentRequest.Hi;
-        _core.Lo = segmentRequest.Lo;
-        _core.Pc = segmentRequest.Pc;
 
         var biosRuntime = _biosRuntimeFactory?.Invoke(
             new GuestMemoryReader(_bus.Read8),
@@ -211,7 +260,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 continue;
             }
 
-            if (!PcWithinProgram(_core.Pc))
+            if (!PcWithinProgram(_core.Pc) && !_inInterruptHandler)
             {
                 break;
             }
@@ -221,14 +270,54 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // (Issue #377) a faulting segment left the program bounds on the next
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
-            // The CPU's hardware interrupt input is held low: this engine cannot
-            // continue into the exception handler, so a scheduled IRQ taken as an
-            // INT exception would end the run as CPU_EXCEPTION (PR #493). Device
-            // IRQs still latch in I_STAT, where the guest can poll them.
-            if (_core.StepWithoutInterrupts() != 0 || _core.ExceptionRaised)
+            if (_core.Step() != 0)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;
+            }
+
+            if (_core.ExceptionRaised)
+            {
+                if (!TookHardwareInterrupt())
+                {
+                    termination = RecompilerIrTerminationReason.Exception;
+                    break;
+                }
+
+                // Issue #499: a device IRQ taken as INT is ordinary guest control
+                // flow. The CPU has already set EPC/CAUSE/SR and vectored; the
+                // guest's handler runs from here and returns with its own
+                // MFC0 EPC / JR / RFE. No instruction retired, so no device time.
+                var wasInHandler = _inInterruptHandler;
+                _inInterruptHandler = true;
+                if (!wasInHandler)
+                {
+                    // First — outermost — take of this handler nesting: record the
+                    // interrupted PC the handler must return to. A nested take
+                    // overwrites cop0 EPC inside the handler, so it must not
+                    // re-capture (and must not erase a still-pending RFE arm).
+                    _handlerEpc = _core.GetCop0(Cop0Epc);
+                    _rfePending = false;
+                }
+                continue;
+            }
+
+            // RFE armed the return check; it lands only once PC is actually back
+            // on the EPC the interrupt captured — whether that happens in this
+            // same step (RFE sharing the return JR's delay slot) or several steps
+            // later (a standalone RFE ahead of a separate return JR). Comparing
+            // against that EPC instead of "inside the program image" is what
+            // keeps handler permission while the handler runs a helper in the
+            // image after a standalone RFE: the helper entry lands on the helper,
+            // not on the interrupted PC, so it cannot look like the return.
+            if (_core.RfeExecuted)
+            {
+                _rfePending = true;
+            }
+            if (_rfePending && _core.Pc == _handlerEpc)
+            {
+                _inInterruptHandler = false;
+                _rfePending = false;
             }
 
             // Devices advance by the time the retired instruction took, so
@@ -236,12 +325,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _scheduler!.Advance(CyclesPerInstruction);
         }
 
-        var stillRunning = PcWithinProgram(_core.Pc) ||
+        var stillRunning = PcWithinProgram(_core.Pc) || _inInterruptHandler ||
                            (biosRuntime is not null && BiosJumpTables.TryResolveVectorFamily(_core.Pc, out _));
         if (termination == RecompilerIrTerminationReason.Success && stillRunning)
         {
             termination = RecompilerIrTerminationReason.ExecutionBudgetExceeded;
         }
+        _resumable = termination == RecompilerIrTerminationReason.ExecutionBudgetExceeded;
 
         var snapshot = new RecompilerStateSnapshot(
             ReadGpr(),
@@ -278,7 +368,34 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         return gpr;
     }
 
+    private bool CoreHolds(TitleExecutionSegmentRequest request)
+    {
+        if (_core.Pc != request.Pc || _core.Hi != request.Hi || _core.Lo != request.Lo)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+        {
+            if (_core.GetGpr(i) != request.Gpr[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
+
+    /// <summary>
+    /// Whether the exception the last step raised is an INT the hardware
+    /// interrupt line (CAUSE.IP2, enabled by SR.IM2) caused. SYSCALL, BREAK,
+    /// faults and software interrupts (CAUSE.IP0/IP1) are not, and still end the
+    /// segment. Reads the state the CPU left; decides nothing the CPU owns.
+    /// </summary>
+    private bool TookHardwareInterrupt() =>
+        _core.ExceptionCode == InterruptExcode &&
+        (_core.GetCop0(Cop0Cause) & _core.GetCop0(Cop0Status) & HardwareInterruptBit) != 0;
 
     private static uint TranslateAddress(uint virtualAddress)
     {

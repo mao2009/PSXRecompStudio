@@ -239,6 +239,11 @@ int PSXCore_GetExceptionInDelaySlot(PSXCore* core) {
     return core->cpu.GetLastExceptionInDelaySlot() ? 1 : 0;
 }
 
+int PSXCore_GetRfeExecuted(PSXCore* core) {
+    if (!core) return 0;
+    return core->cpu.RfeExecuted() ? 1 : 0;
+}
+
 int PSXCore_Run(PSXCore* core, uint32_t maxInstructions) {
     if (!core) return -1;
     // Re-sample the Interrupt Controller before every instruction (not just once

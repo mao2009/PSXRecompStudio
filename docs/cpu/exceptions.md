@@ -78,10 +78,52 @@ handler installed:
   one, which is the false-match risk the oracle exists to rule out.
 - `InterpreterTitleExecutionEngine` — reaching `ExecutionOrchestrator` as
   `RuntimeFailure` / `CPU_EXCEPTION` rather than being handed to the handoff,
-  which would classify a faulted title as `Completed`. It steps with
-  `PSXCore_StepWithoutInterrupts()`, which holds the hardware interrupt input
-  low, so a scheduled device IRQ stays latched in I_STAT instead of raising an
-  INT exception it cannot continue from (PR #493).
+  which would classify a faulted title as `Completed`.
+
+### Continuing through a hardware interrupt (Issue #499)
+
+`InterpreterTitleExecutionEngine` steps with plain `PSXCore_Step()`, so device
+IRQs reach the CPU. It splits a raised exception into two classes using only the
+state the CPU left behind:
+
+| Class | Condition | Engine behavior |
+|---|---|---|
+| Continuable | Excode 0x00 INT **and** `CAUSE & SR & (1 << 10)` (the hardware line IP2 is pending and enabled by IM2) | Keep stepping: the guest's handler at the vector runs |
+| Runtime failure | Everything else: Sys, Bp, RI, CpU, Ov, AdEL, AdES, and a software interrupt (INT raised only by CAUSE.IP0/IP1) | End the segment with `Exception` → `RuntimeFailure` / `CPU_EXCEPTION`, unchanged |
+
+For the continuable case the engine lets execution leave the program image
+until the handler actually returns: the handler at 0x80000080 (or wherever it
+branches) is guest code, not an unresolved transfer, even after it calls a
+helper inside the image and returns from it, or keeps running after RFE before
+its own return jump. `PSXCore_GetRfeExecuted()` only *arms* the return check —
+RFE restores SR, not PC (return is the guest's own `MFC0 EPC` / `JR`
+responsibility, ADR-005) — so the engine also waits for PC to land back on the
+exact EPC the interrupt captured (`_handlerEpc`, a private copy of cop0 EPC
+taken at the outermost hardware-interrupt step) before treating the handler as
+finished. It does **not** treat "back inside the program image" as the return:
+a handler that runs a standalone RFE and then calls an in-image helper has its
+PC on the helper, not on the captured EPC, so handler permission survives the
+helper trip. A nested handler needs no depth tracking: a nested take overwrites
+cop0 EPC inside the handler (with the preempted handler PC) and always plays
+out inside the handler region, so its RFE and return land PC back in the
+*outer* handler — never on the captured EPC — and only the outermost handler's
+real return satisfies both conditions. EPC, CAUSE, SR, vector selection and RFE
+stay in `PSXCpu`. The INT step retires no instruction, so it advances no device
+time.
+
+A segment the budget cuts mid-handler is continued on the same live core
+without re-seeding it, so an in-flight `MFC0` load delay or `JR` branch delay
+survives the segment boundary; only a fresh dispatch (first segment, a handoff
+`ContinueAt`) seeds the core and flushes the pipeline.
+
+A handler that returns without acknowledging I_STAT leaves the line pending, so
+the CPU takes the interrupt again right after RFE and the guest never
+progresses; the run ends as `BudgetExhausted`, as on hardware. A guest that
+takes an interrupt with no handler installed executes whatever RAM holds at the
+vector — the BIOS normally installs one there, and BIOS HLE does not.
+
+`PSXCore_StepWithoutInterrupts()` (PR #493) is no longer used by any engine; it
+remains in the C ABI and its native test.
 
 ### Carrying a fault through the recompiler (Issue #481)
 

@@ -38,4 +38,5 @@ void PSXCpu::ExecRfe() {
     // (docs/cpu/cop0.md; Rust, psx_cpu_cop0.h, Issue #529).
     // PC restore is a software (JR) responsibility and out of scope (ADR-005).
     cop0_[12] = psx_cpu_cop0_rfe(cop0_[12]);
+    rfe_executed_ = true;
 }

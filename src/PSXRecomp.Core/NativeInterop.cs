@@ -68,6 +68,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial void PSXCore_SetLO(IntPtr core, uint value);
 
+    /// <summary>Reads COP0 register <paramref name="index"/> (see docs/cpu/cop0.md for the register map).</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetCop0(IntPtr core, int index);
+
     /// <summary>Returns a pointer to the native 2 MiB main-RAM buffer owned by <paramref name="core"/>. Valid only until the core is destroyed.</summary>
     [LibraryImport(LibName)]
     internal static partial IntPtr PSXCore_GetRAM(IntPtr core);
@@ -184,6 +188,10 @@ internal static partial class NativeInterop
     /// <summary>Returns non-zero when the faulting instruction of the most recent exception was in a branch delay slot (Issue #481). Meaningful only while <see cref="PSXCore_GetExceptionRaised"/> reports one.</summary>
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetExceptionInDelaySlot(IntPtr core);
+
+    /// <summary>Returns non-zero when the most recent <see cref="PSXCore_Step"/> executed RFE (PR #502). Reset by every step.</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetRfeExecuted(IntPtr core);
 
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>

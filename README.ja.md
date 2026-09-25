@@ -129,7 +129,7 @@ Avalonia ベースのデスクトップ UI、C# のドメイン／アプリケ�
 | 実走行可能な recompiled artifact の E2E（synthetic + 合法な実 EXE） | 実装済み — Issue #461 |
 | Disc / executable 解析（CHD → ISO 9660 → PS-X EXE → CFG） | 実装済み |
 | Runtime / BIOS 実行境界（A0/B0/C0 dispatch、Studio に結線された production interpreter engine） | 部分実装 — 実 PS-X EXE のロードと interpreter 実行をサポート（#409）。広範な BIOS HLE ではない |
-| Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — production interpreter で `DeviceScheduler` が駆動（#442）。IRQ は I_STAT にラッチされるが、CPU の割り込み例外としてはまだ受理されない。cycle-exact ではなく、DMA 完了はデータを転送しない |
+| Hardware — DMA / 割り込み / タイマー（MMIO adapter、memory bus） | 部分実装 — production interpreter で `DeviceScheduler` が駆動（#442）。IRQ は I_STAT にラッチされ、SR の IEc/IM2 が有効なら CPU の割り込み例外として受理され、guest の handler が実行されて RFE で復帰する（#499）。cycle-exact ではなく、DMA 完了はデータを転送しない |
 | Hardware — GPU | 部分実装 — レジスタ/VRAM モデル、flat / Gouraud 矩形・三角形ラスタライズ、決定論的 frame snapshot（C#、`DeviceScheduler` にもどの実行エンジンにも未結線） |
 | Hardware — SPU / CD-ROM / MDEC / GTE | 予定 — インターフェース定義のみ |
 | メモリーカード（標準 raw 128 KiB イメージ、Slot 1/2 設定、安全な保存） | 部分実装 — ストレージとフォーマットは実装済み（[`docs/runtime/memory-card.md`](docs/runtime/memory-card.md)）。SIO/IRQ7 プロトコルとカード UI は未実装 |

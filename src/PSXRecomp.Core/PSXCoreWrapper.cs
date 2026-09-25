@@ -116,6 +116,16 @@ public sealed class PSXCoreWrapper : IDisposable
         }
     }
 
+    /// <summary>Reads COP0 register <paramref name="index"/> (docs/cpu/cop0.md: 12 = SR, 13 = CAUSE, 14 = EPC).</summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="index"/> is outside 0..31.</exception>
+    public uint GetCop0(int index)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (index < 0 || index >= 32)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        return NativeInterop.PSXCore_GetCop0(_handle, index);
+    }
+
     /// <summary>Pointer to the native 2 MiB main-RAM buffer. Valid only until this instance is disposed; do not cache across a <see cref="Dispose"/> call.</summary>
     public IntPtr RamPointer
     {
@@ -358,6 +368,19 @@ public sealed class PSXCoreWrapper : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             return NativeInterop.PSXCore_GetExceptionInDelaySlot(_handle) != 0;
+        }
+    }
+
+    /// <summary>
+    /// Whether the most recent <see cref="Step"/> executed RFE, i.e. the guest
+    /// returned from an exception handler (PR #502). Reset by every step.
+    /// </summary>
+    public bool RfeExecuted
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetRfeExecuted(_handle) != 0;
         }
     }
 

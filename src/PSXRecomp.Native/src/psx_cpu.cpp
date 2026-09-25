@@ -36,6 +36,7 @@ void PSXCpu::Reset() {
     last_exception_code_ = 0;
     last_exception_fault_pc_ = 0;
     last_exception_in_delay_slot_ = false;
+    rfe_executed_ = false;
     hardware_interrupt_pending_ = false;
 }
 

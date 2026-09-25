@@ -116,6 +116,7 @@ int PSXCpu::Step(PSXMemory& memory) {
     if (gpr_write_trace_ != nullptr && load_delay_reg_ >= 0) {
         RecordGprWrite(load_delay_reg_, gpr_[load_delay_reg_], load_delay_value_);
     }
+    rfe_executed_ = false;
 
     // CAUSE.IP2 (bit 10) mirrors the Interrupt Controller's aggregate pending
     // line every step, independent of delay-slot state, so that CAUSE reads
