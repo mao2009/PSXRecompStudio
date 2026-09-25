@@ -5,7 +5,7 @@ namespace PSXRecomp.Tests.Recompiler;
 
 /// <summary>
 /// A guest RAM window addressed exactly like the native core: KUSEG is physical,
-/// KSEG0/KSEG1 mask off the region bits (<c>src/PSXRecomp.Native/src/psx_cpu.cpp</c>).
+/// KSEG0/KSEG1 mask off the region bits (<c>src/PSXRecomp.Native/src/psx_cpu_memory_access.cpp</c>).
 /// Access is little-endian, matching the PS1.
 /// </summary>
 [Test]

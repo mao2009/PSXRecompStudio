@@ -102,7 +102,7 @@ RFE only pops the SR status stack. It does not restore the PC.
    MFC0 $k0, EPC / JR $k0 / RFE
 ```
 
-An earlier version described step 2 as clearing `SR[5:4] = 0` (clearing the oldest level), but that was incorrect. Real-hardware behavior documented by psx-spx and the implementation/tests from PR #193 (Issue #141) show that RFE leaves KUo/IEo (SR bits 4-5) unchanged. See `src/PSXRecomp.Native/src/psx_cpu.cpp` (`PSXCpu::ExecRfe()`) and the supporting test `src/PSXRecomp.Native/tests/test_psx_core.cpp` (`test_rfe_pop`, boundary case `0x3C -> 0x3F`, confirming KUo/IEo=1 remains 1 after RFE). For the detailed three-level stack transition, follow `docs/cpu/cop0.md` (SR bit definitions) and `docs/cpu/exceptions.md` (RFE procedure).
+An earlier version described step 2 as clearing `SR[5:4] = 0` (clearing the oldest level), but that was incorrect. Real-hardware behavior documented by psx-spx and the implementation/tests from PR #193 (Issue #141) show that RFE leaves KUo/IEo (SR bits 4-5) unchanged. See `src/PSXRecomp.Native/src/psx_cpu_cop0.cpp` (`PSXCpu::ExecRfe()`) and the supporting test `src/PSXRecomp.Native/tests/test_psx_cpu_cop0_rust.cpp` (`test_rfe_pop`, boundary case `0x3C -> 0x3F`, confirming KUo/IEo=1 remains 1 after RFE). For the detailed three-level stack transition, follow `docs/cpu/cop0.md` (SR bit definitions) and `docs/cpu/exceptions.md` (RFE procedure).
 
 Exception return when BD=1:
 ```text
