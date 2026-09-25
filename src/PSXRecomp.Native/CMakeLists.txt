@@ -80,6 +80,15 @@ add_custom_command(
             ${PSX_RUST_DIR}/src/cpu_hilo.rs
             ${PSX_RUST_DIR}/src/dma.rs
             ${PSX_RUST_DIR}/src/memory.rs
+            # PSXCpu migration slots, pre-registered once (Issue #524) so the
+            # per-slice PRs (#525-#531) never edit this list.
+            ${PSX_RUST_DIR}/src/cpu_decode.rs
+            ${PSX_RUST_DIR}/src/cpu_control.rs
+            ${PSX_RUST_DIR}/src/cpu_memory_access.rs
+            ${PSX_RUST_DIR}/src/cpu_unaligned.rs
+            ${PSX_RUST_DIR}/src/cpu_cop0.rs
+            ${PSX_RUST_DIR}/src/cpu_exception.rs
+            ${PSX_RUST_DIR}/src/cpu_pipeline.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
@@ -88,9 +97,22 @@ add_custom_command(
 )
 add_custom_target(psx_rust_substrate DEPENDS ${PSX_RUST_STATICLIB})
 
+# PSXCpu translation units, one per Rust migration slice (Issue #524). Shared
+# by the library and the native test executable.
+set(PSX_CPU_SOURCES
+    src/psx_cpu.cpp
+    src/psx_cpu_decode.cpp
+    src/psx_cpu_control.cpp
+    src/psx_cpu_memory_access.cpp
+    src/psx_cpu_unaligned.cpp
+    src/psx_cpu_cop0.cpp
+    src/psx_cpu_exception.cpp
+    src/psx_cpu_pipeline.cpp
+)
+
 add_library(PSXRecomp.Native SHARED
     src/psx_api.cpp
-    src/psx_cpu.cpp
+    ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     src/psx_rust_abi.cpp
 )
@@ -148,9 +170,18 @@ endif()
 
 enable_testing()
 add_executable(psx_native_tests
-    src/psx_cpu.cpp
+    ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     tests/test_psx_core.cpp
+    # Per-slice PSXCpu migration tests (Issue #524); each exposes one runner
+    # that test_psx_core.cpp's main() calls.
+    tests/test_psx_cpu_decode_rust.cpp
+    tests/test_psx_cpu_control_rust.cpp
+    tests/test_psx_cpu_memory_access_rust.cpp
+    tests/test_psx_cpu_unaligned_rust.cpp
+    tests/test_psx_cpu_cop0_rust.cpp
+    tests/test_psx_cpu_exception_rust.cpp
+    tests/test_psx_cpu_pipeline_rust.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)
 target_link_libraries(psx_native_tests PRIVATE PSXRecomp.Native)

@@ -14,6 +14,13 @@
 //! - [`dma`]: the DMA controller registers (Issue #488).
 //! - [`memory`]: guest RAM/scratchpad/BIOS/HW-register storage (Issue #492).
 //!
+//! Reserved, still-empty `PSXCpu` migration slots (Issue #524), registered
+//! here once so each slice's PR edits only its own module:
+//! [`cpu_decode`] (#525), [`cpu_control`] (#526), [`cpu_memory_access`]
+//! (#527), [`cpu_unaligned`] (#528), [`cpu_cop0`] (#529), [`cpu_exception`]
+//! (#530), [`cpu_pipeline`] (#531). See
+//! `docs/development/rust-migrations/cpu/README.md`.
+//!
 //! The crate is compiled as a `staticlib` and linked into the existing
 //! `PSXRecomp.Native` shared library, whose thin `extern "C"` re-export layer
 //! (`../../src/psx_rust_abi.cpp`) publishes the DLL/so/dylib symbols that
@@ -32,6 +39,13 @@ pub mod timer;
 pub mod cpu_ops;
 pub mod cpu_hilo;
 pub mod cpu_alu;
+pub mod cpu_decode;
+pub mod cpu_control;
+pub mod cpu_memory_access;
+pub mod cpu_unaligned;
+pub mod cpu_cop0;
+pub mod cpu_exception;
+pub mod cpu_pipeline;
 
 /// Version of the Rust substrate's C ABI contract.
 ///

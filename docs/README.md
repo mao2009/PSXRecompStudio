@@ -99,6 +99,7 @@ Constraints:
 - [README Auto-Update](development/readme-autoupdate.md)
 - [Native Library Build and Test Execution](development/native-library-build.md)
 - [Rust FFI Safety Contract](development/rust-ffi-contract.md)
+- [PSXCpu Rust Migration Slices](development/rust-migrations/cpu/README.md)
 - [Real-ROM Analysis Flow](development/real-rom-analysis.md)
 - [Recompiler IR / CPU Semantic Contract](development/recompiler-ir-contract.md)
 - [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)

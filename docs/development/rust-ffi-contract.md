@@ -408,6 +408,14 @@ directly.
 | `psx_cpu_alu_add` | `AluResult(uint32_t a, uint32_t b)` | `a + b` (two's-complement 32-bit) with MIPS I signed-overflow detection; used by both `ADD` and `ADDI` (the caller sign-extends `ADDI`'s immediate first). |
 | `psx_cpu_alu_sub` | `AluResult(uint32_t a, uint32_t b)` | `a - b` (two's-complement 32-bit) with MIPS I signed-overflow detection. |
 
+### Remaining PSXCpu slices (#524)
+
+The rest of `PSXCpu` (decode, branch/jump, aligned and unaligned load/store,
+COP0, exception resolution, pipeline) is migrated in parallel slices,
+#525-#531. Each slice has its own C++ file, Rust module, test file and doc,
+listed in [PSXCpu Rust Migration Slices](rust-migrations/cpu/README.md). A
+slice records its exports in its own doc there, not on this page.
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)

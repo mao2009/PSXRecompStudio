@@ -6,7 +6,7 @@ namespace PSXRecomp.Core.Runtime;
 /// Canonical PS1 virtual-to-physical address translation (KUSEG/KSEG0/KSEG1).
 /// Shared by the Runtime guest-memory reader, the interpreter executor, and
 /// the recompiler test memory model so the translation logic is defined once.
-/// Mirrors native PSXCpu::TranslateAddress (src/PSXRecomp.Native/src/psx_cpu.cpp).
+/// Mirrors native PSXCpu::TranslateAddress (src/PSXRecomp.Native/src/psx_cpu_memory_access.cpp).
 /// </summary>
 [Domain]
 public static class Ps1AddressTranslation
