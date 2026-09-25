@@ -80,11 +80,11 @@ Each result is a single word, so no `#[repr(C)]` struct is needed.
    They now merge into `load_delay_value_` when `load_delay_reg_ == rt`
    ([pipeline.md](../../../cpu/pipeline.md), "Special LWL/LWR Behavior").
 
-Open question: the forwarding applies to any load still in its delay slot for
-the same `rt` (as DuckStation/Mednafen do), not only to a preceding LWL/LWR.
-`docs/cpu/pipeline.md` describes only the LWL/LWR pair case; telling the two
-apart would need new `PSXCpu` state in the shared `psx_cpu.h`. Only the pair
-case is covered by tests.
+Resolved (#539): the forwarding applies to any load still in its delay slot for
+the same `rt`, not only to a preceding LWL/LWR. This is the MIPS I LWL/LWR
+bypass rule and matches DuckStation, so no producer-opcode state is needed.
+`docs/cpu/pipeline.md` states it explicitly, and
+`test_lwl_lwr_merge_pending_ordinary_load` covers LW/LB followed by LWL/LWR.
 
 The two tests moved here by #524 as `test_lwl_lwr_aligned` /
 `test_lwl_lwr_unchanged` executed a plain `LW` (opcode `0x23`) and never
