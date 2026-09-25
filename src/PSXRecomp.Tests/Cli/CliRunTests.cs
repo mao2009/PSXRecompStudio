@@ -127,6 +127,10 @@ public sealed class CliRunTests
     }
 #pragma warning restore AARC003
 
+#pragma warning disable AARC003 // Test-only setup to force diagnostic bundle creation to fail.
+    private static void CreateDirectoryForTest(string path) => Directory.CreateDirectory(path);
+#pragma warning restore AARC003
+
     private static string ReadZipEntry(ZipArchive archive, string name)
     {
         var entry = archive.GetEntry(name);
@@ -490,7 +494,7 @@ public sealed class CliRunTests
         using var dir = new TempDirectory();
         var exePath = WriteSyntheticExe(dir, "jump.exe", UnresolvedJumpProgram());
         var outDir = dir.CreateSubdirectory("out");
-        Directory.CreateDirectory(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName));
+        CreateDirectoryForTest(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName));
 
         var (exit, output, error) = Invoke(
             "run", exePath, "--output", outDir, "--report", "--json");
