@@ -95,9 +95,11 @@ managed `MemoryBus` test/BIOS-HLE seam — not from a real guest CPU
 (`InterpreterTitleExecutionEngine` → `PSXCoreWrapper` → native `PSXCpu` →
 native `PSXMemory`) without ever going through `MemoryBus`. A CodeRabbit
 review on PR #548 caught this gap; the fix moved the register semantics into
-native Rust (this component has no controller/memory-card protocol or IRQ7 in
-scope, unlike DMA/Timer/Interrupt, so it needed no `PSXCore`-owned state or
-`AttachControllers`-style pointer — see the FFI contract doc). `MemoryBus`'s
+native Rust. At Issue #542 this component had no controller protocol or IRQ7
+in scope. Issue #543 adds the minimal disconnected-pad protocol and delivers
+IRQ7 through a poll/clear pair on the `PsxMemory` handle, so SIO0 still needs
+no `PSXCore`-owned state or `AttachControllers`-style pointer — see the
+FFI contract doc and the Issue #543 paragraph above. `MemoryBus`'s
 SIO0 case now calls `PSXCoreWrapper.ReadMemory32`/`WriteMemory32` (the same
 native entry point the CPU step path uses) instead of a managed adapter, so
 the managed test/BIOS-HLE seam and the production CPU path observe one SSOT.
