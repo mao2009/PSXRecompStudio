@@ -13,7 +13,7 @@
 //! - [`cpu_alu`]: `PSXCpu` overflow-checked ADD/ADDI/SUB arithmetic (Issue #495).
 //! - [`dma`]: the DMA controller registers (Issue #488).
 //! - [`memory`]: guest RAM/scratchpad/BIOS/HW-register storage (Issue #492).
-- [`spu`]: register-only SPU MMIO state (Issue #445).
+//! - [`spu`]: register-only SPU MMIO state (Issue #445).
 //!
 //! Reserved, still-empty `PSXCpu` migration slots (Issue #524), registered
 //! here once so each slice's PR edits only its own module:
