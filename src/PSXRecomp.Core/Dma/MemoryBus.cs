@@ -14,6 +14,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     private TimerMmioAdapter? _timerAdapter;
     private InterruptControllerMmioAdapter? _interruptControllerAdapter;
     private GpuMmioAdapter? _gpuAdapter;
+    private Sio0MmioAdapter? _sio0Adapter;
     private bool _disposed;
 
     public MemoryBus(PSXCoreWrapper core)
@@ -43,6 +44,12 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _gpuAdapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
+    }
+
+    public void AttachSio0Adapter(Sio0MmioAdapter adapter)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _sio0Adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
     public uint Read32(uint address) => Read(address);
@@ -144,6 +151,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
             _timerAdapter = null;
             _interruptControllerAdapter = null;
             _gpuAdapter = null;
+            _sio0Adapter = null;
             _disposed = true;
         }
         GC.SuppressFinalize(this);
@@ -193,6 +201,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
             MmioTarget.Timer => _timerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.InterruptController => _interruptControllerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.Gpu => _gpuAdapter?.ReadRegister(address) ?? 0,
+            MmioTarget.Sio0 => _sio0Adapter?.ReadRegister(address) ?? 0,
             _ => 0,
         };
     }
@@ -213,6 +222,9 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
                 break;
             case MmioTarget.Gpu:
                 _gpuAdapter?.WriteRegister(address, value);
+                break;
+            case MmioTarget.Sio0:
+                _sio0Adapter?.WriteRegister(address, value);
                 break;
         }
     }

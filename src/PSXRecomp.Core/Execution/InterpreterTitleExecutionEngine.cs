@@ -3,6 +3,7 @@ using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.Sio;
 
 namespace PSXRecomp.Core.Execution;
 
@@ -46,6 +47,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly DmaMmioAdapter _dmaAdapter;
     private readonly TimerMmioAdapter _timerAdapter;
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
+    private readonly Sio0Device _sio0Device = new();
     private DeviceScheduler? _scheduler;
     private bool _loaded;
 
@@ -126,6 +128,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _bus.AttachDmaAdapter(_dmaAdapter);
         _bus.AttachTimerAdapter(_timerAdapter);
         _bus.AttachInterruptControllerAdapter(_interruptControllerAdapter);
+
+        // SIO0 register model (Issue #542): pure managed, no native core.
+        _bus.AttachSio0Adapter(new Sio0MmioAdapter(_sio0Device));
     }
 
     /// <inheritdoc />
@@ -139,6 +144,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // Mirrors RecompilerInterpreterExecutor: initial memory first (translated
         // to physical), then the program words so the code image wins any overlap.
         _core.Reset();
+        _sio0Device.Reset();
         foreach (var item in request.InitialMemory)
         {
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);

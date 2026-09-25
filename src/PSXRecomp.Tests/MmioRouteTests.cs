@@ -66,7 +66,7 @@ public class MmioRouteTests
 
     [Theory]
     [InlineData(0x00000000u)]
-    [InlineData(0x1F801040u)]
+    [InlineData(0x1F801060u)] // just past SIO0 (0x1F801040-0x1F80105F routes to SIO0, Issue #542)
     [InlineData(0x1F801078u)]
     [InlineData(0x1F8010FCu)]
     [InlineData(0x1F802000u)]

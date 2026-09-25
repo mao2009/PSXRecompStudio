@@ -47,6 +47,41 @@ public static class Ps1MemoryMap
     public const uint GpuStatusPort = 0x1F801814; // GP1 (write) / GPUSTAT (read)
     public const uint GpuPortEnd = GpuPort + 0x10; // 0x1F801818/0x1F80181C mirror 0x1F801810/0x1F801814
 
+    // SIO0 (controller / memory card serial port), Issue #542. The routed window
+    // is 0x1F801040-0x1F80105F; only the five named registers below carry state.
+    public const uint Sio0Base = 0x1F801040;
+    public const uint Sio0End = 0x1F801060;
+    public const uint Sio0DataOffset = 0x00;
+    public const uint Sio0StatusOffset = 0x04;
+    public const uint Sio0ModeOffset = 0x08;
+    public const uint Sio0ControlOffset = 0x0A;
+    public const uint Sio0BaudOffset = 0x0E;
+
+    public static bool IsSio0Register(uint address) =>
+        address >= Sio0Base && address < Sio0End;
+
+    /// <summary>
+    /// Classifies an address in the SIO0 window. Addresses in the window that are
+    /// not one of the five named registers (e.g. SIO_MISC at +0x0C, the upper
+    /// halves of DATA/STAT, and 0x1F801050-0x1F80105F) return
+    /// <see cref="Sio0RegisterType.Reserved"/>, never <see cref="Sio0RegisterType.None"/>.
+    /// </summary>
+    public static Sio0RegisterType GetSio0RegisterType(uint address)
+    {
+        if (!IsSio0Register(address))
+            return Sio0RegisterType.None;
+
+        return (address - Sio0Base) switch
+        {
+            Sio0DataOffset => Sio0RegisterType.Data,
+            Sio0StatusOffset => Sio0RegisterType.Status,
+            Sio0ModeOffset => Sio0RegisterType.Mode,
+            Sio0ControlOffset => Sio0RegisterType.Control,
+            Sio0BaudOffset => Sio0RegisterType.Baud,
+            _ => Sio0RegisterType.Reserved,
+        };
+    }
+
     public static uint GetTimerBase(int timer) =>
         TimerBase + (uint)(timer * (int)TimerStride);
 
@@ -194,6 +229,23 @@ public enum GpuRegisterType
     None = 0,
     Data,
     Status,
+}
+
+/// <summary>
+/// SIO0 register types (Issue #542). <see cref="Reserved"/> covers every address
+/// in the SIO0 window that is not a named register: reads return 0, writes are
+/// accepted and ignored.
+/// </summary>
+[Domain]
+public enum Sio0RegisterType
+{
+    None = 0,
+    Data,
+    Status,
+    Mode,
+    Control,
+    Baud,
+    Reserved,
 }
 
 /// <summary>
