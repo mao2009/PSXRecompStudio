@@ -37,28 +37,28 @@ Current records:
 
 | ADR | Title | Status |
 |---|---|---|
-| 001 | CPU Specification SSOT | Accepted |
-| 002 | Instruction Definition YAML | Accepted |
-| 003 | MIPS ISA / R3000A / PSX Layering | Accepted |
-| 004 | Branch / Load-Delay Modeling | Accepted |
+| 001 | CPU Specification SSOT Management | Accepted |
+| 002 | Machine-Readable Instruction Definition (YAML) | Accepted |
+| 003 | MIPS ISA / R3000A / PSX Specification Layering | Accepted |
+| 004 | Branch Delay Slot / Load Delay Slot Modeling | Accepted |
 | 005 | PC Update Model | Accepted |
-| 006 | Architecture Enforcement via Analyzer | Accepted |
+| 006 | Architecture Attributes and Dependency Direction Enforced via Build Errors | Accepted |
 | 007 | Repository Artifact Policy and CI Contamination Gate | Accepted |
 | 008 | Batch Orchestrator Checkpoint and Resume Design | Superseded (#242) |
 | 009 | PR-Triggered README Auto-Update via OpenCode | Accepted |
-| 010 | CodeRabbit Review Runs After README Auto-Update | Accepted |
+| 010 | CodeRabbit Best-Effort Automated Review | Accepted |
 | 011 | API Documentation & Docstring Policy | Accepted |
-| 012 | Function Discovery and CFG Hand-off | Accepted |
+| 012 | Function discovery and CFG hand-off | Accepted |
 | 013 | Real-ROM Candidate Selection Reuses the Recompiler as Its Own Validator | Accepted |
 | 014 | BIOS HLE Calls Cross a Shared Runtime Contract | Accepted |
-| 015 | Production Execution Engine Ownership | Accepted |
-| 016 | Generated-Host Execution Budget Semantics | Accepted |
-| 017 | Managed Host I/O Port-Adapter Boundary | Accepted |
-| 018 | Standard Raw 128 KiB PS1 Card Image as the Memory-Card Format | Accepted |
-| 019 | Diagnostics & Recovery Contract | Accepted |
+| 015 | The Production Execution Engine Is the Interpreter Backend, and It Lives in the Domain Layer | Accepted |
+| 016 | Generated-host execution budget semantics | Accepted |
+| 017 | Managed host I/O uses Domain ports and Infrastructure adapters | Accepted |
+| 018 | The standard raw 128 KiB PS1 card image is the memory-card format | Accepted |
+| 019 | Diagnostics & Recovery contract | Accepted |
 | 020 | IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow | Accepted |
-| 021 | Real-ROM Coverage Measurement | Accepted |
-| 022 | GPU Runtime Is a Pure Managed Model | Accepted |
+| 021 | Real-ROM Coverage Is Measured Per Instruction, Separately From Proof Selection | Accepted |
+| 022 | GPU runtime is a pure managed model with a psx-spx GPUSTAT layout | Accepted |
 | 023 | Rust Coexists Inside the Existing Native Shared Library | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
