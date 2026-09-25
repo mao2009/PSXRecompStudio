@@ -6,6 +6,7 @@
 // wire this file in.
 
 #include "psx_core.h"
+#include "psx_cpu_cop0.h"
 #include "test_harness.h"
 
 // COP0 state and exception tests (Issue #141)
@@ -137,6 +138,100 @@ static void test_rfe_pop() {
     PASS();
 }
 
+// Rust COP0 bit transformations (Issue #529): the exports directly, then
+// through MTC0/RFE end to end.
+static const uint32_t kCop0Patterns[] = {
+    0x00000000u, 0xFFFFFFFFu, 0xAAAAAAAAu, 0x55555555u,
+    0x00000300u, 0xFFFFFCFFu, 0x8000047Cu, 0x12345678u,
+};
+
+static void test_rust_cop0_write_cause_mask() {
+    TEST("Rust psx_cpu_cop0_write_cause: only bits 8-9 taken from written value");
+    ASSERT_EQ(psx_cpu_cop0_write_cause(0u, 0u), 0u);
+    ASSERT_EQ(psx_cpu_cop0_write_cause(0u, 0xFFFFFFFFu), 0x300u);
+    ASSERT_EQ(psx_cpu_cop0_write_cause(0xFFFFFFFFu, 0u), 0xFFFFFCFFu);
+    ASSERT_EQ(psx_cpu_cop0_write_cause(0xFFFFFFFFu, 0xFFFFFFFFu), 0xFFFFFFFFu);
+    ASSERT_EQ(psx_cpu_cop0_write_cause(0x8000047Cu, 0x100u), 0x8000057Cu);
+    ASSERT_EQ(psx_cpu_cop0_write_cause(0xAAAAAAAAu, 0x55555555u), 0xAAAAA9AAu);
+    for (uint32_t cause : kCop0Patterns) {
+        for (uint32_t written : kCop0Patterns) {
+            ASSERT_EQ(psx_cpu_cop0_write_cause(cause, written),
+                      (cause & ~0x300u) | (written & 0x300u));
+        }
+    }
+    PASS();
+}
+
+static void test_rust_cop0_rfe_pop() {
+    TEST("Rust psx_cpu_cop0_rfe: KU/IE stack pop keeps KUo/IEo and upper bits");
+    ASSERT_EQ(psx_cpu_cop0_rfe(0u), 0u);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0xFFFFFFFFu), 0xFFFFFFFFu);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0x3Cu), 0x3Fu);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0x03u), 0x00u);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0x0Cu), 0x03u);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0x30u), 0x3Cu);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0xFFFFFFC0u), 0xFFFFFFC0u);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0x1040040Fu), 0x10400403u);
+    ASSERT_EQ(psx_cpu_cop0_rfe(0xAAAAAAAAu), 0xAAAAAAAAu);
+    PASS();
+}
+
+static void test_mtc0_cause_patterns_end_to_end() {
+    TEST("MTC0 CAUSE end to end: zero/all-one/mixed keep non-IP[1:0] bits");
+    for (uint32_t cause : kCop0Patterns) {
+        for (uint32_t written : kCop0Patterns) {
+            PSXCore* core = PSXCore_Create();
+            PSXCore_SetCop0(core, 13, cause);
+            PSXCore_SetGPR(core, 1, written);
+            PSXCore_WriteMemory32(core, 0, 0x40816800u); // MTC0 $1, CAUSE
+            PSXCore_SetPC(core, 0);
+            PSXCore_Step(core);
+            // Step() refreshes CAUSE.IP2 (bit 10) from the (idle) interrupt
+            // controller before executing MTC0, so bit 10 reads back as 0.
+            uint32_t prior = cause & ~0x400u;
+            ASSERT_EQ(PSXCore_GetCop0(core, 13), (prior & ~0x300u) | (written & 0x300u));
+            PSXCore_Destroy(core);
+        }
+    }
+    PASS();
+}
+
+static void test_mtc0_non_cause_full_value_write() {
+    TEST("MTC0 non-CAUSE destinations still write the full 32-bit value");
+    for (uint32_t written : kCop0Patterns) {
+        PSXCore* core = PSXCore_Create();
+        PSXCore_SetCop0(core, 14, ~written);
+        PSXCore_SetGPR(core, 1, written);
+        PSXCore_WriteMemory32(core, 0, 0x40817000u); // MTC0 $1, EPC(14)
+        PSXCore_SetPC(core, 0);
+        PSXCore_Step(core);
+        ASSERT_EQ(PSXCore_GetCop0(core, 14), written);
+        PSXCore_Destroy(core);
+    }
+    PASS();
+}
+
+static void test_rfe_patterns_end_to_end() {
+    TEST("RFE end to end: zero/all-one/mixed SR");
+    const uint32_t cases[][2] = {
+        {0x00000000u, 0x00000000u}, {0xFFFFFFFFu, 0xFFFFFFFFu},
+        {0x0000003Cu, 0x0000003Fu}, {0x00000003u, 0x00000000u},
+        {0x0000000Cu, 0x00000003u}, {0x00000030u, 0x0000003Cu},
+        {0x1040040Fu, 0x10400403u}, {0xAAAAAAAAu, 0xAAAAAAAAu},
+        {0x55555555u, 0x55555555u},
+    };
+    for (const auto& c : cases) {
+        PSXCore* core = PSXCore_Create();
+        PSXCore_SetCop0(core, 12, c[0]);
+        PSXCore_WriteMemory32(core, 0, 0x42000010u); // RFE
+        PSXCore_SetPC(core, 0);
+        PSXCore_Step(core);
+        ASSERT_EQ(PSXCore_GetCop0(core, 12), c[1]);
+        PSXCore_Destroy(core);
+    }
+    PASS();
+}
+
 void run_psx_cpu_cop0_rust_tests() {
     test_cop0_mfc0_mtc0_roundtrip();
     test_mfc0_load_delay();
@@ -144,4 +239,9 @@ void run_psx_cpu_cop0_rust_tests() {
     test_syscall_exception();
     test_break_exception();
     test_rfe_pop();
+    test_rust_cop0_write_cause_mask();
+    test_rust_cop0_rfe_pop();
+    test_mtc0_cause_patterns_end_to_end();
+    test_mtc0_non_cause_full_value_write();
+    test_rfe_patterns_end_to_end();
 }
