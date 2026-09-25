@@ -23,7 +23,7 @@ Paths are relative to `src/PSXRecomp.Native/`.
 
 ## Cross-slice calls
 
-Calls `SetPendingBranch` (pipeline), `SetGPR` and `ToSigned` (`psx_cpu.cpp`). Called by `ExecuteInstruction` (decode).
+Calls `SetPendingBranch` (pipeline) and `SetGPR` (`psx_cpu.cpp`). Called by `ExecuteInstruction` (decode).
 
 ## Current state
 
