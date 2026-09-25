@@ -169,6 +169,86 @@ static void test_adel_unmapped_fetch() {
     PASS();
 }
 
+// --- Issue #531: state transitions now computed in Rust (cpu_pipeline.rs) ---
+
+static void test_pipeline_same_register_back_to_back_loads() {
+    TEST("Pipeline (#531): back-to-back loads to one GPR -- last load wins, one step later");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000);
+    PSXCore_SetGPR(core, 1, 0x11111111u);
+    PSXCore_WriteMemory32(core, 0x1000, 0xAAAAAAAAu);
+    PSXCore_WriteMemory32(core, 0x1004, 0xBBBBBBBBu);
+    PSXCore_WriteMemory32(core, 0, 0x8FA10000u); // LW $1, 0($29)
+    PSXCore_WriteMemory32(core, 4, 0x8FA10004u); // LW $1, 4($29) (load delay slot)
+    PSXCore_WriteMemory32(core, 8, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x11111111u);
+    PSXCore_Step(core); // first load's commit is cancelled by the second
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x11111111u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0xBBBBBBBBu);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_pipeline_pending_and_new_load_commit_in_order() {
+    TEST("Pipeline (#531): pending + new load to different GPRs commit one step apart");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000);
+    PSXCore_WriteMemory32(core, 0x1000, 0xAAAAAAAAu);
+    PSXCore_WriteMemory32(core, 0x1004, 0xBBBBBBBBu);
+    PSXCore_WriteMemory32(core, 0, 0x8FA10000u); // LW $1, 0($29)
+    PSXCore_WriteMemory32(core, 4, 0x8FA20004u); // LW $2, 4($29)
+    PSXCore_WriteMemory32(core, 8, 0x00000000u); // NOP
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0xAAAAAAAAu);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 2), 0xBBBBBBBBu);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_pipeline_exception_in_delay_slot_discards_branch() {
+    TEST("Pipeline (#531): exception in a delay slot discards the pending branch");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0); // BEV=0: vector 0x80000080
+    PSXCore_WriteMemory32(core, 0, 0x10000003u);    // BEQ $0,$0,3 (taken -> 16)
+    PSXCore_WriteMemory32(core, 4, 0x0000000Cu);    // SYSCALL (delay slot)
+    PSXCore_WriteMemory32(core, 0x80, 0x00000000u); // NOP at the vector
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 1);
+    ASSERT_EQ(PSXCore_GetExceptionInDelaySlot(core), 1);
+    ASSERT_EQ(PSXCore_GetCop0(core, 14), 0u); // EPC = the branch
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
+    PSXCore_Step(core); // handler runs sequentially; branch target 16 never applies
+    ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80000084u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_pipeline_set_pc_flushes_pending_load() {
+    TEST("Pipeline (#531): SetPC flush commits a pending load immediately");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 29, 0x1000);
+    PSXCore_WriteMemory32(core, 0x1000, 0xCAFEF00Du);
+    PSXCore_WriteMemory32(core, 0, 0x8FA10000u); // LW $1, 0($29)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0u);
+    PSXCore_SetPC(core, 0x100);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0xCAFEF00Du);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x100u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_pipeline_rust_tests() {
     test_step_branch_delay_slot();
     test_load_delay();
@@ -176,4 +256,8 @@ void run_psx_cpu_pipeline_rust_tests() {
     test_kseg_instruction_fetch();
     test_adel_misaligned_fetch();
     test_adel_unmapped_fetch();
+    test_pipeline_same_register_back_to_back_loads();
+    test_pipeline_pending_and_new_load_commit_in_order();
+    test_pipeline_exception_in_delay_slot_discards_branch();
+    test_pipeline_set_pc_flushes_pending_load();
 }
