@@ -485,6 +485,27 @@ public sealed class CliRunTests
     }
 
     [Fact]
+    public void Run_ReportFailure_PreservesBlockedResultAndExitCode()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "jump.exe", UnresolvedJumpProgram());
+        var outDir = dir.CreateSubdirectory("out");
+        Directory.CreateDirectory(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName));
+
+        var (exit, output, error) = Invoke(
+            "run", exePath, "--output", outDir, "--report", "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Blocked);
+        error.Should().Contain("diagnostic report could not be written");
+
+        using var json = JsonDocument.Parse(output);
+        var root = json.RootElement;
+        root.GetProperty("result").GetProperty("exitCode").GetInt32()
+            .Should().Be(RecompiledArtifactExitCode.Blocked);
+        root.TryGetProperty("diagnosticBundle", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void Run_Report_RuntimeFailureStillGeneratesBundle()
     {
         using var dir = new TempDirectory();
