@@ -1,10 +1,25 @@
 using PSXRecomp.Core;
 using PSXRecomp.Core.Dma;
-using PSXRecomp.Core.Runtime.Sio;
 
 namespace PSXRecomp.Tests;
 
-/// <summary>SIO0 guest-visible register model (Issue #542).</summary>
+/// <summary>
+/// SIO0 guest-visible register model (Issue #542). The register semantics
+/// themselves now live in native Rust (<c>crate::sio0</c>, reached through
+/// <c>PSXMemory</c>/<c>psx_memory_read32</c>/<c>write32</c>) so they are
+/// reachable from the production guest CPU load/store path, not only a
+/// managed-only model (CodeRabbit finding on PR #548). These tests exercise
+/// that native state through <see cref="MemoryBus"/> — which now routes its
+/// SIO0 case straight to <see cref="PSXCoreWrapper.ReadMemory32"/>/
+/// <see cref="PSXCoreWrapper.WriteMemory32"/>, the same native call the CPU
+/// step path uses — and through <see cref="MmioRoute"/>/
+/// <see cref="Ps1MemoryMap"/> address classification, which is unchanged.
+/// The equivalent register-semantics coverage (including RX FIFO fill/drop,
+/// exercised only through the Rust-internal test seam) lives in
+/// <c>src/PSXRecomp.Native/rust/src/sio0.rs</c>'s own tests. A CPU-driven
+/// end-to-end test (opcode -&gt; PSXCore_Step -&gt; PSXMemory -&gt; SIO0) is in
+/// <see cref="Sio0CpuEndToEndTests"/>.
+/// </summary>
 [Test]
 public class Sio0RegisterTests : IDisposable
 {
@@ -16,13 +31,11 @@ public class Sio0RegisterTests : IDisposable
     private const uint IdleStatus = 0x00000005; // TX ready 1 + TX ready 2
 
     private readonly PSXCoreWrapper _core = new();
-    private readonly Sio0Device _device = new();
     private readonly MemoryBus _bus;
 
     public Sio0RegisterTests()
     {
         _bus = new MemoryBus(_core);
-        _bus.AttachSio0Adapter(new Sio0MmioAdapter(_device));
     }
 
     public void Dispose()
@@ -108,7 +121,6 @@ public class Sio0RegisterTests : IDisposable
         _bus.Write16(Baud, 0x0088);
         _bus.Write16(Ctrl, 0x1003);
         _bus.Write8(Data, 0x42);
-        _device.EnqueueReceivedByte(0x99);
 
         _bus.Write16(Ctrl, 0x1043); // reset wins over the other bits
 
@@ -117,44 +129,18 @@ public class Sio0RegisterTests : IDisposable
         _bus.Read(Ctrl).Should().Be(0u);
         _bus.Read(Stat).Should().Be(IdleStatus);
         _bus.Read(Data).Should().Be(0u);
-        _device.TxData.Should().Be(0);
     }
 
     [Fact]
     public void Data_Write_LatchesTxByteWithoutFillingRx()
     {
         _bus.Write8(Data, 0x01);
-        _device.TxData.Should().Be(0x01);
-
         _bus.Write(Data, 0xFFFFFF42);
-        _device.TxData.Should().Be(0x42);
 
-        _bus.Read(Stat).Should().Be(IdleStatus); // no transfer modeled, RX stays empty
+        // TX is never transmitted (no serial protocol modeled, Issue #543):
+        // reading SIO_DATA back reflects RX, which stays empty, not TX.
+        _bus.Read(Stat).Should().Be(IdleStatus);
         _bus.Read(Data).Should().Be(0u);
-    }
-
-    [Fact]
-    public void Data_Read_PopsRxFifoInOrderAndRepeatsLastByteWhenEmpty()
-    {
-        _device.EnqueueReceivedByte(0xFF);
-        _device.EnqueueReceivedByte(0x41);
-
-        (_bus.Read(Stat) & Sio0Device.StatusRxNotEmpty).Should().Be(Sio0Device.StatusRxNotEmpty);
-        _bus.Read8(Data).Should().Be(0xFF);
-        _bus.Read8(Data).Should().Be(0x41);
-        _bus.Read(Stat).Should().Be(IdleStatus);
-        _bus.Read8(Data).Should().Be(0x41);
-    }
-
-    [Fact]
-    public void RxFifo_DropsBytesBeyondEight()
-    {
-        for (byte i = 1; i <= 9; i++)
-            _device.EnqueueReceivedByte(i);
-
-        for (byte i = 1; i <= 8; i++)
-            _bus.Read8(Data).Should().Be(i);
-        _bus.Read(Stat).Should().Be(IdleStatus);
     }
 
     [Fact]
@@ -189,21 +175,20 @@ public class Sio0RegisterTests : IDisposable
         _bus.Read(Ctrl).Should().Be(0x1003u);
         _bus.Read(Baud).Should().Be(0x0088u);
         _bus.Read(Stat).Should().Be(IdleStatus);
-        _device.TxData.Should().Be(0);
     }
 
     [Fact]
     public void EveryAddressInWindow_IsDeterministicAcrossIdenticalSequences()
     {
-        static List<uint> Run()
+        List<uint> Run()
         {
-            var device = new Sio0Device();
-            var adapter = new Sio0MmioAdapter(device);
+            using var core = new PSXCoreWrapper();
+            using var bus = new MemoryBus(core);
             var reads = new List<uint>();
             for (uint a = 0x1F801040; a < 0x1F801060; a++)
             {
-                adapter.Write(a, a * 0x9E3779B1u);
-                reads.Add(adapter.Read(a));
+                bus.Write(a, a * 0x9E3779B1u);
+                reads.Add(bus.Read(a));
             }
             return reads;
         }

@@ -289,6 +289,27 @@ nullable, and an unattached controller falls back to the flat HW-register
 store, exactly as before. A timer read can mutate `*timers` (reading MODE
 clears its target/overflow flags), matching the pre-migration behavior.
 
+SIO0 (Issue #542, fixed for production reachability by a CodeRabbit finding
+on PR #548) is serviced the same way but is not threaded through a
+`PSXMemory::AttachControllers` pointer: `rust/src/sio0.rs`'s `Sio0State` is a
+field owned directly by `PsxMemory` (see its module documentation), because —
+unlike DMA/Timer/Interrupt — nothing else in native code needs to observe or
+drive SIO0 state in this scope (no controller/memory-card protocol, no IRQ7).
+`memory.rs`'s `read{8,16,32}`/`write{8,16,32}` dispatch a SIO0-range address to
+`crate::sio0::read_register`/`write_register` at the exact address requested
+(not word-realigned like the DMA/Timer/Interrupt dispatch), matching the
+managed `Sio0MmioAdapter`/`Ps1MemoryMap.GetSio0RegisterType` semantics it
+replaced byte-for-byte. `sio0.rs`'s functions are not `extern "C"` and add no
+new FFI surface: they are plain same-crate Rust calls from `memory.rs`, so
+this fix needed no `PSXMemory::AttachControllers` signature change, no
+`include/psx_core.h` / `NativeInterop.cs` change, and no `ABI_VERSION` bump.
+The managed `Sio0State`/`Sio0Device`/`Sio0MmioAdapter` classes this replaced
+were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case now calls
+`PSXCoreWrapper.ReadMemory32`/`WriteMemory32` — the same native entry point
+the guest CPU's `LW`/`SW` use — instead of a managed adapter, so there is a
+single SSOT reachable from both the managed test/BIOS-HLE seam and the
+production CPU path.
+
 Every read/write export takes the handle and (for the HW-register window) up
 to three raw, independently-nullable controller-state pointers, so — unlike
 Interrupt/Timer/DMA — these are not infallible-by-value functions per §5:

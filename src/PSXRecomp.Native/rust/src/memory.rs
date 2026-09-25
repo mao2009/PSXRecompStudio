@@ -56,6 +56,7 @@ use std::ptr;
 
 use crate::dma::{psx_dma_read_register, psx_dma_write_register, DmaState};
 use crate::interrupt::{psx_interrupt_read_register, psx_interrupt_write_register, InterruptState};
+use crate::sio0::{is_sio0_register, read_register as sio0_read_register, write_register as sio0_write_register, Sio0State};
 use crate::timer::{psx_timer_read_register, psx_timer_write_register, TimerState};
 
 /// PS1 main RAM size (2 MiB). Must match `PSX_RAM_SIZE` in `psx_cpu.h`.
@@ -226,6 +227,9 @@ pub struct PsxMemory {
     scratchpad: Box<[u8]>,
     bios: Box<[u8]>,
     hw_regs: Box<[u8]>,
+    /// SIO0 register-only model (Issue #542). Owned here rather than by the
+    /// C++ `PSXCore` — see `crate::sio0`'s module documentation for why.
+    sio0: Sio0State,
 }
 
 fn try_zeroed_bytes(len: usize) -> Option<Box<[u8]>> {
@@ -251,6 +255,7 @@ impl PsxMemory {
             scratchpad: try_zeroed_bytes(PSX_SCRATCHPAD_SIZE as usize)?,
             bios: try_zeroed_bytes(PSX_BIOS_SIZE as usize)?,
             hw_regs: try_zeroed_bytes(PSX_HW_REG_SIZE as usize)?,
+            sio0: Sio0State::power_on(),
         };
 
         let layout = Layout::new::<Self>();
@@ -275,11 +280,12 @@ impl PsxMemory {
         self.scratchpad.fill(0);
         self.bios.fill(0);
         self.hw_regs.fill(0);
+        self.sio0.reset();
     }
 
     /// Reads a little-endian 32-bit value; 0 outside every mapped region.
     fn read32(
-        &self,
+        &mut self,
         address: u32,
         dma: Option<&mut DmaState>,
         timers: Option<&mut TimerState>,
@@ -289,10 +295,16 @@ impl PsxMemory {
             Region::Ram(i) => load32_le(&self.ram[i..i + 4]),
             Region::Scratchpad(i) => load32_le(&self.scratchpad[i..i + 4]),
             Region::Bios(i) => load32_le(&self.bios[i..i + 4]),
-            Region::HwReg(i) => match read_controller32(address, dma, timers, interrupts) {
-                Some(value) => value,
-                None => load32_le(&self.hw_regs[i..i + 4]),
-            },
+            Region::HwReg(i) => {
+                if is_sio0_register(address) {
+                    sio0_read_register(&mut self.sio0, address)
+                } else {
+                    match read_controller32(address, dma, timers, interrupts) {
+                        Some(value) => value,
+                        None => load32_le(&self.hw_regs[i..i + 4]),
+                    }
+                }
+            }
             Region::Unmapped => 0,
         }
     }
@@ -311,7 +323,9 @@ impl PsxMemory {
             Region::Scratchpad(i) => store32_le(&mut self.scratchpad[i..i + 4], value),
             Region::Bios(i) => store32_le(&mut self.bios[i..i + 4], value),
             Region::HwReg(i) => {
-                if !write_controller32(address, value, dma, timers, interrupts) {
+                if is_sio0_register(address) {
+                    sio0_write_register(&mut self.sio0, address, value);
+                } else if !write_controller32(address, value, dma, timers, interrupts) {
                     store32_le(&mut self.hw_regs[i..i + 4], value);
                 }
             }
@@ -321,9 +335,10 @@ impl PsxMemory {
 
     /// Reads a little-endian 16-bit value; 0 outside every mapped region. A
     /// HW-register access covers any halfword inside the containing 32-bit
-    /// controller register.
+    /// controller register. A SIO0 access dispatches at its exact address
+    /// instead (see `crate::sio0`'s module documentation).
     fn read16(
-        &self,
+        &mut self,
         address: u32,
         dma: Option<&mut DmaState>,
         timers: Option<&mut TimerState>,
@@ -334,10 +349,14 @@ impl PsxMemory {
             Region::Scratchpad(i) => load16_le(&self.scratchpad[i..i + 2]),
             Region::Bios(i) => load16_le(&self.bios[i..i + 2]),
             Region::HwReg(i) => {
-                let word_addr = address & !2u32;
-                match read_controller32(word_addr, dma, timers, interrupts) {
-                    Some(value) => ((value >> (8 * (address & 2))) & 0xFFFF) as u16,
-                    None => load16_le(&self.hw_regs[i..i + 2]),
+                if is_sio0_register(address) {
+                    (sio0_read_register(&mut self.sio0, address) & 0xFFFF) as u16
+                } else {
+                    let word_addr = address & !2u32;
+                    match read_controller32(word_addr, dma, timers, interrupts) {
+                        Some(value) => ((value >> (8 * (address & 2))) & 0xFFFF) as u16,
+                        None => load16_le(&self.hw_regs[i..i + 2]),
+                    }
                 }
             }
             Region::Unmapped => 0,
@@ -365,17 +384,21 @@ impl PsxMemory {
             Region::Scratchpad(i) => store16_le(&mut self.scratchpad[i..i + 2], value),
             Region::Bios(i) => store16_le(&mut self.bios[i..i + 2], value),
             Region::HwReg(i) => {
-                let word_addr = address & !2u32;
-                match read_controller32(word_addr, dma.as_deref_mut(), timers.as_deref_mut(), interrupts.as_deref_mut()) {
-                    Some(mut value32) => {
-                        if word_addr == PSX_DMA_REGION_END {
-                            value32 &= !DICR_FLAGS_MASK;
+                if is_sio0_register(address) {
+                    sio0_write_register(&mut self.sio0, address, value as u32);
+                } else {
+                    let word_addr = address & !2u32;
+                    match read_controller32(word_addr, dma.as_deref_mut(), timers.as_deref_mut(), interrupts.as_deref_mut()) {
+                        Some(mut value32) => {
+                            if word_addr == PSX_DMA_REGION_END {
+                                value32 &= !DICR_FLAGS_MASK;
+                            }
+                            let shift = 8 * (address & 2);
+                            let merged = (value32 & !(0xFFFFu32 << shift)) | (u32::from(value) << shift);
+                            write_controller32(word_addr, merged, dma, timers, interrupts);
                         }
-                        let shift = 8 * (address & 2);
-                        let merged = (value32 & !(0xFFFFu32 << shift)) | (u32::from(value) << shift);
-                        write_controller32(word_addr, merged, dma, timers, interrupts);
+                        None => store16_le(&mut self.hw_regs[i..i + 2], value),
                     }
-                    None => store16_le(&mut self.hw_regs[i..i + 2], value),
                 }
             }
             Region::Unmapped => {}
@@ -383,9 +406,11 @@ impl PsxMemory {
     }
 
     /// Reads a byte; 0 outside every mapped region. A HW-register access
-    /// covers any byte inside the containing 32-bit controller register.
+    /// covers any byte inside the containing 32-bit controller register. A
+    /// SIO0 access dispatches at its exact address instead (see
+    /// `crate::sio0`'s module documentation).
     fn read8(
-        &self,
+        &mut self,
         address: u32,
         dma: Option<&mut DmaState>,
         timers: Option<&mut TimerState>,
@@ -396,10 +421,14 @@ impl PsxMemory {
             Region::Scratchpad(i) => self.scratchpad[i],
             Region::Bios(i) => self.bios[i],
             Region::HwReg(i) => {
-                let word_addr = address & !3u32;
-                match read_controller32(word_addr, dma, timers, interrupts) {
-                    Some(value) => ((value >> (8 * (address & 3))) & 0xFF) as u8,
-                    None => self.hw_regs[i],
+                if is_sio0_register(address) {
+                    (sio0_read_register(&mut self.sio0, address) & 0xFF) as u8
+                } else {
+                    let word_addr = address & !3u32;
+                    match read_controller32(word_addr, dma, timers, interrupts) {
+                        Some(value) => ((value >> (8 * (address & 3))) & 0xFF) as u8,
+                        None => self.hw_regs[i],
+                    }
                 }
             }
             Region::Unmapped => 0,
@@ -422,17 +451,21 @@ impl PsxMemory {
             Region::Scratchpad(i) => self.scratchpad[i] = value,
             Region::Bios(i) => self.bios[i] = value,
             Region::HwReg(i) => {
-                let word_addr = address & !3u32;
-                match read_controller32(word_addr, dma.as_deref_mut(), timers.as_deref_mut(), interrupts.as_deref_mut()) {
-                    Some(mut value32) => {
-                        if word_addr == PSX_DMA_REGION_END {
-                            value32 &= !DICR_FLAGS_MASK;
+                if is_sio0_register(address) {
+                    sio0_write_register(&mut self.sio0, address, value as u32);
+                } else {
+                    let word_addr = address & !3u32;
+                    match read_controller32(word_addr, dma.as_deref_mut(), timers.as_deref_mut(), interrupts.as_deref_mut()) {
+                        Some(mut value32) => {
+                            if word_addr == PSX_DMA_REGION_END {
+                                value32 &= !DICR_FLAGS_MASK;
+                            }
+                            let shift = 8 * (address & 3);
+                            let merged = (value32 & !(0xFFu32 << shift)) | (u32::from(value) << shift);
+                            write_controller32(word_addr, merged, dma, timers, interrupts);
                         }
-                        let shift = 8 * (address & 3);
-                        let merged = (value32 & !(0xFFu32 << shift)) | (u32::from(value) << shift);
-                        write_controller32(word_addr, merged, dma, timers, interrupts);
+                        None => self.hw_regs[i] = value,
                     }
-                    None => self.hw_regs[i] = value,
                 }
             }
             Region::Unmapped => {}
@@ -522,7 +555,7 @@ pub unsafe extern "C" fn psx_memory_read32(
     interrupts: *mut InterruptState,
 ) -> u32 {
     // SAFETY: caller's documented contract above.
-    let Some(mem) = (unsafe { mem.as_ref() }) else {
+    let Some(mem) = (unsafe { mem.as_mut() }) else {
         return 0;
     };
     // SAFETY: caller's documented contract above.
@@ -569,7 +602,7 @@ pub unsafe extern "C" fn psx_memory_read16(
     interrupts: *mut InterruptState,
 ) -> u16 {
     // SAFETY: caller's documented contract above.
-    let Some(mem) = (unsafe { mem.as_ref() }) else {
+    let Some(mem) = (unsafe { mem.as_mut() }) else {
         return 0;
     };
     // SAFETY: caller's documented contract above.
@@ -618,7 +651,7 @@ pub unsafe extern "C" fn psx_memory_read8(
     interrupts: *mut InterruptState,
 ) -> u8 {
     // SAFETY: caller's documented contract above.
-    let Some(mem) = (unsafe { mem.as_ref() }) else {
+    let Some(mem) = (unsafe { mem.as_mut() }) else {
         return 0;
     };
     // SAFETY: caller's documented contract above.

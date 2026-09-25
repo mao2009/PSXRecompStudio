@@ -14,7 +14,6 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     private TimerMmioAdapter? _timerAdapter;
     private InterruptControllerMmioAdapter? _interruptControllerAdapter;
     private GpuMmioAdapter? _gpuAdapter;
-    private Sio0MmioAdapter? _sio0Adapter;
     private bool _disposed;
 
     public MemoryBus(PSXCoreWrapper core)
@@ -44,12 +43,6 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _gpuAdapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
-    }
-
-    public void AttachSio0Adapter(Sio0MmioAdapter adapter)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        _sio0Adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
     public uint Read32(uint address) => Read(address);
@@ -151,7 +144,6 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
             _timerAdapter = null;
             _interruptControllerAdapter = null;
             _gpuAdapter = null;
-            _sio0Adapter = null;
             _disposed = true;
         }
         GC.SuppressFinalize(this);
@@ -201,7 +193,11 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
             MmioTarget.Timer => _timerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.InterruptController => _interruptControllerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.Gpu => _gpuAdapter?.ReadRegister(address) ?? 0,
-            MmioTarget.Sio0 => _sio0Adapter?.ReadRegister(address) ?? 0,
+            // SIO0 register semantics are native/Rust-owned (Issue #542 /
+            // CodeRabbit finding on PR #548): route straight to the same
+            // psx_memory_read32 the guest CPU's LW/LH/LB use, instead of a
+            // managed adapter that would duplicate the semantics.
+            MmioTarget.Sio0 => _core.ReadMemory32(address),
             _ => 0,
         };
     }
@@ -224,7 +220,7 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
                 _gpuAdapter?.WriteRegister(address, value);
                 break;
             case MmioTarget.Sio0:
-                _sio0Adapter?.WriteRegister(address, value);
+                _core.WriteMemory32(address, value);
                 break;
         }
     }

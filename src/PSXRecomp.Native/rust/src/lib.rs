@@ -35,6 +35,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub mod dma;
 pub mod interrupt;
 pub mod memory;
+pub mod sio0;
 pub mod timer;
 pub mod cpu_ops;
 pub mod cpu_hilo;
