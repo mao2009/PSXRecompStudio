@@ -135,9 +135,114 @@ static void test_branch_load_delay_interaction() {
     PASS();
 }
 
+// Runs `instruction` at PC 0 with $1 = rs_value and a NOP delay slot, and
+// returns the PC after the delay slot: 12 when an offset-2 branch is taken,
+// 8 when it is not.
+static uint32_t run_branch(PSXCore* core, uint32_t instruction, uint32_t rs_value) {
+    PSXCore_SetGPR(core, 1, rs_value);
+    PSXCore_WriteMemory32(core, 0, instruction);
+    PSXCore_WriteMemory32(core, 4, 0x00000000u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    return PSXCore_GetPC(core);
+}
+
+static void test_rust_branch_zero_compares_are_signed() {
+    TEST("BLEZ/BGTZ/BLTZ/BGEZ compare rs as signed (Rust, #526)");
+    PSXCore* core = PSXCore_Create();
+    const uint32_t blez = 0x18200002u, bgtz = 0x1C200002u; // $1, offset 2
+    const uint32_t bltz = 0x04200002u, bgez = 0x04210002u;
+
+    // 0x80000000 is negative, not a large positive value.
+    ASSERT_EQ(run_branch(core, blez, 0x80000000u), 12u);
+    ASSERT_EQ(run_branch(core, bgtz, 0x80000000u), 8u);
+    ASSERT_EQ(run_branch(core, bltz, 0x80000000u), 12u);
+    ASSERT_EQ(run_branch(core, bgez, 0x80000000u), 8u);
+    // Zero boundary.
+    ASSERT_EQ(run_branch(core, blez, 0u), 12u);
+    ASSERT_EQ(run_branch(core, bgtz, 0u), 8u);
+    ASSERT_EQ(run_branch(core, bltz, 0u), 8u);
+    ASSERT_EQ(run_branch(core, bgez, 0u), 12u);
+    // Largest positive.
+    ASSERT_EQ(run_branch(core, blez, 0x7FFFFFFFu), 8u);
+    ASSERT_EQ(run_branch(core, bgtz, 0x7FFFFFFFu), 12u);
+    // BNE $1, $2 (not equal -> taken; equal -> not taken)
+    PSXCore_SetGPR(core, 2, 0x80000000u);
+    ASSERT_EQ(run_branch(core, 0x14220002u, 0x7FFFFFFFu), 12u);
+    ASSERT_EQ(run_branch(core, 0x14220002u, 0x80000000u), 8u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_rust_branch_negative_offset_and_jump_region() {
+    TEST("Backward branch offset and J upper-PC region (Rust, #526)");
+    PSXCore* core = PSXCore_Create();
+
+    // BEQ $0, $0, -2 at 0x100 -> 0x100 + 4 - 8 = 0xFC
+    PSXCore_WriteMemory32(core, 0x100, 0x1000FFFEu);
+    PSXCore_WriteMemory32(core, 0x104, 0x00000000u);
+    PSXCore_SetPC(core, 0x100);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 0xFCu);
+
+    // J 0x800 at KSEG0 0x80001000 keeps the 0x8 region: 0x80000000 | 0x2000
+    PSXCore_WriteMemory32(core, 0x1000, 0x08000800u);
+    PSXCore_WriteMemory32(core, 0x1004, 0x00000000u);
+    PSXCore_SetPC(core, 0x80001000u);
+    PSXCore_Step(core);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x80002000u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
+static void test_rust_link_reads_source_before_linking() {
+    TEST("BGEZAL/BLTZAL $31 and JALR rd==rs use the old source value (Rust, #526)");
+    PSXCore* core = PSXCore_Create();
+
+    // BGEZAL $31, 2 with $31 = -1: decided on the old -1 (not taken) even
+    // though the link it writes (8) would be >= 0.
+    PSXCore_SetGPR(core, 31, 0xFFFFFFFFu);
+    PSXCore_WriteMemory32(core, 0, 0x07F10002u);
+    PSXCore_WriteMemory32(core, 4, 0x00000000u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 8u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 8u); // not taken
+
+    // BLTZAL $31, 2 with $31 = -1: taken on the old value.
+    PSXCore_SetGPR(core, 31, 0xFFFFFFFFu);
+    PSXCore_WriteMemory32(core, 0, 0x07F00002u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 31), 8u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 12u); // taken
+
+    // JALR $5, $5 with $5 = 0x30: jumps to the old 0x30, then $5 = 8.
+    PSXCore_SetGPR(core, 5, 0x30);
+    PSXCore_WriteMemory32(core, 0, 0x00A02809u);
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 8u);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x30u);
+
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_control_rust_tests() {
     test_step_branch();
     test_step_jump();
     test_step_jr_jalr();
     test_branch_load_delay_interaction();
+    test_rust_branch_zero_compares_are_signed();
+    test_rust_branch_negative_offset_and_jump_region();
+    test_rust_link_reads_source_before_linking();
 }
