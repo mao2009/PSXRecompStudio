@@ -7,7 +7,7 @@
 #include "psx_core.h"
 #include "test_harness.h"
 
-static const uint32_t OP_LW = 0x23, OP_LWL = 0x22, OP_LWR = 0x26, OP_SWL = 0x2A, OP_SWR = 0x2E;
+static const uint32_t OP_LB = 0x20, OP_LW = 0x23, OP_LWL = 0x22, OP_LWR = 0x26, OP_SWL = 0x2A, OP_SWR = 0x2E;
 
 static uint32_t EncodeI(uint32_t op, uint32_t rs, uint32_t rt, uint32_t imm) {
     return (op << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFFu);
@@ -171,6 +171,18 @@ static void test_lwl_lwr_pair_reconstructs_word() {
     run_pair("LWL 6 / LWR 3 (reverse order)", OP_LWL, 6, OP_LWR, 3, 0x76655443u);
 }
 
+// An ordinary load (LW/LB) still pending for the same rt is also forwarded
+// into the LWL/LWR merge, not only an LWL/LWR predecessor (Issue #539; MIPS I
+// LWL/LWR bypass, as in DuckStation). Without forwarding the untouched bytes
+// would come from kReg (0xAABBCCDD) instead of the pending load's value.
+static void test_lwl_lwr_merge_pending_ordinary_load() {
+    // LW $1,4 -> pending 0x87766554.
+    run_pair("LW 4 / LWL 1 merges pending LW",  OP_LW, 4, OP_LWL, 1, 0x21106554u);
+    run_pair("LW 4 / LWR 1 merges pending LW",  OP_LW, 4, OP_LWR, 1, 0x87433221u);
+    // LB $1,7 -> pending sign-extended 0xFFFFFF87.
+    run_pair("LB 7 / LWL 1 merges pending LB",  OP_LB, 7, OP_LWL, 1, 0x2110FF87u);
+}
+
 // A pending load to a different register is not merged: LWL $1 uses $1's
 // committed value while LW $2 is still in its delay slot.
 static void test_lwl_ignores_pending_load_to_other_register() {
@@ -223,6 +235,7 @@ void run_psx_cpu_unaligned_rust_tests() {
     test_unaligned_all_offsets();
     test_unaligned_kseg0_aligned_base();
     test_lwl_lwr_pair_reconstructs_word();
+    test_lwl_lwr_merge_pending_ordinary_load();
     test_lwl_ignores_pending_load_to_other_register();
     test_swl_swr_pair_stores_word();
 }

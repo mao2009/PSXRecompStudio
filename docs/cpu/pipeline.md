@@ -97,7 +97,13 @@ ADD $5, $1, $6    ← Uses the new value of $1
 
 ### Special LWL/LWR Behavior
 
-LWL/LWR can read the preceding load result only when they form a **consecutive LWL/LWR pair**:
+LWL/LWR bypass the load delay for their merge input: when the immediately preceding
+instruction is **any load** (LB/LBU/LH/LHU/LW/LWL/LWR) whose result for the same `rt` is
+still pending, LWL/LWR merge into that pending value instead of the committed register
+value. This is the MIPS I rule ("the contents of general register rt are internally
+bypassed ... no NOP is needed between an immediately preceding load instruction which
+specifies register rt as a destination and a subsequent LWL/LWR") and matches DuckStation.
+It is what makes a consecutive LWL/LWR pair work:
 
 ```
 # Valid pair (LWR → LWL order)
@@ -109,7 +115,17 @@ LWL $1, 0($2)     ← In load delay
 LWR $1, 3($2)     ← Can read the LWL result in $1
 ```
 
-A normal load delay remains after the second instruction. If the instructions are not a consecutive pair, the normal load-delay rule applies.
+An ordinary load forwards the same way (Issue #539):
+
+```
+LW  $1, 4($2)     ← In load delay
+LWL $1, 1($2)     ← Merges into the pending LW value, not the old $1
+```
+
+A normal load delay remains after the LWL/LWR itself. A pending load to a *different*
+register is not forwarded; LWL/LWR then merge into the committed `rt`. Only the merge
+input is bypassed: any other instruction in the delay slot still sees the old value.
+Regression coverage: `src/PSXRecomp.Native/tests/test_psx_cpu_unaligned_rust.cpp`.
 
 ### Importance for Testing
 
