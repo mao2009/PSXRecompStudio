@@ -144,6 +144,14 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial void PSXCore_ResetInterruptController(IntPtr core);
 
+    /// <summary>Returns non-zero when SIO0 has an unacknowledged "byte received" (IRQ7) latch (Issue #543).</summary>
+    [LibraryImport(LibName)]
+    internal static partial int PSXCore_GetSio0InterruptPending(IntPtr core);
+
+    /// <summary>Acknowledges/clears SIO0's pending "byte received" (IRQ7) latch.</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_ClearSio0Interrupt(IntPtr core);
+
     /// <summary>Executes a single instruction, honoring branch/load-delay slot semantics.</summary>
     /// <returns>Zero when the step was taken; a negative status when the handle is null. A guest exception is not reported here — see <see cref="PSXCore_GetExceptionRaised"/>.</returns>
     [LibraryImport(LibName)]

@@ -1,5 +1,5 @@
-//! PS1 SIO0 (controller / memory-card serial port) register-only model
-//! (Issue #542), migrated from the managed `PSXRecomp.Core.Runtime.Sio`
+//! PS1 SIO0 (controller / memory-card serial port) model. The register file
+//! (Issue #542) was migrated from the managed `PSXRecomp.Core.Runtime.Sio`
 //! model (`Sio0State`/`Sio0Device`/`Sio0MmioAdapter`) so the semantics are
 //! reachable from the production guest CPU load/store path
 //! (`crate::memory`), not only from the managed `MemoryBus` test/BIOS-HLE
@@ -7,11 +7,14 @@
 //! `0x1F801040-0x1F80105F` reached the native `PSXMemory` flat HW-register
 //! fallback store, never the managed device.
 //!
-//! Register-only, same scope as the managed model it replaces: no serial
-//! transfer / controller / memory-card protocol, no IRQ7 (Issue #543 tracks
-//! both as follow-up work). [`Sio0State::enqueue_received_byte`] is the seam
-//! a future transaction model will drive; nothing calls it in production
-//! yet, so it is `pub(crate)`, exercised only by this module's own tests.
+//! Issue #543 adds a minimal controller serial protocol on top of that
+//! register file: every port this component models is permanently empty
+//! (no host input integration, no memory-card protocol — see the module's
+//! non-goals below), so [`handle_data_write`] gives every transaction a
+//! deterministic "disconnected" response instead of undefined register
+//! state. [`Sio0State::enqueue_received_byte`] is the RX-FIFO seam that
+//! response is delivered through; it used to be `#[cfg(test)]`-only (Issue
+//! #542 modeled no transfer), and is now called from production.
 //!
 //! ## Ownership
 //!
@@ -52,6 +55,25 @@ const MODE_WRITE_MASK: u16 = 0x01FF;
 const CONTROL_STORE_MASK: u16 = 0x3FAF;
 /// SIO_CTRL.6: reset every SIO0 register to zero.
 const CONTROL_RESET_BIT: u16 = 0x0040;
+/// SIO_CTRL.1: `/JOYn` output (device select line). 1 = a device on this
+/// port is selected/clocked; 0 = deselected. Already part of
+/// `CONTROL_STORE_MASK` (Issue #542); Issue #543 gives this bit protocol
+/// meaning: a transaction only proceeds while it is set, and each edge
+/// starts a fresh transaction (see [`handle_control_write`]).
+const CONTROL_SELECT_BIT: u16 = 0x0002;
+
+/// The only controller command this component recognizes (`0x42`, "read
+/// pad", psx-spx / nocash PSX docs). Any other command byte is classified
+/// unrecognized (see [`Sio0State::last_command_recognized`]); the response
+/// byte is identical either way (see [`handle_data_write`]).
+const COMMAND_READ_PAD: u8 = 0x42;
+
+/// The byte a disconnected port's data line reads back for every
+/// transaction byte: real SIO0 hardware leaves the line pulled high when no
+/// device's `/ACK` drives it, so an empty port reads `0xFF` regardless of
+/// position or command (psx-spx "Controller/Memory Card protocol" —
+/// no-controller-connected behavior).
+const DISCONNECTED_RESPONSE_BYTE: u8 = 0xFF;
 
 /// SIO_STAT.0: TX ready flag 1 (TX latch free).
 const STATUS_TX_READY_1: u32 = 1 << 0;
@@ -75,6 +97,17 @@ pub struct Sio0State {
     rx_head: u8,
     rx_len: u8,
     last_rx_data: u8,
+    /// Bytes sent since the current selection edge (Issue #543); saturates,
+    /// since only 0 (address byte) and 1 (command byte) are inspected.
+    transfer_byte_index: u8,
+    /// Diagnostic (Issue #543 acceptance criteria): whether the transaction's
+    /// command byte (`transfer_byte_index == 1`) was [`COMMAND_READ_PAD`].
+    /// `true` before a command byte has been seen. Does not affect the
+    /// response byte — see [`handle_data_write`].
+    last_command_recognized: bool,
+    /// Unacknowledged "byte received" (IRQ7) latch (Issue #543), mirroring
+    /// `TimerChannel::irq_flag`'s edge-latch pattern.
+    irq_pending: bool,
 }
 
 impl Sio0State {
@@ -90,6 +123,9 @@ impl Sio0State {
             rx_head: 0,
             rx_len: 0,
             last_rx_data: 0,
+            transfer_byte_index: 0,
+            last_command_recognized: true,
+            irq_pending: false,
         }
     }
 
@@ -108,19 +144,24 @@ impl Sio0State {
         Some(value)
     }
 
-    /// Transaction-side seam (Issue #543): appends a received byte to the RX
-    /// FIFO. A byte arriving while the 8-byte FIFO is full is dropped.
-    /// Nothing calls this in production yet (no controller/memory-card
-    /// protocol is modeled); it exists so this module's tests can exercise
-    /// RX FIFO ordering/overflow the same way the managed model's own tests
-    /// did before this migration.
-    #[cfg(test)]
+    /// Transaction-side seam: appends a received byte to the RX FIFO. A byte
+    /// arriving while the 8-byte FIFO is full is dropped. Called from
+    /// production by [`handle_data_write`] (Issue #543); also exercised
+    /// directly by this module's own RX FIFO ordering/overflow tests.
     pub(crate) fn enqueue_received_byte(&mut self, value: u8) {
         if (self.rx_len as usize) < RX_FIFO_CAPACITY {
             let tail = (self.rx_head as usize + self.rx_len as usize) % RX_FIFO_CAPACITY;
             self.rx_fifo[tail] = value;
             self.rx_len += 1;
         }
+    }
+
+    /// Diagnostic accessor (Issue #543 acceptance criteria: an unrecognized
+    /// command must be classified explicitly, never silently guessed) for
+    /// this module's own tests; not part of any guest-visible register.
+    #[cfg(test)]
+    pub(crate) fn last_command_recognized(&self) -> bool {
+        self.last_command_recognized
     }
 }
 
@@ -180,20 +221,78 @@ pub fn read_register(state: &mut Sio0State, address: u32) -> u32 {
 /// `(byte)`/`(ushort)` truncations did.
 pub fn write_register(state: &mut Sio0State, address: u32, value: u32) {
     match address - PSX_SIO0_BASE {
-        OFFSET_DATA => state.tx_data = value as u8,
+        OFFSET_DATA => handle_data_write(state, value as u8),
         OFFSET_STATUS => {}
         OFFSET_MODE => state.mode = (value as u16) & MODE_WRITE_MASK,
-        OFFSET_CONTROL => {
-            let value = value as u16;
-            if value & CONTROL_RESET_BIT != 0 {
-                state.reset();
-            } else {
-                state.control = value & CONTROL_STORE_MASK;
-            }
-        }
+        OFFSET_CONTROL => handle_control_write(state, value as u16),
         OFFSET_BAUD => state.baud = value as u16,
         _ => {}
     }
+}
+
+/// SIO_DATA (TX) write: latches the byte (unchanged from Issue #542), then
+/// runs the minimal controller protocol (Issue #543) while the port is
+/// selected (`SIO_CTRL.1`, [`CONTROL_SELECT_BIT`]). Deselected, this is
+/// exactly Issue #542's behavior: a latch with no RX/IRQ side effect.
+fn handle_data_write(state: &mut Sio0State, byte: u8) {
+    state.tx_data = byte;
+    if state.control & CONTROL_SELECT_BIT == 0 {
+        return;
+    }
+
+    if state.transfer_byte_index == 1 {
+        state.last_command_recognized = byte == COMMAND_READ_PAD;
+    }
+    state.transfer_byte_index = state.transfer_byte_index.saturating_add(1);
+
+    // ponytail: every port this component models is permanently empty (no
+    // host input integration, no real pad/memory-card protocol — Issue
+    // #543 non-goals), so every transaction byte reads back the same fixed
+    // disconnected-slot value, regardless of position or command. Upgrade
+    // path: a real device model would branch here on port/command instead
+    // of always enqueueing DISCONNECTED_RESPONSE_BYTE.
+    state.enqueue_received_byte(DISCONNECTED_RESPONSE_BYTE);
+
+    // ponytail: this simplified model signals "byte received" (IRQ7) for
+    // every transaction byte, synchronously, rather than modeling the real
+    // `/ACK` pulse a physical device would drive (which, from an empty
+    // port, would mean IRQ7 never fires at all). That keeps "transfer
+    // complete" deterministic and testable without cycle-exact ACK timing
+    // (explicitly out of scope). Upgrade path: gate this on a modeled
+    // device's real ACK if/when a real controller protocol is added.
+    state.irq_pending = true;
+}
+
+/// SIO_CTRL write: the reset bit (unchanged from Issue #542) wins over
+/// everything else. Otherwise, stores the masked value and, on either edge
+/// of the select bit ([`CONTROL_SELECT_BIT`]), starts a fresh transaction
+/// (Issue #543): deselecting mid-transfer abandons it, and (re)selecting
+/// always begins counting bytes from 0, so a second transaction cannot
+/// observe stale byte-position/command state from the first.
+fn handle_control_write(state: &mut Sio0State, value: u16) {
+    if value & CONTROL_RESET_BIT != 0 {
+        state.reset();
+        return;
+    }
+
+    let was_selected = state.control & CONTROL_SELECT_BIT != 0;
+    state.control = value & CONTROL_STORE_MASK;
+    let is_selected = state.control & CONTROL_SELECT_BIT != 0;
+    if was_selected != is_selected {
+        state.transfer_byte_index = 0;
+        state.last_command_recognized = true;
+    }
+}
+
+/// Returns whether SIO0 has an unacknowledged "byte received" (IRQ7) latch
+/// (Issue #543).
+pub fn is_interrupt_pending(state: &Sio0State) -> bool {
+    state.irq_pending
+}
+
+/// Clears SIO0's "byte received" (IRQ7) latch (Issue #543).
+pub fn clear_interrupt_pending(state: &mut Sio0State) {
+    state.irq_pending = false;
 }
 
 #[cfg(test)]
@@ -345,5 +444,101 @@ mod tests {
         assert!(is_sio0_register(PSX_SIO0_BASE));
         assert!(is_sio0_register(PSX_SIO0_END - 1));
         assert!(!is_sio0_register(PSX_SIO0_END));
+    }
+
+    // Issue #543: minimal controller serial protocol (disconnected-pad response).
+
+    const SELECT: u32 = 0x0003; // TXEN | SIO_CTRL.1 (select)
+    const DESELECT: u32 = 0x0001; // TXEN only, deselected
+
+    #[test]
+    fn unselected_data_write_never_signals_irq_or_fills_rx() {
+        // Issue #542's original behavior, unchanged: with nothing selected,
+        // a TX write is a bare latch.
+        let mut s = Sio0State::power_on();
+        write_register(&mut s, DATA, COMMAND_READ_PAD as u32);
+        assert!(!is_interrupt_pending(&s));
+        assert_eq!(read_register(&mut s, STAT), IDLE_STATUS);
+    }
+
+    #[test]
+    fn disconnected_exchange_every_byte_reads_0xff_and_signals_irq_once_selected() {
+        let mut s = Sio0State::power_on();
+        write_register(&mut s, CTRL, SELECT);
+        assert!(!is_interrupt_pending(&s), "selecting alone must not signal a byte-received IRQ");
+
+        write_register(&mut s, DATA, 0x01); // address byte
+        assert!(is_interrupt_pending(&s));
+        assert_eq!(read_register(&mut s, STAT) & STATUS_RX_NOT_EMPTY, STATUS_RX_NOT_EMPTY);
+        clear_interrupt_pending(&mut s);
+        assert!(!is_interrupt_pending(&s));
+        assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
+        assert_eq!(read_register(&mut s, STAT), IDLE_STATUS, "RX-ready clears once the byte is read");
+
+        write_register(&mut s, DATA, COMMAND_READ_PAD as u32); // command byte
+        assert!(s.last_command_recognized());
+        assert!(is_interrupt_pending(&s));
+        assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
+    }
+
+    #[test]
+    fn unrecognized_command_is_classified_explicitly_but_response_is_unchanged() {
+        let mut s = Sio0State::power_on();
+        write_register(&mut s, CTRL, SELECT);
+
+        write_register(&mut s, DATA, 0x01); // address byte, never classified
+        assert!(s.last_command_recognized(), "the address byte alone must not flip the classification");
+
+        write_register(&mut s, DATA, 0x99); // unrecognized command
+        assert!(!s.last_command_recognized());
+
+        // Disconnected response never depends on recognition: nothing ever
+        // responds, known command or not.
+        assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
+        assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
+    }
+
+    #[test]
+    fn deselecting_mid_transaction_abandons_it_and_a_fresh_selection_starts_over() {
+        let mut s = Sio0State::power_on();
+        write_register(&mut s, CTRL, SELECT);
+        write_register(&mut s, DATA, 0x01); // byte 0 (address)
+        write_register(&mut s, DATA, 0x99); // byte 1 (command) -> unrecognized
+        assert!(!s.last_command_recognized());
+
+        write_register(&mut s, CTRL, DESELECT); // deselect: abandon the transaction
+        clear_interrupt_pending(&mut s);
+
+        write_register(&mut s, CTRL, SELECT); // reselect: fresh transaction
+        write_register(&mut s, DATA, 0x99); // byte 0 (address) of the NEW transaction
+        assert!(
+            s.last_command_recognized(),
+            "a fresh transaction must not inherit the previous one's classification"
+        );
+        write_register(&mut s, DATA, COMMAND_READ_PAD as u32); // byte 1 (command)
+        assert!(s.last_command_recognized());
+    }
+
+    #[test]
+    fn repeated_transaction_after_reset_behaves_identically() {
+        fn run_transaction(s: &mut Sio0State) -> (u32, u32, bool) {
+            write_register(s, CTRL, SELECT);
+            write_register(s, DATA, 0x01);
+            let first = read_register(s, DATA);
+            write_register(s, DATA, COMMAND_READ_PAD as u32);
+            let second = read_register(s, DATA);
+            let recognized = s.last_command_recognized();
+            write_register(s, CTRL, CONTROL_RESET_BIT as u32); // full reset between polls
+            (first, second, recognized)
+        }
+
+        let mut s = Sio0State::power_on();
+        let a = run_transaction(&mut s);
+        let b = run_transaction(&mut s);
+        assert_eq!(a, b);
+        assert_eq!(
+            a,
+            (DISCONNECTED_RESPONSE_BYTE as u32, DISCONNECTED_RESPONSE_BYTE as u32, true)
+        );
     }
 }

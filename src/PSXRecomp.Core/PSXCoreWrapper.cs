@@ -250,6 +250,20 @@ public sealed class PSXCoreWrapper : IDisposable
         NativeInterop.PSXCore_ResetInterruptController(_handle);
     }
 
+    /// <summary>Returns whether SIO0 has an unacknowledged "byte received" (IRQ7) latch (Issue #543).</summary>
+    public bool GetSio0InterruptPending()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetSio0InterruptPending(_handle) != 0;
+    }
+
+    /// <summary>Acknowledges/clears SIO0's pending "byte received" (IRQ7) latch.</summary>
+    public void ClearSio0Interrupt()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_ClearSio0Interrupt(_handle);
+    }
+
     // Instruction execution
 
     /// <summary>Executes a single instruction, honoring branch/load-delay slot semantics (ADR-004/005).</summary>

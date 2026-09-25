@@ -188,9 +188,11 @@ public class Sio0CpuEndToEndTests : IDisposable
     [Fact]
     public void Data_SbThenLb_DoesNotObserveTheJustWrittenTxByte()
     {
-        // No serial transfer is modeled (Issue #543): SIO_DATA reads RX, and
-        // a TX write never fills RX, so the byte just written is never read
-        // back and SIO_STAT stays idle.
+        // SIO_CTRL is still 0 (deselected) here, so Issue #543's protocol
+        // never engages: SIO_DATA reads RX, and an unselected TX write never
+        // fills RX, so the byte just written is never read back and
+        // SIO_STAT stays idle. See the SelectedTransaction_* tests below for
+        // the selected/protocol-engaged behavior.
         Run(
             Ori(T1, Zero, 0x0042),
             Sb(T1, T0, (ushort)DataOffset),
@@ -292,5 +294,112 @@ public class Sio0CpuEndToEndTests : IDisposable
 
         Run(Lw(T2, T0, (ushort)StatusOffset));
         _core.GetGpr(T2).Should().Be(IdleStatus);
+    }
+
+    // Issue #543: minimal controller serial protocol (disconnected-pad response),
+    // driven through the same real CPU Step()/PSXMemory production path as above.
+
+    private const ushort CtrlSelect = 0x0003; // TXEN | SIO_CTRL.1 (select)
+    private const ushort CtrlDeselect = 0x0001; // TXEN only, deselected
+    private const ushort CtrlResetBit = 0x0040;
+
+    [Fact]
+    public void SelectedTransaction_DisconnectedResponse_ReadsFFForEveryByte_ThroughCpuLoadsAndStores()
+    {
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001), // address byte
+            Sb(T1, T0, (ushort)DataOffset),
+            Lw(T2, T0, (ushort)StatusOffset));
+        (_core.GetGpr(T2) & 0x2).Should().NotBe(0u, "the disconnected-slot response byte must land in the RX FIFO");
+
+        Run(Lbu(T2, T0, (ushort)DataOffset));
+        _core.GetGpr(T2).Should().Be(0xFFu, "a disconnected port reads back 0xFF (Issue #543)");
+
+        Run(
+            Ori(T1, Zero, 0x0042), // command byte (recognized: read pad)
+            Sb(T1, T0, (ushort)DataOffset),
+            Lbu(T2, T0, (ushort)DataOffset));
+        _core.GetGpr(T2).Should().Be(0xFFu, "the command byte's response is the same fixed disconnected value, known command or not");
+    }
+
+    [Fact]
+    public void SelectedTransaction_SignalsSio0InterruptPending_UntilClearedThroughPSXCoreWrapper()
+    {
+        _core.GetSio0InterruptPending().Should().BeFalse();
+
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset));
+        _core.GetSio0InterruptPending().Should().BeFalse("selecting alone must not signal a byte-received IRQ");
+
+        Run(
+            Ori(T1, Zero, 0x0001),
+            Sb(T1, T0, (ushort)DataOffset));
+        _core.GetSio0InterruptPending().Should().BeTrue("a transaction byte was transferred while selected");
+
+        _core.ClearSio0Interrupt();
+        _core.GetSio0InterruptPending().Should().BeFalse();
+    }
+
+    [Fact]
+    public void UnselectedDataWrite_NeverSignalsSio0InterruptPending()
+    {
+        Run(
+            Ori(T1, Zero, 0x0042),
+            Sb(T1, T0, (ushort)DataOffset));
+        _core.GetSio0InterruptPending().Should().BeFalse("SIO_CTRL is still 0 (deselected)");
+    }
+
+    [Fact]
+    public void RepeatedTransactionAfterCtrlReset_SignalsIrqAgain_ThroughCpuLoadsAndStores()
+    {
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001),
+            Sb(T1, T0, (ushort)DataOffset));
+        _core.GetSio0InterruptPending().Should().BeTrue();
+        _core.ClearSio0Interrupt();
+
+        Run(
+            Ori(T1, Zero, CtrlResetBit),
+            Sh(T1, T0, (ushort)ControlOffset)); // full register reset between polls
+        _core.GetSio0InterruptPending().Should().BeFalse();
+
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001),
+            Sb(T1, T0, (ushort)DataOffset),
+            Lbu(T2, T0, (ushort)DataOffset));
+        _core.GetGpr(T2).Should().Be(0xFFu);
+        _core.GetSio0InterruptPending().Should().BeTrue("the second transaction must signal its own byte-received IRQ");
+    }
+
+    [Fact]
+    public void Deselecting_ThenReselecting_SignalsAFreshIrqForTheNewTransaction()
+    {
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001),
+            Sb(T1, T0, (ushort)DataOffset));
+        _core.ClearSio0Interrupt();
+
+        Run(
+            Ori(T1, Zero, CtrlDeselect),
+            Sh(T1, T0, (ushort)ControlOffset)); // deselect: abandon the transaction
+        _core.GetSio0InterruptPending().Should().BeFalse("deselecting alone must not itself signal an IRQ");
+
+        Run(
+            Ori(T1, Zero, CtrlSelect),
+            Sh(T1, T0, (ushort)ControlOffset),
+            Ori(T1, Zero, 0x0001),
+            Sb(T1, T0, (ushort)DataOffset),
+            Lbu(T2, T0, (ushort)DataOffset));
+        _core.GetGpr(T2).Should().Be(0xFFu);
+        _core.GetSio0InterruptPending().Should().BeTrue("the reselected transaction signals its own IRQ");
     }
 }

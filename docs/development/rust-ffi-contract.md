@@ -289,26 +289,39 @@ nullable, and an unattached controller falls back to the flat HW-register
 store, exactly as before. A timer read can mutate `*timers` (reading MODE
 clears its target/overflow flags), matching the pre-migration behavior.
 
-SIO0 (Issue #542, fixed for production reachability by a CodeRabbit finding
-on PR #548) is serviced the same way but is not threaded through a
+SIO0 (register file: Issue #542, fixed for production reachability by a
+CodeRabbit finding on PR #548; minimal controller serial protocol: Issue
+#543) is serviced the same way but is not threaded through a
 `PSXMemory::AttachControllers` pointer: `rust/src/sio0.rs`'s `Sio0State` is a
 field owned directly by `PsxMemory` (see its module documentation), because —
-unlike DMA/Timer/Interrupt — nothing else in native code needs to observe or
-drive SIO0 state in this scope (no controller/memory-card protocol, no IRQ7).
-`memory.rs`'s `read{8,16,32}`/`write{8,16,32}` dispatch a SIO0-range address to
+unlike DMA/Timer/Interrupt — nothing else in native code needs to *drive*
+SIO0 state (no `PSXCore`-owned pointer, no `AttachControllers` change). It
+does now raise an interrupt (IRQ7, "byte received"), but through a poll/clear
+pair at the `PsxMemory` handle boundary — `psx_memory_get_sio0_interrupt_pending`/
+`psx_memory_clear_sio0_interrupt`, wrapped by `PSXMemory::GetSio0InterruptPending`/
+`ClearSio0Interrupt` in `psx_memory.h` — the same shape
+`psx_dma_get_interrupt_pending`/`psx_timer_get_interrupt_pending` already use,
+not a shared `PSXInterruptState*` pointer. `memory.rs`'s
+`read{8,16,32}`/`write{8,16,32}` dispatch a SIO0-range address to
 `crate::sio0::read_register`/`write_register` at the exact address requested
 (not word-realigned like the DMA/Timer/Interrupt dispatch), matching the
 managed `Sio0MmioAdapter`/`Ps1MemoryMap.GetSio0RegisterType` semantics it
-replaced byte-for-byte. `sio0.rs`'s functions are not `extern "C"` and add no
-new FFI surface: they are plain same-crate Rust calls from `memory.rs`, so
-this fix needed no `PSXMemory::AttachControllers` signature change, no
-`include/psx_core.h` / `NativeInterop.cs` change, and no `ABI_VERSION` bump.
-The managed `Sio0State`/`Sio0Device`/`Sio0MmioAdapter` classes this replaced
-were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case now calls
+replaced byte-for-byte. `sio0.rs`'s register-file functions are not
+`extern "C"` and add no new FFI surface: they are plain same-crate Rust calls
+from `memory.rs`. The two new SIO0-interrupt exports *are* `extern "C"`
+(`PSXCore_GetSio0InterruptPending`/`PSXCore_ClearSio0Interrupt` P/Invoke
+them), added to `include/psx_core.h`/`NativeInterop.cs` — new exports, not a
+changed signature on an existing one, so no `ABI_VERSION` bump (§1). The
+managed `Sio0State`/`Sio0Device`/`Sio0MmioAdapter` classes Issue #542's fix
+replaced were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case calls
 `PSXCoreWrapper.ReadMemory32`/`WriteMemory32` — the same native entry point
 the guest CPU's `LW`/`SW` use — instead of a managed adapter, so there is a
 single SSOT reachable from both the managed test/BIOS-HLE seam and the
-production CPU path.
+production CPU path. `PSXRecomp.Core.Runtime.DeviceScheduler.Advance` polls
+`GetSio0InterruptPending`/clears/raises `IRQ7`, in the same fixed stage order
+as Timer/DMA, after ticking DMA and before VBlank; unlike Timer/DMA this
+stage needs no `Tick` call first, since SIO0 has no clock of its own — it is
+purely event-driven off `SIO_DATA` writes.
 
 Every read/write export takes the handle and (for the HW-register window) up
 to three raw, independently-nullable controller-state pointers, so — unlike

@@ -117,6 +117,11 @@ PSX_API void     PSXCore_ClearInterrupt(PSXCore* core, int irq);
 /** Resets the interrupt controller (I_STAT/I_MASK) to its power-on state. */
 PSX_API void     PSXCore_ResetInterruptController(PSXCore* core);
 
+/** Returns non-zero when SIO0 has an unacknowledged "byte received" (IRQ7) latch (Issue #543). */
+PSX_API int      PSXCore_GetSio0InterruptPending(PSXCore* core);
+/** Acknowledges/clears SIO0's pending "byte received" (IRQ7) latch. */
+PSX_API void     PSXCore_ClearSio0Interrupt(PSXCore* core);
+
 /**
  * Executes a single instruction, honoring branch/load-delay slot semantics.
  * Returns zero when the step was taken, or a negative status when `core` is NULL.

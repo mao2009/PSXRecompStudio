@@ -66,6 +66,15 @@ uint8_t psx_memory_read8(PsxMemoryHandle* mem, uint32_t address,
                           PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
 void psx_memory_write8(PsxMemoryHandle* mem, uint32_t address, uint8_t value,
                         PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
+
+// SIO0's minimal controller serial protocol (Issue #543). Unlike
+// DMA/Timer/Interrupt, this state is owned inline by PsxMemoryHandle (see
+// sio0.rs's module documentation), so there is no separate PSXSio0State to
+// pass in here: these two functions poll/clear the "byte received" (IRQ7)
+// latch straight off the handle, the same polling boundary
+// psx_dma_get_interrupt_pending/psx_timer_get_interrupt_pending use.
+uint8_t psx_memory_get_sio0_interrupt_pending(const PsxMemoryHandle* mem);
+void psx_memory_clear_sio0_interrupt(PsxMemoryHandle* mem);
 }
 
 class PSXMemory {
@@ -102,6 +111,12 @@ public:
     void Write16(uint32_t address, uint16_t value);
     uint8_t Read8(uint32_t address);
     void Write8(uint32_t address, uint8_t value);
+
+    // SIO0 controller serial protocol (Issue #543): whether a "byte
+    // received" (IRQ7) is pending, and clearing it. Polled the same way
+    // Timer/DMA interrupts are (see DeviceScheduler.Advance).
+    bool GetSio0InterruptPending() const;
+    void ClearSio0Interrupt();
 
 private:
     PsxMemoryHandle* handle_;
@@ -155,4 +170,12 @@ inline uint8_t PSXMemory::Read8(uint32_t address) {
 
 inline void PSXMemory::Write8(uint32_t address, uint8_t value) {
     psx_memory_write8(handle_, address, value, dma_, timers_, interrupts_);
+}
+
+inline bool PSXMemory::GetSio0InterruptPending() const {
+    return psx_memory_get_sio0_interrupt_pending(handle_) != 0;
+}
+
+inline void PSXMemory::ClearSio0Interrupt() {
+    psx_memory_clear_sio0_interrupt(handle_);
 }

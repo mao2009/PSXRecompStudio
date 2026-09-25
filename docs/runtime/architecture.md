@@ -58,7 +58,7 @@ public interface IHardwareComponent
 | Interrupt Controller | IInterruptController | 0x1F801070-0x1F801074 | Central |
 | DMA Controller | IDmaController | 0x1F801080-0x1F8010FF | IRQ3 |
 | Timer 0-2 | ITimer | 0x1F801100-0x1F801128 | IRQ4-6 |
-| Controller/MemCard | native/Rust `crate::sio0` (register model only, Issue #542) | 0x1F801040-0x1F80105E | IRQ7 (interface only, never driven) |
+| Controller/MemCard | native/Rust `crate::sio0` (register model, Issue #542; minimal disconnected-pad protocol, Issue #543) | 0x1F801040-0x1F80105E | IRQ7 (byte received; driven for the disconnected-slot protocol only) |
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
 | MDEC | IMdec | 0x1F801820-0x1F801824 | None |
@@ -68,12 +68,25 @@ public interface IHardwareComponent
 
 The Controller/MemCard row is SIO0. `crate::sio0` (native Rust, owned inline
 by `PsxMemory`; see `docs/development/rust-ffi-contract.md`'s "Guest memory
-(#492)" section) implements only the guest-visible register file:
-deterministic SIO_DATA/SIO_STAT/SIO_MODE/SIO_CTRL/SIO_BAUD read/write
-semantics and a fixed idle value for reserved addresses in the window. No
-serial transfer or controller/memory-card protocol is modeled, so no byte
-ever reaches the RX FIFO in production and IRQ7 is never raised; that is
-tracked separately as a child of #443.
+(#492)" section) implements the guest-visible register file: deterministic
+SIO_DATA/SIO_STAT/SIO_MODE/SIO_CTRL/SIO_BAUD read/write semantics and a fixed
+idle value for reserved addresses in the window.
+
+On top of that register file, Issue #543 adds a minimal controller serial
+protocol: while a port is selected (`SIO_CTRL.1`), every transaction byte
+written to SIO_DATA gets a deterministic disconnected-slot response
+(`0xFF` — no device's `/ACK` ever drives the line low, matching real SIO0
+hardware with nothing connected) queued into the RX FIFO, and signals IRQ7
+("byte received"). This is not real hardware ACK timing (out of scope): the
+model treats each transfer as instantaneous and always signals completion,
+so IRQ7 fires for every transaction byte while selected, not only when a
+real device would pull `/ACK` low. There is still no controller/memory-card
+*transaction* protocol (DualShock/analog, memory-card read/write, multitap)
+and no real host controller input reaches this component — both remain
+tracked as a child of #443. `PSXRecomp.Core.Runtime.DeviceScheduler.Advance`
+delivers IRQ7 the same way it delivers Timer/DMA interrupts: it polls
+`PSXCoreWrapper.GetSio0InterruptPending`, clears it, and raises IRQ7 on the
+interrupt controller.
 
 SIO0 was originally a pure managed model (`Sio0Device`/`Sio0State`/
 `Sio0MmioAdapter`, the GPU precedent, ADR-022), reachable only through the
