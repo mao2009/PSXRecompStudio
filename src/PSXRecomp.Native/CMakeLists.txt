@@ -80,6 +80,15 @@ add_custom_command(
             ${PSX_RUST_DIR}/src/cpu_hilo.rs
             ${PSX_RUST_DIR}/src/dma.rs
             ${PSX_RUST_DIR}/src/memory.rs
+            # PSXCpu migration slots, pre-registered once (Issue #524) so the
+            # per-slice PRs (#525-#531) never edit this list.
+            ${PSX_RUST_DIR}/src/cpu_decode.rs
+            ${PSX_RUST_DIR}/src/cpu_control.rs
+            ${PSX_RUST_DIR}/src/cpu_memory_access.rs
+            ${PSX_RUST_DIR}/src/cpu_unaligned.rs
+            ${PSX_RUST_DIR}/src/cpu_cop0.rs
+            ${PSX_RUST_DIR}/src/cpu_exception.rs
+            ${PSX_RUST_DIR}/src/cpu_pipeline.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
