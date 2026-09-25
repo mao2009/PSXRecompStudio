@@ -25,9 +25,15 @@ public sealed class DeviceSchedulerTests : IDisposable
     private const uint ChcrStartTrigger = 0x11000000u;
     private const uint ChcrBusy = 1u << 24;
 
+    private const uint Sio0Base = 0x1F801040u;
+    private const uint Sio0Data = Sio0Base + 0x00;
+    private const uint Sio0Control = Sio0Base + 0x0A;
+    private const ushort Sio0CtrlSelect = 0x0003; // TXEN | SIO_CTRL.1 (select)
+
     private const uint VblankBit = 1u << DeviceScheduler.VblankIrq;
     private const uint DmaBit = 1u << DeviceScheduler.DmaIrq;
     private const uint Timer2Bit = 1u << (DeviceScheduler.Timer0Irq + 2);
+    private const uint Sio0Bit = 1u << DeviceScheduler.Sio0Irq;
 
     private readonly PSXCoreWrapper _core = new();
     private readonly InterruptControllerMmioAdapter _interrupts;
@@ -132,6 +138,23 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void Sio0ByteReceived_RaisesIrq7OnTheNextAdvance()
+    {
+        // Issue #543: SIO0 has no clock of its own, so a 1-cycle Advance is
+        // enough for the scheduler to notice a byte the guest already
+        // transferred (unlike Timer/DMA, which need cycles to elapse).
+        _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
+        _core.WriteMemory8(Sio0Data, 0x01);
+
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(Sio0Bit);
+
+        _interrupts.Acknowledge(~Sio0Bit);
+        _scheduler.Advance(100);
+        _interrupts.Status.Should().Be(0u, "the latch was already delivered and cleared; nothing re-raises it");
+    }
+
+    [Fact]
     public void Vblank_RaisesIrq0AtEachIntervalBoundary()
     {
         _scheduler.Advance(DeviceScheduler.VblankIntervalCycles - 1);
@@ -160,17 +183,19 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenVblank()
+    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenSio0ThenVblank()
     {
         var recorder = new RecordingInterrupts(_interrupts);
         var scheduler = new DeviceScheduler(_core, recorder);
         ArmTimer2(target: 100, ModeIrqOnTarget);
         ArmOtc(words: 8, irqEnabled: true);
+        _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
+        _core.WriteMemory8(Sio0Data, 0x01);
 
         scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
 
         recorder.Raised.Should().Equal(
-            DeviceScheduler.Timer0Irq + 2, DeviceScheduler.DmaIrq, DeviceScheduler.VblankIrq);
+            DeviceScheduler.Timer0Irq + 2, DeviceScheduler.DmaIrq, DeviceScheduler.Sio0Irq, DeviceScheduler.VblankIrq);
     }
 
     private void ArmTimer2(uint target, uint mode)

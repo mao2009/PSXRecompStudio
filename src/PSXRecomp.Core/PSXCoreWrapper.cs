@@ -250,6 +250,34 @@ public sealed class PSXCoreWrapper : IDisposable
         NativeInterop.PSXCore_ResetInterruptController(_handle);
     }
 
+    /// <summary>Returns whether SIO0 has an unacknowledged "byte received" (IRQ7) latch (Issue #543).</summary>
+    public bool GetSio0InterruptPending()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetSio0InterruptPending(_handle) != 0;
+    }
+
+    /// <summary>Acknowledges/clears SIO0's pending "byte received" (IRQ7) latch.</summary>
+    public void ClearSio0Interrupt()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_ClearSio0Interrupt(_handle);
+    }
+
+    /// <summary>SIO0's last-transaction command classification (Issue #543): 0 = no command byte seen since the last transaction reset, 1 = recognized (the one supported command), 2 = unsupported/unrecognized.</summary>
+    public uint GetSio0CommandStatus()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetSio0CommandStatus(_handle);
+    }
+
+    /// <summary>The command byte last classified unsupported (Issue #543); only meaningful when <see cref="GetSio0CommandStatus"/> returns 2.</summary>
+    public byte GetSio0LastCommandByte()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return (byte)NativeInterop.PSXCore_GetSio0LastCommandByte(_handle);
+    }
+
     // Instruction execution
 
     /// <summary>Executes a single instruction, honoring branch/load-delay slot semantics (ADR-004/005).</summary>
