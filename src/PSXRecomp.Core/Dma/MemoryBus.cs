@@ -53,6 +53,9 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var region = Ps1MemoryMap.ClassifyRegion(address);
+        if (region == MemoryRegionClass.HardwareRegisters &&
+            MmioRoute.Resolve(address).Target == MmioTarget.Spu)
+            return _core.ReadMemory16(address);
         if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
             return (ushort)(Read(address) & 0xFFFF);
         uint word = ReadWord(address & ~3u);
@@ -65,7 +68,10 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
         var region = Ps1MemoryMap.ClassifyRegion(address);
         if (region == MemoryRegionClass.HardwareRegisters)
         {
-            WriteMmio(address, value);
+            if (MmioRoute.Resolve(address).Target == MmioTarget.Spu)
+                _core.WriteMemory16(address, value);
+            else
+                WriteMmio(address, value);
             return;
         }
         if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
@@ -80,6 +86,9 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var region = Ps1MemoryMap.ClassifyRegion(address);
+        if (region == MemoryRegionClass.HardwareRegisters &&
+            MmioRoute.Resolve(address).Target == MmioTarget.Spu)
+            return _core.ReadMemory8(address);
         if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
             return (byte)(Read(address) & 0xFF);
         uint word = ReadWord(address & ~3u);
@@ -92,7 +101,10 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
         var region = Ps1MemoryMap.ClassifyRegion(address);
         if (region == MemoryRegionClass.HardwareRegisters)
         {
-            WriteMmio(address, value);
+            if (MmioRoute.Resolve(address).Target == MmioTarget.Spu)
+                _core.WriteMemory8(address, value);
+            else
+                WriteMmio(address, value);
             return;
         }
         if (region is not (MemoryRegionClass.Ram or MemoryRegionClass.Scratchpad))
@@ -193,6 +205,10 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
             MmioTarget.Timer => _timerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.InterruptController => _interruptControllerAdapter?.ReadRegister(address) ?? 0,
             MmioTarget.Gpu => _gpuAdapter?.ReadRegister(address) ?? 0,
+            // SPU register semantics are native/Rust-owned (Issue #445).
+            // Width-specific Read8/Read16 paths above preserve the guest access
+            // width; this is the aligned 32-bit path used by Read()/Read32().
+            MmioTarget.Spu => _core.ReadMemory32(address),
             // SIO0 register semantics are native/Rust-owned (Issue #542 /
             // CodeRabbit finding on PR #548): route straight to the same
             // psx_memory_read32 the guest CPU's LW/LH/LB use, instead of a
@@ -218,6 +234,9 @@ public sealed class MemoryBus : IMemoryBus, IDisposable
                 break;
             case MmioTarget.Gpu:
                 _gpuAdapter?.WriteRegister(address, value);
+                break;
+            case MmioTarget.Spu:
+                _core.WriteMemory32(address, value);
                 break;
             case MmioTarget.Sio0:
                 _core.WriteMemory32(address, value);

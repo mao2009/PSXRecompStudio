@@ -18,6 +18,7 @@ public readonly struct MmioRoute
     public InterruptControllerRegisterType InterruptControllerRegisterType { get; init; }
     public GpuRegisterType GpuRegisterType { get; init; }
     public Sio0RegisterType Sio0RegisterType { get; init; }
+    public SpuRegisterType SpuRegisterType { get; init; }
 
     public static MmioRoute Unmapped => new() { Target = MmioTarget.None };
 
@@ -81,6 +82,14 @@ public readonly struct MmioRoute
             Offset = offset,
         };
 
+    public static MmioRoute ForSpu(SpuRegisterType registerType, uint offset) =>
+        new()
+        {
+            Target = MmioTarget.Spu,
+            SpuRegisterType = registerType,
+            Offset = offset,
+        };
+
     public static MmioRoute Resolve(uint address)
     {
         // Every address in the SIO0 window routes to the SIO0 adapter, including
@@ -94,6 +103,14 @@ public readonly struct MmioRoute
             if (_gpuType == GpuRegisterType.None)
                 return Unmapped;
             return ForGpu(_gpuType, address - Ps1MemoryMap.GpuPort);
+        }
+
+        if (Ps1MemoryMap.IsSpuRegister(address))
+        {
+            var _spuType = Ps1MemoryMap.GetSpuRegisterType(address);
+            if (_spuType == SpuRegisterType.None)
+                return Unmapped;
+            return ForSpu(_spuType, address - Ps1MemoryMap.SpuBase);
         }
 
         if (Ps1MemoryMap.IsInterruptControllerRegister(address))
@@ -145,4 +162,5 @@ public enum MmioTarget
     InterruptController,
     Gpu,
     Sio0,
+    Spu,
 }

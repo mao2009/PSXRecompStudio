@@ -81,6 +81,7 @@ add_custom_command(
             ${PSX_RUST_DIR}/src/dma.rs
             ${PSX_RUST_DIR}/src/memory.rs
             ${PSX_RUST_DIR}/src/sio0.rs
+            ${PSX_RUST_DIR}/src/spu.rs
             # PSXCpu migration slots, pre-registered once (Issue #524) so the
             # per-slice PRs (#525-#531) never edit this list.
             ${PSX_RUST_DIR}/src/cpu_decode.rs

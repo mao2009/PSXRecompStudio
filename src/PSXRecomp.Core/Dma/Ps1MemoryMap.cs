@@ -47,6 +47,13 @@ public static class Ps1MemoryMap
     public const uint GpuStatusPort = 0x1F801814; // GP1 (write) / GPUSTAT (read)
     public const uint GpuPortEnd = GpuPort + 0x10; // 0x1F801818/0x1F80181C mirror 0x1F801810/0x1F801814
 
+    // SPU register window (Issue #445). Canonical registers are 16-bit:
+    // 24 voice blocks, global/control registers, then reverb registers.
+    public const uint SpuBase = 0x1F801C00;
+    public const uint SpuEnd = 0x1F801E00;
+    public const uint SpuVoiceEnd = SpuBase + 0x180;
+    public const uint SpuControlEnd = SpuBase + 0x1C0;
+
     // SIO0 (controller / memory card serial port), Issue #542. The routed window
     // is 0x1F801040-0x1F80105F; only the five named registers below carry state.
     public const uint Sio0Base = 0x1F801040;
@@ -56,6 +63,20 @@ public static class Ps1MemoryMap
     public const uint Sio0ModeOffset = 0x08;
     public const uint Sio0ControlOffset = 0x0A;
     public const uint Sio0BaudOffset = 0x0E;
+
+    public static bool IsSpuRegister(uint address) =>
+        address >= SpuBase && address < SpuEnd;
+
+    public static SpuRegisterType GetSpuRegisterType(uint address)
+    {
+        if (!IsSpuRegister(address))
+            return SpuRegisterType.None;
+        if (address < SpuVoiceEnd)
+            return SpuRegisterType.Voice;
+        return address < SpuControlEnd
+            ? SpuRegisterType.Control
+            : SpuRegisterType.Reverb;
+    }
 
     public static bool IsSio0Register(uint address) =>
         address >= Sio0Base && address < Sio0End;
@@ -246,6 +267,20 @@ public enum Sio0RegisterType
     Control,
     Baud,
     Reserved,
+}
+
+/// <summary>
+/// SPU register category (Issue #445). All addresses in the 512-byte window
+/// are routed to the Rust-owned register store; the categories describe the
+/// hardware grouping only and do not imply audio synthesis side effects.
+/// </summary>
+[Domain]
+public enum SpuRegisterType
+{
+    None = 0,
+    Voice,
+    Control,
+    Reverb,
 }
 
 /// <summary>
