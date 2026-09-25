@@ -74,8 +74,22 @@ add_custom_command(
     # manifest path, so the pin only applies when cargo runs inside the crate.
     WORKING_DIRECTORY ${PSX_RUST_DIR}
     DEPENDS ${PSX_RUST_DIR}/src/lib.rs
+            ${PSX_RUST_DIR}/src/cpu_alu.rs
             ${PSX_RUST_DIR}/src/interrupt.rs
+            ${PSX_RUST_DIR}/src/cpu_ops.rs
+            ${PSX_RUST_DIR}/src/cpu_hilo.rs
             ${PSX_RUST_DIR}/src/dma.rs
+            ${PSX_RUST_DIR}/src/memory.rs
+            ${PSX_RUST_DIR}/src/sio0.rs
+            # PSXCpu migration slots, pre-registered once (Issue #524) so the
+            # per-slice PRs (#525-#531) never edit this list.
+            ${PSX_RUST_DIR}/src/cpu_decode.rs
+            ${PSX_RUST_DIR}/src/cpu_control.rs
+            ${PSX_RUST_DIR}/src/cpu_memory_access.rs
+            ${PSX_RUST_DIR}/src/cpu_unaligned.rs
+            ${PSX_RUST_DIR}/src/cpu_cop0.rs
+            ${PSX_RUST_DIR}/src/cpu_exception.rs
+            ${PSX_RUST_DIR}/src/cpu_pipeline.rs
             ${PSX_RUST_DIR}/Cargo.toml
             ${PSX_RUST_DIR}/Cargo.lock
             ${PSX_RUST_DIR}/rust-toolchain.toml
@@ -84,9 +98,22 @@ add_custom_command(
 )
 add_custom_target(psx_rust_substrate DEPENDS ${PSX_RUST_STATICLIB})
 
+# PSXCpu translation units, one per Rust migration slice (Issue #524). Shared
+# by the library and the native test executable.
+set(PSX_CPU_SOURCES
+    src/psx_cpu.cpp
+    src/psx_cpu_decode.cpp
+    src/psx_cpu_control.cpp
+    src/psx_cpu_memory_access.cpp
+    src/psx_cpu_unaligned.cpp
+    src/psx_cpu_cop0.cpp
+    src/psx_cpu_exception.cpp
+    src/psx_cpu_pipeline.cpp
+)
+
 add_library(PSXRecomp.Native SHARED
     src/psx_api.cpp
-    src/psx_cpu.cpp
+    ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     src/psx_rust_abi.cpp
 )
@@ -100,6 +127,21 @@ if(UNIX)
     # the archive's objects.
     find_package(Threads REQUIRED)
     target_link_libraries(PSXRecomp.Native PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
+if(WIN32)
+    # `cargo rustc -- --print native-static-libs` for the staticlib reports
+    # these system libraries (Issue #492's heap-allocating memory.rs module
+    # pulls in more of std than the previous POD-only DMA/Timer/Interrupt
+    # modules did, which is what first surfaced this). A `staticlib` archive
+    # carries no linker-flag metadata the way `cargo build`'s own rustc
+    # invocation would auto-apply for an executable/cdylib, so the consuming
+    # CMake target must list them explicitly. This applies to both Windows
+    # toolchains this project builds with (MinGW/GCC and MSVC, the CI
+    # `native-windows` job's default generator): the required Windows API
+    # surface (Winsock, userenv, ntdll, dbghelp) is the same either way, and
+    # CMake resolves the plain names to each toolchain's own import library.
+    target_link_libraries(PSXRecomp.Native PRIVATE ws2_32 userenv dbghelp ntdll)
 endif()
 
 target_include_directories(PSXRecomp.Native
@@ -129,9 +171,18 @@ endif()
 
 enable_testing()
 add_executable(psx_native_tests
-    src/psx_cpu.cpp
+    ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     tests/test_psx_core.cpp
+    # Per-slice PSXCpu migration tests (Issue #524); each exposes one runner
+    # that test_psx_core.cpp's main() calls.
+    tests/test_psx_cpu_decode_rust.cpp
+    tests/test_psx_cpu_control_rust.cpp
+    tests/test_psx_cpu_memory_access_rust.cpp
+    tests/test_psx_cpu_unaligned_rust.cpp
+    tests/test_psx_cpu_cop0_rust.cpp
+    tests/test_psx_cpu_exception_rust.cpp
+    tests/test_psx_cpu_pipeline_rust.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)
 target_link_libraries(psx_native_tests PRIVATE PSXRecomp.Native)
@@ -143,5 +194,8 @@ add_dependencies(psx_native_tests psx_rust_substrate)
 target_link_libraries(psx_native_tests PRIVATE ${PSX_RUST_STATICLIB})
 if(UNIX)
     target_link_libraries(psx_native_tests PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(psx_native_tests PRIVATE ws2_32 userenv dbghelp ntdll)
 endif()
 add_test(NAME psx_native_tests COMMAND psx_native_tests)

@@ -216,7 +216,7 @@ public static class MipsToIrLowerer
     /// <para>
     /// The R3000A commits a load into its target register at the retirement point
     /// of the following instruction (<c>UpdateLoadDelay</c> in
-    /// <c>src/PSXRecomp.Native/src/psx_cpu.cpp</c>), so that instruction reads the
+    /// <c>src/PSXRecomp.Native/src/psx_cpu_pipeline.cpp</c>), so that instruction reads the
     /// pre-load value. The fused block reproduces that ordering literally: the
     /// load's access, then the observer's operations, then the commit. When the
     /// observer itself writes the target register the commit is <em>omitted</em>,

@@ -153,7 +153,7 @@ program still serializes identically.
 
 The R3000A load delay (ADR-004) is real and the native interpreter implements
 it: a load's target register keeps its previous value for exactly one
-instruction. `PSXCpu::UpdateLoadDelay` (`src/PSXRecomp.Native/src/psx_cpu.cpp`)
+instruction. `PSXCpu::UpdateLoadDelay` (`src/PSXRecomp.Native/src/psx_cpu_pipeline.cpp`)
 is the SSOT — the pending value commits at the **retirement point of the
 following instruction**, and a write to the same register during that
 instruction cancels it.

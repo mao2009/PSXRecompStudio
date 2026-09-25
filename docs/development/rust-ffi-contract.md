@@ -263,6 +263,180 @@ The DICR bit layout (flags 0–6, enables 24–30) is the one migrated from the 
 controller; psx-spx places enables at 16–22 and flags at 24–30. Reconciling it
 is a separate change, since it alters guest-visible register semantics.
 
+### Guest memory (#492)
+
+`rust/src/memory.rs` implements `PSXMemory`'s RAM/scratchpad/BIOS/HW-register
+storage and address decode (2 MiB RAM + its low-8-MiB mirror, the 1 KiB
+scratchpad, the BIOS backing store, and the HW-register fallback store),
+migrated from the C++ `class PSXMemory` (Issue #386's mirror/scratchpad/DICR
+semantics, preserved exactly). Unlike Interrupt/Timer/DMA, this storage
+(~2.6 MiB) is too large to pass by value, so it follows the
+`PSXCore_Create`/`PSXCore_Destroy` opaque-handle pattern (§3) instead: a
+`PsxMemoryHandle*` created by `psx_memory_create` and released exactly once by
+`psx_memory_destroy`. Its exports are **internal** to `PSXRecomp.Native`:
+`src/psx_memory.h` declares and calls them so `class PSXMemory` keeps its
+existing public C++ interface unchanged (`Reset`, `GetRAM`, `GetRAMSize`,
+`AttachControllers`, `Read8/16/32`, `Write8/16/32`), so `PSXCpu`, `PSXCore`,
+`psx_api.cpp`, `include/psx_core.h`, `NativeInterop.cs`, and `ABI_VERSION` are
+all unchanged.
+
+DMA/Timer/Interrupt register semantics are not duplicated here: the HW-register
+window's MMIO ranges are serviced by `memory.rs` calling straight into the
+existing `dma`/`timer`/`interrupt` modules' functions (same crate, not a
+second FFI hop). The three controller-state pointers `PSXMemory::AttachControllers`
+has always taken are threaded through unchanged — each is independently
+nullable, and an unattached controller falls back to the flat HW-register
+store, exactly as before. A timer read can mutate `*timers` (reading MODE
+clears its target/overflow flags), matching the pre-migration behavior.
+
+SIO0 (Issue #542, fixed for production reachability by a CodeRabbit finding
+on PR #548) is serviced the same way but is not threaded through a
+`PSXMemory::AttachControllers` pointer: `rust/src/sio0.rs`'s `Sio0State` is a
+field owned directly by `PsxMemory` (see its module documentation), because —
+unlike DMA/Timer/Interrupt — nothing else in native code needs to observe or
+drive SIO0 state in this scope (no controller/memory-card protocol, no IRQ7).
+`memory.rs`'s `read{8,16,32}`/`write{8,16,32}` dispatch a SIO0-range address to
+`crate::sio0::read_register`/`write_register` at the exact address requested
+(not word-realigned like the DMA/Timer/Interrupt dispatch), matching the
+managed `Sio0MmioAdapter`/`Ps1MemoryMap.GetSio0RegisterType` semantics it
+replaced byte-for-byte. `sio0.rs`'s functions are not `extern "C"` and add no
+new FFI surface: they are plain same-crate Rust calls from `memory.rs`, so
+this fix needed no `PSXMemory::AttachControllers` signature change, no
+`include/psx_core.h` / `NativeInterop.cs` change, and no `ABI_VERSION` bump.
+The managed `Sio0State`/`Sio0Device`/`Sio0MmioAdapter` classes this replaced
+were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case now calls
+`PSXCoreWrapper.ReadMemory32`/`WriteMemory32` — the same native entry point
+the guest CPU's `LW`/`SW` use — instead of a managed adapter, so there is a
+single SSOT reachable from both the managed test/BIOS-HLE seam and the
+production CPU path.
+
+Every read/write export takes the handle and (for the HW-register window) up
+to three raw, independently-nullable controller-state pointers, so — unlike
+Interrupt/Timer/DMA — these are not infallible-by-value functions per §5:
+each is `unsafe extern "C"`, null-checks its handle (returning a documented
+default: 0 for reads, no-op for writes), and documents the validity/exclusive-
+borrow contract on every pointer parameter per §4. The address-decode and
+buffer-access logic underneath is bounds-checked, panic-free safe Rust (§8);
+`unsafe` is confined to converting the incoming raw pointers to references.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_memory_create` | `PsxMemoryHandle*(void)` | Allocates a zeroed backing store; null on allocation failure. |
+| `psx_memory_destroy` | `void(PsxMemoryHandle*)` | Releases a handle; null is a no-op. |
+| `psx_memory_reset` | `void(PsxMemoryHandle*)` | Zeroes RAM/scratchpad/BIOS/HW-register storage; null is a no-op. |
+| `psx_memory_ram_ptr` | `uint8_t*(PsxMemoryHandle*)` | RAM buffer pointer, stable for the handle's lifetime; null when the handle is null. |
+| `psx_memory_read{8,16,32}` | `uintN_t(PsxMemoryHandle*, uint32_t address, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | RAM (mirrored), scratchpad, BIOS, or HW-register (controller-routed, else flat store) little-endian read; 0 outside every mapped region or on a null handle. |
+| `psx_memory_write{8,16,32}` | `void(PsxMemoryHandle*, uint32_t address, uintN_t value, PSXDmaState*, PSXTimerState*, PSXInterruptState*)` | Matching write; a sub-word write to a controller register preserves DICR's write-1-to-clear flag bits exactly as the pre-migration C++ implementation did (PR #491's fix). No-op outside every mapped region or on a null handle. |
+
+### PSXCpu non-trapping ALU / logic / shift arithmetic (#501)
+
+`rust/src/cpu_ops.rs` implements the pure `u32 -> u32` computation of
+`PSXCpu`'s non-trapping ALU instructions, migrated from the C++
+`PSXCpu::Exec*` handlers. Its exports are **internal** to `PSXRecomp.Native`:
+`src/psx_cpu.cpp` calls them (declared in `src/psx_cpu_ops.h`), so
+`include/psx_core.h`, `NativeInterop.cs`, and `ABI_VERSION` are all unchanged.
+`PSXCpu` keeps owning instruction decode, GPR reads (`gpr_[rs]`/`gpr_[rt]`),
+`SetGPR` (including `$zero` protection), PC/pipeline/delay-slot/load-delay
+state, and the 16-bit immediate extension of the I-type forms. Every export
+takes and returns plain `u32` values, performs no allocation, dereferences no
+pointer, uses no `unsafe`, and retains no state. Nothing can panic: add/sub
+use `wrapping_*`, and shifts use `wrapping_shl`/`wrapping_shr`, which mask the
+amount to its low 5 bits rather than panicking on `>= 32`. So every export is
+infallible (§5) and returns its result directly.
+
+| Export | Signature | Semantics | Used by |
+|---|---|---|---|
+| `psx_cpu_ops_addu` | `uint32_t(uint32_t a, uint32_t b)` | `a + b`, wrapping (never traps). | `ADDU`; `ADDIU` with `SignExtend16(imm)` |
+| `psx_cpu_ops_subu` | `uint32_t(uint32_t a, uint32_t b)` | `a - b`, wrapping (never traps). | `SUBU` |
+| `psx_cpu_ops_and` | `uint32_t(uint32_t a, uint32_t b)` | `a & b` | `AND`; `ANDI` with `ZeroExtend16(imm)` |
+| `psx_cpu_ops_or` | `uint32_t(uint32_t a, uint32_t b)` | `a \| b` | `OR`; `ORI` with `ZeroExtend16(imm)` |
+| `psx_cpu_ops_xor` | `uint32_t(uint32_t a, uint32_t b)` | `a ^ b` | `XOR`; `XORI` with `ZeroExtend16(imm)` |
+| `psx_cpu_ops_nor` | `uint32_t(uint32_t a, uint32_t b)` | `~(a \| b)` | `NOR` |
+| `psx_cpu_ops_slt` | `uint32_t(uint32_t a, uint32_t b)` | `1` if `int32_t(a) < int32_t(b)`, else `0` | `SLT`; `SLTI` with `SignExtend16(imm)` |
+| `psx_cpu_ops_sltu` | `uint32_t(uint32_t a, uint32_t b)` | `1` if `a < b` unsigned, else `0` | `SLTU`; `SLTIU` with `SignExtend16(imm)` |
+| `psx_cpu_ops_sll` | `uint32_t(uint32_t value, uint32_t amount)` | `value << (amount & 0x1F)` | `SLL` (`shamt`); `SLLV` (`gpr_[rs]`, unmasked); `LUI` as `sll(ZeroExtend16(imm), 16)` |
+| `psx_cpu_ops_srl` | `uint32_t(uint32_t value, uint32_t amount)` | logical `value >> (amount & 0x1F)` | `SRL`; `SRLV` |
+| `psx_cpu_ops_sra` | `uint32_t(uint32_t value, uint32_t amount)` | arithmetic (sign-filling) `int32_t(value) >> (amount & 0x1F)` | `SRA`; `SRAV` |
+
+Semantics notes, each checked against the previous C++ on `main`:
+
+- `SLTI` compared `ToSigned(gpr_[rs]) < imm` with `imm` an `int16_t`
+  (promoted, so sign-extended). Passing `SignExtend16(imm)` to the signed
+  compare gives the same result.
+- `SLTIU` **sign**-extends its immediate and then compares unsigned (standard
+  MIPS I, pinned by Issue #306 / `test_step_sltiu`). It does not zero-extend.
+- `ANDI`/`ORI`/`XORI` zero-extend their immediate; `LUI` places the raw
+  16 bits in the upper half.
+- The decoder already masks `SLL`/`SRL`/`SRA`'s `shamt` to 5 bits, and the C++
+  masked `SLLV`/`SRLV`/`SRAV`'s `gpr_[rs] & 0x1F`. The Rust side now applies
+  that mask for both forms, which is idempotent for `shamt`.
+- C++17 leaves `int32_t >> n` on a negative value implementation-defined, but
+  every supported compiler (GCC, Clang, MSVC) shifts arithmetically. Rust
+  defines `i32 >> n` as arithmetic, so the results are identical. A unit test
+  also checks `SRA` against an explicit sign-fill reference that does not use
+  `i32 >>`.
+
+`ADD`/`ADDI`/`SUB` (overflow-trapping) and the HI/LO multiply/divide group are
+separate slices (#495, #497). `MFHI`/`MFLO`/`MTHI`/`MTLO`, branches/jumps,
+loads/stores (including their address arithmetic), COP0, and exception raising
+all stay in C++.
+
+### PSXCpu HI/LO multiply/divide (#497)
+
+`rust/src/cpu_hilo.rs` implements the pure 64-bit-product / division
+arithmetic of `MULT`/`MULTU`/`DIV`/`DIVU`, migrated from the C++
+`PSXCpu::ExecMult`/`ExecMultu`/`ExecDiv`/`ExecDivu`. Its exports are
+**internal** to `PSXRecomp.Native`: `src/psx_cpu.cpp` calls them (declared
+in `src/psx_cpu_hilo.h`) and assigns the returned HI/LO pair to `hi_`/`lo_`,
+so neither `psx_core.h`, `NativeInterop.cs`, nor `ABI_VERSION` changed
+(these `Exec*` methods are private `PSXCpu` members, never part of any C
+ABI to begin with). `PSXCpu` keeps owning GPR reads (`gpr_[rs]`/`gpr_[rt]`),
+HI/LO storage, and `Reset()`. Every export takes only `u32` values, performs
+no allocation, dereferences no pointer, and contains no operation that can
+panic — the divisor-zero and `i32::MIN / -1` cases are checked before any
+native `/`/`%` (Rust's checked division panics on both in every build
+profile, unlike C++'s well-defined-but-PS1-special-cased behavior) — so
+every export is infallible per §5 and returns its result directly.
+
+`MFHI`/`MFLO`/`MTHI`/`MTLO` are intentionally **not** migrated: they are
+plain HI/LO ↔ GPR state moves with no arithmetic, so there is nothing for
+Rust to compute and crossing the FFI boundary would add a call with no
+semantic value. They stay entirely in C++.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_cpu_hilo_mult` | `PSXMulDivResult(uint32_t a, uint32_t b)` | Signed 64-bit product of `a`/`b` (each reinterpreted as `int32_t`); HI = upper 32 bits, LO = lower 32 bits. |
+| `psx_cpu_hilo_multu` | `PSXMulDivResult(uint32_t a, uint32_t b)` | Unsigned 64-bit product of `a`/`b`; HI/LO split the same way. |
+| `psx_cpu_hilo_div` | `PSXMulDivResult(uint32_t dividend, uint32_t divisor)` | Signed division/remainder (each operand reinterpreted as `int32_t`). `divisor == 0`: LO = `dividend >= 0 ? 0xFFFFFFFF : 1`, HI = `dividend`. `dividend == INT32_MIN && divisor == -1`: LO = `0x80000000`, HI = `0` (PS1-specific, not a trap). Else: LO = truncating quotient, HI = truncating remainder. |
+| `psx_cpu_hilo_divu` | `PSXMulDivResult(uint32_t dividend, uint32_t divisor)` | Unsigned division/remainder. `divisor == 0`: LO = `0xFFFFFFFF`, HI = `dividend`. Else: LO = quotient, HI = remainder. |
+
+### PSXCpu ALU overflow-checked arithmetic (#495)
+
+`rust/src/cpu_alu.rs` implements the overflow-checked sum/difference
+computation for `ADD`/`ADDI`/`SUB` only — the smallest, pure slice of the
+`PSXCpu` decomposition (#471). Its exports are **internal** to
+`PSXRecomp.Native`: `src/psx_cpu.cpp` calls them (declared in
+`src/psx_cpu_alu.h`) from `ExecAdd`/`ExecAddi`/`ExecSub`, which keep owning
+GPR reads/writes, `ADDI`'s sign extension, and raising the `Ov` exception
+(CAUSE Excode 0x0C) — so `include/psx_core.h`, `NativeInterop.cs`, and
+`ABI_VERSION` are all unchanged. `AluResult` is `#[repr(C)]`, POD, and
+returned by value: no pointers, no allocation, no `unsafe`, and no operation
+that can panic, so every export is infallible (§5) and returns its result
+directly.
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `psx_cpu_alu_add` | `AluResult(uint32_t a, uint32_t b)` | `a + b` (two's-complement 32-bit) with MIPS I signed-overflow detection; used by both `ADD` and `ADDI` (the caller sign-extends `ADDI`'s immediate first). |
+| `psx_cpu_alu_sub` | `AluResult(uint32_t a, uint32_t b)` | `a - b` (two's-complement 32-bit) with MIPS I signed-overflow detection. |
+
+### Remaining PSXCpu slices (#524)
+
+The rest of `PSXCpu` (decode, branch/jump, aligned and unaligned load/store,
+COP0, exception resolution, pipeline) is migrated in parallel slices,
+#525-#531. Each slice has its own C++ file, Rust module, test file and doc,
+listed in [PSXCpu Rust Migration Slices](rust-migrations/cpu/README.md). A
+slice records its exports in its own doc there, not on this page.
+
 ## Related
 
 - [ADR-023: Rust Native Coexistence Substrate](../adr/023-rust-native-coexistence-substrate.md)

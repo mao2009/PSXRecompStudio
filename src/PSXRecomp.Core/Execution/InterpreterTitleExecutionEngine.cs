@@ -164,6 +164,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _bus.AttachDmaAdapter(_dmaAdapter);
         _bus.AttachTimerAdapter(_timerAdapter);
         _bus.AttachInterruptControllerAdapter(_interruptControllerAdapter);
+
+        // SIO0 register model (Issue #542): native/Rust-owned inside
+        // PSXMemory (see MemoryBus.ReadMmio/WriteMmio's Sio0 case and
+        // crate::sio0's module documentation), so no adapter is attached
+        // here — Load()'s _core.Reset() already resets it.
     }
 
     /// <inheritdoc />

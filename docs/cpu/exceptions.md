@@ -20,7 +20,7 @@
 
 ## Implementation Status
 
-`PSXCpu` (`src/PSXRecomp.Native/src/psx_cpu.cpp`) raises the following through
+`PSXCpu` (`src/PSXRecomp.Native/src/psx_cpu_exception.cpp`) raises the following through
 `RaiseException`; all of them go through the same EPC / CAUSE.BD / SR-stack /
 vector-selection machinery described below.
 

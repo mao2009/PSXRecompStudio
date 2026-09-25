@@ -17,6 +17,7 @@ public readonly struct MmioRoute
     public TimerRegisterType TimerRegisterType { get; init; }
     public InterruptControllerRegisterType InterruptControllerRegisterType { get; init; }
     public GpuRegisterType GpuRegisterType { get; init; }
+    public Sio0RegisterType Sio0RegisterType { get; init; }
 
     public static MmioRoute Unmapped => new() { Target = MmioTarget.None };
 
@@ -72,8 +73,21 @@ public readonly struct MmioRoute
             Offset = offset,
         };
 
+    public static MmioRoute ForSio0(Sio0RegisterType registerType, uint offset) =>
+        new()
+        {
+            Target = MmioTarget.Sio0,
+            Sio0RegisterType = registerType,
+            Offset = offset,
+        };
+
     public static MmioRoute Resolve(uint address)
     {
+        // Every address in the SIO0 window routes to the SIO0 adapter, including
+        // reserved ones, so their behavior is defined by the device (Issue #542).
+        if (Ps1MemoryMap.IsSio0Register(address))
+            return ForSio0(Ps1MemoryMap.GetSio0RegisterType(address), address - Ps1MemoryMap.Sio0Base);
+
         if (Ps1MemoryMap.IsGpuRegister(address))
         {
             var _gpuType = Ps1MemoryMap.GetGpuRegisterType(address);
@@ -130,4 +144,5 @@ public enum MmioTarget
     Timer,
     InterruptController,
     Gpu,
+    Sio0,
 }

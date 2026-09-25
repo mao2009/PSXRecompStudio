@@ -1,6 +1,6 @@
 # ADR-020: IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow
 
-- Status: Accepted
+- Status: Accepted (amended 2026-09-24 by Issue #411 — see below)
 - Date: 2026-09-17
 - Issue: #411
 
@@ -168,6 +168,39 @@ separate `AddSigned` operation because it is a reachable arithmetic blocker and
 its minimum required contract is an explicit `Exception` termination with no
 destination write; broader exception metadata for every IR operation remains a
 separate design concern.
+
+## Amendment (2026-09-24, Issue #411): audit refresh and closing coverage
+
+This amendment makes no new decision. It fixes audit facts in the Context
+section that later changes made stale, and it records the coverage that closes
+Issue #411.
+
+- **BREAK is no longer an unsupported opcode.** Since Issue #481 it lowers to an
+  `Exception` exit carrying `RecompilerExceptionState` (Excode `0x09`, EPC, BD).
+  That includes the delay-slot case, where the owning transfer's flow is
+  suppressed. `ADD`/`SUB`, `SYSCALL`, `MFC0`/`MTC0`/`RFE`, and COP1–3 still fail
+  lowering explicitly. `ADDI` still lowers to the trapping `AddSigned`.
+- **Scratchpad counts as `Ordinary`.** `RecompilerIrMemoryEffectClassifier`
+  maps RAM, scratchpad, and BIOS ROM to `Ordinary`. Decision point 3 names only
+  RAM and BIOS ROM. Scratchpad is plain data memory with no device-visible
+  effect, so the code is correct and this amendment aligns the text with it.
+- **Stop categories are identified by existing machine-readable fields.** No
+  new diagnostic code was needed. The category → termination reason → title
+  diagnostic mapping is tabulated in
+  `docs/development/recompiler-ir-contract.md` ("Observable effect categories").
+  A differential mismatch in stop category is reported by `RecompilerStateDiff`
+  as the stable `termination` field path.
+- **Closing regression coverage** (`RecompilerIrMemoryEffectTests`):
+  - an MMIO read / write / read of the same register keeps three separate host
+    hook calls in IR order after codegen, so there is no read CSE and no
+    reordering;
+  - codegen rejects an undefined `MemoryEffect` (`IR_VALIDATION_FAILED`, no
+    source emitted);
+  - every defined effect kind is emitted through the runtime memory hook, never
+    as a direct RAM access;
+  - the differential diff localizes a stop-category mismatch to `termination`,
+    deterministically;
+  - `memoryEffect` is part of the deterministic IR serialization.
 
 ## Related ADRs
 
