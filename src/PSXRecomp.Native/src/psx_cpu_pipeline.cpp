@@ -3,8 +3,33 @@
 // pipeline Rust migration slice (#531).
 
 #include "psx_cpu.h"
+#include "psx_cpu_pipeline.h"
 #include "psx_memory.h"
 #include <cstdint>
+
+// The load-delay / branch-delay state transitions are computed in Rust
+// (psx_cpu_pipeline.h, Issue #531) over POD copies of the PSXCpu fields below;
+// this file keeps owning those fields, fetch, dispatch, the interrupt check,
+// Golden Trace recording and the GPR commit write. These helpers copy the
+// branch fields out and back so each transition stays a single by-value call.
+static PSXCpuBranchState ToBranch(uint32_t pc, uint32_t next_pc, uint32_t delay_slot_pc, uint32_t target,
+                                  bool pending, bool issued, bool taken) {
+    return {pc, next_pc, delay_slot_pc, target, pending ? 1u : 0u, issued ? 1u : 0u, taken ? 1u : 0u};
+}
+
+static void FromBranch(const PSXCpuBranchState& s, uint32_t& pc, uint32_t& next_pc, uint32_t& delay_slot_pc,
+                       uint32_t& target, bool& pending, bool& issued, bool& taken) {
+    pc = s.pc;
+    next_pc = s.next_pc;
+    delay_slot_pc = s.delay_slot_pc;
+    target = s.pending_branch_target;
+    pending = s.branch_pending != 0;
+    issued = s.branch_issued != 0;
+    taken = s.pending_branch_taken != 0;
+}
+
+#define PSX_BRANCH_FIELDS pc_, next_pc_, delay_slot_pc_, pending_branch_target_, branch_pending_, branch_issued_, \
+                          pending_branch_taken_
 
 bool PSXCpu::FetchInstruction(PSXMemory& memory, uint32_t& instruction) {
     uint32_t phys = TranslateAddress(pc_);
@@ -23,57 +48,55 @@ bool PSXCpu::FetchInstruction(PSXMemory& memory, uint32_t& instruction) {
 
 void PSXCpu::FlushPipeline() {
     // Commit any pending load result immediately and clear all pending state.
-    if (load_delay_reg_ >= 0) {
-        gpr_[load_delay_reg_] = load_delay_value_;
+    PSXCpuLoadDelayCommit c = psx_cpu_pipeline_flush_load_delay(
+        {load_delay_reg_, load_delay_value_, next_load_delay_reg_, next_load_delay_value_});
+    if (c.commit_reg >= 0) {
+        gpr_[c.commit_reg] = c.commit_value;
     }
-    load_delay_reg_ = -1;
-    next_load_delay_reg_ = -1;
+    load_delay_reg_ = c.state.reg;
+    next_load_delay_reg_ = c.state.next_reg;
 
-    branch_pending_ = false;
-    branch_issued_ = false;
-    next_pc_ = pc_ + 4;
+    FromBranch(psx_cpu_pipeline_flush_branch(ToBranch(PSX_BRANCH_FIELDS)), PSX_BRANCH_FIELDS);
 }
 
 void PSXCpu::UpdateLoadDelay() {
     // Commit the value loaded one instruction ago (the delay-slot instruction has
     // already read the old value), then shift the queued load into place. Writing
     // the register in-order ensures an immediate write in the delay slot wins.
-    if (load_delay_reg_ >= 0) {
-        gpr_[load_delay_reg_] = load_delay_value_;
+    PSXCpuLoadDelayCommit c = psx_cpu_pipeline_update_load_delay(
+        {load_delay_reg_, load_delay_value_, next_load_delay_reg_, next_load_delay_value_});
+    if (c.commit_reg >= 0) {
+        gpr_[c.commit_reg] = c.commit_value;
     }
-    load_delay_reg_ = next_load_delay_reg_;
-    load_delay_value_ = next_load_delay_value_;
-    next_load_delay_reg_ = -1;
-    next_load_delay_value_ = 0;
+    load_delay_reg_ = c.state.reg;
+    load_delay_value_ = c.state.value;
+    next_load_delay_reg_ = c.state.next_reg;
+    next_load_delay_value_ = c.state.next_value;
 }
 
 void PSXCpu::WriteRegDelayed(int index, uint32_t value) {
-    if (index < 0 || index >= PSX_GPR_COUNT) return;
-    if (index == 0) return;
     // Double load delays to the same register: the last load wins. Step()
     // already recorded the cancelled load's pending commit as a Golden Trace
     // event this same call now cancels (it samples load_delay_reg_
     // unconditionally at the top of the step, before this instruction runs)
     // -- that recorded event's value is real in the trace but never reaches
-    // the register file (golden_trace.h, Issue #202).
-    if (index == load_delay_reg_) {
-        load_delay_reg_ = -1;
-    }
-    next_load_delay_reg_ = index;
-    next_load_delay_value_ = value;
+    // the register file (golden_trace.h, Issue #202). Out-of-range and $zero
+    // indices are ignored by the Rust transition.
+    PSXCpuLoadDelayState s = psx_cpu_pipeline_queue_load(
+        {load_delay_reg_, load_delay_value_, next_load_delay_reg_, next_load_delay_value_}, index, value);
+    load_delay_reg_ = s.reg;
+    next_load_delay_reg_ = s.next_reg;
+    next_load_delay_value_ = s.next_value;
 }
 
 void PSXCpu::SetPendingBranch(uint32_t target, bool taken) {
-    if (!branch_pending_) {
-        // Primary branch: record the pending control transfer. The delay slot is
-        // executed before this target is applied (ADR-005).
-        pending_branch_target_ = target;
-        pending_branch_taken_ = taken;
-    }
-    // Branch in a delay slot: the inner branch executes (and consumes its own
-    // delay slot) but its target is ignored; the outer branch is applied instead
+    // Primary branch: record the pending control transfer; the delay slot is
+    // executed before this target is applied (ADR-005). Branch in a delay
+    // slot: the inner branch executes (and consumes its own delay slot) but
+    // its target is ignored; the outer branch is applied instead
     // (docs/cpu/pipeline.md, branch-in-delay-slot).
-    branch_issued_ = true;
+    FromBranch(psx_cpu_pipeline_set_pending_branch(ToBranch(PSX_BRANCH_FIELDS), target, taken ? 1u : 0u),
+               PSX_BRANCH_FIELDS);
 }
 
 int PSXCpu::Step(PSXMemory& memory) {
@@ -123,15 +146,17 @@ int PSXCpu::Step(PSXMemory& memory) {
             executing_instr_addr_ = pc_;
             executing_in_delay_slot_ = false;
             RaiseException(0x00); // INT
-            next_pc_ = pc_ + 4;
+            // Exception path: next_pc = pc + 4, branch state discarded.
+            FromBranch(psx_cpu_pipeline_advance(ToBranch(PSX_BRANCH_FIELDS), pc_, 0u, 1u), PSX_BRANCH_FIELDS);
             UpdateLoadDelay();
             return 0;
         }
     }
 
-    uint32_t instr_addr = pc_;
-    bool in_delay_slot = branch_pending_;
-    branch_issued_ = false;
+    PSXCpuStepBegin begin = psx_cpu_pipeline_begin_step(ToBranch(PSX_BRANCH_FIELDS));
+    FromBranch(begin.state, PSX_BRANCH_FIELDS); // branch_issued_ = false
+    uint32_t instr_addr = begin.instr_addr;
+    bool in_delay_slot = begin.in_delay_slot != 0;
 
     // Set the exception anchor before the fetch: a fetch address error raises
     // through the same RaiseException path and needs EPC/BD already resolved.
@@ -150,39 +175,20 @@ int PSXCpu::Step(PSXMemory& memory) {
     if (exception_raised_) {
         // An exception occurred: pc_ was forced to the exception vector by
         // RaiseException, bypassing the normal delay-slot/branch PC update
-        // (ADR-005: pc = exception vector; next_pc = pc + 4).
-        next_pc_ = pc_ + 4;
+        // (ADR-005: pc = exception vector; next_pc = pc + 4). Branch state
+        // stays discarded.
+        FromBranch(psx_cpu_pipeline_advance(ToBranch(PSX_BRANCH_FIELDS), instr_addr, in_delay_slot ? 1u : 0u, 1u),
+                   PSX_BRANCH_FIELDS);
         UpdateLoadDelay();
         return 0;
     }
 
-    if (in_delay_slot) {
-        // This instruction is the delay slot of a pending branch.
-        if (branch_issued_) {
-            // Branch in a delay slot: the inner branch executes (and consumes its
-            // own delay slot) but its target is ignored; the outer branch applies
-            // afterwards (docs/cpu/pipeline.md). Track the shared delay slot.
-            delay_slot_pc_ = instr_addr + 4;
-            pc_ = instr_addr + 4;
-        } else {
-            // Apply the completed (outermost) branch (ADR-005).
-            if (pending_branch_taken_) {
-                pc_ = pending_branch_target_;
-            } else {
-                pc_ = delay_slot_pc_ + 4;
-            }
-            branch_pending_ = false;
-        }
-    } else if (branch_issued_) {
-        // A branch/jump just executed: the next instruction is its delay slot.
-        delay_slot_pc_ = instr_addr + 4;
-        branch_pending_ = true;
-        pc_ = instr_addr + 4;
-    } else {
-        pc_ = instr_addr + 4;
-    }
-
-    next_pc_ = pc_ + 4;
+    // Delay slot of a pending branch: apply the outermost branch, or (branch
+    // in a delay slot) ignore the inner target and run the shared delay slot
+    // (docs/cpu/pipeline.md). After a branch/jump: its delay slot is next.
+    // Otherwise sequential (ADR-005).
+    FromBranch(psx_cpu_pipeline_advance(ToBranch(PSX_BRANCH_FIELDS), instr_addr, in_delay_slot ? 1u : 0u, 0u),
+               PSX_BRANCH_FIELDS);
     UpdateLoadDelay();
     return 0;
 }
