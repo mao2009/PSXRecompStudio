@@ -321,7 +321,17 @@ replaced were deleted; `PSXRecomp.Core.Dma.MemoryBus`'s SIO0 case calls
 `PSXCoreWrapper.ReadMemory32`/`WriteMemory32` — the same native entry point
 the guest CPU's `LW`/`SW` use — instead of a managed adapter, so there is a
 single SSOT reachable from both the managed test/BIOS-HLE seam and the
-production CPU path. `PSXRecomp.Core.Runtime.DeviceScheduler.Advance` polls
+production CPU path.
+
+SPU register storage (Issue #445) follows that same single-SSOT ownership
+pattern without adding any FFI export: `rust/src/spu.rs` stores the full
+`0x1F801C00-0x1F801DFF` register window as 256 deterministic 16-bit values
+owned inline by `PsxMemory`. `memory.rs` dispatches byte/halfword/word
+accesses directly to `crate::spu`, and managed `MemoryBus` routes SPU accesses
+back through `PSXCoreWrapper.ReadMemory*/WriteMemory*`. No audio synthesis,
+sound-RAM transfer behavior, or IRQ9 is part of this slice.
+
+`PSXRecomp.Core.Runtime.DeviceScheduler.Advance` polls
 `GetSio0InterruptPending`/clears/raises `IRQ7`, in the same fixed stage order
 as Timer/DMA, after ticking DMA and before VBlank; unlike Timer/DMA this
 stage needs no `Tick` call first, since SIO0 has no clock of its own — it is
