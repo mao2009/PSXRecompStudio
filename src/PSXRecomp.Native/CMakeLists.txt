@@ -164,6 +164,15 @@ add_executable(psx_native_tests
     ${PSX_CPU_SOURCES}
     src/psx_memory.cpp
     tests/test_psx_core.cpp
+    # Per-slice PSXCpu migration tests (Issue #524); each exposes one runner
+    # that test_psx_core.cpp's main() calls.
+    tests/test_psx_cpu_decode_rust.cpp
+    tests/test_psx_cpu_control_rust.cpp
+    tests/test_psx_cpu_memory_access_rust.cpp
+    tests/test_psx_cpu_unaligned_rust.cpp
+    tests/test_psx_cpu_cop0_rust.cpp
+    tests/test_psx_cpu_exception_rust.cpp
+    tests/test_psx_cpu_pipeline_rust.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)
 target_link_libraries(psx_native_tests PRIVATE PSXRecomp.Native)
