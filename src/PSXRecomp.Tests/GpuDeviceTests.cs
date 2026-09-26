@@ -46,7 +46,8 @@ public class GpuDeviceTests
 
         gpu.WriteGP1(0x03000000); // param 0 => display ON
         ((gpu.ReadGpustat() >> 23) & 1).Should().Be(0u);
-        gpu.HasFrameEvidence.Should().BeTrue("an explicitly enabled black display is meaningful");
+        gpu.HasFrameEvidence.Should().BeFalse(
+            "display-enable alone does not prove current-load VRAM pixel provenance");
 
         gpu.WriteGP1(0x03000001); // param 1 => display OFF
         ((gpu.ReadGpustat() >> 23) & 1).Should().Be(1u);
