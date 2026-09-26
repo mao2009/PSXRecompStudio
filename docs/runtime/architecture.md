@@ -4,7 +4,7 @@ Issue #44: Runtime/Hardware Abstraction Architecture for allowing Recompiled Cod
 
 ## Overview
 
-The PSXRecompStudio Runtime provides an abstraction layer through which Recompiled Code accesses PS1 hardware. Hardware implementations are not embedded directly into game-specific code; access goes through Domain interfaces.
+The PSXRecompStudio Runtime keeps PS1 hardware semantics out of game-specific code. There is no single common hardware-component interface: production guest memory/MMIO is decoded by the native/Rust memory path, while focused Domain contracts and managed adapters are used where they are the correct boundary (for example BIOS HLE orchestration and the managed GPU model).
 
 ### Prerequisites
 
@@ -15,46 +15,42 @@ The PSXRecompStudio Runtime provides an abstraction layer through which Recompil
 ## Architecture Policy
 
 ```text
-Recompiled Code (generated C# code)
-    ↓ Domain interface calls
-PSXRecomp.Core (Domain layer: Hardware interface definitions)
-    ↓ P/Invoke / C ABI
-PSXRecomp.Native (Infrastructure layer: actual hardware implementations)
+Application / generated-host composition
+    ↓ explicit Domain / runtime contracts
+PSXRecomp.Core
+    ├── BIOS HLE / orchestration / managed GPU contracts
+    └── PSXCoreWrapper
+            ↓ P/Invoke / stable C ABI
+PSXRecomp.Native
+    └── PSXCpu → PsxMemory → Rust-owned memory/MMIO devices
 ```
 
 ### Boundary Principles
 
-1. **Recompiled Code references only IHardwareComponent interfaces.**
+1. **No title-specific hardware implementation is embedded in generated code.**
 2. **The Domain layer is Pure.** (No File I/O, Console, DateTime.Now, or Environment.)
-3. **The Infrastructure layer handles actual state changes and I/O.**
-4. **Opaque pointers (IntPtr) are used across the C ABI boundary.**
+3. **Each device has one authoritative semantic owner.** Managed seams either own the device explicitly (GPU) or forward to the native/Rust SSOT (for example SIO0/SPU).
+4. **The native boundary remains the stable C ABI.** Rust is linked inside the same native library; Rust/C++ implementation details do not leak into managed callers.
+5. **Opaque native handles are used only where stateful native ownership requires them.**
 
 ## Hardware Component Model
 
-All PS1 hardware components implement `IHardwareComponent`.
+The old common `IHardwareComponent` abstraction was removed because it had no production consumers. Current hardware boundaries are intentionally device-specific.
 
-```csharp
-[Domain]
-public interface IHardwareComponent
-{
-    string Name { get; }
-    void Reset();
-    uint Read32(uint offset);
-    void Write32(uint offset, uint value);
-    ushort Read16(uint offset);
-    void Write16(uint offset, ushort value);
-    byte Read8(uint offset);
-    void Write8(uint offset, byte value);
-}
-```
+- Production CPU loads/stores execute through native `PSXCpu` → `PsxMemory`.
+- RAM, scratchpad, BIOS bytes and Rust-owned MMIO devices are decoded by `PsxMemory`.
+- Interrupt, DMA, Timer, SIO0 and SPU semantics are owned by native/Rust state reached through that production memory boundary.
+- The GPU remains a managed Domain model (`IGpu` / `GpuDevice`) and is not yet connected to production title-execution guest MMIO.
+- `IMemoryBus` / `MemoryBus` is a managed routing seam used by BIOS HLE/tests and focused adapters; it is not a universal base interface implemented by every device.
+- BIOS-less execution is modeled through `IBiosRuntime` / `BiosHleRuntime`; there is no live `IBios` hardware-component interface.
 
 ### Component List
 
-| Component | Interface | Address Range | Interrupt |
-|-----------|-----------|---------------|-----------|
-| RAM | IMemoryBus (direct) | 0x00000000-0x007FFFFF (2MB, 8MB mirror) | None |
-| Scratchpad | IMemoryBus | 0x1F800000-0x1F8003FF (1KB) | None |
-| BIOS | IBios | 0x1FC00000-0x1FC7FFFF (512KB) | None |
+| Component | Current boundary / implementation | Address Range | Interrupt |
+|-----------|-----------------------------------|---------------|-----------|
+| RAM | native/Rust `PsxMemory`; managed `IMemoryBus` seam | 0x00000000-0x007FFFFF (2MB, 8MB mirror) | None |
+| Scratchpad | native/Rust `PsxMemory`; managed `IMemoryBus` seam | 0x1F800000-0x1F8003FF (1KB) | None |
+| BIOS address space | `PsxMemory` backing bytes when supplied; normal execution uses `IBiosRuntime` HLE instead of requiring a BIOS ROM | 0x1FC00000-0x1FC7FFFF (512KB) | None |
 | Interrupt Controller | IInterruptController | 0x1F801070-0x1F801074 | Central |
 | DMA Controller | IDmaController | 0x1F801080-0x1F8010FF | IRQ3 |
 | Timer 0-2 | ITimer | 0x1F801100-0x1F801128 | IRQ4-6 |
@@ -144,12 +140,13 @@ Physical Address
 
 ## MMIO Model
 
-Each hardware component owns its own register-offset address space.
+There is no common `IHardwareComponent.Read/Write` dispatch layer.
 
-1. `IMemoryBus.Read32(address)` receives a physical address.
-2. Static checks in `Ps1MemoryMap` identify the component.
-3. The corresponding `IHardwareComponent.Read32(offset)` is called.
-4. offset = `address - component_base_address`.
+- **Production guest CPU path:** `InterpreterTitleExecutionEngine` → `PSXCoreWrapper` → native `PSXCpu` → `PsxMemory`. `PsxMemory` decodes RAM/scratchpad/BIOS/MMIO and forwards Rust-owned device windows to their device modules.
+- **Managed routing seam:** `MemoryBus` uses `Ps1MemoryMap` / `MmioRoute` to classify addresses for BIOS-HLE/tests and managed-owned devices. SIO0/SPU forwarding reaches the same native memory SSOT instead of maintaining duplicate semantics.
+- **GPU exception:** the current GPU register/VRAM model is managed and routed through `GpuMmioAdapter` + `MemoryBus`; production title-execution reachability is a remaining #440 item.
+
+Subword semantics are defined by the owning device/memory implementation; they are not inherited from a deleted common base interface.
 
 ## DMA Model
 
@@ -255,12 +252,16 @@ Controls the CD-ROM controller.
 
 ## BIOS Model
 
-A 512KB ROM BIOS.
+Normal user execution is BIOS-less by default. BIOS calls are represented by
+`IBiosRuntime` / `BiosHleRuntime` and identified by A0/B0/C0 family plus
+function number; supported services implement their guest-visible behavior and
+unsupported services fail explicitly with `BIOS_HLE_UNSUPPORTED_CALL`.
 
-- **Address**: 0x1FC00000-0x1FC7FFFF.
-- **System calls**: GPU, SPU, CD-ROM, memory card, controller I/O.
-- **Overlay**: functions are placed in memory.
-- **Event handling**: callbacks for timers, DMA, and interrupts.
+`PsxMemory` can still expose the 0x1FC00000-0x1FC7FFFF BIOS address range when
+backing bytes are supplied, but a dumped Sony BIOS ROM is not a mandatory
+runtime dependency and is never distributed by this repository. Guest-visible
+jump-table state used by the HLE contract lives in ordinary guest RAM, not in a
+deleted `IBios` component.
 
 ## MDEC (Motion Decoder)
 
@@ -372,16 +373,19 @@ state to schedule, so it is not wired.
 ## Recompiled Code ↔ Runtime ABI
 
 ```text
-Recompiled Code
+Execution / generated-host composition
     │
-    ├── Load/Store → IMemoryBus.Read32/Write32
-    ├── COP2 (GTE) → IGte.ExecuteCommand
-    ├── System Call → IBios (via BIOS)
-    └── I/O Check → address check on memory access
-                      │
-                      ├── RAM → direct pointer access
-                      └── MMIO → IHardwareComponent.Read/Write
+    ├── BIOS service → IBiosRuntime / BiosHleRuntime
+    ├── production CPU load/store
+    │       → PSXCoreWrapper → stable C ABI
+    │       → PSXCpu → PsxMemory
+    │             ├── RAM / scratchpad / BIOS backing
+    │             └── Rust-owned MMIO devices
+    ├── managed BIOS-HLE/test memory seam → IMemoryBus / MemoryBus
+    └── managed GPU seam → IGpu / GpuDevice (production title wiring pending)
 ```
+
+The exact generated-host execution contract is documented separately; this diagram records ownership boundaries rather than claiming that every execution backend uses the same memory-call shape.
 
 ### Performance Optimization
 
@@ -391,9 +395,9 @@ Recompiled Code
 
 ## Multi-Platform Runtime Extension Policy
 
-- Interfaces such as `IHardwareComponent` / `IMemoryBus` are platform-independent.
-- The Infrastructure layer (`PSXRecomp.Native`) provides platform-specific implementations.
-- The C# side depends only on Domain interfaces.
+- Device-specific Domain contracts and `IMemoryBus` are platform-independent where they are used.
+- The native library hides C++/Rust implementation choices behind the stable C ABI.
+- Managed code depends on explicit Domain/runtime contracts rather than a universal hardware base interface.
 - Future extensions:
   - GPU backends (Vulkan, OpenGL, DirectX).
   - Audio backends (SDL2, CoreAudio).
@@ -404,7 +408,7 @@ Recompiled Code
 
 | Criteria | Status |
 |----------|--------|
-| Define the hardware component model | ✅ IHardwareComponent + all interfaces |
+| Define the hardware component model | ✅ Device-specific ownership/boundaries; obsolete common `IHardwareComponent` removed |
 | Define the boundary between Recompiled Code and Runtime | ✅ Section: Recompiled Code ↔ Runtime ABI |
 | Define the MMIO / memory-access policy | ✅ Section: MMIO Model, Memory / Bus Model |
 | Define the timing / synchronization policy | ✅ Section: Timing Model |
