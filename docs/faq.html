@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio FAQ | PS1 Static Recompilation Research</title>
+  <meta name="description" content="Answers to common questions about PSXRecompStudio, PS1 static recompilation, supported inputs, BIOS HLE, hardware support, and project limitations.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/faq.html">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/faq.html">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/faq.html">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/faq.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="ja_JP">
+  <meta property="og:title" content="PSXRecompStudio FAQ | PS1 Static Recompilation Research">
+  <meta property="og:description" content="Answers to common questions about PSXRecompStudio, PS1 static recompilation, supported inputs, BIOS HLE, hardware support, and project limitations.">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/faq.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio FAQ | PS1 Static Recompilation Research">
+  <meta name="twitter:description" content="Answers to common questions about PSXRecompStudio, PS1 static recompilation, supported inputs, BIOS HLE, hardware support, and project limitations.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html" aria-current="page">FAQ</a>
+        <a href="cli.html">CLI</a>
+        <a href="runtime.html">Runtime</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="ja/faq.html" lang="ja">日本語</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">Frequently asked questions</p>
+      <h1>PSXRecompStudio FAQ</h1>
+      <p class="lead">Direct answers about what the project is, what it can do today, and what remains research work.</p>
+    </section>
+
+    <section>
+      <h2>What is PSXRecompStudio?</h2>
+      <p>PSXRecompStudio is an open-source PlayStation 1 research project for binary analysis, MIPS R3000A validation, static recompilation, and native-porting experiments. It combines managed C#/.NET analysis and application code with a mixed C++/Rust native core behind a stable C ABI.</p>
+
+      <h2>Is PSXRecompStudio a PlayStation 1 emulator?</h2>
+      <p>It contains interpreter and PS1 Runtime components used as correctness references and execution infrastructure, but its primary goal is static recompilation research rather than shipping a general-purpose emulator frontend.</p>
+
+      <h2>Can it recompile complete commercial PS1 games into native ports?</h2>
+      <p>Not yet. The project has bounded real-ROM-derived function proofs, whole-corpus coverage reporting, runnable generated-host artifacts, and classified execution paths, but complete commercial-title recompilation remains a research goal.</p>
+
+      <h2>What input formats can the headless CLI use?</h2>
+      <p>The current CLI accepts PS-X EXE input and supported CHD disc images. CHD input is analyzed through the production disc pipeline to resolve the boot PS-X EXE. See the <a href="cli.html">headless CLI page</a> for commands and limitations.</p>
+
+      <h2>Does it require a Sony PlayStation BIOS image?</h2>
+      <p>Normal execution targets BIOS-less operation through BIOS HLE. The HLE surface is partial, and unsupported calls fail explicitly rather than silently succeeding. The project does not distribute a Sony BIOS image.</p>
+
+      <h2>How complete is the PS1 hardware Runtime?</h2>
+      <p>Hardware support is partial. Interrupts, timers, DMA state, guest memory/MMIO, SIO0 register state, SPU register/MMIO state, and a managed GPU model have implemented slices. GPU production integration, SPU audio behavior, CD-ROM, MDEC, GTE, and other evidence-driven gaps remain incomplete. See the <a href="runtime.html">Runtime status page</a>.</p>
+
+      <h2>How does the project validate correctness?</h2>
+      <p>It uses Golden Trace tests, interpreter/recompiler differential validation, deterministic generated artifacts, bounded execution, classified unsupported boundaries, and focused Runtime/native tests. Real commercial inputs are never committed to the repository.</p>
+
+      <h2>Where is the source code?</h2>
+      <p>The source, Issues, pull requests, tests, and detailed documentation are in the <a href="https://github.com/mao2009/PSXRecompStudio">PSXRecompStudio GitHub repository</a>.</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">PSXRecompStudio home</a> · <a href="legal.html">Legal and asset policy</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a></p></footer>
+</body>
+</html>

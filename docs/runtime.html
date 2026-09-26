@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio PS1 Runtime Status | BIOS HLE, GPU, SPU</title>
+  <meta name="description" content="Current PSXRecompStudio Runtime status for BIOS HLE, GPU, SPU, SIO0, DMA, timers, interrupts, memory/MMIO, and remaining PS1 hardware work.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/runtime.html">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/runtime.html">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/runtime.html">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/runtime.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="ja_JP">
+  <meta property="og:title" content="PSXRecompStudio PS1 Runtime Status | BIOS HLE, GPU, SPU">
+  <meta property="og:description" content="Current PSXRecompStudio Runtime status for BIOS HLE, GPU, SPU, SIO0, DMA, timers, interrupts, memory/MMIO, and remaining PS1 hardware work.">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/runtime.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio PS1 Runtime Status | BIOS HLE, GPU, SPU">
+  <meta name="twitter:description" content="Current PSXRecompStudio Runtime status for BIOS HLE, GPU, SPU, SIO0, DMA, timers, interrupts, memory/MMIO, and remaining PS1 hardware work.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="cli.html">CLI</a>
+        <a href="runtime.html" aria-current="page">Runtime</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="ja/runtime.html" lang="ja">日本語</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">PS1 hardware status</p>
+      <h1>PSXRecompStudio Runtime status</h1>
+      <p class="lead">A concise view of the PS1 Runtime pieces that exist today and the hardware behavior that is still incomplete.</p>
+    </section>
+
+    <section>
+      <h2>Implemented foundations</h2>
+      <ul>
+        <li>R3000A execution with delay-slot, exception, COP0, and interrupt behavior under deterministic tests.</li>
+        <li>Rust-backed guest memory/MMIO, interrupt controller, timers, and DMA register/timing state reached by the production execution path.</li>
+        <li>BIOS-less execution through a partial BIOS HLE registry with explicit unsupported-call diagnostics.</li>
+        <li>Rust-owned SIO0 register state, a deterministic disconnected-pad transaction path, and IRQ7 delivery.</li>
+        <li>Rust-owned SPU register/MMIO storage reachable from production CPU memory accesses.</li>
+        <li>A managed GPU register/VRAM model with minimal triangle/rectangle rasterization and deterministic frame snapshots.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Important remaining gaps</h2>
+      <ul>
+        <li>GPU production title-execution MMIO integration, DMA2 data movement, GPU IRQ1, and broader rendering features.</li>
+        <li>SPU ADPCM, ADSR, mixing, reverb, sound RAM transfer behavior, audio output, and IRQ9.</li>
+        <li>Real controller input and the memory-card serial transaction protocol beyond storage-format support.</li>
+        <li>CD-ROM command/status/FIFO behavior, DMA3, and IRQ2.</li>
+        <li>MDEC and GTE behavior when real-title evidence demonstrates they are required.</li>
+        <li>Broader BIOS HLE coverage needed by real titles.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>How Runtime work is prioritized</h2>
+      <p>The project does not implement every PS1 subsystem in issue-number order. Unsupported behavior is intended to fail explicitly, and real-title bring-up evidence is used to identify the next generic BIOS or hardware boundary to implement.</p>
+    </section>
+
+    <section>
+      <h2>Authoritative Runtime documentation</h2>
+      <p>See <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> and <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/runtime/architecture.md">docs/runtime/architecture.md</a> for the detailed ownership, MMIO, scheduling, GPU, SPU, SIO0, and BIOS contracts.</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">PSXRecompStudio home</a> · <a href="faq.html">FAQ</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a></p></footer>
+</body>
+</html>

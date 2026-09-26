@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio Headless CLI | PS-X EXE and CHD</title>
+  <meta name="description" content="Headless PSXRecompStudio CLI reference overview for PS-X EXE and supported CHD recompilation, execution, JSON results, and diagnostic reports.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/cli.html">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/cli.html">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/cli.html">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/cli.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="ja_JP">
+  <meta property="og:title" content="PSXRecompStudio Headless CLI | PS-X EXE and CHD">
+  <meta property="og:description" content="Headless PSXRecompStudio CLI reference overview for PS-X EXE and supported CHD recompilation, execution, JSON results, and diagnostic reports.">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/cli.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio Headless CLI | PS-X EXE and CHD">
+  <meta name="twitter:description" content="Headless PSXRecompStudio CLI reference overview for PS-X EXE and supported CHD recompilation, execution, JSON results, and diagnostic reports.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="cli.html" aria-current="page">CLI</a>
+        <a href="runtime.html">Runtime</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="ja/cli.html" lang="ja">日本語</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">Headless workflow</p>
+      <h1>PSXRecompStudio headless CLI</h1>
+      <p class="lead">Build and run the current recompilation pipeline from scripts, CI, or a terminal without depending on the Avalonia GUI.</p>
+    </section>
+
+    <section>
+      <h2>Supported CLI inputs</h2>
+      <p>The production CLI accepts a PS-X EXE directly or a supported CHD disc image. For CHD input, the analysis pipeline resolves <code>SYSTEM.CNF</code> and the boot PS-X EXE before recompilation. Invalid or unsupported inputs fail closed with classified diagnostics.</p>
+    </section>
+
+    <section>
+      <h2>Commands</h2>
+      <pre><code>psxrecomp recompile &lt;input.exe|input.chd&gt; --output &lt;dir&gt; [--json]
+psxrecomp run       &lt;input.exe|input.chd&gt; [--output &lt;dir&gt;] [--segment-budget &lt;n&gt;] [--report] [--json]</code></pre>
+      <p><code>recompile</code> builds a runnable generated-host artifact. <code>run</code> rebuilds that artifact and launches the current bounded execution path.</p>
+    </section>
+
+    <section>
+      <h2>Machine-readable results and reports</h2>
+      <p><code>--json</code> emits deterministic machine-readable output. Exit code <code>0</code> means success, <code>1</code> means an input/tooling/build/launcher failure, and <code>2</code> means execution reached an explicit unsupported or blocked guest boundary.</p>
+      <p><code>run --report</code> can create a privacy-safe <code>diagnostic-report.zip</code> containing a report, bounded environment metadata, sanitized diagnostics, and an Issue-ready summary. Input game bytes, RAM, save data, credentials, usernames, and local absolute paths are not bundled automatically.</p>
+    </section>
+
+    <section>
+      <h2>Current limitation</h2>
+      <p>A successful build proves that the pipeline produced and launched the artifact; it does not mean a complete commercial title is supported. Real software may still stop at an explicit unsupported BIOS, control-flow, or Runtime boundary.</p>
+    </section>
+
+    <section>
+      <h2>Authoritative CLI documentation</h2>
+      <p>For the exact option grammar, JSON envelopes, exit codes, and diagnostic-bundle contract, read <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/development/headless-cli.md">docs/development/headless-cli.md</a>.</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">PSXRecompStudio home</a> · <a href="faq.html">FAQ</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a></p></footer>
+</body>
+</html>
