@@ -580,6 +580,52 @@ public sealed class CliRunTests
     }
 
     [Fact]
+    public void Run_FrameEvidence_JsonAddsDeterministicProductionSnapshotWithoutChangingRunResult()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit1, output1, error1) = Invoke("run", exePath, "--output", outDir, "--frame-evidence", "--json");
+        var (exit2, output2, error2) = Invoke("run", exePath, "--output", outDir, "--frame-evidence", "--json");
+
+        exit1.Should().Be(RecompiledArtifactExitCode.Success);
+        exit2.Should().Be(RecompiledArtifactExitCode.Success);
+        error1.Should().BeEmpty();
+        error2.Should().BeEmpty();
+        output2.Should().Be(output1, "frame evidence must be deterministic across equivalent runs");
+
+        using var json = JsonDocument.Parse(output1);
+        var root = json.RootElement;
+        root.GetProperty("result").GetProperty("engineName").GetString()
+            .Should().Be("recompiled-host-artifact", "frame evidence must not replace the generated-host run result");
+
+        var frame = root.GetProperty("frameEvidence");
+        frame.GetProperty("status").GetString().Should().Be(ProductionFrameEvidenceCollector.AvailableStatus);
+        frame.GetProperty("width").GetInt32().Should().Be(256);
+        frame.GetProperty("height").GetInt32().Should().Be(240);
+        frame.GetProperty("sha256").GetString().Should().MatchRegex("^[0-9a-f]{64}$");
+        frame.GetProperty("productionState").GetInt32().Should().Be((int)TitleExecutionState.Completed);
+        frame.GetProperty("diagnosticCode").ValueKind.Should().Be(JsonValueKind.Null);
+        frame.GetProperty("reason").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public void Run_FrameEvidence_HumanOutputReportsDimensionsHashAndProductionState()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+
+        var (exit, output, error) = Invoke(
+            "run", exePath, "--output", dir.CreateSubdirectory("out"), "--frame-evidence");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+        output.Should().Contain("Frame evidence: 256x240 sha256:");
+        output.Should().Contain("productionState=Completed");
+    }
+
+    [Fact]
     public void Run_SyntheticExe_HumanOutputReportsCompletionAndArtifactPath()
     {
         using var dir = new TempDirectory();
@@ -733,6 +779,14 @@ public sealed class CliRunTests
         var (exit, _, error) = Invoke("run");
         exit.Should().Be(RecompiledArtifactExitCode.Failure);
         error.Should().Contain("missing input path.");
+    }
+
+    [Fact]
+    public void Recompile_FrameEvidenceOptionIsRejectedWithExitCodeOne()
+    {
+        var (exit, _, error) = Invoke("recompile", "input.exe", "--output", "out", "--frame-evidence");
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        error.Should().Contain("'--frame-evidence' is only valid for 'run'.");
     }
 
     [Fact]
