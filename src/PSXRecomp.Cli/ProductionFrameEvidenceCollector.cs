@@ -41,6 +41,18 @@ internal static class ProductionFrameEvidenceCollector
                 input.Request);
 
             var frame = engine.CaptureFrame();
+            if (frame.Width == 0 || frame.Height == 0)
+            {
+                return new FrameEvidence(
+                    Status: UnavailableStatus,
+                    Width: frame.Width,
+                    Height: frame.Height,
+                    Sha256: null,
+                    ProductionState: result.State,
+                    DiagnosticCode: result.DiagnosticCode,
+                    Reason: "empty-display-region");
+            }
+
             return new FrameEvidence(
                 Status: AvailableStatus,
                 Width: frame.Width,
