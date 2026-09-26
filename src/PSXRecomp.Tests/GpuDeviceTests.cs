@@ -54,6 +54,25 @@ public class GpuDeviceTests
     }
 
     [Fact]
+    public void NewEvidenceEpoch_DisplayEnableAlone_DoesNotAttributePreservedVramToCurrentLoad()
+    {
+        using var gpu = new GpuDevice();
+
+        gpu.WriteGP0(0x020000FF);
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010004);
+        gpu.HasFrameEvidence.Should().BeTrue();
+        gpu.Vram[0, 0].Should().Be(0x001F);
+
+        gpu.ResetFrameEvidence();
+        gpu.WriteGP1(0x03000000); // display ON, but no current-epoch VRAM write
+
+        gpu.Vram[0, 0].Should().Be(0x001F, "GPU reset/evidence epochs do not erase VRAM");
+        gpu.HasFrameEvidence.Should().BeFalse(
+            "preserved pixels from an earlier epoch must not be attributed to this load");
+    }
+
+    [Fact]
     public void DmaDirection_Gp1_04_ReflectsInGpustatBits29To30()
     {
         using var gpu = new GpuDevice();
