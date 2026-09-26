@@ -169,10 +169,13 @@ Unimplemented calls return explicit diagnostics such as
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
 wires A0:39 `InitHeap` (the identity real-ROM analysis observed most broadly —
-5 of 5 locally available executables), A0:3C `putchar`, A0:3E `puts`, the B0:3F
-alias of `puts` (selected by real-ROM evidence — a title observed calling it
-through the B0 jump table), and B0:56 `GetC0Table` / B0:57 `GetB0Table`, and
-implements the full documented behavior of all six. `InitHeap` takes two scalar
+5 of 5 locally available executables), A0:3C `putchar`, its registered B0:3D
+`putchar` alias, A0:3E `puts`, the B0:3F alias of `puts` (selected by
+real-ROM evidence — a title observed calling it through the B0 jump table), and
+B0:56 `GetC0Table` / B0:57 `GetB0Table`, and implements the documented
+behavior of all seven registered identities. The B0:3D registration is current
+Runtime capability, not a claim that the recorded real-ROM fixture set observed
+that alias. `InitHeap` takes two scalar
 arguments (addr, size), has no documented return value, and this Runtime
 registers no malloc/realloc/calloc/free/qsort service to consume its heap
 bookkeeping, so its complete guest-observable contract is argument-shape
