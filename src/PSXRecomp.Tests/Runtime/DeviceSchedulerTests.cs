@@ -2,6 +2,7 @@ using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.Gpu;
 
 namespace PSXRecomp.Tests.Runtime;
 
@@ -31,23 +32,26 @@ public sealed class DeviceSchedulerTests : IDisposable
     private const ushort Sio0CtrlSelect = 0x0003; // TXEN | SIO_CTRL.1 (select)
 
     private const uint VblankBit = 1u << DeviceScheduler.VblankIrq;
+    private const uint GpuBit = 1u << DeviceScheduler.GpuIrq;
     private const uint DmaBit = 1u << DeviceScheduler.DmaIrq;
     private const uint Timer2Bit = 1u << (DeviceScheduler.Timer0Irq + 2);
     private const uint Sio0Bit = 1u << DeviceScheduler.Sio0Irq;
 
     private readonly PSXCoreWrapper _core = new();
+    private readonly GpuDevice _gpu = new();
     private readonly InterruptControllerMmioAdapter _interrupts;
     private readonly DeviceScheduler _scheduler;
 
     public DeviceSchedulerTests()
     {
         _interrupts = new InterruptControllerMmioAdapter(_core);
-        _scheduler = new DeviceScheduler(_core, _interrupts);
+        _scheduler = new DeviceScheduler(_core, _interrupts, _gpu);
     }
 
     public void Dispose()
     {
         _interrupts.Dispose();
+        _gpu.Dispose();
         _core.Dispose();
         GC.SuppressFinalize(this);
     }
@@ -155,6 +159,50 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void GpuCommandIrq_RaisesIrq1OnEdge_AndKeepsGpuAndIStatAcksIndependent()
+    {
+        _gpu.WriteGP0(0x1F000000);
+
+        _scheduler.Advance(1);
+
+        _gpu.HasCommandInterrupt.Should().BeTrue();
+        (_gpu.ReadGpustat() & (1u << 24)).Should().NotBe(0u);
+        _interrupts.Status.Should().Be(GpuBit);
+
+        // I_STAT is an edge latch. Clearing it while the GPU source is still
+        // asserted must not create a second edge by itself.
+        _interrupts.Acknowledge(~GpuBit);
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u);
+
+        // GP1(02h) clears only the GPU source; it must not be responsible for
+        // clearing I_STAT. This low sample rearms the scheduler for the next
+        // GP0(1Fh) request.
+        _gpu.WriteGP1(0x02000000);
+        _gpu.HasCommandInterrupt.Should().BeFalse();
+        (_gpu.ReadGpustat() & (1u << 24)).Should().Be(0u);
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u);
+
+        _gpu.WriteGP0(0x1F000000);
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(GpuBit, "a new low-to-high GPU request must deliver a fresh IRQ1");
+    }
+
+    [Fact]
+    public void Gp1Acknowledge_DoesNotClearAnAlreadyLatchedIStatIrq1()
+    {
+        _gpu.WriteGP0(0x1F000000);
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(GpuBit);
+
+        _gpu.WriteGP1(0x02000000);
+
+        _gpu.HasCommandInterrupt.Should().BeFalse();
+        _interrupts.Status.Should().Be(GpuBit, "GPU source acknowledge and I_STAT acknowledge are separate hardware contracts");
+    }
+
+    [Fact]
     public void Vblank_RaisesIrq0AtEachIntervalBoundary()
     {
         _scheduler.Advance(DeviceScheduler.VblankIntervalCycles - 1);
@@ -183,19 +231,24 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenSio0ThenVblank()
+    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenSio0ThenGpuThenVblank()
     {
         var recorder = new RecordingInterrupts(_interrupts);
-        var scheduler = new DeviceScheduler(_core, recorder);
+        var scheduler = new DeviceScheduler(_core, recorder, _gpu);
         ArmTimer2(target: 100, ModeIrqOnTarget);
         ArmOtc(words: 8, irqEnabled: true);
         _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
         _core.WriteMemory8(Sio0Data, 0x01);
+        _gpu.WriteGP0(0x1F000000);
 
         scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
 
         recorder.Raised.Should().Equal(
-            DeviceScheduler.Timer0Irq + 2, DeviceScheduler.DmaIrq, DeviceScheduler.Sio0Irq, DeviceScheduler.VblankIrq);
+            DeviceScheduler.Timer0Irq + 2,
+            DeviceScheduler.DmaIrq,
+            DeviceScheduler.Sio0Irq,
+            DeviceScheduler.GpuIrq,
+            DeviceScheduler.VblankIrq);
     }
 
     private void ArmTimer2(uint target, uint mode)
