@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio Runtime状況 | BIOS HLE・GPU・SPU・SIO0</title>
+  <meta name="description" content="PSXRecompStudioのPS1 Runtime実装状況を、BIOS HLE、GPU、SPU、SIO0、DMA、Timer、Interrupt、Memory/MMIOごとに日本語で説明します。">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/ja/runtime.html">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/runtime.html">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/runtime.html">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/runtime.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="PSXRecompStudio Runtime状況 | BIOS HLE・GPU・SPU・SIO0">
+  <meta property="og:description" content="PSXRecompStudioのPS1 Runtime実装状況を、BIOS HLE、GPU、SPU、SIO0、DMA、Timer、Interrupt、Memory/MMIOごとに日本語で説明します。">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/ja/runtime.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio Runtime状況 | BIOS HLE・GPU・SPU・SIO0">
+  <meta name="twitter:description" content="PSXRecompStudioのPS1 Runtime実装状況を、BIOS HLE、GPU、SPU、SIO0、DMA、Timer、Interrupt、Memory/MMIOごとに日本語で説明します。">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="メインナビゲーション">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="cli.html">CLI</a>
+        <a href="runtime.html" aria-current="page">Runtime</a>
+        <a href="../architecture.html">Architecture</a>
+        <a href="../">English</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">PS1 hardware status</p>
+      <h1>PSXRecompStudio Runtime状況</h1>
+      <p class="lead">現在実装済みのPS1 Runtime基盤と、まだ未完成のハードウェア挙動を分けて説明します。</p>
+    </section>
+
+    <section>
+      <h2>実装済みの基盤</h2>
+      <ul>
+        <li>R3000A実行、Delay Slot、例外、COP0、割り込みの決定論的テスト。</li>
+        <li>Rust-backedのguest memory/MMIO、Interrupt Controller、Timer、DMA state。</li>
+        <li>部分的なBIOS HLEによるBIOS-less実行。</li>
+        <li>Rust-owned SIO0 register、disconnected-pad応答、IRQ7。</li>
+        <li>Rust-owned SPU register/MMIO storage。</li>
+        <li>managed GPU register/VRAM、最小triangle/rectangle rasterization、決定論的FrameSnapshot。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>主な未実装・未統合部分</h2>
+      <ul>
+        <li>GPUのproduction title execution MMIO統合、DMA2、GPU IRQ1、追加描画機能。</li>
+        <li>SPUのADPCM、ADSR、mixing、reverb、sound RAM transfer、host audio output、IRQ9。</li>
+        <li>real controller inputとmemory-card serial protocol。</li>
+        <li>CD-ROM command/status/FIFO、DMA3、IRQ2。</li>
+        <li>実タイトルのevidenceに応じたMDEC/GTE実装。</li>
+        <li>実タイトルに必要なBIOS HLE coverage拡大。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>何を優先して実装しますか？</h2>
+      <p>PS1 hardwareを番号順に全部作る方針ではありません。実タイトルの実行で最初に現れる未対応境界をevidenceとして確認し、汎用的なRuntime/BIOS機能として実装する方針です。</p>
+    </section>
+
+    <section>
+      <h2>詳細設計</h2>
+      <p><a href="https://github.com/mao2009/PSXRecompStudio/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>と<a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/runtime/architecture.md">Runtime Architecture</a>に、ownership、MMIO、scheduler、GPU、SPU、SIO0、BIOSの詳細があります。</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">日本語ホーム</a> · <a href="../runtime.html">English Runtime</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p></footer>
+</body>
+</html>
