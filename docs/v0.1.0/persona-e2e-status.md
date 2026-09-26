@@ -45,7 +45,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
 | RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests`; production PS-X EXE path via `TitleExecutionService.Run(PsxExe, ...)` (#409) |
 | BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 7 registered identities: A0:39, A0:3C, B0:3D, A0:3E, B0:3F, B0:56, B0:57 |
-| GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493), and production interpreter 32-bit guest MMIO reachability (#572); DMA2, GPU IRQ1 delivery, and production frame evidence remain |
+| GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493), production interpreter 32-bit guest MMIO reachability (#572), and GPU command IRQ1 delivery (#574); DMA2 and production frame evidence (#575) remain |
 | SPU | ⚠ Partial | Rust-owned register/MMIO model at 0x1F801C00-0x1F801DFF (#445/#551); no ADPCM/ADSR/mixing/reverb/sound-RAM/audio-output model |
 | SIO0 | ⚠ Partial | Production-reachable register model + deterministic disconnected-pad transaction path + IRQ7 (#443 via #548/#549); no real host controller or memory-card wire protocol |
 | CD-ROM | ❌ Not implemented | Register/command/DMA3/IRQ2 implementation remains #444 |
@@ -130,9 +130,9 @@ What still does not exist:
   that is not the same as replacing the Studio production engine.
 - **Production GPU/frame completion.** Guest 32-bit GP0/GP1/GPUSTAT traffic from
   the production interpreter now reaches the existing managed `GpuDevice`/VRAM
-  state through #572. DMA channel 2 data movement, GPU command IRQ1 delivery,
-  and exposing the resulting `FrameSnapshot` as #351 headless evidence remain
-  open under #440/#15.
+  state through #572. GPU command IRQ1 is delivered through the production
+  scheduler in #574. DMA channel 2 data movement and exposing the resulting
+  `FrameSnapshot` as #351 headless evidence (#575) remain open under #440/#15.
 - **SPU audio behavior.** SPU register/MMIO storage is production-reachable
   (#445/#551), but ADPCM decoding, ADSR, mixing, reverb, sound RAM, audio output,
   CD-audio input, and IRQ9 are not implemented.
@@ -148,9 +148,10 @@ What still does not exist:
    Persona fixture run should identify the next concrete missing identity/state.
 
 2. **Production GPU/frame integration (#440 / #351).** Production interpreter
-   32-bit GPU MMIO now reaches the existing managed GPU state (#572). Remaining
-   concrete gaps are DMA2, GPU IRQ1 delivery, and exposing the resulting
-   `FrameSnapshot` through the headless #351 evidence path.
+   32-bit GPU MMIO reaches the existing managed GPU state (#572) and GPU
+   command IRQ1 is scheduler-delivered (#574). Remaining concrete gaps are DMA2
+   and exposing the resulting `FrameSnapshot` through the headless #351
+   evidence path (#575).
 
 3. **Evidence-gated hardware after the next real boundary.** SPU register/MMIO
    exists, while audio behavior is still absent; CD-ROM remains unimplemented.

@@ -18,9 +18,9 @@ namespace PSXRecomp.Core.Runtime.Gpu;
 /// Integration disclosure: this device is reachable through
 /// <c>GpuMmioAdapter</c> + <c>MemoryBus</c> and, since Issue #572, the production
 /// native interpreter forwards guest 32-bit GPU MMIO accesses to that same
-/// managed adapter. DMA channel 2 consumption and GPU command IRQ1 delivery to
-/// the Interrupt Controller remain separate integration work. VBlank IRQ0 is
-/// owned by <see cref="DeviceScheduler"/> rather than this device.
+/// managed adapter. DMA channel 2 consumption remains separate integration
+/// work. GPU command IRQ1 delivery is owned by <see cref="DeviceScheduler"/>
+/// (Issue #574), while VBlank IRQ0 is also scheduler-owned.
 /// </summary>
 [Domain]
 public sealed class GpuDevice : IGpu, IDisposable
@@ -227,6 +227,9 @@ public sealed class GpuDevice : IGpu, IDisposable
         // Bit31 (drawing even/odd lines) requires a scanline/timing model (Issue #442); reads 0.
         return st;
     }
+
+    /// <summary>True while GP0(1Fh) is requesting GPU IRQ1; GP1(02h) clears this source.</summary>
+    public bool HasCommandInterrupt => _state.IrqRequested;
 
     public IntPtr GetVramPointer() => Vram.Pointer;
 

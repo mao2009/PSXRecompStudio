@@ -16,11 +16,12 @@ namespace PSXRecomp.Core.Runtime;
 /// <para>
 /// It keeps no clock of its own: elapsed cycles come from the caller on every
 /// <see cref="Advance"/>. The only state is the phase inside the current VBlank
-/// interval and the DMA IRQ line's last level, for edge detection.
+/// interval plus the DMA and GPU command-IRQ source levels used for edge detection.
 /// </para>
 /// <para>
 /// Fixed order within one <see cref="Advance"/>, each stage raising its own
-/// line: Timers (IRQ4-6) → DMA (IRQ3) → SIO0 (IRQ7) → VBlank (IRQ0). Whether
+/// line: Timers (IRQ4-6) → DMA (IRQ3) → SIO0 (IRQ7) → GPU command IRQ (IRQ1)
+/// → VBlank (IRQ0). Whether
 /// the CPU takes the aggregate line as an INT exception is the stepping
 /// caller's choice: <c>PSXCore_Step</c> samples it (Issue #144) — the production
 /// interpreter steps that way and runs the guest's handler (Issue #499) — while
@@ -39,6 +40,9 @@ public sealed class DeviceScheduler
     /// <summary>VBlank interrupt line.</summary>
     public const int VblankIrq = 0;
 
+    /// <summary>GPU command interrupt line (GP0(1Fh), Issue #574).</summary>
+    public const int GpuIrq = 1;
+
     /// <summary>DMA interrupt line.</summary>
     public const int DmaIrq = 3;
 
@@ -52,17 +56,22 @@ public sealed class DeviceScheduler
 
     private readonly PSXCoreWrapper _core;
     private readonly IInterruptController _interrupts;
+    private readonly IGpu? _gpu;
     private uint _cyclesSinceVblank;
     private bool _dmaIrqLine;
+    private bool _gpuIrqLine;
 
     /// <summary>Creates a scheduler over <paramref name="core"/>'s devices.</summary>
     /// <param name="core">The native core whose Timer/DMA state advances.</param>
     /// <param name="interrupts">Where device interrupts are raised; normally the
     /// core's own <c>InterruptControllerMmioAdapter</c>.</param>
-    public DeviceScheduler(PSXCoreWrapper core, IInterruptController interrupts)
+    /// <param name="gpu">Optional GPU command-interrupt source. Production title execution
+    /// passes its existing managed GPU adapter; callers without a GPU may leave it null.</param>
+    public DeviceScheduler(PSXCoreWrapper core, IInterruptController interrupts, IGpu? gpu = null)
     {
         _core = core ?? throw new ArgumentNullException(nameof(core));
         _interrupts = interrupts ?? throw new ArgumentNullException(nameof(interrupts));
+        _gpu = gpu;
     }
 
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
@@ -101,6 +110,20 @@ public sealed class DeviceScheduler
         {
             _core.ClearSio0Interrupt();
             _interrupts.Raise(Sio0Irq);
+        }
+
+        // GPU command interrupt: GP0(1Fh) asserts the GPU-internal source
+        // (GPUSTAT bit 24). Deliver only its rising edge as IRQ1. GP1(02h)
+        // deasserts the source, while I_STAT remains independently latched until
+        // the guest acknowledges it (Issue #574).
+        if (_gpu is not null)
+        {
+            var gpuLine = _gpu.HasCommandInterrupt;
+            if (gpuLine && !_gpuIrqLine)
+            {
+                _interrupts.Raise(GpuIrq);
+            }
+            _gpuIrqLine = gpuLine;
         }
 
         // VBlank: several intervals elapsed in one call still latch one IRQ0.

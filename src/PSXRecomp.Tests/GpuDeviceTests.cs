@@ -67,9 +67,11 @@ public class GpuDeviceTests
         using var gpu = new GpuDevice();
 
         gpu.WriteGP0(0x1F000000);
+        gpu.HasCommandInterrupt.Should().BeTrue();
         ((gpu.ReadGpustat() >> 24) & 1).Should().Be(1u);
 
         gpu.WriteGP1(0x02000000);
+        gpu.HasCommandInterrupt.Should().BeFalse();
         ((gpu.ReadGpustat() >> 24) & 1).Should().Be(0u);
     }
 
