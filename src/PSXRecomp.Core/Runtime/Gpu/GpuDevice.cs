@@ -16,10 +16,11 @@ namespace PSXRecomp.Core.Runtime.Gpu;
 /// device, so <see cref="HasVblank"/> is always false.
 ///
 /// Integration disclosure: this device is reachable through
-/// <c>GpuMmioAdapter</c> + <c>MemoryBus</c>, but it is NOT yet wired into any
-/// production <c>IRecompiledExecutionEngine</c>. DMA channel 2 consumption and
-/// GPU interrupt (IRQ1/VBlank IRQ0) signaling into the Interrupt Controller are
-/// also not wired. Callers that need those must do so explicitly.
+/// <c>GpuMmioAdapter</c> + <c>MemoryBus</c> and, since Issue #572, the production
+/// native interpreter forwards guest 32-bit GPU MMIO accesses to that same
+/// managed adapter. DMA channel 2 consumption and GPU command IRQ1 delivery to
+/// the Interrupt Controller remain separate integration work. VBlank IRQ0 is
+/// owned by <see cref="DeviceScheduler"/> rather than this device.
 /// </summary>
 [Domain]
 public sealed class GpuDevice : IGpu, IDisposable
@@ -246,7 +247,7 @@ public sealed class GpuDevice : IGpu, IDisposable
         return ((ushort)_width, (ushort)_height);
     }
 
-    /// <summary>Always false: VBlank IRQ0 comes from <see cref="DeviceScheduler"/> (Issue #442), since this device is not yet wired into a production engine.</summary>
+    /// <summary>Always false: VBlank IRQ0 comes from <see cref="DeviceScheduler"/> (Issue #442), not from the GPU register model.</summary>
     public bool HasVblank => false;
 
     public void AcknowledgeVblank()
