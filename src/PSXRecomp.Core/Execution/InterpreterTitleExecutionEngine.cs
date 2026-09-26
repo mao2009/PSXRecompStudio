@@ -57,6 +57,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly GpuMmioAdapter _gpuAdapter;
     private DeviceScheduler? _scheduler;
     private bool _loaded;
+    private bool _disposed;
 
     // Set when the CPU takes a hardware interrupt, cleared once the handler has
     // actually returned. Entering the program image alone does not clear it: a
@@ -360,6 +361,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Releases the native core, memory bus and MMIO adapters this engine owns.</summary>
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         // The native CPU may call back into the managed GPU adapter while
         // stepping, so sever that edge before either side of the bridge is
         // disposed (Issue #572).
@@ -375,6 +381,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _timerAdapter.Dispose();
         _interruptControllerAdapter.Dispose();
         _core.Dispose();
+        _disposed = true;
         GC.SuppressFinalize(this);
     }
 
