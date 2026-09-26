@@ -2,7 +2,7 @@
 
 **Status:** Experimental
 
-**Related Issue:** #474
+**Related Issues:** #474, #570
 
 The release workflow packages the current `psxrecomp` headless CLI for direct
 download from GitHub Releases.
@@ -47,12 +47,36 @@ The release bundle does **not** redistribute GCC or another C compiler.
 ## Release trigger
 
 - Pull requests that touch release packaging run a packaging dry-run only.
-- `workflow_dispatch` runs a packaging dry-run only.
 - Pushing a version tag matching `v*` packages all enabled targets and creates
   the GitHub Release with SHA-256 checksums.
+- `workflow_dispatch` can create and publish a versioned release directly from
+  the GitHub Actions UI. It accepts a required `release_tag` such as
+  `v0.0.0-alpha.2`.
 
-Prerelease-looking tags such as `v0.1.0-alpha.1` are published as GitHub
+For a manual release, the workflow fails closed unless it was dispatched from
+`main`, the tag matches the release-version format, and the tag does not
+already exist. Packaging and smoke tests run before the tag is created. After
+all three platform packages pass, the release job rechecks that the tag is
+still absent, creates it at the exact `main` SHA captured by the workflow
+run, generates SHA-256 checksums, and publishes the GitHub Release. Existing
+tags are never moved or overwritten.
+
+Prerelease-looking tags such as `v0.0.0-alpha.2` are published as GitHub
 pre-releases.
+
+### Mobile / web release
+
+A maintainer can publish without a local Git client:
+
+1. Open the repository on GitHub and go to **Actions**.
+2. Open **Release CLI**.
+3. Choose **Run workflow**.
+4. Keep the branch set to **main**.
+5. Enter the desired `release_tag`, for example `v0.0.0-alpha.2`.
+6. Run the workflow.
+
+The tag and GitHub Release are created only after the existing Linux x64,
+Windows x64, and macOS arm64 packaging and `--help` smoke tests succeed.
 
 ## Asset policy
 
