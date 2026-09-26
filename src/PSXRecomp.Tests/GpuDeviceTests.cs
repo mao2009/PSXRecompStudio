@@ -12,6 +12,7 @@ public class GpuDeviceTests
     {
         using var gpu = new GpuDevice();
         gpu.ReadGpustat().Should().Be(GpustatReset);
+        gpu.HasFrameEvidence.Should().BeFalse("untouched power-on VRAM is not frame evidence");
     }
 
     [Fact]
@@ -45,6 +46,7 @@ public class GpuDeviceTests
 
         gpu.WriteGP1(0x03000000); // param 0 => display ON
         ((gpu.ReadGpustat() >> 23) & 1).Should().Be(0u);
+        gpu.HasFrameEvidence.Should().BeTrue("an explicitly enabled black display is meaningful");
 
         gpu.WriteGP1(0x03000001); // param 1 => display OFF
         ((gpu.ReadGpustat() >> 23) & 1).Should().Be(1u);
@@ -234,6 +236,20 @@ public class GpuDeviceTests
     }
 
     [Fact]
+    public void Gp0BlackFill_MarksFrameEvidenceWithoutInspectingPixelValues()
+    {
+        using var gpu = new GpuDevice();
+
+        gpu.WriteGP0(0x02000000); // black fill: written pixels remain numerically zero
+        gpu.WriteGP0(0x00000000);
+        gpu.WriteGP0(0x00010004);
+
+        gpu.Vram[0, 0].Should().Be(0u);
+        gpu.HasFrameEvidence.Should().BeTrue(
+            "frame readiness is based on guest GPU activity, not on non-zero pixels");
+    }
+
+    [Fact]
     public void Gp0FillCommand_ZeroHeight_DoesNotFill()
     {
         using var gpu = new GpuDevice();
@@ -241,6 +257,7 @@ public class GpuDeviceTests
         gpu.WriteGP0(0x00000000);
         gpu.WriteGP0(0x00000004); // h=0
         gpu.Vram[0, 0].Should().Be(0);
+        gpu.HasFrameEvidence.Should().BeFalse();
     }
 
     [Fact]
