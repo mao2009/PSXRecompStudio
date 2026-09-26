@@ -60,6 +60,23 @@ public sealed class CliRunTests
         Immediate(OriOpcode, MarkerRegister, DiagnosticMarker),
     };
 
+    /// <summary>
+    /// Production-interpreter-only frame fixture: a GP0 quick fill of black
+    /// pixels. Pixel values stay zero, so evidence readiness must come from
+    /// semantic GPU activity rather than a "non-zero framebuffer" heuristic.
+    /// </summary>
+    private static uint[] BlackFrameProgram() => new uint[]
+    {
+        0x3C08BF80u, // lui  $t0, 0xBF80
+        0x35081810u, // ori  $t0, $t0, 0x1810  -> KSEG1 GP0
+        0x3C090200u, // lui  $t1, 0x0200       -> GP0(02h), black
+        0xAD090000u, // sw   $t1, 0($t0)
+        0xAD000000u, // sw   $zero, 0($t0)     -> coord (0,0)
+        0x3C090001u, // lui  $t1, 0x0001
+        0x35290004u, // ori  $t1, $t1, 0x0004  -> 4x1 (rounded to 16x1)
+        0xAD090000u, // sw   $t1, 0($t0)
+    };
+
     /// <summary>An unconditional jump to an address no block is compiled for.</summary>
     private static uint[] UnresolvedJumpProgram() => new uint[]
     {
@@ -580,6 +597,93 @@ public sealed class CliRunTests
     }
 
     [Fact]
+    public void Run_FrameEvidence_NoGpuActivity_IsDeterministicallyUnavailableWithoutChangingRunResult()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var outDir = dir.CreateSubdirectory("out");
+
+        var (exit1, output1, error1) = Invoke("run", exePath, "--output", outDir, "--frame-evidence", "--json");
+        var (exit2, output2, error2) = Invoke("run", exePath, "--output", outDir, "--frame-evidence", "--json");
+
+        exit1.Should().Be(RecompiledArtifactExitCode.Success);
+        exit2.Should().Be(RecompiledArtifactExitCode.Success);
+        error1.Should().BeEmpty();
+        error2.Should().BeEmpty();
+        output2.Should().Be(output1, "frame evidence must be deterministic across equivalent runs");
+
+        using var json = JsonDocument.Parse(output1);
+        var root = json.RootElement;
+        root.GetProperty("result").GetProperty("engineName").GetString()
+            .Should().Be("recompiled-host-artifact", "frame evidence must not replace the generated-host run result");
+
+        var frame = root.GetProperty("frameEvidence");
+        frame.GetProperty("status").GetString().Should().Be(ProductionFrameEvidenceCollector.UnavailableStatus);
+        frame.GetProperty("width").ValueKind.Should().Be(JsonValueKind.Null);
+        frame.GetProperty("height").ValueKind.Should().Be(JsonValueKind.Null);
+        frame.GetProperty("sha256").ValueKind.Should().Be(JsonValueKind.Null);
+        frame.GetProperty("productionState").GetInt32().Should().Be((int)TitleExecutionState.Completed);
+        frame.GetProperty("diagnosticCode").ValueKind.Should().Be(JsonValueKind.Null);
+        frame.GetProperty("reason").GetString().Should().Be("no-frame-activity");
+    }
+
+    [Fact]
+    public void Run_FrameEvidence_HumanOutputReportsUnavailableWhenGuestNeverTouchesGpu()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+
+        var (exit, output, error) = Invoke(
+            "run", exePath, "--output", dir.CreateSubdirectory("out"), "--frame-evidence");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        error.Should().BeEmpty();
+        output.Should().Contain("Frame evidence: unavailable (no-frame-activity).");
+    }
+
+    [Fact]
+    public void ProductionFrameEvidenceCollector_BlackGpuFill_IsAvailableWithoutPixelHeuristic()
+    {
+        var exe = PsxExe.Load(BuildSyntheticExe(BlackFrameProgram()), "FRAME.EXE");
+        var input = PsxExeTitleInput.Build(exe, outerBudget: 2, segmentBudget: 64);
+
+        var evidence = ProductionFrameEvidenceCollector.Collect(input);
+
+        evidence.Status.Should().Be(ProductionFrameEvidenceCollector.AvailableStatus);
+        evidence.Width.Should().Be(256);
+        evidence.Height.Should().Be(240);
+        evidence.Sha256.Should().MatchRegex("^[0-9a-f]{64}$");
+        evidence.ProductionState.Should().Be(TitleExecutionState.Completed);
+        evidence.DiagnosticCode.Should().BeNull();
+        evidence.Reason.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(typeof(DllNotFoundException))]
+    [InlineData(typeof(EntryPointNotFoundException))]
+    [InlineData(typeof(BadImageFormatException))]
+    public void ProductionFrameEvidenceCollector_InteropFailuresUseBoundedInteropReason(Type exceptionType)
+    {
+        var exception = (Exception)Activator.CreateInstance(exceptionType)!;
+
+        ProductionFrameEvidenceCollector.IsExpectedCaptureFailure(exception).Should().BeTrue();
+        ProductionFrameEvidenceCollector.ClassifyCaptureFailure(exception)
+            .Should().Be(ProductionFrameEvidenceCollector.NativeInteropUnavailableReason);
+    }
+
+    [Theory]
+    [InlineData(typeof(ArgumentException))]
+    [InlineData(typeof(InvalidOperationException))]
+    public void ProductionFrameEvidenceCollector_PreparationFailuresUseBoundedPreparationReason(Type exceptionType)
+    {
+        var exception = (Exception)Activator.CreateInstance(exceptionType)!;
+
+        ProductionFrameEvidenceCollector.IsExpectedCaptureFailure(exception).Should().BeTrue();
+        ProductionFrameEvidenceCollector.ClassifyCaptureFailure(exception)
+            .Should().Be(ProductionFrameEvidenceCollector.PreparationFailedReason);
+    }
+
+    [Fact]
     public void Run_SyntheticExe_HumanOutputReportsCompletionAndArtifactPath()
     {
         using var dir = new TempDirectory();
@@ -733,6 +837,14 @@ public sealed class CliRunTests
         var (exit, _, error) = Invoke("run");
         exit.Should().Be(RecompiledArtifactExitCode.Failure);
         error.Should().Contain("missing input path.");
+    }
+
+    [Fact]
+    public void Recompile_FrameEvidenceOptionIsRejectedWithExitCodeOne()
+    {
+        var (exit, _, error) = Invoke("recompile", "input.exe", "--output", "out", "--frame-evidence");
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        error.Should().Contain("'--frame-evidence' is only valid for 'run'.");
     }
 
     [Fact]

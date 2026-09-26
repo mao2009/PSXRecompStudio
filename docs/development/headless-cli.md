@@ -118,7 +118,36 @@ because no production result exists to serialize. When the run succeeds but is
 blocked (exit code 2), the JSON document is still emitted with
 `"success": false`.
 
-Without `--report`, the run JSON field set is unchanged. With `--report`,
+Without `--report` or `--frame-evidence`, the run JSON field set is unchanged.
+With `--frame-evidence`, one `frameEvidence` object is appended:
+
+```json
+{ "frameEvidence": {
+    "status": "available",
+    "width": 256,
+    "height": 240,
+    "sha256": "<64 lowercase hex characters>",
+    "productionState": 0,
+    "diagnosticCode": null,
+    "reason": null
+} }
+```
+
+`status` is `available` only after the production interpreter observes
+meaningful guest GPU frame activity that actually writes at least one VRAM
+pixel in the current execution epoch (for example a quick fill, rasterized
+primitive, or CPU-to-VRAM transfer). This is deliberately not a non-zero-pixel
+heuristic: an explicitly written black frame is valid evidence, while untouched
+power-on VRAM — or display-enable applied only to pixels preserved from an older
+load — is reported as `unavailable` with `reason: "no-frame-activity"`.
+Other unavailable states leave hash fields null as appropriate and classify the
+reason explicitly. Expected native interop availability failures use
+`native-interop-unavailable`; production preparation/contract failures use
+`production-frame-preparation-failed`.
+The `productionState` belongs to the supplemental production-interpreter
+evidence run; the top-level `result` remains the generated-host run.
+
+Without `--report`, the diagnostic-bundle field remains absent. With `--report`,
 the same envelope adds one final field:
 
 ```json

@@ -51,5 +51,24 @@ internal static class CliJson
         RecompiledArtifactResult Result,
         string DiagnosticBundle);
 
+    [Infrastructure]
+    public sealed record RunResultWithFrameEvidence(
+        string Kind,
+        bool Success,
+        string? Artifact,
+        IReadOnlyList<byte> Output,
+        RecompiledArtifactResult Result,
+        ProductionFrameEvidenceCollector.FrameEvidence FrameEvidence);
+
+    [Infrastructure]
+    public sealed record RunResultWithDiagnosticBundleAndFrameEvidence(
+        string Kind,
+        bool Success,
+        string? Artifact,
+        IReadOnlyList<byte> Output,
+        RecompiledArtifactResult Result,
+        string DiagnosticBundle,
+        ProductionFrameEvidenceCollector.FrameEvidence FrameEvidence);
+
     public static string Serialize<T>(T document) => ArtifactJson.Serialize(document);
 }

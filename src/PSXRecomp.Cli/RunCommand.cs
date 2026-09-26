@@ -22,6 +22,10 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// so <c>run</c> rebuilds from the input; persisted-artifact-only relaunch is outside
 /// Issue #460. With <c>--report</c>, the command also packages the existing
 /// privacy-safe #457 diagnostic contracts after a production result exists.
+/// With <c>--frame-evidence</c>, it additionally runs the same resolved input
+/// through the production interpreter and reports a deterministic snapshot of
+/// that engine's real managed GPU/VRAM state (#575). This supplemental evidence
+/// never changes the generated-host run's exit code or termination result.
 /// The production result maps onto the process exit code as-is:
 /// Success → 0, Blocked → 2, Failure/tooling → 1.
 /// </summary>
@@ -69,6 +73,9 @@ public static class RunCommand
                 resultRegister: (int)R3000aRegister.V0);
 
             var artifactPath = ResolveArtifactPath(outputDirectory);
+            var frameEvidence = arguments.FrameEvidence
+                ? ProductionFrameEvidenceCollector.Collect(input)
+                : null;
             string? diagnosticBundlePath = null;
             if (arguments.Report)
             {
@@ -93,24 +100,46 @@ public static class RunCommand
 
             if (arguments.Json)
             {
-                if (diagnosticBundlePath is null)
+                var success = outcome.Result.Outcome == RecompiledArtifactOutcome.Success;
+                if (diagnosticBundlePath is not null && frameEvidence is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResult(
+                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithDiagnosticBundleAndFrameEvidence(
                         Kind: CliJson.RunKind,
-                        Success: outcome.Result.Outcome == RecompiledArtifactOutcome.Success,
+                        Success: success,
                         Artifact: artifactPath,
                         Output: outcome.Output,
-                        Result: outcome.Result)));
+                        Result: outcome.Result,
+                        DiagnosticBundle: diagnosticBundlePath,
+                        FrameEvidence: frameEvidence)));
                 }
-                else
+                else if (diagnosticBundlePath is not null)
                 {
                     standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithDiagnosticBundle(
                         Kind: CliJson.RunKind,
-                        Success: outcome.Result.Outcome == RecompiledArtifactOutcome.Success,
+                        Success: success,
                         Artifact: artifactPath,
                         Output: outcome.Output,
                         Result: outcome.Result,
                         DiagnosticBundle: diagnosticBundlePath)));
+                }
+                else if (frameEvidence is not null)
+                {
+                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithFrameEvidence(
+                        Kind: CliJson.RunKind,
+                        Success: success,
+                        Artifact: artifactPath,
+                        Output: outcome.Output,
+                        Result: outcome.Result,
+                        FrameEvidence: frameEvidence)));
+                }
+                else
+                {
+                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResult(
+                        Kind: CliJson.RunKind,
+                        Success: success,
+                        Artifact: artifactPath,
+                        Output: outcome.Output,
+                        Result: outcome.Result)));
                 }
             }
             else
@@ -119,6 +148,10 @@ public static class RunCommand
                 if (diagnosticBundlePath is not null)
                 {
                     standardOutput.WriteLine($"Diagnostic report: {diagnosticBundlePath}");
+                }
+                if (frameEvidence is not null)
+                {
+                    WriteFrameEvidence(frameEvidence, standardOutput);
                 }
             }
 
@@ -225,6 +258,25 @@ public static class RunCommand
             standardOutput.WriteLine($"TTY: {RenderTty(outcome.Output)}");
         }
         standardOutput.WriteLine($"Artifact: {artifactPath}");
+    }
+
+    private static void WriteFrameEvidence(
+        ProductionFrameEvidenceCollector.FrameEvidence evidence,
+        TextWriter standardOutput)
+    {
+        if (evidence.Status == ProductionFrameEvidenceCollector.AvailableStatus)
+        {
+            standardOutput.WriteLine(
+                $"Frame evidence: {evidence.Width}x{evidence.Height} sha256:{evidence.Sha256} " +
+                $"(productionState={evidence.ProductionState}).");
+            if (evidence.DiagnosticCode is { Length: > 0 } diagnosticCode)
+            {
+                standardOutput.WriteLine($"Frame production diagnostic: {diagnosticCode}");
+            }
+            return;
+        }
+
+        standardOutput.WriteLine($"Frame evidence: unavailable ({evidence.Reason}).");
     }
 
     private static string RenderTty(IReadOnlyList<byte> bytes)

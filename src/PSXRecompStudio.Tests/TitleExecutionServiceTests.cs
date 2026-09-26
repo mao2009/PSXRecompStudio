@@ -27,6 +27,9 @@ public class TitleExecutionServiceTests
         run.Output.Should().Equal(TitleExecutionService.DiagnosticCharacter);
         run.Result.FinalSnapshot!.Gpr[(int)R3000aRegister.S1]
             .Should().Be(TitleExecutionService.DiagnosticMarker);
+        run.Frame.Width.Should().Be(256);
+        run.Frame.Height.Should().Be(240);
+        run.Frame.ComputeStableHash().Should().HaveCount(32);
     }
 
     // Issue #279: A0:39 InitHeap(addr,size) is the first BIOS call real-ROM crt0

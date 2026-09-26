@@ -37,6 +37,7 @@ public sealed class GpuRasterizerTests
         gpu.WriteGP0(Vertex(10, 20));
 
         gpu.LastRasterOutcome.Should().Be(GpuRasterOutcome.Rasterized);
+        gpu.HasFrameEvidence.Should().BeTrue();
         gpu.Vram[10, 20].Should().Be(Rgb555(0xF8, 0x00, 0x00));
         gpu.Vram[11, 20].Should().Be(0);
         gpu.Vram[9, 20].Should().Be(0);
@@ -110,9 +111,25 @@ public sealed class GpuRasterizerTests
 
         _act.Should().NotThrow();
         gpu.LastRasterOutcome.Should().Be(GpuRasterOutcome.Rasterized);
+        gpu.HasFrameEvidence.Should().BeFalse(
+            "a fully clipped primitive must not count as frame evidence");
         for (int y = 0; y < GpuVram.Height; y += 64)
             for (int x = 0; x < GpuVram.Width; x += 64)
                 gpu.Vram[x, y].Should().Be(0);
+    }
+
+    [Fact]
+    public void Rectangle_ZeroSize_DoesNotCreateFrameEvidence()
+    {
+        using var gpu = NewGpuWithFullDrawArea();
+
+        gpu.WriteGP0(0x60000000 | Color(0xFF, 0xFF, 0xFF));
+        gpu.WriteGP0(Vertex(10, 10));
+        gpu.WriteGP0(0x00000000); // width=0, height=0
+
+        gpu.LastRasterOutcome.Should().Be(GpuRasterOutcome.Rasterized);
+        gpu.HasFrameEvidence.Should().BeFalse();
+        gpu.Vram[10, 10].Should().Be(0);
     }
 
     [Fact]
@@ -210,6 +227,8 @@ public sealed class GpuRasterizerTests
         gpu.WriteGP0(Vertex(30, 30)); // collinear => zero area
 
         gpu.LastRasterOutcome.Should().Be(GpuRasterOutcome.Rasterized);
+        gpu.HasFrameEvidence.Should().BeFalse(
+            "a degenerate triangle writes no VRAM pixel");
         for (int i = 10; i <= 30; i++)
             gpu.Vram[i, i].Should().Be(0);
     }

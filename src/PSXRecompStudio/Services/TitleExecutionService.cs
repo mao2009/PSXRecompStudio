@@ -5,6 +5,7 @@ using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.Gpu;
 
 namespace PSXRecompStudio.Services;
 
@@ -14,7 +15,10 @@ namespace PSXRecompStudio.Services;
 /// ADR-014 — so the host decides how to render them).
 /// </summary>
 [Application]
-public sealed record TitleExecutionRun(TitleExecutionResult Result, IReadOnlyList<byte> Output);
+public sealed record TitleExecutionRun(
+    TitleExecutionResult Result,
+    IReadOnlyList<byte> Output,
+    FrameSnapshot Frame);
 
 /// <summary>
 /// The Studio's composition root for running a title: it assembles the
@@ -86,8 +90,9 @@ public sealed class TitleExecutionService
 
         var result = new ExecutionOrchestrator().Execute(
             engine, new ProgramEndHandoff(entryPc, program.Count), request);
+        var frame = engine.CaptureFrame();
 
-        return new TitleExecutionRun(result, sink.Bytes);
+        return new TitleExecutionRun(result, sink.Bytes, frame);
     }
 
     /// <summary>
@@ -120,8 +125,9 @@ public sealed class TitleExecutionService
             engine,
             new ProgramEndHandoff(input.LoadAddress, input.InstructionWords.Count),
             input.Request);
+        var frame = engine.CaptureFrame();
 
-        return new TitleExecutionRun(result, sink.Bytes);
+        return new TitleExecutionRun(result, sink.Bytes, frame);
     }
 
     /// <summary>

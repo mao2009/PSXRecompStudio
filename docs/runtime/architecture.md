@@ -216,8 +216,12 @@ state.
 
 Not yet implemented: texture mapping, quads, line primitives,
 semi-transparency blending, dithering, mask-bit checking, VRAM→VRAM blit, and
-DMA channel 2 (GPU) consumption of the DMA controller. No CLI/headless export
-path consumes `FrameSnapshot` yet (#575).
+DMA channel 2 (GPU) consumption of the DMA controller. `InterpreterTitleExecutionEngine.CaptureFrame()` exposes that same production
+GPU/VRAM state. Its evidence-oriented boundary separately tracks current-epoch
+VRAM pixel writes, so untouched or merely preserved VRAM is not misreported as
+a new frame while legitimate all-black guest output remains valid. `psxrecomp run
+--frame-evidence` emits deterministic width/height/SHA-256 headless evidence
+when that activity exists (#575).
 
 ## SPU Model
 
@@ -389,7 +393,8 @@ Execution / generated-host composition
     ├── managed BIOS-HLE/test memory seam → IMemoryBus / MemoryBus
     └── managed GPU seam → IGpu / GpuDevice
             ├── production guest MMIO bridge (#572)
-            └── scheduler IRQ1 delivery (#574)
+            ├── scheduler IRQ1 delivery (#574)
+            └── production FrameSnapshot / headless evidence (#575)
 ```
 
 The exact generated-host execution contract is documented separately; this diagram records ownership boundaries rather than claiming that every execution backend uses the same memory-call shape.

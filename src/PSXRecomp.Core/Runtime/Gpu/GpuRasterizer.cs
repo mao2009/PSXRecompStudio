@@ -10,7 +10,10 @@ namespace PSXRecomp.Core.Runtime.Gpu;
 [Domain]
 public enum GpuRasterOutcome
 {
-    /// <summary>The primitive was rasterized into VRAM.</summary>
+    /// <summary>
+    /// The primitive is supported and rasterization completed. It can still be a
+    /// deterministic no-op after zero sizing, degeneracy, or clipping.
+    /// </summary>
     Rasterized = 0,
 
     /// <summary>
@@ -40,11 +43,23 @@ public enum GpuRasterOutcome
 /// bytes), which is what this slice's headless frame evidence requires.
 /// </para>
 /// </summary>
+/// <summary>Detailed internal raster result used to preserve pixel-write provenance.</summary>
+[Domain]
+internal readonly record struct GpuRasterResult(GpuRasterOutcome Outcome, bool WrotePixels);
+
 [Domain]
 public static class GpuRasterizer
 {
     /// <summary>Rasterizes a decoded drawing-primitive packet into <paramref name="vram"/>.</summary>
-    public static GpuRasterOutcome Rasterize(GpuPrimitivePacket primitive, GpuState state, GpuVram vram)
+    public static GpuRasterOutcome Rasterize(GpuPrimitivePacket primitive, GpuState state, GpuVram vram) =>
+        RasterizeDetailed(primitive, state, vram).Outcome;
+
+    /// <summary>
+    /// Rasterizes a primitive and also reports whether at least one VRAM pixel
+    /// was actually written. The extra bit is used only for frame-evidence
+    /// provenance; <see cref="Rasterize"/> keeps the existing public outcome API.
+    /// </summary>
+    internal static GpuRasterResult RasterizeDetailed(GpuPrimitivePacket primitive, GpuState state, GpuVram vram)
     {
         uint word = primitive.CommandWord;
         uint family = word >> 29;
@@ -53,11 +68,11 @@ public static class GpuRasterizer
         {
             1 => RasterizePolygon(word, primitive.Parameters, state, vram),
             3 => RasterizeRectangle(word, primitive.Parameters, state, vram),
-            _ => GpuRasterOutcome.UnsupportedFeature,
+            _ => new GpuRasterResult(GpuRasterOutcome.UnsupportedFeature, false),
         };
     }
 
-    private static GpuRasterOutcome RasterizePolygon(uint word, IReadOnlyList<uint> p, GpuState state, GpuVram vram)
+    private static GpuRasterResult RasterizePolygon(uint word, IReadOnlyList<uint> p, GpuState state, GpuVram vram)
     {
         bool _gouraud = ((word >> 28) & 1) != 0;
         bool _quad = ((word >> 27) & 1) != 0;
@@ -66,7 +81,7 @@ public static class GpuRasterizer
         // Quads and texture mapping are not implemented by this slice; report
         // explicitly rather than mis-rendering half a quad or an untextured guess.
         if (_quad || _textured)
-            return GpuRasterOutcome.UnsupportedFeature;
+            return new GpuRasterResult(GpuRasterOutcome.UnsupportedFeature, false);
 
         var _offset = DecodeDrawOffset(state.DrawOffset);
         var _c0 = DecodeColor5(word);
@@ -77,15 +92,15 @@ public static class GpuRasterizer
         var _c1 = _gouraud ? DecodeColor5(p[1]) : _c0;
         var _c2 = _gouraud ? DecodeColor5(p[3]) : _c0;
 
-        FillTriangle(_v0, _c0, _v1, _c1, _v2, _c2, state, vram);
-        return GpuRasterOutcome.Rasterized;
+        bool _wrotePixels = FillTriangle(_v0, _c0, _v1, _c1, _v2, _c2, state, vram);
+        return new GpuRasterResult(GpuRasterOutcome.Rasterized, _wrotePixels);
     }
 
-    private static GpuRasterOutcome RasterizeRectangle(uint word, IReadOnlyList<uint> p, GpuState state, GpuVram vram)
+    private static GpuRasterResult RasterizeRectangle(uint word, IReadOnlyList<uint> p, GpuState state, GpuVram vram)
     {
         bool _textured = ((word >> 26) & 1) != 0;
         if (_textured)
-            return GpuRasterOutcome.UnsupportedFeature;
+            return new GpuRasterResult(GpuRasterOutcome.UnsupportedFeature, false);
 
         int _size = (int)((word >> 27) & 3);
         var _offset = DecodeDrawOffset(state.DrawOffset);
@@ -102,21 +117,23 @@ public static class GpuRasterizer
         int _height = _dims.Height;
 
         if (_width <= 0 || _height <= 0)
-            return GpuRasterOutcome.Rasterized;
+            return new GpuRasterResult(GpuRasterOutcome.Rasterized, false);
 
         var _color = DecodeColor5(word);
         ushort _pixel = PackPixel(_color.R, _color.G, _color.B);
 
         var (_minX, _minY, _maxX, _maxY) = ClipBounds(_vx, _vy, _vx + _width - 1, _vy + _height - 1, state);
+        if (_minX > _maxX || _minY > _maxY)
+            return new GpuRasterResult(GpuRasterOutcome.Rasterized, false);
 
         for (int y = _minY; y <= _maxY; y++)
             for (int x = _minX; x <= _maxX; x++)
                 vram[x, y] = _pixel;
 
-        return GpuRasterOutcome.Rasterized;
+        return new GpuRasterResult(GpuRasterOutcome.Rasterized, true);
     }
 
-    private static void FillTriangle(
+    private static bool FillTriangle(
         (int X, int Y) v0, (int R, int G, int B) c0,
         (int X, int Y) v1, (int R, int G, int B) c1,
         (int X, int Y) v2, (int R, int G, int B) c2,
@@ -124,7 +141,7 @@ public static class GpuRasterizer
     {
         long _area = EdgeFunction(v0, v1, v2);
         if (_area == 0)
-            return; // degenerate (collinear/zero-area) triangle: deterministic no-op
+            return false; // degenerate (collinear/zero-area) triangle: deterministic no-op
 
         int _minX = Math.Min(v0.X, Math.Min(v1.X, v2.X));
         int _maxX = Math.Max(v0.X, Math.Max(v1.X, v2.X));
@@ -132,7 +149,10 @@ public static class GpuRasterizer
         int _maxY = Math.Max(v0.Y, Math.Max(v1.Y, v2.Y));
 
         var (_clipMinX, _clipMinY, _clipMaxX, _clipMaxY) = ClipBounds(_minX, _minY, _maxX, _maxY, state);
+        if (_clipMinX > _clipMaxX || _clipMinY > _clipMaxY)
+            return false;
 
+        bool wrotePixels = false;
         for (int y = _clipMinY; y <= _clipMaxY; y++)
         {
             for (int x = _clipMinX; x <= _clipMaxX; x++)
@@ -154,8 +174,11 @@ public static class GpuRasterizer
                 int _b = (int)((_w0 * c0.B + _w1 * c1.B + _w2 * c2.B) / _area);
 
                 vram[x, y] = PackPixel(_r, _g, _b);
+                wrotePixels = true;
             }
         }
+
+        return wrotePixels;
     }
 
     private static long EdgeFunction((int X, int Y) a, (int X, int Y) b, (int X, int Y) p) =>

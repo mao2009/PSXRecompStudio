@@ -264,6 +264,62 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_ProductionFrameEvidence_IsAbsentUntilGuestGpuActivityOccurs()
+    {
+        using var engine = new InterpreterTitleExecutionEngine([MipsEncoding.Nop], Entry);
+
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 1, segment: 8));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        engine.CaptureFrame().Width.Should().Be(256, "a raw snapshot always exists");
+        engine.CaptureFrameEvidence().Should().BeNull(
+            "untouched power-on VRAM must not be promoted to title-screen evidence");
+    }
+
+    [Fact]
+    public void Interpreter_ProductionFrameSnapshot_ReflectsGuestGpuVramWrites()
+    {
+        // Issue #575: execute a real guest GP0 fill through the production native
+        // interpreter, then capture from the exact managed GPU/VRAM instance that
+        // received those MMIO writes. Red 0xFF converts to PS1 15bpp red 0x001F.
+        var words = new uint[]
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: 0xBF80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: (byte)R3000aRegister.T0, immediate: 0x1810),
+
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x0200),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: 0x00FF),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x0001),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: 0x0004),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+        };
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 2, segment: 64));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+
+        var frame = engine.CaptureFrameEvidence();
+        frame.Should().NotBeNull("the guest completed a real GP0 fill");
+        frame!.Width.Should().Be(256);
+        frame.Height.Should().Be(240);
+        frame.Pixels[0].Should().Be(0x001F);
+        frame.Pixels[15].Should().Be(0x001F, "GP0 fill rounds the 4-pixel width to 16 pixels");
+        frame.Pixels[16].Should().Be(0);
+        frame.ComputeStableHash().Should().NotEqual(new byte[32]);
+
+        engine.Load(Request(Entry, outer: 2, segment: 64));
+        engine.CaptureFrameEvidence().Should().BeNull(
+            "a fresh production Load starts a new evidence epoch even though GPU reset preserves VRAM");
+    }
+
+    [Fact]
     public void Interpreter_LiveGuestGpuMmio_DeliversIrq1AndKeepsAcksIndependent()
     {
         // Issues #572/#574: guest SW/LW executes inside the native interpreter,

@@ -196,6 +196,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // to physical), then the program words so the code image wins any overlap.
         _core.Reset();
         _gpuDevice.Reset();
+        _gpuDevice.ResetFrameEvidence();
         foreach (var item in request.InitialMemory)
         {
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
@@ -356,6 +357,51 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         return new RecompilerExecutionResult(
             RecompilerExecutionStatus.Completed, snapshot, diagnosticCode, diagnosticMessage);
+    }
+
+    /// <summary>
+    /// Captures the current production GPU display state from the exact
+    /// <see cref="GpuDevice"/> / VRAM instance mutated by this engine's guest
+    /// MMIO execution (Issue #575).
+    /// </summary>
+    /// <remarks>
+    /// This is a presentation-agnostic evidence boundary. It does not wait for
+    /// VBlank or define when a frame is "final"; it snapshots the current GPU
+    /// state at the caller-selected execution boundary.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The engine has not been loaded yet.</exception>
+    /// <exception cref="ObjectDisposedException">The engine has already been disposed.</exception>
+    public FrameSnapshot CaptureFrame()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_loaded)
+        {
+            throw new InvalidOperationException("Load must complete before a production frame can be captured.");
+        }
+
+        return _gpuDevice.CaptureFrame();
+    }
+
+    /// <summary>
+    /// Captures a frame only when the current production execution epoch has
+    /// performed meaningful GPU display/VRAM activity (Issue #575).
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="CaptureFrame"/>, this evidence-oriented boundary
+    /// distinguishes untouched power-on VRAM from a legitimate all-black frame
+    /// explicitly produced/enabled by the guest.
+    /// </remarks>
+    /// <returns>The current production frame, or <c>null</c> when no meaningful
+    /// frame activity has occurred since the most recent <see cref="Load"/>.</returns>
+    public FrameSnapshot? CaptureFrameEvidence()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_loaded)
+        {
+            throw new InvalidOperationException("Load must complete before production frame evidence can be captured.");
+        }
+
+        return _gpuDevice.HasFrameEvidence ? _gpuDevice.CaptureFrame() : null;
     }
 
     /// <summary>Releases the native core, memory bus and MMIO adapters this engine owns.</summary>
