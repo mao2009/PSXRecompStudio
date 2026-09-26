@@ -65,6 +65,8 @@ public sealed class DeviceScheduler
     /// <param name="core">The native core whose Timer/DMA state advances.</param>
     /// <param name="interrupts">Where device interrupts are raised; normally the
     /// core's own <c>InterruptControllerMmioAdapter</c>.</param>
+    /// <param name="gpu">Optional GPU command-interrupt source. Production title execution
+    /// passes its existing managed GPU adapter; callers without a GPU may leave it null.</param>
     public DeviceScheduler(PSXCoreWrapper core, IInterruptController interrupts, IGpu? gpu = null)
     {
         _core = core ?? throw new ArgumentNullException(nameof(core));
