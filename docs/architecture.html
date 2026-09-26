@@ -35,7 +35,7 @@
 
     <section>
       <h2>Native core</h2>
-      <p>C++ and CMake are used for the native core, including CPU and hardware-oriented components. Native implementation details are not exposed directly to managed code.</p>
+      <p>The native core is a mixed C++/Rust implementation built with CMake and Cargo. Rust owns several controller, memory/MMIO, and CPU semantic slices, while C++ retains lifecycle/orchestration and selected state operations. Native implementation details remain hidden behind one shared-library boundary.</p>
     </section>
 
     <section>
@@ -48,7 +48,7 @@
 Stable C ABI
         |
         v
-C++ native core</code></pre>
+C++ / Rust native core</code></pre>
     </section>
 
     <section>
@@ -58,12 +58,12 @@ C++ native core</code></pre>
 
     <section>
       <h2>Recompiler research path</h2>
-      <p>The current static recompilation path is validated on synthetic MIPS fixtures. MIPS instructions are lowered into a backend-agnostic IR, host C is generated deterministically, execution is bounded, and the result is compared against interpreter state. This validates the recompiler architecture without claiming complete PlayStation 1 game recompilation.</p>
+      <p>The static recompilation path is validated first on synthetic MIPS fixtures and also on bounded functions derived from legally supplied real PlayStation inputs. MIPS instructions are lowered into a backend-agnostic IR, host C is generated deterministically, execution is bounded, and results are compared against interpreter state. Whole-corpus coverage reporting records what can and cannot currently be lowered without selecting only known-good candidates. The project can also build and launch runnable generated-host artifacts through a headless CLI, but this still does not imply complete-title recompilation.</p>
     </section>
 
     <section>
       <h2>Validation and architecture enforcement</h2>
-      <p>Golden Trace and differential validation are used to detect semantic divergence. Separately, compiler-enforced architecture rules constrain layering, dependency direction, forbidden API use, and the interop boundary. Together, these mechanisms are intended to keep both execution behavior and repository structure verifiable as the project grows.</p>
+      <p>Golden Trace, differential validation, classified execution outcomes, and deterministic frame/report artifacts are used to detect semantic divergence. Separately, compiler-enforced architecture rules constrain layering, dependency direction, forbidden API use, and the interop boundary. Together, these mechanisms keep execution behavior and repository structure verifiable as the project grows.</p>
     </section>
 
     <section>
