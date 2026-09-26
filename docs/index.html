@@ -5,7 +5,65 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PSXRecompStudio | PlayStation 1 Static Recompilation and MIPS Analysis</title>
   <meta name="description" content="PSXRecompStudio is an open-source PlayStation 1 research project for PS1 static recompilation, PSX reverse engineering, MIPS R3000A analysis, and native porting research.">
+  <meta name="robots" content="index,follow">
   <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:title" content="PSXRecompStudio | PlayStation 1 Static Recompilation Research">
+  <meta property="og:description" content="Open-source PS1 static recompilation, MIPS R3000A analysis, reverse-engineering, and native-porting research.">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio | PlayStation 1 Static Recompilation Research">
+  <meta name="twitter:description" content="Open-source PS1 static recompilation, MIPS R3000A analysis, reverse-engineering, and native-porting research.">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://mao2009.github.io/PSXRecompStudio/#website",
+        "url": "https://mao2009.github.io/PSXRecompStudio/",
+        "name": "PSXRecompStudio",
+        "description": "Open-source PlayStation 1 static recompilation, MIPS R3000A analysis, reverse-engineering, and native-porting research.",
+        "inLanguage": "en",
+        "sameAs": [
+          "https://github.com/mao2009/PSXRecompStudio"
+        ]
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": "https://mao2009.github.io/PSXRecompStudio/#source",
+        "name": "PSXRecompStudio",
+        "description": "Research source code and tooling for PlayStation 1 binary analysis, MIPS R3000A validation, static recompilation, and native-porting experiments.",
+        "url": "https://mao2009.github.io/PSXRecompStudio/",
+        "codeRepository": "https://github.com/mao2009/PSXRecompStudio",
+        "license": "https://github.com/mao2009/PSXRecompStudio/blob/main/LICENSE",
+        "programmingLanguage": [
+          "C#",
+          "C++",
+          "Rust"
+        ],
+        "runtimePlatform": [
+          ".NET 10",
+          "Windows",
+          "Linux",
+          "macOS"
+        ],
+        "keywords": [
+          "PlayStation 1",
+          "PS1",
+          "PSX",
+          "static recompilation",
+          "MIPS R3000A",
+          "reverse engineering",
+          "binary analysis",
+          "native porting"
+        ],
+        "isAccessibleForFree": true
+      }
+    ]
+  }
+  </script>
   <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -28,6 +86,12 @@
       <p class="lead">A development environment for PlayStation 1 (PS1 / PSX) binary analysis, MIPS R3000A analysis, static recompilation research, reverse engineering, and native porting experiments.</p>
       <p>PSXRecompStudio focuses on building and validating the technical foundations needed for reliable PlayStation 1 recompilation. It does not yet recompile complete commercial PS1 games into native ports.</p>
       <p class="actions"><a class="button" href="https://github.com/mao2009/PSXRecompStudio">View the repository on GitHub</a></p>
+    </section>
+
+    <section>
+      <h2>What is PSXRecompStudio?</h2>
+      <p>PSXRecompStudio is an open-source research toolkit for analyzing original PlayStation software and validating static recompilation techniques. It combines PS-X EXE and supported CHD analysis, MIPS R3000A execution models, deterministic recompiler validation, runnable generated-host artifacts, and partial PS1 Runtime hardware models.</p>
+      <p>It is a research platform, not a claim of complete commercial-game compatibility. The current project can prove bounded real-ROM-derived recompilation paths and classified execution outcomes, but it does not yet turn complete commercial PS1 titles into finished native ports.</p>
     </section>
 
     <section>
@@ -63,7 +127,7 @@
 
     <section>
       <h2>Explore the project</h2>
-      <p>Read the <a href="architecture.html">architecture overview</a>, see the <a href="roadmap.html">research roadmap</a>, or review the <a href="legal.html">legal and asset policy</a>. For source code, issues, tests, and contribution history, use the <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a>.</p>
+      <p>Start with the <a href="faq.html">PSXRecompStudio FAQ</a>, the <a href="cli.html">headless CLI guide</a>, or the <a href="runtime.html">PS1 Runtime status</a>. For deeper design details, read the <a href="architecture.html">architecture overview</a>, see the <a href="roadmap.html">research roadmap</a>, or review the <a href="legal.html">legal and asset policy</a>. Source code, issues, tests, and contribution history are in the <a href="https://github.com/mao2009/PSXRecompStudio">GitHub repository</a>.</p>
     </section>
   </main>
 
