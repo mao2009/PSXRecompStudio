@@ -12,10 +12,11 @@
 
 ## Purpose
 
-`PSXCpu`'s remaining C++ semantics are migrated to Rust as separate slices,
-one per Issue, that can run in parallel. Issue #524 split the code so each
-slice owns its own files. This page says which files each slice owns and
-which files no slice may edit without coordination.
+The conflict-isolated PSXCpu migration defined by #524 is complete: all seven
+slices #525-#531 have landed. This page is now the maintenance map for those
+completed Rust-owned semantic slices: it records which translation unit, Rust
+module, test file, and design note own each boundary, and which files remain
+shared coordination points.
 
 The per-function FFI rules are in the
 [Rust FFI Safety Contract](../../rust-ffi-contract.md). This page covers file
@@ -25,27 +26,26 @@ ownership only.
 
 Every path is relative to `src/PSXRecomp.Native/`.
 
-| Slice | Issue | C++ translation unit | Rust module | Native test file | Doc |
-|---|---|---|---|---|---|
-| Decode / dispatch | #525 | `src/psx_cpu_decode.cpp` | `rust/src/cpu_decode.rs` | `tests/test_psx_cpu_decode_rust.cpp` | [decode.md](decode.md) |
-| Branch / jump | #526 | `src/psx_cpu_control.cpp` | `rust/src/cpu_control.rs` | `tests/test_psx_cpu_control_rust.cpp` | [control.md](control.md) |
-| Aligned load/store | #527 | `src/psx_cpu_memory_access.cpp` | `rust/src/cpu_memory_access.rs` | `tests/test_psx_cpu_memory_access_rust.cpp` | [memory-access.md](memory-access.md) |
-| LWL/LWR/SWL/SWR | #528 | `src/psx_cpu_unaligned.cpp` | `rust/src/cpu_unaligned.rs` | `tests/test_psx_cpu_unaligned_rust.cpp` | [unaligned.md](unaligned.md) |
-| COP0 | #529 | `src/psx_cpu_cop0.cpp` | `rust/src/cpu_cop0.rs` | `tests/test_psx_cpu_cop0_rust.cpp` | [cop0.md](cop0.md) |
-| Exception resolution | #530 | `src/psx_cpu_exception.cpp` | `rust/src/cpu_exception.rs` | `tests/test_psx_cpu_exception_rust.cpp` | [exception.md](exception.md) |
-| Pipeline / load delay (second wave) | #531 | `src/psx_cpu_pipeline.cpp` | `rust/src/cpu_pipeline.rs` | `tests/test_psx_cpu_pipeline_rust.cpp` | [pipeline.md](pipeline.md) |
+| Slice | Issue | Status | C++ translation unit | Rust module | Native test file | Doc |
+|---|---|---|---|---|---|---|
+| Decode / dispatch | #525 | ✅ Migrated | `src/psx_cpu_decode.cpp` | `rust/src/cpu_decode.rs` | `tests/test_psx_cpu_decode_rust.cpp` | [decode.md](decode.md) |
+| Branch / jump | #526 | ✅ Migrated | `src/psx_cpu_control.cpp` | `rust/src/cpu_control.rs` | `tests/test_psx_cpu_control_rust.cpp` | [control.md](control.md) |
+| Aligned load/store | #527 | ✅ Migrated | `src/psx_cpu_memory_access.cpp` | `rust/src/cpu_memory_access.rs` | `tests/test_psx_cpu_memory_access_rust.cpp` | [memory-access.md](memory-access.md) |
+| LWL/LWR/SWL/SWR | #528 | ✅ Migrated | `src/psx_cpu_unaligned.cpp` | `rust/src/cpu_unaligned.rs` | `tests/test_psx_cpu_unaligned_rust.cpp` | [unaligned.md](unaligned.md) |
+| COP0 | #529 | ✅ Migrated | `src/psx_cpu_cop0.cpp` | `rust/src/cpu_cop0.rs` | `tests/test_psx_cpu_cop0_rust.cpp` | [cop0.md](cop0.md) |
+| Exception resolution | #530 | ✅ Migrated | `src/psx_cpu_exception.cpp` | `rust/src/cpu_exception.rs` | `tests/test_psx_cpu_exception_rust.cpp` | [exception.md](exception.md) |
+| Pipeline / load delay (second wave) | #531 | ✅ Migrated | `src/psx_cpu_pipeline.cpp` | `rust/src/cpu_pipeline.rs` | `tests/test_psx_cpu_pipeline_rust.cpp` | [pipeline.md](pipeline.md) |
 
-A slice also owns one new internal header, `src/psx_cpu_<slice>.h`, if it
-needs one to declare its Rust exports for the C++ caller. `src/psx_cpu_alu.h`
-is the existing example. Headers are not listed in CMake, so adding one does
-not touch a shared file.
+Each migrated slice owns its existing internal `src/psx_cpu_<slice>.h`
+boundary where present. Future maintenance should keep semantic changes in the
+same owned Rust/C++/test/doc surface unless the ABI genuinely requires a shared
+file change. Headers are not listed in CMake.
 
-Everything in the table is already registered: each Rust module is in
-`rust/src/lib.rs` and in the cargo `DEPENDS` list in `CMakeLists.txt`. Each C++
-file is in `PSX_CPU_SOURCES`. Each test file is in `psx_native_tests`, and its
-`run_psx_cpu_<slice>_rust_tests()` runner is declared in `tests/test_harness.h`
-and called from `main()`. A slice PR therefore does not need to edit any of
-those shared files.
+Everything in the table is registered in the build/test graph: each Rust module
+is in `rust/src/lib.rs` and cargo's CMake `DEPENDS` list, each C++ file is in
+`PSX_CPU_SOURCES`, and each native test runner is wired into the harness.
+Ordinary maintenance of one completed slice should therefore avoid those shared
+registration files.
 
 ## Shared files
 
@@ -83,14 +83,13 @@ changing one of these functions affects callers in other slices' files:
 A slice may change what these functions do inside its own file, as long as the
 signature in `psx_cpu.h` stays the same.
 
-## Rules for a slice PR
+## Maintenance rules
 
-1. Change only the files your slice owns. If you have to change a shared file,
-   list it in the PR body.
-2. Do not change observable CPU behavior unless the Issue asks for it. The
-   existing tests for the slice live in its test file and must keep passing.
-3. Put new tests in the slice's test file and call them from its runner.
-4. Record Rust exports and the migration's decisions in the slice's doc on this
-   page's index, following the format of the existing
-   [Migrated subsystems](../../rust-ffi-contract.md#migrated-subsystems)
-   entries.
+1. Change the smallest completed slice that owns the behavior. If a shared file
+   must change, call that out explicitly in the PR.
+2. Do not duplicate Rust-owned semantics back into C++. Observable CPU behavior
+   changes require focused tests and an Issue that states the intended semantic change.
+3. Put new regression tests in the owning slice's test file when possible.
+4. Keep each slice document synchronized when its internal Rust ABI or ownership
+   boundary changes; the repository-wide FFI rules remain in the
+   [Rust FFI Safety Contract](../../rust-ffi-contract.md).
