@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio | PlayStation 1 静的再コンパイル・MIPS解析</title>
+  <meta name="description" content="PSXRecompStudioは、PlayStation 1の静的再コンパイル、MIPS R3000A解析、リバースエンジニアリング、ネイティブ移植を研究するオープンソースプロジェクトです。">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/ja/">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="PSXRecompStudio | PlayStation 1 静的再コンパイル・MIPS解析">
+  <meta property="og:description" content="PSXRecompStudioは、PlayStation 1の静的再コンパイル、MIPS R3000A解析、リバースエンジニアリング、ネイティブ移植を研究するオープンソースプロジェクトです。">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/ja/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio | PlayStation 1 静的再コンパイル・MIPS解析">
+  <meta name="twitter:description" content="PSXRecompStudioは、PlayStation 1の静的再コンパイル、MIPS R3000A解析、リバースエンジニアリング、ネイティブ移植を研究するオープンソースプロジェクトです。">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="メインナビゲーション">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="cli.html">CLI</a>
+        <a href="runtime.html">Runtime</a>
+        <a href="../architecture.html">Architecture</a>
+        <a href="../">English</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">オープンソース PlayStation 1 研究</p>
+      <h1>PSXRecompStudio</h1>
+      <p class="lead">PlayStation 1（PS1 / PSX）のバイナリ解析、MIPS R3000A解析、静的再コンパイル、リバースエンジニアリング、ネイティブ移植を研究するための開発環境です。</p>
+      <p>現在は完全な市販PS1タイトルをネイティブ移植へ変換する段階には到達していません。実ROM由来の限定的な再コンパイル検証、実行可能な生成ホスト成果物、分類可能なCLI実行結果、部分的なPS1 Runtime実装を積み上げています。</p>
+      <p class="actions"><a class="button" href="https://github.com/mao2009/PSXRecompStudio">GitHubでソースを見る</a></p>
+    </section>
+
+    <section>
+      <h2>PSXRecompStudioとは？</h2>
+      <p>合法的に用意したPS-X EXEや対応CHDを解析し、MIPS R3000A命令、制御フロー、BIOS呼び出し、再コンパイル可能範囲を検証する研究基盤です。C#/.NETの解析・アプリケーション層と、C++/Rust混在のNative Coreを安定したC ABIで接続しています。</p>
+    </section>
+
+    <section>
+      <h2>現在できること</h2>
+      <ul>
+        <li>PS-X EXEと対応CHDの解析、ISO 9660 / SYSTEM.CNF / boot EXEの解決。</li>
+        <li>R3000A / MIPS Iの命令、Delay Slot、例外、割り込み、メモリ挙動の検証。</li>
+        <li>合成入力と実ROM由来関数を使った静的再コンパイル、差分検証、coverage計測。</li>
+        <li><code>psxrecomp recompile</code> / <code>psxrecomp run</code> によるheadless CLI実行。</li>
+        <li>BIOS HLE、Interrupt/Timer/DMA/Memory、SIO0/SPU、部分的GPU/FrameSnapshotなどのRuntime基盤。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>まだ未完成の部分</h2>
+      <ul>
+        <li>市販PS1タイトル全体のend-to-end静的再コンパイル。</li>
+        <li>GPUのproduction実行経路への完全統合、DMA2、GPU IRQ1、追加描画機能。</li>
+        <li>SPU音声生成、CD-ROM、MDEC、GTEなどの完全なハードウェア挙動。</li>
+        <li>実タイトルに必要なBIOS HLE coverageの拡大。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>詳しく見る</h2>
+      <p><a href="faq.html">FAQ</a>、<a href="cli.html">CLI</a>、<a href="runtime.html">Runtime状況</a>から確認できます。詳細な設計は英語版の<a href="../architecture.html">Architecture</a>と<a href="../roadmap.html">Roadmap</a>、ソースは<a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>を参照してください。</p>
+    </section>
+  </main>
+
+  <footer><p><a href="../">English</a> · <a href="../legal.html">Legal</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p></footer>
+</body>
+</html>
