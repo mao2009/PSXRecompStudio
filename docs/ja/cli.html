@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio CLI | PS-X EXE・CHDの再コンパイル</title>
+  <meta name="description" content="PSXRecompStudioのheadless CLIでPS-X EXEや対応CHDを再コンパイル・実行し、JSON結果や診断レポートを取得する方法を日本語で説明します。">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/ja/cli.html">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/cli.html">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/cli.html">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/cli.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="PSXRecompStudio CLI | PS-X EXE・CHDの再コンパイル">
+  <meta property="og:description" content="PSXRecompStudioのheadless CLIでPS-X EXEや対応CHDを再コンパイル・実行し、JSON結果や診断レポートを取得する方法を日本語で説明します。">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/ja/cli.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio CLI | PS-X EXE・CHDの再コンパイル">
+  <meta name="twitter:description" content="PSXRecompStudioのheadless CLIでPS-X EXEや対応CHDを再コンパイル・実行し、JSON結果や診断レポートを取得する方法を日本語で説明します。">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="メインナビゲーション">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html">FAQ</a>
+        <a href="cli.html" aria-current="page">CLI</a>
+        <a href="runtime.html">Runtime</a>
+        <a href="../architecture.html">Architecture</a>
+        <a href="../">English</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">Headless workflow</p>
+      <h1>PSXRecompStudio CLI</h1>
+      <p class="lead">Avalonia GUIに依存せず、terminal・CI・scriptから現在の再コンパイルbuild/run経路を利用できます。</p>
+    </section>
+
+    <section>
+      <h2>対応入力</h2>
+      <p>PS-X EXEを直接指定するか、対応CHDを指定できます。CHDの場合はproduction disc解析pipelineがSYSTEM.CNFとboot PS-X EXEを解決します。解決できない入力は誤魔化さず分類済みエラーとして停止します。</p>
+    </section>
+
+    <section>
+      <h2>コマンド</h2>
+      <pre><code>psxrecomp recompile &lt;input.exe|input.chd&gt; --output &lt;dir&gt; [--json]
+psxrecomp run       &lt;input.exe|input.chd&gt; [--output &lt;dir&gt;] [--segment-budget &lt;n&gt;] [--report] [--json]</code></pre>
+      <p><code>recompile</code>は実行可能なgenerated-host artifactをbuildし、<code>run</code>はそのartifactを再buildして現在のbounded execution pathで起動します。</p>
+    </section>
+
+    <section>
+      <h2>JSON・exit code・診断bundle</h2>
+      <p><code>--json</code>は決定論的なmachine-readable結果を出力します。exit codeは0=成功、1=入力/Toolchain/build/launcher失敗、2=guest executionが明示的な未対応境界に到達した状態です。</p>
+      <p><code>run --report</code>ではprivacy-safeな<code>diagnostic-report.zip</code>を生成できます。ゲーム入力本体、RAM、save data、credential、username、local absolute pathは自動収集しません。</p>
+    </section>
+
+    <section>
+      <h2>重要な制限</h2>
+      <p>artifactのbuildや起動成功は、市販タイトル全体の互換性を意味しません。実ソフトは未対応BIOS call、control-flow、Runtime hardware境界などで明示的に停止する場合があります。</p>
+    </section>
+
+    <section>
+      <h2>詳細仕様</h2>
+      <p>正確なoption、JSON schema、exit code、diagnostic bundle仕様は<a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/development/headless-cli.md">Headless CLI reference</a>を参照してください。</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">日本語ホーム</a> · <a href="../cli.html">English CLI</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p></footer>
+</body>
+</html>
