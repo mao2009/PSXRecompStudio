@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PSXRecompStudio FAQ | PS1 静的再コンパイル研究</title>
+  <meta name="description" content="PSXRecompStudio、PS1静的再コンパイル、対応入力、BIOS HLE、ハードウェア対応状況、現在の制限について日本語で説明します。">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://mao2009.github.io/PSXRecompStudio/ja/faq.html">
+  <link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/faq.html">
+  <link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/faq.html">
+  <link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/faq.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PSXRecompStudio">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="PSXRecompStudio FAQ | PS1 静的再コンパイル研究">
+  <meta property="og:description" content="PSXRecompStudio、PS1静的再コンパイル、対応入力、BIOS HLE、ハードウェア対応状況、現在の制限について日本語で説明します。">
+  <meta property="og:url" content="https://mao2009.github.io/PSXRecompStudio/ja/faq.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="PSXRecompStudio FAQ | PS1 静的再コンパイル研究">
+  <meta name="twitter:description" content="PSXRecompStudio、PS1静的再コンパイル、対応入力、BIOS HLE、ハードウェア対応状況、現在の制限について日本語で説明します。">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="メインナビゲーション">
+      <a class="brand" href="./">PSXRecompStudio</a>
+      <div class="nav-links">
+        <a href="faq.html" aria-current="page">FAQ</a>
+        <a href="cli.html">CLI</a>
+        <a href="runtime.html">Runtime</a>
+        <a href="../architecture.html">Architecture</a>
+        <a href="../">English</a>
+        <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero compact">
+      <p class="eyebrow">よくある質問</p>
+      <h1>PSXRecompStudio FAQ</h1>
+      <p class="lead">PSXRecompStudioが何を目指し、現在どこまで実装されているかを日本語で簡潔にまとめます。</p>
+    </section>
+
+    <section>
+      <h2>PSXRecompStudioとは何ですか？</h2>
+      <p>PlayStation 1のバイナリ解析、MIPS R3000A検証、静的再コンパイル、ネイティブ移植を研究するオープンソースプロジェクトです。</p>
+
+      <h2>PS1エミュレータですか？</h2>
+      <p>正しさの基準としてInterpreterやPS1 Runtimeを含みますが、主目的は一般的なエミュレータUIの提供ではなく、静的再コンパイル研究です。</p>
+
+      <h2>市販PS1ゲームを完全にネイティブ化できますか？</h2>
+      <p>まだできません。実ROM由来関数の限定的な再コンパイル検証、coverage計測、生成ホスト成果物のbuild/runまでは成立していますが、タイトル全体の再コンパイルは研究中です。</p>
+
+      <h2>どの入力形式に対応していますか？</h2>
+      <p>Headless CLIではPS-X EXEと対応CHDを扱えます。CHDはdisc解析経路からSYSTEM.CNFとboot PS-X EXEを解決します。</p>
+
+      <h2>PlayStation BIOSは必須ですか？</h2>
+      <p>通常実行はBIOS-lessを目標にしており、BIOS HLEを利用します。ただしHLE coverageは部分的で、未対応callは明示的に停止します。Sony BIOSイメージは配布しません。</p>
+
+      <h2>GPUやSPUはどこまで動きますか？</h2>
+      <p>GPUはregister/VRAM、最小rasterization、決定論的FrameSnapshotまで部分実装されています。SPUはregister/MMIOが実装済みですが音声生成は未実装です。SIO0、DMA、Timer、Interruptにも実装済みsliceがあります。詳細は<a href="runtime.html">Runtime状況</a>を参照してください。</p>
+
+      <h2>ソースコードはどこにありますか？</h2>
+      <p><a href="https://github.com/mao2009/PSXRecompStudio">GitHubリポジトリ</a>でソース、Issue、PR、テスト、詳細ドキュメントを公開しています。</p>
+    </section>
+  </main>
+
+  <footer><p><a href="./">日本語ホーム</a> · <a href="../faq.html">English FAQ</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p></footer>
+</body>
+</html>
