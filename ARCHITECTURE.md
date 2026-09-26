@@ -146,15 +146,16 @@ Status reflects the current repository state (implementation, tests, and CI), no
 |---------------|------|
 | Interrupt Controller | Implemented |
 | CPU interrupt integration | Implemented |
-| DMA | Partially implemented (register-level model + IRQ + C# MMIO adapter + tests; transfer engine / MemoryBus wiring on the native execution path is not implemented) |
-| Timers | Partially implemented (register-level model + tick + IRQ + C# MMIO adapter + tests; GPU-derived dotclock / HBlank signal wiring is not implemented) |
-| GPU | Partially implemented (register/VRAM model + flat/Gouraud rectangle/triangle rasterization + deterministic frame snapshot, C# only; texture mapping and quads are not implemented; not wired into `DeviceScheduler` or DMA2) |
-| SPU | Planned (interface contract only) |
-| CD-ROM | Planned (interface contract only) |
+| DMA | Partially implemented (Rust register/timing model + production MMIO reachability + IRQ3 scheduling; device data movement such as GPU DMA2/OTC/CD-ROM/SPU/MDEC remains device work) |
+| Timers | Partially implemented (Rust register/tick/IRQ model reached from production scheduling; cycle-exact timing and GPU-derived dotclock/HBlank synchronization are not implemented) |
+| GPU | Partially implemented (managed GP0/GP1/GPUSTAT + VRAM, flat/Gouraud triangle/rectangle rasterization, deterministic frame snapshot, VBlank IRQ0 scheduling; production title-execution MMIO, DMA2 and GPU IRQ1 remain open) |
+| SPU | Partially implemented (Rust-owned 0x1F801C00-0x1F801DFF register/MMIO store reached by production CPU accesses; ADPCM/ADSR/mixing/reverb/sound RAM/audio output/IRQ9 are not implemented) |
+| SIO0 | Partially implemented (Rust-owned register model + deterministic disconnected-pad transaction path + IRQ7; real host controller and memory-card serial protocol are not implemented) |
+| CD-ROM | Planned (interface/contract only; register/command/DMA3/IRQ2 implementation remains open) |
 | MDEC | Planned (interface contract only) |
 | GTE | Planned (interface contract only) |
 
-The Interrupt Controller has its register model, C ABI, C# adapter, and native tests implemented, as well as CPU interrupt integration that reflects the aggregate pending state into CAUSE.IP2 on every CPU Step/Run; see [docs/cpu/exceptions.md](docs/cpu/exceptions.md). DMA / Timers are implemented through their register-level models, with C# `MemoryBus` MMIO routing adapters and native tests, while complete wiring from the native execution path (`PSXMemory`'s `hw_regs` region) to each controller remains in progress. GPU has a managed C# register/VRAM/rasterization/frame-snapshot model, but is not yet wired into `DeviceScheduler` or DMA2 and has no native implementation. SPU / CD-ROM / MDEC / GTE have interface contracts in `PSXRecomp.Core/Runtime` only; no native implementations exist.
+The Interrupt Controller is Rust-backed and integrated with CPU interrupt delivery; see [docs/cpu/exceptions.md](docs/cpu/exceptions.md). DMA and Timers are also Rust-backed, are reachable through the production memory/device path, and are advanced by `DeviceScheduler`; their remaining gaps are device data movement and more accurate timing/synchronization, not basic reachability. GPU has a managed register/VRAM/rasterization/frame-snapshot model and VBlank scheduling, but production title-execution guest MMIO, DMA2 and GPU IRQ1 remain open. SPU and SIO0 now have Rust-owned production-reachable register/MMIO state; SPU audio semantics and real controller/memory-card protocols remain intentionally incomplete. CD-ROM / MDEC / GTE remain future/evidence-gated hardware work.
 
 ## Runtime
 
@@ -168,10 +169,13 @@ Unimplemented calls return explicit diagnostics such as
 workarounds must not be added to the Recompiler or CPU core, and a real BIOS
 image must not be distributed or made mandatory. The HLE registry currently
 wires A0:39 `InitHeap` (the identity real-ROM analysis observed most broadly —
-5 of 5 locally available executables), A0:3C `putchar`, A0:3E `puts`, the B0:3F
-alias of `puts` (selected by real-ROM evidence — a title observed calling it
-through the B0 jump table), and B0:56 `GetC0Table` / B0:57 `GetB0Table`, and
-implements the full documented behavior of all six. `InitHeap` takes two scalar
+5 of 5 locally available executables), A0:3C `putchar`, its registered B0:3D
+`putchar` alias, A0:3E `puts`, the B0:3F alias of `puts` (selected by
+real-ROM evidence — a title observed calling it through the B0 jump table), and
+B0:56 `GetC0Table` / B0:57 `GetB0Table`, and implements the documented
+behavior of all seven registered identities. The B0:3D registration is current
+Runtime capability, not a claim that the recorded real-ROM fixture set observed
+that alias. `InitHeap` takes two scalar
 arguments (addr, size), has no documented return value, and this Runtime
 registers no malloc/realloc/calloc/free/qsort service to consume its heap
 bookkeeping, so its complete guest-observable contract is argument-shape
@@ -334,7 +338,7 @@ YAML is used to define title-specific differences:
 
 Rust was also considered, but C++ was chosen as the primary option because of existing PSX-emulator knowledge and its compatibility with C# P/Invoke.
 
-That choice is being revisited incrementally rather than reversed (Issue #471). A Rust `staticlib` now links into the same native library (Issue #473, [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md)), so individual subsystems migrate one at a time behind the unchanged C ABI: the interrupt controller (Issue #484), the timer controller (Issue #486) and the DMA controller registers (Issue #488) are now implemented in Rust, and removing C++ is not a goal.
+That choice has been evolved incrementally rather than reversed. A Rust `staticlib` links into the same native library (Issue #473, [ADR-023](docs/adr/023-rust-native-coexistence-substrate.md)), and the public managed/native C ABI remains stable. Rust now owns the interrupt controller (#484), timers (#486), DMA controller state (#488), guest memory/MMIO backing (#492), SIO0 and SPU register state, plus the migrated PSXCpu semantic slices (ALU/HI-LO and #525-#531 decode/control/memory/unaligned/COP0/exception/pipeline). C++ still owns lifecycle/orchestration and selected state moves where crossing the FFI boundary adds no value; removing C++ is not a goal. Issue #471 is complete as the migration/coexistence parent, while future migrations remain focused follow-ups.
 
 ## Build Structure
 
