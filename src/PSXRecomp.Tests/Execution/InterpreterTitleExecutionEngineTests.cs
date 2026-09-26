@@ -11,7 +11,7 @@ public sealed class InterpreterTitleExecutionEngineTests
 {
     private const uint Entry = 0x80001000u;
 
-    // CodeRabbit PR #491: the constructor once built native-owned MMIO adapters
+    // CodeRabbit PR #491: the constructor once built MMIO adapters
     // as locals and attached them to the bus without retaining/disposal ownership.
     // Issue #572 adds the managed GPU adapter to that same engine lifecycle.
     // Reached through the engine's own fields (no product-code test hook added);
