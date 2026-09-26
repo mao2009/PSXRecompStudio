@@ -20,6 +20,8 @@ public interface IGpu
     void WriteGP1(uint command);
     uint ReadGpuread();
     uint ReadGpustat();
+    /// <summary>Whether GP0(1Fh) currently asserts the GPU command-interrupt source (GPUSTAT bit 24).</summary>
+    bool HasCommandInterrupt { get; }
     IntPtr GetVramPointer();
     (ushort Width, ushort Height) GetDisplayResolution();
     bool HasVblank { get; }
