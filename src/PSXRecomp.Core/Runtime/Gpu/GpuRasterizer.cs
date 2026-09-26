@@ -10,7 +10,10 @@ namespace PSXRecomp.Core.Runtime.Gpu;
 [Domain]
 public enum GpuRasterOutcome
 {
-    /// <summary>The primitive was rasterized into VRAM.</summary>
+    /// <summary>
+    /// The primitive is supported and rasterization completed. It can still be a
+    /// deterministic no-op after zero sizing, degeneracy, or clipping.
+    /// </summary>
     Rasterized = 0,
 
     /// <summary>
@@ -40,6 +43,8 @@ public enum GpuRasterOutcome
 /// bytes), which is what this slice's headless frame evidence requires.
 /// </para>
 /// </summary>
+/// <summary>Detailed internal raster result used to preserve pixel-write provenance.</summary>
+[Domain]
 internal readonly record struct GpuRasterResult(GpuRasterOutcome Outcome, bool WrotePixels);
 
 [Domain]
