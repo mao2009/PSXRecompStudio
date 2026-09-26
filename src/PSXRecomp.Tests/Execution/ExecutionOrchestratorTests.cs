@@ -264,6 +264,44 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_LiveGuestGpuMmio_ReachesTheManagedGpuState()
+    {
+        // Issue #572: production guest loads/stores execute inside the native
+        // interpreter and therefore do not pass through the managed MemoryBus
+        // object. This program uses the KSEG1 GPU ports exactly as guest code
+        // would: GP0(1Fh) raises the GPU's internal IRQ1-request bit, GPUSTAT
+        // reads it back, then GP1(02h) acknowledges it and a second GPUSTAT read
+        // observes the same managed GpuDevice state cleared.
+        //
+        // If the native-to-managed bridge is absent, these accesses hit only the
+        // native flat HW-register fallback and S0 never sees GPUSTAT bit 24.
+        var words = new uint[]
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: 0xBF80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: (byte)R3000aRegister.T0, immediate: 0x1810),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F00),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S0, baseRegister: (byte)R3000aRegister.T0, offset: 4),
+            MipsEncoding.Nop,
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x0200),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: 4),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S1, baseRegister: (byte)R3000aRegister.T0, offset: 4),
+            MipsEncoding.Nop,
+        };
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 4, segment: 64));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+        var snapshot = result.FinalSnapshot!;
+        (snapshot.Gpr[(int)R3000aRegister.S0] & (1u << 24)).Should().Be(1u << 24,
+            "GP0(1Fh) must set GPUSTAT.IRQ through the existing managed GPU");
+        (snapshot.Gpr[(int)R3000aRegister.S1] & (1u << 24)).Should().Be(0u,
+            "GP1(02h) must acknowledge that same managed GPU IRQ request");
+    }
+
+    [Fact]
     public void Interpreter_LiveGuestObservesTimer2Irq_AtTheCycleTheSchedulerRaisedIt()
     {
         // Issue #442: nothing but the production path advances devices here. The

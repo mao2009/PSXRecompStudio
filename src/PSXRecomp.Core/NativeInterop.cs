@@ -80,6 +80,18 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_GetRAMSize();
 
+    /// <summary>
+    /// Attaches the managed GPU register bridge used by the production native CPU for
+    /// 32-bit accesses to the GPU MMIO window. Passing zero callback pointers detaches it.
+    /// Callback/context ownership stays with the managed caller.
+    /// </summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_SetGpuMmioCallbacks(
+        IntPtr core,
+        IntPtr context,
+        IntPtr read32,
+        IntPtr write32);
+
     /// <summary>Reads a DMA controller register at the given absolute address.</summary>
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_ReadDmaRegister(IntPtr core, uint address);

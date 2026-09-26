@@ -26,6 +26,12 @@ static constexpr uint32_t PSX_DMA_REGION_END = 0x1F8010F4u; // DICR
 static constexpr uint32_t PSX_TIMER_BASE = 0x1F801100u;
 static constexpr uint32_t PSX_TIMER_REGION_END = PSX_TIMER_BASE + 3u * 0x10u - 1u; // 0x1F80112F
 
+// GPU GP0/GPUREAD + GP1/GPUSTAT ports and their documented mirrors.
+// The GPU semantics remain managed; this range is only intercepted when a
+// production managed callback has been attached (Issue #572).
+static constexpr uint32_t PSX_GPU_MMIO_BASE = 0x1F801810u;
+static constexpr uint32_t PSX_GPU_MMIO_END = 0x1F801820u; // exclusive
+
 /*
  * Guest RAM/scratchpad/BIOS/HW-register storage and access semantics.
  * Implemented in Rust (`../rust/src/memory.rs`, Issue #492); this header
@@ -86,6 +92,9 @@ uint8_t psx_memory_get_sio0_command_status(const PsxMemoryHandle* mem);
 uint8_t psx_memory_get_sio0_last_command_byte(const PsxMemoryHandle* mem);
 }
 
+using PSXGpuMmioRead32Callback = uint32_t (*)(void* context, uint32_t address);
+using PSXGpuMmioWrite32Callback = void (*)(void* context, uint32_t address, uint32_t value);
+
 class PSXMemory {
 public:
     PSXMemory();
@@ -113,6 +122,12 @@ public:
     // flat hw_regs window, preserving the pre-attach behavior.
     void AttachControllers(PSXDmaState* dma, PSXTimerState* timers, PSXInterruptState* interrupts);
 
+    // Attaches the managed GPU register model to the production native CPU
+    // path. Only 32-bit accesses in the GPU port window are intercepted; all
+    // GPU semantics remain owned by the managed GpuDevice/GpuMmioAdapter.
+    // Passing null callbacks detaches the bridge.
+    void AttachGpuMmio(void* context, PSXGpuMmioRead32Callback read32, PSXGpuMmioWrite32Callback write32);
+
     // Memory read/write helpers for CPU
     uint32_t Read32(uint32_t address);
     void Write32(uint32_t address, uint32_t value);
@@ -137,6 +152,9 @@ private:
     PSXDmaState* dma_ = nullptr;
     PSXTimerState* timers_ = nullptr;
     PSXInterruptState* interrupts_ = nullptr;
+    void* gpu_context_ = nullptr;
+    PSXGpuMmioRead32Callback gpu_read32_ = nullptr;
+    PSXGpuMmioWrite32Callback gpu_write32_ = nullptr;
 };
 
 inline PSXMemory::PSXMemory() : handle_(psx_memory_create()) {
@@ -162,11 +180,27 @@ inline void PSXMemory::AttachControllers(PSXDmaState* dma, PSXTimerState* timers
     interrupts_ = interrupts;
 }
 
+inline void PSXMemory::AttachGpuMmio(
+    void* context,
+    PSXGpuMmioRead32Callback read32,
+    PSXGpuMmioWrite32Callback write32) {
+    gpu_context_ = context;
+    gpu_read32_ = read32;
+    gpu_write32_ = write32;
+}
+
 inline uint32_t PSXMemory::Read32(uint32_t address) {
+    if (address >= PSX_GPU_MMIO_BASE && address < PSX_GPU_MMIO_END && gpu_read32_) {
+        return gpu_read32_(gpu_context_, address);
+    }
     return psx_memory_read32(handle_, address, dma_, timers_, interrupts_);
 }
 
 inline void PSXMemory::Write32(uint32_t address, uint32_t value) {
+    if (address >= PSX_GPU_MMIO_BASE && address < PSX_GPU_MMIO_END && gpu_write32_) {
+        gpu_write32_(gpu_context_, address, value);
+        return;
+    }
     psx_memory_write32(handle_, address, value, dma_, timers_, interrupts_);
 }
 

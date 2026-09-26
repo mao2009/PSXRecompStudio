@@ -97,6 +97,15 @@ uint32_t PSXCore_GetRAMSize(void) {
     return PSX_RAM_SIZE;
 }
 
+void PSXCore_SetGpuMmioCallbacks(
+    PSXCore* core,
+    void* context,
+    PSXGpuMmioRead32 read32,
+    PSXGpuMmioWrite32 write32) {
+    if (!core) return;
+    core->memory.AttachGpuMmio(context, read32, write32);
+}
+
 uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
     return psx_dma_read_register(core->dma, address);

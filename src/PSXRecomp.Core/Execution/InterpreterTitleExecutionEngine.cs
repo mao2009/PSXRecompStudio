@@ -3,6 +3,7 @@ using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.Gpu;
 
 namespace PSXRecomp.Core.Execution;
 
@@ -52,8 +53,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly DmaMmioAdapter _dmaAdapter;
     private readonly TimerMmioAdapter _timerAdapter;
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
+    private readonly GpuDevice _gpuDevice;
+    private readonly GpuMmioAdapter _gpuAdapter;
     private DeviceScheduler? _scheduler;
     private bool _loaded;
+    private bool _disposed;
 
     // Set when the CPU takes a hardware interrupt, cleared once the handler has
     // actually returned. Entering the program image alone does not clear it: a
@@ -161,9 +165,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _dmaAdapter = new DmaMmioAdapter(_core);
         _timerAdapter = new TimerMmioAdapter(_core);
         _interruptControllerAdapter = new InterruptControllerMmioAdapter(_core);
+        _gpuDevice = new GpuDevice();
+        _gpuAdapter = new GpuMmioAdapter(_gpuDevice);
         _bus.AttachDmaAdapter(_dmaAdapter);
         _bus.AttachTimerAdapter(_timerAdapter);
         _bus.AttachInterruptControllerAdapter(_interruptControllerAdapter);
+        _bus.AttachGpuAdapter(_gpuAdapter);
+
+        // Production guest LW/SW executes inside the native interpreter, so it
+        // bypasses the managed MemoryBus object itself. Route only the GPU's
+        // 32-bit register window back to the same managed adapter; the native
+        // side owns no GPU semantics (Issue #572).
+        _core.AttachGpuMmio(_gpuAdapter.ReadRegister, _gpuAdapter.WriteRegister);
 
         // SIO0 register model (Issue #542): native/Rust-owned inside
         // PSXMemory (see MemoryBus.ReadMmio/WriteMmio's Sio0 case and
@@ -182,6 +195,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // Mirrors RecompilerInterpreterExecutor: initial memory first (translated
         // to physical), then the program words so the code image wins any overlap.
         _core.Reset();
+        _gpuDevice.Reset();
         foreach (var item in request.InitialMemory)
         {
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
@@ -347,14 +361,27 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Releases the native core, memory bus and MMIO adapters this engine owns.</summary>
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // The native CPU may call back into the managed GPU adapter while
+        // stepping, so sever that edge before either side of the bridge is
+        // disposed (Issue #572).
+        _core.DetachGpuMmio();
         _bus.Dispose();
-        // The adapters unregister their callbacks in Dispose(); MemoryBus.Dispose()
-        // only clears its own references to them, so they must be disposed here,
-        // and before _core.Dispose(), so no adapter can touch a freed native core.
+        _gpuAdapter.Dispose();
+        _gpuDevice.Dispose();
+
+        // The native-owned adapters unregister their callbacks in Dispose();
+        // MemoryBus.Dispose() only clears its own references to them, so they
+        // must be disposed before _core.Dispose().
         _dmaAdapter.Dispose();
         _timerAdapter.Dispose();
         _interruptControllerAdapter.Dispose();
         _core.Dispose();
+        _disposed = true;
         GC.SuppressFinalize(this);
     }
 
