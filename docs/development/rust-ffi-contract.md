@@ -13,10 +13,11 @@
 ## Purpose
 
 The rules every Rust function exported across the native boundary must follow.
-This is a **migration contract** for the incremental C++ -> Rust migration
-(#471), not an introduction to Rust FFI: it states what this repository
-requires, so that a reviewer can decide whether a migration PR is acceptable by
-reading the diff against this page.
+This contract was established for the incremental C++ -> Rust migration
+(#471) and remains the **maintenance contract** for the resulting mixed
+C++/Rust native library. The parent migration Issue is complete, but every new
+or changed Rust boundary must still satisfy these rules so reviewers can verify
+ownership, layout, error, panic, and ABI safety from the diff.
 
 ADR-023 owns the decision to host Rust inside the existing `PSXRecomp.Native`
 shared library; this page owns the resulting per-function rules.
@@ -460,13 +461,17 @@ directly.
 | `psx_cpu_alu_add` | `AluResult(uint32_t a, uint32_t b)` | `a + b` (two's-complement 32-bit) with MIPS I signed-overflow detection; used by both `ADD` and `ADDI` (the caller sign-extends `ADDI`'s immediate first). |
 | `psx_cpu_alu_sub` | `AluResult(uint32_t a, uint32_t b)` | `a - b` (two's-complement 32-bit) with MIPS I signed-overflow detection. |
 
-### Remaining PSXCpu slices (#524)
+### Completed PSXCpu slices (#524-#531)
 
-The rest of `PSXCpu` (decode, branch/jump, aligned and unaligned load/store,
-COP0, exception resolution, pipeline) is migrated in parallel slices,
-#525-#531. Each slice has its own C++ file, Rust module, test file and doc,
-listed in [PSXCpu Rust Migration Slices](rust-migrations/cpu/README.md). A
-slice records its exports in its own doc there, not on this page.
+The conflict-isolated PSXCpu migration is complete for decode, branch/jump,
+aligned and unaligned load/store, COP0, exception resolution, and pipeline/load
+delay (#525-#531). Each completed slice keeps its own C++ call site, Rust module,
+native test file, and design note, listed in
+[PSXCpu Rust Migration Slices](rust-migrations/cpu/README.md).
+
+Those per-slice documents remain the SSOT for the internal exports and semantic
+decisions. This page continues to define the repository-wide FFI safety rules;
+future work should not treat #525-#531 as pending migration tasks.
 
 ## Related
 
