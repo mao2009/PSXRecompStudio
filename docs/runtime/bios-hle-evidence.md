@@ -11,11 +11,12 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds six
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds seven
 registrations — A0:39 `InitHeap` (the identity real-ROM analysis observed most
-broadly, 5 of 5 executables), A0:3C `putchar`, A0:3E `puts`, its
-real-ROM-evidence-selected B0:3F alias, B0:56 `GetC0Table`, and B0:57
-`GetB0Table` — each implementing its documented behavior under the shared
+broadly, 5 of 5 executables), A0:3C `putchar`, its registered B0:3D
+`putchar` alias, A0:3E `puts`, its real-ROM-evidence-selected B0:3F alias,
+B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
+documented behavior under the shared
 ADR-014 contract (ADR-014 amendment 2026-09-17 "A0:39 InitHeap registered").
 Both parallel Runtime
 capabilities this document originally awaited have since landed: the
@@ -45,14 +46,21 @@ evidence-driven from #225 and later full-title bring-up").
 
 ## 2. Current support matrix
 
+The B0:3D `putchar` alias below is a statement about the current registry,
+not new fixture evidence. Section 3's observed-call inventory remains historical
+evidence from the recorded local corpus and is not rewritten to claim B0:3D was
+observed there.
+
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
 registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
-six entries**: `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
-`(A0, 0x3E)` → `InvokePuts`, `(B0, 0x3F)` → `InvokePuts`,
-`(B0, 0x56)` → `InvokeGetC0Table`, and `(B0, 0x57)` → `InvokeGetB0Table`.
+seven entries**: `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
+`(B0, 0x3D)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
+`(B0, 0x3F)` → `InvokePuts`, `(B0, 0x56)` → `InvokeGetC0Table`, and
+`(B0, 0x57)` → `InvokeGetB0Table`.
 `InitHeap` validates argument shape only (no guest-observable heap state
 exists for this Runtime to model, since no malloc/free-family service is
-registered); the next two are thin service bindings; the last two expose the
+registered); the putchar/puts identities and their registered B0 aliases are
+thin service bindings; the last two expose the
 guest-visible B0/C0 jump tables. Calls are canonicalized
 by physical slot before registry lookup, so C0 high-range mirrors such as
 `C0:BF`, `C0:D6`, and `C0:D7` reach the registered `B0:3F`, `B0:56`, and
@@ -68,7 +76,7 @@ state before reaching the registry. If the 4-byte slot at
 that is not that physical slot's own HLE sentinel (`BiosJumpTables.HleSentinelTarget`,
 computed from the slot's canonical identity — see below), `BiosServiceResult.PatchedTarget`
 is returned instead — carrying the raw patched guest address in `ReturnValue`
-(ADR-014 amendment 2026-09-11 for #360). Each of the six registered slots is
+(ADR-014 amendment 2026-09-11 for #360). Each of the seven registered slots is
 seeded with that sentinel at construction time (a required `IGuestMemoryWriter`
 constructor dependency) **only when that slot currently reads as zero** — a
 pre-existing guest patch or a save-state's restored content is never
