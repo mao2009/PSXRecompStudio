@@ -208,7 +208,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         }
 
         // Fresh device timing for the freshly reset core (Issue #442).
-        _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter);
+        _scheduler = new DeviceScheduler(_core, _interruptControllerAdapter, _gpuAdapter);
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
