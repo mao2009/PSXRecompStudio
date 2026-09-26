@@ -133,9 +133,13 @@ With `--frame-evidence`, one `frameEvidence` object is appended:
 } }
 ```
 
-`status` is `available` only when the production interpreter produced a
-non-empty capture. Otherwise it is `unavailable`, hash fields are null as
-appropriate, and `reason` classifies why no frame evidence was produced.
+`status` is `available` only after the production interpreter observes
+meaningful guest GPU frame activity (for example a VRAM write/rasterization or
+explicit display enable). This is deliberately not a non-zero-pixel heuristic:
+an explicitly produced black frame is valid evidence, while untouched power-on
+VRAM is reported as `unavailable` with `reason: "no-frame-activity"`.
+Other unavailable states leave hash fields null as appropriate and classify the
+reason explicitly.
 The `productionState` belongs to the supplemental production-interpreter
 evidence run; the top-level `result` remains the generated-host run.
 
