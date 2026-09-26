@@ -118,7 +118,28 @@ because no production result exists to serialize. When the run succeeds but is
 blocked (exit code 2), the JSON document is still emitted with
 `"success": false`.
 
-Without `--report`, the run JSON field set is unchanged. With `--report`,
+Without `--report` or `--frame-evidence`, the run JSON field set is unchanged.
+With `--frame-evidence`, one `frameEvidence` object is appended:
+
+```json
+{ "frameEvidence": {
+    "status": "available",
+    "width": 256,
+    "height": 240,
+    "sha256": "<64 lowercase hex characters>",
+    "productionState": 0,
+    "diagnosticCode": null,
+    "reason": null
+} }
+```
+
+`status` is `available` only when the production interpreter produced a
+non-empty capture. Otherwise it is `unavailable`, hash fields are null as
+appropriate, and `reason` classifies why no frame evidence was produced.
+The `productionState` belongs to the supplemental production-interpreter
+evidence run; the top-level `result` remains the generated-host run.
+
+Without `--report`, the diagnostic-bundle field remains absent. With `--report`,
 the same envelope adds one final field:
 
 ```json
