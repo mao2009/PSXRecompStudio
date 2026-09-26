@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/</loc></url>
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/architecture.html</loc></url>
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/roadmap.html</loc></url>
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/legal.html</loc></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/faq.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/cli.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/runtime.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/architecture.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/roadmap.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/legal.html</loc><lastmod>2026-09-26</lastmod></url>
 </urlset>
