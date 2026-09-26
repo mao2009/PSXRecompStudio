@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler), #366 (full-title execution orchestrator), #380 (production execution engine ownership, ADR-015), #409 (real PS-X EXE → production execution path bridge)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #440 (GPU remaining integration), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #552 (this status synchronization)
 
 ## Purpose
 
@@ -30,7 +30,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
         ↓
     BIOS HLE dispatch  — A0/B0/C0 jump-table service calls (in-band `BiosVectorDispatch`)
         ↓
-    GPU / SPU / CD-ROM — hardware rendering + audio + disc (⚠ NOT YET IMPLEMENTED)
+    GPU / SPU / SIO0 / CD-ROM — partial hardware models; production integration remains incomplete
         ↓
 [6] TITLE_SCREEN       — Persona title screen (v0.1.0 Release Gate)
 ```
@@ -44,9 +44,11 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | ANALYSIS | ✅ Implemented | `RealRomAnalysisSkillTests` / `RealRomAnalyzer.RunAll()` |
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
 | RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests`; production PS-X EXE path via `TitleExecutionService.Run(PsxExe, ...)` (#409) |
-| BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 5 of 256+ services |
-| GPU | ⚠ Partial | Managed register/VRAM model (#440) — register/MMIO semantics + VRAM transfers; not wired into title execution, no rasterization |
-| SPU / CD-ROM | ❌ Not implemented | Interface-only |
+| BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 7 registered identities: A0:39, A0:3C, B0:3D, A0:3E, B0:3F, B0:56, B0:57 |
+| GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493); not yet reachable from production title-execution guest MMIO |
+| SPU | ⚠ Partial | Rust-owned register/MMIO model at 0x1F801C00-0x1F801DFF (#445/#551); no ADPCM/ADSR/mixing/reverb/sound-RAM/audio-output model |
+| SIO0 | ⚠ Partial | Production-reachable register model + deterministic disconnected-pad transaction path + IRQ7 (#443 via #548/#549); no real host controller or memory-card wire protocol |
+| CD-ROM | ❌ Not implemented | Register/command/DMA3/IRQ2 implementation remains #444 |
 | TITLE_SCREEN | ❌ Not reached | — |
 
 The RUNTIME_EXECUTION row above is this gate's own real-ROM, fixture-gated test
@@ -77,12 +79,19 @@ PC with no continuation rule is classified (UnsupportedTransfer), never a hang.
 It runs on real-ROM functions through `RealRomTitleExecutionTests`
 (real-fixture-gated; skips with no `rom/*.chd`).
 
-Only five BIOS services are currently registered: A0:3C putchar, A0:3E puts,
-B0:3F puts alias, B0:56 GetC0Table, and B0:57 GetB0Table. The first unregistered
-call fails closed with `BIOS_HLE_UNSUPPORTED_CALL`. Therefore broader BIOS HLE
-coverage is the next generic runtime blocker after the implemented bounded
-execution stages. Once the required BIOS calls are covered, GPU/SPU/CD-ROM
-producers remain necessary before an actual title screen can be reached.
+Seven BIOS identities are currently registered: A0:39 InitHeap, A0:3C putchar,
+B0:3D putchar alias, A0:3E puts, B0:3F puts alias, B0:56 GetC0Table, and
+B0:57 GetB0Table. An unregistered call still fails closed with
+`BIOS_HLE_UNSUPPORTED_CALL`.
+
+No newer legal-Persona fixture result is recorded in this repository after the
+recent Runtime work, so this document does not invent a new first failing BIOS
+identity. Based on the current production contract and recorded #351 evidence,
+**BIOS HLE coverage remains the first documented generic code-level blocker**.
+A fresh local run with a legally owned Persona fixture is required to identify
+the next concrete unsupported boundary. After that boundary is cleared, the
+remaining production GPU/frame integration and any actually exercised
+SPU/CD-ROM support must be resolved before the title screen can be claimed.
 
 The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
@@ -115,40 +124,38 @@ the exact executable held by the analysis outcome is the object handed to
 
 What still does not exist:
 
-- ~~**Real disc/EXE → production execution wiring.**~~ Wired in this PR: the
-  Studio's `RealRomTitleExecutionService`/`RunRealTitleCommand` retain the
-  analyzed PS-X EXE and run it through the production execution path. This is
-  distinct from the E2E gate's fixture-gated Test execution path described
-  above.
-- **Disc-image acquisition (file I/O) in the product.** The Application layer
-  is forbidden `System.IO.File`/`Directory` by the architecture contract
-  (`src/architecture.contract.json`), so the product action consumes pre-read
-  disc bytes (`MainWindowViewModel.DiscImageBytes`); reading a disc image from
-  disk stays behind the Infrastructure seam, deferred to Issue #38.
-- **A production generated-host (recompiled) execution backend.** The Studio's
-  production path is interpreter-backed only (ADR-015); compiling recompiled
-  guest code and running it as the product's execution backend is deferred
-  (Option B in ADR-015), not implemented.
-- Runs the entire Persona executable to an **actual title screen** — even once
-  a real title is loaded, the boot path needs BIOS HLE beyond the five services
-  above and GPU/SPU/CD-ROM MMIO.
-- GPU / SPU / CD-ROM hardware: a managed GPU register/VRAM model now exists
-  (#440) but is not wired into the title execution path and performs no
-  rasterization; the SPU/CD-ROM interfaces still have no production
-  implementation. Hardware communication beyond the modeled GPU registers would
-  hit MMIO open-bus (reads return 0, writes ignored).
+- **A production generated-host (recompiled) execution backend for the Studio.**
+  The Studio's production composition remains interpreter-backed (ADR-015).
+  The headless CLI can build and launch runnable generated-host artifacts, but
+  that is not the same as replacing the Studio production engine.
+- **Production title-execution GPU reachability.** The existing `GpuDevice`,
+  VRAM, rasterizer, and `FrameSnapshot` are implemented, but guest GPU MMIO
+  during production title execution is not yet wired to that same state.
+- **GPU DMA2 / IRQ1 integration.** VBlank IRQ0 scheduling exists; DMA channel 2
+  data movement and GPU command IRQ1 remain open under #440.
+- **SPU audio behavior.** SPU register/MMIO storage is production-reachable
+  (#445/#551), but ADPCM decoding, ADSR, mixing, reverb, sound RAM, audio output,
+  CD-audio input, and IRQ9 are not implemented.
+- **CD-ROM runtime hardware.** The command/status/FIFO model, DMA3 data path and
+  IRQ2 remain unimplemented (#444).
+- **An actual Persona title-screen proof.** No fake frame, hard-coded shortcut,
+  or test-only presentation satisfies #351.
 
 **Remaining generic runtime sub-blockers in order:**
 
-1. **BIOS HLE coverage**: Only 5 services implemented (A0:3C putchar, A0:3E puts,
-   B0:3F puts alias, B0:56 GetC0Table, B0:57 GetB0Table). First unregistered call
-   produces diagnostic code `BIOS_HLE_UNSUPPORTED_CALL`.
+1. **BIOS HLE coverage (#279).** Seven identities are registered; unsupported
+   calls still stop explicitly with `BIOS_HLE_UNSUPPORTED_CALL`. A fresh legal
+   Persona fixture run should identify the next concrete missing identity/state.
 
-2. **GPU rendering**: the managed GPU model (#440) covers register semantics and
-   VRAM transfers only; rasterization and display output are not implemented, so
-   no rendering occurs.
+2. **Production GPU/frame integration (#440 / #351).** Existing GPU MMIO/VRAM,
+   minimal rasterization and `FrameSnapshot` must be reached from production
+   title execution; DMA2 and GPU IRQ1 remain separate concrete gaps.
 
-3. **SPU / CD-ROM**: Same situation — interface-only.
+3. **Evidence-gated hardware after the next real boundary.** SPU register/MMIO
+   exists, while audio behavior is still absent; CD-ROM remains unimplemented.
+   MDEC/GTE/CD-ROM/SPU work should be promoted only when the real execution path
+   demonstrates that it is the next blocker rather than implemented by issue
+   number order.
 
 ## Reproduction Route
 
@@ -227,7 +234,10 @@ or local paths.
 
 - [Issue #351](https://github.com/mao2009/PSXRecompStudio/issues/351) — this gate
 - [Issue #9](https://github.com/mao2009/PSXRecompStudio/issues/9) — v0.1.0 milestone
-- [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution policy
-- [Issue #362](https://github.com/mao2009/PSXRecompStudio/issues/362) — recompiled-path BIOS dispatch (Worker A)
-- [Issue #366](https://github.com/mao2009/PSXRecompStudio/issues/366) — full-title execution orchestrator (this work)
-- [Issue #380](https://github.com/mao2009/PSXRecompStudio/issues/380) / [ADR-015](../adr/015-production-execution-engine-ownership.md) — production execution engine ownership; the Studio's diagnostic execution entry point described above
+- [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution / remaining HLE coverage
+- [Issue #440](https://github.com/mao2009/PSXRecompStudio/issues/440) — remaining GPU production integration, DMA2 and IRQ1
+- [Issue #444](https://github.com/mao2009/PSXRecompStudio/issues/444) — CD-ROM register/DMA3/IRQ2 model (evidence-gated)
+- [Issue #445](https://github.com/mao2009/PSXRecompStudio/issues/445) — SPU register/MMIO substrate (completed via #551)
+- [Issue #443](https://github.com/mao2009/PSXRecompStudio/issues/443) — scoped SIO0 model (completed via #548/#549)
+- [Issue #552](https://github.com/mao2009/PSXRecompStudio/issues/552) — synchronization of this status document
+- [ADR-015](../adr/015-production-execution-engine-ownership.md) — production execution engine ownership
