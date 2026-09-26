@@ -74,14 +74,12 @@ internal static class ProductionFrameEvidenceCollector
                 DiagnosticCode: result.DiagnosticCode,
                 Reason: null);
         }
-        catch (Exception ex) when (
-            ex is ArgumentException or InvalidOperationException
-                or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+        catch (Exception ex) when (IsExpectedCaptureFailure(ex))
         {
             // Frame evidence is supplemental to the generated-host run. A
             // production-path preparation failure or a missing/incompatible
             // native interop binary must not replace or rewrite that run's
-            // classified result; report only the evidence as unavailable.
+            // classified result; expose only a bounded, sanitized reason.
             return new FrameEvidence(
                 Status: UnavailableStatus,
                 Width: null,
@@ -89,9 +87,21 @@ internal static class ProductionFrameEvidenceCollector
                 Sha256: null,
                 ProductionState: null,
                 DiagnosticCode: null,
-                Reason: "production-frame-capture-failed");
+                Reason: ClassifyCaptureFailure(ex));
         }
     }
+
+    internal const string NativeInteropUnavailableReason = "native-interop-unavailable";
+    internal const string PreparationFailedReason = "production-frame-preparation-failed";
+
+    internal static bool IsExpectedCaptureFailure(Exception ex) =>
+        ex is ArgumentException or InvalidOperationException
+            or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException;
+
+    internal static string ClassifyCaptureFailure(Exception ex) =>
+        ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException
+            ? NativeInteropUnavailableReason
+            : PreparationFailedReason;
 
     [Infrastructure]
     internal sealed record FrameEvidence(
