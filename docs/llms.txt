@@ -6,10 +6,19 @@ PSXRecompStudio is a research platform, not a claim of complete commercial-game 
 
 ## Canonical public pages
 
+English:
 - Home: https://mao2009.github.io/PSXRecompStudio/
 - FAQ: https://mao2009.github.io/PSXRecompStudio/faq.html
 - Headless CLI: https://mao2009.github.io/PSXRecompStudio/cli.html
 - Runtime status: https://mao2009.github.io/PSXRecompStudio/runtime.html
+
+Japanese:
+- ホーム: https://mao2009.github.io/PSXRecompStudio/ja/
+- FAQ: https://mao2009.github.io/PSXRecompStudio/ja/faq.html
+- CLI: https://mao2009.github.io/PSXRecompStudio/ja/cli.html
+- Runtime状況: https://mao2009.github.io/PSXRecompStudio/ja/runtime.html
+
+Shared detailed pages:
 - Architecture: https://mao2009.github.io/PSXRecompStudio/architecture.html
 - Roadmap: https://mao2009.github.io/PSXRecompStudio/roadmap.html
 - Legal and asset policy: https://mao2009.github.io/PSXRecompStudio/legal.html
@@ -35,4 +44,4 @@ PSXRecompStudio is a research platform, not a claim of complete commercial-game 
 
 The repository does not distribute copyrighted ROM, ISO, CHD, BIOS/firmware, commercial game executable, or extracted game-asset content. Users are responsible for supplying legally obtained inputs and for complying with applicable law and license terms.
 
-This file is a supplemental navigation summary. The linked HTML pages and repository documentation are authoritative.
+The public site is intentionally available in English and Japanese for the core Home/FAQ/CLI/Runtime search intents. The linked HTML pages and repository documentation are authoritative; this file is only a supplemental navigation summary.
