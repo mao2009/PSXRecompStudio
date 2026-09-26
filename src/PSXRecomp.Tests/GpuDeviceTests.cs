@@ -244,7 +244,7 @@ public class GpuDeviceTests
         gpu.WriteGP0(0x00000000);
         gpu.WriteGP0(0x00010004);
 
-        gpu.Vram[0, 0].Should().Be(0u);
+        gpu.Vram[0, 0].Should().Be((ushort)0);
         gpu.HasFrameEvidence.Should().BeTrue(
             "frame readiness is based on guest GPU activity, not on non-zero pixels");
     }
