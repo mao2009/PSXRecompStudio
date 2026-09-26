@@ -1,7 +1,63 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/</loc></url>
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/architecture.html</loc></url>
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/roadmap.html</loc></url>
-  <url><loc>https://mao2009.github.io/PSXRecompStudio/legal.html</loc></url>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/ja/</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/faq.html</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/faq.html"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/faq.html"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/faq.html"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/ja/faq.html</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/faq.html"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/faq.html"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/faq.html"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/cli.html</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/cli.html"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/cli.html"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/cli.html"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/ja/cli.html</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/cli.html"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/cli.html"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/cli.html"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/runtime.html</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/runtime.html"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/runtime.html"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/runtime.html"/>
+  </url>
+  <url>
+    <loc>https://mao2009.github.io/PSXRecompStudio/ja/runtime.html</loc>
+    <lastmod>2026-09-26</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://mao2009.github.io/PSXRecompStudio/runtime.html"/>
+    <xhtml:link rel="alternate" hreflang="ja" href="https://mao2009.github.io/PSXRecompStudio/ja/runtime.html"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://mao2009.github.io/PSXRecompStudio/runtime.html"/>
+  </url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/architecture.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/roadmap.html</loc><lastmod>2026-09-26</lastmod></url>
+  <url><loc>https://mao2009.github.io/PSXRecompStudio/legal.html</loc><lastmod>2026-09-26</lastmod></url>
 </urlset>

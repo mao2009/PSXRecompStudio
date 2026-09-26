@@ -1,0 +1,47 @@
+# PSXRecompStudio
+
+> Open-source PlayStation 1 research project for PS1/PSX binary analysis, MIPS R3000A validation, static recompilation, and native-porting experiments.
+
+PSXRecompStudio is a research platform, not a claim of complete commercial-game compatibility. It can analyze legal user-supplied PS-X EXE and supported CHD inputs, validate bounded real-ROM-derived recompilation paths, build runnable generated-host artifacts, and produce classified headless execution results.
+
+## Canonical public pages
+
+English:
+- Home: https://mao2009.github.io/PSXRecompStudio/
+- FAQ: https://mao2009.github.io/PSXRecompStudio/faq.html
+- Headless CLI: https://mao2009.github.io/PSXRecompStudio/cli.html
+- Runtime status: https://mao2009.github.io/PSXRecompStudio/runtime.html
+
+Japanese:
+- ホーム: https://mao2009.github.io/PSXRecompStudio/ja/
+- FAQ: https://mao2009.github.io/PSXRecompStudio/ja/faq.html
+- CLI: https://mao2009.github.io/PSXRecompStudio/ja/cli.html
+- Runtime状況: https://mao2009.github.io/PSXRecompStudio/ja/runtime.html
+
+Shared detailed pages:
+- Architecture: https://mao2009.github.io/PSXRecompStudio/architecture.html
+- Roadmap: https://mao2009.github.io/PSXRecompStudio/roadmap.html
+- Legal and asset policy: https://mao2009.github.io/PSXRecompStudio/legal.html
+- Source repository: https://github.com/mao2009/PSXRecompStudio
+
+## Current capabilities
+
+- PS-X EXE and supported CHD analysis.
+- MIPS R3000A decode, execution, delay-slot, exception, interrupt, and differential validation.
+- Static recompilation research with deterministic host-code generation and bounded real-ROM-derived proofs.
+- Headless `psxrecomp recompile` and `psxrecomp run` workflows with JSON and privacy-safe diagnostic reports.
+- Partial BIOS HLE and PS1 Runtime hardware models.
+- Mixed C#/.NET application code and C++/Rust native implementation behind a stable C ABI.
+
+## Important limitations
+
+- Complete commercial PS1 titles are not yet recompiled into finished native ports.
+- BIOS HLE coverage is partial.
+- GPU production integration is incomplete.
+- SPU audio behavior, CD-ROM, MDEC, GTE, and other hardware behavior remain incomplete or evidence-gated.
+
+## Content and legal policy
+
+The repository does not distribute copyrighted ROM, ISO, CHD, BIOS/firmware, commercial game executable, or extracted game-asset content. Users are responsible for supplying legally obtained inputs and for complying with applicable law and license terms.
+
+The public site is intentionally available in English and Japanese for the core Home/FAQ/CLI/Runtime search intents. The linked HTML pages and repository documentation are authoritative; this file is only a supplemental navigation summary.
