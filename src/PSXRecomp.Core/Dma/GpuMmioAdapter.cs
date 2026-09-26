@@ -83,6 +83,15 @@ public sealed class GpuMmioAdapter : GpuInterface, IMemoryBus, IDisposable
         return _device.ReadGpustat();
     }
 
+    public bool HasCommandInterrupt
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _device.HasCommandInterrupt;
+        }
+    }
+
     public IntPtr GetVramPointer()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
