@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Core;
@@ -26,7 +27,17 @@ namespace PSXRecomp.Core;
 [Domain]
 public sealed class PSXCoreWrapper : IDisposable
 {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate uint GpuMmioRead32Callback(IntPtr context, uint address);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void GpuMmioWrite32Callback(IntPtr context, uint address, uint value);
+
+    private static readonly GpuMmioRead32Callback GpuRead32Thunk = ReadGpuMmio32;
+    private static readonly GpuMmioWrite32Callback GpuWrite32Thunk = WriteGpuMmio32;
+
     private IntPtr _handle;
+    private GCHandle _gpuMmioContext;
     private bool _disposed;
 
     /// <summary>Number of general-purpose registers (R0-R31) exposed by <see cref="GetGpr"/>/<see cref="SetGpr"/>.</summary>
@@ -138,6 +149,46 @@ public sealed class PSXCoreWrapper : IDisposable
 
     /// <summary>Returns the fixed PS1 main-RAM size in bytes. Equivalent to <see cref="RamSize"/>; does not require a live instance.</summary>
     public static uint GetRamSize() => NativeInterop.PSXCore_GetRAMSize();
+
+    /// <summary>
+    /// Attaches a managed 32-bit GPU-MMIO target to this core's production CPU
+    /// memory path (Issue #572). The callbacks remain owned and rooted by this
+    /// wrapper until <see cref="DetachGpuMmio"/> or <see cref="Dispose"/>.
+    /// </summary>
+    public void AttachGpuMmio(Func<uint, uint> read32, Action<uint, uint> write32)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(read32);
+        ArgumentNullException.ThrowIfNull(write32);
+
+        DetachGpuMmioCore();
+
+        var state = new GpuMmioCallbackState(read32, write32);
+        _gpuMmioContext = GCHandle.Alloc(state);
+        try
+        {
+            NativeInterop.PSXCore_SetGpuMmioCallbacks(
+                _handle,
+                GCHandle.ToIntPtr(_gpuMmioContext),
+                Marshal.GetFunctionPointerForDelegate(GpuRead32Thunk),
+                Marshal.GetFunctionPointerForDelegate(GpuWrite32Thunk));
+        }
+        catch
+        {
+            _gpuMmioContext.Free();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Detaches the managed GPU-MMIO bridge before its target is disposed.
+    /// Safe to call when no bridge is attached.
+    /// </summary>
+    public void DetachGpuMmio()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        DetachGpuMmioCore();
+    }
 
     /// <summary>Reads a DMA controller register at the given absolute address.</summary>
     public uint ReadDmaRegister(uint address)
@@ -443,12 +494,65 @@ public sealed class PSXCoreWrapper : IDisposable
         {
             if (_handle != IntPtr.Zero)
             {
+                DetachGpuMmioCore();
                 NativeInterop.PSXCore_Destroy(_handle);
                 _handle = IntPtr.Zero;
             }
             _disposed = true;
         }
         GC.SuppressFinalize(this);
+    }
+
+    private void DetachGpuMmioCore()
+    {
+        if (_handle != IntPtr.Zero)
+        {
+            NativeInterop.PSXCore_SetGpuMmioCallbacks(
+                _handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        if (_gpuMmioContext.IsAllocated)
+        {
+            _gpuMmioContext.Free();
+        }
+    }
+
+    private static uint ReadGpuMmio32(IntPtr context, uint address)
+    {
+        if (context == IntPtr.Zero)
+        {
+            return 0;
+        }
+
+        var handle = GCHandle.FromIntPtr(context);
+        return handle.Target is GpuMmioCallbackState state ? state.Read32(address) : 0;
+    }
+
+    private static void WriteGpuMmio32(IntPtr context, uint address, uint value)
+    {
+        if (context == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var handle = GCHandle.FromIntPtr(context);
+        if (handle.Target is GpuMmioCallbackState state)
+        {
+            state.Write32(address, value);
+        }
+    }
+
+    private sealed class GpuMmioCallbackState
+    {
+        public GpuMmioCallbackState(Func<uint, uint> read32, Action<uint, uint> write32)
+        {
+            Read32 = read32;
+            Write32 = write32;
+        }
+
+        public Func<uint, uint> Read32 { get; }
+
+        public Action<uint, uint> Write32 { get; }
     }
 
     ~PSXCoreWrapper()
