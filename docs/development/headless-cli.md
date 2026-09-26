@@ -134,12 +134,16 @@ With `--frame-evidence`, one `frameEvidence` object is appended:
 ```
 
 `status` is `available` only after the production interpreter observes
-meaningful guest GPU frame activity (for example a VRAM write/rasterization or
-explicit display enable). This is deliberately not a non-zero-pixel heuristic:
-an explicitly produced black frame is valid evidence, while untouched power-on
-VRAM is reported as `unavailable` with `reason: "no-frame-activity"`.
+meaningful guest GPU frame activity that actually writes at least one VRAM
+pixel in the current execution epoch (for example a quick fill, rasterized
+primitive, or CPU-to-VRAM transfer). This is deliberately not a non-zero-pixel
+heuristic: an explicitly written black frame is valid evidence, while untouched
+power-on VRAM — or display-enable applied only to pixels preserved from an older
+load — is reported as `unavailable` with `reason: "no-frame-activity"`.
 Other unavailable states leave hash fields null as appropriate and classify the
-reason explicitly.
+reason explicitly. Expected native interop availability failures use
+`native-interop-unavailable`; production preparation/contract failures use
+`production-frame-preparation-failed`.
 The `productionState` belongs to the supplemental production-interpreter
 evidence run; the top-level `result` remains the generated-host run.
 
