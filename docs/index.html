@@ -35,8 +35,10 @@
       <ul>
         <li>R3000A / MIPS I instruction modeling, decoding, memory behavior, delay-slot behavior, exceptions, interrupts, and deterministic Golden Trace validation.</li>
         <li>Disc-analysis flow covering CHD input, ISO 9660 structures, PS-X EXE extraction, MIPS analysis, basic blocks, and control-flow graph extraction.</li>
-        <li>A synthetic MIPS recompiler vertical slice: MIPS to IR lowering, host C generation, bounded execution, and differential validation against the interpreter.</li>
-        <li>Compiler-enforced architecture boundaries and a stable C# to C++ interop boundary.</li>
+        <li>A synthetic MIPS recompiler vertical slice plus bounded real-ROM-derived function proofs, whole-corpus coverage reporting, deterministic host C generation, and differential validation against the interpreter.</li>
+        <li>Runnable generated-host artifacts and a headless <code>psxrecomp recompile</code> / <code>psxrecomp run</code> CLI with classified JSON results and privacy-safe diagnostic bundles.</li>
+        <li>Partial Runtime hardware support including BIOS HLE, production-reachable interrupt/timer/DMA/memory/SIO0/SPU register state, and a managed GPU model with minimal rasterization and deterministic frame snapshots.</li>
+        <li>Compiler-enforced architecture boundaries and a stable C ABI shared by the C# layer and the mixed C++/Rust native core.</li>
       </ul>
     </section>
 
@@ -46,7 +48,6 @@
         <li>End-to-end recompilation of complete commercial PlayStation 1 titles.</li>
         <li>A finished runtime for native PS1 game ports.</li>
         <li>Complete GPU, SPU, CD-ROM, MDEC, and GTE support.</li>
-        <li>General real-ROM function recompilation integrated with the validated recompiler path.</li>
       </ul>
     </section>
 
@@ -55,8 +56,8 @@
       <div class="grid">
         <article class="card"><h3>C# and .NET</h3><p>Domain logic, analysis, validation, tests, and managed interop code.</p></article>
         <article class="card"><h3>Avalonia</h3><p>Cross-platform desktop application shell and future analysis workflows.</p></article>
-        <article class="card"><h3>C++ and CMake</h3><p>Native CPU and hardware-oriented components built behind a stable C ABI.</p></article>
-        <article class="card"><h3>C ABI and P/Invoke</h3><p>A narrow managed/native boundary keeps C++ implementation details out of C#.</p></article>
+        <article class="card"><h3>C++, Rust, and CMake</h3><p>Native CPU, memory, and hardware-oriented components coexist behind a stable C ABI while semantics migrate incrementally to Rust.</p></article>
+        <article class="card"><h3>C ABI and P/Invoke</h3><p>A narrow managed/native boundary keeps C++ and Rust implementation details out of C#.</p></article>
       </div>
     </section>
 
