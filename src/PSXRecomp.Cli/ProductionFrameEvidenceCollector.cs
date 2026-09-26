@@ -40,7 +40,19 @@ internal static class ProductionFrameEvidenceCollector
                 new ProgramEndHandoff(programEnd),
                 input.Request);
 
-            var frame = engine.CaptureFrame();
+            var frame = engine.CaptureFrameEvidence();
+            if (frame is null)
+            {
+                return new FrameEvidence(
+                    Status: UnavailableStatus,
+                    Width: null,
+                    Height: null,
+                    Sha256: null,
+                    ProductionState: result.State,
+                    DiagnosticCode: result.DiagnosticCode,
+                    Reason: "no-frame-activity");
+            }
+
             if (frame.Width == 0 || frame.Height == 0)
             {
                 return new FrameEvidence(
@@ -62,11 +74,14 @@ internal static class ProductionFrameEvidenceCollector
                 DiagnosticCode: result.DiagnosticCode,
                 Reason: null);
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (
+            ex is ArgumentException or InvalidOperationException
+                or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
         {
             // Frame evidence is supplemental to the generated-host run. A
-            // production-path preparation failure must not replace or rewrite
-            // that run's classified result; report the evidence as unavailable.
+            // production-path preparation failure or a missing/incompatible
+            // native interop binary must not replace or rewrite that run's
+            // classified result; report only the evidence as unavailable.
             return new FrameEvidence(
                 Status: UnavailableStatus,
                 Width: null,
