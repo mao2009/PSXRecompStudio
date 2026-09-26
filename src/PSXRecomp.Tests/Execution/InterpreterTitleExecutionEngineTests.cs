@@ -2,7 +2,6 @@ using System.Reflection;
 using FluentAssertions;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Execution;
-using PSXRecomp.Core.Runtime.Gpu;
 using PSXRecomp.Tests.Recompiler;
 
 namespace PSXRecomp.Tests.Execution;
