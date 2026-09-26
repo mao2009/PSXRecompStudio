@@ -358,6 +358,29 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             RecompilerExecutionStatus.Completed, snapshot, diagnosticCode, diagnosticMessage);
     }
 
+    /// <summary>
+    /// Captures the current production GPU display state from the exact
+    /// <see cref="GpuDevice"/> / VRAM instance mutated by this engine's guest
+    /// MMIO execution (Issue #575).
+    /// </summary>
+    /// <remarks>
+    /// This is a presentation-agnostic evidence boundary. It does not wait for
+    /// VBlank or define when a frame is "final"; it snapshots the current GPU
+    /// state at the caller-selected execution boundary.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The engine has not been loaded yet.</exception>
+    /// <exception cref="ObjectDisposedException">The engine has already been disposed.</exception>
+    public FrameSnapshot CaptureFrame()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_loaded)
+        {
+            throw new InvalidOperationException("Load must complete before a production frame can be captured.");
+        }
+
+        return _gpuDevice.CaptureFrame();
+    }
+
     /// <summary>Releases the native core, memory bus and MMIO adapters this engine owns.</summary>
     public void Dispose()
     {
