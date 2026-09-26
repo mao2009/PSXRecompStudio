@@ -152,7 +152,7 @@ public static class GpuRasterizer
         if (_clipMinX > _clipMaxX || _clipMinY > _clipMaxY)
             return false;
 
-        bool _wrotePixels = false;
+        bool wrotePixels = false;
         for (int y = _clipMinY; y <= _clipMaxY; y++)
         {
             for (int x = _clipMinX; x <= _clipMaxX; x++)
@@ -174,11 +174,11 @@ public static class GpuRasterizer
                 int _b = (int)((_w0 * c0.B + _w1 * c1.B + _w2 * c2.B) / _area);
 
                 vram[x, y] = PackPixel(_r, _g, _b);
-                _wrotePixels = true;
+                wrotePixels = true;
             }
         }
 
-        return _wrotePixels;
+        return wrotePixels;
     }
 
     private static long EdgeFunction((int X, int Y) a, (int X, int Y) b, (int X, int Y) p) =>
