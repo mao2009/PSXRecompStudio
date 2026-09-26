@@ -196,6 +196,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // to physical), then the program words so the code image wins any overlap.
         _core.Reset();
         _gpuDevice.Reset();
+        _gpuDevice.ResetFrameEvidence();
         foreach (var item in request.InitialMemory)
         {
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
@@ -379,6 +380,28 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         }
 
         return _gpuDevice.CaptureFrame();
+    }
+
+    /// <summary>
+    /// Captures a frame only when the current production execution epoch has
+    /// performed meaningful GPU display/VRAM activity (Issue #575).
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="CaptureFrame"/>, this evidence-oriented boundary
+    /// distinguishes untouched power-on VRAM from a legitimate all-black frame
+    /// explicitly produced/enabled by the guest.
+    /// </remarks>
+    /// <returns>The current production frame, or <c>null</c> when no meaningful
+    /// frame activity has occurred since the most recent <see cref="Load"/>.</returns>
+    public FrameSnapshot? CaptureFrameEvidence()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_loaded)
+        {
+            throw new InvalidOperationException("Load must complete before production frame evidence can be captured.");
+        }
+
+        return _gpuDevice.HasFrameEvidence ? _gpuDevice.CaptureFrame() : null;
     }
 
     /// <summary>Releases the native core, memory bus and MMIO adapters this engine owns.</summary>
