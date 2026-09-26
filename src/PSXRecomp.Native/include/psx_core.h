@@ -75,6 +75,21 @@ PSX_API uint8_t* PSXCore_GetRAM(PSXCore* core);
 /** Returns the fixed PS1 main-RAM size in bytes. Does not require a live instance. */
 PSX_API uint32_t PSXCore_GetRAMSize(void);
 
+/** Managed GPU-MMIO callback signatures used by the production interpreter bridge (Issue #572). */
+typedef uint32_t (*PSXGpuMmioRead32)(void* context, uint32_t address);
+typedef void (*PSXGpuMmioWrite32)(void* context, uint32_t address, uint32_t value);
+
+/**
+ * Attaches or detaches the managed GPU register bridge used by the native CPU
+ * for 32-bit accesses to 0x1F801810-0x1F80181F. GPU semantics remain managed;
+ * this ABI only forwards the access. Passing NULL callbacks detaches it.
+ */
+PSX_API void PSXCore_SetGpuMmioCallbacks(
+    PSXCore* core,
+    void* context,
+    PSXGpuMmioRead32 read32,
+    PSXGpuMmioWrite32 write32);
+
 /** Reads a DMA controller register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 /** Writes a DMA controller register at the given absolute address. */
