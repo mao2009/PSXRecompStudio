@@ -99,9 +99,14 @@ internal static class ProductionFrameEvidenceCollector
             or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException;
 
     internal static string ClassifyCaptureFailure(Exception ex) =>
-        ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException
-            ? NativeInteropUnavailableReason
-            : PreparationFailedReason;
+        ex switch
+        {
+            DllNotFoundException or EntryPointNotFoundException or BadImageFormatException =>
+                NativeInteropUnavailableReason,
+            ArgumentException or InvalidOperationException =>
+                PreparationFailedReason,
+            _ => throw new ArgumentOutOfRangeException(nameof(ex), "Exception is not an expected frame-capture failure."),
+        };
 
     [Infrastructure]
     internal sealed record FrameEvidence(
