@@ -190,6 +190,29 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void GpuReset_DeassertsCommandIrqSource_AndRearmsTheNextRequest()
+    {
+        _gpu.WriteGP0(0x1F000000);
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(GpuBit);
+
+        _interrupts.Acknowledge(~GpuBit);
+        _gpu.WriteGP1(0x00000000); // GP1(00h): full GPU reset clears IrqRequested
+        _gpu.HasCommandInterrupt.Should().BeFalse();
+
+        // The scheduler must observe the low source before a later request can
+        // form a new rising edge.
+        _scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u);
+
+        _gpu.WriteGP0(0x1F000000);
+        _scheduler.Advance(1);
+
+        _gpu.HasCommandInterrupt.Should().BeTrue();
+        _interrupts.Status.Should().Be(GpuBit, "a post-reset GP0(1Fh) must deliver a fresh IRQ1");
+    }
+
+    [Fact]
     public void Gp1Acknowledge_DoesNotClearAnAlreadyLatchedIStatIrq1()
     {
         _gpu.WriteGP0(0x1F000000);
