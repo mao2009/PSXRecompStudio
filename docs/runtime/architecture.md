@@ -40,7 +40,7 @@ The old common `IHardwareComponent` abstraction was removed because it had no pr
 - Production CPU loads/stores execute through native `PSXCpu` → `PsxMemory`.
 - RAM, scratchpad, BIOS bytes and Rust-owned MMIO devices are decoded by `PsxMemory`.
 - Interrupt, DMA, Timer, SIO0 and SPU semantics are owned by native/Rust state reached through that production memory boundary.
-- The GPU remains a managed Domain model (`IGpu` / `GpuDevice`) and is not yet connected to production title-execution guest MMIO.
+- The GPU remains a managed Domain model (`IGpu` / `GpuDevice`). Production interpreter 32-bit GPU MMIO is forwarded through a narrow native callback seam to the same `GpuMmioAdapter` / `GpuDevice` state (#572); native/Rust does not duplicate GPU semantics.
 - `IMemoryBus` / `MemoryBus` is a managed routing seam used by BIOS HLE/tests and focused adapters; it is not a universal base interface implemented by every device.
 - BIOS-less execution is modeled through `IBiosRuntime` / `BiosHleRuntime`; there is no live `IBios` hardware-component interface.
 
@@ -144,7 +144,7 @@ There is no common `IHardwareComponent.Read/Write` dispatch layer.
 
 - **Production guest CPU path:** `InterpreterTitleExecutionEngine` → `PSXCoreWrapper` → native `PSXCpu` → `PsxMemory`. `PsxMemory` decodes RAM/scratchpad/BIOS/MMIO and forwards Rust-owned device windows to their device modules.
 - **Managed routing seam:** `MemoryBus` uses `Ps1MemoryMap` / `MmioRoute` to classify addresses for BIOS-HLE/tests and managed-owned devices. SIO0/SPU forwarding reaches the same native memory SSOT instead of maintaining duplicate semantics.
-- **GPU exception:** the current GPU register/VRAM model is managed and routed through `GpuMmioAdapter` + `MemoryBus`; production title-execution reachability is a remaining #440 item.
+- **GPU bridge:** the GPU register/VRAM model remains managed and routed through `GpuMmioAdapter` + `MemoryBus`. Production native-interpreter 32-bit accesses to the GPU port window are forwarded to that same adapter through the #572 callback seam; DMA2 and GPU IRQ1 integration remain #440 items.
 
 Subword semantics are defined by the owning device/memory implementation; they are not inherited from a deleted common base interface.
 
