@@ -82,7 +82,17 @@ typedef void (*PSXGpuMmioWrite32)(void* context, uint32_t address, uint32_t valu
 /**
  * Attaches or detaches the managed GPU register bridge used by the native CPU
  * for 32-bit accesses to 0x1F801810-0x1F80181F. GPU semantics remain managed;
- * this ABI only forwards the access. Passing NULL callbacks detaches it.
+ * this ABI only forwards the access.
+ *
+ * The native core retains `context`, `read32`, and `write32` after this call.
+ * When callbacks are non-NULL, all three values must remain valid until the
+ * bridge is detached by calling this function with NULL callbacks, or until the
+ * core is destroyed. The caller owns the context and callback storage.
+ *
+ * Calls that may invoke the callbacks (for example PSXCore_Step/Run or 32-bit
+ * memory access) must not run concurrently on the same core with attachment,
+ * detachment, or destruction. Passing NULL callbacks detaches the bridge before
+ * returning and the context is not used afterward.
  */
 PSX_API void PSXCore_SetGpuMmioCallbacks(
     PSXCore* core,
