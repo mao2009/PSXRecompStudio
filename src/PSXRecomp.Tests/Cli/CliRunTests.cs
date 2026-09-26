@@ -658,6 +658,31 @@ public sealed class CliRunTests
         evidence.Reason.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(typeof(DllNotFoundException))]
+    [InlineData(typeof(EntryPointNotFoundException))]
+    [InlineData(typeof(BadImageFormatException))]
+    public void ProductionFrameEvidenceCollector_InteropFailuresUseBoundedInteropReason(Type exceptionType)
+    {
+        var exception = (Exception)Activator.CreateInstance(exceptionType)!;
+
+        ProductionFrameEvidenceCollector.IsExpectedCaptureFailure(exception).Should().BeTrue();
+        ProductionFrameEvidenceCollector.ClassifyCaptureFailure(exception)
+            .Should().Be(ProductionFrameEvidenceCollector.NativeInteropUnavailableReason);
+    }
+
+    [Theory]
+    [InlineData(typeof(ArgumentException))]
+    [InlineData(typeof(InvalidOperationException))]
+    public void ProductionFrameEvidenceCollector_PreparationFailuresUseBoundedPreparationReason(Type exceptionType)
+    {
+        var exception = (Exception)Activator.CreateInstance(exceptionType)!;
+
+        ProductionFrameEvidenceCollector.IsExpectedCaptureFailure(exception).Should().BeTrue();
+        ProductionFrameEvidenceCollector.ClassifyCaptureFailure(exception)
+            .Should().Be(ProductionFrameEvidenceCollector.PreparationFailedReason);
+    }
+
     [Fact]
     public void Run_SyntheticExe_HumanOutputReportsCompletionAndArtifactPath()
     {
