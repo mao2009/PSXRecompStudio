@@ -128,13 +128,6 @@ public sealed class GpuDevice : IGpu, IDisposable
                 break;
             case 0x03: // Display Enable
                 _state.DisplayEnabled = (_param & 1) == 0;
-                if (_state.DisplayEnabled)
-                {
-                    // An explicitly enabled untouched display is meaningful
-                    // evidence too: a legitimate black frame must not be
-                    // rejected just because every pixel value is zero.
-                    _frameEvidenceObserved = true;
-                }
                 break;
             case 0x04: // DMA Direction / Data Request
                 _state.DmaDirection = (GpuDmaDirection)(_param & 3);
@@ -240,10 +233,11 @@ public sealed class GpuDevice : IGpu, IDisposable
     public bool HasCommandInterrupt => _state.IrqRequested;
 
     /// <summary>
-    /// Whether this execution epoch has produced guest-visible frame activity
-    /// suitable for headless evidence (Issue #575). This is semantic activity,
-    /// not a pixel-content heuristic: an explicit black fill/display can be
-    /// meaningful while an untouched power-on VRAM buffer is not.
+    /// Whether this execution epoch has written at least one VRAM pixel through
+    /// modeled guest GPU activity suitable for headless evidence (Issue #575).
+    /// This is semantic write provenance, not a pixel-content heuristic: a black
+    /// fill still counts, while display-enable alone cannot attribute preserved
+    /// VRAM pixels to the current load.
     /// </summary>
     public bool HasFrameEvidence => _frameEvidenceObserved;
 
@@ -350,8 +344,9 @@ public sealed class GpuDevice : IGpu, IDisposable
         {
             var _primitive = new GpuPrimitivePacket(cmd, _pendingCommandWord, param.ToArray());
             LastPrimitive = _primitive;
-            LastRasterOutcome = GpuRasterizer.Rasterize(_primitive, _state, Vram);
-            if (LastRasterOutcome == GpuRasterOutcome.Rasterized)
+            var _raster = GpuRasterizer.RasterizeDetailed(_primitive, _state, Vram);
+            LastRasterOutcome = _raster.Outcome;
+            if (_raster.WrotePixels)
             {
                 _frameEvidenceObserved = true;
             }
