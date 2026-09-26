@@ -155,7 +155,7 @@ public sealed class PSXCoreWrapper : IDisposable
     /// memory path (Issue #572). The callbacks remain owned and rooted by this
     /// wrapper until <see cref="DetachGpuMmio"/> or <see cref="Dispose"/>.
     /// </summary>
-    public void AttachGpuMmio(Func<uint, uint> read32, Action<uint, uint> write32)
+    internal void AttachGpuMmio(Func<uint, uint> read32, Action<uint, uint> write32)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(read32);
@@ -184,7 +184,7 @@ public sealed class PSXCoreWrapper : IDisposable
     /// Detaches the managed GPU-MMIO bridge before its target is disposed.
     /// Safe to call when no bridge is attached.
     /// </summary>
-    public void DetachGpuMmio()
+    internal void DetachGpuMmio()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         DetachGpuMmioCore();
