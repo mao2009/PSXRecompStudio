@@ -45,6 +45,7 @@ public sealed class GpuDevice : IGpu, IDisposable
     private int _txHalfwordsLeft;
 
     private bool _discardUntilTerminator;
+    private bool _frameEvidenceObserved;
 
     public GpuDevice()
     {
@@ -127,6 +128,13 @@ public sealed class GpuDevice : IGpu, IDisposable
                 break;
             case 0x03: // Display Enable
                 _state.DisplayEnabled = (_param & 1) == 0;
+                if (_state.DisplayEnabled)
+                {
+                    // An explicitly enabled untouched display is meaningful
+                    // evidence too: a legitimate black frame must not be
+                    // rejected just because every pixel value is zero.
+                    _frameEvidenceObserved = true;
+                }
                 break;
             case 0x04: // DMA Direction / Data Request
                 _state.DmaDirection = (GpuDmaDirection)(_param & 3);
@@ -231,6 +239,21 @@ public sealed class GpuDevice : IGpu, IDisposable
     /// <summary>True while GP0(1Fh) is requesting GPU IRQ1; GP1(02h) clears this source.</summary>
     public bool HasCommandInterrupt => _state.IrqRequested;
 
+    /// <summary>
+    /// Whether this execution epoch has produced guest-visible frame activity
+    /// suitable for headless evidence (Issue #575). This is semantic activity,
+    /// not a pixel-content heuristic: an explicit black fill/display can be
+    /// meaningful while an untouched power-on VRAM buffer is not.
+    /// </summary>
+    public bool HasFrameEvidence => _frameEvidenceObserved;
+
+    /// <summary>
+    /// Starts a fresh host-selected evidence epoch without mutating hardware
+    /// state. Production <c>Load</c> uses this because a GP1 reset preserves
+    /// VRAM and therefore must not itself erase evidence history.
+    /// </summary>
+    internal void ResetFrameEvidence() => _frameEvidenceObserved = false;
+
     public IntPtr GetVramPointer() => Vram.Pointer;
 
     /// <summary>
@@ -328,6 +351,10 @@ public sealed class GpuDevice : IGpu, IDisposable
             var _primitive = new GpuPrimitivePacket(cmd, _pendingCommandWord, param.ToArray());
             LastPrimitive = _primitive;
             LastRasterOutcome = GpuRasterizer.Rasterize(_primitive, _state, Vram);
+            if (LastRasterOutcome == GpuRasterOutcome.Rasterized)
+            {
+                _frameEvidenceObserved = true;
+            }
             LastResult = cmd.Result;
             LastResultOpcode = cmd.Opcode;
             return;
@@ -389,6 +416,7 @@ public sealed class GpuDevice : IGpu, IDisposable
         if (_w == 0 || _h == 0)
             return;
 
+        _frameEvidenceObserved = true;
         ushort _pixel = (ushort)(((commandWord >> 3) & 0x1F) | (((commandWord >> 11) & 0x1F) << 5) | (((commandWord >> 19) & 0x1F) << 10));
 
         for (int row = 0; row < _h; row++)
@@ -421,6 +449,7 @@ public sealed class GpuDevice : IGpu, IDisposable
 
     private void WriteTransferHalfword(ushort half)
     {
+        _frameEvidenceObserved = true;
         Vram[(_txX + _txRowOffset) & 0x3FF, _txY] = half;
         _txRowOffset++;
         _txHalfwordsLeft--;
