@@ -264,6 +264,43 @@ public sealed class ExecutionOrchestratorTests
     }
 
     [Fact]
+    public void Interpreter_ProductionFrameSnapshot_ReflectsGuestGpuVramWrites()
+    {
+        // Issue #575: execute a real guest GP0 fill through the production native
+        // interpreter, then capture from the exact managed GPU/VRAM instance that
+        // received those MMIO writes. Red 0xFF converts to PS1 15bpp red 0x001F.
+        var words = new uint[]
+        {
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: 0xBF80),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T0, rs: (byte)R3000aRegister.T0, immediate: 0x1810),
+
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x0200),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: 0x00FF),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: 0, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x0001),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: (byte)R3000aRegister.T1, immediate: 0x0004),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: 0),
+        };
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        var result = new ExecutionOrchestrator().Execute(
+            engine, ExitHandoff(), Request(Entry, outer: 2, segment: 64));
+
+        result.State.Should().Be(TitleExecutionState.Completed, Describe(result));
+
+        var frame = engine.CaptureFrame();
+        frame.Width.Should().Be(256);
+        frame.Height.Should().Be(240);
+        frame.Pixels[0].Should().Be(0x001F);
+        frame.Pixels[15].Should().Be(0x001F, "GP0 fill rounds the 4-pixel width to 16 pixels");
+        frame.Pixels[16].Should().Be(0);
+        frame.ComputeStableHash().Should().NotEqual(new byte[32]);
+    }
+
+    [Fact]
     public void Interpreter_LiveGuestGpuMmio_DeliversIrq1AndKeepsAcksIndependent()
     {
         // Issues #572/#574: guest SW/LW executes inside the native interpreter,
