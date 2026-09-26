@@ -208,14 +208,16 @@ presentation-agnostic capture of the configured display region, plus a
 SHA-256 stable-content hash — independent of VBlank/scheduler timing.
 
 VBlank IRQ0 is raised by the device scheduler (see
-[Device Scheduling](#device-scheduling-issue-442)), not by `GpuDevice`, because
-the GPU is not yet part of the production engine; `IGpu.HasVblank` stays false.
+[Device Scheduling](#device-scheduling-issue-442)), not by `GpuDevice`;
+`IGpu.HasVblank` stays false. Production guest 32-bit GPU MMIO reaches this
+same managed device through #572, and Issue #574 wires the existing GP0(1Fh)
+command-interrupt source to scheduler-delivered IRQ1 without duplicating GPU
+state.
 
 Not yet implemented: texture mapping, quads, line primitives,
 semi-transparency blending, dithering, mask-bit checking, VRAM→VRAM blit, and
 DMA channel 2 (GPU) consumption of the DMA controller. No CLI/headless export
-path consumes `FrameSnapshot` yet, and the GPU device itself is not wired into
-`DeviceScheduler` or any production execution engine.
+path consumes `FrameSnapshot` yet (#575).
 
 ## SPU Model
 
@@ -356,8 +358,11 @@ run. Responsibilities are split so no device behavior is duplicated:
   continues; other exceptions (SYSCALL, BREAK, faults, software interrupts)
   still end the segment as `CPU_EXCEPTION`. See `docs/cpu/exceptions.md`.
 - **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
-  raised as IRQ4-6) → DMA (IRQ3 on a rising edge of DICR bit 31) → VBlank
+  raised as IRQ4-6) → DMA (IRQ3 on a rising edge of DICR bit 31) → SIO0 (IRQ7)
+  → GPU command IRQ (IRQ1 on the rising edge of GP0(1Fh)'s source) → VBlank
   (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
+  GP1(02h) deasserts the GPU source; the already-latched I_STAT bit remains
+  independently guest-acknowledged (#574).
 - **DMA completion model:** a started channel (CHCR bit 24, DPCR enable, and bit
   28 for sync mode 0) completes after one cycle per word (sync 0: BCR[15:0];
   sync 1: size × count; linked list: one word, since its length lives in guest
@@ -365,8 +370,8 @@ run. Responsibilities are split so no device behavior is duplicated:
   enabled. No data is transferred; device-backed transfers (GPU DMA2, OTC
   clearing, CD-ROM, SPU, MDEC) remain device work.
 
-Not modelled: cycle-exact timing, HBlank, Timer 0/1 blank sync lines, and GPU
-IRQ1. The generated-host engine (`HostTitleExecutionEngine`, test-only) carries
+Not modelled: cycle-exact timing, HBlank, and Timer 0/1 blank sync lines.
+The generated-host engine (`HostTitleExecutionEngine`, test-only) carries
 guest MMIO as a flat register window across processes and has no native device
 state to schedule, so it is not wired.
 
@@ -382,7 +387,9 @@ Execution / generated-host composition
     │             ├── RAM / scratchpad / BIOS backing
     │             └── Rust-owned MMIO devices
     ├── managed BIOS-HLE/test memory seam → IMemoryBus / MemoryBus
-    └── managed GPU seam → IGpu / GpuDevice (production title wiring pending)
+    └── managed GPU seam → IGpu / GpuDevice
+            ├── production guest MMIO bridge (#572)
+            └── scheduler IRQ1 delivery (#574)
 ```
 
 The exact generated-host execution contract is documented separately; this diagram records ownership boundaries rather than claiming that every execution backend uses the same memory-call shape.
