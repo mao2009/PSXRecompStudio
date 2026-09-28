@@ -59,6 +59,7 @@ public sealed class CdRomDevice : ICdRom
 
     private readonly Queue<byte> _parameters = new(FifoCapacity);
     private readonly Queue<byte> _responses = new(FifoCapacity);
+    private readonly Queue<byte> _data = new();
     private readonly Queue<(byte Interrupt, byte[] Response, bool MarksDataReady)> _pendingResponses = new();
 
     private readonly CdRomDiscIdentity _discIdentity;
@@ -66,6 +67,7 @@ public sealed class CdRomDevice : ICdRom
     private byte _interruptEnable;
     private byte _interruptFlag;
     private bool _activeResponseMarksDataReady;
+    private ulong _interruptGeneration;
 
     public CdRomDevice()
         : this(CdRomDiscIdentity.NoDisc)
@@ -84,6 +86,10 @@ public sealed class CdRomDevice : ICdRom
     public IReadOnlyCollection<byte> Parameters => _parameters.ToArray();
 
     public int ResponseCount => _responses.Count;
+
+    public int DataBytesAvailable => _data.Count;
+
+    public ulong InterruptGeneration => _interruptGeneration;
 
     /// <summary>Interrupt enable bits 0-4.</summary>
     public byte InterruptEnable => _interruptEnable;
@@ -138,11 +144,22 @@ public sealed class CdRomDevice : ICdRom
         }
     }
 
+    /// <summary>Reads the oldest byte in the bounded data FIFO, or zero when empty.</summary>
+    public byte ReadData() => _data.TryDequeue(out var value) ? value : (byte)0;
+
     /// <summary>
-    /// No sector bytes are modeled yet. DataReady is the bounded #586 contract;
-    /// the actual data FIFO/DMA3 consumer is added by #587.
+    /// Supplies bytes from the disc/sector layer without coupling this device to
+    /// any image format. The active ReadN/ReadS command owns interpretation of
+    /// those bytes; DMA3 consumes them through <see cref="ReadData"/>.
     /// </summary>
-    public byte ReadData() => 0;
+    public void LoadData(ReadOnlySpan<byte> data)
+    {
+        if (!IsReading)
+            throw new InvalidOperationException("CD-ROM data can be supplied only while ReadN/ReadS is active.");
+
+        foreach (var value in data)
+            _data.Enqueue(value);
+    }
 
     /// <summary>
     /// 0x1F801800 read: bits 0-1 index, bit3 PRMEMPT, bit4 PRMWRDY,
@@ -218,6 +235,7 @@ public sealed class CdRomDevice : ICdRom
     public void Reset()
     {
         _parameters.Clear();
+        _data.Clear();
         ClearResponseSequence();
         _index = 0;
         _interruptEnable = 0;
@@ -353,6 +371,10 @@ public sealed class CdRomDevice : ICdRom
         foreach (var value in response) _responses.Enqueue(value);
         _interruptFlag = interrupt;
         _activeResponseMarksDataReady = marksDataReady;
+        unchecked
+        {
+            _interruptGeneration++;
+        }
         if (marksDataReady) DataReady = true;
     }
 
