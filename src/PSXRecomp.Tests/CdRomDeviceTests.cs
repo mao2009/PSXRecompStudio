@@ -96,9 +96,9 @@ public class CdRomDeviceTests
         var cd = new CdRomDevice();
         cd.WriteRegister(2, 0x01);
         cd.WriteRegister(2, 0x02);
-        cd.WriteRegister(1, 0x01); // GetStat: not yet implemented (#586)
+        cd.WriteRegister(1, 0x00); // Unused/unsupported command.
 
-        cd.LastCommand.Should().Be(0x01);
+        cd.LastCommand.Should().Be(0x00);
         cd.Parameters.Should().BeEmpty("command dispatch consumes the parameter FIFO");
         cd.ReadStatus().Should().Be(StatusIdle | 0x20, "response FIFO holds the error");
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
@@ -108,6 +108,178 @@ public class CdRomDeviceTests
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidCommand);
         cd.ReadStatus().Should().Be(StatusIdle, "response FIFO drained");
         cd.ReadRegister(1).Should().Be(0, "empty response FIFO reads 0");
+    }
+
+    [Fact]
+    public void GetStat_ReturnsDeterministicStatusWithInt3()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x01);
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ReadRegister(1).Should().Be(0x02, "present disc reports the minimal motor-on status");
+        cd.ResponseCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Init_QueuesInt3ThenInt2AndClearsReadState()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(2, 0x00);
+        cd.WriteRegister(2, 0x02);
+        cd.WriteRegister(2, 0x00);
+        cd.WriteCommand(0x02);
+        cd.ReadRegister(1).Should().Be(0x02);
+        cd.AcknowledgeInterrupt();
+
+        cd.WriteCommand(0x06);
+        cd.ReadRegister(1).Should().Be(0x22);
+        cd.AcknowledgeInterrupt();
+        cd.ReadRegister(1).Should().Be(0x22);
+        cd.DataReady.Should().BeTrue();
+        cd.AcknowledgeInterrupt();
+
+        cd.WriteCommand(0x0A);
+
+        cd.IsReading.Should().BeFalse();
+        cd.DataReady.Should().BeFalse();
+        cd.Location.Should().BeNull();
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ReadRegister(1).Should().Be(0x02);
+
+        cd.AcknowledgeInterrupt();
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntComplete);
+        cd.ReadRegister(1).Should().Be(0x02);
+    }
+
+    [Fact]
+    public void GetId_LicensedMode2_QueuesInt3ThenLicensedIdentityInt2()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2((byte)'E'));
+        cd.WriteCommand(0x1A);
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ReadRegister(1).Should().Be(0x02);
+
+        cd.AcknowledgeInterrupt();
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntComplete);
+        Enumerable.Range(0, 8).Select(_ => cd.ReadRegister(1)).Should().Equal(
+            0x02, 0x00, 0x20, 0x00, (byte)'S', (byte)'C', (byte)'E', (byte)'E');
+    }
+
+    [Fact]
+    public void GetId_NoDisc_QueuesInt3ThenFailClosedInt5()
+    {
+        var cd = new CdRomDevice();
+        cd.WriteCommand(0x1A);
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ReadRegister(1).Should().Be(0x00);
+
+        cd.AcknowledgeInterrupt();
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        Enumerable.Range(0, 8).Select(_ => cd.ReadRegister(1)).Should().Equal(
+            0x08, CdRomDevice.ErrorInvalidCommand, 0, 0, 0, 0, 0, 0);
+    }
+
+    [Fact]
+    public void SetLoc_StoresValidatedBcdLocationUntilReadConsumesIt()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(2, 0x12);
+        cd.WriteRegister(2, 0x34);
+        cd.WriteRegister(2, 0x56);
+
+        cd.WriteCommand(0x02);
+
+        cd.Location.Should().Be(new CdRomLocation(0x12, 0x34, 0x56));
+        cd.HasPendingLocation.Should().BeTrue();
+        cd.Parameters.Should().BeEmpty();
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ReadRegister(1).Should().Be(0x02);
+    }
+
+    [Theory]
+    [InlineData(0x00, 0x60, 0x00)]
+    [InlineData(0x00, 0x00, 0x75)]
+    [InlineData(0x0A, 0x00, 0x00)]
+    public void SetLoc_InvalidBcdFailsClosed(byte minute, byte second, byte frame)
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(2, minute);
+        cd.WriteRegister(2, second);
+        cd.WriteRegister(2, frame);
+
+        cd.WriteCommand(0x02);
+
+        cd.Location.Should().BeNull();
+        cd.HasPendingLocation.Should().BeFalse();
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        cd.ReadRegister(1).Should().Be(0x03);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidParameter);
+    }
+
+    [Fact]
+    public void WrongParameterCount_UsesDedicatedErrorCode()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(2, 0x12);
+        cd.WriteCommand(0x01); // GetStat expects no parameters.
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        cd.ReadRegister(1).Should().Be(0x03);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorWrongParameterCount);
+    }
+
+    [Theory]
+    [InlineData(0x06, false)]
+    [InlineData(0x1B, true)]
+    public void ReadCommand_QueuesOneBoundedInt1DataReadyEvent(byte command, bool raw)
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(2, 0x00);
+        cd.WriteRegister(2, 0x02);
+        cd.WriteRegister(2, 0x00);
+        cd.WriteCommand(0x02);
+        cd.ReadRegister(1).Should().Be(0x02);
+        cd.AcknowledgeInterrupt();
+
+        cd.WriteCommand(command);
+
+        cd.IsReading.Should().BeTrue();
+        cd.ReadSectorsRaw.Should().Be(raw);
+        cd.HasPendingLocation.Should().BeFalse();
+        cd.DataReady.Should().BeFalse("INT1 is not visible until the command INT3 is completed");
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ReadRegister(1).Should().Be(0x22);
+
+        cd.AcknowledgeInterrupt();
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntDataReady);
+        cd.DataReady.Should().BeTrue();
+        (cd.ReadStatus() & 0x40).Should().Be(0x40, "DRQSTS reflects the bounded data-ready token");
+        cd.ReadRegister(1).Should().Be(0x22);
+
+        cd.AcknowledgeInterrupt();
+
+        cd.DataReady.Should().BeFalse();
+        (cd.ReadStatus() & 0x40).Should().Be(0);
+        cd.GetInterruptFlag().Should().Be(0xE0, "no repeating INT1 is synthesized in the #586 slice");
+    }
+
+    [Fact]
+    public void ReadWithoutDisc_FailsClosedWithoutDataReady()
+    {
+        var cd = new CdRomDevice();
+        cd.WriteCommand(0x06);
+
+        cd.IsReading.Should().BeFalse();
+        cd.DataReady.Should().BeFalse();
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorStat);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorNotReady);
     }
 
     [Fact]
