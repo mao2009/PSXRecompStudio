@@ -860,6 +860,25 @@ public static class MipsToIrLowerer
                 // Operand1=rt (value), Operand2=rs (shift amount) — DecodeShiftByRegister.
                 sources = new[] { instruction.Operand1.Register, instruction.Operand2.Register };
                 return true;
+            case R3000aOpcode.Mult:
+            case R3000aOpcode.Multu:
+            case R3000aOpcode.Div:
+            case R3000aOpcode.Divu:
+                // Operand0=rs, Operand1=rt, no rd — DecodeMultiplyDivide. Both feed
+                // the HI/LO write; neither is a GPR destination.
+                sources = new[] { instruction.Operand0.Register, instruction.Operand1.Register };
+                return true;
+            case R3000aOpcode.Mthi:
+            case R3000aOpcode.Mtlo:
+                // Operand0=rs — DecodeMoveToHiLo. The GPR is read; HI/LO is written,
+                // not a GPR, so it never appears as a destination register.
+                sources = new[] { instruction.Operand0.Register };
+                return true;
+            case R3000aOpcode.Mfhi:
+            case R3000aOpcode.Mflo:
+                // Operand0=rd — DecodeMoveFromHiLo. Reads HI/LO (not a GPR); no GPR source.
+                sources = Array.Empty<byte>();
+                return true;
             default:
                 sources = Array.Empty<byte>();
                 return false;
@@ -888,6 +907,14 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Bgez:
             case R3000aOpcode.J:
             case R3000aOpcode.Jr:
+            case R3000aOpcode.Mult:
+            case R3000aOpcode.Multu:
+            case R3000aOpcode.Div:
+            case R3000aOpcode.Divu:
+            case R3000aOpcode.Mthi:
+            case R3000aOpcode.Mtlo:
+                // Mult/Multu/Div/Divu write HI/LO, not a GPR; Mthi/Mtlo write HI/LO
+                // from a GPR they only read. None of the six has a GPR destination.
                 destination = 0;
                 return false;
             case R3000aOpcode.Sll:
@@ -896,6 +923,8 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sllv:
             case R3000aOpcode.Srlv:
             case R3000aOpcode.Srav:
+            case R3000aOpcode.Mfhi:
+            case R3000aOpcode.Mflo:
             case R3000aOpcode.Addu:
             case R3000aOpcode.Subu:
             case R3000aOpcode.And:
@@ -1024,6 +1053,30 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Srav:
                 EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftRightArithmeticVariable);
                 return null;
+            case R3000aOpcode.Mult:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.MultiplySigned);
+                return null;
+            case R3000aOpcode.Multu:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.MultiplyUnsigned);
+                return null;
+            case R3000aOpcode.Div:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.DivideSigned);
+                return null;
+            case R3000aOpcode.Divu:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.DivideUnsigned);
+                return null;
+            case R3000aOpcode.Mfhi:
+                builder.WriteGpr(instruction.Operand0.Register, builder.ReadHi());
+                return null;
+            case R3000aOpcode.Mflo:
+                builder.WriteGpr(instruction.Operand0.Register, builder.ReadLo());
+                return null;
+            case R3000aOpcode.Mthi:
+                builder.WriteHi(builder.ReadGpr(instruction.Operand0.Register));
+                return null;
+            case R3000aOpcode.Mtlo:
+                builder.WriteLo(builder.ReadGpr(instruction.Operand0.Register));
+                return null;
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     instruction.Opcode,
@@ -1044,6 +1097,19 @@ public static class MipsToIrLowerer
         var right = builder.ReadGpr(instruction.Operand2.Register);
         var result = builder.Binary(operationKind, left, right);
         builder.WriteGpr(instruction.Operand0.Register, result);
+    }
+
+    /// <summary>
+    /// MULT/MULTU/DIV/DIVU (<c>DecodeMultiplyDivide</c>: Operand0=rs, Operand1=rt,
+    /// no rd). Writes HI/LO directly; there is no GPR destination and no SSA
+    /// result to write back (see <see cref="RecompilerIrOperationKind.MultiplySigned"/>).
+    /// </summary>
+    private static void EmitMultiplyOrDivide(
+        BlockBuilder builder, R3000aInstruction instruction, RecompilerIrOperationKind operationKind)
+    {
+        var rs = builder.ReadGpr(instruction.Operand0.Register);
+        var rt = builder.ReadGpr(instruction.Operand1.Register);
+        builder.MultiplyOrDivide(operationKind, rs, rt);
     }
 
     private static void EmitImmediateArithmetic(
@@ -1245,6 +1311,26 @@ public static class MipsToIrLowerer
 
         public void Store(RecompilerIrOperationKind kind, int address, int value) =>
             _operations.Add(new RecompilerIrOperation(kind, inputValueA: address, inputValueB: value));
+
+        public int ReadHi() =>
+            AddWithResult(id => new RecompilerIrOperation(RecompilerIrOperationKind.ReadHi, resultValueId: id));
+
+        public int ReadLo() =>
+            AddWithResult(id => new RecompilerIrOperation(RecompilerIrOperationKind.ReadLo, resultValueId: id));
+
+        public void WriteHi(int value) =>
+            _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.WriteHi, inputValueA: value));
+
+        public void WriteLo(int value) =>
+            _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.WriteLo, inputValueA: value));
+
+        /// <summary>
+        /// MULT/MULTU/DIV/DIVU: a two-input operation with no SSA result — it
+        /// writes both HI and LO directly, the same "computes, then stores"
+        /// shape <see cref="Store"/> uses for guest memory.
+        /// </summary>
+        public void MultiplyOrDivide(RecompilerIrOperationKind kind, int inputValueA, int inputValueB) =>
+            _operations.Add(new RecompilerIrOperation(kind, inputValueA: inputValueA, inputValueB: inputValueB));
 
         /// <summary>
         /// Writes a GPR, except GPR[0]: it is immutable, so the architectural

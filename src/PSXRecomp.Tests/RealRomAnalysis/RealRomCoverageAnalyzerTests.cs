@@ -63,13 +63,16 @@ public class RealRomCoverageAnalyzerTests
     [Fact]
     public void AnUnsupportedInstructionIsNamedRatherThanSilentlyRejected()
     {
-        // MULT is decoded by the CPU model but not lowered by the current contract.
-        var report = CreateReport(extraWords: [0x00220018]);
+        // LWL (opcode field 0x22, rs=8, rt=9) is decoded by the CPU model but not
+        // lowered by the current contract. Issue #597 lowered MULT/MULTU/DIV/DIVU/
+        // MFHI/MFLO/MTHI/MTLO, so the older MULT probe (0x00220018) is no longer
+        // unsupported.
+        var report = CreateReport(extraWords: [0x89090000]);
 
         var coverage = Analyze(report);
 
         Count(coverage, RealRomCoverageClass.UnsupportedInstruction).Should().Be(1);
-        Reason(coverage, RealRomCoverageClass.UnsupportedInstruction, "mult").Should().Be(1,
+        Reason(coverage, RealRomCoverageClass.UnsupportedInstruction, "lwl").Should().Be(1,
             "a rejection must carry an explicit, machine-readable reason, never a generic bucket");
     }
 

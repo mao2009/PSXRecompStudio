@@ -82,6 +82,48 @@ public enum RecompilerIrOperationKind : byte
 
     /// <summary>SRAV: arithmetic (sign-filling) right shift of input A by input B, masked to input B's low 5 bits (see <see cref="ShiftLeftLogicalVariable"/>).</summary>
     ShiftRightArithmeticVariable,
+
+    /// <summary>
+    /// Produces the current value of the HI register (the multiply/divide
+    /// unit's second 32-bit slot). HI/LO are architectural state distinct from
+    /// the 32 GPRs (Issue #497's <c>PSXCpu::hi_</c>/<c>lo_</c>), so they get
+    /// their own operation kinds rather than an out-of-range <see cref="ReadGpr"/>
+    /// register number.
+    /// </summary>
+    ReadHi,
+
+    /// <summary>Produces the current value of the LO register (see <see cref="ReadHi"/>).</summary>
+    ReadLo,
+
+    /// <summary>Writes input A to the HI register and produces no result (see <see cref="ReadHi"/>).</summary>
+    WriteHi,
+
+    /// <summary>Writes input A to the LO register and produces no result (see <see cref="ReadHi"/>).</summary>
+    WriteLo,
+
+    /// <summary>
+    /// MULT: the signed 64-bit product of inputs A and B (each reinterpreted as
+    /// a two's-complement <c>int32</c>), writing HI = the upper 32 bits and
+    /// LO = the lower 32 bits directly — mirrors <c>PSXCpu::ExecMult</c> /
+    /// <c>psx_cpu_hilo_mult</c>. Produces no SSA result; the new HI/LO values
+    /// are read back through <see cref="ReadHi"/>/<see cref="ReadLo"/>, the same
+    /// way a guest store is read back through a later load.
+    /// </summary>
+    MultiplySigned,
+
+    /// <summary>MULTU: the unsigned 64-bit product of inputs A and B, split the same way as <see cref="MultiplySigned"/> (see <c>PSXCpu::ExecMultu</c>).</summary>
+    MultiplyUnsigned,
+
+    /// <summary>
+    /// DIV: signed division of input A (dividend) by input B (divisor), writing
+    /// LO = quotient and HI = remainder, with the PS1/MIPS-I divide-by-zero and
+    /// <c>INT_MIN / -1</c> special cases <c>PSXCpu::ExecDiv</c> / <c>psx_cpu_hilo_div</c>
+    /// define (never a host trap or UB). Produces no SSA result (see <see cref="MultiplySigned"/>).
+    /// </summary>
+    DivideSigned,
+
+    /// <summary>DIVU: unsigned division of input A by input B, split the same way as <see cref="DivideSigned"/>, with the divide-by-zero special case <c>PSXCpu::ExecDivu</c> defines.</summary>
+    DivideUnsigned,
 }
 
 [Domain]
@@ -649,6 +691,32 @@ public static class RecompilerIrValidator
             case RecompilerIrOperationKind.ShiftRightLogical:
             case RecompilerIrOperationKind.ShiftRightArithmetic:
                 Require(hasResult && hasA && !hasB && operation.ShiftAmount <= 31, diagnostics, blockIndex, operationIndex);
+                break;
+            case RecompilerIrOperationKind.ReadHi:
+            case RecompilerIrOperationKind.ReadLo:
+                Require(hasResult && !hasA && !hasB, diagnostics, blockIndex, operationIndex);
+                if (operation.Register != 0 || operation.ShiftAmount != 0)
+                {
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidRegister, "A HI/LO read must not carry a GPR number or shift amount.", blockIndex, operationIndex);
+                }
+                break;
+            case RecompilerIrOperationKind.WriteHi:
+            case RecompilerIrOperationKind.WriteLo:
+                Require(!hasResult && hasA && !hasB, diagnostics, blockIndex, operationIndex);
+                if (operation.Register != 0 || operation.ShiftAmount != 0)
+                {
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidRegister, "A HI/LO write must not carry a GPR number or shift amount.", blockIndex, operationIndex);
+                }
+                break;
+            case RecompilerIrOperationKind.MultiplySigned:
+            case RecompilerIrOperationKind.MultiplyUnsigned:
+            case RecompilerIrOperationKind.DivideSigned:
+            case RecompilerIrOperationKind.DivideUnsigned:
+                Require(!hasResult && hasA && hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
+                if (operation.Register != 0)
+                {
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidRegister, "A multiply/divide operation must not carry a GPR number.", blockIndex, operationIndex);
+                }
                 break;
             default:
                 Require(hasResult && hasA && hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
