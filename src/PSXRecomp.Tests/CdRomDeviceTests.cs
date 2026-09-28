@@ -283,6 +283,42 @@ public class CdRomDeviceTests
     }
 
     [Fact]
+    public void DataFifo_RequiresActiveRead_AndPreservesByteOrder()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+
+        var beforeRead = () => cd.LoadData(new byte[] { 1, 2, 3, 4 });
+        beforeRead.Should().Throw<InvalidOperationException>();
+
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 0x11, 0x22, 0x33, 0x44 });
+
+        cd.DataBytesAvailable.Should().Be(4);
+        cd.ReadData().Should().Be(0x11);
+        cd.ReadData().Should().Be(0x22);
+        cd.ReadData().Should().Be(0x33);
+        cd.ReadData().Should().Be(0x44);
+        cd.DataBytesAvailable.Should().Be(0);
+        cd.ReadData().Should().Be(0, "empty data FIFO reads fail closed as zero");
+    }
+
+    [Fact]
+    public void Reset_ClearsLoadedDataAndInterruptGenerationState()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 1, 2, 3, 4 });
+        cd.InterruptGeneration.Should().BeGreaterThan(0);
+
+        cd.Reset();
+
+        cd.DataBytesAvailable.Should().Be(0);
+        cd.DataReady.Should().BeFalse();
+        cd.HasInterrupt.Should().BeFalse();
+        cd.IsReading.Should().BeFalse();
+    }
+
+    [Fact]
     public void CommandWrite_OnlyAtIndex0()
     {
         for (var index = 1; index < 4; index++)
