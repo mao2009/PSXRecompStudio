@@ -218,7 +218,19 @@ public class CdRomDeviceTests
         cd.HasPendingLocation.Should().BeFalse();
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
         cd.ReadRegister(1).Should().Be(0x03);
-        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidCommand);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidParameter);
+    }
+
+    [Fact]
+    public void WrongParameterCount_UsesDedicatedErrorCode()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(2, 0x12);
+        cd.WriteCommand(0x01); // GetStat expects no parameters.
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        cd.ReadRegister(1).Should().Be(0x03);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorWrongParameterCount);
     }
 
     [Theory]
