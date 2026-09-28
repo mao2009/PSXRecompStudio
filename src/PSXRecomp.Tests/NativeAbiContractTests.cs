@@ -47,6 +47,29 @@ public class NativeAbiContractTests
     }
 
     [Fact]
+    public void RustStatusConstants_MatchHeaderAndManagedDeclarations()
+    {
+        var header = ReadEmbeddedHeader();
+        var expected = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["PSX_RUST_OK"] = NativeInterop.RustOk,
+            ["PSX_RUST_ERR_NULL_ARGUMENT"] = NativeInterop.RustErrNullArgument,
+            ["PSX_RUST_ERR_PANIC"] = NativeInterop.RustErrPanic,
+        };
+
+        foreach (var (name, managedValue) in expected)
+        {
+            var match = Regex.Match(
+                header,
+                $@"#define\s+{Regex.Escape(name)}\s+\(?\s*(?<value>-?\d+)\s*\)?",
+                RegexOptions.CultureInvariant);
+
+            match.Success.Should().BeTrue($"native header must define {name}");
+            int.Parse(match.Groups["value"].Value).Should().Be(managedValue);
+        }
+    }
+
+    [Fact]
     public unsafe void RustRoundTrip_ExercisesManagedToNativeToRustBoundary()
     {
         NativeInterop.PSXRecompRust_AbiVersion().Should().Be(1u);
