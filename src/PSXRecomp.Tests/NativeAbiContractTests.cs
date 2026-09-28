@@ -70,6 +70,22 @@ public class NativeAbiContractTests
     }
 
     [Fact]
+    public void GpuCallbackDelegates_MatchPublishedCAbiCallingConventionAndShape()
+    {
+        AssertCallbackDelegate(
+            "GpuMmioRead32Callback",
+            typeof(uint),
+            typeof(IntPtr),
+            typeof(uint));
+        AssertCallbackDelegate(
+            "GpuMmioWrite32Callback",
+            typeof(void),
+            typeof(IntPtr),
+            typeof(uint),
+            typeof(uint));
+    }
+
+    [Fact]
     public unsafe void RustRoundTrip_ExercisesManagedToNativeToRustBoundary()
     {
         NativeInterop.PSXRecompRust_AbiVersion().Should().Be(1u);
@@ -83,6 +99,28 @@ public class NativeAbiContractTests
 
         var nullStatus = NativeInterop.PSXRecompRust_RoundTrip(input, (uint*)0);
         nullStatus.Should().Be(NativeInterop.RustErrNullArgument);
+    }
+
+    private static void AssertCallbackDelegate(
+        string nestedTypeName,
+        Type returnType,
+        params Type[] parameterTypes)
+    {
+        var delegateType = typeof(PSXCoreWrapper).GetNestedType(
+            nestedTypeName,
+            BindingFlags.NonPublic);
+        delegateType.Should().NotBeNull($"managed ABI callback delegate {nestedTypeName} must exist");
+        delegateType!.BaseType.Should().Be(typeof(MulticastDelegate));
+
+        var convention = delegateType.GetCustomAttribute<UnmanagedFunctionPointerAttribute>();
+        convention.Should().NotBeNull();
+        convention!.CallingConvention.Should().Be(CallingConvention.Cdecl);
+
+        var invoke = delegateType.GetMethod("Invoke");
+        invoke.Should().NotBeNull();
+        invoke!.ReturnType.Should().Be(returnType);
+        invoke.GetParameters().Select(parameter => parameter.ParameterType)
+            .Should().Equal(parameterTypes);
     }
 
     private static string ReadEmbeddedHeader()
