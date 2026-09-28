@@ -49,6 +49,8 @@ public sealed class CdRomDevice : ICdRom
     /// <summary>Response stat error bit (bit 0).</summary>
     public const byte ErrorStat = 0x01;
 
+    public const byte ErrorInvalidParameter = 0x10;
+    public const byte ErrorWrongParameterCount = 0x20;
     public const byte ErrorInvalidCommand = 0x40;
     public const byte ErrorNotReady = 0x80;
 
@@ -295,7 +297,7 @@ public sealed class CdRomDevice : ICdRom
         var values = parameters.ToArray();
         if (!IsBcd(values[0], 99) || !IsBcd(values[1], 59) || !IsBcd(values[2], 74))
         {
-            QueueError(ErrorInvalidCommand);
+            QueueError(ErrorInvalidParameter);
             return;
         }
 
@@ -324,7 +326,7 @@ public sealed class CdRomDevice : ICdRom
     private bool RequireParameterCount(IReadOnlyCollection<byte> parameters, int expected)
     {
         if (parameters.Count == expected) return true;
-        QueueError(ErrorInvalidCommand);
+        QueueError(ErrorWrongParameterCount);
         return false;
     }
 
