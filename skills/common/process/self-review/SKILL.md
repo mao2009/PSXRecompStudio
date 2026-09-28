@@ -4,8 +4,9 @@ description: >
   Mandatory, tool-agnostic self-review gate performed by an AI agent before
   creating a pull request. Finds requirement gaps, scope creep, design/SSOT/ADR
   conflicts, missing tests, and recurring review findings before external review.
-version: 0.1.0
+version: 0.2.0
 scope: process
+related-issues: "#23, #85, #106"
 platform: agent-agnostic
 ---
 
@@ -113,6 +114,8 @@ classification (see [Classification](#finding-classification)).
 - [ ] For each category of past finding: checked this PR for the same kind of problem.
 - [ ] Predicted what an external reviewer would most likely flag, and checked
       those points first.
+- [ ] Any recurring/durable finding was routed to the smallest existing
+      prevention owner instead of automatically creating a new analyzer or gate.
 
 ## Finding classification
 
@@ -154,20 +157,63 @@ Constraints:
 
 ## External-review feedback loop
 
-When an external review reports a finding:
+When an external review, human review, CI failure, audit, or later regression
+reports a finding:
 
-1. Classify it (same taxonomy as above).
-2. Fix what needs fixing; re-run affected verification.
-3. Answer honestly: **why did the self review miss it?**
-   - Checklist item absent? → add it.
-   - Item present but shallow? → sharpen it.
-   - Knowledge existed but wasn't consulted? → make it part of Inputs.
-4. Apply the corresponding update to this skill (via a normal PR) when the gap
-   is structural, not one-off.
-5. If the same *kind* of finding occurs **two or more times** (from any source),
-   promote the rule permanently: checklist entry here, project SSOT rule, or
-   ADR — choose the level that prevents recurrence, prefer the highest one that
-   applies.
+1. Classify the finding using this skill's finding taxonomy.
+2. Fix the concrete defect in the current change when it is in scope; re-run the
+   affected verification.
+3. Answer honestly: **why did the existing review/gate stack miss it?**
+   - Checklist item absent? → the review process may need a focused update.
+   - Contract ambiguous or missing? → the owning SSOT/ADR may be incomplete.
+   - Existing mechanical gate has a hole? → extend that gate and add a regression.
+   - Runtime semantics were wrong? → add semantic executable evidence.
+4. Decide whether the finding is a one-off or evidence of a durable gap.
+5. Route any durable gap to the **smallest existing prevention mechanism that
+   actually owns the failure mode**, using the table below.
+6. If the durable work cannot be completed safely in the current PR, create a
+   focused follow-up Issue with the evidence required below.
+
+### Prevention routing
+
+| Finding shape | Default durable prevention |
+|---|---|
+| One-off implementation mistake | Focused regression test; no new global rule |
+| Missing/ambiguous behavioral or architecture contract | Owning SSOT and, when warranted, ADR; executable check where practical |
+| Layer/dependency/API-boundary violation | Existing architecture contract + ArchitectureAnalyzer consumer coverage |
+| Purity/adopted immutability violation | Existing PureSharp policy/configuration |
+| CPU/Recompiler/Runtime execution semantics | Golden, differential, contract or focused regression test |
+| Repository/process invariant | Existing CI/script/Skill/workflow validation |
+| Repeated static source pattern with no existing owner | Candidate static rule; evaluate through the Analyzer Rollout Skill |
+
+**Do not promote by prestige or abstraction level.** An ADR is not "better" than
+a regression test, and a Roslyn analyzer is not "better" than an executable
+semantic test. Choose the narrowest durable mechanism that can reliably prevent
+the same failure mode without duplicating another owner.
+
+Recurrence strengthens the case for durable prevention. Two or more occurrences
+of the same failure class are a strong signal that the current prevention is
+insufficient, but recurrence alone does not prove that a new analyzer is the
+right mechanism. A single finding may still require an SSOT/ADR update when it
+exposes a genuine contract gap.
+
+### Focused follow-up Issue evidence
+
+When prevention is split out of the current PR, the follow-up Issue must record:
+
+- the concrete finding(s) and where they occurred;
+- the affected contract/SSOT or subsystem;
+- whether the issue is one-off or recurring, with links/evidence where known;
+- why the current compiler/analyzer/test/CI/review stack did not catch it;
+- the existing owner that should be extended, or why no existing owner fits;
+- the proposed prevention mechanism and explicit non-goals;
+- the verification that will prove the prevention works.
+
+Do not create speculative diagnostic catalogs, reserved rule-ID families, or
+generic "quality improvement" Issues without a concrete failure mode.
+
+For a genuine new static-rule candidate, the Analyzer Rollout Skill owns the
+eligibility, overlap, baseline, false-positive and severity-ratcheting process.
 
 ## ADR feedback conditions
 
