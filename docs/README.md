@@ -91,6 +91,7 @@ Constraints:
 - [Top-level Architecture SSOT](../ARCHITECTURE.md)
 - [Architecture Index](architecture/README.md)
 - [Managed Architecture Matrix](architecture-matrix.md)
+- [Capability and Verification Matrix](status/capabilities.md)
 - [GUI / UX](architecture/gui-ux.md)
 - [Development Agent Guide](development/agent-guide.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
