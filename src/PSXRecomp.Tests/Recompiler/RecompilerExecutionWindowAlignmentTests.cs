@@ -100,6 +100,69 @@ public sealed class RecompilerExecutionWindowAlignmentTests
     }
 
     [Fact]
+    public void ReferenceFirstAligned_ReferenceStopsBetweenBranchAndDelaySlot_DoesNotAssertASharedWindow()
+    {
+        // referenceStepBudget=7 retires the second loop iteration's BNE (PC 0x0C)
+        // but stops before its delay slot (PC 0x10) retires. Issue #578 /
+        // CodeRabbit: the old projection counted that BNE's entry PC as a fully
+        // retired host block anyway, deriving StepBudget=6 with BudgetsAreShared:
+        // true — the host then executed the delay slot and took the branch the
+        // interpreter never resolved, landing on PC 0x08 while the interpreter sat
+        // at PC 0x10, a false MISMATCH under a falsely-proven shared window. A host
+        // block always retires atomically, so no derived budget can reproduce this
+        // exact mid-fused-block stopping point; alignment must be refused instead.
+        var fixture = LoopFixture(stepBudget: 9, referenceStepBudget: 7);
+        var reference = new RecompilerInterpreterExecutor();
+        var actual = new RecompilerHostExecutor();
+
+        var result = RecompilerDifferentialRunner.RunReferenceFirstAligned(fixture, reference, actual);
+
+        Assert.True(result.Actual.Status == RecompilerExecutionStatus.Completed,
+            $"recompiled host failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}");
+        Assert.Equal(RecompilerIrTerminationReason.ExecutionBudgetExceeded, result.Reference.Snapshot!.Termination);
+        Assert.Equal(2u, result.Reference.Snapshot.Gpr[9]);
+        Assert.Equal(EntryPc + 0x10, result.Reference.Snapshot.PC);
+
+        // Alignment refused: the fixture keeps its own author-supplied budget and
+        // BudgetsAreShared stays false, exactly like the "nothing projects" fallback
+        // — never the falsely-derived StepBudget: 6 / BudgetsAreShared: true the bug
+        // produced.
+        Assert.False(result.Fixture.BudgetsAreShared);
+        Assert.Equal(9u, result.Fixture.StepBudget);
+
+        // Whatever the unaligned comparison finds, it must never be laundered as a
+        // proven match or as budget-inconclusive: BudgetsAreShared: false makes both
+        // unreachable, which is the honest outcome for a window this method could
+        // not prove.
+        Assert.False(result.IsMatch, result.Diff?.Describe());
+        Assert.False(result.IsBudgetInconclusive, result.Diff?.Describe());
+    }
+
+    [Fact]
+    public void ReferenceFirstAligned_ReferenceCompletesTheDelaySlot_AlignsAndIsAMatch()
+    {
+        // referenceStepBudget=8 retires both loop iterations' BNE *and* delay slot
+        // (through PC 0x10 the second time), so the final fused block is fully
+        // retired — the alignment this method is meant to prove remains available
+        // for the shape immediately adjacent to the incomplete-block regression
+        // above.
+        var fixture = LoopFixture(stepBudget: 9, referenceStepBudget: 8);
+        var reference = new RecompilerInterpreterExecutor();
+        var actual = new RecompilerHostExecutor();
+
+        var result = RecompilerDifferentialRunner.RunReferenceFirstAligned(fixture, reference, actual);
+
+        Assert.True(result.Actual.Status == RecompilerExecutionStatus.Completed,
+            $"recompiled host failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}");
+        Assert.True(result.Fixture.BudgetsAreShared);
+        Assert.Equal(6u, result.Fixture.StepBudget);
+        Assert.Equal(2u, result.Reference.Snapshot!.Gpr[9]);
+        Assert.Equal(2u, result.Actual.Snapshot!.Gpr[9]);
+        Assert.Equal(result.Reference.Snapshot.PC, result.Actual.Snapshot.PC);
+        Assert.True(result.IsMatch, result.Diff?.Describe());
+    }
+
+    [Fact]
     public void ReferenceFirstAligned_RealDivergence_IsStillAMismatch()
     {
         // The alignment machinery must not launder a genuine semantic bug: a host

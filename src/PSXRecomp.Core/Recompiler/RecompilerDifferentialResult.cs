@@ -64,7 +64,7 @@ public static class RecompilerDifferentialRunner
                 referenceResult.Snapshot,
                 actualResult.Snapshot,
                 budgetsAreShared: fixture.BudgetsAreShared,
-                staticBlockEntryPcs: StaticBlockEntryPcs(fixture))
+                staticBlockEntryPcs: BlockGuestInstructionWidths(fixture).Keys.ToHashSet())
             : null;
 
         return new RecompilerDifferentialResult(fixture, referenceResult, actualResult, diff);
@@ -113,13 +113,23 @@ public static class RecompilerDifferentialRunner
         ArgumentNullException.ThrowIfNull(actual);
 
         var referenceResult = reference.Execute(fixture);
-        var staticBlockEntryPcs = StaticBlockEntryPcs(fixture);
+        var blockWidths = BlockGuestInstructionWidths(fixture);
+        var staticBlockEntryPcs = blockWidths.Keys.ToHashSet();
 
         var alignedFixture = fixture;
         if (referenceResult.Snapshot is not null)
         {
-            var projectedBlockCount = ProjectedRetiredBlockCount(referenceResult.Snapshot.PcTrace, staticBlockEntryPcs);
-            if (projectedBlockCount > 0)
+            var (projectedBlockCount, endsMidFusedBlock) =
+                ProjectedRetiredBlockCount(referenceResult.Snapshot.PcTrace, blockWidths);
+
+            // A trace that stops after retiring a fused block's control-transfer but
+            // before its delay slot (Issue #578 / CodeRabbit) has no host-side
+            // equivalent stopping point: the host always retires a fused block
+            // atomically, so no derived StepBudget can reproduce that exact window.
+            // Fall back to the fixture unchanged, exactly as when nothing projects at
+            // all — asserting BudgetsAreShared here would compare two genuinely
+            // different execution windows under a false proof of alignment.
+            if (projectedBlockCount > 0 && !endsMidFusedBlock)
             {
                 alignedFixture = fixture.WithStepBudget((uint)projectedBlockCount, budgetsAreShared: true);
             }
@@ -139,28 +149,56 @@ public static class RecompilerDifferentialRunner
     }
 
     /// <summary>
-    /// The number of <paramref name="pcTrace"/> entries that land on a static
-    /// block-entry PC — the projection <see cref="RunReferenceFirstAligned"/> uses to
-    /// convert a guest-instruction execution window into the host's own retired-block
-    /// unit (Issue #578).
+    /// Walks <paramref name="pcTrace"/> against each block's known guest-instruction
+    /// width (<paramref name="blockGuestInstructionWidths"/>) and counts only the
+    /// blocks the trace retires <em>completely</em> — every one of a fused block's
+    /// instructions (a control transfer and its delay slot, or a fused load-delay
+    /// pair/triple) present in order, not merely its entry PC. A trace entry that is
+    /// not a known block entry where one is expected (for example a BIOS vector PC
+    /// outside the fixture's own lowered program) is skipped rather than treated as
+    /// ending the walk, matching the original entry-only projection for that case.
+    /// <paramref name="endsMidFusedBlock"/> reports whether the trace stopped after
+    /// entering a block but before retiring all of its instructions — the shape
+    /// Issue #578 (CodeRabbit) reports: the reference stops between a fused block's
+    /// control transfer and its delay slot, and that block must not be counted as a
+    /// retired unit the host can be given credit for.
     /// </summary>
-    private static int ProjectedRetiredBlockCount(IReadOnlyList<uint> pcTrace, IReadOnlySet<uint> staticBlockEntryPcs)
+    private static (int Count, bool EndsMidFusedBlock) ProjectedRetiredBlockCount(
+        IReadOnlyList<uint> pcTrace, IReadOnlyDictionary<uint, int> blockGuestInstructionWidths)
     {
         var count = 0;
+        var remainingInBlock = 0;
         foreach (var pc in pcTrace)
         {
-            if (staticBlockEntryPcs.Contains(pc)) count++;
+            if (remainingInBlock == 0)
+            {
+                if (!blockGuestInstructionWidths.TryGetValue(pc, out var width))
+                {
+                    continue;
+                }
+
+                remainingInBlock = width;
+            }
+
+            remainingInBlock--;
+            if (remainingInBlock == 0) count++;
         }
-        return count;
+
+        return (count, remainingInBlock > 0);
     }
 
     /// <summary>
-    /// The lowered program's static block-entry PCs for the fixture's instructions —
-    /// the authoritative projection target for <see cref="RecompilerStateDiff"/>'s
-    /// budget-tail check, independent of whichever PCs a given host run happened to
-    /// observe.
+    /// The lowered program's static block-entry PCs mapped to each block's width in
+    /// guest instructions (1 for a straight-line instruction, 2 for a control
+    /// transfer fused with its delay slot, 2 or 3 for a fused load-delay pair —
+    /// see <see cref="MipsToIrLowerer.LowerProgram"/>) — the authoritative
+    /// projection target for <see cref="RecompilerStateDiff"/>'s budget-tail check
+    /// and for <see cref="ProjectedRetiredBlockCount"/>, independent of whichever PCs
+    /// a given host run happened to observe. Blocks are contiguous and ordered by
+    /// entry PC, so each block's width is the guest-address distance to the next
+    /// block's entry PC (or to the end of the fixture's program for the last block).
     /// </summary>
-    private static IReadOnlySet<uint> StaticBlockEntryPcs(RecompilerDifferentialFixture fixture)
+    private static IReadOnlyDictionary<uint, int> BlockGuestInstructionWidths(RecompilerDifferentialFixture fixture)
     {
         var instructions = new List<(R3000aInstruction Instruction, uint EntryPc)>(fixture.Instructions.Count);
         for (var i = 0; i < fixture.Instructions.Count; i++)
@@ -169,6 +207,16 @@ public static class RecompilerDifferentialRunner
         }
 
         var program = MipsToIrLowerer.LowerProgram(instructions);
-        return program.Blocks.Select(block => block.EntryPc).ToHashSet();
+        var entryPcs = program.Blocks.Select(block => block.EntryPc).ToArray();
+        var programEndPc = fixture.PcOfInstruction(fixture.Instructions.Count);
+
+        var widths = new Dictionary<uint, int>(entryPcs.Length);
+        for (var i = 0; i < entryPcs.Length; i++)
+        {
+            var nextEntryPc = i + 1 < entryPcs.Length ? entryPcs[i + 1] : programEndPc;
+            widths[entryPcs[i]] = (int)((nextEntryPc - entryPcs[i]) / 4);
+        }
+
+        return widths;
     }
 }

@@ -42,12 +42,35 @@ were not hand-verified by its author:
    `ReferenceStepBudget`.
 2. Project the interpreter's retired PC trace onto the lowered program's
    authoritative static block-entry PCs (the same set `RecompilerStateDiff`'s
-   budget-tail check already uses) and count the projected entries.
-3. Rebuild the fixture with that count as `StepBudget` and
-   `BudgetsAreShared: true` (`RecompilerDifferentialFixture.WithStepBudget`),
-   and run the actual (recompiled-host) executor under the rebuilt fixture.
-4. Compare the two snapshots exactly as `Run` does — no change to
+   budget-tail check already uses), and count only the entries whose *entire*
+   block — every one of its guest instructions, in order — the trace actually
+   retired. A host block is atomic: it always retires all of its guest
+   instructions (a control transfer and its delay slot, or a fused load-delay
+   pair) as one unit, so entering a block is not the same as retiring it. A
+   trace that stops after a fused block's control transfer but before its
+   delay slot has retired that block's entry PC but not the block itself, and
+   must not be counted.
+3. If the reference trace ends inside such an incomplete block, alignment is
+   unprovable for this run: no `StepBudget` exists that reproduces the
+   reference's exact stopping point, because the host has no dispatch point
+   between a control transfer and its delay slot. In that case the fixture is
+   used unchanged (`BudgetsAreShared` stays whatever the caller supplied,
+   never asserted `true`), exactly like the case where nothing projects at
+   all.
+4. Otherwise, rebuild the fixture with the count of *completely* retired
+   blocks as `StepBudget` and `BudgetsAreShared: true`
+   (`RecompilerDifferentialFixture.WithStepBudget`), and run the actual
+   (recompiled-host) executor under the rebuilt fixture.
+5. Compare the two snapshots exactly as `Run` does — no change to
    `RecompilerStateDiff`'s classification rules.
+
+Projection is therefore only ever computed over a **complete host-block
+prefix** of the reference trace: `BudgetsAreShared: true` is asserted only for
+a window bounded at a block boundary both sides can reach, never for a window
+that ends mid-block on the reference side. Issue #578's own regression
+(CodeRabbit review on PR #580) is a reference trace that stops between a
+fused block's control transfer and its delay slot; the projection excludes
+that trailing partial block instead of crediting it as retired.
 
 This is the only caller allowed to derive `BudgetsAreShared: true` for a
 fixture it did not build by hand, because it is the only one that *measures*
@@ -80,6 +103,12 @@ failure mode itself.
   reference run; this is inappropriate for a fixture that intentionally wants
   to probe the naive equal-numeric-budget behavior (`Run` remains available for
   that).
+- **Negative**: a `ReferenceStepBudget` that happens to land between a fused
+  block's control transfer and its delay slot gets no alignment at all for
+  that run — the fixture falls back to its own unaligned budget. This is
+  inherent to the host's atomic block dispatch, not a gap this mechanism can
+  close; a caller who wants alignment for a specific window should choose a
+  `ReferenceStepBudget` that lands on a block boundary.
 
 ## Alternatives considered
 
