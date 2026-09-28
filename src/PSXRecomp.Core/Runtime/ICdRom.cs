@@ -16,6 +16,20 @@ public interface ICdRom
     byte ReadRegister(int index);
     void WriteRegister(int index, byte value);
     byte ReadData();
+
+    /// <summary>Number of bytes currently readable from the CD-ROM data FIFO.</summary>
+    int DataBytesAvailable { get; }
+
+    /// <summary>Whether the current command response exposes a data-ready condition.</summary>
+    bool DataReady { get; }
+
+    /// <summary>
+    /// Monotonic identity of the most recently activated interrupt packet.
+    /// Schedulers use this to distinguish INT3 -> INT1/INT2 transitions even
+    /// when the enabled CD-ROM interrupt line never has an observable low gap.
+    /// </summary>
+    ulong InterruptGeneration { get; }
+
     byte ReadStatus();
     void WriteCommand(byte command);
     byte GetInterruptFlag();
