@@ -163,6 +163,44 @@ public class GteRtpsKernelTests
         (r.Flag & (FlagSzSaturated | FlagError)).Should().Be(FlagSzSaturated | FlagError);
     }
 
+
+    [Theory]
+    [InlineData(0x001FFFFF, -0x1000)]
+    [InlineData(-0x001FFFFF, 0x1000)]
+    public void Sf0_Ir1UsesVisible32BitMacAfterWideAccumulation(int trx, int expected)
+    {
+        // |TRX<<12| = 0x1FFFFF000: beyond signed 32-bit, but well inside the
+        // 44-bit MAC1 accumulator. sf=0 stores the low 32 bits in MAC1 before
+        // IR1 saturation, so the sign can differ from the full-width value.
+        var r = Execute(
+            Identity(0, 0, 0, trx: trx, h: 0, ofx: 0, ofy: 0, dqa: 0, dqb: 0),
+            sf: false,
+            lm: false);
+
+        r.Mac1.Should().Be(expected);
+        r.Ir1.Should().Be((short)expected);
+        (r.Flag & (FlagMac1Positive | FlagMac1Negative | FlagIr1Saturated)).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(0x001FFFFF, 0x001FFFFF, 0x7FFF)]
+    [InlineData(-0x001FFFFF, -0x001FFFFF, -0x8000)]
+    public void Sf1_ShiftsWideAccumulatorBeforeVisibleMacStorage(int trx, int expectedMac, int expectedIr)
+    {
+        // The same >32-bit internal accumulator is shifted by 12 first. Because
+        // the valid MAC1-3 range is 44-bit, the shifted result fits signed
+        // 32-bit; IR1 then saturates from that visible MAC value.
+        var r = Execute(
+            Identity(0, 0, 0, trx: trx, h: 0, ofx: 0, ofy: 0, dqa: 0, dqb: 0),
+            sf: true,
+            lm: false);
+
+        r.Mac1.Should().Be(expectedMac);
+        r.Ir1.Should().Be((short)expectedIr);
+        (r.Flag & (FlagMac1Positive | FlagMac1Negative)).Should().Be(0);
+        (r.Flag & FlagIr1Saturated).Should().Be(FlagIr1Saturated);
+    }
+
     [Fact]
     public void Mac1_Positive44BitOverflow_WrapsAndFlags()
     {
