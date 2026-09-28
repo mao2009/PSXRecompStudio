@@ -272,6 +272,7 @@ public sealed class CdRomDevice : ICdRom
         IsReading = false;
         ReadSectorsRaw = false;
         DataReady = false;
+        _data.Clear();
 
         QueueResponse(IntAcknowledge, CommandStatus);
         QueueResponse(IntComplete, CommandStatus);
@@ -336,6 +337,7 @@ public sealed class CdRomDevice : ICdRom
         IsReading = true;
         ReadSectorsRaw = raw;
         HasPendingLocation = false;
+        _data.Clear();
 
         QueueResponse(IntAcknowledge, CommandStatus);
         QueueResponse(IntDataReady, true, CommandStatus);
