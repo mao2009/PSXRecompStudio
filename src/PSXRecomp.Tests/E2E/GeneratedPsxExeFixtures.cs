@@ -93,14 +93,14 @@ public static class GeneratedPsxExeFixtures
     public static GeneratedPsxExeFixture BiosPutCharMarker { get; } = new(
         id: "bios-putchar-marker",
         description: "Calls the repository BIOS-HLE A0 putchar service, writes S1=0x7777, then reaches the natural program end.",
-        instructionWords:
-        [
+        instructionWords: new uint[]
+        {
             Immediate(OriOpcode, R3000aRegister.T1, BiosHleRuntime.PutCharFunction),
             Immediate(OriOpcode, R3000aRegister.A0, DiagnosticCharacter),
             Jump(JalOpcode, BiosJumpTables.A0VectorAddress),
             0u, // JAL delay slot
             Immediate(OriOpcode, R3000aRegister.S1, DiagnosticMarker),
-        ],
+        },
         expectedSha256: "a863090b04d20a9f790c4cf533dd13edf5a222f3852c6178f28605a8c910ae6e",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
@@ -111,11 +111,11 @@ public static class GeneratedPsxExeFixtures
     public static GeneratedPsxExeFixture UnresolvedJump { get; } = new(
         id: "unresolved-jump",
         description: "Transfers outside the compiled image after a real MIPS jump delay slot and must fail closed as an unresolved transfer.",
-        instructionWords:
-        [
+        instructionWords: new uint[]
+        {
             Jump(JumpOpcode, UnresolvedJumpTarget),
             0u, // J delay slot
-        ],
+        },
         expectedSha256: "b9a0ffdd05963233a906223cd0eb85321928efb32f29404b19244ff433ddeb35",
         expectedOutcome: RecompiledArtifactOutcome.Blocked,
         expectedState: TitleExecutionState.UnsupportedTransfer,
