@@ -122,7 +122,7 @@ Start with [docs/README.md](docs/README.md). Useful entry points include:
 
 Architecture and dependency rules are enforced at build time by `loach.ArchitectureAnalyzer`; repository artifact policy is also enforced in CI.
 
-For project-specific development guidance, see [docs/development/agent-guide.md](docs/development/agent-guide.md).
+For human contribution workflow and contributor-ready Issue guidance, see [CONTRIBUTING.md](CONTRIBUTING.md). AI development agents should instead start from [AGENTS.md](AGENTS.md) and [docs/development/agent-guide.md](docs/development/agent-guide.md).
 
 ## Support
 
