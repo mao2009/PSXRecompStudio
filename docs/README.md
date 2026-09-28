@@ -35,6 +35,8 @@ Architecture
 └── Runtime
 
 Development
+├── Human Contributor Workflow
+├── Contributor Entry-Task Review
 ├── Agent Guide
 ├── Repository Artifact Policy
 ├── API Documentation & Docstring Policy
@@ -93,6 +95,8 @@ Constraints:
 - [Managed Architecture Matrix](architecture-matrix.md)
 - [Capability and Verification Matrix](status/capabilities.md)
 - [GUI / UX](architecture/gui-ux.md)
+- [Human Contributor Workflow](../CONTRIBUTING.md)
+- [Contributor Entry-Task Review](development/contributor-entry-tasks.md)
 - [Development Agent Guide](development/agent-guide.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
 - [Real-ROM Analysis Artifact Format](development/real-rom-analysis-artifacts.md)
