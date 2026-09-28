@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved the prior first blocker), #440 (GPU remaining integration), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #552 (this status synchronization)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, current first blocker), #440 (GPU remaining integration), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #552 (this status synchronization)
 
 ## Purpose
 
@@ -104,16 +104,26 @@ regression in either.
    `Beq`/`Bne`/`J`/`Jal`/`Jr`/`Jalr`; the six compare-with-zero branch opcodes
    (`Blez`/`Bgtz`/`Bltz`/`Bgez`/`Bltzal`/`Bgezal`) were decoded and natively
    executable but never lowered to IR. #593 added that lowering.
-2. **Current first blocker.** Re-running the identical CLI command after #593
-   now fails at PC `0x80018354` (`Srlv`, `[InvalidOperationShape] Opcode 'Srlv'
+2. **Resolved (#596).** Re-running the identical CLI command after #593
+   failed at PC `0x80018354` (`Srlv`, `[InvalidOperationShape] Opcode 'Srlv'
    is not supported by this lowering stage.`) — `Srlv` (shift-right-logical by
    a register amount) is a plain ALU opcode, not a control-transfer one; only
-   the shift-*by-immediate* forms (`Sll`/`Srl`/`Sra`) are lowered today, not
-   the register-shift-amount forms (`Sllv`/`Srlv`/`Srav`). This is a new,
-   distinct, unimplemented-instruction gap with no known-duplicate open Issue
-   as of this writing; it has not yet been scoped or fixed here — doing so is
-   explicitly out of scope for #593, which fixes only the six branch opcodes
-   above. A follow-up Issue should be filed once this gap is triaged.
+   the shift-*by-immediate* forms (`Sll`/`Srl`/`Sra`) were lowered, not the
+   register-shift-amount forms (`Sllv`/`Srlv`/`Srav`). The existing IR shift
+   representation could not even hold a runtime shift amount (`ShiftAmount`
+   was a compile-time byte field); #596 added three variable-shift IR kinds
+   (`ShiftLeftLogicalVariable`/`ShiftRightLogicalVariable`/
+   `ShiftRightArithmeticVariable`) and lowering for all three opcodes.
+3. **Current first blocker (#597, filed, not yet implemented).** Re-running
+   the identical CLI command after #596 now fails at PC `0x8001CE34` (`Mult`,
+   `[InvalidOperationShape] Opcode 'Mult' is not supported by this lowering
+   stage.`). Unlike the two resolved blockers above, this is not a missing
+   case in an otherwise-compatible IR shape: `MipsToIrLowerer` has *no*
+   lowering for the multiply/divide family (`Mult`/`Multu`/`Div`/`Divu`) or
+   the HI/LO register-pair moves (`Mfhi`/`Mflo`/`Mthi`/`Mtlo`) at all, and the
+   IR (`RecompilerIrOperationKind`) has no representation for HI/LO
+   (`PSXCpu::hi_`/`lo_`) as CPU state distinct from the 32 GPRs. This needs
+   new IR representation, not just a new switch case — see #597 for scope.
 
 Because the build still fails before `RUNTIME_EXECUTION` starts, **BIOS HLE
 coverage (#279), GPU integration (#440) and CD-ROM (#444) all remain
@@ -268,7 +278,9 @@ or local paths.
 
 - [Issue #351](https://github.com/mao2009/PSXRecompStudio/issues/351) — this gate
 - [Issue #9](https://github.com/mao2009/PSXRecompStudio/issues/9) — v0.1.0 milestone
-- [Issue #593](https://github.com/mao2009/PSXRecompStudio/issues/593) — REGIMM/zero-comparison branch IR lowering (resolved the Bgez blocker; the current first blocker is the unrelated `Srlv` opcode gap, not yet filed)
+- [Issue #593](https://github.com/mao2009/PSXRecompStudio/issues/593) — REGIMM/zero-comparison branch IR lowering (resolved the `Bgez` blocker)
+- [Issue #596](https://github.com/mao2009/PSXRecompStudio/issues/596) — register-shift-amount opcode IR lowering (resolved the `Srlv` blocker)
+- [Issue #597](https://github.com/mao2009/PSXRecompStudio/issues/597) — MULT/DIV/HI-LO IR lowering (current first blocker, `Mult` at PC `0x8001CE34`, not yet implemented)
 - [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution / remaining HLE coverage (not yet reached by a production CLI run)
 - [Issue #440](https://github.com/mao2009/PSXRecompStudio/issues/440) — remaining GPU production integration, DMA2 and IRQ1
 - [Issue #444](https://github.com/mao2009/PSXRecompStudio/issues/444) — CD-ROM register/DMA3/IRQ2 model (evidence-gated)
