@@ -840,6 +840,14 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Bne:
                 sources = new[] { instruction.Operand0.Register, instruction.Operand1.Register };
                 return true;
+            case R3000aOpcode.Blez:
+            case R3000aOpcode.Bgtz:
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bgez:
+            case R3000aOpcode.Bltzal:
+            case R3000aOpcode.Bgezal:
+                sources = new[] { instruction.Operand0.Register };
+                return true;
             case R3000aOpcode.Jr:
                 sources = new[] { instruction.Operand0.Register };
                 return true;
@@ -868,6 +876,10 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sw:
             case R3000aOpcode.Beq:
             case R3000aOpcode.Bne:
+            case R3000aOpcode.Blez:
+            case R3000aOpcode.Bgtz:
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bgez:
             case R3000aOpcode.J:
             case R3000aOpcode.Jr:
                 destination = 0;
@@ -899,6 +911,8 @@ public static class MipsToIrLowerer
                 return true;
             case R3000aOpcode.Jal:
             case R3000aOpcode.Jalr:
+            case R3000aOpcode.Bltzal:
+            case R3000aOpcode.Bgezal:
                 destination = instruction.LinkInfo.LinkRegister;
                 return instruction.LinkInfo.WritesLink;
             default:

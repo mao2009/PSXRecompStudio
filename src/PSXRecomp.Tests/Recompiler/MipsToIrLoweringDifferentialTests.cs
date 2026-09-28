@@ -270,6 +270,55 @@ public class MipsToIrLoweringDifferentialTests
         run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
     }
 
+    [Theory]
+    [InlineData(BlezOpcodeField, (byte)0, -5, 5, true)]
+    [InlineData(BlezOpcodeField, (byte)0, 5, -5, false)]
+    [InlineData(BgtzOpcodeField, (byte)0, 5, -5, true)]
+    [InlineData(BgtzOpcodeField, (byte)0, -5, 5, false)]
+    [InlineData(RegimmOpcodeField, BltzSelector, -5, 5, true)]
+    [InlineData(RegimmOpcodeField, BltzSelector, 5, -5, false)]
+    [InlineData(RegimmOpcodeField, BgezSelector, 5, -5, true)]
+    [InlineData(RegimmOpcodeField, BgezSelector, -5, 5, false)]
+    public void LoadDelay_ThenCompareWithZeroBranch_ComparesThePreLoadValue(
+        byte opcodeField, byte selector, int preLoadValue, int loadedValue, bool taken)
+    {
+        // The load's target register also feeds the branch condition: on hardware
+        // the branch reads the pre-load value, and loadedValue (deliberately
+        // chosen to flip the decision) only lands after the branch delay slot
+        // retires. A lowering that fused the load's commit too early would take
+        // the wrong branch.
+        var words = BuildLoadDelayCompareWithZeroBranch(opcodeField, selector, preLoadValue, loadedValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 11u : 13u, dataWindowBytes: 4);
+
+        run.Ir.Gpr[10].Should().Be(1u, "the branch delay slot always retires");
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+        run.Ir.Gpr[13].Should().Be(7u, "the target is plain fall-through code and is reached either way");
+        run.Ir.Gpr[8].Should().Be(unchecked((uint)loadedValue), "the load has committed by the time execution reaches here");
+    }
+
+    [Theory]
+    [InlineData(BltzalSelector, -5, 5, true)]
+    [InlineData(BltzalSelector, 5, -5, false)]
+    [InlineData(BgezalSelector, 5, -5, true)]
+    [InlineData(BgezalSelector, -5, 5, false)]
+    public void LoadDelay_ThenLinkBranchOnTheSameRegister_ComparesPreLoadAndCancelsThePendingLoad(
+        byte selector, int preLoadValue, int loadedValue, bool taken)
+    {
+        // LW $ra, 0($t3) ; BLTZAL/BGEZAL $ra, target — the trickiest case: the
+        // load's target register IS $ra, and the branch both reads it (condition,
+        // pre-load value) and writes it (unconditional link). The interpreter
+        // oracle settles both: PSXCpu::ExecBltzal/ExecBgezal read rs before
+        // linking, and the immediate link write cancels the pending load exactly
+        // like PSXCpu::SetGPR does for JAL (docs/cpu/pipeline.md).
+        var words = BuildLoadDelayLinkBranchOnSameRegister(selector, preLoadValue, loadedValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 11u : 13u, dataWindowBytes: 4);
+
+        run.Ir.Gpr[10].Should().Be(1u, "the branch delay slot always retires");
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+        run.Ir.Gpr[13].Should().Be(7u, "the target is plain fall-through code and is reached either way");
+        run.Ir.Gpr[31].Should().Be(EntryPc + 0x28, "the link write (branch PC + 8) always wins over the stale pending load, taken or not");
+    }
+
     [Fact]
     public void BackwardBranch_LoopsTheExpectedNumberOfTimes()
     {
@@ -802,6 +851,49 @@ public class MipsToIrLoweringDifferentialTests
         MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),
         MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),
         MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 7),
+    ];
+
+    /// <summary>
+    /// $a3 = DataBase ; store <paramref name="loadedValue"/> there ; pre-load $t0
+    /// to <paramref name="preLoadValue"/> ; LW $t0, 0($a3) ; then a compare-with-
+    /// zero branch on $t0 over the fall-through block. Layout: branch at
+    /// EntryPc+0x20, delay slot at +0x24, fall-through at +0x28/+0x2C, target at
+    /// +0x30.
+    /// </summary>
+    private static uint[] BuildLoadDelayCompareWithZeroBranch(
+        byte opcodeField, byte rt, int preLoadValue, int loadedValue) =>
+    [
+        MipsEncoding.I(0x0F, rt: 7, rs: 0, immediate: 0x8000),
+        MipsEncoding.I(0x09, rt: 7, rs: 7, immediate: 0x1000),                        // $a3 = DataBase
+        .. LoadConstant(register: 20, value: loadedValue),
+        MipsEncoding.Load(R3000aOpcode.Sw, rt: 20, baseRegister: 7, offset: 0),       // store the loaded value
+        .. LoadConstant(register: 8, value: preLoadValue),                           // pre-load $t0
+        MipsEncoding.Load(R3000aOpcode.Lw, rt: 8, baseRegister: 7, offset: 0),        // load-delay slot
+        MipsEncoding.Branch(opcodeField, rs: 8, rt: rt, pc: EntryPc + 0x20, target: EntryPc + 0x30),
+        MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 1),                            // delay slot
+        MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),                        // fall-through
+        MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),                        // filler
+        MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 7),                           // target
+    ];
+
+    /// <summary>
+    /// Same shape as <see cref="BuildLoadDelayCompareWithZeroBranch"/>, except the
+    /// load's target register is $ra (31) — the same register the link-branch
+    /// selector both reads (branch condition) and writes (unconditional link).
+    /// </summary>
+    private static uint[] BuildLoadDelayLinkBranchOnSameRegister(byte selector, int preLoadValue, int loadedValue) =>
+    [
+        MipsEncoding.I(0x0F, rt: 7, rs: 0, immediate: 0x8000),
+        MipsEncoding.I(0x09, rt: 7, rs: 7, immediate: 0x1000),                        // $a3 = DataBase
+        .. LoadConstant(register: 20, value: loadedValue),
+        MipsEncoding.Load(R3000aOpcode.Sw, rt: 20, baseRegister: 7, offset: 0),       // store the loaded value
+        .. LoadConstant(register: 31, value: preLoadValue),                          // pre-load $ra
+        MipsEncoding.Load(R3000aOpcode.Lw, rt: 31, baseRegister: 7, offset: 0),       // load-delay slot
+        MipsEncoding.Branch(0x01, rs: 31, rt: selector, pc: EntryPc + 0x20, target: EntryPc + 0x30),
+        MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 1),                            // delay slot
+        MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),                        // fall-through
+        MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),                        // filler
+        MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 7),                           // target
     ];
 
     /// <summary>LUI + ORI: sets <paramref name="register"/> to the exact 32-bit

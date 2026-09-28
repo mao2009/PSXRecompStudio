@@ -340,6 +340,68 @@ public class MipsToIrMemoryLoweringTests
         linked.Immediate.Should().Be(EntryPc + 4 + 8, "the last write to $ra is the JAL link value");
     }
 
+    [Theory]
+    [InlineData(0x06, (byte)0)] // BLEZ
+    [InlineData(0x07, (byte)0)] // BGTZ
+    [InlineData(0x01, (byte)0x00)] // BLTZ (REGIMM)
+    [InlineData(0x01, (byte)0x01)] // BGEZ (REGIMM)
+    public void LoadDelay_ObservedByACompareWithZeroBranch_FusesLoadTransferAndDelaySlot(byte opcodeField, byte selector)
+    {
+        // LW $t1, 0($t0) ; <branch> $t1, target ; NOP — the branch compares the
+        // pre-load $t1, and the load commits before the branch delay slot runs.
+        var target = EntryPc + 0x40;
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 9, baseRegister: 8, offset: 0),
+            MipsEncoding.Branch(opcodeField, rs: 9, rt: selector, pc: EntryPc + 4, target: target),
+            MipsEncoding.Nop,
+        });
+
+        program.Blocks.Should().ContainSingle("the load and its load-delay slot fuse into one block");
+        var block = program.Blocks[0];
+        block.EntryPc.Should().Be(EntryPc, "the fused block is entered at the load");
+
+        var operations = block.Operations.ToList();
+        var observerRead = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.ReadGpr && op.Register == 9);
+        var commit = operations.FindIndex(op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 9);
+
+        observerRead.Should().BeGreaterThanOrEqualTo(0, "the branch condition reads the pre-load register");
+        commit.Should().BeGreaterThan(observerRead, "the load commits after the branch condition is read");
+
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(0x10)] // BLTZAL (REGIMM)
+    [InlineData(0x11)] // BGEZAL (REGIMM)
+    public void LoadDelay_ObservedByALinkBranch_EmitsNoCommitBecauseTheLinkWriteCancelsIt(byte selector)
+    {
+        // LW $ra, 0($t0) ; BLTZAL/BGEZAL $ra, target ; NOP — the branch reads the
+        // pre-load $ra for its own condition, then unconditionally links $ra,
+        // which is an immediate write and so cancels the pending load exactly as
+        // JAL's link write does (PSXCpu::ExecBltzal/ExecBgezal: the decision uses
+        // rs before linking).
+        var target = EntryPc + 0x40;
+        var program = LowerWords(new[]
+        {
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 31, baseRegister: 8, offset: 0),
+            MipsEncoding.Branch(0x01, rs: 31, rt: selector, pc: EntryPc + 4, target: target),
+            MipsEncoding.Nop,
+        });
+
+        program.Blocks.Should().ContainSingle("the load and its load-delay slot fuse into one block");
+        var block = program.Blocks[0];
+
+        var writesToRa = block.Operations.Where(op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 31).ToList();
+        writesToRa.Should().HaveCount(1, "only the branch's own link write reaches $ra — the loaded value never commits");
+
+        var linked = block.Operations.Single(op => op.ResultValueId == writesToRa[0].InputValueA);
+        linked.Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        linked.Immediate.Should().Be(EntryPc + 4 + 8, "the link value is the branch address + 8, not the loaded value");
+
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+    }
+
     [Fact]
     public void LoadDelay_ObservedByAWriteToTheSameRegister_EmitsNoCommit()
     {
