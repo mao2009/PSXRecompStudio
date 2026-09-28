@@ -20,8 +20,8 @@ namespace PSXRecomp.Core.Runtime;
 /// </para>
 /// <para>
 /// Fixed order within one <see cref="Advance"/>, each stage raising its own
-/// line: Timers (IRQ4-6) → DMA (IRQ3) → SIO0 (IRQ7) → GPU command IRQ (IRQ1)
-/// → VBlank (IRQ0). Whether
+/// line: Timers (IRQ4-6) → DMA (IRQ3) → CD-ROM (IRQ2) → SIO0 (IRQ7)
+/// → GPU command IRQ (IRQ1) → VBlank (IRQ0). Whether
 /// the CPU takes the aggregate line as an INT exception is the stepping
 /// caller's choice: <c>PSXCore_Step</c> samples it (Issue #144) — the production
 /// interpreter steps that way and runs the guest's handler (Issue #499) — while
@@ -43,6 +43,9 @@ public sealed class DeviceScheduler
     /// <summary>GPU command interrupt line (GP0(1Fh), Issue #574).</summary>
     public const int GpuIrq = 1;
 
+    /// <summary>CD-ROM command/data interrupt line.</summary>
+    public const int CdRomIrq = 2;
+
     /// <summary>DMA interrupt line.</summary>
     public const int DmaIrq = 3;
 
@@ -57,9 +60,11 @@ public sealed class DeviceScheduler
     private readonly PSXCoreWrapper _core;
     private readonly IInterruptController _interrupts;
     private readonly IGpu? _gpu;
+    private readonly ICdRom? _cdRom;
     private uint _cyclesSinceVblank;
     private bool _dmaIrqLine;
     private bool _gpuIrqLine;
+    private ulong _lastCdRomInterruptGeneration;
 
     /// <summary>Creates a scheduler over <paramref name="core"/>'s devices.</summary>
     /// <param name="core">The native core whose Timer/DMA state advances.</param>
@@ -67,11 +72,18 @@ public sealed class DeviceScheduler
     /// core's own <c>InterruptControllerMmioAdapter</c>.</param>
     /// <param name="gpu">Optional GPU command-interrupt source. Production title execution
     /// passes its existing managed GPU adapter; callers without a GPU may leave it null.</param>
-    public DeviceScheduler(PSXCoreWrapper core, IInterruptController interrupts, IGpu? gpu = null)
+    /// <param name="cdRom">Optional CD-ROM interrupt source. Each newly activated,
+    /// enabled command/data response packet raises IRQ2 once.</param>
+    public DeviceScheduler(
+        PSXCoreWrapper core,
+        IInterruptController interrupts,
+        IGpu? gpu = null,
+        ICdRom? cdRom = null)
     {
         _core = core ?? throw new ArgumentNullException(nameof(core));
         _interrupts = interrupts ?? throw new ArgumentNullException(nameof(interrupts));
         _gpu = gpu;
+        _cdRom = cdRom;
     }
 
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
@@ -103,6 +115,17 @@ public sealed class DeviceScheduler
             _interrupts.Raise(DmaIrq);
         }
         _dmaIrqLine = dmaLine;
+
+        // CD-ROM: response packets are event-driven rather than cycle-driven.
+        // Use the packet generation, not only a level edge, so an INT3 ack that
+        // immediately exposes a queued INT1/INT2 still produces a distinct IRQ2.
+        if (_cdRom is not null &&
+            _cdRom.HasInterrupt &&
+            _cdRom.InterruptGeneration != _lastCdRomInterruptGeneration)
+        {
+            _interrupts.Raise(CdRomIrq);
+            _lastCdRomInterruptGeneration = _cdRom.InterruptGeneration;
+        }
 
         // SIO0: no clock of its own (Issue #543 is event-driven off DATA
         // writes, not cycle count), so this is a bare poll/clear, not a Tick.
