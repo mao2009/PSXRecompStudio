@@ -10,6 +10,7 @@ public enum CdRomDmaTransferStatus
     NotStarted = 0,
     WaitingForData,
     UnsupportedMode,
+    InvalidDestination,
     Completed,
 }
 
@@ -89,6 +90,12 @@ public sealed class CdRomDmaTransfer
         }
 
         var address = madr & AddressMask;
+        var endExclusive = (ulong)address + requiredBytes;
+        if (address >= Ps1MemoryMap.RamMirrorEnd || endExclusive > Ps1MemoryMap.RamMirrorEnd)
+        {
+            return new(CdRomDmaTransferStatus.InvalidDestination, 0, address);
+        }
+
         for (uint wordIndex = 0; wordIndex < words; wordIndex++)
         {
             var value =
