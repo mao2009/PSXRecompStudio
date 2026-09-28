@@ -175,6 +175,17 @@ Implemented as the COP2 coprocessor.
 - **Commands**: issued through COP2 instructions (`sf=shift fraction`, `lm=saturate`).
 - **Major commands**: RTPS, NCLIP, AVSZ3, AVSZ4, SQR, NCCT, NCS, NCT, NCDS, NCDT, DPCL, DPCT, DPCS, DCT, INTPL, MVMVA, DCPL, DPCS, GPF, GPL, NCCT.
 
+### Register bank (Issue #581)
+
+`PSXRecomp.Core.Runtime.Gte.GteRegisterBank` implements `IGte`'s 32 data and
+32 control registers as a pure managed Domain model with the documented
+register semantics: 16-bit sign/zero extension on read, the SXYP write-push
+FIFO, IRGB write expansion / ORGB read packing, LZCS→LZCR leading-sign count,
+and FLAG's hard-wired low bits plus computed bit 31. `Reset` zeroes every
+register. `ExecuteCommand` throws `NotSupportedException` until command
+slices land, and the bank is not yet wired to CPU COP2 dispatch (the native
+interpreter still raises Coprocessor Unusable for COP2/LWC2/SWC2).
+
 ## GPU Model
 
 Controlled through the two GP0/GP1 registers.
