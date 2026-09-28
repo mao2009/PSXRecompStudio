@@ -62,6 +62,13 @@ $cases = @(
         Output         = @('unexpected test failure')
         Category       = 'analysis_failure'
         DiagnosticCode = $null
+    },
+    @{
+        Name           = 'empty output fallback'
+        Stage          = 'RUNTIME_EXECUTION'
+        Output         = $null
+        Category       = 'runtime_execution_failure'
+        DiagnosticCode = $null
     }
 )
 
