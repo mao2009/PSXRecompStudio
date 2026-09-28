@@ -103,7 +103,7 @@ public sealed class RecompiledArtifactE2ETests
         outcome.Result.EngineName.Should().Be(RecompiledHostExecutionEngine.EngineName);
         outcome.Result.ResultValue.Should().Be(fixture.ExpectedResultValue);
         outcome.Output.Should().Equal(fixture.ExpectedOutputByte!.Value);
-        outcome.Json.Should().Contain(""engineName"");
+        outcome.Json.Should().Contain("\"engineName\"");
     }
 
     [Fact]
@@ -151,7 +151,7 @@ public sealed class RecompiledArtifactE2ETests
         outcome.Result.GuestPc.Should().Be(fixture.ExpectedGuestPc);
         outcome.Result.DiagnosticCode.Should().Be(fixture.ExpectedDiagnosticCode);
         outcome.Result.EngineName.Should().Be(RecompiledHostExecutionEngine.EngineName);
-        outcome.Json.Should().Contain(""outcome"");
+        outcome.Json.Should().Contain("\"outcome\"");
     }
 
     [Fact]
