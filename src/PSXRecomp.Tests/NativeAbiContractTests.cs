@@ -118,6 +118,7 @@ public class NativeAbiContractTests
         "PSXGpuMmioRead32" => typeof(IntPtr),
         "PSXGpuMmioWrite32" => typeof(IntPtr),
         "uint8_t" => typeof(byte),
+        "uint8_t*" => typeof(IntPtr),
         "uint16_t" => typeof(ushort),
         "uint32_t" => typeof(uint),
         "uint32_t*" => typeof(uint).MakePointerType(),
