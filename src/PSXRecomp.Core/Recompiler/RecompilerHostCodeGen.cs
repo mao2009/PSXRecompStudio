@@ -136,6 +136,9 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.ShiftLeftLogical => true,
         RecompilerIrOperationKind.ShiftRightLogical => true,
         RecompilerIrOperationKind.ShiftRightArithmetic => true,
+        RecompilerIrOperationKind.ShiftLeftLogicalVariable => true,
+        RecompilerIrOperationKind.ShiftRightLogicalVariable => true,
+        RecompilerIrOperationKind.ShiftRightArithmeticVariable => true,
         RecompilerIrOperationKind.CompareEqual => true,
         RecompilerIrOperationKind.CompareNotEqual => true,
         RecompilerIrOperationKind.CompareLessThanSigned => true,
@@ -373,6 +376,25 @@ public static class RecompilerHostCodeGen
                 if (result == null) return null;
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
                 return $"{result} = {Sra32Helper}({ResolveValue(op.InputValueA, valueNames)}, {op.ShiftAmount}u);";
+
+            case RecompilerIrOperationKind.ShiftLeftLogicalVariable:
+                // SLLV: the amount is a runtime GPR value, so it is masked explicitly
+                // here (plain C's << on a uint32_t by a count >= 32 is undefined
+                // behavior, unlike the immediate ShiftLeftLogical case above where the
+                // decoded shamt is already 0-31).
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = (uint32_t){ResolveValue(op.InputValueA, valueNames)} << ({ResolveValue(op.InputValueB, valueNames)} & 31u);";
+
+            case RecompilerIrOperationKind.ShiftRightLogicalVariable:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = (uint32_t){ResolveValue(op.InputValueA, valueNames)} >> ({ResolveValue(op.InputValueB, valueNames)} & 31u);";
+
+            case RecompilerIrOperationKind.ShiftRightArithmeticVariable:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = {Sra32Helper}({ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)} & 31u);";
 
             case RecompilerIrOperationKind.CompareEqual:
                 if (result == null) return null;

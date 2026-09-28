@@ -434,6 +434,85 @@ public class MipsToIrLoweringTests
     }
 
     [Fact]
+    public void Sllv_ProducesReadReadShiftLeftLogicalVariableWrite()
+    {
+        // SLLV $t2, $t0, $t1  (rd=10, rt=8 value, rs=9 amount) - EncodeR(funct, rd, rs, rt, shamt).
+        var instruction = R3000aDecoder.Decode(EncodeR(0x04, 10, 9, 8, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Sllv);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x8000D000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8, "rt is the value to shift");
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[1].Register.Should().Be(9, "rs is the runtime shift amount");
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.ShiftLeftLogicalVariable);
+        block.Operations[2].InputValueA.Should().Be(0);
+        block.Operations[2].InputValueB.Should().Be(1);
+        block.Operations[2].ShiftAmount.Should().Be(0, "the amount is a runtime value (input B), not a compile-time byte");
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[3].Register.Should().Be(10);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Srlv_ProducesReadReadShiftRightLogicalVariableWrite()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeR(0x06, 10, 9, 8, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Srlv);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x8000E000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.ShiftRightLogicalVariable);
+        block.Operations[2].InputValueA.Should().Be(0);
+        block.Operations[2].InputValueB.Should().Be(1);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Srav_ProducesReadReadShiftRightArithmeticVariableWrite()
+    {
+        var instruction = R3000aDecoder.Decode(EncodeR(0x07, 10, 9, 8, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Srav);
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x8000F000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(4);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.ShiftRightArithmeticVariable);
+        block.Operations[2].InputValueA.Should().Be(0);
+        block.Operations[2].InputValueB.Should().Be(1);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
+    public void Sllv_TargetingZeroRegister_ProducesNoWrite()
+    {
+        // rd=$zero must be discarded like every other opcode's write, per
+        // BlockBuilder.WriteGpr - not a shift-specific special case.
+        var instruction = R3000aDecoder.Decode(EncodeR(0x04, 0, 9, 8, 0));
+
+        var result = MipsToIrLowerer.Lower(instruction, 0x80010000);
+        result.IsSupported.Should().BeTrue();
+        var block = result.Block!;
+
+        block.Operations.Should().HaveCount(3, "the discarded write to $zero is never emitted");
+        block.Operations.Should().NotContain(op => op.Kind == RecompilerIrOperationKind.WriteGpr);
+
+        ValidateProgram(block);
+    }
+
+    [Fact]
     public void ZeroRegisterRead_ProducesValidReadGpr()
     {
         var instruction = R3000aDecoder.Decode(EncodeR(0x21, 10, 0, 9, 0));

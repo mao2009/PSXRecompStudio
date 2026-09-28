@@ -854,6 +854,12 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Jalr:
                 sources = new[] { instruction.Operand1.Register };
                 return true;
+            case R3000aOpcode.Sllv:
+            case R3000aOpcode.Srlv:
+            case R3000aOpcode.Srav:
+                // Operand1=rt (value), Operand2=rs (shift amount) — DecodeShiftByRegister.
+                sources = new[] { instruction.Operand1.Register, instruction.Operand2.Register };
+                return true;
             default:
                 sources = Array.Empty<byte>();
                 return false;
@@ -887,6 +893,9 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sll:
             case R3000aOpcode.Srl:
             case R3000aOpcode.Sra:
+            case R3000aOpcode.Sllv:
+            case R3000aOpcode.Srlv:
+            case R3000aOpcode.Srav:
             case R3000aOpcode.Addu:
             case R3000aOpcode.Subu:
             case R3000aOpcode.And:
@@ -1002,6 +1011,19 @@ public static class MipsToIrLowerer
                 return EmitStore(builder, instruction, RecompilerIrOperationKind.Store16);
             case R3000aOpcode.Sw:
                 return EmitStore(builder, instruction, RecompilerIrOperationKind.Store32);
+            case R3000aOpcode.Sllv:
+                // Decoded operand layout (DecodeShiftByRegister): Operand0=rd, Operand1=rt
+                // (value), Operand2=rs (runtime shift amount) — the same rd/left/right
+                // shape EmitThreeRegisterArithmetic already reads, just with a variable-
+                // shift IR kind instead of an ALU one.
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftLeftLogicalVariable);
+                return null;
+            case R3000aOpcode.Srlv:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftRightLogicalVariable);
+                return null;
+            case R3000aOpcode.Srav:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftRightArithmeticVariable);
+                return null;
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     instruction.Opcode,

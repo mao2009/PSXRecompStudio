@@ -26,6 +26,9 @@ public class MipsToIrLoweringDifferentialTests
     private const byte BgezSelector = 0x01;
     private const byte BltzalSelector = 0x10;
     private const byte BgezalSelector = 0x11;
+    private const byte SllvFunct = 0x04;
+    private const byte SrlvFunct = 0x06;
+    private const byte SravFunct = 0x07;
 
     private const int Int32MinValue = int.MinValue;
     private const int Int32MaxValue = int.MaxValue;
@@ -268,6 +271,57 @@ public class MipsToIrLoweringDifferentialTests
 
         run.Ir.Gpr[31].Should().Be(EntryPc + 0x10, "the branch is at entryPc+8, so it links entryPc+0x10, taken or not");
         run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(31)]
+    [InlineData(32)]
+    [InlineData(33)]
+    [InlineData(255)]
+    public void Sllv_ShiftsByTheRuntimeAmountMaskedToLowFiveBits_MatchesTheInterpreter(int amount)
+    {
+        var words = BuildVariableShift(SllvFunct, value: unchecked((int)0x1234_5678u), amount);
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        run.Ir.Gpr[10].Should().Be(0x1234_5678u << (amount & 31),
+            "the amount masks to its low 5 bits, exactly like the native Rust wrapping_shl oracle");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(31)]
+    [InlineData(32)]
+    [InlineData(33)]
+    [InlineData(255)]
+    public void Srlv_ShiftsByTheRuntimeAmountMaskedToLowFiveBits_MatchesTheInterpreter(int amount)
+    {
+        // High bit set so a wrongly-signed shift (SRAV instead of SRLV) would be caught.
+        var words = BuildVariableShift(SrlvFunct, value: unchecked((int)0x8000_0001u), amount);
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        run.Ir.Gpr[10].Should().Be(0x8000_0001u >> (amount & 31));
+    }
+
+    [Theory]
+    [InlineData(0, Int32MinValue)]
+    [InlineData(1, Int32MinValue)]
+    [InlineData(31, Int32MinValue)]
+    [InlineData(32, Int32MinValue)]
+    [InlineData(33, Int32MinValue)]
+    [InlineData(255, Int32MinValue)]
+    [InlineData(0, -1)]
+    [InlineData(4, -256)]
+    public void Srav_SignExtendsAndShiftsByTheRuntimeAmountMaskedToLowFiveBits_MatchesTheInterpreter(
+        int amount, int value)
+    {
+        var words = BuildVariableShift(SravFunct, value, amount);
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        run.Ir.Gpr[10].Should().Be(unchecked((uint)(value >> (amount & 31))),
+            "SRAV sign-extends and masks the runtime amount, matching PSXCpu::ExecSrav / psx_cpu_ops_sra");
     }
 
     [Theory]
@@ -851,6 +905,19 @@ public class MipsToIrLoweringDifferentialTests
         MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),
         MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),
         MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 7),
+    ];
+
+    /// <summary>
+    /// $t0 = <paramref name="value"/>, $t1 = <paramref name="amount"/> (both via
+    /// LUI/ORI, so any 32-bit value including negatives and amounts &gt;= 32 is
+    /// exact), then SLLV/SRLV/SRAV $t2, $t0, $t1 (rd=10, rt=8 value, rs=9 amount -
+    /// DecodeShiftByRegister's operand layout).
+    /// </summary>
+    private static uint[] BuildVariableShift(byte funct, int value, int amount) =>
+    [
+        .. LoadConstant(register: 8, value: value),
+        .. LoadConstant(register: 9, value: amount),
+        MipsEncoding.R(funct, rd: 10, rs: 9, rt: 8, shamt: 0),
     ];
 
     /// <summary>

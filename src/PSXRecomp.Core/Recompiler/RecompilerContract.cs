@@ -67,6 +67,21 @@ public enum RecompilerIrOperationKind : byte
     /// operations in the block in that case.
     /// </summary>
     AddSigned,
+
+    /// <summary>
+    /// SLLV: logical left shift of input A by input B, masked to input B's low
+    /// 5 bits. Unlike <see cref="ShiftLeftLogical"/>, the amount is a runtime
+    /// value (input B) rather than a compile-time <c>ShiftAmount</c> byte,
+    /// because SLLV's amount comes from a GPR at execution time (MIPS I:
+    /// only bits 4:0 of the register are architecturally significant).
+    /// </summary>
+    ShiftLeftLogicalVariable,
+
+    /// <summary>SRLV: logical right shift of input A by input B, masked to input B's low 5 bits (see <see cref="ShiftLeftLogicalVariable"/>).</summary>
+    ShiftRightLogicalVariable,
+
+    /// <summary>SRAV: arithmetic (sign-filling) right shift of input A by input B, masked to input B's low 5 bits (see <see cref="ShiftLeftLogicalVariable"/>).</summary>
+    ShiftRightArithmeticVariable,
 }
 
 [Domain]
