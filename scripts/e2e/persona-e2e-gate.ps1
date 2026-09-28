@@ -71,6 +71,8 @@ $scriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot   = Split-Path -Parent (Split-Path -Parent $scriptDir)
 $romDir     = Join-Path $repoRoot 'rom'
 
+. (Join-Path $scriptDir 'persona-e2e-classification.ps1')
+
 if ([string]::IsNullOrEmpty($OutputPath)) {
     $OutputPath = Join-Path $repoRoot 'reports' 'e2e' 'persona-e2e-gate-result.json'
 }
@@ -192,8 +194,9 @@ if (-not $NoBuild) {
     $buildOutput = & dotnet build (Join-Path $repoRoot 'src' 'PSXRecomp.Tests' 'PSXRecomp.Tests.csproj') `
         -c Release --nologo -q 2>&1
     if ($LASTEXITCODE -ne 0) {
+        $classification = Get-PersonaE2EFailureClassification -Stage 'BUILD' -Output $buildOutput
         Add-Fail 'BUILD' "dotnet build failed (exit $LASTEXITCODE). Output: $buildOutput" `
-            'artifact-build-runtime wiring'
+            $classification.Category $classification.DiagnosticCode
         Emit-Result (Build-Result)
         exit 1
     }
@@ -222,8 +225,9 @@ if (-not $analysisPassed) {
     } else {
         $failLine = ($analysisOutput | Select-String 'FailedStage|FailureKind|FAIL|Error' |
                      Select-Object -First 1).Line
+        $classification = Get-PersonaE2EFailureClassification -Stage 'ANALYSIS' -Output $analysisOutput
         Add-Fail 'ANALYSIS' "RealRomAnalysisSkillTests failed. $failLine" `
-            'artifact-build-runtime wiring'
+            $classification.Category $classification.DiagnosticCode
         Emit-Result (Build-Result)
         exit 1
     }
@@ -255,8 +259,9 @@ if (-not $recompPassed) {
     } else {
         $failLine = ($recompOutput | Select-String 'DiagnosticCode|FAIL|failed|Error' |
                      Select-Object -First 1).Line
+        $classification = Get-PersonaE2EFailureClassification -Stage 'RECOMPILER_SLICE' -Output $recompOutput
         Add-Fail 'RECOMPILER_SLICE' "RealRomRecompilerVerticalSliceTests failed. $failLine" `
-            'unsupported instruction'
+            $classification.Category $classification.DiagnosticCode
         Emit-Result (Build-Result)
         exit 1
     }
@@ -299,8 +304,9 @@ if (-not $runtimePassed) {
     } else {
         $failLine = ($runtimeOutput | Select-String 'DiagnosticCode|InvalidState|FAIL|failed|Error' |
                      Select-Object -First 1).Line
+        $classification = Get-PersonaE2EFailureClassification -Stage 'RUNTIME_EXECUTION' -Output $runtimeOutput
         Add-Fail 'RUNTIME_EXECUTION' "RealRomTitleExecutionTests failed. $failLine" `
-            'full-title execution'
+            $classification.Category $classification.DiagnosticCode
         Emit-Result (Build-Result)
         exit 1
     }

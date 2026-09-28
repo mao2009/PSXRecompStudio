@@ -105,6 +105,15 @@ public static class MipsToIrLowerer
     /// interpreter links before the transfer applies, and the block exits with a
     /// <see cref="RecompilerIrFlowKind.Call"/> flow whose target is the callee and
     /// whose next PC is the return address.</item>
+    /// <item>BLEZ / BGTZ / BLTZ / BGEZ — a compare-with-zero condition built from
+    /// <see cref="RecompilerIrOperationKind.CompareLessThanSigned"/> (and, for
+    /// BGEZ/BLEZ, negated via <see cref="RecompilerIrOperationKind.CompareEqual"/>
+    /// against 0) drives the same <see cref="RecompilerIrFlowKind.Branch"/> flow as
+    /// BEQ/BNE.</item>
+    /// <item>BLTZAL / BGEZAL — the same compare-with-zero condition as BLTZ/BGEZ,
+    /// plus the unconditional <c>$ra = entryPc + 8</c> link write before the delay
+    /// slot (the branch decision does not gate the link, per
+    /// <c>PSXCpu::ExecBltzal</c>/<c>ExecBgezal</c>).</item>
     /// <item>JR / JALR — the target is a runtime register value, which
     /// <see cref="RecompilerIrFlow.Target"/> (a static address) cannot express, so
     /// the delay slot retires and the block terminates with
@@ -112,8 +121,6 @@ public static class MipsToIrLowerer
     /// still performs its link write, after reading the target register, so that
     /// <c>JALR rd, rd</c> keeps the pre-link target.</item>
     /// </list>
-    /// The compare-with-zero branches are reported unsupported rather than
-    /// approximated.
     /// </summary>
     /// <param name="control">The control-transfer instruction, at <paramref name="entryPc"/>.</param>
     /// <param name="entryPc">The address of <paramref name="control"/>.</param>
@@ -440,6 +447,13 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Jr:
             case R3000aOpcode.Jalr:
                 return TryEmitRegisterIndirectTransfer(builder, control, controlPc, delaySlot, pendingLoad, out exit);
+            case R3000aOpcode.Blez:
+            case R3000aOpcode.Bgtz:
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bgez:
+            case R3000aOpcode.Bltzal:
+            case R3000aOpcode.Bgezal:
+                return TryEmitCompareWithZeroBranch(builder, control, controlPc, delaySlot, pendingLoad, out exit);
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     control.Opcode,
@@ -488,6 +502,98 @@ public static class MipsToIrLowerer
             nextPc: unchecked(controlPc + (2 * InstructionSize)),
             flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target, condition));
         return null;
+    }
+
+    /// <summary>
+    /// Lowers BLEZ/BGTZ/BLTZ/BGEZ and their link variants BLTZAL/BGEZAL. All six
+    /// compare <c>rs</c> against zero; the *AL pair additionally links <c>$ra</c>
+    /// unconditionally, from the same pre-delay-slot read of <c>rs</c>, before the
+    /// delay slot (<c>PSXCpu::ExecBltzal</c>/<c>ExecBgezal</c>: "the decision uses
+    /// rs before linking" — the link is not gated by the branch outcome).
+    /// </summary>
+    private static MipsToIrLoweringResult? TryEmitCompareWithZeroBranch(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit exit)
+    {
+        exit = null!;
+        if (!R3000aBranchSemantics.TryGetBranchTarget(control, controlPc, out var target))
+        {
+            return UnresolvedTarget(control, controlPc, "branch");
+        }
+
+        // The condition is evaluated from rs as it stands before the delay slot
+        // retires, matching BEQ/BNE.
+        var rs = builder.ReadGpr(control.Operand0.Register);
+        var zero = builder.Constant(0);
+        var condition = EmitCompareWithZeroCondition(builder, control.Opcode, rs, zero);
+
+        if (control.LinkInfo.WritesLink)
+        {
+            if (!R3000aLinkSemantics.TryGetLinkValue(control, controlPc, out var returnAddress))
+            {
+                return MipsToIrLoweringResult.Unsupported(
+                    control.Opcode,
+                    RecompilerIrDiagnosticCode.InvalidFlow,
+                    $"'{control.Opcode}' at PC 0x{controlPc:X8} was decoded without link information, so its return " +
+                    "address cannot be lowered.");
+            }
+
+            EmitLinkWrite(builder, control, returnAddress);
+        }
+
+        var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        if (trapExit is not null)
+        {
+            // The *AL link write above still retires before a delay-slot BREAK, the
+            // same ordering TryEmitCall uses for JAL.
+            exit = trapExit;
+            return null;
+        }
+
+        exit = new RecompilerIrExit(
+            RecompilerIrTerminationReason.Success,
+            nextPc: unchecked(controlPc + (2 * InstructionSize)),
+            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target, condition));
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the 0/1 branch condition for a compare-with-zero opcode by composing
+    /// the existing signed less-than and equality operations, rather than adding a
+    /// new IR operation kind that every consumer (evaluator, host codegen) would
+    /// also have to learn: <c>rs &gt;= 0</c> is <c>!(rs &lt; 0)</c> and
+    /// <c>rs &lt;= 0</c> is <c>!(0 &lt; rs)</c>, each negated with
+    /// <see cref="RecompilerIrOperationKind.CompareEqual"/> against 0.
+    /// </summary>
+    private static int EmitCompareWithZeroCondition(BlockBuilder builder, R3000aOpcode opcode, int rs, int zero)
+    {
+        switch (opcode)
+        {
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bltzal:
+                return builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, rs, zero);
+            case R3000aOpcode.Bgez:
+            case R3000aOpcode.Bgezal:
+                var lessThanZero = builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, rs, zero);
+                return builder.Binary(RecompilerIrOperationKind.CompareEqual, lessThanZero, zero);
+            case R3000aOpcode.Bgtz:
+                return builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, zero, rs);
+            case R3000aOpcode.Blez:
+                var greaterThanZero = builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, zero, rs);
+                return builder.Binary(RecompilerIrOperationKind.CompareEqual, greaterThanZero, zero);
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(opcode), opcode, "Not a compare-with-zero branch opcode.");
+        }
     }
 
     private static MipsToIrLoweringResult? TryEmitDirectJump(
@@ -734,11 +840,44 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Bne:
                 sources = new[] { instruction.Operand0.Register, instruction.Operand1.Register };
                 return true;
+            case R3000aOpcode.Blez:
+            case R3000aOpcode.Bgtz:
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bgez:
+            case R3000aOpcode.Bltzal:
+            case R3000aOpcode.Bgezal:
+                sources = new[] { instruction.Operand0.Register };
+                return true;
             case R3000aOpcode.Jr:
                 sources = new[] { instruction.Operand0.Register };
                 return true;
             case R3000aOpcode.Jalr:
                 sources = new[] { instruction.Operand1.Register };
+                return true;
+            case R3000aOpcode.Sllv:
+            case R3000aOpcode.Srlv:
+            case R3000aOpcode.Srav:
+                // Operand1=rt (value), Operand2=rs (shift amount) — DecodeShiftByRegister.
+                sources = new[] { instruction.Operand1.Register, instruction.Operand2.Register };
+                return true;
+            case R3000aOpcode.Mult:
+            case R3000aOpcode.Multu:
+            case R3000aOpcode.Div:
+            case R3000aOpcode.Divu:
+                // Operand0=rs, Operand1=rt, no rd — DecodeMultiplyDivide. Both feed
+                // the HI/LO write; neither is a GPR destination.
+                sources = new[] { instruction.Operand0.Register, instruction.Operand1.Register };
+                return true;
+            case R3000aOpcode.Mthi:
+            case R3000aOpcode.Mtlo:
+                // Operand0=rs — DecodeMoveToHiLo. The GPR is read; HI/LO is written,
+                // not a GPR, so it never appears as a destination register.
+                sources = new[] { instruction.Operand0.Register };
+                return true;
+            case R3000aOpcode.Mfhi:
+            case R3000aOpcode.Mflo:
+                // Operand0=rd — DecodeMoveFromHiLo. Reads HI/LO (not a GPR); no GPR source.
+                sources = Array.Empty<byte>();
                 return true;
             default:
                 sources = Array.Empty<byte>();
@@ -762,13 +901,30 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sw:
             case R3000aOpcode.Beq:
             case R3000aOpcode.Bne:
+            case R3000aOpcode.Blez:
+            case R3000aOpcode.Bgtz:
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bgez:
             case R3000aOpcode.J:
             case R3000aOpcode.Jr:
+            case R3000aOpcode.Mult:
+            case R3000aOpcode.Multu:
+            case R3000aOpcode.Div:
+            case R3000aOpcode.Divu:
+            case R3000aOpcode.Mthi:
+            case R3000aOpcode.Mtlo:
+                // Mult/Multu/Div/Divu write HI/LO, not a GPR; Mthi/Mtlo write HI/LO
+                // from a GPR they only read. None of the six has a GPR destination.
                 destination = 0;
                 return false;
             case R3000aOpcode.Sll:
             case R3000aOpcode.Srl:
             case R3000aOpcode.Sra:
+            case R3000aOpcode.Sllv:
+            case R3000aOpcode.Srlv:
+            case R3000aOpcode.Srav:
+            case R3000aOpcode.Mfhi:
+            case R3000aOpcode.Mflo:
             case R3000aOpcode.Addu:
             case R3000aOpcode.Subu:
             case R3000aOpcode.And:
@@ -793,6 +949,8 @@ public static class MipsToIrLowerer
                 return true;
             case R3000aOpcode.Jal:
             case R3000aOpcode.Jalr:
+            case R3000aOpcode.Bltzal:
+            case R3000aOpcode.Bgezal:
                 destination = instruction.LinkInfo.LinkRegister;
                 return instruction.LinkInfo.WritesLink;
             default:
@@ -882,6 +1040,43 @@ public static class MipsToIrLowerer
                 return EmitStore(builder, instruction, RecompilerIrOperationKind.Store16);
             case R3000aOpcode.Sw:
                 return EmitStore(builder, instruction, RecompilerIrOperationKind.Store32);
+            case R3000aOpcode.Sllv:
+                // Decoded operand layout (DecodeShiftByRegister): Operand0=rd, Operand1=rt
+                // (value), Operand2=rs (runtime shift amount) — the same rd/left/right
+                // shape EmitThreeRegisterArithmetic already reads, just with a variable-
+                // shift IR kind instead of an ALU one.
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftLeftLogicalVariable);
+                return null;
+            case R3000aOpcode.Srlv:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftRightLogicalVariable);
+                return null;
+            case R3000aOpcode.Srav:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.ShiftRightArithmeticVariable);
+                return null;
+            case R3000aOpcode.Mult:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.MultiplySigned);
+                return null;
+            case R3000aOpcode.Multu:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.MultiplyUnsigned);
+                return null;
+            case R3000aOpcode.Div:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.DivideSigned);
+                return null;
+            case R3000aOpcode.Divu:
+                EmitMultiplyOrDivide(builder, instruction, RecompilerIrOperationKind.DivideUnsigned);
+                return null;
+            case R3000aOpcode.Mfhi:
+                builder.WriteGpr(instruction.Operand0.Register, builder.ReadHi());
+                return null;
+            case R3000aOpcode.Mflo:
+                builder.WriteGpr(instruction.Operand0.Register, builder.ReadLo());
+                return null;
+            case R3000aOpcode.Mthi:
+                builder.WriteHi(builder.ReadGpr(instruction.Operand0.Register));
+                return null;
+            case R3000aOpcode.Mtlo:
+                builder.WriteLo(builder.ReadGpr(instruction.Operand0.Register));
+                return null;
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     instruction.Opcode,
@@ -902,6 +1097,19 @@ public static class MipsToIrLowerer
         var right = builder.ReadGpr(instruction.Operand2.Register);
         var result = builder.Binary(operationKind, left, right);
         builder.WriteGpr(instruction.Operand0.Register, result);
+    }
+
+    /// <summary>
+    /// MULT/MULTU/DIV/DIVU (<c>DecodeMultiplyDivide</c>: Operand0=rs, Operand1=rt,
+    /// no rd). Writes HI/LO directly; there is no GPR destination and no SSA
+    /// result to write back (see <see cref="RecompilerIrOperationKind.MultiplySigned"/>).
+    /// </summary>
+    private static void EmitMultiplyOrDivide(
+        BlockBuilder builder, R3000aInstruction instruction, RecompilerIrOperationKind operationKind)
+    {
+        var rs = builder.ReadGpr(instruction.Operand0.Register);
+        var rt = builder.ReadGpr(instruction.Operand1.Register);
+        builder.MultiplyOrDivide(operationKind, rs, rt);
     }
 
     private static void EmitImmediateArithmetic(
@@ -1103,6 +1311,26 @@ public static class MipsToIrLowerer
 
         public void Store(RecompilerIrOperationKind kind, int address, int value) =>
             _operations.Add(new RecompilerIrOperation(kind, inputValueA: address, inputValueB: value));
+
+        public int ReadHi() =>
+            AddWithResult(id => new RecompilerIrOperation(RecompilerIrOperationKind.ReadHi, resultValueId: id));
+
+        public int ReadLo() =>
+            AddWithResult(id => new RecompilerIrOperation(RecompilerIrOperationKind.ReadLo, resultValueId: id));
+
+        public void WriteHi(int value) =>
+            _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.WriteHi, inputValueA: value));
+
+        public void WriteLo(int value) =>
+            _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.WriteLo, inputValueA: value));
+
+        /// <summary>
+        /// MULT/MULTU/DIV/DIVU: a two-input operation with no SSA result — it
+        /// writes both HI and LO directly, the same "computes, then stores"
+        /// shape <see cref="Store"/> uses for guest memory.
+        /// </summary>
+        public void MultiplyOrDivide(RecompilerIrOperationKind kind, int inputValueA, int inputValueB) =>
+            _operations.Add(new RecompilerIrOperation(kind, inputValueA: inputValueA, inputValueB: inputValueB));
 
         /// <summary>
         /// Writes a GPR, except GPR[0]: it is immutable, so the architectural

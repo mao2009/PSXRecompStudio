@@ -112,4 +112,18 @@ public sealed record RecompilerDifferentialFixture
 
     /// <summary>Returns the guest PC of the <paramref name="index"/>-th instruction.</summary>
     public uint PcOfInstruction(int index) => EntryPc + unchecked((uint)index * 4u);
+
+    /// <summary>
+    /// Returns a copy of this fixture with a different <see cref="StepBudget"/> and
+    /// <see cref="BudgetsAreShared"/> fact — everything else (instructions, entry PC,
+    /// initial state, <see cref="ReferenceStepBudget"/>) unchanged. Used by
+    /// <see cref="RecompilerDifferentialRunner.RunReferenceFirstAligned"/> (Issue #578)
+    /// to rebuild the fixture around a host budget it has actually measured from the
+    /// reference executor's own retirement trace, rather than mutating the original.
+    /// </summary>
+    public RecompilerDifferentialFixture WithStepBudget(uint stepBudget, bool budgetsAreShared) =>
+        new(
+            Name, Instructions, EntryPc, stepBudget,
+            InitialGpr, InitialHi, InitialLo, InitialMemory, MemoryWindow,
+            ReferenceStepBudget, budgetsAreShared);
 }

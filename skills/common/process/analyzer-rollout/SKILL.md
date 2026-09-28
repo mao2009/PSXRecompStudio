@@ -4,8 +4,9 @@ description: >
   Repeatable process for evaluating, introducing, migrating, and progressively
   enforcing Roslyn analyzers and other static quality rules without hiding
   existing debt or causing unsafe bulk rewrites.
-version: 0.1.0
+version: 0.2.0
 scope: process
+related-issues: "#23, #98, #106"
 platform: agent-agnostic
 ---
 
@@ -39,11 +40,40 @@ cost while keeping the change explainable and reversible.
 7. **Local and CI behavior must match.** A rule called a quality gate must be
    evaluated by the normal build/test path used in CI.
 
+## Eligibility gate
+
+Before treating a finding as an analyzer/static-rule task, establish all of the
+following from concrete evidence:
+
+- at least one real bug/review finding or other demonstrated rule gap exists;
+- the intended behavior is already grounded in an SSOT/contract rather than
+  being invented by the analyzer;
+- compiler/.NET Analyzers, PureSharp, ArchitectureAnalyzer, existing CI and
+  existing semantic tests were checked for ownership/overlap;
+- the failure is meaningfully detectable from static source/metadata;
+- a focused semantic regression test alone would not be the more accurate owner;
+- expected signal justifies false-positive, migration, CI and maintenance cost.
+
+If any of these cannot be established, **stop the analyzer rollout** and route
+the finding back to its correct owner. Common outcomes are:
+
+- one-off bug → focused regression test;
+- execution-semantic bug → Golden/differential/contract test;
+- architecture boundary → existing ArchitectureAnalyzer consumer contract;
+- purity rule → existing PureSharp policy;
+- repository process gap → CI/script/Skill validation;
+- missing design contract → SSOT/ADR.
+
+This is a fail-closed eligibility gate: "a static rule might be useful" is not
+evidence that a new analyzer should exist.
+
 ## Inputs
 
 Collect the following before implementation:
 
-- analyzer/package name and exact version;
+- concrete finding(s) or bug class that triggered evaluation;
+- why the existing quality-stack owners did not already prevent it;
+- analyzer/package name and exact version when a package is being evaluated;
 - authoritative upstream documentation or source repository;
 - current project TFM, SDK and Roslyn/compiler versions;
 - existing analyzer `PackageReference`s and `.editorconfig` severity policy;
@@ -52,6 +82,12 @@ Collect the following before implementation:
 - CI build/test commands used for the target projects.
 
 ## Procedure
+
+### 0. Confirm eligibility and existing ownership
+
+Record the finding evidence, overlap check and why static enforcement is the
+correct owner. If an existing owner can be extended, use that owner instead of
+introducing a parallel analyzer or diagnostic family.
 
 ### 1. Verify the analyzer and integration mode
 
@@ -271,6 +307,8 @@ Follow-up issue(s), if any:
 
 ## Completion checklist
 
+- [ ] Concrete finding/bug-class evidence recorded
+- [ ] Static-rule eligibility established; semantic-test/process/architecture owners considered first
 - [ ] Analyzer/package identity and compatibility verified
 - [ ] Rule ownership vs existing analyzers checked
 - [ ] Baseline diagnostic counts measured
@@ -290,4 +328,7 @@ Follow-up issue(s), if any:
 
 This skill does not require clearing every existing advisory warning in the
 same PR, building a permanent bulk-rename utility, replacing other analyzers,
-or treating "more analyzer rules" as an end in itself.
+or treating "more analyzer rules" as an end in itself. It is also not a route
+for turning runtime semantics, one-off review comments, or speculative future
+concerns into static diagnostics merely because doing so is technically
+possible.

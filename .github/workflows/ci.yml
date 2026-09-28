@@ -10,6 +10,60 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify documentation-only change
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+            head="$PR_HEAD_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+            head="$PUSH_HEAD_SHA"
+          fi
+
+          docs_only=false
+          if [[ -n "$base" && ! "$base" =~ ^0+$ ]]; then
+            mapfile -t changed_files < <(git diff --name-only "$base" "$head")
+            if (( ${#changed_files[@]} > 0 )); then
+              docs_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  docs/*|README*.md|CONTRIBUTING.md|.github/ISSUE_TEMPLATE/*.md)
+                    ;;
+                  *)
+                    docs_only=false
+                    break
+                    ;;
+                esac
+              done
+            fi
+          fi
+
+          printf 'docs_only=%s\n' "$docs_only" >> "$GITHUB_OUTPUT"
+          printf 'Documentation-only change: %s\n' "$docs_only"
+          printf 'Changed files:\n'
+          printf '  %s\n' "${changed_files[@]:-<unavailable>}"
+
   artifact-policy:
     name: Artifact Contamination Gate
     runs-on: ubuntu-latest
@@ -23,12 +77,19 @@ jobs:
 
   native:
     name: Native Core Build and Test
+    needs: changes
     runs-on: ubuntu-latest
     steps:
+      - name: Documentation-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "Documentation-only change; native build/tests are not required."
+
       - name: Checkout
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/checkout@v4
 
       - name: Install Ninja
+        if: needs.changes.outputs.docs_only != 'true'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       # The Rust substrate is linked into PSXRecomp.Native, so `cargo build`
@@ -36,19 +97,24 @@ jobs:
       # crate's unit tests are platform-independent, so they run once, here,
       # in a job the CI Gate already requires.
       - name: Rust unit tests
+        if: needs.changes.outputs.docs_only != 'true'
         working-directory: src/PSXRecomp.Native/rust
         run: cargo test --verbose
 
       - name: Configure
+        if: needs.changes.outputs.docs_only != 'true'
         run: cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
+        if: needs.changes.outputs.docs_only != 'true'
         run: cmake --build build/native --parallel
 
       - name: Test
+        if: needs.changes.outputs.docs_only != 'true'
         run: ctest --test-dir build/native --output-on-failure
 
       - name: Upload native library
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: psxrecomp-native-linux-x64
@@ -57,21 +123,29 @@ jobs:
 
   dotnet:
     name: .NET Build and Test
-    needs: native
+    needs: [changes, native]
     runs-on: ubuntu-latest
     steps:
+      - name: Documentation-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "Documentation-only change; .NET build/tests are not required."
+
       - name: Checkout
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/checkout@v4
 
       - name: Setup .NET
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.x'
 
       - name: Restore
+        if: needs.changes.outputs.docs_only != 'true'
         run: dotnet restore src/PSXRecompStudio.slnx
 
       - name: Check NuGet vulnerabilities
+        if: needs.changes.outputs.docs_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -84,28 +158,32 @@ jobs:
           fi
 
       - name: Build
+        if: needs.changes.outputs.docs_only != 'true'
         run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
 
       - name: Download native library
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/download-artifact@v4
         with:
           name: psxrecomp-native-linux-x64
           path: native
 
       - name: Install native library for .NET tests
+        if: needs.changes.outputs.docs_only != 'true'
         run: |
           test -f native/libPSXRecomp.Native.so
           cp native/libPSXRecomp.Native.so src/PSXRecomp.Tests/bin/Release/net10.0/
           ls -l src/PSXRecomp.Tests/bin/Release/net10.0/libPSXRecomp.Native.so
 
       - name: Test
+        if: needs.changes.outputs.docs_only != 'true'
         env:
           RECOMPILER_ARTIFACT_ROOT: ${{ runner.temp }}/recompiler-differential-artifacts
         run: |
           dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
 
       - name: Upload differential harness failure artifacts
-        if: failure()
+        if: needs.changes.outputs.docs_only != 'true' && failure()
         uses: actions/upload-artifact@v4
         with:
           name: recompiler-differential-artifacts
@@ -114,6 +192,8 @@ jobs:
 
   native-windows:
     name: Native Core Build and Test (Windows)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -137,7 +217,8 @@ jobs:
 
   dotnet-windows:
     name: .NET Build and Test (Windows)
-    needs: native-windows
+    needs: [changes, native-windows]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -173,6 +254,8 @@ jobs:
 
   native-macos:
     name: Native Core Build and Test (macOS)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -196,7 +279,8 @@ jobs:
 
   dotnet-macos:
     name: .NET Build and Test (macOS)
-    needs: native-macos
+    needs: [changes, native-macos]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -231,6 +315,8 @@ jobs:
 
   gui-tests:
     name: GUI Headless Tests
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -258,13 +344,32 @@ jobs:
   ci:
     name: CI Gate
     if: always()
-    needs: [artifact-policy, dotnet, native, gui-tests, native-windows, dotnet-windows, native-macos, dotnet-macos]
+    needs: [changes, artifact-policy, dotnet, native, gui-tests, native-windows, dotnet-windows, native-macos, dotnet-macos]
     runs-on: ubuntu-latest
     steps:
-      - name: Require all checks to pass
+      - name: Require appropriate checks to pass
+        shell: bash
         run: |
-          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" || "${{ needs.gui-tests.result }}" != "success" || "${{ needs.native-windows.result }}" != "success" || "${{ needs.dotnet-windows.result }}" != "success" || "${{ needs.native-macos.result }}" != "success" || "${{ needs.dotnet-macos.result }}" != "success" ]]; then
+          set -euo pipefail
+
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "Change classification did not succeed."
+            exit 1
+          fi
+
+          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" ]]; then
             echo "Required CI jobs did not all succeed."
             exit 1
           fi
+
+          if [[ "${{ needs.changes.outputs.docs_only }}" == "true" ]]; then
+            echo "Documentation-only change: heavyweight Windows/macOS/GUI jobs were intentionally skipped."
+            exit 0
+          fi
+
+          if [[ "${{ needs.gui-tests.result }}" != "success" || "${{ needs.native-windows.result }}" != "success" || "${{ needs.dotnet-windows.result }}" != "success" || "${{ needs.native-macos.result }}" != "success" || "${{ needs.dotnet-macos.result }}" != "success" ]]; then
+            echo "Full CI matrix did not all succeed."
+            exit 1
+          fi
+
           echo "All required CI jobs passed."

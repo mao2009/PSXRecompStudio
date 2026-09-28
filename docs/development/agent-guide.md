@@ -17,6 +17,8 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 5. Inspect related open Issues and recent implementation PRs.
 6. Inspect the relevant code.
 7. Check architectural constraints before proposing changes.
+8. When changing analyzers, tests, CI gates, or quality policy, read
+   [Quality and Verification Stack](quality-stack.md) before choosing an enforcement mechanism.
 
 ## Git Workflow
 

@@ -17,6 +17,7 @@ common skill is ported to another project.
 | Bootstrap / authority hierarchy | `docs/development/agent-guide.md` |
 | Top-level architecture SSOT | `ARCHITECTURE.md` |
 | Documentation index | `docs/README.md` |
+| Quality-gate ownership / rule routing | `docs/development/quality-stack.md` |
 | Layer/dependency SSOT (enforced by analyzer) | `docs/architecture-matrix.md` |
 | Architecture overview | `docs/architecture/README.md` |
 | CPU/R3000A subsystem specs | `docs/cpu/instruction-set.md`, `docs/cpu/instruction-format.md`, `docs/cpu/registers.md`, `docs/cpu/r3000a.md`, `docs/cpu/pipeline.md`, `docs/cpu/memory.md`, `docs/cpu/exceptions.md`, `docs/cpu/cop0.md` |

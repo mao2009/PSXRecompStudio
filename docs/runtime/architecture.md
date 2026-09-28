@@ -175,6 +175,19 @@ Implemented as the COP2 coprocessor.
 - **Commands**: issued through COP2 instructions (`sf=shift fraction`, `lm=saturate`).
 - **Major commands**: RTPS, NCLIP, AVSZ3, AVSZ4, SQR, NCCT, NCS, NCT, NCDS, NCDT, DPCL, DPCT, DPCS, DCT, INTPL, MVMVA, DCPL, DPCS, GPF, GPL, NCCT.
 
+### Register bank (Issue #581)
+
+`PSXRecomp.Core.Runtime.Gte.GteRegisterBank` implements `IGte`'s 32 data and
+32 control registers as a pure managed Domain model with the documented
+register semantics: 16-bit sign/zero extension on read, the SXYP write-push
+FIFO, IRGB write expansion / ORGB read packing, LZCS→LZCR leading-sign count,
+and FLAG's hard-wired low bits plus computed bit 31. `Reset` zeroes every
+backing register; because LZCR is derived from the cleared LZCS value rather
+than stored independently, reading LZCR immediately after reset returns 32.
+`ExecuteCommand` throws `NotSupportedException` until command
+slices land, and the bank is not yet wired to CPU COP2 dispatch (the native
+interpreter still raises Coprocessor Unusable for COP2/LWC2/SWC2).
+
 ## GPU Model
 
 Controlled through the two GP0/GP1 registers.
@@ -255,6 +268,14 @@ Controls the CD-ROM controller.
 - **Commands**: sector reads, seek, packet reads, CD audio.
 - **IRQ2**: raised on command completion, data ready, or errors.
 - **Modes**: Normal/Double speed, DMA/PIO.
+
+Current implementation (Issue #585): `CdRomDevice` implements `ICdRom` as a
+register/FIFO substrate only — index selection, 16-byte parameter and response
+FIFOs, a status register derived from FIFO state, interrupt enable/flag
+registers, and reset. Parameter FIFO overflow throws. No command is implemented
+yet: every command fails closed with INT5 and response `[0x01, 0x40]` (invalid
+command). The device is not yet wired to `MemoryBus`, DMA3, or IRQ2, and has no
+disc, data FIFO, or audio model.
 
 ## BIOS Model
 

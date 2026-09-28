@@ -18,6 +18,10 @@ public static class RecompilerHostCodeGen
     private const string StateParam = "state";
     private const string CoreField = "core";
     private const string Sra32Helper = "recompiler_sra32";
+    private const string MultSignedHelper = "recompiler_mult_signed";
+    private const string MultUnsignedHelper = "recompiler_mult_unsigned";
+    private const string DivSignedHelper = "recompiler_div_signed";
+    private const string DivUnsignedHelper = "recompiler_div_unsigned";
     private const string TerminationField = "termination_reason";
     private const string NextPcField = "next_pc";
     private const string ExceptionRaisedField = "exception_raised";
@@ -136,6 +140,9 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.ShiftLeftLogical => true,
         RecompilerIrOperationKind.ShiftRightLogical => true,
         RecompilerIrOperationKind.ShiftRightArithmetic => true,
+        RecompilerIrOperationKind.ShiftLeftLogicalVariable => true,
+        RecompilerIrOperationKind.ShiftRightLogicalVariable => true,
+        RecompilerIrOperationKind.ShiftRightArithmeticVariable => true,
         RecompilerIrOperationKind.CompareEqual => true,
         RecompilerIrOperationKind.CompareNotEqual => true,
         RecompilerIrOperationKind.CompareLessThanSigned => true,
@@ -147,6 +154,14 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.Store8 => true,
         RecompilerIrOperationKind.Store16 => true,
         RecompilerIrOperationKind.Store32 => true,
+        RecompilerIrOperationKind.ReadHi => true,
+        RecompilerIrOperationKind.ReadLo => true,
+        RecompilerIrOperationKind.WriteHi => true,
+        RecompilerIrOperationKind.WriteLo => true,
+        RecompilerIrOperationKind.MultiplySigned => true,
+        RecompilerIrOperationKind.MultiplyUnsigned => true,
+        RecompilerIrOperationKind.DivideSigned => true,
+        RecompilerIrOperationKind.DivideUnsigned => true,
         _ => false,
     };
 
@@ -177,6 +192,7 @@ public static class RecompilerHostCodeGen
         EmitMemoryHelperDeclarations(sb);
         EmitStateStruct(sb);
         EmitSra32Helper(sb);
+        EmitMulDivHelpers(sb);
 
         foreach (var block in program.Blocks)
         {
@@ -278,6 +294,63 @@ public static class RecompilerHostCodeGen
         sb.AppendLine();
     }
 
+    /// <summary>
+    /// MULT/MULTU/DIV/DIVU helpers: each writes both <c>state->hi</c> and
+    /// <c>state->lo</c> directly (mirrors <see cref="Store"/>'s "computes, then
+    /// stores" shape) rather than returning a value, since a plain C function
+    /// cannot return two 32-bit halves without an extra struct type. Every cast
+    /// to the signed/64-bit intermediate is explicit (never relying on C's usual
+    /// arithmetic promotion), and DIV/DIVU check their divide-by-zero / INT_MIN
+    /// special cases before the native <c>/</c>/<c>%</c>, matching
+    /// <c>PSXCpu::ExecDiv</c>/<c>ExecDivu</c> / <c>psx_cpu_hilo_div</c>/<c>divu</c>
+    /// exactly — plain C division would be undefined behavior for both cases.
+    /// </summary>
+    private static void EmitMulDivHelpers(StringBuilder sb)
+    {
+        sb.AppendLine("static void " + MultSignedHelper + "(" + StateStruct + "* " + StateParam + ", uint32_t a, uint32_t b) {");
+        sb.AppendLine(IndentUnit + "int64_t product = (int64_t)(int32_t)a * (int64_t)(int32_t)b;");
+        sb.AppendLine(IndentUnit + StateParam + "->hi = (uint32_t)(product >> 32);");
+        sb.AppendLine(IndentUnit + StateParam + "->lo = (uint32_t)(product & 0xFFFFFFFFu);");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("static void " + MultUnsignedHelper + "(" + StateStruct + "* " + StateParam + ", uint32_t a, uint32_t b) {");
+        sb.AppendLine(IndentUnit + "uint64_t product = (uint64_t)a * (uint64_t)b;");
+        sb.AppendLine(IndentUnit + StateParam + "->hi = (uint32_t)(product >> 32);");
+        sb.AppendLine(IndentUnit + StateParam + "->lo = (uint32_t)(product & 0xFFFFFFFFu);");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("static void " + DivSignedHelper + "(" + StateStruct + "* " + StateParam + ", uint32_t dividend, uint32_t divisor) {");
+        sb.AppendLine(IndentUnit + "int32_t n = (int32_t)dividend;");
+        sb.AppendLine(IndentUnit + "int32_t d = (int32_t)divisor;");
+        sb.AppendLine(IndentUnit + "if (d == 0) {");
+        sb.AppendLine(IndentUnit + "  " + StateParam + "->lo = (n >= 0) ? 0xFFFFFFFFu : 1u;");
+        sb.AppendLine(IndentUnit + "  " + StateParam + "->hi = (uint32_t)n;");
+        sb.AppendLine(IndentUnit + "  return;");
+        sb.AppendLine(IndentUnit + "}");
+        sb.AppendLine(IndentUnit + "if (n == INT32_MIN && d == -1) {");
+        sb.AppendLine(IndentUnit + "  " + StateParam + "->hi = 0u;");
+        sb.AppendLine(IndentUnit + "  " + StateParam + "->lo = 0x80000000u;");
+        sb.AppendLine(IndentUnit + "  return;");
+        sb.AppendLine(IndentUnit + "}");
+        sb.AppendLine(IndentUnit + StateParam + "->hi = (uint32_t)(n % d);");
+        sb.AppendLine(IndentUnit + StateParam + "->lo = (uint32_t)(n / d);");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("static void " + DivUnsignedHelper + "(" + StateStruct + "* " + StateParam + ", uint32_t dividend, uint32_t divisor) {");
+        sb.AppendLine(IndentUnit + "if (divisor == 0) {");
+        sb.AppendLine(IndentUnit + "  " + StateParam + "->hi = dividend;");
+        sb.AppendLine(IndentUnit + "  " + StateParam + "->lo = 0xFFFFFFFFu;");
+        sb.AppendLine(IndentUnit + "  return;");
+        sb.AppendLine(IndentUnit + "}");
+        sb.AppendLine(IndentUnit + StateParam + "->hi = dividend % divisor;");
+        sb.AppendLine(IndentUnit + StateParam + "->lo = dividend / divisor;");
+        sb.AppendLine("}");
+        sb.AppendLine();
+    }
+
     private static void EmitBlockFunction(StringBuilder sb, RecompilerIrBlock block)
     {
         var functionName = $"recompiler_block_0x{block.EntryPc:X8}";
@@ -374,6 +447,25 @@ public static class RecompilerHostCodeGen
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
                 return $"{result} = {Sra32Helper}({ResolveValue(op.InputValueA, valueNames)}, {op.ShiftAmount}u);";
 
+            case RecompilerIrOperationKind.ShiftLeftLogicalVariable:
+                // SLLV: the amount is a runtime GPR value, so it is masked explicitly
+                // here (plain C's << on a uint32_t by a count >= 32 is undefined
+                // behavior, unlike the immediate ShiftLeftLogical case above where the
+                // decoded shamt is already 0-31).
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = (uint32_t){ResolveValue(op.InputValueA, valueNames)} << ({ResolveValue(op.InputValueB, valueNames)} & 31u);";
+
+            case RecompilerIrOperationKind.ShiftRightLogicalVariable:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = (uint32_t){ResolveValue(op.InputValueA, valueNames)} >> ({ResolveValue(op.InputValueB, valueNames)} & 31u);";
+
+            case RecompilerIrOperationKind.ShiftRightArithmeticVariable:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = {Sra32Helper}({ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)} & 31u);";
+
             case RecompilerIrOperationKind.CompareEqual:
                 if (result == null) return null;
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
@@ -421,6 +513,36 @@ public static class RecompilerHostCodeGen
 
             case RecompilerIrOperationKind.Store32:
                 return $"recompiler_write_mem32({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.ReadHi:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = {StateParam}->hi;";
+
+            case RecompilerIrOperationKind.ReadLo:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = {StateParam}->lo;";
+
+            case RecompilerIrOperationKind.WriteHi:
+                if (op.InputValueA < 0) return null;
+                return $"{StateParam}->hi = {ResolveValue(op.InputValueA, valueNames)};";
+
+            case RecompilerIrOperationKind.WriteLo:
+                if (op.InputValueA < 0) return null;
+                return $"{StateParam}->lo = {ResolveValue(op.InputValueA, valueNames)};";
+
+            case RecompilerIrOperationKind.MultiplySigned:
+                return $"{MultSignedHelper}({StateParam}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.MultiplyUnsigned:
+                return $"{MultUnsignedHelper}({StateParam}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.DivideSigned:
+                return $"{DivSignedHelper}({StateParam}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.DivideUnsigned:
+                return $"{DivUnsignedHelper}({StateParam}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
 
             default:
                 return null;
