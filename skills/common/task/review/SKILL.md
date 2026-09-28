@@ -9,7 +9,7 @@ description: >
 version: 1.0.0
 scope: process
 platform: agent-agnostic
-related-issues: "#174, #270"
+related-issues: "#23, #174, #270"
 ---
 
 # Review Skill
@@ -183,6 +183,23 @@ For each viewpoint, state either the findings found or a short "no issues found"
 justified by inspection (not by assumption). When acting as the pre-PR
 self review, feed findings into the self-review skill's classification and
 resolution procedure rather than ending here.
+
+## Durable-finding handoff
+
+A review finding is first a finding about the change under review. Do not expand
+that PR into unrelated process work merely because the finding suggests a
+broader rule.
+
+After the concrete finding is resolved or recorded, any **recurring or
+structural prevention gap** is handed to the
+[pre-PR self-review feedback loop](../../process/self-review/SKILL.md#external-review-feedback-loop).
+That process decides the smallest durable owner (regression test, SSOT/ADR,
+ArchitectureAnalyzer contract, PureSharp, CI/Skill, or a justified static-rule
+candidate) and defines the evidence required for a focused follow-up Issue.
+
+The review itself must not declare "add an analyzer" solely from severity or
+importance. It should report the failure mode and evidence; prevention routing
+happens through the shared feedback process.
 
 ## Verification
 
