@@ -50,6 +50,13 @@ public sealed class DmaMmioAdapter : IDmaController, IMemoryBus, IDisposable
         return _core.GetDmaInterruptPending();
     }
 
+    public void Tick(uint cycles)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _core.TickDma(cycles);
+        EvaluateInterrupt();
+    }
+
     public void SetInterruptCallback(Action<uint>? callback)
     {
         _interruptCallback = callback;
