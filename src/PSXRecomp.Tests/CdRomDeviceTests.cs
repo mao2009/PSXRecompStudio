@@ -303,12 +303,13 @@ public class CdRomDeviceTests
     }
 
     [Fact]
-    public void Reset_ClearsLoadedDataAndInterruptGenerationState()
+    public void Reset_ClearsLoadedDataAndReadState_WithoutReusingInterruptGeneration()
     {
         var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
         cd.WriteCommand(0x06);
         cd.LoadData(new byte[] { 1, 2, 3, 4 });
-        cd.InterruptGeneration.Should().BeGreaterThan(0);
+        var generation = cd.InterruptGeneration;
+        generation.Should().BeGreaterThan(0);
 
         cd.Reset();
 
@@ -316,6 +317,7 @@ public class CdRomDeviceTests
         cd.DataReady.Should().BeFalse();
         cd.HasInterrupt.Should().BeFalse();
         cd.IsReading.Should().BeFalse();
+        cd.InterruptGeneration.Should().Be(generation, "packet identities are monotonic across device reset");
     }
 
     [Fact]
