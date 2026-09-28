@@ -48,7 +48,7 @@ jobs:
               docs_only=true
               for path in "${changed_files[@]}"; do
                 case "$path" in
-                  docs/*|README*.md)
+                  docs/*|README*.md|CONTRIBUTING.md|.github/ISSUE_TEMPLATE/*.md)
                     ;;
                   *)
                     docs_only=false
