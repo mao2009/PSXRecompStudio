@@ -98,7 +98,7 @@ public sealed class CdRomDmaTransfer
                 (uint)_cdRom.ReadData() << 24;
 
             _memory.Write(address, value);
-            address = (address + sizeof(uint)) & AddressMask;
+            address = (address + (uint)sizeof(uint)) & AddressMask;
         }
 
         // The Rust DMA model owns CHCR completion and DICR flag semantics.
