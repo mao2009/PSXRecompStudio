@@ -29,9 +29,18 @@ public class MipsToIrLoweringDifferentialTests
     private const byte SllvFunct = 0x04;
     private const byte SrlvFunct = 0x06;
     private const byte SravFunct = 0x07;
+    private const byte MfhiFunct = 0x10;
+    private const byte MthiFunct = 0x11;
+    private const byte MfloFunct = 0x12;
+    private const byte MtloFunct = 0x13;
+    private const byte MultFunct = 0x18;
+    private const byte MultuFunct = 0x19;
+    private const byte DivFunct = 0x1A;
+    private const byte DivuFunct = 0x1B;
 
     private const int Int32MinValue = int.MinValue;
     private const int Int32MaxValue = int.MaxValue;
+    private const uint UInt32MaxValue = uint.MaxValue;
 
     [Fact]
     public void Memory_LoadsAndStoresOfEveryWidth_MatchTheInterpreter()
@@ -322,6 +331,231 @@ public class MipsToIrLoweringDifferentialTests
 
         run.Ir.Gpr[10].Should().Be(unchecked((uint)(value >> (amount & 31))),
             "SRAV sign-extends and masks the runtime amount, matching PSXCpu::ExecSrav / psx_cpu_ops_sra");
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(1, 1)]
+    [InlineData(5, -3)]
+    [InlineData(-5, -3)]
+    [InlineData(Int32MaxValue, Int32MaxValue)]
+    [InlineData(Int32MinValue, 1)]
+    [InlineData(Int32MinValue, -1)]
+    public void Mult_SignedProductSplitAcrossHiLo_MatchesTheInterpreter(int rs, int rt)
+    {
+        var words = BuildMultiplyDivide(MultFunct, rs, rt);
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        var expected = (long)rs * rt;
+        run.Ir.Hi.Should().Be(unchecked((uint)(expected >> 32)), "MULT's HI is the upper 32 bits of the signed 64-bit product");
+        run.Ir.Lo.Should().Be(unchecked((uint)(expected & 0xFFFFFFFFL)), "MULT's LO is the lower 32 bits of the signed 64-bit product");
+    }
+
+    [Theory]
+    [InlineData(0u, 12345u)]
+    [InlineData(1u, 1u)]
+    [InlineData(UInt32MaxValue, 1u)]
+    [InlineData(UInt32MaxValue, UInt32MaxValue)]
+    [InlineData(0x0001_0000u, 0x0001_0000u)]
+    public void Multu_UnsignedProductSplitAcrossHiLo_MatchesTheInterpreter(uint rs, uint rt)
+    {
+        var words = BuildMultiplyDivide(MultuFunct, unchecked((int)rs), unchecked((int)rt));
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        var expected = (ulong)rs * rt;
+        run.Ir.Hi.Should().Be(unchecked((uint)(expected >> 32)), "MULTU's HI is the upper 32 bits of the unsigned 64-bit product");
+        run.Ir.Lo.Should().Be(unchecked((uint)(expected & 0xFFFFFFFFUL)), "MULTU's LO is the lower 32 bits of the unsigned 64-bit product");
+    }
+
+    [Theory]
+    [InlineData(42, 5)]      // positive / positive
+    [InlineData(-42, 5)]     // negative / positive
+    [InlineData(42, -5)]     // positive / negative
+    [InlineData(-42, -5)]    // negative / negative
+    [InlineData(0, 7)]       // dividend = 0
+    [InlineData(42, 1)]      // divisor = 1
+    [InlineData(42, -1)]     // divisor = -1
+    [InlineData(42, 0)]      // divisor = 0, positive dividend
+    [InlineData(-42, 0)]     // divisor = 0, negative dividend
+    [InlineData(Int32MinValue, -1)] // INT_MIN / -1: the PS1-pinned result, never a host trap
+    [InlineData(Int32MinValue, 1)]
+    public void Div_QuotientAndRemainderMatchThePS1SpecialCases_MatchesTheInterpreter(int dividend, int divisor)
+    {
+        var words = BuildMultiplyDivide(DivFunct, dividend, divisor);
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        // The differential assertion inside RunBoth is the real oracle check (native
+        // interpreter vs. IR); this restates the documented PS1/MIPS-I contract
+        // (psx_cpu_hilo.rs::div_signed) so a wrong-but-self-consistent lowering still fails.
+        if (divisor == 0)
+        {
+            run.Ir.Lo.Should().Be(dividend >= 0 ? uint.MaxValue : 1u);
+            run.Ir.Hi.Should().Be(unchecked((uint)dividend));
+        }
+        else if (dividend == int.MinValue && divisor == -1)
+        {
+            run.Ir.Hi.Should().Be(0u);
+            run.Ir.Lo.Should().Be(0x8000_0000u);
+        }
+        else
+        {
+            run.Ir.Lo.Should().Be(unchecked((uint)(dividend / divisor)));
+            run.Ir.Hi.Should().Be(unchecked((uint)(dividend % divisor)));
+        }
+    }
+
+    [Theory]
+    [InlineData(42u, 5u)]
+    [InlineData(0u, 7u)]
+    [InlineData(UInt32MaxValue, 1u)]
+    [InlineData(42u, 0u)]
+    [InlineData(UInt32MaxValue, 3u)]
+    public void Divu_QuotientAndRemainderMatchThePS1SpecialCase_MatchesTheInterpreter(uint dividend, uint divisor)
+    {
+        var words = BuildMultiplyDivide(DivuFunct, unchecked((int)dividend), unchecked((int)divisor));
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0);
+
+        if (divisor == 0)
+        {
+            run.Ir.Hi.Should().Be(dividend);
+            run.Ir.Lo.Should().Be(uint.MaxValue);
+        }
+        else
+        {
+            run.Ir.Lo.Should().Be(dividend / divisor);
+            run.Ir.Hi.Should().Be(dividend % divisor);
+        }
+    }
+
+    [Fact]
+    public void Mult_ThenMfhiMflo_MovesBothHalvesIntoGprs()
+    {
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: 1000),
+            .. LoadConstant(register: 9, value: 2000),
+            MipsEncoding.MultiplyDivide(MultFunct, rs: 8, rt: 9),
+            MipsEncoding.MoveFromHiLo(MfhiFunct, rd: 20),
+            MipsEncoding.MoveFromHiLo(MfloFunct, rd: 21),
+        ];
+        var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 0);
+
+        run.Ir.Gpr[20].Should().Be(0u, "1000*2000 fits entirely in LO");
+        run.Ir.Gpr[21].Should().Be(2_000_000u);
+    }
+
+    [Fact]
+    public void Div_ThenMfhiMflo_MovesQuotientAndRemainderIntoGprs()
+    {
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: 42),
+            .. LoadConstant(register: 9, value: 5),
+            MipsEncoding.MultiplyDivide(DivFunct, rs: 8, rt: 9),
+            MipsEncoding.MoveFromHiLo(MfhiFunct, rd: 20),
+            MipsEncoding.MoveFromHiLo(MfloFunct, rd: 21),
+        ];
+        var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 0);
+
+        run.Ir.Gpr[20].Should().Be(2u, "42 % 5 = 2 (remainder, from HI)");
+        run.Ir.Gpr[21].Should().Be(8u, "42 / 5 = 8 (quotient, from LO)");
+    }
+
+    [Fact]
+    public void Mfhi_ToZeroRegister_IsDiscardedLikeAnyGprZeroWrite()
+    {
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: 0x1234),
+            .. LoadConstant(register: 9, value: 1),
+            MipsEncoding.MultiplyDivide(MultFunct, rs: 8, rt: 9),
+            MipsEncoding.MoveFromHiLo(MfhiFunct, rd: 0),
+            MipsEncoding.MoveFromHiLo(MfloFunct, rd: 0),
+        ];
+        var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 0);
+
+        run.Ir.Gpr[0].Should().Be(0u, "GPR[0] stays immutable even when MFHI/MFLO target it");
+    }
+
+    [Fact]
+    public void Mthi_WritesOnlyHi_LoIsUnaffected()
+    {
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: unchecked((int)0xAAAAAAAAu)), // -> HI, via MTHI
+            .. LoadConstant(register: 9, value: unchecked((int)0xBBBBBBBBu)), // -> LO, via MTLO
+            MipsEncoding.MoveToHiLo(MthiFunct, rs: 8),
+            MipsEncoding.MoveToHiLo(MtloFunct, rs: 9),
+            .. LoadConstant(register: 10, value: unchecked((int)0xCCCCCCCCu)),
+            MipsEncoding.MoveToHiLo(MthiFunct, rs: 10),
+            MipsEncoding.MoveFromHiLo(MfhiFunct, rd: 20),
+            MipsEncoding.MoveFromHiLo(MfloFunct, rd: 21),
+        ];
+        var run = RunBoth(words, retiredInstructions: 11, dataWindowBytes: 0);
+
+        run.Ir.Gpr[20].Should().Be(0xCCCCCCCCu, "the second MTHI overwrote HI");
+        run.Ir.Gpr[21].Should().Be(0xBBBBBBBBu, "MTHI must never touch LO");
+    }
+
+    [Fact]
+    public void Mtlo_WritesOnlyLo_HiIsUnaffected()
+    {
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: unchecked((int)0xAAAAAAAAu)), // -> HI
+            .. LoadConstant(register: 9, value: unchecked((int)0xBBBBBBBBu)), // -> LO
+            MipsEncoding.MoveToHiLo(MthiFunct, rs: 8),
+            MipsEncoding.MoveToHiLo(MtloFunct, rs: 9),
+            .. LoadConstant(register: 10, value: unchecked((int)0xDDDDDDDDu)),
+            MipsEncoding.MoveToHiLo(MtloFunct, rs: 10),
+            MipsEncoding.MoveFromHiLo(MfhiFunct, rd: 20),
+            MipsEncoding.MoveFromHiLo(MfloFunct, rd: 21),
+        ];
+        var run = RunBoth(words, retiredInstructions: 11, dataWindowBytes: 0);
+
+        run.Ir.Gpr[20].Should().Be(0xAAAAAAAAu, "MTLO must never touch HI");
+        run.Ir.Gpr[21].Should().Be(0xDDDDDDDDu, "the second MTLO overwrote LO");
+    }
+
+    [Fact]
+    public void Mthi_Mtlo_ThenMfhiMflo_Roundtrip_IndependentValues()
+    {
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: 0x1111_1111),
+            .. LoadConstant(register: 9, value: 0x2222_2222),
+            MipsEncoding.MoveToHiLo(MthiFunct, rs: 8),
+            MipsEncoding.MoveToHiLo(MtloFunct, rs: 9),
+            MipsEncoding.MoveFromHiLo(MfhiFunct, rd: 20),
+            MipsEncoding.MoveFromHiLo(MfloFunct, rd: 21),
+        ];
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 0);
+
+        run.Ir.Gpr[20].Should().Be(0x1111_1111u);
+        run.Ir.Gpr[21].Should().Be(0x2222_2222u);
+    }
+
+    [Fact]
+    public void Div_ImmediatelyAfterALoadOfRs_ReadsThePreLoadValue_NotTheFreshlyLoadedOne()
+    {
+        // Load-delay adjacency (the #593/#594 lesson): a load's result is not
+        // visible to the very next instruction (R3000A load-delay slot). $t0=999
+        // is the pre-load value DIV must use as rs; the LW's own loaded value
+        // (untouched RAM at DataBase, so 0) only becomes visible to whatever
+        // follows DIV. The load address must not alias the program's own text
+        // (EntryPc), which DataBase is chosen to avoid.
+        var words = (uint[])
+        [
+            .. LoadConstant(register: 8, value: 999),
+            .. LoadConstant(register: 11, value: unchecked((int)DataBase)),
+            .. LoadConstant(register: 20, value: 42),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 8, baseRegister: 11, offset: 0),
+            MipsEncoding.MultiplyDivide(DivFunct, rs: 8, rt: 20),
+        ];
+        var run = RunBoth(words, retiredInstructions: 8, dataWindowBytes: 0);
+
+        run.Ir.Lo.Should().Be(999u / 42u, "DIV must read rs's pre-load value, matching BEQ/BNE's existing load-delay contract");
+        run.Ir.Hi.Should().Be(999u % 42u);
     }
 
     [Theory]
@@ -921,6 +1155,19 @@ public class MipsToIrLoweringDifferentialTests
     ];
 
     /// <summary>
+    /// $t0 = <paramref name="rsValue"/>, $t1 = <paramref name="rtValue"/> (via
+    /// LUI/ORI), then MULT/MULTU/DIV/DIVU $t0, $t1 (DecodeMultiplyDivide's
+    /// operand layout: Operand0=rs, Operand1=rt, no rd — the result lands in
+    /// HI/LO, read back via <c>run.Ir.Hi</c>/<c>run.Ir.Lo</c>, never a GPR).
+    /// </summary>
+    private static uint[] BuildMultiplyDivide(byte funct, int rsValue, int rtValue) =>
+    [
+        .. LoadConstant(register: 8, value: rsValue),
+        .. LoadConstant(register: 9, value: rtValue),
+        MipsEncoding.MultiplyDivide(funct, rs: 8, rt: 9),
+    ];
+
+    /// <summary>
     /// $a3 = DataBase ; store <paramref name="loadedValue"/> there ; pre-load $t0
     /// to <paramref name="preLoadValue"/> ; LW $t0, 0($a3) ; then a compare-with-
     /// zero branch on $t0 over the fall-through block. Layout: branch at
@@ -1006,6 +1253,8 @@ public class MipsToIrLoweringDifferentialTests
 
         ir.Gpr.Should().Equal(interpreter.Gpr, "the lowered IR must agree with the native interpreter on every GPR");
         ir.Memory.Should().Equal(interpreter.Memory, "the lowered IR must agree with the interpreter on guest memory");
+        ir.Result.Hi.Should().Be(interpreter.Hi, "the lowered IR must agree with the native interpreter on HI");
+        ir.Result.Lo.Should().Be(interpreter.Lo, "the lowered IR must agree with the native interpreter on LO");
 
         return new DifferentialRun(ir.Result, ir.Memory, interpreter.Pc);
     }
@@ -1017,7 +1266,7 @@ public class MipsToIrLoweringDifferentialTests
     /// exception model at all, so a fault there would silently compare a faulted
     /// run against a clean one (Issue #377).
     /// </param>
-    private static (uint[] Gpr, byte[] Memory, uint Pc) RunInterpreter(
+    private static (uint[] Gpr, byte[] Memory, uint Pc, uint Hi, uint Lo) RunInterpreter(
         uint[] words, uint stepBudget, uint dataWindowBytes, bool expectFault = false)
     {
         using var core = new PSXCoreWrapper();
@@ -1061,7 +1310,7 @@ public class MipsToIrLoweringDifferentialTests
             memory[i] = core.ReadMemory8(dataBase + i);
         }
 
-        return (gpr, memory, core.Pc);
+        return (gpr, memory, core.Pc, core.Hi, core.Lo);
     }
 
     private static (uint[] Gpr, byte[] Memory, RecompilerIrEvaluationResult Result) RunLoweredIr(

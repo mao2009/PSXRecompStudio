@@ -19,11 +19,11 @@ public sealed class RealRomRecompilerBridgeTests
 {
     private const uint Base = 0x80100000u;
 
-    // A real MULT encoding as found in MIPS object code (MULT $v0, $v1) —
-    // MipsToIrLowerer does not lower it, so it is a stable "unsupported instruction"
-    // probe without hand-rolling an encoding. Issue #304 lowered SLTU, so the older
-    // SLTU probe (0x0043082B) is no longer unsupported.
-    private const uint UnsupportedMultWord = 0x00430018u;
+    // LWL $t1, 0($t0) — MipsToIrLowerer does not lower LWL/LWR (unaligned loads), so
+    // it is a stable "unsupported instruction" probe. Issue #304 lowered SLTU and
+    // Issue #597 lowered MULT/MULTU/DIV/DIVU/MFHI/MFLO/MTHI/MTLO, so the older SLTU
+    // probe (0x0043082B) and MULT probe (0x00430018) are no longer unsupported.
+    private static readonly uint UnsupportedInstructionWord = MipsEncoding.I(0x22, rt: 9, rs: 8, immediate: 0);
 
     private static DecodedInstruction[] MakeInstructions(uint start, params uint[] words)
     {
@@ -118,7 +118,7 @@ public sealed class RealRomRecompilerBridgeTests
         var words = new[]
         {
             MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 5), // ADDIU $t0, $zero, 5
-            UnsupportedMultWord,
+            UnsupportedInstructionWord,
             MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 7), // never reached
         };
         var instructions = MakeInstructions(Base, words);

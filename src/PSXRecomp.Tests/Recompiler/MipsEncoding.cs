@@ -40,6 +40,15 @@ internal static class MipsEncoding
 
     public static uint JumpAndLinkRegister(byte rd, byte rs) => R(0x09, rd: rd, rs: rs, rt: 0, shamt: 0);
 
+    /// <summary>Encodes MULT(0x18)/MULTU(0x19)/DIV(0x1A)/DIVU(0x1B) (DecodeMultiplyDivide: rs, rt; no rd).</summary>
+    public static uint MultiplyDivide(byte funct, byte rs, byte rt) => R(funct, rd: 0, rs: rs, rt: rt, shamt: 0);
+
+    /// <summary>Encodes MFHI(0x10)/MFLO(0x12) (DecodeMoveFromHiLo: rd only).</summary>
+    public static uint MoveFromHiLo(byte funct, byte rd) => R(funct, rd: rd, rs: 0, rt: 0, shamt: 0);
+
+    /// <summary>Encodes MTHI(0x11)/MTLO(0x13) (DecodeMoveToHiLo: rs only).</summary>
+    public static uint MoveToHiLo(byte funct, byte rs) => R(funct, rd: 0, rs: rs, rt: 0, shamt: 0);
+
     /// <summary>
     /// Encodes a BREAK (SPECIAL funct 0x0D), which raises a synchronous Bp
     /// exception — Excode 0x09, docs/cpu/exceptions.md.

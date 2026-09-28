@@ -81,6 +81,8 @@ internal sealed record RecompilerIrEvaluationResult(
     uint Pc,
     RecompilerIrTerminationReason Termination,
     uint BlocksRetired,
+    uint Hi = 0,
+    uint Lo = 0,
     RecompilerExceptionState? Exception = null);
 
 /// <summary>
@@ -106,6 +108,9 @@ internal static class RecompilerIrEvaluator
     {
         var gpr = initialGpr.ToArray();
         gpr[0] = 0;
+        // [0] = HI, [1] = LO — architectural state distinct from the 32 GPRs
+        // (see RecompilerIrOperationKind.ReadHi), threaded the same way gpr is.
+        var hiLo = new uint[2];
 
         var blocks = program.Blocks.ToDictionary(block => block.EntryPc);
         var pc = entryPc;
@@ -116,22 +121,23 @@ internal static class RecompilerIrEvaluator
             if (!blocks.TryGetValue(pc, out var block))
             {
                 // Control left the lowered program; the run completed.
-                return new RecompilerIrEvaluationResult(gpr, pc, RecompilerIrTerminationReason.Success, retired);
+                return new RecompilerIrEvaluationResult(
+                    gpr, pc, RecompilerIrTerminationReason.Success, retired, hiLo[0], hiLo[1]);
             }
 
             if (retired >= blockBudget)
             {
                 return new RecompilerIrEvaluationResult(
-                    gpr, pc, RecompilerIrTerminationReason.ExecutionBudgetExceeded, retired);
+                    gpr, pc, RecompilerIrTerminationReason.ExecutionBudgetExceeded, retired, hiLo[0], hiLo[1]);
             }
 
             var values = new Dictionary<int, uint>();
             foreach (var operation in block.Operations)
             {
-                if (!Execute(operation, gpr, values, memory))
+                if (!Execute(operation, gpr, hiLo, values, memory))
                 {
                     return new RecompilerIrEvaluationResult(
-                        gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1);
+                        gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1, hiLo[0], hiLo[1]);
                 }
             }
 
@@ -140,7 +146,8 @@ internal static class RecompilerIrEvaluator
             var exit = block.Exit;
             if (exit.Reason != RecompilerIrTerminationReason.Success)
             {
-                return new RecompilerIrEvaluationResult(gpr, pc, exit.Reason, retired, exit.Exception);
+                return new RecompilerIrEvaluationResult(
+                    gpr, pc, exit.Reason, retired, hiLo[0], hiLo[1], exit.Exception);
             }
 
             pc = NextPc(exit, values);
@@ -169,6 +176,7 @@ internal static class RecompilerIrEvaluator
     private static bool Execute(
         RecompilerIrOperation operation,
         uint[] gpr,
+        uint[] hiLo,
         Dictionary<int, uint> values,
         RecompilerGuestMemory memory)
     {
@@ -194,6 +202,69 @@ internal static class RecompilerIrEvaluator
             case RecompilerIrOperationKind.Store32:
                 memory.Write32(values[operation.InputValueA], values[operation.InputValueB]);
                 return true;
+            case RecompilerIrOperationKind.ReadHi:
+                values[operation.ResultValueId] = hiLo[0];
+                return true;
+            case RecompilerIrOperationKind.ReadLo:
+                values[operation.ResultValueId] = hiLo[1];
+                return true;
+            case RecompilerIrOperationKind.WriteHi:
+                hiLo[0] = values[operation.InputValueA];
+                return true;
+            case RecompilerIrOperationKind.WriteLo:
+                hiLo[1] = values[operation.InputValueA];
+                return true;
+            case RecompilerIrOperationKind.MultiplySigned:
+            {
+                var product = (long)(int)values[operation.InputValueA] * (int)values[operation.InputValueB];
+                hiLo[0] = unchecked((uint)(product >> 32));
+                hiLo[1] = unchecked((uint)(product & 0xFFFFFFFFu));
+                return true;
+            }
+            case RecompilerIrOperationKind.MultiplyUnsigned:
+            {
+                var product = (ulong)values[operation.InputValueA] * values[operation.InputValueB];
+                hiLo[0] = unchecked((uint)(product >> 32));
+                hiLo[1] = unchecked((uint)(product & 0xFFFFFFFFu));
+                return true;
+            }
+            case RecompilerIrOperationKind.DivideSigned:
+            {
+                var n = (int)values[operation.InputValueA];
+                var d = (int)values[operation.InputValueB];
+                if (d == 0)
+                {
+                    hiLo[1] = n >= 0 ? uint.MaxValue : 1u;
+                    hiLo[0] = unchecked((uint)n);
+                }
+                else if (n == int.MinValue && d == -1)
+                {
+                    hiLo[0] = 0u;
+                    hiLo[1] = 0x80000000u;
+                }
+                else
+                {
+                    hiLo[0] = unchecked((uint)(n % d));
+                    hiLo[1] = unchecked((uint)(n / d));
+                }
+                return true;
+            }
+            case RecompilerIrOperationKind.DivideUnsigned:
+            {
+                var dividend = values[operation.InputValueA];
+                var divisor = values[operation.InputValueB];
+                if (divisor == 0)
+                {
+                    hiLo[0] = dividend;
+                    hiLo[1] = uint.MaxValue;
+                }
+                else
+                {
+                    hiLo[0] = dividend % divisor;
+                    hiLo[1] = dividend / divisor;
+                }
+                return true;
+            }
             default:
                 if (operation.Kind == RecompilerIrOperationKind.AddSigned)
                 {
