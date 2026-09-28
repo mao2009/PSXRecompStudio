@@ -11,7 +11,7 @@ public class NativeAbiContractTests
     private const string HeaderResource = "PSXRecomp.Tests.Abi.psx_core.h";
 
     private static readonly Regex ExportRegex = new(
-        @"PSX_API\s+(?<return>[A-Za-z_][A-Za-z0-9_\s\*]*?)\s+(?<name>PSX\w+)\s*\((?<params>.*?)\)\s*;",
+        @"PSX_API\s+(?<return>[A-Za-z_][A-Za-z0-9_\s\*]*?)\s*(?<name>PSX\w+)\s*\((?<params>.*?)\)\s*;",
         RegexOptions.Singleline | RegexOptions.CultureInvariant);
 
     [Fact]
@@ -20,6 +20,14 @@ public class NativeAbiContractTests
         var header = ReadEmbeddedHeader();
         var exports = ExportRegex.Matches(header).Cast<Match>().ToArray();
         exports.Should().NotBeEmpty();
+
+        var declaredExports = Regex.Matches(
+            header,
+            @"(?m)^[ \t]*PSX_API\b",
+            RegexOptions.CultureInvariant).Count;
+        exports.Should().HaveCount(
+            declaredExports,
+            "every PSX_API declaration in the public header must be parsed");
 
         var imports = typeof(NativeInterop)
             .GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
@@ -72,17 +80,10 @@ public class NativeAbiContractTests
     [Fact]
     public void GpuCallbackDelegates_MatchPublishedCAbiCallingConventionAndShape()
     {
-        AssertCallbackDelegate(
-            "GpuMmioRead32Callback",
-            typeof(uint),
-            typeof(IntPtr),
-            typeof(uint));
-        AssertCallbackDelegate(
-            "GpuMmioWrite32Callback",
-            typeof(void),
-            typeof(IntPtr),
-            typeof(uint),
-            typeof(uint));
+        var header = ReadEmbeddedHeader();
+
+        AssertCallbackDelegate(header, "PSXGpuMmioRead32", "GpuMmioRead32Callback");
+        AssertCallbackDelegate(header, "PSXGpuMmioWrite32", "GpuMmioWrite32Callback");
     }
 
     [Fact]
@@ -102,10 +103,16 @@ public class NativeAbiContractTests
     }
 
     private static void AssertCallbackDelegate(
-        string nestedTypeName,
-        Type returnType,
-        params Type[] parameterTypes)
+        string header,
+        string typedefName,
+        string nestedTypeName)
     {
+        var typedef = Regex.Match(
+            header,
+            $@"typedef\s+(?<return>[A-Za-z_][A-Za-z0-9_\s\*]*?)\s*\(\s*\*{Regex.Escape(typedefName)}\s*\)\s*\((?<params>.*?)\)\s*;",
+            RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        typedef.Success.Should().BeTrue($"public header must declare callback typedef {typedefName}");
+
         var delegateType = typeof(PSXCoreWrapper).GetNestedType(
             nestedTypeName,
             BindingFlags.NonPublic);
@@ -118,9 +125,15 @@ public class NativeAbiContractTests
 
         var invoke = delegateType.GetMethod("Invoke");
         invoke.Should().NotBeNull();
-        invoke!.ReturnType.Should().Be(returnType);
+        invoke!.ReturnType.Should().Be(
+            MapCType(typedef.Groups["return"].Value.Trim()),
+            $"{nestedTypeName} return type must match {typedefName}");
+
+        var expectedParameters = ParseParameterTypes(typedef.Groups["params"].Value);
         invoke.GetParameters().Select(parameter => parameter.ParameterType)
-            .Should().Equal(parameterTypes);
+            .Should().Equal(
+                expectedParameters,
+                $"{nestedTypeName} parameter types must match {typedefName}");
     }
 
     private static string ReadEmbeddedHeader()
