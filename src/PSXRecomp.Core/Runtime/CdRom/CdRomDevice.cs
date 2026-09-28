@@ -2,45 +2,83 @@ using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Core.Runtime.CdRom;
 
+/// <summary>BCD location remembered by SetLoc until the next read command consumes it.</summary>
+[Domain]
+public readonly record struct CdRomLocation(byte Minute, byte Second, byte Frame);
+
 /// <summary>
-/// Managed PS1 CD-ROM controller register/FIFO substrate (Issue #585).
-/// Implements <see cref="ICdRom"/> for the 0x1F801800-0x1F801803 window:
-/// <c>ReadRegister</c>/<c>WriteRegister</c> take the port (address &amp; 3);
-/// ports 1-3 are multiplexed by the index selected through port 0 bits 0-1.
+/// Minimal virtual-disc identity used by GetID and bounded read-state tests.
+/// This is metadata only: #586 deliberately does not provide sector contents.
+/// </summary>
+[Domain]
+public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed, byte Type, byte RegionCode)
+{
+    public static CdRomDiscIdentity NoDisc => new(false, false, 0, 0);
+
+    /// <summary>Licensed Mode2 data disc with an ASCII SCE region suffix (normally I/A/E).</summary>
+    public static CdRomDiscIdentity LicensedMode2(byte regionCode = (byte)'I') =>
+        new(true, true, 0x20, regionCode);
+}
+
+/// <summary>
+/// Managed PS1 CD-ROM controller register/FIFO substrate plus the minimal
+/// deterministic command protocol tracked by Issues #585/#586.
 ///
-/// Scope: index selection, 16-byte parameter and response FIFOs, a status
-/// register derived live from FIFO state, interrupt enable/flag registers, and
-/// reset. No CD-ROM command is implemented yet (Issue #586): every command
-/// fails closed with the controller's own "invalid command" error, INT5 with
-/// response <c>[0x01, 0x40]</c>. There is no drive, disc, data FIFO, sound map,
-/// DMA3 or IRQ2 wiring (Issue #587); <see cref="HasInterrupt"/> is only the
-/// device-side line state.
+/// Implemented commands: GetStat/Nop (01h), SetLoc (02h), ReadN (06h),
+/// Init (0Ah), GetID (1Ah) and ReadS (1Bh). Multi-response commands are exposed
+/// one interrupt packet at a time: the next packet becomes visible only after
+/// the current response FIFO is drained and its interrupt is acknowledged.
+///
+/// There is still no sector payload, audio, DMA3 or IRQ2 wiring (#587).
+/// ReadN/ReadS therefore expose one bounded INT1/data-ready event rather than a
+/// repeating hardware read stream; <see cref="HasInterrupt"/> remains only the
+/// device-side enabled-line state.
 /// </summary>
 [Domain]
 public sealed class CdRomDevice : ICdRom
 {
     public const int FifoCapacity = 16;
 
+    public const byte IntDataReady = 0x01;
+    public const byte IntComplete = 0x02;
+    public const byte IntAcknowledge = 0x03;
+
     /// <summary>INT5: command error.</summary>
     public const byte IntError = 0x05;
 
-    /// <summary>Response stat byte for an error: only the error bit (bit 0); no drive state is modeled.</summary>
+    /// <summary>Response stat error bit (bit 0).</summary>
     public const byte ErrorStat = 0x01;
 
-    /// <summary>Hardware error code for an invalid/unsupported command.</summary>
     public const byte ErrorInvalidCommand = 0x40;
+    public const byte ErrorNotReady = 0x80;
+
+    private const byte StatMotorOn = 0x02;
+    private const byte StatRead = 0x20;
 
     private readonly Queue<byte> _parameters = new(FifoCapacity);
     private readonly Queue<byte> _responses = new(FifoCapacity);
+    private readonly Queue<(byte Interrupt, byte[] Response, bool MarksDataReady)> _pendingResponses = new();
 
+    private readonly CdRomDiscIdentity _discIdentity;
     private int _index;
     private byte _interruptEnable;
     private byte _interruptFlag;
+    private bool _activeResponseMarksDataReady;
+
+    public CdRomDevice()
+        : this(CdRomDiscIdentity.NoDisc)
+    {
+    }
+
+    public CdRomDevice(CdRomDiscIdentity discIdentity)
+    {
+        _discIdentity = discIdentity;
+    }
 
     /// <summary>Currently selected register index (0-3).</summary>
     public int Index => _index;
 
-    /// <summary>Pending parameter bytes, oldest first (command dispatch will consume them in this order).</summary>
+    /// <summary>Pending parameter bytes, oldest first.</summary>
     public IReadOnlyCollection<byte> Parameters => _parameters.ToArray();
 
     public int ResponseCount => _responses.Count;
@@ -50,6 +88,22 @@ public sealed class CdRomDevice : ICdRom
 
     /// <summary>Most recent command byte written, or null since reset.</summary>
     public byte? LastCommand { get; private set; }
+
+    public CdRomLocation? Location { get; private set; }
+
+    /// <summary>True after SetLoc until the next successful ReadN/ReadS consumes it.</summary>
+    public bool HasPendingLocation { get; private set; }
+
+    public bool IsReading { get; private set; }
+
+    /// <summary>True for ReadS, false for ReadN. Meaningful only while <see cref="IsReading"/> is true.</summary>
+    public bool ReadSectorsRaw { get; private set; }
+
+    /// <summary>
+    /// One bounded sector-ready token for #586. It becomes true with the queued
+    /// INT1 response and is cleared when that INT1 is acknowledged.
+    /// </summary>
+    public bool DataReady { get; private set; }
 
     public bool HasInterrupt => (_interruptFlag & _interruptEnable & 0x1F) != 0;
 
@@ -75,20 +129,22 @@ public sealed class CdRomDevice : ICdRom
             case (2, 1): _interruptEnable = (byte)(value & 0x1F); break;
             case (3, 1): SetInterruptFlag(value); break;
             case (1 or 2 or 3, _):
-                // ponytail: sound map, CD audio volume and request register (incl. 1F801803h.Index0
-                // BFRD/SMEN) are accepted as no-ops until audio/data-transfer slices model them.
+                // Sound map, CD audio volume and request-register behavior remain
+                // outside this command-layer slice.
                 break;
             default: throw new ArgumentOutOfRangeException(nameof(index), index, "CD-ROM port must be 0-3.");
         }
     }
 
-    /// <summary>Data FIFO read. No sector data exists yet, so this is always 0 (DRQSTS stays clear).</summary>
+    /// <summary>
+    /// No sector bytes are modeled yet. DataReady is the bounded #586 contract;
+    /// the actual data FIFO/DMA3 consumer is added by #587.
+    /// </summary>
     public byte ReadData() => 0;
 
     /// <summary>
-    /// 0x1F801800 read: bits 0-1 index, bit3 PRMEMPT, bit4 PRMWRDY, bit5 RSLRRDY.
-    /// ADPBUSY (2), DRQSTS (6) and BUSYSTS (7) are 0: no XA-ADPCM, no data FIFO,
-    /// and commands complete synchronously.
+    /// 0x1F801800 read: bits 0-1 index, bit3 PRMEMPT, bit4 PRMWRDY,
+    /// bit5 RSLRRDY and bit6 DRQSTS (bounded DataReady token).
     /// </summary>
     public byte ReadStatus()
     {
@@ -96,21 +152,32 @@ public sealed class CdRomDevice : ICdRom
         if (_parameters.Count == 0) status |= 1 << 3;
         if (_parameters.Count < FifoCapacity) status |= 1 << 4;
         if (_responses.Count > 0) status |= 1 << 5;
+        if (DataReady) status |= 1 << 6;
         return (byte)status;
     }
 
-    /// <summary>
-    /// Command register write. Fails closed: consumes the parameter FIFO, replaces
-    /// the response FIFO with <c>[ErrorStat, ErrorInvalidCommand]</c> and raises INT5.
-    /// </summary>
+    /// <summary>Dispatch one command synchronously into deterministic response packets.</summary>
     public void WriteCommand(byte command)
     {
         LastCommand = command;
+        var parameters = _parameters.ToArray();
         _parameters.Clear();
-        _responses.Clear();
-        _responses.Enqueue(ErrorStat);
-        _responses.Enqueue(ErrorInvalidCommand);
-        _interruptFlag = IntError;
+
+        // A newly accepted command owns the command-response channel. This keeps
+        // the original substrate's replacement behavior and avoids unbounded
+        // accumulation when software sends another command before completing one.
+        ClearResponseSequence();
+
+        switch (command)
+        {
+            case 0x01: ExecuteGetStat(parameters); break;
+            case 0x02: ExecuteSetLoc(parameters); break;
+            case 0x06: ExecuteRead(parameters, raw: false); break;
+            case 0x0A: ExecuteInit(parameters); break;
+            case 0x1A: ExecuteGetId(parameters); break;
+            case 0x1B: ExecuteRead(parameters, raw: true); break;
+            default: QueueError(ErrorInvalidCommand); break;
+        }
     }
 
     /// <summary>Interrupt flag register read: bits 0-4 are the flag, bits 5-7 read as 1.</summary>
@@ -124,18 +191,184 @@ public sealed class CdRomDevice : ICdRom
     {
         _interruptFlag &= (byte)~(value & 0x1F);
         if ((value & 0x40) != 0) _parameters.Clear();
+
+        if (_interruptFlag == 0 && _activeResponseMarksDataReady)
+        {
+            DataReady = false;
+            _activeResponseMarksDataReady = false;
+        }
+
+        TryPromotePendingResponse();
     }
 
-    public void AcknowledgeInterrupt() => _interruptFlag = 0;
+    public void AcknowledgeInterrupt()
+    {
+        _interruptFlag = 0;
+        if (_activeResponseMarksDataReady)
+        {
+            DataReady = false;
+            _activeResponseMarksDataReady = false;
+        }
+
+        TryPromotePendingResponse();
+    }
 
     public void Reset()
     {
         _parameters.Clear();
-        _responses.Clear();
+        ClearResponseSequence();
         _index = 0;
         _interruptEnable = 0;
-        _interruptFlag = 0;
         LastCommand = null;
+        Location = null;
+        HasPendingLocation = false;
+        IsReading = false;
+        ReadSectorsRaw = false;
+    }
+
+    private byte CommandStatus
+    {
+        get
+        {
+            byte status = 0;
+            if (_discIdentity.IsPresent) status |= StatMotorOn;
+            if (IsReading) status |= StatRead;
+            return status;
+        }
+    }
+
+    private void ExecuteGetStat(IReadOnlyCollection<byte> parameters)
+    {
+        if (!RequireParameterCount(parameters, 0)) return;
+        QueueResponse(IntAcknowledge, CommandStatus);
+    }
+
+    private void ExecuteInit(IReadOnlyCollection<byte> parameters)
+    {
+        if (!RequireParameterCount(parameters, 0)) return;
+
+        Location = null;
+        HasPendingLocation = false;
+        IsReading = false;
+        ReadSectorsRaw = false;
+        DataReady = false;
+
+        QueueResponse(IntAcknowledge, CommandStatus);
+        QueueResponse(IntComplete, CommandStatus);
+    }
+
+    private void ExecuteGetId(IReadOnlyCollection<byte> parameters)
+    {
+        if (!RequireParameterCount(parameters, 0)) return;
+
+        QueueResponse(IntAcknowledge, CommandStatus);
+
+        if (!_discIdentity.IsPresent)
+        {
+            QueueResponse(IntError, false, 0x08, ErrorInvalidCommand, 0, 0, 0, 0, 0, 0);
+            return;
+        }
+
+        if (!_discIdentity.IsLicensed)
+        {
+            QueueResponse(IntError, false, 0x0A, ErrorNotReady, _discIdentity.Type, 0, 0, 0, 0, 0);
+            return;
+        }
+
+        QueueResponse(
+            IntComplete,
+            false,
+            StatMotorOn,
+            0x00,
+            _discIdentity.Type,
+            0x00,
+            (byte)'S',
+            (byte)'C',
+            (byte)'E',
+            _discIdentity.RegionCode);
+    }
+
+    private void ExecuteSetLoc(IReadOnlyCollection<byte> parameters)
+    {
+        if (!RequireParameterCount(parameters, 3)) return;
+
+        var values = parameters.ToArray();
+        if (!IsBcd(values[0], 99) || !IsBcd(values[1], 59) || !IsBcd(values[2], 74))
+        {
+            QueueError(ErrorInvalidCommand);
+            return;
+        }
+
+        Location = new CdRomLocation(values[0], values[1], values[2]);
+        HasPendingLocation = true;
+        QueueResponse(IntAcknowledge, CommandStatus);
+    }
+
+    private void ExecuteRead(IReadOnlyCollection<byte> parameters, bool raw)
+    {
+        if (!RequireParameterCount(parameters, 0)) return;
+        if (!_discIdentity.IsPresent)
+        {
+            QueueError(ErrorNotReady);
+            return;
+        }
+
+        IsReading = true;
+        ReadSectorsRaw = raw;
+        HasPendingLocation = false;
+
+        QueueResponse(IntAcknowledge, CommandStatus);
+        QueueResponse(IntDataReady, true, CommandStatus);
+    }
+
+    private bool RequireParameterCount(IReadOnlyCollection<byte> parameters, int expected)
+    {
+        if (parameters.Count == expected) return true;
+        QueueError(ErrorInvalidCommand);
+        return false;
+    }
+
+    private void QueueError(byte errorCode) =>
+        QueueResponse(IntError, false, (byte)(CommandStatus | ErrorStat), errorCode);
+
+    private void QueueResponse(byte interrupt, params byte[] response) =>
+        QueueResponse(interrupt, false, response);
+
+    private void QueueResponse(byte interrupt, bool marksDataReady, params byte[] response)
+    {
+        if (_interruptFlag == 0 && _responses.Count == 0 && _pendingResponses.Count == 0)
+        {
+            ActivateResponse(interrupt, response, marksDataReady);
+            return;
+        }
+
+        _pendingResponses.Enqueue((interrupt, response, marksDataReady));
+    }
+
+    private void ActivateResponse(byte interrupt, IEnumerable<byte> response, bool marksDataReady)
+    {
+        _responses.Clear();
+        foreach (var value in response) _responses.Enqueue(value);
+        _interruptFlag = interrupt;
+        _activeResponseMarksDataReady = marksDataReady;
+        if (marksDataReady) DataReady = true;
+    }
+
+    private void TryPromotePendingResponse()
+    {
+        if (_interruptFlag != 0 || _responses.Count != 0 || _pendingResponses.Count == 0) return;
+
+        var next = _pendingResponses.Dequeue();
+        ActivateResponse(next.Interrupt, next.Response, next.MarksDataReady);
+    }
+
+    private void ClearResponseSequence()
+    {
+        _responses.Clear();
+        _pendingResponses.Clear();
+        _interruptFlag = 0;
+        _activeResponseMarksDataReady = false;
+        DataReady = false;
     }
 
     private void PushParameter(byte value)
@@ -145,6 +378,18 @@ public sealed class CdRomDevice : ICdRom
         _parameters.Enqueue(value);
     }
 
-    // ponytail: empty response FIFO reads 0; real hardware returns stale buffer bytes. Model if a game depends on it.
-    private byte PopResponse() => _responses.TryDequeue(out var value) ? value : (byte)0;
+    private byte PopResponse()
+    {
+        if (!_responses.TryDequeue(out var value)) return 0;
+        TryPromotePendingResponse();
+        return value;
+    }
+
+    private static bool IsBcd(byte value, int maximum)
+    {
+        var high = value >> 4;
+        var low = value & 0x0F;
+        if (high > 9 || low > 9) return false;
+        return high * 10 + low <= maximum;
+    }
 }
