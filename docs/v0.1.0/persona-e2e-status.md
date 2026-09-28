@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #440 (GPU remaining integration), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #552 (this status synchronization)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved the prior first blocker), #440 (GPU remaining integration), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #552 (this status synchronization)
 
 ## Purpose
 
@@ -59,39 +59,69 @@ be conflated.
 
 ## First Blocker toward TITLE_SCREEN (as of HEAD)
 
-**Stage:** BIOS HLE coverage
+**Stage:** Recompiler IR lowering (build stage, before RUNTIME_EXECUTION)
 
-**Classification:** `runtime/BIOS coverage` — the bounded execution loop exists,
-but the BIOS service surface needed by a real title is still incomplete.
+**Classification:** `recompiler/lowering coverage` — the production CLI's
+whole-program build fails on an unsupported opcode before any guest
+instruction executes; BIOS HLE, GPU, CD-ROM and every other runtime boundary
+below are unreached by definition until this stage succeeds.
 
 **Description:**
 
-The full-title execution orchestrator (Issue #366) now runs recompiled guest code
-through a bounded CPU loop: `ExecutionOrchestrator` in `PSXRecomp.Core.Execution`
-drives an `IRecompiledExecutionEngine` (the Test assembly's IR, interpreter, and
-generated-host `HostTitleExecutionEngine`) across multiple segments with outer and
-per-segment budgets. Guest segments end on unresolved control transfers at the
-Runtime/BIOS boundary; the shared `BiosVectorDispatch` contract (PR #364,
-interpreter + recompiled paths) services A0/B0/C0 jump-table calls in-band, and a
-handoff decides continue/exit/return/pause. A segment that stops at an unresolved
-PC with no continuation rule is classified (UnsupportedTransfer), never a hang.
+A fresh local run against a legally owned Persona fixture (`rom/PERSONA.chd`),
+using the production CLI:
 
-It runs on real-ROM functions through `RealRomTitleExecutionTests`
-(real-fixture-gated; skips with no `rom/*.chd`).
+```powershell
+dotnet run --project src/PSXRecomp.Cli -- run rom/PERSONA.chd --output out/persona --json --report --frame-evidence
+```
 
-Seven BIOS identities are currently registered: A0:39 InitHeap, A0:3C putchar,
-B0:3D putchar alias, A0:3E puts, B0:3F puts alias, B0:56 GetC0Table, and
-B0:57 GetB0Table. An unregistered call still fails closed with
-`BIOS_HLE_UNSUPPORTED_CALL`.
+showed that **BIOS HLE coverage is not the first blocker.** `psxrecomp run`
+fails during the build stage — `CliInput.Lower` → `ReachableProgramBuilder.Build`
+(`src/PSXRecomp.Core/Recompiler/ReachableProgramBuilder.cs`) — with exit code 1
+(tooling/build failure) and no JSON output (by design: no
+`RecompiledArtifactResult` exists yet for this failure class, so the CLI's
+`--json` diagnostic path is never reached; see `RunCommand.cs`). `--report` and
+`--frame-evidence` are consequently also unreached.
 
-No newer legal-Persona fixture result is recorded in this repository after the
-recent Runtime work, so this document does not invent a new first failing BIOS
-identity. Based on the current production contract and recorded #351 evidence,
-**BIOS HLE coverage remains the first documented generic code-level blocker**.
-A fresh local run with a legally owned Persona fixture is required to identify
-the next concrete unsupported boundary. After that boundary is cleared, the
-remaining production GPU/frame integration and any actually exercised
-SPU/CD-ROM support must be resolved before the title screen can be claimed.
+**Why the existing real-ROM tests never exposed this.** The production `run`
+path eagerly discovers and lowers the *entire* statically-reachable code graph
+from the EXE entry point in one pass (`ReachableProgramBuilder`). The existing
+real-ROM gates instead lower a bounded candidate window
+(`RealRomCandidateSelector`, used by `RealRomRecompilerVerticalSliceTests`) or
+execute segment-by-segment (`ExecutionOrchestrator`, used by
+`RealRomTitleExecutionTests`) — neither ever needs the *whole* reachable graph
+to be lowerable, so a PASS on either never guaranteed the production CLI's
+whole-program build would succeed. This is a structural gap between what the
+test suite validates and what the production CLI actually requires, not a
+regression in either.
+
+**Blocker history, in the order actually measured (not guessed):**
+
+1. **Resolved (#593).** The initial run failed at PC `0x80012170` (`Bgez`,
+   `[InvalidFlow] Control-transfer opcode 'Bgez' is not supported by this
+   lowering stage.`) — a few KB past the EXE load base, inside Persona's own
+   early startup code, not BIOS/GPU/CD-ROM. `MipsToIrLowerer` lowered only
+   `Beq`/`Bne`/`J`/`Jal`/`Jr`/`Jalr`; the six compare-with-zero branch opcodes
+   (`Blez`/`Bgtz`/`Bltz`/`Bgez`/`Bltzal`/`Bgezal`) were decoded and natively
+   executable but never lowered to IR. #593 added that lowering.
+2. **Current first blocker.** Re-running the identical CLI command after #593
+   now fails at PC `0x80018354` (`Srlv`, `[InvalidOperationShape] Opcode 'Srlv'
+   is not supported by this lowering stage.`) — `Srlv` (shift-right-logical by
+   a register amount) is a plain ALU opcode, not a control-transfer one; only
+   the shift-*by-immediate* forms (`Sll`/`Srl`/`Sra`) are lowered today, not
+   the register-shift-amount forms (`Sllv`/`Srlv`/`Srav`). This is a new,
+   distinct, unimplemented-instruction gap with no known-duplicate open Issue
+   as of this writing; it has not yet been scoped or fixed here — doing so is
+   explicitly out of scope for #593, which fixes only the six branch opcodes
+   above. A follow-up Issue should be filed once this gap is triaged.
+
+Because the build still fails before `RUNTIME_EXECUTION` starts, **BIOS HLE
+coverage (#279), GPU integration (#440) and CD-ROM (#444) all remain
+unreached and unranked** — none of them can be promoted to "the next blocker"
+without a production CLI run that actually reaches RUNTIME_EXECUTION. The
+generic sub-blocker ordering below is retained as the *anticipated* order once
+the recompiler's IR lowering coverage stops rejecting the production CLI's
+whole-program build; it is not itself measured evidence.
 
 The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
@@ -141,11 +171,14 @@ What still does not exist:
 - **An actual Persona title-screen proof.** No fake frame, hard-coded shortcut,
   or test-only presentation satisfies #351.
 
-**Remaining generic runtime sub-blockers in order:**
+**Anticipated generic runtime sub-blockers, once recompiler lowering coverage
+stops rejecting the production CLI's whole-program build (not yet reached, not
+measured evidence — see the lowering blocker history above):**
 
 1. **BIOS HLE coverage (#279).** Seven identities are registered; unsupported
-   calls still stop explicitly with `BIOS_HLE_UNSUPPORTED_CALL`. A fresh legal
-   Persona fixture run should identify the next concrete missing identity/state.
+   calls still stop explicitly with `BIOS_HLE_UNSUPPORTED_CALL`. A production
+   CLI run that actually reaches RUNTIME_EXECUTION is required to identify the
+   next concrete missing identity/state — none has been observed yet.
 
 2. **Production GPU/frame integration (#440 / #351).** Production interpreter
    32-bit GPU MMIO reaches the existing managed GPU state (#572) and GPU
@@ -235,7 +268,8 @@ or local paths.
 
 - [Issue #351](https://github.com/mao2009/PSXRecompStudio/issues/351) — this gate
 - [Issue #9](https://github.com/mao2009/PSXRecompStudio/issues/9) — v0.1.0 milestone
-- [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution / remaining HLE coverage
+- [Issue #593](https://github.com/mao2009/PSXRecompStudio/issues/593) — REGIMM/zero-comparison branch IR lowering (resolved the Bgez blocker; the current first blocker is the unrelated `Srlv` opcode gap, not yet filed)
+- [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution / remaining HLE coverage (not yet reached by a production CLI run)
 - [Issue #440](https://github.com/mao2009/PSXRecompStudio/issues/440) — remaining GPU production integration, DMA2 and IRQ1
 - [Issue #444](https://github.com/mao2009/PSXRecompStudio/issues/444) — CD-ROM register/DMA3/IRQ2 model (evidence-gated)
 - [Issue #445](https://github.com/mao2009/PSXRecompStudio/issues/445) — SPU register/MMIO substrate (completed via #551)
