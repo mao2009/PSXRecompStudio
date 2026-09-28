@@ -66,6 +66,19 @@ public class CdRomDeviceTests
     }
 
     [Fact]
+    public void Parameters_ReturnsSnapshotThatCannotTrackLaterFifoMutation()
+    {
+        var cd = new CdRomDevice();
+        cd.WriteRegister(2, 0x11);
+
+        var snapshot = cd.Parameters;
+        cd.WriteRegister(2, 0x22);
+
+        snapshot.Should().Equal(0x11);
+        cd.Parameters.Should().Equal(0x11, 0x22);
+    }
+
+    [Fact]
     public void ParameterFifo_OverflowFailsExplicitlyAndKeepsContents()
     {
         var cd = new CdRomDevice();

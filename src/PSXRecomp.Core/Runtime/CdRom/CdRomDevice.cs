@@ -41,7 +41,7 @@ public sealed class CdRomDevice : ICdRom
     public int Index => _index;
 
     /// <summary>Pending parameter bytes, oldest first (command dispatch will consume them in this order).</summary>
-    public IReadOnlyCollection<byte> Parameters => _parameters;
+    public IReadOnlyCollection<byte> Parameters => _parameters.ToArray();
 
     public int ResponseCount => _responses.Count;
 
