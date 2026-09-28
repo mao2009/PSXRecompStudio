@@ -24,6 +24,9 @@ static_assert(std::is_same_v<decltype(&PSXCore_ReadMemory32), std::uint32_t (*)(
 static_assert(std::is_same_v<decltype(&PSXCore_WriteMemory32), void (*)(PSXCore*, std::uint32_t, std::uint32_t)>);
 static_assert(std::is_same_v<decltype(&PSXRecompRust_AbiVersion), std::uint32_t (*)(void)>);
 static_assert(std::is_same_v<decltype(&PSXRecompRust_RoundTrip), std::int32_t (*)(std::uint32_t, std::uint32_t*)>);
+static_assert(PSX_RUST_OK == 0);
+static_assert(PSX_RUST_ERR_NULL_ARGUMENT == -1);
+static_assert(PSX_RUST_ERR_PANIC == -2);
 
 namespace
 {
@@ -91,9 +94,9 @@ LibraryHandle OpenLibrary(const char* path)
     return LoadLibraryA(path);
 }
 
-void* FindSymbol(LibraryHandle handle, const char* name)
+bool HasSymbol(LibraryHandle handle, const char* name)
 {
-    return reinterpret_cast<void*>(GetProcAddress(handle, name));
+    return GetProcAddress(handle, name) != nullptr;
 }
 
 void CloseLibrary(LibraryHandle handle)
@@ -117,10 +120,10 @@ LibraryHandle OpenLibrary(const char* path)
     return dlopen(path, RTLD_NOW | RTLD_LOCAL);
 }
 
-void* FindSymbol(LibraryHandle handle, const char* name)
+bool HasSymbol(LibraryHandle handle, const char* name)
 {
     dlerror();
-    return dlsym(handle, name);
+    return dlsym(handle, name) != nullptr;
 }
 
 void CloseLibrary(LibraryHandle handle)
@@ -155,7 +158,7 @@ int main(int argc, char** argv)
     int missing = 0;
     for (const char* symbol : RequiredSymbols)
     {
-        if (FindSymbol(library, symbol) == nullptr)
+        if (!HasSymbol(library, symbol))
         {
             std::fprintf(stderr, "missing required ABI symbol: %s\n", symbol);
             ++missing;
@@ -167,7 +170,7 @@ int main(int argc, char** argv)
     // stops detecting missing exports, that negative contract test fails.
     for (int i = 2; i < argc; ++i)
     {
-        if (FindSymbol(library, argv[i]) == nullptr)
+        if (!HasSymbol(library, argv[i]))
         {
             std::fprintf(stderr, "missing required ABI symbol: %s\n", argv[i]);
             ++missing;
