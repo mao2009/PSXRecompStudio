@@ -93,6 +93,23 @@ public sealed class CdRomDmaTransferTests : IDisposable
         _dma.GetInterruptPending().Should().BeFalse();
     }
 
+    [Fact]
+    public void DestinationCrossingRamMirrorEnd_FailsClosedBeforeAnyWrite()
+    {
+        PrepareDataReady(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
+        var destination = Ps1MemoryMap.RamMirrorEnd - sizeof(uint);
+        ArmDma3(destination, words: 2, enableDmaInterrupt: true);
+
+        var result = _transfer.TryTransfer();
+
+        result.Status.Should().Be(CdRomDmaTransferStatus.InvalidDestination);
+        result.WordsTransferred.Should().Be(0);
+        _memory.Read32(destination).Should().Be(0u);
+        _cdRom.DataBytesAvailable.Should().Be(8);
+        (_dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(CdRomDmaTransfer.Channel)) & StartBusy)
+            .Should().Be(StartBusy);
+    }
+
     [Theory]
     [InlineData(0x11000001u)] // RAM -> device direction
     [InlineData(0x11000200u)] // sync mode 1
