@@ -12,10 +12,14 @@ function Get-PersonaE2EFailureClassification {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Stage,
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Output
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$Output
     )
 
-    $text = ($Output | ForEach-Object { "$_" }) -join "`n"
+    $text = if ($null -eq $Output) {
+        ''
+    } else {
+        ($Output | ForEach-Object { "$_" }) -join "`n"
+    }
     $diagnosticCode = $null
 
     $diagnosticMatch = [regex]::Match(
