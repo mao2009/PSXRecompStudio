@@ -182,7 +182,9 @@ Implemented as the COP2 coprocessor.
 register semantics: 16-bit sign/zero extension on read, the SXYP write-push
 FIFO, IRGB write expansion / ORGB read packing, LZCS→LZCR leading-sign count,
 and FLAG's hard-wired low bits plus computed bit 31. `Reset` zeroes every
-register. `ExecuteCommand` throws `NotSupportedException` until command
+backing register; because LZCR is derived from the cleared LZCS value rather
+than stored independently, reading LZCR immediately after reset returns 32.
+`ExecuteCommand` throws `NotSupportedException` until command
 slices land, and the bank is not yet wired to CPU COP2 dispatch (the native
 interpreter still raises Coprocessor Unusable for COP2/LWC2/SWC2).
 
