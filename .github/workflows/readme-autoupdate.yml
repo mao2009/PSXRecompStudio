@@ -51,6 +51,8 @@ name: README Auto-Update
     branches:
       - main
     types: [opened, synchronize, reopened]
+    paths-ignore:
+      - 'docs/**'
 
 permissions: {}
 
