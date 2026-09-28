@@ -256,6 +256,14 @@ Controls the CD-ROM controller.
 - **IRQ2**: raised on command completion, data ready, or errors.
 - **Modes**: Normal/Double speed, DMA/PIO.
 
+Current implementation (Issue #585): `CdRomDevice` implements `ICdRom` as a
+register/FIFO substrate only — index selection, 16-byte parameter and response
+FIFOs, a status register derived from FIFO state, interrupt enable/flag
+registers, and reset. Parameter FIFO overflow throws. No command is implemented
+yet: every command fails closed with INT5 and response `[0x01, 0x40]` (invalid
+command). The device is not yet wired to `MemoryBus`, DMA3, or IRQ2, and has no
+disc, data FIFO, or audio model.
+
 ## BIOS Model
 
 Normal user execution is BIOS-less by default. BIOS calls are represented by
