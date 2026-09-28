@@ -132,6 +132,7 @@ Constraints:
 - [Quality / Verification](development/quality-stack.md)
 - Runtime
   - [Runtime Architecture](runtime/architecture.md)
+  - [RTPS MAC1-3 Width and IR Saturation](runtime/gte-rtps-mac-width.md)
   - [Memory Card Format and Storage Policy](runtime/memory-card.md)
 
 ## Translation relationship checks
