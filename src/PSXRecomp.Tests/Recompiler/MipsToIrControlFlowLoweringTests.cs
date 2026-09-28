@@ -334,18 +334,131 @@ public class MipsToIrControlFlowLoweringTests
         RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
     }
 
-    [Theory]
-    [InlineData(R3000aOpcode.Blez, (byte)0x06)]
-    [InlineData(R3000aOpcode.Bgtz, (byte)0x07)]
-    public void CompareWithZeroBranches_AreNotLoweredYet(R3000aOpcode opcode, byte opcodeField)
+    private const byte BlezOpcodeField = 0x06;
+    private const byte BgtzOpcodeField = 0x07;
+    private const byte RegimmOpcodeField = 0x01;
+    private const byte BltzSelector = 0x00;
+    private const byte BgezSelector = 0x01;
+    private const byte BltzalSelector = 0x10;
+    private const byte BgezalSelector = 0x11;
+
+    [Fact]
+    public void Bgtz_ProducesACompareLessThanSignedConditionOfZeroAndRs()
     {
-        var instruction = R3000aDecoder.Decode(MipsEncoding.I(opcodeField, rt: 0, rs: 8, immediate: 4));
-        instruction.Opcode.Should().Be(opcode);
+        // BGTZ (rs > 0) lowers directly to 0 < rs, no negation needed.
+        var target = EntryPc + 4 + (4u << 2);
+        var block = LowerControlTransfer(
+            MipsEncoding.I(BgtzOpcodeField, rt: 0, rs: 8, immediate: 4),
+            MipsEncoding.Nop);
 
-        var result = MipsToIrLowerer.LowerControlTransfer(instruction, EntryPc, R3000aDecoder.Decode(MipsEncoding.Nop));
+        block.Operations.Should().HaveCount(4);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+        block.Operations[1].Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        block.Operations[1].Immediate.Should().Be(0u);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanSigned);
+        block.Operations[2].InputValueA.Should().Be(1, "the zero constant is the left-hand operand for rs > 0");
+        block.Operations[2].InputValueB.Should().Be(0);
 
-        result.IsSupported.Should().BeFalse();
-        result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidFlow);
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Branch);
+        block.Exit.Flow.Target.Should().Be(target);
+        block.Exit.Flow.ConditionValueId.Should().Be(block.Operations[2].ResultValueId);
+    }
+
+    [Fact]
+    public void Bltz_ProducesACompareLessThanSignedConditionOfRsAndZero()
+    {
+        // BLTZ (rs < 0) lowers directly to rs < 0, no negation needed.
+        var block = LowerControlTransfer(
+            MipsEncoding.I(RegimmOpcodeField, rt: BltzSelector, rs: 8, immediate: 4),
+            MipsEncoding.Nop);
+
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanSigned);
+        block.Operations[2].InputValueA.Should().Be(0, "rs is the left-hand operand for rs < 0");
+        block.Operations[2].InputValueB.Should().Be(1);
+        block.Exit.Flow!.ConditionValueId.Should().Be(block.Operations[2].ResultValueId);
+    }
+
+    [Fact]
+    public void Blez_NegatesTheGreaterThanConditionWithCompareEqual()
+    {
+        // BLEZ (rs <= 0) is !(0 < rs), composed from the existing operations
+        // rather than a new IR op kind.
+        var block = LowerControlTransfer(
+            MipsEncoding.I(BlezOpcodeField, rt: 0, rs: 8, immediate: 4),
+            MipsEncoding.Nop);
+
+        block.Operations.Should().HaveCount(5);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanSigned);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.CompareEqual);
+        block.Operations[3].InputValueA.Should().Be(block.Operations[2].ResultValueId);
+        block.Operations[3].InputValueB.Should().Be(1, "negated against the same zero constant");
+        block.Exit.Flow!.ConditionValueId.Should().Be(block.Operations[3].ResultValueId);
+    }
+
+    [Fact]
+    public void Bgez_NegatesTheLessThanConditionWithCompareEqual()
+    {
+        // BGEZ (rs >= 0) is !(rs < 0).
+        var block = LowerControlTransfer(
+            MipsEncoding.I(RegimmOpcodeField, rt: BgezSelector, rs: 8, immediate: 4),
+            MipsEncoding.Nop);
+
+        block.Operations.Should().HaveCount(5);
+        block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.CompareLessThanSigned);
+        block.Operations[2].InputValueA.Should().Be(0);
+        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.CompareEqual);
+        block.Exit.Flow!.ConditionValueId.Should().Be(block.Operations[3].ResultValueId);
+    }
+
+    [Theory]
+    [InlineData(BltzalSelector)]
+    [InlineData(BgezalSelector)]
+    public void BltzalAndBgezal_LinkPcPlusEightUnconditionallyBeforeTheDelaySlot(byte selector)
+    {
+        // PSXCpu::ExecBltzal/ExecBgezal: "the decision uses rs before linking" —
+        // $ra is written every time, whether or not the branch is taken.
+        var block = LowerControlTransfer(
+            MipsEncoding.I(RegimmOpcodeField, rt: selector, rs: 8, immediate: 4),
+            MipsEncoding.Nop);
+
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(8);
+
+        var linkWriteIndex = block.Operations.ToList().FindIndex(
+            op => op.Kind == RecompilerIrOperationKind.WriteGpr && op.Register == 31);
+        linkWriteIndex.Should().BeGreaterThan(0);
+
+        var linkConstant = block.Operations[linkWriteIndex - 1];
+        linkConstant.Kind.Should().Be(RecompilerIrOperationKind.Constant);
+        linkConstant.Immediate.Should().Be(EntryPc + 8);
+
+        // The link write precedes the delay slot, same ordering as JAL.
+        block.Operations[linkWriteIndex + 1].Kind.Should().Be(RecompilerIrOperationKind.Nop);
+
+        block.Exit.Flow!.Kind.Should().Be(RecompilerIrFlowKind.Branch);
+        block.Exit.NextPc.Should().Be(EntryPc + 8);
+    }
+
+    [Fact]
+    public void LowerProgram_AllCompareWithZeroOpcodesValidate()
+    {
+        // Every opcode that owns a delay slot is now lowered; there is no longer
+        // an unsupported control-transfer instruction reachable via the decoder.
+        foreach (var word in new[]
+        {
+            MipsEncoding.I(BlezOpcodeField, rt: 0, rs: 8, immediate: 4),
+            MipsEncoding.I(BgtzOpcodeField, rt: 0, rs: 8, immediate: 4),
+            MipsEncoding.I(RegimmOpcodeField, rt: BltzSelector, rs: 8, immediate: 4),
+            MipsEncoding.I(RegimmOpcodeField, rt: BgezSelector, rs: 8, immediate: 4),
+            MipsEncoding.I(RegimmOpcodeField, rt: BltzalSelector, rs: 8, immediate: 4),
+            MipsEncoding.I(RegimmOpcodeField, rt: BgezalSelector, rs: 8, immediate: 4),
+        })
+        {
+            var program = LowerWords(EntryPc, word, MipsEncoding.Nop);
+            RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+        }
     }
 
     [Fact]
@@ -442,16 +555,6 @@ public class MipsToIrControlFlowLoweringTests
         var lower = () => MipsToIrLowerer.LowerProgram(instructions);
 
         lower.Should().Throw<InvalidOperationException>().WithMessage("*delay slot*");
-    }
-
-    [Fact]
-    public void LowerProgram_UnsupportedControlTransfer_FailsFast()
-    {
-        // BLEZ needs a signed comparison the contract does not have yet.
-        var lower = () => LowerWords(EntryPc, MipsEncoding.I(0x06, rt: 0, rs: 8, immediate: 4), MipsEncoding.Nop);
-
-        lower.Should().Throw<InvalidOperationException>()
-            .WithMessage("*InvalidFlow*");
     }
 
     [Fact]

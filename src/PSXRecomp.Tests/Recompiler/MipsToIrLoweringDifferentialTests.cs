@@ -19,6 +19,16 @@ public class MipsToIrLoweringDifferentialTests
     private const uint DataBase = 0x80001000u;
     private const byte BeqOpcodeField = 0x04;
     private const byte BneOpcodeField = 0x05;
+    private const byte BlezOpcodeField = 0x06;
+    private const byte BgtzOpcodeField = 0x07;
+    private const byte RegimmOpcodeField = 0x01;
+    private const byte BltzSelector = 0x00;
+    private const byte BgezSelector = 0x01;
+    private const byte BltzalSelector = 0x10;
+    private const byte BgezalSelector = 0x11;
+
+    private const int Int32MinValue = int.MinValue;
+    private const int Int32MaxValue = int.MaxValue;
 
     [Fact]
     public void Memory_LoadsAndStoresOfEveryWidth_MatchTheInterpreter()
@@ -174,6 +184,90 @@ public class MipsToIrLoweringDifferentialTests
         var run = RunBoth(words, retiredInstructions: 7, dataWindowBytes: 0);
 
         run.Ir.Gpr[11].Should().Be(0xBADu);
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(Int32MinValue, true)]
+    [InlineData(Int32MaxValue, false)]
+    public void Bltz_TakenExactlyWhenRsIsNegative_MatchesTheInterpreter(int rsValue, bool taken)
+    {
+        var words = BuildCompareWithZeroBranch(RegimmOpcodeField, BltzSelector, rsValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 5u : 7u, dataWindowBytes: 0);
+
+        run.Ir.Gpr[8].Should().Be(unchecked((uint)rsValue));
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+    }
+
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(Int32MinValue, false)]
+    [InlineData(Int32MaxValue, true)]
+    public void Bgez_TakenExactlyWhenRsIsNonNegative_MatchesTheInterpreter(int rsValue, bool taken)
+    {
+        var words = BuildCompareWithZeroBranch(RegimmOpcodeField, BgezSelector, rsValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 5u : 7u, dataWindowBytes: 0);
+
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    [InlineData(Int32MinValue, true)]
+    [InlineData(Int32MaxValue, false)]
+    public void Blez_TakenExactlyWhenRsIsNonPositive_MatchesTheInterpreter(int rsValue, bool taken)
+    {
+        var words = BuildCompareWithZeroBranch(BlezOpcodeField, rt: 0, rsValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 5u : 7u, dataWindowBytes: 0);
+
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+    }
+
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    [InlineData(Int32MinValue, false)]
+    [InlineData(Int32MaxValue, true)]
+    public void Bgtz_TakenExactlyWhenRsIsPositive_MatchesTheInterpreter(int rsValue, bool taken)
+    {
+        var words = BuildCompareWithZeroBranch(BgtzOpcodeField, rt: 0, rsValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 5u : 7u, dataWindowBytes: 0);
+
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(1, false)]
+    public void Bltzal_LinksRaUnconditionallyRegardlessOfTheBranchOutcome_MatchesTheInterpreter(
+        int rsValue, bool taken)
+    {
+        // PSXCpu::ExecBltzal: $ra links every time, taken or not.
+        var words = BuildCompareWithZeroBranch(RegimmOpcodeField, BltzalSelector, rsValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 5u : 7u, dataWindowBytes: 0);
+
+        run.Ir.Gpr[31].Should().Be(EntryPc + 0x10, "the branch is at entryPc+8, so it links entryPc+0x10, taken or not");
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
+    }
+
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(-1, false)]
+    public void Bgezal_LinksRaUnconditionallyRegardlessOfTheBranchOutcome_MatchesTheInterpreter(
+        int rsValue, bool taken)
+    {
+        var words = BuildCompareWithZeroBranch(RegimmOpcodeField, BgezalSelector, rsValue);
+        var run = RunBoth(words, retiredInstructions: taken ? 5u : 7u, dataWindowBytes: 0);
+
+        run.Ir.Gpr[31].Should().Be(EntryPc + 0x10, "the branch is at entryPc+8, so it links entryPc+0x10, taken or not");
+        run.Ir.Gpr[11].Should().Be(taken ? 0u : 0xBADu, "the fall-through path is skipped exactly when taken");
     }
 
     [Fact]
@@ -692,6 +786,36 @@ public class MipsToIrLoweringDifferentialTests
         MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),
         MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 7),
     ];
+
+    /// <summary>
+    /// t0 = <paramref name="rsValue"/> (via LUI/ORI, so any 32-bit value is exact),
+    /// then a compare-with-zero branch over the fall-through block. Same layout as
+    /// <see cref="BuildConditionalBranch"/>: branch at 0x08, delay slot at 0x0C,
+    /// fall-through at 0x10/0x14, target at 0x18 — reached with a fixed +4
+    /// (words) branch offset every time.
+    /// </summary>
+    private static uint[] BuildCompareWithZeroBranch(byte opcodeField, byte rt, int rsValue) =>
+    [
+        .. LoadConstant(register: 8, value: rsValue),
+        MipsEncoding.I(opcodeField, rt: rt, rs: 8, immediate: 4),
+        MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 1),
+        MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),
+        MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 0xBAD),
+        MipsEncoding.I(0x09, rt: 13, rs: 0, immediate: 7),
+    ];
+
+    /// <summary>LUI + ORI: sets <paramref name="register"/> to the exact 32-bit
+    /// <paramref name="value"/>, including magnitudes an ADDIU's 16-bit immediate
+    /// cannot sign-extend to (e.g. INT32_MIN/INT32_MAX).</summary>
+    private static uint[] LoadConstant(byte register, int value)
+    {
+        var bits = unchecked((uint)value);
+        return
+        [
+            MipsEncoding.I(0x0F, rt: register, rs: 0, immediate: (ushort)(bits >> 16)),
+            MipsEncoding.I(0x0D, rt: register, rs: register, immediate: (ushort)(bits & 0xFFFF)),
+        ];
+    }
 
     /// <summary>
     /// Runs <paramref name="words"/> on the native interpreter and on the lowered

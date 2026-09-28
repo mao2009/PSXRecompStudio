@@ -105,6 +105,15 @@ public static class MipsToIrLowerer
     /// interpreter links before the transfer applies, and the block exits with a
     /// <see cref="RecompilerIrFlowKind.Call"/> flow whose target is the callee and
     /// whose next PC is the return address.</item>
+    /// <item>BLEZ / BGTZ / BLTZ / BGEZ — a compare-with-zero condition built from
+    /// <see cref="RecompilerIrOperationKind.CompareLessThanSigned"/> (and, for
+    /// BGEZ/BLEZ, negated via <see cref="RecompilerIrOperationKind.CompareEqual"/>
+    /// against 0) drives the same <see cref="RecompilerIrFlowKind.Branch"/> flow as
+    /// BEQ/BNE.</item>
+    /// <item>BLTZAL / BGEZAL — the same compare-with-zero condition as BLTZ/BGEZ,
+    /// plus the unconditional <c>$ra = entryPc + 8</c> link write before the delay
+    /// slot (the branch decision does not gate the link, per
+    /// <c>PSXCpu::ExecBltzal</c>/<c>ExecBgezal</c>).</item>
     /// <item>JR / JALR — the target is a runtime register value, which
     /// <see cref="RecompilerIrFlow.Target"/> (a static address) cannot express, so
     /// the delay slot retires and the block terminates with
@@ -112,8 +121,6 @@ public static class MipsToIrLowerer
     /// still performs its link write, after reading the target register, so that
     /// <c>JALR rd, rd</c> keeps the pre-link target.</item>
     /// </list>
-    /// The compare-with-zero branches are reported unsupported rather than
-    /// approximated.
     /// </summary>
     /// <param name="control">The control-transfer instruction, at <paramref name="entryPc"/>.</param>
     /// <param name="entryPc">The address of <paramref name="control"/>.</param>
@@ -440,6 +447,13 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Jr:
             case R3000aOpcode.Jalr:
                 return TryEmitRegisterIndirectTransfer(builder, control, controlPc, delaySlot, pendingLoad, out exit);
+            case R3000aOpcode.Blez:
+            case R3000aOpcode.Bgtz:
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bgez:
+            case R3000aOpcode.Bltzal:
+            case R3000aOpcode.Bgezal:
+                return TryEmitCompareWithZeroBranch(builder, control, controlPc, delaySlot, pendingLoad, out exit);
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     control.Opcode,
@@ -488,6 +502,98 @@ public static class MipsToIrLowerer
             nextPc: unchecked(controlPc + (2 * InstructionSize)),
             flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target, condition));
         return null;
+    }
+
+    /// <summary>
+    /// Lowers BLEZ/BGTZ/BLTZ/BGEZ and their link variants BLTZAL/BGEZAL. All six
+    /// compare <c>rs</c> against zero; the *AL pair additionally links <c>$ra</c>
+    /// unconditionally, from the same pre-delay-slot read of <c>rs</c>, before the
+    /// delay slot (<c>PSXCpu::ExecBltzal</c>/<c>ExecBgezal</c>: "the decision uses
+    /// rs before linking" — the link is not gated by the branch outcome).
+    /// </summary>
+    private static MipsToIrLoweringResult? TryEmitCompareWithZeroBranch(
+        BlockBuilder builder,
+        R3000aInstruction control,
+        uint controlPc,
+        R3000aInstruction delaySlot,
+        PendingLoadCommit? pendingLoad,
+        out RecompilerIrExit exit)
+    {
+        exit = null!;
+        if (!R3000aBranchSemantics.TryGetBranchTarget(control, controlPc, out var target))
+        {
+            return UnresolvedTarget(control, controlPc, "branch");
+        }
+
+        // The condition is evaluated from rs as it stands before the delay slot
+        // retires, matching BEQ/BNE.
+        var rs = builder.ReadGpr(control.Operand0.Register);
+        var zero = builder.Constant(0);
+        var condition = EmitCompareWithZeroCondition(builder, control.Opcode, rs, zero);
+
+        if (control.LinkInfo.WritesLink)
+        {
+            if (!R3000aLinkSemantics.TryGetLinkValue(control, controlPc, out var returnAddress))
+            {
+                return MipsToIrLoweringResult.Unsupported(
+                    control.Opcode,
+                    RecompilerIrDiagnosticCode.InvalidFlow,
+                    $"'{control.Opcode}' at PC 0x{controlPc:X8} was decoded without link information, so its return " +
+                    "address cannot be lowered.");
+            }
+
+            EmitLinkWrite(builder, control, returnAddress);
+        }
+
+        var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        if (trapExit is not null)
+        {
+            // The *AL link write above still retires before a delay-slot BREAK, the
+            // same ordering TryEmitCall uses for JAL.
+            exit = trapExit;
+            return null;
+        }
+
+        exit = new RecompilerIrExit(
+            RecompilerIrTerminationReason.Success,
+            nextPc: unchecked(controlPc + (2 * InstructionSize)),
+            flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target, condition));
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the 0/1 branch condition for a compare-with-zero opcode by composing
+    /// the existing signed less-than and equality operations, rather than adding a
+    /// new IR operation kind that every consumer (evaluator, host codegen) would
+    /// also have to learn: <c>rs &gt;= 0</c> is <c>!(rs &lt; 0)</c> and
+    /// <c>rs &lt;= 0</c> is <c>!(0 &lt; rs)</c>, each negated with
+    /// <see cref="RecompilerIrOperationKind.CompareEqual"/> against 0.
+    /// </summary>
+    private static int EmitCompareWithZeroCondition(BlockBuilder builder, R3000aOpcode opcode, int rs, int zero)
+    {
+        switch (opcode)
+        {
+            case R3000aOpcode.Bltz:
+            case R3000aOpcode.Bltzal:
+                return builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, rs, zero);
+            case R3000aOpcode.Bgez:
+            case R3000aOpcode.Bgezal:
+                var lessThanZero = builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, rs, zero);
+                return builder.Binary(RecompilerIrOperationKind.CompareEqual, lessThanZero, zero);
+            case R3000aOpcode.Bgtz:
+                return builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, zero, rs);
+            case R3000aOpcode.Blez:
+                var greaterThanZero = builder.Binary(RecompilerIrOperationKind.CompareLessThanSigned, zero, rs);
+                return builder.Binary(RecompilerIrOperationKind.CompareEqual, greaterThanZero, zero);
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(opcode), opcode, "Not a compare-with-zero branch opcode.");
+        }
     }
 
     private static MipsToIrLoweringResult? TryEmitDirectJump(
