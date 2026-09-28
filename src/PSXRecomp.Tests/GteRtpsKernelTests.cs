@@ -107,6 +107,18 @@ public class GteRtpsKernelTests
         r.Flag.Should().Be(flag);
     }
 
+    [Theory]
+    [InlineData(-1, 0u)] // MAC3 = -1: lm clamps IR3 to 0, but -1 is within -8000h..7FFFh.
+    [InlineData(-0x8001, FlagIr3Saturated)] // MAC3 = -8001h: out of the fixed range.
+    public void Sf1Lm1_Ir3Flag_UsesFixedRange_NotLmRange(int trz, uint ir3Flag)
+    {
+        var r = Execute(Identity(0, 0, 0, trz: trz), sf: true, lm: true);
+
+        r.Mac3.Should().Be(trz);
+        r.Ir3.Should().Be(0);
+        (r.Flag & FlagIr3Saturated).Should().Be(ir3Flag);
+    }
+
     [Fact]
     public void Ir_SaturatesAtBothEnds_WithLm0()
     {

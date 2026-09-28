@@ -78,18 +78,11 @@ public static class GteRtpsKernel
         short ir1 = (short)Saturate(mac1, irMin, 0x7FFF, FlagIr1Saturated, ref flag);
         short ir2 = (short)Saturate(mac2, irMin, 0x7FFF, FlagIr2Saturated, ref flag);
 
-        // RTPS quirk: with sf=0 the IR3 flag tracks (MAC3 SAR 12) against
-        // -8000h..+7FFFh while the stored IR3 is still saturated from MAC3.
-        short ir3;
-        if (sf)
-        {
-            ir3 = (short)Saturate(mac3, irMin, 0x7FFF, FlagIr3Saturated, ref flag);
-        }
-        else
-        {
-            ir3 = (short)Math.Clamp(mac3, irMin, 0x7FFF);
-            Saturate(z >> 12, -0x8000, 0x7FFF, FlagIr3Saturated, ref flag);
-        }
+        // RTPS quirk: the IR3 flag always tracks (MAC3 SAR 12) against
+        // -8000h..+7FFFh regardless of sf/lm, while the stored IR3 is
+        // saturated from MAC3 using the lm-dependent range.
+        short ir3 = (short)Math.Clamp(mac3, irMin, 0x7FFF);
+        Saturate(z >> 12, -0x8000, 0x7FFF, FlagIr3Saturated, ref flag);
 
         ushort sz = (ushort)Saturate(z >> 12, 0, 0xFFFF, FlagSzSaturated, ref flag);
 
