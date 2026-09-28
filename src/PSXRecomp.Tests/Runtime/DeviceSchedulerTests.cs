@@ -2,6 +2,7 @@ using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Core.Runtime.Gpu;
 
 namespace PSXRecomp.Tests.Runtime;
@@ -33,6 +34,7 @@ public sealed class DeviceSchedulerTests : IDisposable
 
     private const uint VblankBit = 1u << DeviceScheduler.VblankIrq;
     private const uint GpuBit = 1u << DeviceScheduler.GpuIrq;
+    private const uint CdRomBit = 1u << DeviceScheduler.CdRomIrq;
     private const uint DmaBit = 1u << DeviceScheduler.DmaIrq;
     private const uint Timer2Bit = 1u << (DeviceScheduler.Timer0Irq + 2);
     private const uint Sio0Bit = 1u << DeviceScheduler.Sio0Irq;
@@ -139,6 +141,56 @@ public sealed class DeviceSchedulerTests : IDisposable
 
         (_core.ReadDmaRegister(Ch6Chcr) & ChcrBusy).Should().Be(0u);
         _interrupts.Status.Should().Be(0u);
+    }
+
+    [Fact]
+    public void CdRomCommandResponse_RaisesIrq2OnceUntilANewPacketActivates()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        EnableAllCdRomInterrupts(cdRom);
+        var scheduler = new DeviceScheduler(_core, _interrupts, _gpu, cdRom);
+
+        cdRom.WriteCommand(0x01); // GetStat -> INT3 generation 1
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit);
+
+        _interrupts.Acknowledge(~CdRomBit);
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u, "the same CD-ROM response generation must not re-raise");
+
+        cdRom.ReadRegister(1); // drain status response
+        cdRom.AcknowledgeInterrupt();
+        cdRom.WriteCommand(0x01); // generation 2
+
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit, "a new response packet must raise a fresh IRQ2");
+    }
+
+    [Fact]
+    public void CdRomRead_Int3ThenInt1_AreDistinctIrq2Generations()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        EnableAllCdRomInterrupts(cdRom);
+        var scheduler = new DeviceScheduler(_core, _interrupts, _gpu, cdRom);
+
+        cdRom.WriteCommand(0x06); // ReadN: INT3 followed by queued INT1
+
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit);
+
+        // Guest acknowledges I_STAT separately from the CD-ROM controller.
+        _interrupts.Acknowledge(~CdRomBit);
+        cdRom.ReadRegister(1).Should().Be(0x22);
+        cdRom.AcknowledgeInterrupt(); // immediately promotes INT1 generation
+
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit, "INT1 must not be lost because INT3->INT1 had no sampled low gap");
+
+        _interrupts.Acknowledge(~CdRomBit);
+        cdRom.ReadRegister(1).Should().Be(0x22);
+        cdRom.AcknowledgeInterrupt();
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u, "both controller and I_STAT acknowledgements are deterministic");
     }
 
     [Fact]
@@ -254,10 +306,14 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenSio0ThenGpuThenVblank()
+    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenCdRomThenSio0ThenGpuThenVblank()
     {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        EnableAllCdRomInterrupts(cdRom);
+        cdRom.WriteCommand(0x01);
+
         var recorder = new RecordingInterrupts(_interrupts);
-        var scheduler = new DeviceScheduler(_core, recorder, _gpu);
+        var scheduler = new DeviceScheduler(_core, recorder, _gpu, cdRom);
         ArmTimer2(target: 100, ModeIrqOnTarget);
         ArmOtc(words: 8, irqEnabled: true);
         _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
@@ -269,9 +325,17 @@ public sealed class DeviceSchedulerTests : IDisposable
         recorder.Raised.Should().Equal(
             DeviceScheduler.Timer0Irq + 2,
             DeviceScheduler.DmaIrq,
+            DeviceScheduler.CdRomIrq,
             DeviceScheduler.Sio0Irq,
             DeviceScheduler.GpuIrq,
             DeviceScheduler.VblankIrq);
+    }
+
+    private static void EnableAllCdRomInterrupts(CdRomDevice cdRom)
+    {
+        cdRom.WriteRegister(0, 1);
+        cdRom.WriteRegister(2, 0x1F);
+        cdRom.WriteRegister(0, 0);
     }
 
     private void ArmTimer2(uint target, uint mode)
