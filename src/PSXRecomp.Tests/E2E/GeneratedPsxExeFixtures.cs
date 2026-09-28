@@ -124,7 +124,7 @@ public static class GeneratedPsxExeFixtures
         expectedDiagnosticCode: "UNRESOLVED_TRANSFER");
 
     public static IReadOnlyList<GeneratedPsxExeFixture> All { get; } =
-        Array.AsReadOnly([BiosPutCharMarker, UnresolvedJump]);
+        Array.AsReadOnly(new[] { BiosPutCharMarker, UnresolvedJump });
 
     /// <summary>
     /// Deterministically generates a minimal PS-X EXE in memory. All integers
