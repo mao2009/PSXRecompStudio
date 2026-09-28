@@ -32,7 +32,7 @@ A contributor-ready task should state the validation it requires. Use the smalle
 Typical evidence levels are:
 
 - **Synthetic** — repository-owned unit, contract, differential, or generated-fixture evidence.
-- **Fixture** — deterministic repository-owned generated input that exercises a production path.
+- **Fixture** — deterministic repository-owned generated input that exercises a production path. For PS-X EXE fixtures, see [Source-generated PS-X EXE fixtures](docs/development/generated-psx-exe-fixtures.md).
 - **Legal real input** — user-supplied, legally owned PS1 input used only where real-title evidence is necessary.
 
 Never commit ROMs, disc images, PS-X executables extracted from commercial software, Sony BIOS images, save data, credentials, or other private/copyrighted artifacts.
