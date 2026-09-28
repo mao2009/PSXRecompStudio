@@ -37,6 +37,7 @@ Architecture
 Development
 ├── Human Contributor Workflow
 ├── Contributor Entry-Task Review
+├── Source-generated PS-X EXE Fixtures
 ├── Agent Guide
 ├── Quality and Verification Stack
 ├── Repository Artifact Policy
@@ -98,6 +99,7 @@ Constraints:
 - [GUI / UX](architecture/gui-ux.md)
 - [Human Contributor Workflow](../CONTRIBUTING.md)
 - [Contributor Entry-Task Review](development/contributor-entry-tasks.md)
+- [Source-generated PS-X EXE Fixtures](development/generated-psx-exe-fixtures.md)
 - [Development Agent Guide](development/agent-guide.md)
 - [Quality and Verification Stack](development/quality-stack.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
