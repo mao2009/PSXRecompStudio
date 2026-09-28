@@ -128,6 +128,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c_abi_scalar_widths_match_the_published_contract() {
+        assert_eq!(std::mem::size_of::<u8>(), 1);
+        assert_eq!(std::mem::size_of::<u16>(), 2);
+        assert_eq!(std::mem::size_of::<u32>(), 4);
+        assert_eq!(std::mem::size_of::<i32>(), 4);
+        assert_eq!(std::mem::size_of::<*mut u32>(), std::mem::size_of::<usize>());
+        assert_eq!(PSX_RUST_OK, 0);
+        assert_eq!(PSX_RUST_ERR_NULL_ARGUMENT, -1);
+        assert_eq!(PSX_RUST_ERR_PANIC, -2);
+    }
+
+    #[test]
     fn abi_version_is_the_published_constant() {
         assert_eq!(psx_rust_abi_version(), ABI_VERSION);
         assert_eq!(ABI_VERSION, 1);

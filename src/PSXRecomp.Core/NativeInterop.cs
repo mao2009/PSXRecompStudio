@@ -72,6 +72,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_GetCop0(IntPtr core, int index);
 
+    /// <summary>Writes COP0 register <paramref name="index"/>. Raw ABI mirror; higher-level callers retain their existing wrapper policy.</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_SetCop0(IntPtr core, int index, uint value);
+
     /// <summary>Returns a pointer to the native 2 MiB main-RAM buffer owned by <paramref name="core"/>. Valid only until the core is destroyed.</summary>
     [LibraryImport(LibName)]
     internal static partial IntPtr PSXCore_GetRAM(IntPtr core);

@@ -200,3 +200,32 @@ if(WIN32)
     target_link_libraries(psx_native_tests PRIVATE ws2_32 userenv dbghelp ntdll)
 endif()
 add_test(NAME psx_native_tests COMMAND psx_native_tests)
+
+# Stable public C ABI contract (Issue #607). This checker loads the exact shared
+# library artifact and verifies every required PSX_API export by name. It does
+# not link against the library, so a missing export cannot be hidden by a static
+# test-only linkage path.
+add_executable(psx_abi_contract_tests
+    tests/test_psx_abi_contract.cpp
+)
+target_include_directories(psx_abi_contract_tests PRIVATE include)
+add_dependencies(psx_abi_contract_tests PSXRecomp.Native)
+if(UNIX)
+    target_link_libraries(psx_abi_contract_tests PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
+add_test(
+    NAME psx_abi_contract_tests
+    COMMAND psx_abi_contract_tests $<TARGET_FILE:PSXRecomp.Native>
+)
+
+# Negative proof that the export checker fails closed. WILL_FAIL inverts only
+# the expected process result; if the checker ever accepts a nonexistent
+# symbol, CTest reports this test as failed.
+add_test(
+    NAME psx_abi_contract_rejects_missing_symbol
+    COMMAND psx_abi_contract_tests
+            $<TARGET_FILE:PSXRecomp.Native>
+            PSXRecomp_ABI_INTENTIONAL_MISSING
+)
+set_tests_properties(psx_abi_contract_rejects_missing_symbol PROPERTIES WILL_FAIL TRUE)

@@ -22,6 +22,66 @@ ownership, layout, error, panic, and ABI safety from the diff.
 ADR-023 owns the decision to host Rust inside the existing `PSXRecomp.Native`
 shared library; this page owns the resulting per-function rules.
 
+## Stable ABI surface and compatibility
+
+The stable native ABI shipped by this repository is the set of `PSX_API`
+functions and callback typedefs declared in
+`src/PSXRecomp.Native/include/psx_core.h`.
+
+- `PSXCore` is opaque. Its fields, size and alignment are **not** ABI.
+- No concrete struct is currently passed by value across the public C ABI.
+  Therefore there is no current public struct layout to freeze with
+  `offsetof`; the contract tests instead pin scalar widths, pointer/callback
+  shapes, managed signatures and exported symbol names.
+- Rust's direct `psx_rust_*` symbols are internal implementation details.
+  The stable public names are the `PSXRecompRust_*` thunks in
+  `psx_core.h`.
+- Internal C++/Rust headers under `src/` are not compatibility surfaces unless
+  they are explicitly promoted into `include/psx_core.h`.
+
+### Compatible and incompatible extension
+
+Adding a new exported function is backward-compatible for existing callers.
+Renaming/removing an export, changing its calling convention, integer width,
+pointer shape, ownership/lifetime rule, or observable semantics is an
+incompatible ABI change.
+
+The Rust substrate exposes `PSXRecompRust_AbiVersion`; incompatible changes to
+an existing `PSXRecompRust_*` contract must bump `ABI_VERSION`.
+
+The older `PSXCore_*` surface has no general capability-negotiation/version
+function. Until such a boundary is deliberately introduced, existing
+`PSXCore_*` exports are append-only: do not remove or incompatibly change one.
+A new optional capability should use a new export rather than repurposing an
+existing function.
+
+If a public by-value struct is introduced later, it must:
+
+1. use fixed-width ABI-visible fields and explicit C/Rust/managed layout;
+2. include an explicit caller-visible size/version field;
+3. be extended only by appending fields;
+4. allow an older caller's smaller declared size without reading/writing the
+   appended tail;
+5. gain C/C++ `sizeof/alignof/offsetof`, Rust `size_of/align_of`, and managed
+   layout checks before it becomes stable.
+
+### Automated compatibility checks
+
+The normal native/.NET test path now checks the boundary in three ways:
+
+- `psx_abi_contract_tests` dynamically loads the produced shared library and
+  verifies every required `PSX_API` symbol. A negative CTest case requires a
+  deliberately nonexistent symbol and is marked `WILL_FAIL`, proving the
+  checker itself fails closed.
+- `NativeAbiContractTests` embeds `psx_core.h` and compares every
+  `PSX_API` name and supported scalar/pointer signature against
+  `NativeInterop`, then performs a real managed -> shared-library -> Rust
+  round trip.
+- Rust unit tests pin ABI scalar widths and status-code values.
+
+Because native and managed test jobs run on Linux, Windows and macOS, the export
+and managed-boundary checks execute on each shipped host ABI.
+
 ## Where Rust may live
 
 Rust code lives under `src/PSXRecomp.Native/rust/` only. It is compiled as a
