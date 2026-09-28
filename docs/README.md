@@ -38,6 +38,7 @@ Development
 ├── Human Contributor Workflow
 ├── Contributor Entry-Task Review
 ├── Agent Guide
+├── Quality and Verification Stack
 ├── Repository Artifact Policy
 ├── API Documentation & Docstring Policy
 ├── Rust FFI Safety Contract
@@ -98,6 +99,7 @@ Constraints:
 - [Human Contributor Workflow](../CONTRIBUTING.md)
 - [Contributor Entry-Task Review](development/contributor-entry-tasks.md)
 - [Development Agent Guide](development/agent-guide.md)
+- [Quality and Verification Stack](development/quality-stack.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
 - [Real-ROM Analysis Artifact Format](development/real-rom-analysis-artifacts.md)
 - [API Documentation & Docstring Policy](development/documentation-policy.md)
@@ -123,11 +125,9 @@ Constraints:
   - [Memory](cpu/memory.md)
   - [Test Specification](cpu/test-specification.md)
 - Decoder — planned
-- Analyzer — planned
 - [Diagnostics](architecture/diagnostics.md)
 - AI Analysis — planned
-- Harness — planned
-- Testing — planned
+- [Quality / Verification](development/quality-stack.md)
 - Runtime
   - [Runtime Architecture](runtime/architecture.md)
   - [Memory Card Format and Storage Policy](runtime/memory-card.md)
