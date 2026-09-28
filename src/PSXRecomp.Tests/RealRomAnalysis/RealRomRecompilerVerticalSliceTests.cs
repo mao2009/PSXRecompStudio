@@ -94,7 +94,13 @@ public class RealRomRecompilerVerticalSliceTests
         var fixture = candidate.ToDifferentialFixture($"real-rom-{fixtureId}-0x{candidate.StartAddress:X8}");
         var reference = new RecompilerInterpreterExecutor();
         var actual = new global::PSXRecomp.Tests.Recompiler.RecompilerHostExecutor();
-        var result = RecompilerDifferentialRunner.Run(fixture, reference, actual);
+        // Issue #578: StepBudget (host blocks) and ReferenceStepBudget (guest
+        // instructions) are set to the same numeric candidate.InstructionCount by
+        // ToDifferentialFixture, which only coincides for straight-line code. A real
+        // candidate with a fused control transfer (BNE/BEQ/J + delay slot) needs the
+        // aligned runner so both executors are actually bounded by the same execution
+        // window rather than by equal-but-differently-unitized numeric budgets.
+        var result = RecompilerDifferentialRunner.RunReferenceFirstAligned(fixture, reference, actual);
 
         var evidence =
             $"fixture={fixtureId} entry=0x{candidate.StartAddress:X8} instructions={candidate.InstructionCount} " +
