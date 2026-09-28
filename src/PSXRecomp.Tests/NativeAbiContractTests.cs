@@ -55,6 +55,36 @@ public class NativeAbiContractTests
     }
 
     [Fact]
+    public void PublicHeaderExports_ArePresentInNativeLibrary()
+    {
+        var header = ReadEmbeddedHeader();
+        var exports = ExportRegex.Matches(header).Cast<Match>().ToArray();
+        exports.Should().NotBeEmpty();
+
+        var loaded = NativeLibrary.TryLoad(
+            "PSXRecomp.Native",
+            typeof(NativeAbiContractTests).Assembly,
+            searchPath: null,
+            out var library);
+        loaded.Should().BeTrue("the native library must be loadable by the same logical name used by LibraryImport");
+
+        try
+        {
+            foreach (var export in exports)
+            {
+                var name = export.Groups["name"].Value;
+                NativeLibrary.TryGetExport(library, name, out _).Should().BeTrue(
+                    $"{name} is declared PSX_API in psx_core.h and must exist in the shipped native library");
+            }
+        }
+        finally
+        {
+            if (library != IntPtr.Zero)
+                NativeLibrary.Free(library);
+        }
+    }
+
+    [Fact]
     public void RustStatusConstants_MatchHeaderAndManagedDeclarations()
     {
         var header = ReadEmbeddedHeader();
