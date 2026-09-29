@@ -66,13 +66,25 @@ kind=run success=True engine=recompiled-host-artifact exitCode=0 tty='P'
 DEMO OK: generated code ran; TTY "P"; repeated run identical.
 ```
 
-## Capturing a screenshot or recording
+## Verified against a published release
+
+The script was run against the released Windows binary
+`psxrecomp-v0.0.0-alpha.2-win-x64.zip` (the latest release when checked,
+2026-09-29; archive checked against the release `SHA256SUMS.txt`) with
+`pwsh scripts/demo/synthetic-demo.ps1 -Psxrecomp <path>\psxrecomp.exe` and `gcc`
+(MinGW-w64) on `PATH`. It exited `0`, and its output was identical to the
+committed capture above, including `engine=recompiled-host-artifact` and TTY
+`P`. The Linux and macOS archives were not run for this check.
+
+## Visual recording (not yet produced)
 
 No image or video is committed: none is generated in CI, and no capture
-dependency was added. To produce one for an announcement, run the script in a
+dependency was added. A real terminal recording or screenshot of the run above
+is still to be made and is tracked in #505. To produce one, run the script in a
 terminal and record it with any local tool (for example `asciinema rec` or your
 OS screen recorder), then share the result together with the limitation note
-above. Do not include any ROM, BIOS, or commercial-title footage.
+above. Record where it came from (tool, script revision, release version) next
+to the asset. Do not include any ROM, BIOS, or commercial-title footage.
 
 ## Not covered
 
