@@ -48,7 +48,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493), production interpreter 32-bit guest MMIO reachability (#572), GPU command IRQ1 delivery (#574), and production `FrameSnapshot` headless evidence (#575); DMA2 remains |
 | SPU | ⚠ Partial | Rust-owned register/MMIO model at 0x1F801C00-0x1F801DFF (#445/#551); no ADPCM/ADSR/mixing/reverb/sound-RAM/audio-output model |
 | SIO0 | ⚠ Partial | Production-reachable register model + deterministic disconnected-pad transaction path + IRQ7 (#443 via #548/#549); no real host controller or memory-card wire protocol |
-| CD-ROM | ⚠ Partial | Indexed register/FIFO substrate is implemented (#585 / PR #588); minimum command protocol (#586) and DMA3/IRQ2 wiring (#587) remain |
+| CD-ROM | ⚠ Partial | Register/FIFO substrate, minimum command protocol, DMA3 and IRQ2 are implemented and production-interpreter reachable (#585/#586/#587); sector bytes are test-supplied only — no real disc source, streaming, seek timing or CD audio (#14) |
 | GTE | ⚠ Partial | COP2 data/control register bank (#581 / PR #592), RTPS (#582 / PR #590), and NCLIP (#583 / PR #591) are implemented; AVSZ3/AVSZ4 (#584 / PR #589) is under review and native COP2 dispatch/integration remains #447 |
 | TITLE_SCREEN | ❌ Not reached | — |
 
@@ -195,9 +195,10 @@ What still does not exist:
 - **SPU audio behavior.** SPU register/MMIO storage is production-reachable
   (#445/#551), but ADPCM decoding, ADSR, mixing, reverb, sound RAM, audio output,
   CD-audio input, and IRQ9 are not implemented.
-- **CD-ROM runtime completion.** The indexed register/FIFO substrate now exists
-  (#585 / PR #588), but the minimum command protocol (#586), DMA3 data path and
-  IRQ2 wiring (#587) remain unimplemented.
+- **CD-ROM real disc data.** The register/FIFO substrate, minimum command
+  protocol, DMA3 and IRQ2 are implemented and production-interpreter reachable
+  (#585/#586/#587), but sector bytes are test-supplied only: there is no real
+  disc source, streaming, seek timing or CD audio (#14).
 - **GTE production integration.** The COP2 register bank (#581 / PR #592) and
   isolated RTPS/NCLIP kernels (#582/#583 via PRs #590/#591) now exist; AVSZ3/4
   is being reviewed in PR #589. Native COP2/LWC2/SWC2 dispatch is still not
@@ -220,8 +221,9 @@ measured evidence — see the lowering blocker history above):**
    The remaining concrete GPU integration gap is DMA2 data movement.
 
 3. **Evidence-gated hardware after the next real boundary.** SPU register/MMIO
-   exists while audio behavior is still absent. CD-ROM now has its register/FIFO
-   substrate but still lacks the minimum command/DMA3/IRQ2 path. GTE now has a
+   exists while audio behavior is still absent. CD-ROM has its register/FIFO
+   substrate, minimum command protocol, DMA3 and IRQ2, but sector data is still
+   test-supplied only (#14). GTE now has a
    register bank plus isolated RTPS/NCLIP kernels, but COP2 dispatch/integration
    is still open. MDEC/GTE/CD-ROM/SPU work should be promoted only when the real
    execution path demonstrates that it is the next blocker rather than by issue
@@ -311,7 +313,7 @@ or local paths.
 - [Issue #628](https://github.com/mao2009/PSXRecompStudio/issues/628) — Syscall / exception-transfer IR lowering (resolved; `Syscall` at PC `0x8004143C`)
 - [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution / remaining HLE coverage (not yet reached by a production CLI run)
 - [Issue #440](https://github.com/mao2009/PSXRecompStudio/issues/440) — remaining GPU production integration; DMA2 remains (IRQ1 #574 and headless FrameSnapshot #575 are complete)
-- [Issue #444](https://github.com/mao2009/PSXRecompStudio/issues/444) — CD-ROM runtime model; register/FIFO substrate landed via #588, command protocol #586 and DMA3/IRQ2 #587 remain
+- [Issue #444](https://github.com/mao2009/PSXRecompStudio/issues/444) — CD-ROM runtime model; register/FIFO substrate, command protocol, DMA3 and IRQ2 implemented (#585/#586/#587); real disc data remains #14
 - [Issue #447](https://github.com/mao2009/PSXRecompStudio/issues/447) — GTE/COP2 execution integration; register bank and initial arithmetic kernels are partially implemented
 - [Issue #445](https://github.com/mao2009/PSXRecompStudio/issues/445) — SPU register/MMIO substrate (completed via #551)
 - [Issue #443](https://github.com/mao2009/PSXRecompStudio/issues/443) — scoped SIO0 model (completed via #548/#549)
