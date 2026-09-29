@@ -24,3 +24,27 @@ does not contain generated code or CPU-lowering policy.
 The existing real-ROM report remains backward-compatible: its function projection is
 optional for callers constructing reports directly, and the existing four-file
 real-ROM artifact format remains unchanged for reports without the projection.
+
+## Amendment: reachable-program roots (Issue #644)
+
+`ReachableProgramBuilder` (the recompiler's statically reachable-program discovery) is a
+separate consumer of the same decoder and jump/branch semantics; it does not consume
+`FunctionDiscoveryArtifact`. Its roots are exactly:
+
+1. the PS-X EXE entry point, and
+2. caller-supplied explicit roots (`ReachableProgramBuilder.Build(..., additionalRoots)`,
+   `psxrecomp run|recompile --entry-root 0xPC`).
+
+All roots are discovered in one shared pass, so leaders, delay slots, load-delay pairs and
+conflict detection are common to every root. Each explicit root must be a 4-byte-aligned PC
+naming a complete word inside the text image, otherwise the build fails closed with an
+`InvalidFlow` diagnostic naming the root. Duplicate roots, the entry point, and PCs already
+reached are accepted. With no explicit roots the result is identical to entry-only discovery.
+
+Roots are an input, never a guess. The builder does not derive roots from
+`FunctionDiscoveryArtifact` entries, does not scan data words for pointers, and does not treat
+the whole text region as block candidates; #639 measured each of those (function entries added
+0 blocks; blanket pointer harvesting fail-closed 432 of 562 candidates and added 9,170 blocks;
+11.8% of Persona's text words decode as Reserved). A transfer that lands on an in-image PC with
+no compiled block still stops the run (`UNRESOLVED_TRANSFER_IN_IMAGE`); the runtime does not
+claim or compile it. Interpreter fallback and mixed execution remain out of scope (ADR-015, #249).

@@ -159,6 +159,17 @@ regression in either.
    `0x800251D8`, because reachable-program discovery stops at `JR`/`JALR`.
    These are artifact memory-image and static-discovery gaps, not BIOS HLE
    coverage.
+8. **Measured after #637/#638/#644 (runtime stage).** With the EXE image in
+   artifact RAM (#637) the same `jalr $v0` at `0x800251D0` targets `0x80025350`
+   (runtime fact; `$ra = 0x800251D8`, now a block entry after #638). The run
+   stopped at `Blocked` / `UnsupportedTransfer`, exit 2, guest PC `0x80025350`,
+   reported by #644 as `UNRESOLVED_TRANSFER_IN_IMAGE` (an in-image PC with no
+   compiled block). Supplying it as an explicit root,
+   `psxrecomp run rom/PERSONA.chd --entry-root 0x80025350 --json`, compiles the
+   block and the run no longer stops there; the next blocker is
+   `BIOS_HLE_UNSUPPORTED_CALL` `A0:13` (exit 1, `RuntimeFailure`), a BIOS HLE gap
+   and not a coverage gap. Roots are caller input only; nothing in production code
+   names a title address (ADR-012 amendment).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU

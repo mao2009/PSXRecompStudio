@@ -30,7 +30,7 @@ public static class RecompileCommand
         try
         {
             var input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget: 1);
-            var program = CliInput.Lower(input);
+            var program = CliInput.Lower(input, arguments.EntryRoots);
 
             var dispatch = RecompilerHostCodeGen.Generate(program);
             if (!dispatch.Success)
@@ -39,7 +39,7 @@ public static class RecompileCommand
                     "CodegenFailed",
                     dispatch.DiagnosticCode ?? "CODEGEN_FAILED",
                     dispatch.DiagnosticMessage,
-                    arguments.Json,
+                    arguments.Json, arguments.EntryRoots,
                     standardOutput,
                     standardError);
             }
@@ -51,7 +51,7 @@ public static class RecompileCommand
                     "CodegenFailed",
                     artifact.DiagnosticCode ?? "CODEGEN_FAILED",
                     artifact.DiagnosticMessage,
-                    arguments.Json,
+                    arguments.Json, arguments.EntryRoots,
                     standardOutput,
                     standardError);
             }
@@ -64,14 +64,14 @@ public static class RecompileCommand
                     build.Status.ToString(),
                     build.DiagnosticCode ?? "BUILD_FAILED",
                     build.DiagnosticMessage,
-                    arguments.Json,
+                    arguments.Json, arguments.EntryRoots,
                     standardOutput,
                     standardError);
             }
 
             if (arguments.Json)
             {
-                standardOutput.WriteLine(CliJson.Serialize(new CliJson.RecompileResult(
+                standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RecompileResult(
                     Kind: CliJson.RecompileKind,
                     Success: true,
                     Status: nameof(GeneratedHostBuildStatus.Succeeded),
@@ -93,7 +93,7 @@ public static class RecompileCommand
                 or ArgumentException or InvalidOperationException)
         {
             var (status, code) = ClassifyException(ex);
-            return Fail(status, code, ex.Message, arguments.Json, standardOutput, standardError);
+            return Fail(status, code, ex.Message, arguments.Json, arguments.EntryRoots, standardOutput, standardError);
         }
     }
 
@@ -102,13 +102,14 @@ public static class RecompileCommand
         string errorCode,
         string? message,
         bool json,
+        IReadOnlyList<uint> entryRoots,
         TextWriter standardOutput,
         TextWriter standardError)
     {
         var text = string.IsNullOrEmpty(message) ? status : $"{status}: {message}";
         if (json)
         {
-            standardOutput.WriteLine(CliJson.Serialize(new CliJson.RecompileResult(
+            standardOutput.WriteLine(CliJson.Serialize(entryRoots, new CliJson.RecompileResult(
                 Kind: CliJson.RecompileKind,
                 Success: false,
                 Status: status,

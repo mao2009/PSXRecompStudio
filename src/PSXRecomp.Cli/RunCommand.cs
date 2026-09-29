@@ -62,7 +62,7 @@ public static class RunCommand
                 input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget);
             }
 
-            var program = CliInput.Lower(input);
+            var program = CliInput.Lower(input, arguments.EntryRoots);
             var programEnd = unchecked(input.LoadAddress + (uint)input.InstructionWords.Count * 4u);
 
             var outcome = new RecompiledArtifactLauncher().Launch(
@@ -103,7 +103,7 @@ public static class RunCommand
                 var success = outcome.Result.Outcome == RecompiledArtifactOutcome.Success;
                 if (diagnosticBundlePath is not null && frameEvidence is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithDiagnosticBundleAndFrameEvidence(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResultWithDiagnosticBundleAndFrameEvidence(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,
@@ -114,7 +114,7 @@ public static class RunCommand
                 }
                 else if (diagnosticBundlePath is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithDiagnosticBundle(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResultWithDiagnosticBundle(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,
@@ -124,7 +124,7 @@ public static class RunCommand
                 }
                 else if (frameEvidence is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResultWithFrameEvidence(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResultWithFrameEvidence(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,
@@ -134,7 +134,7 @@ public static class RunCommand
                 }
                 else
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(new CliJson.RunResult(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResult(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,

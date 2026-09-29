@@ -71,4 +71,30 @@ internal static class CliJson
         ProductionFrameEvidenceCollector.FrameEvidence FrameEvidence);
 
     public static string Serialize<T>(T document) => ArtifactJson.Serialize(document);
+
+    /// <summary>
+    /// Serializes <paramref name="document"/> and, only when the caller supplied explicit
+    /// entry roots (Issue #644), appends an <c>entryRoots</c> array of canonical
+    /// <c>0xXXXXXXXX</c> strings (ascending, distinct) so the output alone reproduces the run's
+    /// reachability input. With no roots the output is byte-identical to <see cref="Serialize{T}(T)"/>.
+    /// </summary>
+    public static string Serialize<T>(IReadOnlyList<uint> entryRoots, T document)
+    {
+        var json = ArtifactJson.Serialize(document);
+        if (entryRoots.Count == 0)
+        {
+            return json;
+        }
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        var roots = new System.Text.Json.Nodes.JsonArray();
+        foreach (var root in entryRoots.Distinct().Order())
+        {
+            roots.Add($"0x{root:X8}");
+        }
+
+        node["entryRoots"] = roots;
+        var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+        return node.ToJsonString(options).ReplaceLineEndings("\n") + "\n";
+    }
 }

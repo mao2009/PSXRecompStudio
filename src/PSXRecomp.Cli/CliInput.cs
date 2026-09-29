@@ -125,12 +125,15 @@ internal static class CliInput
         return (PsxExeTitleInput.Build(outcome.Executable, outerBudget, segmentBudget), sha256);
     }
 
-    public static RecompilerIrProgram Lower(PsxExeTitleExecution input)
+    /// <param name="entryRoots">Caller-supplied explicit extra roots (Issue #644); empty keeps the
+    /// entry-only discovery.</param>
+    public static RecompilerIrProgram Lower(PsxExeTitleExecution input, IReadOnlyList<uint>? entryRoots = null)
     {
         return ReachableProgramBuilder.Build(
             input.LoadAddress,
             input.InstructionWords,
-            input.Request.EntryPc);
+            input.Request.EntryPc,
+            entryRoots ?? []);
     }
 }
 

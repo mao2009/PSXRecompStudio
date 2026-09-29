@@ -24,9 +24,9 @@ namespace PSXRecomp.Infrastructure.Cli;
 [Infrastructure]
 public static class Program
 {
-    private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]";
+    private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--json]";
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
-    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--report] [--frame-evidence] [--json]";
+    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--report] [--frame-evidence] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
 
@@ -105,6 +105,7 @@ public static class Program
         var report = false;
         var frameEvidence = false;
         uint? segmentBudget = null;
+        var entryRoots = new SortedSet<uint>();
         var help = false;
 
         for (var i = 0; i < arguments.Count; i++)
@@ -145,6 +146,22 @@ public static class Program
                         return false;
                     }
                     segmentBudget = budget;
+                    break;
+                case "--entry-root":
+                    if (i + 1 >= arguments.Count)
+                    {
+                        parsed = default;
+                        error = "missing value for option '--entry-root'.";
+                        return false;
+                    }
+                    var rootText = arguments[++i];
+                    if (!TryParseGuestPc(rootText, out var root))
+                    {
+                        parsed = default;
+                        error = $"invalid entry root '{rootText}': expected a hexadecimal guest PC with a 0x prefix, such as 0x80025350.";
+                        return false;
+                    }
+                    entryRoots.Add(root);
                     break;
                 case "--report":
                     if (!allowReport)
@@ -187,7 +204,7 @@ public static class Program
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, Help: true);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: true);
             error = null;
             return true;
         }
@@ -206,9 +223,22 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, Help: false);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: false);
         error = null;
         return true;
+    }
+
+    /// <summary>
+    /// A guest PC is written in hexadecimal with a mandatory <c>0x</c> prefix, so a decimal
+    /// value can never be silently read as hex. Range/alignment/image checks belong to the
+    /// reachable-program builder, which owns the text image.
+    /// </summary>
+    private static bool TryParseGuestPc(string text, out uint value)
+    {
+        value = 0;
+        return text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            && uint.TryParse(text.AsSpan(2), System.Globalization.NumberStyles.AllowHexSpecifier,
+                System.Globalization.CultureInfo.InvariantCulture, out value);
     }
 
     private static int Doctor(string[] arguments, TextWriter standardOutput, TextWriter standardError)
@@ -286,4 +316,5 @@ internal sealed record ParsedArguments(
     uint? SegmentBudget,
     bool Report,
     bool FrameEvidence,
+    IReadOnlyList<uint> EntryRoots,
     bool Help);
