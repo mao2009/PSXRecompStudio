@@ -115,17 +115,22 @@ public sealed class DeviceScheduler
             }
         }
 
-        // CD-ROM DMA3: the managed bridge exclusively owns channel 3's
-        // completion (Issue #587), so it is serviced before the generic
-        // per-cycle model below, which always excludes that channel.
-        _cdRomDma?.TryTransfer();
-
         // DMA: IRQ3 fires on a rising edge of the DICR bit-31 line, whatever
-        // raised it (a completion here, this Advance's CD-ROM DMA3 service
-        // above, or a guest DICR write in between). Channel 3 is excluded:
-        // its duration/completion belongs solely to the CD-ROM DMA3 bridge
-        // above, never to this deterministic per-word model.
-        _core.TickDmaExcludingChannel(cycles, CdRomDmaTransfer.Channel);
+        // raised it (a completion here, this Advance's CD-ROM DMA3 service,
+        // or a guest DICR write in between). When a CD-ROM DMA3 bridge is
+        // configured it exclusively owns channel 3's completion (Issue #587):
+        // it is serviced first and the deterministic per-word model skips
+        // channel 3. Without a bridge, every channel (including 3) keeps the
+        // generic model.
+        if (_cdRomDma is not null)
+        {
+            _cdRomDma.TryTransfer();
+            _core.TickDmaExcludingChannel(cycles, CdRomDmaTransfer.Channel);
+        }
+        else
+        {
+            _core.TickDma(cycles);
+        }
         var dmaLine = _core.GetDmaInterruptPending();
         if (dmaLine && !_dmaIrqLine)
         {

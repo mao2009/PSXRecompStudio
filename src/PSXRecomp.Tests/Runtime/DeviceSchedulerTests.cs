@@ -24,6 +24,9 @@ public sealed class DeviceSchedulerTests : IDisposable
     private const uint Dicr = 0x1F8010F4u;
     private const uint Ch6Bcr = 0x1F8010E4u;
     private const uint Ch6Chcr = 0x1F8010E8u;
+    private const uint Ch3Bcr = 0x1F8010B4u;
+    private const uint Ch3Chcr = 0x1F8010B8u;
+    private const uint Dma3DicrFlag = 1u << 3;
     private const uint ChcrStartTrigger = 0x11000000u;
     private const uint ChcrBusy = 1u << 24;
 
@@ -130,6 +133,38 @@ public sealed class DeviceSchedulerTests : IDisposable
         _interrupts.Acknowledge(0);
         _scheduler.Advance(100);
         _interrupts.Status.Should().Be(0u, "IRQ3 is edge-triggered: a line that stays high does not re-raise");
+    }
+
+    [Fact]
+    public void Dma3_WithoutCdRomBridge_CompletesThroughTheGenericTick()
+    {
+        ArmDma3(words: 4);
+
+        _scheduler.Advance(4);
+
+        (_core.ReadDmaRegister(Ch3Chcr) & ChcrBusy).Should().Be(0u,
+            "without a CD-ROM DMA3 bridge, channel 3 keeps the generic per-word model");
+        (_core.ReadDmaRegister(Dicr) & Dma3DicrFlag).Should().Be(Dma3DicrFlag);
+        _interrupts.Status.Should().Be(DmaBit);
+    }
+
+    [Fact]
+    public void Dma3_WithCdRomBridge_IsExcludedFromTheGenericTick()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2()); // no data loaded
+        using var dma = new DmaMmioAdapter(_core);
+        using var bus = new MemoryBus(_core);
+        bus.AttachDmaAdapter(dma);
+        var scheduler = new DeviceScheduler(
+            _core, _interrupts, _gpu, cdRom, new CdRomDmaTransfer(cdRom, dma, bus));
+        ArmDma3(words: 4);
+
+        scheduler.Advance(1000);
+
+        (_core.ReadDmaRegister(Ch3Chcr) & ChcrBusy).Should().NotBe(0u,
+            "the bridge owns channel 3, so elapsed cycles alone must not complete it");
+        (_core.ReadDmaRegister(Dicr) & Dma3DicrFlag).Should().Be(0u);
+        _interrupts.Status.Should().Be(0u);
     }
 
     [Fact]
@@ -353,6 +388,14 @@ public sealed class DeviceSchedulerTests : IDisposable
         }
         _core.WriteDmaRegister(Ch6Bcr, words);
         _core.WriteDmaRegister(Ch6Chcr, ChcrStartTrigger | 0x2u);
+    }
+
+    private void ArmDma3(uint words)
+    {
+        _core.WriteDmaRegister(Dpcr, 0x07654321u | (1u << 15));
+        _core.WriteDmaRegister(Dicr, (1u << 23) | (1u << 27));
+        _core.WriteDmaRegister(Ch3Bcr, words);
+        _core.WriteDmaRegister(Ch3Chcr, ChcrStartTrigger);
     }
 
     /// <summary>Records <see cref="Raise"/> order and forwards to the real controller.</summary>
