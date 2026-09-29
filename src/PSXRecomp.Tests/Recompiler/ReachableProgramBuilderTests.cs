@@ -159,6 +159,20 @@ public sealed class ReachableProgramBuilderTests
     }
 
     [Fact]
+    public void Jalr_IntoZeroRegister_DoesNotDiscoverContinuation()
+    {
+        // JALR rd=0 is architecturally JR: GPR[0] is immutable, no link is
+        // written, and the return site must not be enqueued (Issue #638 edge case).
+        var program = Build(
+            Word.JumpAndLinkRegister(0, 8),
+            Word.Nop,
+            Word.Addiu(10, 0, 3));
+
+        program.Blocks.Select(block => block.EntryPc)
+            .Should().Equal(LoadAddress);
+    }
+
+    [Fact]
     public void UnsupportedDelaySlot_FailsClosed()
     {
         var lower = () => Build(Word.Jump(0x90000000u), Word.Cop1Unusable);
