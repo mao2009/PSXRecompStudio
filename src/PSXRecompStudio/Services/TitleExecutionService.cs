@@ -18,7 +18,8 @@ namespace PSXRecompStudio.Services;
 public sealed record TitleExecutionRun(
     TitleExecutionResult Result,
     IReadOnlyList<byte> Output,
-    FrameSnapshot Frame);
+    FrameSnapshot Frame,
+    bool HasFrameEvidence = false);
 
 /// <summary>
 /// The Studio's composition root for running a title: it assembles the
@@ -92,7 +93,8 @@ public sealed class TitleExecutionService
             engine, new ProgramEndHandoff(entryPc, program.Count), request);
         var frame = engine.CaptureFrame();
 
-        return new TitleExecutionRun(result, sink.Bytes, frame);
+        // Issue #455: the presentation must tell "guest produced a frame" from untouched power-on VRAM.
+        return new TitleExecutionRun(result, sink.Bytes, frame, engine.CaptureFrameEvidence() is not null);
     }
 
     /// <summary>
@@ -127,7 +129,8 @@ public sealed class TitleExecutionService
             input.Request);
         var frame = engine.CaptureFrame();
 
-        return new TitleExecutionRun(result, sink.Bytes, frame);
+        // Issue #455: the presentation must tell "guest produced a frame" from untouched power-on VRAM.
+        return new TitleExecutionRun(result, sink.Bytes, frame, engine.CaptureFrameEvidence() is not null);
     }
 
     /// <summary>

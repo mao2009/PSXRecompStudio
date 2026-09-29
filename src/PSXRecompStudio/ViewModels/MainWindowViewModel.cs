@@ -35,6 +35,23 @@ public partial class MainWindowViewModel : ViewModelBase
     private string _realTitleExecutionStatus = "Not run";
 
     /// <summary>
+    /// The presentation copy of the last run's Runtime <c>FrameSnapshot</c> (Issue #455).
+    /// Starts as <see cref="FramePresentationState.NoFrame"/>; never a placeholder image.
+    /// </summary>
+    [ObservableProperty]
+    private PresentationFrame _presentedFrame = PresentationFrame.NoFrame;
+
+    /// <summary>Explicit text for the frame surface's current state.</summary>
+    public string FrameStatus => PresentedFrame.State switch
+    {
+        FramePresentationState.Ready => $"Frame {PresentedFrame.Width}x{PresentedFrame.Height}",
+        FramePresentationState.Unsupported => "Frame unsupported: display region has no visible area",
+        _ => "No frame: the Runtime has not produced one",
+    };
+
+    partial void OnPresentedFrameChanged(PresentationFrame value) => OnPropertyChanged(nameof(FrameStatus));
+
+    /// <summary>
     /// The raw bytes of the disc image the real-ROM production flow analyzes and executes.
     /// I/O-free by design: the Application layer is forbidden <see cref="System.IO.File"/> /
     /// <see cref="System.IO.Directory"/> by the architecture contract, so disc bytes are
@@ -52,6 +69,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private void RunDiagnosticTitle()
     {
         var run = _execution.RunDiagnostic();
+        PresentedFrame = PresentationFrame.From(run.Frame, run.HasFrameEvidence);
         var output = Encoding.ASCII.GetString([.. run.Output]);
         ExecutionStatus =
             $"{run.Result.State} via {run.Result.EngineName} " +
@@ -84,12 +102,17 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var result = await Task.Run(() =>
+        var worker = await Task.Run(() =>
         {
             var sha256 = Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
-            return _realExecution.AnalyzeAndExecuteFromDiscImage(bytes, sha256);
+            var analyzed = _realExecution.AnalyzeAndExecuteFromDiscImage(bytes, sha256);
+            // Frame adaptation stays off the UI thread; the snapshot is an immutable copy.
+            var frame = analyzed.Run is { } r ? PresentationFrame.From(r.Frame, r.HasFrameEvidence) : PresentationFrame.NoFrame;
+            return (analyzed, frame);
         }).ConfigureAwait(true);
+        var (result, presented) = worker;
+        PresentedFrame = presented;
 
         if (result.ExecutionLayoutRejectionReason is not null)
         {
