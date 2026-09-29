@@ -107,8 +107,12 @@ public sealed class ReachableProgramBuilderTests
             link ? Word.JumpAndLinkRegister(8, 9) : Word.JumpRegister(8),
             Word.Nop);
 
+        // Discovery still stops at the register-indirect transfer and guesses no
+        // static target; the exit carries the runtime target value (Issue #635).
         program.Blocks.Should().ContainSingle();
-        program.Blocks[0].Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        program.Blocks[0].Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        program.Blocks[0].Exit.TargetValueId.Should().NotBeNull();
+        program.Blocks[0].Exit.NextPc.Should().BeNull();
         program.Blocks[0].Exit.Flow.Should().BeNull();
     }
 

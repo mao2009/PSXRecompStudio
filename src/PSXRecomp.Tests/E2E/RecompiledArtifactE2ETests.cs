@@ -180,6 +180,72 @@ public sealed class RecompiledArtifactE2ETests
         outcome.Json.Should().Contain("BIOS_HLE_UNSUPPORTED_CALL");
     }
 
+    [Theory]
+    [InlineData(BiosJumpTables.A0VectorAddress, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosJumpTables.B0VectorAddress, BiosHleRuntime.PutCharAliasFunction)]
+    [InlineData(BiosJumpTables.C0VectorAddress, (byte)0xBD)]
+    public void SyntheticExe_JrBiosStub_ReachesTheService_AndReturnsToTheCaller(uint vector, byte function)
+    {
+        // Issue #635: the canonical PS1 BIOS stub reaches the vector through
+        // JR $t2, not a direct JAL, over the production launch path.
+        const uint marker = 0x7777u;
+        var words = new uint[]
+        {
+            GeneratedPsxExeFixtures.Immediate(0x0D, R3000aRegister.A0, 'P'),                 // 0
+            GeneratedPsxExeFixtures.Jump(0x03, GeneratedPsxExeFixtures.EntryPc + 0x18),       // 1 JAL stub
+            0u,                                                                               // 2
+            GeneratedPsxExeFixtures.Immediate(0x0D, R3000aRegister.S1, marker),               // 3 return lands here
+            GeneratedPsxExeFixtures.Jump(0x02, GeneratedPsxExeFixtures.EntryPc + 0x24),       // 4 J program end
+            0u,                                                                               // 5
+            GeneratedPsxExeFixtures.Immediate(0x09, R3000aRegister.T2, vector),               // 6 stub
+            (uint)R3000aRegister.T2 << 21 | 0x08u,                                            // 7 JR $t2
+            GeneratedPsxExeFixtures.Immediate(0x09, R3000aRegister.T1, function),             // 8 delay slot
+        };
+        var (program, request, loadAddress, wordCount) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
+
+        using var dir = new TempDirectory();
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program,
+            request,
+            new ProgramEndHandoff(loadAddress + (uint)(wordCount * sizeof(uint))),
+            dir.FullPath,
+            resultRegister: (int)R3000aRegister.S1);
+
+        outcome.Result.State.Should().Be(TitleExecutionState.Completed, outcome.Result.DiagnosticMessage);
+        outcome.Result.DiagnosticCode.Should().BeNull();
+        outcome.Result.ResultValue.Should().Be(marker);
+        outcome.Output.Should().Equal((byte)'P');
+    }
+
+    [Fact]
+    public void SyntheticExe_JrToAnUnresolvedTarget_FailsClosedWithADiagnostic()
+    {
+        // Issue #635: a register-indirect target that is neither a compiled block
+        // nor a host-claimed vector is an unresolved transfer with a diagnostic,
+        // never a silent RuntimeHandoff.
+        var words = new uint[]
+        {
+            GeneratedPsxExeFixtures.Immediate(0x0F, R3000aRegister.T0, GeneratedPsxExeFixtures.UnresolvedJumpTarget >> 16),
+            (uint)R3000aRegister.T0 << 21 | 0x08u, // JR $t0
+            0u,                                    // delay slot
+        };
+        var (program, request, loadAddress, wordCount) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
+
+        using var dir = new TempDirectory();
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program,
+            request,
+            new ProgramEndHandoff(loadAddress + (uint)(wordCount * sizeof(uint))),
+            dir.FullPath,
+            resultRegister: (int)R3000aRegister.V0);
+
+        outcome.Result.State.Should().Be(TitleExecutionState.UnsupportedTransfer);
+        outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Blocked);
+        outcome.Result.GuestPc.Should().Be(GeneratedPsxExeFixtures.UnresolvedJumpTarget);
+        outcome.Result.DiagnosticCode.Should().Be("UNRESOLVED_TRANSFER");
+        outcome.Result.DiagnosticMessage.Should().NotBeNullOrEmpty();
+    }
+
     private sealed class ProgramEndHandoff(uint programEnd) : ITitleExecutionHandoff
     {
         public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState) =>

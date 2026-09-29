@@ -98,8 +98,8 @@ to a **single** block — see [Delay slots](#delay-slots).
 | BNE rs,rt,off | as BEQ with `CompareNotEqual` | |
 | J target | delay slot → exit with `Jump` flow | Target from `R3000aJumpSemantics`; a jump exit carries no next PC |
 | JAL target | `Constant(pc + 8)` → `WriteGpr($ra)` → delay slot → exit with `Call` flow | Link value from `R3000aLinkSemantics`; the exit's next PC is the return address |
-| JR rs | delay slot → exit with `UnresolvedIndirectFlow` | See [Register-indirect control flow](#register-indirect-control-flow) |
-| JALR rd,rs | `ReadGpr(rs)` → `Constant(pc + 8)` → `WriteGpr(rd)` → delay slot → exit with `UnresolvedIndirectFlow` | Target read before the link write, so `JALR rd,rd` keeps the pre-link target |
+| JR rs | `ReadGpr(rs)` → delay slot → `Success` exit with `TargetValueId` = that read | See [Register-indirect control flow](#register-indirect-control-flow) |
+| JALR rd,rs | `ReadGpr(rs)` → `Constant(pc + 8)` → `WriteGpr(rd)` → delay slot → `Success` exit with `TargetValueId` = the `rs` read | Target read before the link write, so `JALR rd,rd` keeps the pre-link target |
 
 ## API Surface
 
@@ -257,23 +257,23 @@ so no truncation operation is emitted.
 ## Register-indirect control flow
 
 `RecompilerIrFlow.Target` is a static address, so it cannot carry a target held
-in a register. JR and JALR therefore lower to a block that retires its delay slot
-and then terminates with `RecompilerIrTerminationReason.UnresolvedIndirectFlow`.
-That is an honest statement of the frontier — control leaves the lowered program
-here — rather than a synthesized transfer. JR emits no operation of its own; JALR
-emits `ReadGpr(rs)` before its link write, because the link may target the same
-register and the interpreter captures the target first (`PSXCpu::ExecJalr`).
+in a register. Since Issue #635 JR and JALR read their target register first —
+before JALR's link write (the interpreter captures the target first,
+`PSXCpu::ExecJalr`, so `JALR rd,rd` keeps the pre-link value) and before the delay
+slot — retire the delay slot, and exit with `Success` and
+`RecompilerIrExit.TargetValueId` naming that read. The generated block writes it
+to `next_pc`; the dispatch loop then enters a compiled block at that address, or
+asks `host_transfer` (a BIOS A0/B0/C0 vector, resolved by address through
+`BiosJumpTables.TryResolveVectorFamily`), or ends the segment so the title-level
+handoff decides — `UNRESOLVED_TRANSFER` when no rule applies. A BREAK/SYSCALL in
+the delay slot still suppresses the transfer.
 
-`JR $ra` is **not** special-cased. A return-like flow would need
-`RecompilerIrFlowKind.Return`, which stays reserved precisely because its target
-is register-held; and treating any `JR $ra` as a return would be an analysis
-claim, not a semantic one — the same encoding also implements tail calls and
-computed jumps. It therefore lowers exactly like any other JR, and a program that
-calls and returns is cross-checked against the interpreter up to the return
-boundary (see `MipsToIrLoweringDifferentialTests.JalThenJrRa_ReturnsToTheLinkedAddress`).
-
-Resolving a register-held target — and with it `Return` — needs a contract change
-this stage deliberately does not make; see [Deferred](#deferred).
+`JR $ra` is **not** special-cased. Treating any `JR $ra` as a return would be an
+analysis claim, not a semantic one — the same encoding also implements tail calls
+and computed jumps — so it lowers exactly like any other JR, and a program that
+calls and returns runs through the return against the interpreter (see
+`MipsToIrLoweringDifferentialTests.JalThenJrRa_ReturnsToTheLinkedAddress`).
+`RecompilerIrFlowKind.Return` stays reserved.
 
 ## Bounded differential execution classification
 
@@ -318,7 +318,7 @@ report it as such.
 
 | Deferred | Reason |
 |---|---|
-| Register-held control-flow targets (JR / JALR resolution, `Return` flow) | `RecompilerIrFlow.Target` is a static address and has no value-id form. Expressing a runtime target needs a #206 contract change, which this stage deliberately does not make; the frontier stays explicit as `UnresolvedIndirectFlow`. |
+| `Return` flow | Register-held targets are carried by `RecompilerIrExit.TargetValueId` (Issue #635); a distinct return relation is not modelled. |
 | BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branch encodings (`0x06`-`0x07`, `0x01`) have no decoder entry yet; the signed comparison IR now exists (`CompareLessThanSigned`), so lowering them is a decoder + lowering extension. |
 | ADDI / SUB / ADD, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
 | COP0 / COP2, SYSCALL | Coprocessor and exception semantics. |

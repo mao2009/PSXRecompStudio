@@ -981,6 +981,13 @@ lower to `RecompilerIrTerminationReason.UnresolvedIndirectFlow` precisely
 because the IR carries no runtime target, so nothing in the recompiler models a
 computed jump this could have been expressed through.
 
+> **Amendment (2026-09-29, Issue #635):** the lowering fact above is historical.
+> Since #635, register-indirect `JR`/`JALR` carry their runtime target on
+> `RecompilerIrExit.TargetValueId` (see the ADR-020 amendment) and are relayed
+> through the existing generated dispatch loop and `host_transfer`. The decision
+> (option A) is unchanged. The other `UnresolvedIndirectFlow` mentions in this
+> ADR describe runtime BIOS stop paths and remain correct.
+
 No CPU semantics are reimplemented. Setting the PC hands the target back to the
 same native R3000A interpreter that ran the caller, and the target returns
 through the `$ra` the original call site linked — the trampoline never consumes

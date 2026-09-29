@@ -18,10 +18,9 @@ namespace PSXRecomp.Tests.Recompiler;
 /// what is asserted is the behavior of generated C, not of a simulation of it.
 /// </para>
 /// <para>
-/// The generated host can only enter a PC it compiled a block for, so every
-/// program here returns from a patched routine with a static jump rather than
-/// <c>jr $ra</c> (which lowers to
-/// <see cref="RecompilerIrTerminationReason.UnresolvedIndirectFlow"/>). The
+/// The patch programs return from the patched routine with a static jump; the
+/// <see cref="JrStubProgram"/> fixtures cover the register-indirect path
+/// (<c>jr $t2</c> into the vector, then back through <c>$ra</c>, Issue #635). The
 /// interpreter runs the identical fixture, which is what makes the parity
 /// assertions meaningful.
 /// </para>
@@ -328,6 +327,58 @@ public sealed class RecompiledBiosVectorDispatchTests
             Kseg0EntryPc, BiosJumpTables.A0VectorAddress, UnregisteredA0Function));
     }
 
+    // --- Issue #635: the canonical register-indirect BIOS stub ---------------
+
+    [Theory]
+    [InlineData(BiosCallFamily.A0, BiosHleRuntime.PutCharFunction)]
+    [InlineData(BiosCallFamily.B0, BiosHleRuntime.PutCharAliasFunction)]
+    [InlineData(BiosCallFamily.C0, (byte)0xBD)]
+    public void JrStub_PutChar_ReachesTheService_ReturnsThroughRa_AndMatchesTheInterpreter(
+        BiosCallFamily family, byte function)
+    {
+        var fixture = JrStubProgram(Kseg0EntryPc, VectorAddressOf(family), function, a0: (uint)'Z', a1: 0);
+
+        var hostSink = new CapturedOutputSink();
+        var result = RunGenerated(fixture, hostSink);
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Termination.Should().Be(RecompilerIrTerminationReason.Success);
+        result.Snapshot.Gpr[(int)R3000aRegister.V0].Should().Be((uint)'Z');
+        result.Snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(ReturnedMarker, "the service returned to the compiled caller");
+        result.Snapshot.PC.Should().Be(Kseg0EntryPc + (JrStubProgramLength * 4u));
+        hostSink.Bytes.Should().BeEquivalentTo(new byte[] { (byte)'Z' }, static o => o.WithStrictOrdering());
+
+        var (interpreterSink, paritySink) = AssertParity(fixture);
+        paritySink.Bytes.Should().BeEquivalentTo(interpreterSink.Bytes, static o => o.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void JrStub_InitHeap_IsSupported_AndMatchesTheInterpreter()
+    {
+        // The exact shape the Persona boot stops on (Issue #635): addiu $t2, $zero,
+        // 0xA0; jr $t2; addiu $t1, $zero, 0x39.
+        var fixture = JrStubProgram(
+            Kseg0EntryPc, BiosJumpTables.A0VectorAddress, BiosHleRuntime.InitHeapFunction, a0: 0x00100000u, a1: 0x8000u);
+
+        var result = RunGenerated(fixture);
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.S1].Should().Be(ReturnedMarker);
+
+        AssertParity(fixture);
+    }
+
+    [Fact]
+    public void JrStub_UnregisteredService_StopsWithTheRuntimesDiagnostic_AndMatchesTheInterpreter()
+    {
+        var fixture = JrStubProgram(Kseg0EntryPc, BiosJumpTables.A0VectorAddress, UnregisteredA0Function, a0: 0, a1: 0);
+
+        var result = RunGenerated(fixture);
+        result.DiagnosticCode.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
+        result.Snapshot!.Termination.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        result.Snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0u);
+
+        AssertParity(fixture);
+    }
+
     /// <summary>
     /// Runs one fixture through both executors over the same Runtime configuration
     /// and asserts that GPRs, HI/LO, PC, memory, termination reason and the
@@ -457,6 +508,47 @@ public sealed class RecompiledBiosVectorDispatchTests
             stepBudget: 16,
             initialGpr: initialGpr,
             initialMemory: initialMemory,
+            referenceStepBudget: 16);
+    }
+
+    // Register-indirect stub layout (Issue #635): the call reaches the vector
+    // through the canonical PS1 BIOS stub, not a direct JAL.
+    //
+    //   0  JAL  stub                      links $ra to index 2
+    //   1  NOP
+    //   2  ORI  $s1, $zero, returned      reached only on return from the service
+    //   3  J    end                       leave the program
+    //   4  NOP
+    //   5  ADDIU $t2, $zero, vector       the stub
+    //   6  JR   $t2
+    //   7  ADDIU $t1, $zero, function     delay slot selects the function
+
+    private const uint JrStubIndex = 5;
+    private const uint JrStubProgramLength = 8;
+
+    private static RecompilerDifferentialFixture JrStubProgram(
+        uint entryPc, uint vectorAddress, byte function, uint a0, uint a1)
+    {
+        var words = new uint[JrStubProgramLength];
+        words[0] = MipsEncoding.JumpAndLink(entryPc + (JrStubIndex * 4u));
+        words[1] = MipsEncoding.Nop;
+        words[2] = MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.S1, rs: 0, immediate: (ushort)ReturnedMarker);
+        words[3] = MipsEncoding.Jump(entryPc + (JrStubProgramLength * 4u));
+        words[4] = MipsEncoding.Nop;
+        words[JrStubIndex] = MipsEncoding.I(0x09, rt: (byte)R3000aRegister.T2, rs: 0, immediate: (ushort)vectorAddress);
+        words[6] = MipsEncoding.JumpRegister((byte)R3000aRegister.T2);
+        words[7] = MipsEncoding.I(0x09, rt: (byte)R3000aRegister.T1, rs: 0, immediate: function);
+
+        var initialGpr = new uint[RecompilerDifferentialFixture.GprCount];
+        initialGpr[(int)R3000aRegister.A0] = a0;
+        initialGpr[(int)R3000aRegister.A1] = a1;
+
+        return new RecompilerDifferentialFixture(
+            name: "recompiled-bios-jr-stub",
+            encodedInstructions: words,
+            entryPc: entryPc,
+            stepBudget: 16,
+            initialGpr: initialGpr,
             referenceStepBudget: 16);
     }
 

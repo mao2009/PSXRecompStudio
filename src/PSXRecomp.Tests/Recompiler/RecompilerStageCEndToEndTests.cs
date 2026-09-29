@@ -152,34 +152,35 @@ public sealed class RecompilerStageCEndToEndTests
     }
 
     [Fact]
-    public void IndirectJump_FailsClosed_AsUnresolvedIndirectFlow_OnTheHost()
+    public void IndirectJump_FollowsTheRegisterTarget_IntoACompiledBlock_OnTheHost()
     {
-        // The recompiled host cannot statically resolve a register-held target:
-        // it must terminate with UnresolvedIndirectFlow (host classification):
+        // Issue #635: the generated block writes the register-held target to
+        // next_pc, and the dispatch loop enters the compiled block there.
         var fixture = RecompilerFixtures.Issue209IndirectJump();
         var actual = new RecompilerHostExecutor().Execute(fixture);
 
         Assert.Equal(RecompilerExecutionStatus.Completed, actual.Status);
         Assert.NotNull(actual.Snapshot);
-        Assert.Equal(RecompilerIrTerminationReason.UnresolvedIndirectFlow, actual.Snapshot!.Termination);
-        Assert.Equal(0x80000008u, actual.Snapshot!.PC);           // parked at the JR block entry
-        Assert.Equal(0x80000014u, actual.Snapshot!.Gpr[8]);       // its setup instructions retired
+        Assert.Equal(RecompilerIrTerminationReason.Success, actual.Snapshot!.Termination);
+        Assert.Equal(0x80000018u, actual.Snapshot!.PC);           // ran off the end after the target
+        Assert.Equal(0x80000014u, actual.Snapshot!.Gpr[8]);
+        Assert.Equal(0u, actual.Snapshot!.Gpr[9]);                // 0x10 was skipped
+        Assert.Equal(4u, actual.Snapshot!.Gpr[10]);               // the JR target ran
     }
 
     [Fact]
-    public void IndirectJump_IsFollowedByThe_Interpreter_SoItIsNotADifferentialMatch()
+    public void IndirectJump_MatchesThe_Interpreter()
     {
-        // This is why an indirect transfer is a classification check and not a
-        // comparative one: the interpreter CAN follow $t0 (the JR target runs), so
-        // the two sides permanently diverge at the transfer. Records the intent.
+        // Before Issue #635 the two sides permanently diverged at the transfer;
+        // the host now follows $t0 like the interpreter does.
         var fixture = RecompilerFixtures.Issue209IndirectJump();
         var result = RecompilerDifferentialRunner.Run(
             fixture, new RecompilerInterpreterExecutor(), new RecompilerHostExecutor());
 
-        Assert.Equal(RecompilerExecutionStatus.Completed, result.Reference.Status);
+        Assert.True(result.BothCompleted, $"[{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}");
+        Assert.True(result.IsMatch, RecompilerDifferentialArtifacts.FailureMessage(result));
         Assert.Equal(RecompilerIrTerminationReason.Success, result.Reference.Snapshot!.Termination);
-        Assert.Equal(RecompilerIrTerminationReason.UnresolvedIndirectFlow, result.Actual.Snapshot!.Termination);
-        Assert.False(result.IsMatch);
+        Assert.Equal(RecompilerIrTerminationReason.Success, result.Actual.Snapshot!.Termination);
     }
 
     [Fact]

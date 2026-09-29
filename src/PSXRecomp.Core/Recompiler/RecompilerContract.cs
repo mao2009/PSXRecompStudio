@@ -317,17 +317,30 @@ public sealed record RecompilerIrExit
         RecompilerIrTerminationReason reason,
         uint? nextPc = null,
         RecompilerIrFlow? flow = null,
-        RecompilerExceptionState? exception = null)
+        RecompilerExceptionState? exception = null,
+        int? targetValueId = null)
     {
         Reason = reason;
         NextPc = nextPc;
         Flow = flow;
         Exception = exception;
+        TargetValueId = targetValueId;
     }
 
     public RecompilerIrTerminationReason Reason { get; }
     public uint? NextPc { get; }
     public RecompilerIrFlow? Flow { get; }
+
+    /// <summary>
+    /// The value id holding a runtime next PC (Issue #635): the register-indirect
+    /// target of JR/JALR, read before the link write and the delay slot. Only
+    /// valid on a flow-less <see cref="RecompilerIrTerminationReason.Success"/>
+    /// exit, as the alternative to <see cref="NextPc"/> — exactly one of the two
+    /// is set. The runtime decides what the address is (a compiled block, a BIOS
+    /// vector through the host transfer, or an unresolved transfer); the IR does
+    /// not classify it.
+    /// </summary>
+    public int? TargetValueId { get; }
 
     /// <summary>
     /// The exception state an <see cref="RecompilerIrTerminationReason.Exception"/>
@@ -496,6 +509,19 @@ public static class RecompilerIrValidator
         }
 
         var flow = exit.Flow;
+        if (exit.TargetValueId is { } targetValueId)
+        {
+            if (exit.Reason != RecompilerIrTerminationReason.Success || flow is not null || exit.NextPc is not null)
+            {
+                Add(diagnostics, RecompilerIrDiagnosticCode.IllegalTermination, "A runtime target value is only valid on a flow-less success exit without a next PC.", blockIndex);
+            }
+            else if (!definedValueIds.Contains(targetValueId))
+            {
+                Add(diagnostics, RecompilerIrDiagnosticCode.MissingOperand, "A runtime target value must be defined by an earlier operation in the block.", blockIndex);
+            }
+            return;
+        }
+
         if (flow is null)
         {
             if (exit.Reason == RecompilerIrTerminationReason.Success && exit.NextPc is null)

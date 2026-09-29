@@ -880,37 +880,35 @@ public class MipsToIrLoweringDifferentialTests
     [Fact]
     public void JalThenJrRa_ReturnsToTheLinkedAddress()
     {
-        // JAL links 0x0C; the callee's JR $ra leaves the lowered program, and the
-        // interpreter's PC at that same boundary is the linked address.
-        var callee = EntryPc + 0x14;
+        // JAL links 0x0C; the callee's JR $ra carries that runtime value as the
+        // block's next PC (Issue #635), so the IR lands on the compiled return
+        // block and runs on from there exactly like the interpreter.
+        var callee = EntryPc + 0x18;
         var words = new[]
         {
             MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),                    // 0x00
             MipsEncoding.JumpAndLink(callee),                                    // 0x04
             MipsEncoding.Nop,                                                    // 0x08 delay slot
             MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 5),                    // 0x0C return address
-            MipsEncoding.Nop,                                                    // 0x10
-            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 7),                   // 0x14 callee
-            MipsEncoding.JumpRegister(rs: 31),                                   // 0x18
-            MipsEncoding.Nop,                                                    // 0x1C return delay slot
+            MipsEncoding.Jump(EntryPc + 0x24),                                   // 0x10 leave the program
+            MipsEncoding.Nop,                                                    // 0x14 delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 7),                   // 0x18 callee
+            MipsEncoding.JumpRegister(rs: 31),                                   // 0x1C
+            MipsEncoding.Nop,                                                    // 0x20 return delay slot
         };
 
-        // 0x00, 0x04, 0x08, 0x14, 0x18, 0x1C — the IR stops at the indirect flow.
-        var run = RunBoth(
-            words,
-            retiredInstructions: 6,
-            dataWindowBytes: 0,
-            interpreterExtraSteps: 0,
-            expectedIrTermination: RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        // 0x00, 0x04, 0x08, 0x18, 0x1C, 0x20, 0x0C, 0x10, 0x14.
+        var run = RunBoth(words, retiredInstructions: 9, dataWindowBytes: 0, interpreterExtraSteps: 0);
 
         run.Ir.Gpr[31].Should().Be(EntryPc + 0x0C);
         run.Ir.Gpr[10].Should().Be(7u, "the callee ran");
-        run.Ir.Gpr[9].Should().Be(0u, "the IR run stops before the return lands");
-        run.InterpreterPc.Should().Be(run.Ir.Gpr[31], "the interpreter returns to the linked address");
+        run.Ir.Gpr[9].Should().Be(5u, "the return landed on the compiled caller");
+        run.Ir.Pc.Should().Be(EntryPc + 0x24);
+        run.InterpreterPc.Should().Be(run.Ir.Pc);
     }
 
     [Fact]
-    public void Jalr_LinksThenLeavesTheProgramThroughItsRegisterTarget()
+    public void Jalr_LinksThenTransfersToItsRegisterTarget()
     {
         var words = new[]
         {
@@ -923,17 +921,61 @@ public class MipsToIrLoweringDifferentialTests
             MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 6),                   // 0x18 register target
         };
 
-        var run = RunBoth(
-            words,
-            retiredInstructions: 4,
-            dataWindowBytes: 0,
-            interpreterExtraSteps: 0,
-            expectedIrTermination: RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        // 0x00, 0x04, 0x08, 0x0C, 0x18 — then control leaves the program.
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0, interpreterExtraSteps: 0);
 
         run.Ir.Gpr[31].Should().Be(EntryPc + 0x10, "JALR links the branch address + 8");
         run.Ir.Gpr[9].Should().Be(4u, "the delay slot retires before the transfer");
-        run.Ir.Gpr[11].Should().Be(0u, "the IR does not follow a register-held target");
-        run.InterpreterPc.Should().Be(EntryPc + 0x18, "the interpreter transfers to the register target");
+        run.Ir.Gpr[10].Should().Be(0u, "the link address is not executed");
+        run.Ir.Gpr[11].Should().Be(6u, "the IR follows the register-held target");
+        run.Ir.Pc.Should().Be(EntryPc + 0x1C);
+        run.InterpreterPc.Should().Be(run.Ir.Pc);
+    }
+
+    [Fact]
+    public void Jalr_SameRegister_TransfersToThePreLinkValue()
+    {
+        // JALR $t0, $t0: the target is read before the link write, so control
+        // reaches the old $t0 while $t0 itself ends up holding the link address.
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),               // 0x00
+            MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x0018),               // 0x04 $t0 = EntryPc + 0x18
+            MipsEncoding.JumpAndLinkRegister(rd: 8, rs: 8),                      // 0x08
+            MipsEncoding.Nop,                                                    // 0x0C delay slot
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0xBAD),               // 0x10 link address
+            MipsEncoding.Nop,                                                    // 0x14
+            MipsEncoding.R(0x21, rd: 11, rs: 8, rt: 0, shamt: 0),                // 0x18 $t3 = $t0
+        };
+
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0, interpreterExtraSteps: 0);
+
+        run.Ir.Gpr[8].Should().Be(EntryPc + 0x10, "the link write lands in the same register");
+        run.Ir.Gpr[10].Should().Be(0u);
+        run.Ir.Gpr[11].Should().Be(EntryPc + 0x10, "the target block observes the linked value");
+        run.Ir.Pc.Should().Be(EntryPc + 0x1C);
+        run.InterpreterPc.Should().Be(run.Ir.Pc);
+    }
+
+    [Fact]
+    public void Jr_DelaySlotOverwritingTheTargetRegister_DoesNotChangeTheTarget()
+    {
+        var words = new[]
+        {
+            MipsEncoding.I(0x0F, rt: 10, rs: 0, immediate: 0x8000),              // 0x00
+            MipsEncoding.I(0x09, rt: 10, rs: 10, immediate: 0x0014),             // 0x04 $t2 = EntryPc + 0x14
+            MipsEncoding.JumpRegister(rs: 10),                                   // 0x08
+            MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 0x0010),              // 0x0C delay slot rewrites $t2
+            MipsEncoding.I(0x09, rt: 11, rs: 0, immediate: 0xBAD),               // 0x10
+            MipsEncoding.I(0x09, rt: 12, rs: 0, immediate: 9),                   // 0x14 register target
+        };
+
+        var run = RunBoth(words, retiredInstructions: 5, dataWindowBytes: 0, interpreterExtraSteps: 0);
+
+        run.Ir.Gpr[10].Should().Be(0x10u, "the delay slot retires");
+        run.Ir.Gpr[11].Should().Be(0u, "the rewritten value is not the transfer target");
+        run.Ir.Gpr[12].Should().Be(9u);
+        run.InterpreterPc.Should().Be(run.Ir.Pc);
     }
 
     [Fact]

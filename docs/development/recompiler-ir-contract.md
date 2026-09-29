@@ -87,8 +87,8 @@ to ordinary RAM access or ordinary direct control flow.
 |---|---|---|
 | Ordinary guest memory | `Load*`/`Store*` with `MemoryEffect = Ordinary` (or `Unknown` when not statically known) | none; the access retires normally |
 | MMIO / device access | `Load*`/`Store*` with `MemoryEffect = Device` (or `Unknown`) | none; the access retires through the host memory hook. `UnsupportedMmio` → `RUNTIME_UNSUPPORTED_MMIO` is the reserved stop reason (already mapped by `DiagnosticAdapter`, with no producer yet; device semantics belong to the runtime) |
-| BIOS / runtime transfer | JR/JALR exit `UnresolvedIndirectFlow` (no flow); the host resolves it via the generated `host_transfer` hook / runtime dispatch (ADR-014) | `UnresolvedIndirectFlow` → runtime handoff, or the runtime's own code (e.g. BIOS dispatch failure) |
-| Indirect / unresolved control flow | same `UnresolvedIndirectFlow` exit; never a guessed `Jump`/`Call`; a host-unclaimed unknown PC stops the dispatcher | `UnresolvedIndirectFlow` at the JR/JALR block; landing on a PC that has no block and no handoff rule → `UNRESOLVED_TRANSFER` at title level |
+| BIOS / runtime transfer | JR/JALR `Success` exit carrying the register-held target as `TargetValueId` (no flow, no static next PC, Issue #635); the dispatch loop finds no block at a vector address and the generated `host_transfer` hook / runtime dispatch resolves it by target address (`BiosJumpTables.TryResolveVectorFamily`, ADR-014) | none when the service is supported; a runtime stop (e.g. BIOS dispatch failure) is `UnresolvedIndirectFlow` with the runtime's own code |
+| Indirect / unresolved control flow | same `TargetValueId` exit; never a guessed `Jump`/`Call`; a target with a compiled block continues guest→guest; a host-unclaimed unknown PC stops the dispatcher | landing on a PC that has no block, no host claim and no handoff rule → `UNRESOLVED_TRANSFER` at title level |
 | Exception-producing operation | `AddSigned` (ADDI) traps before its destination write; BREAK lowers to an `Exception` exit carrying Excode/EPC/BD; ADD/SUB/SYSCALL/COP0 and other not-yet-modelled trapping opcodes fail lowering | `Exception` → `CPU_EXCEPTION` |
 | Unsupported operation / effect | `MipsToIrLoweringResult.Unsupported`; codegen `Success=false` (`IR_VALIDATION_FAILED`, `UNSUPPORTED_OPERATION_KIND`, `UNSUPPORTED_FLOW_KIND`); an undefined `MemoryEffect` fails validation | `UnsupportedInstruction` / `UnsupportedIr` / `UnsupportedMemory` → `RECOMP_UNSUPPORTED_*` |
 
@@ -134,8 +134,12 @@ remain lowering/execution responsibilities. `CompareEqual` / `CompareNotEqual`
 operations produce the 0/1 condition values consumed by a `Branch` flow.
 
 A transfer whose target is held in a register (JR, JALR) has no flow: the block
-terminates with `UnresolvedIndirectFlow`, an explicit statement of the frontier
-rather than a synthesized transfer.
+exits with `Success` and `TargetValueId` naming the value that holds the runtime
+next PC (Issue #635). Exactly one of `NextPc` / `TargetValueId` is set on such
+an exit, and the value must be defined in the block. The IR does not classify
+the target: the runtime decides by address whether it is a compiled block, a
+host-claimed transfer (BIOS vector), or an unresolved transfer. `JR $ra` is not
+special-cased.
 
 ## Functions and metadata
 
@@ -155,6 +159,8 @@ uses an undefined operation or flow kind; mis-shapes a memory, compare, shift,
 or existing arithmetic operation; writes GPR[0]; leaves a branch condition
 undefined or a successor missing; leaves a call target or its return-address
 next PC missing; places a flow on a non-success exit; uses a reserved flow;
+carries a `TargetValueId` together with a next PC or flow, on a non-success
+exit, or naming an undefined value;
 duplicates a function entry PC; references a function block that is not in
 the program; carries an undefined `RecompilerIrMemoryEffectKind` on a memory
 operation; or carries any non-default memory effect on a non-memory operation.

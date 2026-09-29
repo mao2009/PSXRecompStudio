@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, resolved), #599 (LWL/LWR/SWL/SWR lowering, resolved), #628 (Syscall lowering, resolved), #440 (GPU remaining integration), #444 (CD-ROM), #447 (GTE), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #601 (this status synchronization)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, resolved), #599 (LWL/LWR/SWL/SWR lowering, resolved), #628 (Syscall lowering, resolved), #635 (register-indirect JR/JALR relay, resolved), #440 (GPU remaining integration), #444 (CD-ROM), #447 (GTE), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #601 (this status synchronization)
 
 ## Purpose
 
@@ -134,19 +134,34 @@ regression in either.
    `0x08`, EPC/BD carried on the exit, delay-slot form reports the owning
    branch), validated by `RecompilerIrValidator` and differential-tested
    against the native interpreter. The build stage now succeeds.
-6. **Current first blocker (measured after #628, runtime stage).** The same
-   CLI command now builds the artifact and fails at RUNTIME_EXECUTION:
-   `Blocked` / `RuntimeHandoff`, guest PC `0x80041694`, frame evidence
-   `BIOS_HLE_UNSUPPORTED_CALL` (`no-frame-activity`). The generated block at
-   that PC is a `JR $t2` whose delay slot loads `$t1 = 0x39` after `$t2 = 0xA0`
-   (read from the generated artifact source), i.e. a BIOS A0h call, function
-   `0x39`, reaching an unimplemented HLE service (#279 territory). This
-   is a runtime blocker, not a recompiler build blocker. Whether the
-   `Syscall @ 0x8004143C` block itself executed before this point was not
-   established by this measurement.
+6. **Resolved (#635).** Re-running the identical CLI command after #628
+   built the artifact and stopped at runtime: `Blocked` / `RuntimeHandoff`,
+   guest PC `0x80041694`, null result diagnostic. That block is the A0 stub
+   `addiu $t2,$zero,0xA0; jr $t2; addiu $t1,$zero,0x39`; register-indirect
+   `JR`/`JALR` ended the artifact run without relaying the target. #635
+   carries the target on the IR exit (`TargetValueId`) into the dispatch
+   loop; a block trace of the same artifact built with
+   `RECOMPILER_CHECKPOINTS` (local investigation, not committed) shows `0x80041694` → host-claimed
+   `0x000000A0` with `$t1 = 0x39` (A0:39 InitHeap, Supported) → return to
+   `0x800119C4`.
+7. **Current first blocker (measured after #635, runtime stage).** The same
+   CLI command now stops at `Blocked` / `UnsupportedTransfer`, exit 2,
+   guest PC `0x00000000`, `UNRESOLVED_TRANSFER`; frame evidence (the
+   separate interpreter run) is `unavailable` / `RuntimeFailure` /
+   `BIOS_HLE_UNSUPPORTED_CALL` (`no-frame-activity`), at A0:13. The artifact
+   reaches `0x00000000` through `jalr $v0` at `0x800251D0`, whose target is
+   loaded through the pointer at `0x8004FCE0`. The artifact's guest RAM is
+   not seeded with the PS-X EXE image (its input carries zero initial-memory
+   entries), so that load returns 0; in the EXE image the pointer chain names
+   `0x80025350`, which the interpreter calls. The same missing image data
+   already changes `$sp` at startup (the word at `0x800119E0`). The generated
+   program also has no block at `0x80025350` or at the `jalr` return address
+   `0x800251D8`, because reachable-program discovery stops at `JR`/`JALR`.
+   These are artifact memory-image and static-discovery gaps, not BIOS HLE
+   coverage.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is the unsupported BIOS HLE call above (#279); **GPU
+first measured stop is the unresolved transfer above; **GPU
 integration (#440) and CD-ROM (#444) remain unreached and unranked**. The
 generic sub-blocker ordering below is retained as the *anticipated* order once
 the recompiler's IR lowering coverage stops rejecting the production CLI's
