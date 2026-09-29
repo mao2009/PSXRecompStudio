@@ -151,6 +151,22 @@ contract in Issue #377) are preserved:
   a raised resolution — the agreement then lives in `exception.faultPc`. An
   unraised exception keeps the strict `pc` compare.
 
+### SYSCALL through the recompiler (Issue #628)
+
+SYSCALL (Excode 0x08, Sys) is lowered exactly like BREAK: a standalone SYSCALL
+is an exception-terminated IR block, and a SYSCALL in a branch/JAL delay slot
+suppresses the owning transfer (the link write still retires) and reports
+`faultPc = <owning branch PC>`, `inDelaySlot = true`. The interpreter oracle
+populates the snapshot exception resolution for both Sys and Bp. No new IR op
+or exit kind exists; only the Excode differs (`MipsToIrLowerer.TrapExcode`).
+
+The generated host does not model COP0: Cause/SR/EPC writes and the BEV-dependent
+vector (0x80000080 / 0xBFC00180) remain the native runtime's job, derived from the
+`(code, faultPc, inDelaySlot)` tuple. `ReachableProgramBuilder` treats the SYSCALL
+block as a terminal leaf: no edge to the vector (a runtime, BEV-dependent target)
+and no fall-through to PC+4. Executing the guest handler and returning through
+RFE/JR is not part of this lowering.
+
 ## Exception Vectors
 
 | Exception | BEV=0 | BEV=1 |

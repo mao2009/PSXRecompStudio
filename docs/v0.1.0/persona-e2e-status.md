@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, resolved), #599 (LWL/LWR/SWL/SWR lowering, resolved), #628 (Syscall lowering, current first blocker), #440 (GPU remaining integration), #444 (CD-ROM), #447 (GTE), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #601 (this status synchronization)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, resolved), #599 (LWL/LWR/SWL/SWR lowering, resolved), #628 (Syscall lowering, resolved), #440 (GPU remaining integration), #444 (CD-ROM), #447 (GTE), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #601 (this status synchronization)
 
 ## Purpose
 
@@ -128,19 +128,26 @@ regression in either.
    and pending load-delay interaction. #599 added IR lowering and
    differential coverage against the native interpreter; `Lwl @ 0x800287A4`
    is resolved by PR #627.
-5. **Current first blocker (#628, filed, not yet investigated or
-   implemented).** Re-running the identical CLI command after #599 / PR #627
-   now stops at PC `0x8004143C` (`Syscall`, `[InvalidOperationShape] Opcode
-   'Syscall' is not supported by this lowering stage.`). This is still a
-   recompiler build-stage failure; #628 tracks it, and its required
-   semantics have not been investigated yet. The measurement is as reported
-   in PR #627 (worker measurement; the CLI run was not re-executed when this
-   status was synchronized).
+5. **Resolved (#628).** Re-running the identical CLI command after #599 /
+   PR #627 stopped at PC `0x8004143C` (`Syscall`). #628 lowers `Syscall` as
+   the same architectural synchronous exception exit BREAK uses (Excode
+   `0x08`, EPC/BD carried on the exit, delay-slot form reports the owning
+   branch), validated by `RecompilerIrValidator` and differential-tested
+   against the native interpreter. The build stage now succeeds.
+6. **Current first blocker (measured after #628, runtime stage).** The same
+   CLI command now builds the artifact and fails at RUNTIME_EXECUTION:
+   `Blocked` / `RuntimeHandoff`, guest PC `0x80041694`, frame evidence
+   `BIOS_HLE_UNSUPPORTED_CALL` (`no-frame-activity`). The generated block at
+   that PC is a `JR $t2` whose delay slot loads `$t1 = 0x39` after `$t2 = 0xA0`
+   (read from the generated artifact source), i.e. a BIOS A0h call, function
+   `0x39`, reaching an unimplemented HLE service (#279 territory). This
+   is a runtime blocker, not a recompiler build blocker. Whether the
+   `Syscall @ 0x8004143C` block itself executed before this point was not
+   established by this measurement.
 
-Because the build still fails before `RUNTIME_EXECUTION` starts, **BIOS HLE
-coverage (#279), GPU integration (#440) and CD-ROM (#444) all remain
-unreached and unranked** — none of them can be promoted to "the next blocker"
-without a production CLI run that actually reaches RUNTIME_EXECUTION. The
+The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
+first measured stop is the unsupported BIOS HLE call above (#279); **GPU
+integration (#440) and CD-ROM (#444) remain unreached and unranked**. The
 generic sub-blocker ordering below is retained as the *anticipated* order once
 the recompiler's IR lowering coverage stops rejecting the production CLI's
 whole-program build; it is not itself measured evidence.
@@ -301,7 +308,7 @@ or local paths.
 - [Issue #596](https://github.com/mao2009/PSXRecompStudio/issues/596) — register-shift-amount opcode IR lowering (resolved the `Srlv` blocker)
 - [Issue #597](https://github.com/mao2009/PSXRecompStudio/issues/597) — MULT/DIV/HI-LO IR lowering (resolved the `Mult` blocker)
 - [Issue #599](https://github.com/mao2009/PSXRecompStudio/issues/599) — LWL/LWR/SWL/SWR IR lowering (resolved by PR #627; the `Lwl` blocker at PC `0x800287A4`)
-- [Issue #628](https://github.com/mao2009/PSXRecompStudio/issues/628) — Syscall / exception-transfer IR lowering (current first blocker, `Syscall` at PC `0x8004143C`)
+- [Issue #628](https://github.com/mao2009/PSXRecompStudio/issues/628) — Syscall / exception-transfer IR lowering (resolved; `Syscall` at PC `0x8004143C`)
 - [Issue #279](https://github.com/mao2009/PSXRecompStudio/issues/279) — BIOS-less execution / remaining HLE coverage (not yet reached by a production CLI run)
 - [Issue #440](https://github.com/mao2009/PSXRecompStudio/issues/440) — remaining GPU production integration; DMA2 remains (IRQ1 #574 and headless FrameSnapshot #575 are complete)
 - [Issue #444](https://github.com/mao2009/PSXRecompStudio/issues/444) — CD-ROM runtime model; register/FIFO substrate landed via #588, command protocol #586 and DMA3/IRQ2 #587 remain

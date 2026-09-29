@@ -307,18 +307,6 @@ public class RecompilerIrMemoryEffectTests
         result.UnsupportedOpcode.Should().Be(R3000aOpcode.Add);
     }
 
-    [Fact]
-    public void Syscall_IsUnsupportedAndFailsExplicitly()
-    {
-        var instruction = R3000aDecoder.Decode(MipsEncoding.R(0x0C, rd: 0, rs: 0, rt: 0, shamt: 0));
-        instruction.Opcode.Should().Be(R3000aOpcode.Syscall);
-
-        var result = MipsToIrLowerer.Lower(instruction, EntryPc);
-
-        result.IsSupported.Should().BeFalse();
-        result.Block.Should().BeNull();
-    }
-
     // Issue #481: a reachable BREAK raises a synchronous Bp exception (Excode
     // 0x09). Unlike ADD/ADDI overflow it does not depend on runtime data, so the
     // exception is fully resolvable at lowering time and is carried on the exit
