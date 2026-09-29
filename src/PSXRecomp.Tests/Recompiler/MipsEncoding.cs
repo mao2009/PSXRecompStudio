@@ -55,6 +55,12 @@ internal static class MipsEncoding
     /// </summary>
     public static uint Break() => R(0x0D, rd: 0, rs: 0, rt: 0, shamt: 0);
 
+    /// <summary>
+    /// Encodes a SYSCALL (SPECIAL funct 0x0C), which raises a synchronous Sys
+    /// exception — Excode 0x08, docs/cpu/exceptions.md.
+    /// </summary>
+    public static uint Syscall() => R(0x0C, rd: 0, rs: 0, rt: 0, shamt: 0);
+
     private static byte MemoryOpcodeField(R3000aOpcode opcode) => opcode switch
     {
         R3000aOpcode.Lb => 0x20,

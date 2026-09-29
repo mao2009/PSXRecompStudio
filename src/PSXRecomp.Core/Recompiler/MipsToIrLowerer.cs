@@ -45,6 +45,23 @@ public static class MipsToIrLowerer
     public const uint BreakExcode = 0x09;
 
     /// <summary>
+    /// CAUSE Excode for the SYSCALL instruction (Sys, docs/cpu/exceptions.md).
+    /// SYSCALL is lowered exactly like BREAK apart from this code (Issue #628).
+    /// </summary>
+    public const uint SyscallExcode = 0x08;
+
+    /// <summary>
+    /// Returns the CAUSE Excode of a synchronous trap instruction (SYSCALL/BREAK)
+    /// this stage lowers as an exception exit, or <see langword="null"/>.
+    /// </summary>
+    public static uint? TrapExcode(R3000aOpcode opcode) => opcode switch
+    {
+        R3000aOpcode.Syscall => SyscallExcode,
+        R3000aOpcode.Break => BreakExcode,
+        _ => null,
+    };
+
+    /// <summary>
     /// Lowers one straight-line instruction into its own block.
     /// An instruction that owns a delay slot is rejected here; use
     /// <see cref="LowerControlTransfer"/> for it.
@@ -60,9 +77,9 @@ public static class MipsToIrLowerer
                 "lower it together with its delay-slot instruction via LowerControlTransfer.");
         }
 
-        if (instruction.Opcode == R3000aOpcode.Break)
+        if (TrapExcode(instruction.Opcode) is { } trapExcode)
         {
-            // BREAK raises a synchronous Bp exception (Excode 0x09) before any
+            // BREAK/SYSCALL raise a synchronous exception (Bp 0x09 / Sys 0x08) before any
             // later instruction retires; it reads and writes no registers, so an
             // empty operation list fully describes it. The block carries the
             // exception details so the host code generator can reproduce EPC/BD
@@ -73,7 +90,7 @@ public static class MipsToIrLowerer
                 Array.Empty<RecompilerIrOperation>(),
                 new RecompilerIrExit(
                     RecompilerIrTerminationReason.Exception,
-                    exception: CreateBreakException(entryPc, inDelaySlot: false))));
+                    exception: CreateTrapException(trapExcode, entryPc, inDelaySlot: false))));
         }
 
         var builder = new BlockBuilder();
@@ -768,11 +785,11 @@ public static class MipsToIrLowerer
         // the pending transfer applies. It reads no registers, so nothing else is
         // emitted; the exception carries the owning branch's PC and BD=1, and the
         // caller suppresses the transfer flow (Issue #481).
-        if (delaySlot.Opcode == R3000aOpcode.Break)
+        if (TrapExcode(delaySlot.Opcode) is { } trapExcode)
         {
             trapExit = new RecompilerIrExit(
                 RecompilerIrTerminationReason.Exception,
-                exception: CreateBreakException(controlPc, inDelaySlot: true));
+                exception: CreateTrapException(trapExcode, controlPc, inDelaySlot: true));
             return null;
         }
 
@@ -788,8 +805,8 @@ public static class MipsToIrLowerer
             $"The delay-slot instruction of '{control.Opcode}' could not be lowered: {failure.DiagnosticMessage}");
     }
 
-    private static RecompilerExceptionState CreateBreakException(uint faultPc, bool inDelaySlot) =>
-        new(isRaised: true, code: BreakExcode, faultPc: faultPc, inDelaySlot: inDelaySlot);
+    private static RecompilerExceptionState CreateTrapException(uint excode, uint faultPc, bool inDelaySlot) =>
+        new(isRaised: true, code: excode, faultPc: faultPc, inDelaySlot: inDelaySlot);
 
     /// <summary>
     /// Reports the GPRs an instruction reads, for the opcodes this stage lowers.
