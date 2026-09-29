@@ -58,6 +58,8 @@ psxrecomp run <input.exe|input.chd> --output out --report
 
 No input to hand? Run the [synthetic demo](docs/development/showcase-demo.md), which generates its own redistributable PS-X EXE.
 
+![Synthetic demo: pipeline and terminal output](docs/assets/demo/synthetic-demo.svg)
+
 See the [headless CLI reference](docs/development/headless-cli.md) for JSON output, exit codes, report contents, and input behavior.
 
 ## Architecture
