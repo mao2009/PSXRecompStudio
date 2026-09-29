@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="448" viewBox="0 0 960 448" role="img" aria-labelledby="t">
+<title id="t">PSXRecompStudio synthetic demo: pipeline and terminal output</title>
+<rect width="960" height="448" fill="#0d1117"/>
+<text x="24" y="34" fill="#e6edf3" font-family="sans-serif" font-size="20" font-weight="bold">PSXRecompStudio: synthetic PS-X EXE, recompiled and run</text>
+<rect x="24" y="56" width="140" height="44" rx="6" fill="#161b22" stroke="#3fb950"/>
+<text x="94" y="83" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="14">PS-X EXE</text>
+<text x="176" y="83" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="16">&#8594;</text>
+<rect x="188" y="56" width="140" height="44" rx="6" fill="#161b22" stroke="#3fb950"/>
+<text x="258" y="83" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="14">MIPS analysis</text>
+<text x="340" y="83" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="16">&#8594;</text>
+<rect x="352" y="56" width="140" height="44" rx="6" fill="#161b22" stroke="#3fb950"/>
+<text x="422" y="83" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="14">IR / lowering</text>
+<text x="504" y="83" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="16">&#8594;</text>
+<rect x="516" y="56" width="140" height="44" rx="6" fill="#161b22" stroke="#3fb950"/>
+<text x="586" y="83" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="14">Host code</text>
+<text x="668" y="83" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="16">&#8594;</text>
+<rect x="680" y="56" width="140" height="44" rx="6" fill="#161b22" stroke="#3fb950"/>
+<text x="750" y="83" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="14">Native artifact</text>
+<text x="832" y="83" text-anchor="middle" fill="#8b949e" font-family="sans-serif" font-size="16">&#8594;</text>
+<rect x="844" y="56" width="140" height="44" rx="6" fill="#161b22" stroke="#3fb950"/>
+<text x="914" y="83" text-anchor="middle" fill="#e6edf3" font-family="sans-serif" font-size="14">Execution</text>
+<rect x="24" y="128" width="912" height="280" rx="8" fill="#010409" stroke="#30363d"/>
+<text x="40" y="154" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve">Generated synthetic input: synthetic.exe (2068 bytes, SHA-256 a863090b04d20a9f790c4cf533dd13edf5a222f3852c6178f28605a8c910ae6e)</text>
+<text x="40" y="174" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve"></text>
+<text x="40" y="194" fill="#79c0ff" font-family="monospace" font-size="13" xml:space="preserve">$ psxrecomp recompile synthetic.exe --output out --json</text>
+<text x="40" y="214" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve"></text>
+<text x="40" y="234" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve">kind    : recompile</text>
+<text x="40" y="254" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve">success : True</text>
+<text x="40" y="274" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve">status  : Succeeded</text>
+<text x="40" y="294" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve"></text>
+<text x="40" y="314" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve"></text>
+<text x="40" y="334" fill="#79c0ff" font-family="monospace" font-size="13" xml:space="preserve">$ psxrecomp run synthetic.exe --output out --json</text>
+<text x="40" y="354" fill="#e6edf3" font-family="monospace" font-size="13" xml:space="preserve">kind=run success=True engine=recompiled-host-artifact exitCode=0 tty=&apos;P&apos;</text>
+<text x="40" y="374" fill="#3fb950" font-family="monospace" font-size="13" xml:space="preserve">DEMO OK: generated code ran; TTY &quot;P&quot;; repeated run identical.</text>
+<text x="24" y="432" fill="#8b949e" font-family="sans-serif" font-size="12">Synthetic repository-authored input (5 MIPS instructions). Not a commercial-title compatibility claim. Rendered from a captured transcript.</text>
+</svg>
