@@ -56,6 +56,8 @@ psxrecomp run <input.exe|input.chd> --output out
 psxrecomp run <input.exe|input.chd> --output out --report
 ```
 
+入力ファイルがない場合は、再配布可能な PS-X EXE を自動生成する [synthetic demo](docs/development/showcase-demo.md) を実行できます（英語版）。
+
 JSON 出力、exit code、report 内容、入力処理の詳細は [Headless CLI reference](docs/development/headless-cli.md) を参照してください。
 
 ## アーキテクチャ

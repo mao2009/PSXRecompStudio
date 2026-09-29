@@ -114,6 +114,7 @@ Constraints:
 - [MIPS-to-IR Lowering](development/recompiler-ir-lowering.md)
 - [Recompiler Host Code Generation](development/recompiler-host-codegen.md)
 - [Headless CLI](development/headless-cli.md)
+- [Synthetic showcase demo](development/showcase-demo.md)
 - [References and Prior Art](REFERENCES.md)
 - [Architecture Decision Records](adr/)
 - CPU / R3000A
