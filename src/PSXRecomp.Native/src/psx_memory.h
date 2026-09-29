@@ -32,6 +32,15 @@ static constexpr uint32_t PSX_TIMER_REGION_END = PSX_TIMER_BASE + 3u * 0x10u - 1
 static constexpr uint32_t PSX_GPU_MMIO_BASE = 0x1F801810u;
 static constexpr uint32_t PSX_GPU_MMIO_END = 0x1F801820u; // exclusive
 
+// CD-ROM controller ports 0x1F801800-0x1F801803 (index/status, command/
+// response/data, and the two banked registers behind the index byte). CD-ROM
+// semantics remain managed (CdRomDevice); real hardware and this codebase's
+// guest software access these four registers only as individual bytes, so
+// only Read8/Write8 are intercepted, mirroring the GPU bridge but at byte
+// width (Issue #587).
+static constexpr uint32_t PSX_CDROM_MMIO_BASE = 0x1F801800u;
+static constexpr uint32_t PSX_CDROM_MMIO_END = 0x1F801804u; // exclusive
+
 /*
  * Guest RAM/scratchpad/BIOS/HW-register storage and access semantics.
  * Implemented in Rust (`../rust/src/memory.rs`, Issue #492); this header
@@ -95,6 +104,9 @@ uint8_t psx_memory_get_sio0_last_command_byte(const PsxMemoryHandle* mem);
 using PSXGpuMmioRead32Callback = uint32_t (*)(void* context, uint32_t address);
 using PSXGpuMmioWrite32Callback = void (*)(void* context, uint32_t address, uint32_t value);
 
+using PSXCdRomMmioRead8Callback = uint8_t (*)(void* context, uint32_t address);
+using PSXCdRomMmioWrite8Callback = void (*)(void* context, uint32_t address, uint8_t value);
+
 class PSXMemory {
 public:
     PSXMemory();
@@ -128,6 +140,13 @@ public:
     // Passing null callbacks detaches the bridge.
     void AttachGpuMmio(void* context, PSXGpuMmioRead32Callback read32, PSXGpuMmioWrite32Callback write32);
 
+    // Attaches the managed CD-ROM controller model to the production native
+    // CPU path. Only 8-bit accesses in the CD-ROM port window are
+    // intercepted; all CD-ROM semantics remain owned by the managed
+    // CdRomDevice/CdRomMmioAdapter. Passing null callbacks detaches the
+    // bridge (Issue #587).
+    void AttachCdRomMmio(void* context, PSXCdRomMmioRead8Callback read8, PSXCdRomMmioWrite8Callback write8);
+
     // Memory read/write helpers for CPU
     uint32_t Read32(uint32_t address);
     void Write32(uint32_t address, uint32_t value);
@@ -155,6 +174,9 @@ private:
     void* gpu_context_ = nullptr;
     PSXGpuMmioRead32Callback gpu_read32_ = nullptr;
     PSXGpuMmioWrite32Callback gpu_write32_ = nullptr;
+    void* cdrom_context_ = nullptr;
+    PSXCdRomMmioRead8Callback cdrom_read8_ = nullptr;
+    PSXCdRomMmioWrite8Callback cdrom_write8_ = nullptr;
 };
 
 inline PSXMemory::PSXMemory() : handle_(psx_memory_create()) {
@@ -189,6 +211,15 @@ inline void PSXMemory::AttachGpuMmio(
     gpu_write32_ = write32;
 }
 
+inline void PSXMemory::AttachCdRomMmio(
+    void* context,
+    PSXCdRomMmioRead8Callback read8,
+    PSXCdRomMmioWrite8Callback write8) {
+    cdrom_context_ = context;
+    cdrom_read8_ = read8;
+    cdrom_write8_ = write8;
+}
+
 inline uint32_t PSXMemory::Read32(uint32_t address) {
     if (address >= PSX_GPU_MMIO_BASE && address < PSX_GPU_MMIO_END && gpu_read32_) {
         return gpu_read32_(gpu_context_, address);
@@ -213,10 +244,17 @@ inline void PSXMemory::Write16(uint32_t address, uint16_t value) {
 }
 
 inline uint8_t PSXMemory::Read8(uint32_t address) {
+    if (address >= PSX_CDROM_MMIO_BASE && address < PSX_CDROM_MMIO_END && cdrom_read8_) {
+        return cdrom_read8_(cdrom_context_, address);
+    }
     return psx_memory_read8(handle_, address, dma_, timers_, interrupts_);
 }
 
 inline void PSXMemory::Write8(uint32_t address, uint8_t value) {
+    if (address >= PSX_CDROM_MMIO_BASE && address < PSX_CDROM_MMIO_END && cdrom_write8_) {
+        cdrom_write8_(cdrom_context_, address, value);
+        return;
+    }
     psx_memory_write8(handle_, address, value, dma_, timers_, interrupts_);
 }
 

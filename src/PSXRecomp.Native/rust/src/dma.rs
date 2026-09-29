@@ -255,6 +255,71 @@ pub extern "C" fn psx_dma_get_interrupt_pending(state: DmaState) -> u32 {
     u32::from(irq_line(state.dicr))
 }
 
+/// Returns `state` after `cycles` CPU cycles of DMA progress, exactly like
+/// [`psx_dma_tick`], except `excluded_channel` is skipped entirely: its
+/// CHCR/remaining/DICR flag never change, no matter its started state
+/// (Issue #587). Used when another owner (the managed CD-ROM DMA3 bridge)
+/// exclusively completes that channel via [`psx_dma_complete_channel`], so
+/// this generic per-cycle model must not also age or complete it. Infallible.
+#[no_mangle]
+pub extern "C" fn psx_dma_tick_excluding_channel(state: DmaState, cycles: u32, excluded_channel: u32) -> DmaState {
+    let mut s = state;
+    if cycles == 0 {
+        return s;
+    }
+    for (ch, (channel, remaining)) in s.channels.iter_mut().zip(s.remaining.iter_mut()).enumerate() {
+        if ch as u32 == excluded_channel {
+            continue;
+        }
+        let bit = 1u32 << ch;
+        if !channel_started(s.dpcr, ch as u32, channel.chcr) {
+            continue;
+        }
+        if *remaining == 0 {
+            *remaining = transfer_cycles(channel);
+        }
+        if cycles < *remaining {
+            *remaining -= cycles;
+            continue;
+        }
+        *remaining = 0;
+        channel.chcr &= !(CHCR_START_BUSY | CHCR_START_TRIGGER);
+        if s.dicr & (bit << 24) != 0 {
+            s.dicr |= bit;
+        }
+    }
+    s
+}
+
+/// Returns `state` after immediately completing `channel`'s in-flight
+/// transfer, independent of elapsed cycles (Issue #587): clears its CHCR
+/// start/busy (bit 24) and start/trigger (bit 28) bits and sets its DICR flag
+/// when that channel's DICR enable is set — the same register-visible
+/// completion signal [`psx_dma_tick`] would eventually produce, without
+/// costing a modelled duration or touching any other channel's CHCR,
+/// remaining duration or DICR flag. A channel that is not currently started
+/// (channel_started false) is left unchanged. Used by the managed CD-ROM
+/// DMA3 bridge, which already moved the whole burst's data itself and only
+/// needs this one-shot completion signal. Infallible.
+#[no_mangle]
+pub extern "C" fn psx_dma_complete_channel(state: DmaState, channel: u32) -> DmaState {
+    let mut s = state;
+    let Ok(idx) = usize::try_from(channel) else { return s; };
+    let Some(c) = s.channels.get_mut(idx) else { return s; };
+    if !channel_started(s.dpcr, channel, c.chcr) {
+        return s;
+    }
+    c.chcr &= !(CHCR_START_BUSY | CHCR_START_TRIGGER);
+    if let Some(r) = s.remaining.get_mut(idx) {
+        *r = 0;
+    }
+    let bit = 1u32 << idx;
+    if s.dicr & (bit << 24) != 0 {
+        s.dicr |= bit;
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,4 +566,86 @@ mod tests {
         };
         assert_eq!(run(), run());
     }
+
+    /// Channel `ch` armed for a manual (sync 0) transfer of `words` words,
+    /// with DPCR enable and, when `irq`, DICR master + that channel's enable.
+    fn armed_channel(ch: u32, words: u32, irq: bool) -> DmaState {
+        let mut s = psx_dma_reset();
+        s = psx_dma_write_register(s, PSX_DMA_DPCR, PSX_DMA_DPCR_RESET | (1 << (3 + 4 * ch)));
+        if irq {
+            s = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | ((1 << ch) << 24));
+        }
+        s = psx_dma_write_register(s, chan_addr(ch, 4), words);
+        psx_dma_write_register(s, chan_addr(ch, 8), CHCR_START_BUSY | CHCR_START_TRIGGER)
+    }
+
+    #[test]
+    fn tick_excluding_channel_leaves_it_completely_untouched() {
+        // Channel 3 (CD-ROM) and channel 6 (OTC) both armed; ticking while
+        // excluding channel 3 must complete channel 6 but leave channel 3's
+        // CHCR/remaining/DICR flag exactly as armed_channel left them.
+        let armed = {
+            let mut s = armed_channel(3, 8, true);
+            s = psx_dma_write_register(s, PSX_DMA_DPCR, s.dpcr | (1 << (3 + 4 * 6)));
+            s = psx_dma_write_register(s, PSX_DMA_DICR, s.dicr | (0x40 << 24));
+            s = psx_dma_write_register(s, chan_addr(6, 4), 4);
+            psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
+        };
+        let channel_3_before = armed.channels[3];
+
+        let s = psx_dma_tick_excluding_channel(armed, 4, 3);
+
+        assert_eq!(s.channels[3], channel_3_before, "excluded channel's CHCR must not change");
+        assert_eq!(s.remaining[3], 0, "excluded channel's remaining duration must not be costed");
+        assert_eq!(s.dicr & DMA3_FLAG, 0, "excluded channel's DICR flag must not be set");
+        assert_eq!(s.channels[6].chcr & CHCR_START_BUSY, 0, "the non-excluded channel still completes normally");
+        assert_eq!(s.dicr & (0x40), 0x40, "the non-excluded channel's DICR flag still sets");
+    }
+
+    #[test]
+    fn tick_excluding_channel_still_advances_every_other_channel() {
+        let s = psx_dma_tick_excluding_channel(armed_channel(6, 4, true), 4, 3);
+        assert_eq!(s.channels[6].chcr & CHCR_START_BUSY, 0);
+        assert_eq!(s.dicr & DICR_FLAGS_MASK, 0x40);
+    }
+
+    #[test]
+    fn complete_channel_finishes_only_that_channel() {
+        let armed = {
+            let mut s = armed_channel(3, 8, true);
+            s = psx_dma_write_register(s, PSX_DMA_DPCR, s.dpcr | (1 << (3 + 4 * 6)));
+            s = psx_dma_write_register(s, PSX_DMA_DICR, s.dicr | (0x40 << 24));
+            s = psx_dma_write_register(s, chan_addr(6, 4), 4);
+            psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
+        };
+        let channel_6_before = armed.channels[6];
+        let remaining_6_before = armed.remaining[6];
+
+        let s = psx_dma_complete_channel(armed, 3);
+
+        assert_eq!(s.channels[3].chcr & (CHCR_START_BUSY | CHCR_START_TRIGGER), 0);
+        assert_eq!(s.dicr & DMA3_FLAG, DMA3_FLAG);
+        assert_eq!(s.remaining[3], 0);
+        assert_eq!(s.channels[6], channel_6_before, "unrelated channel's CHCR must not change");
+        assert_eq!(s.remaining[6], remaining_6_before, "unrelated channel's remaining duration must not change");
+        assert_eq!(s.dicr & 0x40, 0, "unrelated channel's DICR flag must not be set");
+    }
+
+    #[test]
+    fn complete_channel_is_noop_when_not_started() {
+        let s = psx_dma_reset();
+        assert_eq!(psx_dma_complete_channel(s, 3), s);
+
+        let no_trigger = psx_dma_write_register(armed_channel(3, 1, true), chan_addr(3, 8), CHCR_START_BUSY);
+        assert_eq!(psx_dma_complete_channel(no_trigger, 3), no_trigger);
+    }
+
+    #[test]
+    fn complete_channel_out_of_range_is_noop() {
+        let s = armed_channel(3, 1, true);
+        assert_eq!(psx_dma_complete_channel(s, 7), s);
+        assert_eq!(psx_dma_complete_channel(s, u32::MAX), s);
+    }
+
+    const DMA3_FLAG: u32 = 1 << 3;
 }

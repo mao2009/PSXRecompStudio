@@ -32,4 +32,12 @@ uint32_t psx_dma_read_register(PSXDmaState state, uint32_t address);
 PSXDmaState psx_dma_write_register(PSXDmaState state, uint32_t address, uint32_t value);
 uint32_t psx_dma_get_interrupt_pending(PSXDmaState state);
 PSXDmaState psx_dma_tick(PSXDmaState state, uint32_t cycles);
+
+/*
+ * Issue #587: channel-specific DMA advance/completion, so the managed
+ * CD-ROM DMA3 bridge can own channel 3's completion without the generic
+ * per-cycle model also aging or completing it (and vice versa).
+ */
+PSXDmaState psx_dma_tick_excluding_channel(PSXDmaState state, uint32_t cycles, uint32_t excluded_channel);
+PSXDmaState psx_dma_complete_channel(PSXDmaState state, uint32_t channel);
 }

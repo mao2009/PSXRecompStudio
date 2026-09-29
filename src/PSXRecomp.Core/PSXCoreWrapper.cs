@@ -33,11 +33,20 @@ public sealed class PSXCoreWrapper : IDisposable
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void GpuMmioWrite32Callback(IntPtr context, uint address, uint value);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate byte CdRomMmioRead8Callback(IntPtr context, uint address);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void CdRomMmioWrite8Callback(IntPtr context, uint address, byte value);
+
     private static readonly GpuMmioRead32Callback GpuRead32Thunk = ReadGpuMmio32;
     private static readonly GpuMmioWrite32Callback GpuWrite32Thunk = WriteGpuMmio32;
+    private static readonly CdRomMmioRead8Callback CdRomRead8Thunk = ReadCdRomMmio8;
+    private static readonly CdRomMmioWrite8Callback CdRomWrite8Thunk = WriteCdRomMmio8;
 
     private IntPtr _handle;
     private GCHandle _gpuMmioContext;
+    private GCHandle _cdRomMmioContext;
     private bool _disposed;
 
     /// <summary>Number of general-purpose registers (R0-R31) exposed by <see cref="GetGpr"/>/<see cref="SetGpr"/>.</summary>
@@ -190,6 +199,46 @@ public sealed class PSXCoreWrapper : IDisposable
         DetachGpuMmioCore();
     }
 
+    /// <summary>
+    /// Attaches a managed 8-bit CD-ROM-MMIO target to this core's production CPU
+    /// memory path (Issue #587). The callbacks remain owned and rooted by this
+    /// wrapper until <see cref="DetachCdRomMmio"/> or <see cref="Dispose"/>.
+    /// </summary>
+    internal void AttachCdRomMmio(Func<uint, byte> read8, Action<uint, byte> write8)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(read8);
+        ArgumentNullException.ThrowIfNull(write8);
+
+        DetachCdRomMmioCore();
+
+        var state = new CdRomMmioCallbackState(read8, write8);
+        _cdRomMmioContext = GCHandle.Alloc(state);
+        try
+        {
+            NativeInterop.PSXCore_SetCdRomMmioCallbacks(
+                _handle,
+                GCHandle.ToIntPtr(_cdRomMmioContext),
+                Marshal.GetFunctionPointerForDelegate(CdRomRead8Thunk),
+                Marshal.GetFunctionPointerForDelegate(CdRomWrite8Thunk));
+        }
+        catch
+        {
+            _cdRomMmioContext.Free();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Detaches the managed CD-ROM-MMIO bridge before its target is disposed.
+    /// Safe to call when no bridge is attached.
+    /// </summary>
+    internal void DetachCdRomMmio()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        DetachCdRomMmioCore();
+    }
+
     /// <summary>Reads a DMA controller register at the given absolute address.</summary>
     public uint ReadDmaRegister(uint address)
     {
@@ -216,6 +265,20 @@ public sealed class PSXCoreWrapper : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         NativeInterop.PSXCore_TickDma(_handle, cycles);
+    }
+
+    /// <summary>Like <see cref="TickDma"/>, except <paramref name="excludedChannel"/> is skipped entirely (Issue #587).</summary>
+    public void TickDmaExcludingChannel(uint cycles, uint excludedChannel)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_TickDmaExcludingChannel(_handle, cycles, excludedChannel);
+    }
+
+    /// <summary>Immediately completes <paramref name="channel"/>'s in-flight transfer, independent of elapsed cycles (Issue #587).</summary>
+    public void CompleteDmaChannel(uint channel)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_CompleteDmaChannel(_handle, channel);
     }
 
     /// <summary>Reads a timer (0-2) register at the given absolute address.</summary>
@@ -495,6 +558,7 @@ public sealed class PSXCoreWrapper : IDisposable
             if (_handle != IntPtr.Zero)
             {
                 DetachGpuMmioCore();
+                DetachCdRomMmioCore();
                 NativeInterop.PSXCore_Destroy(_handle);
                 _handle = IntPtr.Zero;
             }
@@ -514,6 +578,20 @@ public sealed class PSXCoreWrapper : IDisposable
         if (_gpuMmioContext.IsAllocated)
         {
             _gpuMmioContext.Free();
+        }
+    }
+
+    private void DetachCdRomMmioCore()
+    {
+        if (_handle != IntPtr.Zero)
+        {
+            NativeInterop.PSXCore_SetCdRomMmioCallbacks(
+                _handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        if (_cdRomMmioContext.IsAllocated)
+        {
+            _cdRomMmioContext.Free();
         }
     }
 
@@ -542,6 +620,31 @@ public sealed class PSXCoreWrapper : IDisposable
         }
     }
 
+    private static byte ReadCdRomMmio8(IntPtr context, uint address)
+    {
+        if (context == IntPtr.Zero)
+        {
+            return 0;
+        }
+
+        var handle = GCHandle.FromIntPtr(context);
+        return handle.Target is CdRomMmioCallbackState state ? state.Read8(address) : (byte)0;
+    }
+
+    private static void WriteCdRomMmio8(IntPtr context, uint address, byte value)
+    {
+        if (context == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var handle = GCHandle.FromIntPtr(context);
+        if (handle.Target is CdRomMmioCallbackState state)
+        {
+            state.Write8(address, value);
+        }
+    }
+
     private sealed class GpuMmioCallbackState
     {
         public GpuMmioCallbackState(Func<uint, uint> read32, Action<uint, uint> write32)
@@ -553,6 +656,19 @@ public sealed class PSXCoreWrapper : IDisposable
         public Func<uint, uint> Read32 { get; }
 
         public Action<uint, uint> Write32 { get; }
+    }
+
+    private sealed class CdRomMmioCallbackState
+    {
+        public CdRomMmioCallbackState(Func<uint, byte> read8, Action<uint, byte> write8)
+        {
+            Read8 = read8;
+            Write8 = write8;
+        }
+
+        public Func<uint, byte> Read8 { get; }
+
+        public Action<uint, byte> Write8 { get; }
     }
 
     ~PSXCoreWrapper()

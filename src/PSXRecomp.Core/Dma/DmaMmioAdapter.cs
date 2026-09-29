@@ -57,6 +57,13 @@ public sealed class DmaMmioAdapter : IDmaController, IMemoryBus, IDisposable
         EvaluateInterrupt();
     }
 
+    public void CompleteChannel(uint channel)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _core.CompleteDmaChannel(channel);
+        EvaluateInterrupt();
+    }
+
     public void SetInterruptCallback(Action<uint>? callback)
     {
         _interruptCallback = callback;

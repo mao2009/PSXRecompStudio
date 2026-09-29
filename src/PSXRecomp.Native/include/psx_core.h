@@ -99,6 +99,22 @@ PSX_API void PSXCore_SetGpuMmioCallbacks(
     PSXGpuMmioRead32 read32,
     PSXGpuMmioWrite32 write32);
 
+/** Managed CD-ROM-MMIO callback signatures used by the production interpreter bridge (Issue #587). */
+typedef uint8_t (*PSXCdRomMmioRead8)(void* context, uint32_t address);
+typedef void (*PSXCdRomMmioWrite8)(void* context, uint32_t address, uint8_t value);
+
+/**
+ * Attaches or detaches the managed CD-ROM register bridge used by the native
+ * CPU for 8-bit accesses to 0x1F801800-0x1F801803. CD-ROM semantics remain
+ * managed; this ABI only forwards the access. Ownership/lifetime and
+ * concurrency rules mirror PSXCore_SetGpuMmioCallbacks exactly.
+ */
+PSX_API void PSXCore_SetCdRomMmioCallbacks(
+    PSXCore* core,
+    void* context,
+    PSXCdRomMmioRead8 read8,
+    PSXCdRomMmioWrite8 write8);
+
 /** Reads a DMA controller register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 /** Writes a DMA controller register at the given absolute address. */
@@ -112,6 +128,21 @@ PSX_API int      PSXCore_GetDmaInterruptPending(PSXCore* core);
  * DICR enable is set.
  */
 PSX_API void     PSXCore_TickDma(PSXCore* core, uint32_t cycles);
+/**
+ * Like PSXCore_TickDma, except `excluded_channel` is skipped entirely: its
+ * CHCR/remaining/DICR flag never change no matter its started state
+ * (Issue #587). Used when another owner (the managed CD-ROM DMA3 bridge)
+ * exclusively completes that channel via PSXCore_CompleteDmaChannel.
+ */
+PSX_API void     PSXCore_TickDmaExcludingChannel(PSXCore* core, uint32_t cycles, uint32_t excluded_channel);
+/**
+ * Immediately completes `channel`'s in-flight transfer, independent of
+ * elapsed cycles (Issue #587): clears its CHCR bits 24/28 and sets its DICR
+ * flag when that channel's DICR enable is set. No other channel's CHCR,
+ * remaining duration, or DICR flag changes. A channel that is not currently
+ * started is left unchanged.
+ */
+PSX_API void     PSXCore_CompleteDmaChannel(PSXCore* core, uint32_t channel);
 
 /** Reads a timer (0-2) register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address);

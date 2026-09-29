@@ -106,6 +106,15 @@ void PSXCore_SetGpuMmioCallbacks(
     core->memory.AttachGpuMmio(context, read32, write32);
 }
 
+void PSXCore_SetCdRomMmioCallbacks(
+    PSXCore* core,
+    void* context,
+    PSXCdRomMmioRead8 read8,
+    PSXCdRomMmioWrite8 write8) {
+    if (!core) return;
+    core->memory.AttachCdRomMmio(context, read8, write8);
+}
+
 uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
     return psx_dma_read_register(core->dma, address);
@@ -124,6 +133,16 @@ int PSXCore_GetDmaInterruptPending(PSXCore* core) {
 void PSXCore_TickDma(PSXCore* core, uint32_t cycles) {
     if (!core) return;
     core->dma = psx_dma_tick(core->dma, cycles);
+}
+
+void PSXCore_TickDmaExcludingChannel(PSXCore* core, uint32_t cycles, uint32_t excluded_channel) {
+    if (!core) return;
+    core->dma = psx_dma_tick_excluding_channel(core->dma, cycles, excluded_channel);
+}
+
+void PSXCore_CompleteDmaChannel(PSXCore* core, uint32_t channel) {
+    if (!core) return;
+    core->dma = psx_dma_complete_channel(core->dma, channel);
 }
 
 uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {

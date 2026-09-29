@@ -117,6 +117,15 @@ public class NativeAbiContractTests
     }
 
     [Fact]
+    public void CdRomCallbackDelegates_MatchPublishedCAbiCallingConventionAndShape()
+    {
+        var header = ReadEmbeddedHeader();
+
+        AssertCallbackDelegate(header, "PSXCdRomMmioRead8", "CdRomMmioRead8Callback");
+        AssertCallbackDelegate(header, "PSXCdRomMmioWrite8", "CdRomMmioWrite8Callback");
+    }
+
+    [Fact]
     public unsafe void RustRoundTrip_ExercisesManagedToNativeToRustBoundary()
     {
         NativeInterop.PSXRecompRust_AbiVersion().Should().Be(1u);
@@ -198,6 +207,8 @@ public class NativeAbiContractTests
         "void*" => typeof(IntPtr),
         "PSXGpuMmioRead32" => typeof(IntPtr),
         "PSXGpuMmioWrite32" => typeof(IntPtr),
+        "PSXCdRomMmioRead8" => typeof(IntPtr),
+        "PSXCdRomMmioWrite8" => typeof(IntPtr),
         "uint8_t" => typeof(byte),
         "uint8_t*" => typeof(IntPtr),
         "uint16_t" => typeof(ushort),
