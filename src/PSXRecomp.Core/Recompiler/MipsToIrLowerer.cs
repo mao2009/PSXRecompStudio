@@ -243,7 +243,7 @@ public static class MipsToIrLowerer
         var (observer, observerPc) = instructions[index + 1];
 
         var builder = new BlockBuilder();
-        var failure = TryEmitLoadValue(builder, load, out var loadedValue);
+        var failure = TryEmitLoadValue(builder, load, mergeSource: null, out var loadedValue);
         if (failure is not null)
         {
             throw Unsupported(failure, load, loadPc);
@@ -270,7 +270,12 @@ public static class MipsToIrLowerer
             return new RecompilerIrBlock(loadPc, builder.Operations, transferExit);
         }
 
-        var observerFailure = TryEmitInstruction(builder, observer);
+        // LWL/LWR to the load's own target merge into the still-pending value
+        // (docs/cpu/pipeline.md "Special LWL/LWR Behavior", PSXCpu::ExecLwl/ExecLwr),
+        // not into the committed register the other instructions observe.
+        var observerFailure = writesTarget && observer.Opcode is R3000aOpcode.Lwl or R3000aOpcode.Lwr
+            ? EmitLoad(builder, observer, mergeSource: loadedValue)
+            : TryEmitInstruction(builder, observer);
         if (observerFailure is not null)
         {
             throw Unsupported(observerFailure, observer, observerPc);
@@ -834,6 +839,11 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sb:
             case R3000aOpcode.Sh:
             case R3000aOpcode.Sw:
+            case R3000aOpcode.Swl:
+            case R3000aOpcode.Swr:
+            case R3000aOpcode.Lwl:
+            case R3000aOpcode.Lwr:
+                // LWL/LWR also read rt: they merge into it.
                 sources = new[] { instruction.Operand1.BaseRegister, instruction.Operand0.Register };
                 return true;
             case R3000aOpcode.Beq:
@@ -899,6 +909,8 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sb:
             case R3000aOpcode.Sh:
             case R3000aOpcode.Sw:
+            case R3000aOpcode.Swl:
+            case R3000aOpcode.Swr:
             case R3000aOpcode.Beq:
             case R3000aOpcode.Bne:
             case R3000aOpcode.Blez:
@@ -945,6 +957,8 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Lh:
             case R3000aOpcode.Lhu:
             case R3000aOpcode.Lw:
+            case R3000aOpcode.Lwl:
+            case R3000aOpcode.Lwr:
                 destination = instruction.Operand0.Register;
                 return true;
             case R3000aOpcode.Jal:
@@ -1033,7 +1047,12 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Lh:
             case R3000aOpcode.Lhu:
             case R3000aOpcode.Lw:
+            case R3000aOpcode.Lwl:
+            case R3000aOpcode.Lwr:
                 return EmitLoad(builder, instruction);
+            case R3000aOpcode.Swl:
+            case R3000aOpcode.Swr:
+                return EmitUnalignedStore(builder, instruction);
             case R3000aOpcode.Sb:
                 return EmitStore(builder, instruction, RecompilerIrOperationKind.Store8);
             case R3000aOpcode.Sh:
@@ -1166,9 +1185,10 @@ public static class MipsToIrLowerer
     /// load delay is not architecturally observable; the observable case commits
     /// through <see cref="LowerObservedLoadDelay"/> instead.
     /// </summary>
-    private static MipsToIrLoweringResult? EmitLoad(BlockBuilder builder, R3000aInstruction instruction)
+    private static MipsToIrLoweringResult? EmitLoad(
+        BlockBuilder builder, R3000aInstruction instruction, int? mergeSource = null)
     {
-        var failure = TryEmitLoadValue(builder, instruction, out var value);
+        var failure = TryEmitLoadValue(builder, instruction, mergeSource, out var value);
         if (failure is not null)
         {
             return failure;
@@ -1183,11 +1203,18 @@ public static class MipsToIrLowerer
     /// forms — the shift pair that widens the accessed value, producing the value
     /// the target register will receive. The register commit is deliberately left
     /// to the caller, because the load delay decides where it belongs.
+    /// <paramref name="mergeSource"/> is the value LWL/LWR merge into when a load
+    /// to the same register is still pending; otherwise they read <c>rt</c>.
     /// </summary>
     private static MipsToIrLoweringResult? TryEmitLoadValue(
-        BlockBuilder builder, R3000aInstruction instruction, out int value)
+        BlockBuilder builder, R3000aInstruction instruction, int? mergeSource, out int value)
     {
         value = -1;
+        if (instruction.Opcode is R3000aOpcode.Lwl or R3000aOpcode.Lwr)
+        {
+            return TryEmitUnalignedLoadValue(builder, instruction, mergeSource, out value);
+        }
+
         // The shift amount is the sign-extension width: 0 for the zero-extending
         // forms (LBU/LHU) and for LW, which use the loaded value directly.
         (RecompilerIrOperationKind Kind, byte SignExtendShift)? shape = instruction.Opcode switch
@@ -1230,6 +1257,94 @@ public static class MipsToIrLowerer
         value = loaded;
         return null;
     }
+
+    /// <summary>
+    /// LWL/LWR: reads the aligned word containing the effective address and
+    /// merges it into <paramref name="mergeSource"/> (or <c>rt</c>), preserving
+    /// the bytes the access does not cover. The byte-merge table is the one in
+    /// <c>src/PSXRecomp.Native/rust/src/cpu_unaligned.rs</c>, with
+    /// <c>s = (addr &amp; 3) * 8</c>:
+    /// LWL = <c>(reg &amp; (0x00FFFFFF &gt;&gt; s)) | (mem &lt;&lt; (24 - s))</c>,
+    /// LWR = <c>(reg &amp; ~(0xFFFFFFFF &gt;&gt; s)) | (mem &gt;&gt; s)</c>.
+    /// Composed from existing operations, so no backend learns a new kind.
+    /// </summary>
+    private static MipsToIrLoweringResult? TryEmitUnalignedLoadValue(
+        BlockBuilder builder, R3000aInstruction instruction, int? mergeSource, out int value)
+    {
+        value = -1;
+        if (instruction.Operand1.Kind != R3000aOperandKind.MemoryOffset)
+        {
+            return UnsupportedMemoryOperand(instruction);
+        }
+
+        var address = EmitEffectiveAddress(builder, instruction.Operand1);
+        var (aligned, shift) = EmitUnalignedAddressParts(builder, address);
+        var register = mergeSource ?? builder.ReadGpr(instruction.Operand0.Register);
+        var memory = builder.Load(RecompilerIrOperationKind.Load32, aligned);
+
+        int keptMask, merged;
+        if (instruction.Opcode == R3000aOpcode.Lwl)
+        {
+            keptMask = builder.Binary(
+                RecompilerIrOperationKind.ShiftRightLogicalVariable, builder.Constant(0x00FFFFFFu), shift);
+            merged = builder.Binary(
+                RecompilerIrOperationKind.ShiftLeftLogicalVariable, memory, EmitTwentyFourMinus(builder, shift));
+        }
+        else
+        {
+            keptMask = EmitNot(builder, builder.Binary(
+                RecompilerIrOperationKind.ShiftRightLogicalVariable, builder.Constant(0xFFFFFFFFu), shift));
+            merged = builder.Binary(RecompilerIrOperationKind.ShiftRightLogicalVariable, memory, shift);
+        }
+
+        var kept = builder.Binary(RecompilerIrOperationKind.And, register, keptMask);
+        value = builder.Binary(RecompilerIrOperationKind.Or, kept, merged);
+        return null;
+    }
+
+    /// <summary>
+    /// SWL/SWR: a read-modify-write of the aligned word containing the
+    /// effective address, per <c>cpu_unaligned.rs</c> (<c>s = (addr &amp; 3) * 8</c>):
+    /// SWL = <c>(mem &amp; ~(0xFFFFFFFF &gt;&gt; (24 - s))) | (reg &gt;&gt; (24 - s))</c>,
+    /// SWR = <c>(mem &amp; ~(0xFFFFFFFF &lt;&lt; s)) | (reg &lt;&lt; s)</c>.
+    /// </summary>
+    private static MipsToIrLoweringResult? EmitUnalignedStore(BlockBuilder builder, R3000aInstruction instruction)
+    {
+        if (instruction.Operand1.Kind != R3000aOperandKind.MemoryOffset)
+        {
+            return UnsupportedMemoryOperand(instruction);
+        }
+
+        var address = EmitEffectiveAddress(builder, instruction.Operand1);
+        var (aligned, shift) = EmitUnalignedAddressParts(builder, address);
+        var register = builder.ReadGpr(instruction.Operand0.Register);
+        var memory = builder.Load(RecompilerIrOperationKind.Load32, aligned);
+
+        // SWL shifts right by 24 - s, SWR left by s — mask and value alike.
+        var (shiftKind, amount) = instruction.Opcode == R3000aOpcode.Swl
+            ? (RecompilerIrOperationKind.ShiftRightLogicalVariable, EmitTwentyFourMinus(builder, shift))
+            : (RecompilerIrOperationKind.ShiftLeftLogicalVariable, shift);
+
+        var keptMask = EmitNot(builder, builder.Binary(shiftKind, builder.Constant(0xFFFFFFFFu), amount));
+        var kept = builder.Binary(RecompilerIrOperationKind.And, memory, keptMask);
+        var stored = builder.Binary(shiftKind, register, amount);
+        builder.Store(RecompilerIrOperationKind.Store32, aligned, builder.Binary(RecompilerIrOperationKind.Or, kept, stored));
+        return null;
+    }
+
+    /// <summary>Emits <c>addr &amp; ~3</c> and the byte shift <c>(addr &amp; 3) * 8</c>.</summary>
+    private static (int Aligned, int Shift) EmitUnalignedAddressParts(BlockBuilder builder, int address)
+    {
+        var aligned = builder.Binary(RecompilerIrOperationKind.And, address, builder.Constant(~3u));
+        var byteOffset = builder.Binary(RecompilerIrOperationKind.And, address, builder.Constant(3u));
+        return (aligned, builder.Shift(RecompilerIrOperationKind.ShiftLeftLogical, byteOffset, 3));
+    }
+
+    private static int EmitTwentyFourMinus(BlockBuilder builder, int shift) =>
+        builder.Binary(RecompilerIrOperationKind.Subtract, builder.Constant(24u), shift);
+
+    private static int EmitNot(BlockBuilder builder, int value) =>
+        builder.Binary(RecompilerIrOperationKind.Nor, value, value);
 
     private static MipsToIrLoweringResult? EmitStore(
         BlockBuilder builder, R3000aInstruction instruction, RecompilerIrOperationKind storeKind)

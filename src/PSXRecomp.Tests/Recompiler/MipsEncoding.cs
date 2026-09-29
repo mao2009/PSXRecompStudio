@@ -21,7 +21,7 @@ internal static class MipsEncoding
     public static uint J(byte opcode, uint target) =>
         ((uint)opcode << 26) | ((target & 0x0FFFFFFCu) >> 2);
 
-    /// <summary>Encodes a base+offset load or store (LB/LBU/LH/LHU/LW/LWL, SB/SH/SW).</summary>
+    /// <summary>Encodes a base+offset load or store (LB/LBU/LH/LHU/LW/LWL/LWR, SB/SH/SW/SWL/SWR).</summary>
     public static uint Load(R3000aOpcode opcode, byte rt, byte baseRegister, ushort offset) =>
         I(MemoryOpcodeField(opcode), rt, baseRegister, offset);
 
@@ -66,7 +66,9 @@ internal static class MipsEncoding
         R3000aOpcode.Lwr => 0x26,
         R3000aOpcode.Sb => 0x28,
         R3000aOpcode.Sh => 0x29,
+        R3000aOpcode.Swl => 0x2A,
         R3000aOpcode.Sw => 0x2B,
+        R3000aOpcode.Swr => 0x2E,
         _ => throw new ArgumentOutOfRangeException(nameof(opcode), opcode, "Not a base+offset memory opcode."),
     };
 }
