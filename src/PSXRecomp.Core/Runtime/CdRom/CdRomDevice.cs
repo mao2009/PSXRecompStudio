@@ -37,7 +37,17 @@ public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed,
 [Domain]
 public sealed class CdRomDevice : ICdRom
 {
+    /// <summary>Capacity of the parameter and response FIFOs, in bytes.</summary>
     public const int FifoCapacity = 16;
+
+    /// <summary>
+    /// Capacity of the data FIFO, in bytes: one raw 2352-byte CD sector (the
+    /// same size as <c>ChdCdCodec.CdSectorDataSize</c>). It holds either read
+    /// mode's per-sector payload — ReadN's 2048-byte user data or ReadS's
+    /// 2340-byte whole sector minus sync — so a single sector always fits.
+    /// Independent of <see cref="FifoCapacity"/>.
+    /// </summary>
+    public const int DataFifoCapacity = 2352;
 
     public const byte IntDataReady = 0x01;
     public const byte IntComplete = 0x02;
@@ -158,11 +168,16 @@ public sealed class CdRomDevice : ICdRom
     /// Supplies bytes from the disc/sector layer without coupling this device to
     /// any image format. The active ReadN/ReadS command owns interpretation of
     /// those bytes; DMA3 consumes them through <see cref="ReadData"/>.
+    /// The load is atomic: input that does not fit in the remaining
+    /// <see cref="DataFifoCapacity"/> is rejected before any byte is enqueued.
     /// </summary>
     public void LoadData(ReadOnlySpan<byte> data)
     {
         if (!IsReading)
             throw new InvalidOperationException("CD-ROM data can be supplied only while ReadN/ReadS is active.");
+        if (data.Length > DataFifoCapacity - _data.Count)
+            throw new InvalidOperationException(
+                $"CD-ROM data FIFO overflow: {data.Length} bytes exceed the remaining {DataFifoCapacity - _data.Count} of {DataFifoCapacity}.");
 
         foreach (var value in data)
             _data.Enqueue(value);

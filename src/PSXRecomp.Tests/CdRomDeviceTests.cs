@@ -312,6 +312,69 @@ public class CdRomDeviceTests
     }
 
     [Fact]
+    public void DataFifo_HasItsOwnCapacity_IndependentOfParameterAndResponseFifos()
+    {
+        CdRomDevice.DataFifoCapacity.Should().Be(2352, "one raw CD sector");
+        CdRomDevice.DataFifoCapacity.Should().NotBe(CdRomDevice.FifoCapacity);
+    }
+
+    [Fact]
+    public void LoadData_ExactlyFillingCapacity_IsAccepted()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+
+        cd.LoadData(new byte[CdRomDevice.DataFifoCapacity]);
+
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity);
+    }
+
+    [Fact]
+    public void LoadData_OneByteOverCapacity_EnqueuesNothing()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 0xA1, 0xA2 });
+
+        var overflow = () => cd.LoadData(new byte[CdRomDevice.DataFifoCapacity - 1]);
+
+        overflow.Should().Throw<InvalidOperationException>();
+        cd.DataBytesAvailable.Should().Be(2, "a rejected load must not partially enqueue");
+        cd.ReadData().Should().Be(0xA1);
+        cd.ReadData().Should().Be(0xA2);
+        cd.ReadData().Should().Be(0, "no byte of the rejected load may be visible");
+    }
+
+    [Fact]
+    public void LoadData_EmptyInput_IsANoOp_EvenWhenFull()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[CdRomDevice.DataFifoCapacity]);
+
+        cd.LoadData(ReadOnlySpan<byte>.Empty);
+
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity);
+    }
+
+    [Fact]
+    public void LoadData_AfterPartialDrain_AcceptsExactlyTheFreedSpace()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[CdRomDevice.DataFifoCapacity]);
+        cd.ReadData();
+        cd.ReadData();
+
+        var tooMuch = () => cd.LoadData(new byte[] { 1, 2, 3 });
+        tooMuch.Should().Throw<InvalidOperationException>();
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity - 2);
+
+        cd.LoadData(new byte[] { 1, 2 });
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity);
+    }
+
+    [Fact]
     public void Reset_ClearsLoadedDataAndReadState_WithoutReusingInterruptGeneration()
     {
         var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
