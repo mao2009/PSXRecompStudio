@@ -75,7 +75,7 @@ fixed order with stable IDs:
 
 | ID | Passes when | `errorCode` on failure |
 |---|---|---|
-| `os` | Windows/Linux/macOS on X64/Arm64 (`unsupported` otherwise) | `UNSUPPORTED_PLATFORM` |
+| `os` | Windows x64, Linux x64, or macOS arm64 (`unsupported` otherwise) | `UNSUPPORTED_PLATFORM` |
 | `dotnet` | Always `ok` (the CLI is running on the .NET runtime) | n/a |
 | `native-runtime` | `PSXRecomp.Native` loads and a core can be created (`PSXCoreWrapper`) | `NATIVE_RUNTIME_UNAVAILABLE` |
 | `c-compiler` | The build service's host C compiler (`gcc`) starts and answers `--version` | `TOOLCHAIN_UNAVAILABLE` |

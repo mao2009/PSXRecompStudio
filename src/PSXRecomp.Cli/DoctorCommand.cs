@@ -47,8 +47,8 @@ internal static class DoctorCommand
 
     internal static int Run(bool json, TextWriter standardOutput, Probes probes)
     {
-        var supported = probes.OsPlatform is "Windows" or "Linux" or "macOS"
-            && probes.Architecture is "X64" or "Arm64";
+        // Validated release matrix (linux-x64, win-x64, osx-arm64); not the OS x arch product.
+        var supported = (probes.OsPlatform, probes.Architecture) is ("Windows", "X64") or ("Linux", "X64") or ("macOS", "Arm64");
         var checks = new[]
         {
             new Check("os", supported ? Ok : Unsupported, supported ? null : "UNSUPPORTED_PLATFORM"),

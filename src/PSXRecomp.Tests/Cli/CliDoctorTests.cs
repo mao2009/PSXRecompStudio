@@ -46,8 +46,23 @@ public sealed class CliDoctorTests
     }
 
     [Theory]
+    [InlineData("Windows", "X64")]
+    [InlineData("Linux", "X64")]
+    [InlineData("macOS", "Arm64")]
+    public void Doctor_ValidatedPlatform_ExitZero(string os, string arch)
+    {
+        var (exit, output) = Doctor(json: true, Healthy(os, arch));
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        Statuses(output)["os"].Should().Be("ok");
+    }
+
+    [Theory]
     [InlineData("FreeBSD", "X64")]
     [InlineData("Windows", "X86")]
+    [InlineData("Windows", "Arm64")]
+    [InlineData("Linux", "Arm64")]
+    [InlineData("macOS", "X64")]
     public void Doctor_UnsupportedPlatform_ExitTwo(string os, string arch)
     {
         var (exit, output) = Doctor(json: true, Healthy(os, arch));
