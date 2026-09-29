@@ -269,13 +269,32 @@ Controls the CD-ROM controller.
 - **IRQ2**: raised on command completion, data ready, or errors.
 - **Modes**: Normal/Double speed, DMA/PIO.
 
-Current implementation (Issue #585): `CdRomDevice` implements `ICdRom` as a
-register/FIFO substrate only — index selection, 16-byte parameter and response
-FIFOs, a status register derived from FIFO state, interrupt enable/flag
-registers, and reset. Parameter FIFO overflow throws. No command is implemented
-yet: every command fails closed with INT5 and response `[0x01, 0x40]` (invalid
-command). The device is not yet wired to `MemoryBus`, DMA3, or IRQ2, and has no
-disc, data FIFO, or audio model.
+Current implementation (Issues #585/#586/#587): `CdRomDevice` implements
+`ICdRom` — index selection, 16-byte parameter and response FIFOs, status,
+interrupt enable/flag registers, and the minimum command protocol (GetStat,
+SetLoc, ReadN/ReadS, Init, GetID), exposed one interrupt packet at a time;
+unknown commands fail closed with INT5. Parameter FIFO overflow throws. Sector
+bytes enter a separate data FIFO (`DataFifoCapacity` = 2352 bytes, one raw
+sector) only through `LoadData`, which rejects a load that does not fit
+without enqueueing any of it. DRQSTS (status bit 6) reports the data until it
+is read (or a new command/reset retires the read), independently of INT1
+acknowledgement.
+
+Production wiring (#587): `InterpreterTitleExecutionEngine` owns a
+`CdRomDevice` (a licensed Mode2 disc identity), attaches its
+`CdRomMmioAdapter` to `MemoryBus`, and forwards the native CPU's 8-bit accesses
+to 0x1F801800-0x1F801803 to it through `PSXCore_SetCdRomMmioCallbacks`,
+mirroring the GPU seam. `DeviceScheduler` receives the device and a
+`CdRomDmaTransfer`: each `Advance` first services DMA3 — when channel 3 is
+started in sync mode 0 / device-to-RAM / incrementing and the data FIFO holds
+the whole BCR payload, it writes guest RAM and completes channel 3 alone via
+`PSXCore_CompleteDmaChannel`; otherwise it writes nothing — and then raises
+IRQ2 once per newly activated, enabled response packet.
+
+Not implemented: no production code calls `LoadData`, so there is no real
+disc-image/sector source; a production ReadN/ReadS announces INT1 but supplies
+no bytes (only tests load data). Streaming reads, seek timing and CD audio are
+also absent.
 
 ## BIOS Model
 
@@ -373,7 +392,9 @@ run. Responsibilities are split so no device behavior is duplicated:
   only the phase inside the current VBlank interval and the DMA IRQ line's last
   level. BIOS HLE vector dispatch retires no instruction and advances nothing.
 - **Device semantics stay native/Rust.** Timers advance via `PSXCore_TickTimers`
-  and DMA via `PSXCore_TickDma`; IRQs are raised through
+  and DMA via `PSXCore_TickDma` — or, when a CD-ROM DMA3 bridge is configured
+  (as in production), via `PSXCore_TickDmaExcludingChannel(…, 3)`, because
+  that bridge alone completes channel 3 (#587); IRQs are raised through
   `IInterruptController.Raise` onto the Rust interrupt controller.
 - **IRQs are taken as CPU interrupts (Issue #499).** The engine steps with
   `PSXCore_Step`, so a guest that unmasks I_MASK and sets SR IEc/IM2 takes an
@@ -383,8 +404,10 @@ run. Responsibilities are split so no device behavior is duplicated:
   continues; other exceptions (SYSCALL, BREAK, faults, software interrupts)
   still end the segment as `CPU_EXCEPTION`. See `docs/cpu/exceptions.md`.
 - **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
-  raised as IRQ4-6) → DMA (IRQ3 on a rising edge of DICR bit 31) → SIO0 (IRQ7)
-  → GPU command IRQ (IRQ1 on the rising edge of GP0(1Fh)'s source) → VBlank
+  raised as IRQ4-6) → DMA (CD-ROM DMA3 service when configured, then the
+  generic tick; IRQ3 on a rising edge of DICR bit 31) → CD-ROM (IRQ2 per newly
+  activated enabled response packet) → SIO0 (IRQ7) → GPU command IRQ (IRQ1 on
+  the rising edge of GP0(1Fh)'s source) → VBlank
   (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
   GP1(02h) deasserts the GPU source; the already-latched I_STAT bit remains
   independently guest-acknowledged (#574).
@@ -392,8 +415,9 @@ run. Responsibilities are split so no device behavior is duplicated:
   28 for sync mode 0) completes after one cycle per word (sync 0: BCR[15:0];
   sync 1: size × count; linked list: one word, since its length lives in guest
   RAM). Completion clears CHCR bits 24/28 and sets the channel's DICR flag when
-  enabled. No data is transferred; device-backed transfers (GPU DMA2, OTC
-  clearing, CD-ROM, SPU, MDEC) remain device work.
+  enabled. The tick itself transfers no data; CD-ROM DMA3 moves its data and
+  completes only channel 3 (#587). Other device-backed transfers (GPU DMA2,
+  OTC clearing, SPU, MDEC) remain device work.
 
 Not modelled: cycle-exact timing, HBlank, and Timer 0/1 blank sync lines.
 The generated-host engine (`HostTitleExecutionEngine`, test-only) carries

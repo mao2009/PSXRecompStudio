@@ -29,10 +29,11 @@ public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed,
 /// one interrupt packet at a time: the next packet becomes visible only after
 /// the current response FIFO is drained and its interrupt is acknowledged.
 ///
-/// There is still no sector payload, audio, DMA3 or IRQ2 wiring (#587).
-/// ReadN/ReadS therefore expose one bounded INT1/data-ready event rather than a
-/// repeating hardware read stream; <see cref="HasInterrupt"/> remains only the
-/// device-side enabled-line state.
+/// Sector bytes arrive only through <see cref="LoadData"/>, which no production
+/// code calls yet, and there is no audio model; DMA3/IRQ2 wiring lives in
+/// CdRomDmaTransfer and DeviceScheduler (#587). ReadN/ReadS expose one
+/// bounded INT1/data-ready event rather than a repeating hardware read stream;
+/// <see cref="HasInterrupt"/> remains only the device-side enabled-line state.
 /// </summary>
 [Domain]
 public sealed class CdRomDevice : ICdRom
