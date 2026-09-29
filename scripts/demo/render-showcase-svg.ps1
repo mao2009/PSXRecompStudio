@@ -21,7 +21,8 @@ $lines = @((Get-Content $Transcript) | ForEach-Object { $_.TrimEnd() })
 while ($lines.Count -gt 0 -and -not $lines[-1]) { $lines = @($lines[0..($lines.Count - 2)]) }
 
 $stages = 'PS-X EXE', 'MIPS analysis', 'IR / lowering', 'Host code', 'Native artifact', 'Execution'
-$w = 960; $boxW = 140; $gap = 24; $lh = 20
+$boxW = 140; $gap = 24; $lh = 20; $margin = 24
+$w = 2 * $margin + $stages.Count * $boxW + ($stages.Count - 1) * $gap  # every stage box fits inside the viewBox
 $termTop = 128; $h = $termTop + 24 + $lh * $lines.Count + 56
 $sb = [Text.StringBuilder]::new()
 [void]$sb.Append("<svg xmlns=`"http://www.w3.org/2000/svg`" width=`"$w`" height=`"$h`" viewBox=`"0 0 $w $h`" role=`"img`" aria-labelledby=`"t`">`n")
@@ -29,7 +30,7 @@ $sb = [Text.StringBuilder]::new()
 [void]$sb.Append("<rect width=`"$w`" height=`"$h`" fill=`"#0d1117`"/>`n")
 [void]$sb.Append("<text x=`"24`" y=`"34`" fill=`"#e6edf3`" font-family=`"sans-serif`" font-size=`"20`" font-weight=`"bold`">PSXRecompStudio: synthetic PS-X EXE, recompiled and run</text>`n")
 for ($i = 0; $i -lt $stages.Count; $i++) {
-    $x = 24 + $i * ($boxW + $gap)
+    $x = $margin + $i *($boxW + $gap)
     [void]$sb.Append("<rect x=`"$x`" y=`"56`" width=`"$boxW`" height=`"44`" rx=`"6`" fill=`"#161b22`" stroke=`"#3fb950`"/>`n")
     [void]$sb.Append("<text x=`"$($x + $boxW / 2)`" y=`"83`" text-anchor=`"middle`" fill=`"#e6edf3`" font-family=`"sans-serif`" font-size=`"14`">$(Esc $stages[$i])</text>`n")
     if ($i -lt $stages.Count - 1) { [void]$sb.Append("<text x=`"$($x + $boxW + $gap / 2)`" y=`"83`" text-anchor=`"middle`" fill=`"#8b949e`" font-family=`"sans-serif`" font-size=`"16`">&#8594;</text>`n") }
