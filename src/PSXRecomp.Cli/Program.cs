@@ -25,6 +25,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 public static class Program
 {
     private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]";
+    private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
     private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--report] [--frame-evidence] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
@@ -50,6 +51,7 @@ public static class Program
         {
             "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, standardOutput, standardError),
             "run" => Dispatch("run", rest, allowSegmentBudget: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, standardOutput, standardError),
+            "doctor" => Doctor(rest, standardOutput, standardError),
             "--help" or "-h" => Usage(standardOutput),
             _ => UnknownCommand(command, standardError),
         };
@@ -209,6 +211,26 @@ public static class Program
         return true;
     }
 
+    private static int Doctor(string[] arguments, TextWriter standardOutput, TextWriter standardError)
+    {
+        if (arguments.Contains("--help") || arguments.Contains("-h"))
+        {
+            standardOutput.WriteLine(UsageDoctor);
+            WriteExitCodes(standardOutput);
+            return RecompiledArtifactExitCode.Success;
+        }
+
+        var unknown = arguments.FirstOrDefault(a => a != "--json");
+        if (unknown is not null)
+        {
+            standardError.WriteLine($"psxrecomp doctor: unexpected argument '{unknown}'.");
+            standardError.WriteLine(UsageDoctor);
+            return RecompiledArtifactExitCode.Failure;
+        }
+
+        return DoctorCommand.Run(arguments.Length > 0, standardOutput, DoctorCommand.HostProbes());
+    }
+
     private static int Usage(TextWriter writer)
     {
         WriteUsage(writer);
@@ -229,9 +251,11 @@ public static class Program
         writer.WriteLine("commands:");
         writer.WriteLine("  recompile   build a runnable recompiled host artifact from a PS-X EXE or CHD");
         writer.WriteLine("  run         build and run a recompiled artifact from a PS-X EXE or CHD");
+        writer.WriteLine("  doctor      check the OS, .NET, native runtime, and C compiler this CLI needs");
         writer.WriteLine();
         writer.WriteLine(UsageRecompile);
         writer.WriteLine(UsageRun);
+        writer.WriteLine(UsageDoctor);
         writer.WriteLine();
         WriteExitCodes(writer);
     }
@@ -245,7 +269,8 @@ public static class Program
     private static void WriteExitCodes(TextWriter writer)
     {
         writer.WriteLine("exit codes: 0 success; 1 tooling/input/build/launcher failure;");
-        writer.WriteLine("            2 (run) runtime stopped at an explicit unsupported/blocked boundary");
+        writer.WriteLine("            2 (run) runtime stopped at an explicit unsupported/blocked boundary;");
+        writer.WriteLine("            2 (doctor) unsupported OS/architecture");
     }
 }
 

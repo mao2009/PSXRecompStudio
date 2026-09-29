@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #460, #458, #459, #461, #457
+**Related Issues:** #460, #458, #459, #461, #457, #623
 
 **Related Components:** `src/PSXRecomp.Cli/`, `.github/workflows/ci.yml`,
 `src/PSXRecomp.Tests/E2E/`, `src/PSXRecomp.Tests/Cli/`
@@ -25,6 +25,7 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 ```
 psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
 psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--report] [--json]
+psxrecomp doctor    [--json]
 ```
 
 `psxrecomp --help` prints usage, the option grammar, and the exit-code table.
@@ -66,13 +67,35 @@ launcher failures that produce no result do not fabricate one. `--json` (valid
 for both commands) emits the machine-readable envelope (see below) as the sole
 stdout document.
 
+### `doctor`
+
+Read-only preflight of the environment `recompile`/`run` need (Issue #623). It
+takes no input and touches no files, network, or BIOS/ROM. Checks run in this
+fixed order with stable IDs:
+
+| ID | Passes when | `errorCode` on failure |
+|---|---|---|
+| `os` | Windows x64, Linux x64, or macOS arm64 (`unsupported` otherwise) | `UNSUPPORTED_PLATFORM` |
+| `dotnet` | Always `ok` (the CLI is running on the .NET runtime) | n/a |
+| `native-runtime` | `PSXRecomp.Native` loads and a core can be created (`PSXCoreWrapper`) | `NATIVE_RUNTIME_UNAVAILABLE` |
+| `c-compiler` | The build service's host C compiler (`gcc`) starts and answers `--version` | `TOOLCHAIN_UNAVAILABLE` |
+
+Human output is one line per check (`.NET  OK  <runtime>`). `--json` emits
+`{ "kind": "doctor", "success": true, "status": "ok", "checks": [ { "id": "os",
+"status": "ok", "errorCode": null }, ... ] }`; it contains no versions, paths,
+or timestamps, so it is byte-identical for an unchanged environment. `status`
+is `ok`, `failed`, or `unsupported`; check status is `ok`, `failed`, or
+`unsupported`. Exit code `0` when every check passes, `1` when a tooling check
+failed, `2` when the OS/architecture is unsupported. The Rust toolchain is not
+checked: cargo is only a native-build-time dependency, not needed to run the CLI.
+
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Success (run completed; recompile build succeeded) |
 | 1 | Tooling / input / build / launcher failure |
-| 2 | (run) Guest control reached an explicit unsupported/blocked boundary |
+| 2 | (run) Guest control reached an explicit unsupported/blocked boundary; (doctor) unsupported OS/architecture |
 
 ## JSON envelopes
 

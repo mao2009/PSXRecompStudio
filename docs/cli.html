@@ -52,8 +52,9 @@
     <section>
       <h2>Commands</h2>
       <pre><code>psxrecomp recompile &lt;input.exe|input.chd&gt; --output &lt;dir&gt; [--json]
-psxrecomp run       &lt;input.exe|input.chd&gt; [--output &lt;dir&gt;] [--segment-budget &lt;n&gt;] [--report] [--json]</code></pre>
-      <p><code>recompile</code> builds a runnable generated-host artifact. <code>run</code> rebuilds that artifact and launches the current bounded execution path.</p>
+psxrecomp run       &lt;input.exe|input.chd&gt; [--output &lt;dir&gt;] [--segment-budget &lt;n&gt;] [--report] [--json]
+psxrecomp doctor    [--json]</code></pre>
+      <p><code>recompile</code> builds a runnable generated-host artifact. <code>run</code> rebuilds that artifact and launches the current bounded execution path. <code>doctor</code> checks the OS, .NET, native runtime, and C compiler the CLI needs (exit <code>0</code> ok, <code>1</code> tooling check failed, <code>2</code> unsupported OS/architecture).</p>
     </section>
 
     <section>
