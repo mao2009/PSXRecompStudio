@@ -47,6 +47,12 @@ public static class Ps1MemoryMap
     public const uint GpuStatusPort = 0x1F801814; // GP1 (write) / GPUSTAT (read)
     public const uint GpuPortEnd = GpuPort + 0x10; // 0x1F801818/0x1F80181C mirror 0x1F801810/0x1F801814
 
+    // CD-ROM controller ports (Issue #587): four independently addressed byte
+    // registers, index-selected per docs/architecture/cdrom (index/status,
+    // command/response/data, and the two banked registers behind the index).
+    public const uint CdRomBase = 0x1F801800;
+    public const uint CdRomEnd = CdRomBase + 4;
+
     // SPU register window (Issue #445). Canonical registers are 16-bit:
     // 24 voice blocks, global/control registers, then reverb registers.
     public const uint SpuBase = 0x1F801C00;
@@ -147,6 +153,9 @@ public static class Ps1MemoryMap
 
     public static bool IsGpuRegister(uint address) =>
         address >= GpuPort && address < GpuPortEnd;
+
+    public static bool IsCdRomRegister(uint address) =>
+        address >= CdRomBase && address < CdRomEnd;
 
     public static GpuRegisterType GetGpuRegisterType(uint address)
     {

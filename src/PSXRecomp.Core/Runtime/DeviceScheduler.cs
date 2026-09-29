@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Dma;
 
 namespace PSXRecomp.Core.Runtime;
 
@@ -61,6 +62,7 @@ public sealed class DeviceScheduler
     private readonly IInterruptController _interrupts;
     private readonly IGpu? _gpu;
     private readonly ICdRom? _cdRom;
+    private readonly CdRomDmaTransfer? _cdRomDma;
     private uint _cyclesSinceVblank;
     private bool _dmaIrqLine;
     private bool _gpuIrqLine;
@@ -74,16 +76,23 @@ public sealed class DeviceScheduler
     /// passes its existing managed GPU adapter; callers without a GPU may leave it null.</param>
     /// <param name="cdRom">Optional CD-ROM interrupt source. Each newly activated,
     /// enabled command/data response packet raises IRQ2 once.</param>
+    /// <param name="cdRomDma">Optional CD-ROM DMA3 bridge. When present, this
+    /// scheduler exclusively owns channel 3's completion through it (Issue
+    /// #587): the generic per-cycle DMA model below never advances or
+    /// completes channel 3 itself, so a real CD-ROM burst is never faked by
+    /// the deterministic duration model.</param>
     public DeviceScheduler(
         PSXCoreWrapper core,
         IInterruptController interrupts,
         IGpu? gpu = null,
-        ICdRom? cdRom = null)
+        ICdRom? cdRom = null,
+        CdRomDmaTransfer? cdRomDma = null)
     {
         _core = core ?? throw new ArgumentNullException(nameof(core));
         _interrupts = interrupts ?? throw new ArgumentNullException(nameof(interrupts));
         _gpu = gpu;
         _cdRom = cdRom;
+        _cdRomDma = cdRomDma;
     }
 
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
@@ -106,9 +115,17 @@ public sealed class DeviceScheduler
             }
         }
 
+        // CD-ROM DMA3: the managed bridge exclusively owns channel 3's
+        // completion (Issue #587), so it is serviced before the generic
+        // per-cycle model below, which always excludes that channel.
+        _cdRomDma?.TryTransfer();
+
         // DMA: IRQ3 fires on a rising edge of the DICR bit-31 line, whatever
-        // raised it (a completion here or a guest DICR write in between).
-        _core.TickDma(cycles);
+        // raised it (a completion here, this Advance's CD-ROM DMA3 service
+        // above, or a guest DICR write in between). Channel 3 is excluded:
+        // its duration/completion belongs solely to the CD-ROM DMA3 bridge
+        // above, never to this deterministic per-word model.
+        _core.TickDmaExcludingChannel(cycles, CdRomDmaTransfer.Channel);
         var dmaLine = _core.GetDmaInterruptPending();
         if (dmaLine && !_dmaIrqLine)
         {
