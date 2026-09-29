@@ -48,6 +48,8 @@ A focused PR should:
 - avoid unrelated cleanup or refactoring;
 - preserve fail-closed behavior when unsupported hardware or instructions remain.
 
+Prefer `jj` over `git` locally? It is optional and does not change the GitHub flow; see the [Optional Jujutsu workflow](docs/development/jujutsu.md).
+
 Keep implementation, tests, and documentation synchronized when the change modifies a public or architectural contract.
 
 ## Contributor-ready Issues
