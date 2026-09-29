@@ -73,6 +73,67 @@ public sealed class CdRomDmaTransferTests : IDisposable
     }
 
     [Fact]
+    public void UnrelatedActiveChannel_NeitherAdvancesNorCompletes_WhenCdRomDma3Completes()
+    {
+        // Issue #587: servicing channel 3 must not advance the generic
+        // per-cycle model at all, so another channel that is actively
+        // in-flight (not merely idle, as the MADR sentinel above proves)
+        // must not age, complete, or raise its own DICR flag/IRQ3 either.
+        const int unrelatedChannel = 6;
+        const uint unrelatedDpcrEnable = 1u << (3 + 4 * unrelatedChannel);
+        const uint unrelatedDicrEnable = 1u << (24 + unrelatedChannel);
+        const uint unrelatedDicrFlag = 1u << unrelatedChannel;
+
+        var payload = new byte[] { 1, 2, 3, 4 };
+        PrepareDataReady(payload);
+
+        var dpcr = _dma.ReadRegister(Ps1MemoryMap.Dpcr) | unrelatedDpcrEnable;
+        _dma.WriteRegister(Ps1MemoryMap.Dpcr, dpcr);
+        _dma.WriteRegister(Ps1MemoryMap.Dicr, DmaMasterEnable | Dma3InterruptEnable | unrelatedDicrEnable);
+        _dma.WriteRegister(Ps1MemoryMap.GetChannelMadr(unrelatedChannel), 0x00456780u);
+        _dma.WriteRegister(Ps1MemoryMap.GetChannelBcr(unrelatedChannel), 4u);
+        _dma.WriteRegister(Ps1MemoryMap.GetChannelChcr(unrelatedChannel), Dma3NormalChcr);
+        var unrelatedChcrBefore = _dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(unrelatedChannel));
+        var unrelatedMadrBefore = _dma.ReadRegister(Ps1MemoryMap.GetChannelMadr(unrelatedChannel));
+
+        const uint destination = 0x00000400u;
+        ArmDma3(destination, words: 1, enableDmaInterrupt: true);
+
+        var result = _transfer.TryTransfer();
+
+        result.Status.Should().Be(CdRomDmaTransferStatus.Completed);
+        _dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(unrelatedChannel)).Should().Be(
+            unrelatedChcrBefore, "an unrelated active channel's CHCR must not change");
+        _dma.ReadRegister(Ps1MemoryMap.GetChannelMadr(unrelatedChannel)).Should().Be(unrelatedMadrBefore);
+        (_dma.ReadRegister(Ps1MemoryMap.Dicr) & unrelatedDicrFlag).Should().Be(
+            0u, "no unrelated DICR flag/IRQ3 may fire from servicing channel 3");
+    }
+
+    [Fact]
+    public void AcknowledgingInt1_DoesNotDiscardUnconsumedData_AndDma3StillSucceeds()
+    {
+        // Issue #587: a valid guest ordering is ReadN -> INT1 data-ready ->
+        // guest acknowledges INT1 -> DMA3 starts. Acknowledging the response
+        // interrupt must not drop bytes still sitting in the data FIFO.
+        var payload = new byte[] { 1, 2, 3, 4 };
+        PrepareDataReady(payload);
+
+        _cdRom.AcknowledgeInterrupt(); // acks INT1 itself, not just INT3
+        _cdRom.DataReady.Should().BeTrue("unconsumed data must survive the INT1 acknowledgement");
+        _cdRom.DataBytesAvailable.Should().Be(4);
+
+        const uint destination = 0x00000500u;
+        ArmDma3(destination, words: 1, enableDmaInterrupt: true);
+
+        var result = _transfer.TryTransfer();
+
+        result.Should().Be(new CdRomDmaTransferResult(
+            CdRomDmaTransferStatus.Completed, 1, destination));
+        _memory.Read32(destination).Should().Be(0x04030201u);
+        _cdRom.DataBytesAvailable.Should().Be(0);
+    }
+
+    [Fact]
     public void InsufficientData_FailsClosedWithoutPartialRamOrDmaCompletion()
     {
         PrepareDataReady(new byte[] { 0x11, 0x22, 0x33, 0x44 });

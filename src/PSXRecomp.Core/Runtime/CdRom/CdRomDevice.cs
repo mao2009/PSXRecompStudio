@@ -108,10 +108,17 @@ public sealed class CdRomDevice : ICdRom
     public bool ReadSectorsRaw { get; private set; }
 
     /// <summary>
-    /// One bounded sector-ready token for #586. It becomes true with the queued
-    /// INT1 response and is cleared when that INT1 is acknowledged.
+    /// One bounded sector-ready token (#586/#587). It becomes true once the
+    /// active response packet marks data ready (the queued INT1 from
+    /// ReadN/ReadS) and stays true as long as the data FIFO still has
+    /// unconsumed bytes — acknowledging that packet's interrupt does not
+    /// discard it. It goes false once the FIFO is actually drained via
+    /// <see cref="ReadData"/>, or a new command dispatch/<see cref="Reset"/>
+    /// retires the packet that announced it: interrupt acknowledgement and
+    /// data-FIFO availability are deliberately separate states, matching real
+    /// hardware's independent INT-ack and BFRD/DRQSTS handshakes.
     /// </summary>
-    public bool DataReady { get; private set; }
+    public bool DataReady => _activeResponseMarksDataReady && _data.Count > 0;
 
     public bool HasInterrupt => (_interruptFlag & _interruptEnable & 0x1F) != 0;
 
@@ -211,24 +218,17 @@ public sealed class CdRomDevice : ICdRom
         _interruptFlag &= (byte)~(value & 0x1F);
         if ((value & 0x40) != 0) _parameters.Clear();
 
-        if (_interruptFlag == 0 && _activeResponseMarksDataReady)
-        {
-            DataReady = false;
-            _activeResponseMarksDataReady = false;
-        }
-
+        // Acknowledging the interrupt flag must not discard unconsumed data:
+        // DataReady tracks the data FIFO independently of the interrupt ack
+        // (Issue #587), so no state is cleared here beyond the flag itself.
         TryPromotePendingResponse();
     }
 
     public void AcknowledgeInterrupt()
     {
         _interruptFlag = 0;
-        if (_activeResponseMarksDataReady)
-        {
-            DataReady = false;
-            _activeResponseMarksDataReady = false;
-        }
 
+        // See SetInterruptFlag: acknowledging must not discard unconsumed data.
         TryPromotePendingResponse();
     }
 
@@ -271,7 +271,7 @@ public sealed class CdRomDevice : ICdRom
         HasPendingLocation = false;
         IsReading = false;
         ReadSectorsRaw = false;
-        DataReady = false;
+        _activeResponseMarksDataReady = false;
         _data.Clear();
 
         QueueResponse(IntAcknowledge, CommandStatus);
@@ -377,7 +377,6 @@ public sealed class CdRomDevice : ICdRom
         {
             _interruptGeneration++;
         }
-        if (marksDataReady) DataReady = true;
     }
 
     private void TryPromotePendingResponse()
@@ -394,7 +393,6 @@ public sealed class CdRomDevice : ICdRom
         _pendingResponses.Clear();
         _interruptFlag = 0;
         _activeResponseMarksDataReady = false;
-        DataReady = false;
     }
 
     private void PushParameter(byte value)

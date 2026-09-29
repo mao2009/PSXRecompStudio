@@ -133,11 +133,13 @@ public class CdRomDeviceTests
         cd.AcknowledgeInterrupt();
 
         cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 0x00 });
         cd.ReadRegister(1).Should().Be(0x22);
         cd.AcknowledgeInterrupt();
         cd.ReadRegister(1).Should().Be(0x22);
         cd.DataReady.Should().BeTrue();
         cd.AcknowledgeInterrupt();
+        cd.DataReady.Should().BeTrue("acknowledging INT1 must not discard unconsumed data (Issue #587)");
 
         cd.WriteCommand(0x0A);
 
@@ -247,6 +249,7 @@ public class CdRomDeviceTests
         cd.AcknowledgeInterrupt();
 
         cd.WriteCommand(command);
+        cd.LoadData(new byte[] { 0xAA });
 
         cd.IsReading.Should().BeTrue();
         cd.ReadSectorsRaw.Should().Be(raw);
@@ -264,9 +267,15 @@ public class CdRomDeviceTests
 
         cd.AcknowledgeInterrupt();
 
-        cd.DataReady.Should().BeFalse();
-        (cd.ReadStatus() & 0x40).Should().Be(0);
+        // Issue #587: acknowledging INT1 must not discard data the guest has
+        // not consumed yet. Interrupt acknowledgement and data-FIFO
+        // availability are separate states.
+        cd.DataReady.Should().BeTrue("unconsumed data must survive the INT1 acknowledgement");
+        (cd.ReadStatus() & 0x40).Should().Be(0x40);
         cd.GetInterruptFlag().Should().Be(0xE0, "no repeating INT1 is synthesized in the #586 slice");
+
+        cd.ReadData();
+        cd.DataReady.Should().BeFalse("DataReady clears once the FIFO is actually drained, not on interrupt ack");
     }
 
     [Fact]

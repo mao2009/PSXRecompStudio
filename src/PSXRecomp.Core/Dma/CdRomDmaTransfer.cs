@@ -27,8 +27,9 @@ public readonly record struct CdRomDmaTransferResult(
 /// DMA register ownership remains in the existing Rust-backed
 /// <see cref="IDmaController"/>. This type only moves an already-available
 /// CD-ROM data FIFO into guest RAM when channel 3 is armed in the documented
-/// CD-ROM burst/device-to-RAM mode, then advances the existing DMA controller
-/// far enough to complete that exact word count.
+/// CD-ROM burst/device-to-RAM mode, then signals that one channel's
+/// completion on the existing DMA controller without advancing (and
+/// potentially completing) any other active channel.
 /// </summary>
 [Domain]
 public sealed class CdRomDmaTransfer
@@ -108,9 +109,12 @@ public sealed class CdRomDmaTransfer
             address = (address + (uint)sizeof(uint)) & AddressMask;
         }
 
-        // The Rust DMA model owns CHCR completion and DICR flag semantics.
-        // Its current deterministic timing is one model cycle per word.
-        _dma.Tick(words);
+        // The Rust DMA model owns CHCR completion and DICR flag semantics,
+        // but this bridge already moved the whole burst's data itself in the
+        // loop above, so it completes only this channel (Issue #587) instead
+        // of ticking the generic per-cycle model, which would also age or
+        // complete any other unrelated active DMA channel.
+        _dma.CompleteChannel(Channel);
 
         return new(CdRomDmaTransferStatus.Completed, words, madr & AddressMask);
     }
