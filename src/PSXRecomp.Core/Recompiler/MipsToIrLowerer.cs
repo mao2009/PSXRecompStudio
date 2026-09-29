@@ -513,7 +513,7 @@ public static class MipsToIrLowerer
 
         if (trapExit is not null)
         {
-            // The delay slot raised a BREAK: the pending transfer never applies,
+            // The delay slot raised a trap (BREAK/SYSCALL): the pending transfer never applies,
             // so the block stops at the exception instead of flowing.
             exit = trapExit;
             return null;
@@ -575,7 +575,7 @@ public static class MipsToIrLowerer
 
         if (trapExit is not null)
         {
-            // The *AL link write above still retires before a delay-slot BREAK, the
+            // The *AL link write above still retires before a delay-slot trap (BREAK/SYSCALL), the
             // same ordering TryEmitCall uses for JAL.
             exit = trapExit;
             return null;
@@ -692,7 +692,7 @@ public static class MipsToIrLowerer
         if (trapExit is not null)
         {
             // JAL's link write above still retires before the delay slot raises
-            // its BREAK — on hardware the branch links, then the fault applies.
+            // its trap (BREAK/SYSCALL) — on hardware the branch links, then the fault applies.
             exit = trapExit;
             return null;
         }
@@ -781,7 +781,7 @@ public static class MipsToIrLowerer
         // the loaded value while the transfer read the pre-load one.
         pendingLoad?.Emit(builder);
 
-        // A BREAK delay slot raises the exception at its own retirement, before
+        // A BREAK/SYSCALL delay slot raises the exception at its own retirement, before
         // the pending transfer applies. It reads no registers, so nothing else is
         // emitted; the exception carries the owning branch's PC and BD=1, and the
         // caller suppresses the transfer flow (Issue #481).
