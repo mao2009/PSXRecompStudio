@@ -78,11 +78,10 @@
         </StackPanel>
 
         <!-- Frame presentation (Issue #455): shows the Runtime FrameSnapshot via a presentation copy.
-             Nearest-neighbor scaling; Image.Source is null (nothing drawn) when there is no frame. -->
+             Nearest-neighbor scaling; Image.Source is set/cleared by MainWindow via FrameResourceOwner (Issue #634); null when there is no frame. -->
         <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="60,16,60,0">
             <Image x:Name="FrameImage"
                    AutomationProperties.Name="FrameImage"
-                   Source="{Binding PresentedFrame, Converter={x:Static v:FrameBitmapConverter.Instance}}"
                    RenderOptions.BitmapInterpolationMode="None"
                    Stretch="Uniform" MaxHeight="240"/>
             <TextBlock x:Name="FrameStatusText"
