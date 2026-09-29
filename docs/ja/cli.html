@@ -52,8 +52,9 @@
     <section>
       <h2>コマンド</h2>
       <pre><code>psxrecomp recompile &lt;input.exe|input.chd&gt; --output &lt;dir&gt; [--json]
-psxrecomp run       &lt;input.exe|input.chd&gt; [--output &lt;dir&gt;] [--segment-budget &lt;n&gt;] [--report] [--json]</code></pre>
-      <p><code>recompile</code>は実行可能なgenerated-host artifactをbuildし、<code>run</code>はそのartifactを再buildして現在のbounded execution pathで起動します。</p>
+psxrecomp run       &lt;input.exe|input.chd&gt; [--output &lt;dir&gt;] [--segment-budget &lt;n&gt;] [--report] [--json]
+psxrecomp doctor    [--json]</code></pre>
+      <p><code>recompile</code>は実行可能なgenerated-host artifactをbuildし、<code>run</code>はそのartifactを再buildして現在のbounded execution pathで起動します。<code>doctor</code>はCLIに必要なOS、.NET、native runtime、Cコンパイラを確認します（exit 0=正常、1=Toolchain確認失敗、2=未対応OS/architecture）。</p>
     </section>
 
     <section>

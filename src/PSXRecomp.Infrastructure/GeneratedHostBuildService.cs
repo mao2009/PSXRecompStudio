@@ -21,7 +21,7 @@ namespace PSXRecomp.Infrastructure;
 [Infrastructure]
 public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
 {
-    private const string DefaultCompiler = "gcc";
+    internal const string DefaultCompiler = "gcc";
     private static readonly string[] DefaultCompilerArgTokens = ["-std=c11", "-O0", "-Wall", "-Wextra"];
     private const int ToolchainTimeoutMs = 30000;
     private const int ToolchainCleanupMs = 2000;

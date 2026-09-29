@@ -12,5 +12,6 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="PSXRecomp.Tests" />
+    <InternalsVisibleTo Include="psxrecomp" />
   </ItemGroup>
 </Project>
