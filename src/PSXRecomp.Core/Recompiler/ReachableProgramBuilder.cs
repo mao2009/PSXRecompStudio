@@ -6,7 +6,7 @@ namespace PSXRecomp.Core.Recompiler;
 /// <summary>
 /// Discovers and lowers the statically reachable portion of a PS-X EXE text image.
 /// Words in the image are decoded only after a guest PC reaches them from the
-/// executable entry point. This keeps text-region data and padding outside the
+/// executable entry point or from a caller-supplied explicit root (Issue #644). This keeps text-region data and padding outside the
 /// recompiler input while leaving unsupported reachable instructions fail-closed.
 /// </summary>
 [Domain]
@@ -25,9 +25,33 @@ public static class ReachableProgramBuilder
     public static RecompilerIrProgram Build(
         uint loadAddress,
         IReadOnlyList<uint> instructionWords,
-        uint entryPc)
+        uint entryPc) =>
+        Build(loadAddress, instructionWords, entryPc, additionalRoots: []);
+
+    /// <summary>
+    /// Builds a deterministic IR program from the executable entry point plus
+    /// caller-supplied explicit roots, discovered in one shared pass (Issue #644).
+    /// Every root feeds the same leader, delay-slot, load-delay and conflict state;
+    /// roots are never built separately and merged. The roots are an explicit input,
+    /// not a heuristic: nothing in this builder guesses a root from the image.
+    /// Without additional roots the result is identical to the entry-only overload.
+    /// </summary>
+    /// <param name="loadAddress">Guest address of the first supplied word.</param>
+    /// <param name="instructionWords">The complete declared text image, in guest memory order.</param>
+    /// <param name="entryPc">The PS-X EXE header entry point.</param>
+    /// <param name="additionalRoots">Extra block entry PCs. Each must be 4-byte aligned and
+    /// name a complete word inside the image. Duplicates, the entry point, and PCs the
+    /// entry-driven discovery already reaches are accepted.</param>
+    /// <exception cref="InvalidOperationException">The entry point, an additional root, or a
+    /// statically discovered in-image transfer is structurally invalid.</exception>
+    public static RecompilerIrProgram Build(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
+        IEnumerable<uint> additionalRoots)
     {
         ArgumentNullException.ThrowIfNull(instructionWords);
+        ArgumentNullException.ThrowIfNull(additionalRoots);
 
         if (instructionWords.Count == 0)
         {
@@ -58,11 +82,27 @@ public static class ReachableProgramBuilder
             throw InvalidFlow($"entry point 0x{entryPc:X8} is outside the supplied text image.");
         }
 
+        var leaders = new SortedSet<uint> { entryPc };
+        var pending = new SortedSet<uint> { entryPc };
+        foreach (var root in additionalRoots)
+        {
+            if ((root & (InstructionSize - 1)) != 0)
+            {
+                throw InvalidFlow($"additional root 0x{root:X8} is not 4-byte aligned.");
+            }
+
+            if (!image.Contains(root))
+            {
+                throw InvalidFlow($"additional root 0x{root:X8} is outside the supplied text image or has no complete instruction word.");
+            }
+
+            leaders.Add(root);
+            pending.Add(root);
+        }
+
         var decoded = new Dictionary<uint, R3000aInstruction>();
         var reachable = new HashSet<uint>();
         var delaySlots = new HashSet<uint>();
-        var leaders = new SortedSet<uint> { entryPc };
-        var pending = new SortedSet<uint> { entryPc };
 
         while (pending.Count > 0)
         {

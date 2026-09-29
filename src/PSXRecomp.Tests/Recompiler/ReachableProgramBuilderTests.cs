@@ -252,6 +252,143 @@ public sealed class ReachableProgramBuilderTests
             .And.Message.Should().NotContain("outside the supplied text image");
     }
 
+    // ---- Issue #644: explicit additional roots, discovered in one shared pass ----
+
+    private static readonly uint[] BranchingImage =
+    [
+        Word.Branch(0x04, rs: 8, rt: 0, pc: LoadAddress, target: LoadAddress + 16),
+        Word.Nop,
+        Word.Jump(LoadAddress + 20),
+        Word.Nop,
+        Word.Addiu(9, 0, 1),
+        Word.Addiu(10, 0, 2),
+    ];
+
+    /// <summary>Entry is a register jump; the words after it are reachable only through a root.</summary>
+    private static readonly uint[] IndirectOnlyImage =
+    [
+        Word.JumpRegister(8),
+        Word.Nop,
+        Word.Addiu(9, 0, 5),
+        Word.Addiu(10, 0, 6),
+    ];
+
+    [Fact]
+    public void AdditionalRoots_Empty_MatchesEntryOnlyBuildExactly()
+    {
+        var entryOnly = ReachableProgramBuilder.Build(LoadAddress, BranchingImage, LoadAddress);
+        var withEmpty = ReachableProgramBuilder.Build(LoadAddress, BranchingImage, LoadAddress, []);
+
+        withEmpty.Blocks.Select(block => block.EntryPc).Should().Equal(entryOnly.Blocks.Select(block => block.EntryPc));
+        RecompilerIrSerializer.Serialize(withEmpty).Should().Be(RecompilerIrSerializer.Serialize(entryOnly));
+    }
+
+    [Fact]
+    public void IndirectOnlyTarget_IsCompiledOnlyWhenSuppliedAsRoot()
+    {
+        var without = ReachableProgramBuilder.Build(LoadAddress, IndirectOnlyImage, LoadAddress);
+        var with = ReachableProgramBuilder.Build(LoadAddress, IndirectOnlyImage, LoadAddress, [LoadAddress + 8]);
+
+        without.Blocks.Select(block => block.EntryPc).Should().Equal(LoadAddress);
+        with.Blocks.Select(block => block.EntryPc)
+            .Should().Equal(LoadAddress, LoadAddress + 8, LoadAddress + 12);
+    }
+
+    [Fact]
+    public void DuplicateEntryAndAlreadyReachableRoots_AreAcceptedWithoutChangingTheProgram()
+    {
+        var entryOnly = ReachableProgramBuilder.Build(LoadAddress, BranchingImage, LoadAddress);
+
+        var program = ReachableProgramBuilder.Build(
+            LoadAddress,
+            BranchingImage,
+            LoadAddress,
+            [LoadAddress, LoadAddress + 16, LoadAddress + 20, LoadAddress + 16]);
+
+        program.Blocks.Select(block => block.EntryPc).Should().OnlyHaveUniqueItems();
+        RecompilerIrSerializer.Serialize(program).Should().Be(RecompilerIrSerializer.Serialize(entryOnly));
+    }
+
+    [Fact]
+    public void RootOrderAndDuplicates_DoNotAffectTheProgram()
+    {
+        var ascending = ReachableProgramBuilder.Build(
+            LoadAddress, IndirectOnlyImage, LoadAddress, [LoadAddress + 8, LoadAddress + 12]);
+        var shuffled = ReachableProgramBuilder.Build(
+            LoadAddress, IndirectOnlyImage, LoadAddress, [LoadAddress + 12, LoadAddress + 8, LoadAddress + 12]);
+
+        RecompilerIrSerializer.Serialize(shuffled).Should().Be(RecompilerIrSerializer.Serialize(ascending));
+    }
+
+    [Fact]
+    public void LastWordOfImage_IsAValidRoot()
+    {
+        var program = ReachableProgramBuilder.Build(
+            LoadAddress, IndirectOnlyImage, LoadAddress, [LoadAddress + 12]);
+
+        program.Blocks.Select(block => block.EntryPc).Should().Equal(LoadAddress, LoadAddress + 12);
+    }
+
+    [Theory]
+    [InlineData(0x80010002u, "not 4-byte aligned")]
+    [InlineData(0x80010004u + 0x1000u, "outside the supplied text image")]
+    [InlineData(0x8000FFFCu, "outside the supplied text image")]
+    [InlineData(0x80010010u, "outside the supplied text image")] // one word past the last (4-word image)
+    public void InvalidAdditionalRoot_FailsClosedNamingTheRoot(uint root, string reason)
+    {
+        var build = () => ReachableProgramBuilder.Build(LoadAddress, IndirectOnlyImage, LoadAddress, [root]);
+
+        build.Should().Throw<InvalidOperationException>()
+            .Which.Message.Should().Contain($"0x{root:X8}").And.Contain(reason).And.Contain("additional root");
+    }
+
+    [Fact]
+    public void RootInsideAnotherPathsDelaySlot_FailsClosedLikeAnyLeaderDelaySlotConflict()
+    {
+        var build = () => ReachableProgramBuilder.Build(
+            LoadAddress, IndirectOnlyImage, LoadAddress, [LoadAddress + 4]);
+
+        build.Should().Throw<InvalidOperationException>()
+            .WithMessage("*0x80010004*both a discovered block entry and a delay slot*");
+    }
+
+    [Fact]
+    public void RootBetweenALoadAndItsDelayObserver_FailsClosed()
+    {
+        var words = new[]
+        {
+            Word.JumpRegister(8),
+            Word.Nop,
+            Word.LoadWord(9, 8, 0),
+            Word.R(0x21, rd: 10, rs: 9, rt: 0),
+        };
+
+        var build = () => ReachableProgramBuilder.Build(
+            LoadAddress, words, LoadAddress, [LoadAddress + 8, LoadAddress + 12]);
+
+        build.Should().Throw<InvalidOperationException>()
+            .WithMessage("*load at PC 0x80010008*0x8001000C*");
+    }
+
+    [Fact]
+    public void AdditionalRoots_ShareOneDiscoveryPassWithTheEntry()
+    {
+        // The root at +8 falls through into +12, which the entry-driven path also reaches by a
+        // direct jump. One shared pass discovers +12 once, as a leader of both.
+        var words = new[]
+        {
+            Word.Jump(LoadAddress + 12),
+            Word.Nop,
+            Word.Addiu(9, 0, 1),
+            Word.Addiu(10, 0, 2),
+        };
+
+        var program = ReachableProgramBuilder.Build(LoadAddress, words, LoadAddress, [LoadAddress + 8]);
+
+        program.Blocks.Select(block => block.EntryPc)
+            .Should().Equal(LoadAddress, LoadAddress + 8, LoadAddress + 12);
+    }
+
     private static RecompilerIrProgram Build(params uint[] words) =>
         ReachableProgramBuilder.Build(LoadAddress, words, LoadAddress);
 

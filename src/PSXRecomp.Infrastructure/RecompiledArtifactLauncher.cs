@@ -90,7 +90,11 @@ public sealed class RecompiledArtifactLauncher
             outputDirectory,
             biosRuntimeFactory ?? ((reader, writer) => new BiosHleRuntime(sink, reader, writer)));
 
-        var execution = new ExecutionOrchestrator().Execute(engine, handoff, request);
+        var execution = InImageTransferDiagnostic.Apply(
+            new ExecutionOrchestrator().Execute(engine, handoff, request),
+            program,
+            input.LoadAddress,
+            input.InstructionWords.Count);
         var result = RecompiledArtifactResult.From(execution, resultRegister);
 
         return new LaunchOutcome(result, ArtifactJson.Serialize(result), sink.Bytes);
