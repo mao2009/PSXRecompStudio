@@ -146,6 +146,14 @@ public static class ReachableProgramBuilder
                         QueueContinuation(pc, image, leaders, pending);
                     }
                 }
+                else if (instruction.LinkInfo.WritesLink)
+                {
+                    // JALR: the dynamic target is unknown and must not be guessed,
+                    // but the return site (pc + 8) is statically determined.
+                    // Enqueue it for reachable-program discovery, consistent with
+                    // the JAL handling above.
+                    QueueContinuation(pc, image, leaders, pending);
+                }
 
                 // JR/JALR and any other unresolved transfer deliberately stop
                 // discovery here. MipsToIrLowerer preserves their dynamic boundary.
