@@ -105,6 +105,15 @@ Infrastructure
 - Application contracts should remain suitable for future CLI, automation, and AI integration.
 - Domain results should be testable and serializable where practical.
 
+## Runtime frame presentation (Issue #455, post-v0.1)
+
+The Studio shows the Runtime's existing `FrameSnapshot` (#441/#575) and nothing else: Runtime/GPU -> `FrameSnapshot` -> `PresentationFrame` (Application-layer BGRA32 copy) -> Avalonia `Image`. Studio owns no GPU, VRAM or rasterizer.
+
+- The presentation copy is built off the UI thread for real-title runs; the source snapshot is never mutated, and window resize only rescales at draw time (nearest-neighbor, `BitmapInterpolationMode.None`).
+- Explicit states: `NoFrame` (no Runtime frame evidence; nothing is drawn, no placeholder), `Unsupported` (empty display region), `Ready`.
+- The frame is captured after a run completes at the caller's chosen boundary; live/continuous presentation and VBlank pacing are not part of this slice.
+- Runtime and headless CLI do not reference Avalonia (guarded by `HeadlessAvaloniaIndependenceTests`); closing the window has no Runtime effect.
+
 ## Dashboard direction
 
 The dashboard should communicate project health at a glance, including architecture, analysis progress, function/symbol counts, diagnostics, AI state, harness/test status, recompilation readiness, and runtime state.

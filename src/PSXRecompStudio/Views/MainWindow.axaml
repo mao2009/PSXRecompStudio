@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:PSXRecompStudio.ViewModels"
+        xmlns:v="using:PSXRecompStudio.Views"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="500"
@@ -72,6 +73,21 @@
             <TextBlock x:Name="RealTitleExecutionStatusText"
                        AutomationProperties.Name="RealTitleExecutionStatus"
                        Text="{Binding RealTitleExecutionStatus}"
+                       FontSize="12" Foreground="#808080"
+                       HorizontalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- Frame presentation (Issue #455): shows the Runtime FrameSnapshot via a presentation copy.
+             Nearest-neighbor scaling; Image.Source is null (nothing drawn) when there is no frame. -->
+        <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="60,16,60,0">
+            <Image x:Name="FrameImage"
+                   AutomationProperties.Name="FrameImage"
+                   Source="{Binding PresentedFrame, Converter={x:Static v:FrameBitmapConverter.Instance}}"
+                   RenderOptions.BitmapInterpolationMode="None"
+                   Stretch="Uniform" MaxHeight="240"/>
+            <TextBlock x:Name="FrameStatusText"
+                       AutomationProperties.Name="FrameStatus"
+                       Text="{Binding FrameStatus}"
                        FontSize="12" Foreground="#808080"
                        HorizontalAlignment="Center"/>
         </StackPanel>
