@@ -25,10 +25,12 @@ public sealed class RecompiledArtifactLauncher
 
     /// <summary>
     /// Builds and runs one runnable artifact for <paramref name="program"/> from
-    /// <paramref name="request"/>'s initial state.
+    /// <paramref name="input"/>'s program image and initial state.
     /// </summary>
     /// <param name="program">The lowered Recompiler IR to build a runnable artifact from.</param>
-    /// <param name="request">The initial guest state. <c>OuterBudget</c> must be 1: this
+    /// <param name="input">The program image (loaded into artifact guest RAM before the first
+    /// guest instruction, exactly as the interpreter loads it — Issue #637) and the initial
+    /// guest state. <c>Request.OuterBudget</c> must be 1: this
     /// milestone's engine supports exactly one artifact launch (see
     /// <see cref="RecompiledHostExecutionEngine"/>'s remarks), and an
     /// <c>OuterBudget</c> greater than 1 is rejected here, as a launcher
@@ -45,14 +47,14 @@ public sealed class RecompiledArtifactLauncher
     /// transfers are relayed to; defaults to the shared <see cref="BiosHleRuntime"/> attached
     /// to this launch's output sink.</param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/> or
-    /// <paramref name="request"/> is null.</exception>
+    /// <paramref name="input"/> is null.</exception>
     /// <exception cref="InvalidOperationException">Code generation or the artifact build failed,
-    /// or <paramref name="request"/> has an <c>OuterBudget</c> greater than 1 — this launcher
+    /// or <paramref name="input"/>'s request has an <c>OuterBudget</c> greater than 1 — this launcher
     /// is one-shot: <see cref="RecompiledHostExecutionEngine"/> carries no guest-RAM continuity
     /// across repeated launches (Issue #459's scope).</exception>
     public LaunchOutcome Launch(
         RecompilerIrProgram program,
-        TitleExecutionRequest request,
+        PsxExeTitleExecution input,
         ITitleExecutionHandoff? handoff,
         string outputDirectory,
         IGeneratedHostBuildService? buildService = null,
@@ -60,8 +62,9 @@ public sealed class RecompiledArtifactLauncher
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(program);
-        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(input);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        var request = input.Request;
 
         // Launcher-specific one-shot precondition: an OuterBudget above 1 would
         // drive RecompiledHostExecutionEngine's second RunSegment call, which the
@@ -81,6 +84,8 @@ public sealed class RecompiledArtifactLauncher
         var sink = new CollectedOutput();
         using var engine = new RecompiledHostExecutionEngine(
             program,
+            input.InstructionWords,
+            input.LoadAddress,
             buildService ?? new GeneratedHostBuildService(),
             outputDirectory,
             biosRuntimeFactory ?? ((reader, writer) => new BiosHleRuntime(sink, reader, writer)));

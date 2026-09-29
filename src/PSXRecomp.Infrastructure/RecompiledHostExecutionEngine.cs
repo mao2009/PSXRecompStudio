@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -51,6 +52,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly string _binaryPath;
     private readonly string _inputPath;
+    private readonly string _imagePath;
+    private readonly uint _imageLoadAddress;
+    private readonly IReadOnlyList<uint> _imageWords;
 
     private IReadOnlyList<RecompilerInitialMemoryItem> _initialMemory =
         Array.Empty<RecompilerInitialMemoryItem>();
@@ -66,6 +70,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// failure mode without deferring it past construction.
     /// </summary>
     /// <param name="program">The lowered Recompiler IR to build a runnable artifact from.</param>
+    /// <param name="imageWords">The guest program image (the PS-X EXE text segment) the
+    /// interpreter writes into guest RAM before execution; the artifact loads the same
+    /// words at <paramref name="imageLoadAddress"/> before its first guest instruction
+    /// (Issue #637), so data loads from the text region see the same bytes.</param>
+    /// <param name="imageLoadAddress">The guest address <paramref name="imageWords"/> is loaded at.</param>
     /// <param name="buildService">The production build substrate (Issue #458).</param>
     /// <param name="outputDirectory">
     /// Where the artifact's source, object, and binary are written. The caller owns
@@ -78,22 +87,34 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// unresolved transfer then stops the run immediately, a legitimate classified
     /// boundary rather than a failure.
     /// </param>
-    /// <exception cref="ArgumentNullException"><paramref name="program"/> or
-    /// <paramref name="buildService"/> is null.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="program"/>,
+    /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
     /// <exception cref="InvalidOperationException">Code generation or the build failed.</exception>
     public RecompiledHostExecutionEngine(
         RecompilerIrProgram program,
+        IReadOnlyList<uint> imageWords,
+        uint imageLoadAddress,
         IGeneratedHostBuildService buildService,
         string outputDirectory,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(program);
+        ArgumentNullException.ThrowIfNull(imageWords);
         ArgumentNullException.ThrowIfNull(buildService);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        if (imageWords.Count == 0)
+        {
+            // Mirrors InterpreterTitleExecutionEngine: no program image, nothing to run.
+            throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+        }
 
         _biosRuntimeFactory = biosRuntimeFactory;
         _blockEntryPcs = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
         _inputPath = Path.Combine(outputDirectory, "artifact-input.txt");
+        _imagePath = Path.Combine(outputDirectory, "artifact-image.bin");
+        _imageLoadAddress = imageLoadAddress;
+        _imageWords = imageWords;
 
         var dispatch = RecompilerHostCodeGen.Generate(program);
         if (!dispatch.Success)
@@ -172,7 +193,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
         var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs);
-        var arguments = new List<string>(2) { _inputPath };
+        var arguments = new List<string>(3) { _inputPath, _imagePath };
         if (bridge is not null)
         {
             arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
@@ -242,7 +263,21 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             sb.Append(item.Address).Append(' ').Append(item.Value).Append('\n');
         }
 
+        // Issue #637: the program image travels as a raw little-endian sidecar
+        // (argv[2]) rather than as init-memory entries — a PS-X EXE text segment
+        // is far beyond MaxInitEntries — and the input file declares its load
+        // address and exact byte length so a missing or truncated sidecar fails
+        // closed in the driver.
+        var image = new byte[_imageWords.Count * sizeof(uint)];
+        for (var i = 0; i < _imageWords.Count; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(i * sizeof(uint)), _imageWords[i]);
+        }
+
+        sb.Append(_imageLoadAddress).Append(' ').Append(image.Length).Append('\n');
+
         File.WriteAllText(_inputPath, sb.ToString());
+        File.WriteAllBytes(_imagePath, image);
     }
 
     /// <summary>

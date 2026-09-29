@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -43,7 +44,8 @@ public sealed class RecompiledArtifactLauncherTests
     public void Launch_SyntheticFixture_ExecutesGeneratedCodeAndStopsAtUnresolvedTransfer()
     {
         const uint entryPc = 0x80010000u;
-        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
 
         using var dir = new TempDirectory();
         var request = new TitleExecutionRequest(
@@ -51,7 +53,7 @@ public sealed class RecompiledArtifactLauncherTests
             initialMemory: [], outerBudget: 1, segmentBudget: 8);
 
         var outcome = new RecompiledArtifactLauncher().Launch(
-            program, request, handoff: null, dir.FullPath, resultRegister: (int)R3000aRegister.V0);
+            program, new PsxExeTitleExecution(entryPc, words, request), handoff: null, dir.FullPath, resultRegister: (int)R3000aRegister.V0);
 
         // The generated block executed for real: V0 carries the value only the
         // recompiled instruction itself could have produced (the deterministic
@@ -86,7 +88,7 @@ public sealed class RecompiledArtifactLauncherTests
             initialMemory: [], outerBudget: 1, segmentBudget: 64);
 
         var outcome = new RecompiledArtifactLauncher().Launch(
-            program, request, new ProgramEndHandoff(programEnd), dir.FullPath, resultRegister: (int)R3000aRegister.S1);
+            program, new PsxExeTitleExecution(entryPc, words, request), new ProgramEndHandoff(programEnd), dir.FullPath, resultRegister: (int)R3000aRegister.S1);
 
         // The A0:3C putchar call was dispatched through the real, shared
         // BiosHleRuntime (ADR-014) — the artifact itself carries no BIOS
@@ -102,10 +104,11 @@ public sealed class RecompiledArtifactLauncherTests
     public void RunSegment_CalledTwice_ThrowsRatherThanSilentlyRestartingFromStaleMemory()
     {
         const uint entryPc = 0x80030000u;
-        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
 
         using var dir = new TempDirectory();
-        using var engine = new RecompiledHostExecutionEngine(program, new GeneratedHostBuildService(), dir.FullPath);
+        using var engine = new RecompiledHostExecutionEngine(program, words, entryPc, new GeneratedHostBuildService(), dir.FullPath);
         var request = new TitleExecutionRequest(
             entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
             initialMemory: [], outerBudget: 1, segmentBudget: 8);
@@ -125,7 +128,8 @@ public sealed class RecompiledArtifactLauncherTests
     public void Launch_OuterBudgetGreaterThanOne_ThrowsPreconditionBeforeEngineConstruction()
     {
         const uint entryPc = 0x80040000u;
-        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
 
         using var dir = new TempDirectory();
         var request = new TitleExecutionRequest(
@@ -137,7 +141,7 @@ public sealed class RecompiledArtifactLauncherTests
         // 1 is rejected up front — it is a launcher precondition, not a
         // mid-orchestration engine surprise.
         var act = () => new RecompiledArtifactLauncher().Launch(
-            program, request, handoff: null, dir.FullPath);
+            program, new PsxExeTitleExecution(entryPc, words, request), handoff: null, dir.FullPath);
         act.Should().Throw<InvalidOperationException>().WithMessage("*OuterBudget must be 1*");
     }
 
@@ -145,10 +149,11 @@ public sealed class RecompiledArtifactLauncherTests
     public void RunSegment_ExecutesFromSegmentRequestState_NotFromStaleLoadState()
     {
         const uint entryPc = 0x80050000u;
-        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
 
         using var dir = new TempDirectory();
-        using var engine = new RecompiledHostExecutionEngine(program, new GeneratedHostBuildService(), dir.FullPath);
+        using var engine = new RecompiledHostExecutionEngine(program, words, entryPc, new GeneratedHostBuildService(), dir.FullPath);
 
         // Load must not freeze the architectural state the artifact runs from:
         // its entry pc points at no compiled block and its budget of 0 would end
@@ -202,7 +207,7 @@ public sealed class RecompiledArtifactLauncherTests
             outerBudget: 1, segmentBudget: 64);
 
         var outcome = new RecompiledArtifactLauncher().Launch(
-            program, request, new ProgramEndHandoff(programEnd), dir.FullPath, resultRegister: (int)R3000aRegister.S1);
+            program, new PsxExeTitleExecution(entryPc, words, request), new ProgramEndHandoff(programEnd), dir.FullPath, resultRegister: (int)R3000aRegister.S1);
 
         // Load's seed reached the artifact this RunSegment executed: A0:3E puts
         // read the NUL-terminated string from guest memory at a0, which only the
@@ -217,7 +222,8 @@ public sealed class RecompiledArtifactLauncherTests
     public void RunSegment_InputPathWithSpacesAndQuotes_IsReceivedUnchangedAsOneArgument()
     {
         const uint entryPc = 0x80070000u;
-        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
 
         using var dir = new TempDirectory();
         // A quote cannot be part of a Windows path; everywhere else both a space
@@ -226,7 +232,7 @@ public sealed class RecompiledArtifactLauncherTests
         var working = OperatingSystem.IsWindows()
             ? dir.CreateSubdirectory("path with space")
             : dir.CreateSubdirectory("path with \"quote\" and space");
-        using var engine = new RecompiledHostExecutionEngine(program, new GeneratedHostBuildService(), working);
+        using var engine = new RecompiledHostExecutionEngine(program, words, entryPc, new GeneratedHostBuildService(), working);
         var request = new TitleExecutionRequest(
             entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
             initialMemory: [], outerBudget: 1, segmentBudget: 8);
@@ -242,7 +248,8 @@ public sealed class RecompiledArtifactLauncherTests
     public void Launch_HostTransferProtocolFault_IsClassifiedProtocolFailure_NotLeakedException()
     {
         const uint entryPc = 0x80080000u;
-        var program = Lower(entryPc, [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)]);
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
 
         using var dir = new TempDirectory();
         var request = new TitleExecutionRequest(
@@ -253,7 +260,7 @@ public sealed class RecompiledArtifactLauncherTests
         // handshake: a faulting factory exercises RunProcess's pump-fault path.
         var outcome = new RecompiledArtifactLauncher().Launch(
             program,
-            request,
+            new PsxExeTitleExecution(entryPc, words, request),
             handoff: null,
             dir.FullPath,
             resultRegister: (int)R3000aRegister.V0,
@@ -268,6 +275,141 @@ public sealed class RecompiledArtifactLauncherTests
         outcome.Result.DiagnosticMessage.Should().Be("The artifact host-transfer protocol failed.");
         outcome.Json.Should().Contain("ARTIFACT_HOST_PROTOCOL_FAILED");
         outcome.Json.Should().NotContain("simulated protocol fault");
+    }
+
+    private const uint TextImageEntry = 0x80090000u;
+    private const uint TextImageDataWord = 0x9A785634u;
+
+    /// <summary>
+    /// Issue #637 fixture: the very first guest instruction already reads the program
+    /// image as data (a0 = the image base), before any guest store runs, so only a
+    /// preloaded image can supply these values. Word 8 is a data word the code never
+    /// executes; the J leaves the image so both engines end at the same program end.
+    /// </summary>
+    private static uint[] TextImageLoadWords()
+    {
+        const byte a0 = (byte)R3000aRegister.A0;
+        static uint Load(byte opcode, R3000aRegister rt, uint offset) =>
+            (uint)opcode << 26 | (uint)a0 << 21 | (uint)rt << 16 | offset;
+        return
+        [
+            Load(0x23, R3000aRegister.S0, 0x20), // lw  s0, 0x20(a0)  data word
+            Load(0x20, R3000aRegister.S1, 0x23), // lb  s1, 0x23(a0)  sign-extended top byte
+            Load(0x24, R3000aRegister.S2, 0x21), // lbu s2, 0x21(a0)
+            Load(0x23, R3000aRegister.S3, 0x00), // lw  s3, 0(a0)     the first instruction word itself
+            Load(0x21, R3000aRegister.S4, 0x22), // lh  s4, 0x22(a0)
+            0x02u << 26 | ((TextImageEntry + 0x24u) & 0x0FFFFFFCu) >> 2, // j program end
+            0u, // delay slot
+            0u, // unreachable padding
+            TextImageDataWord,
+        ];
+    }
+
+    private static TitleExecutionRequest TextImageRequest()
+    {
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        gpr[(int)R3000aRegister.A0] = TextImageEntry;
+        return new TitleExecutionRequest(
+            TextImageEntry, gpr, initialHi: 0, initialLo: 0, initialMemory: [], outerBudget: 1, segmentBudget: 64);
+    }
+
+    [Fact]
+    public void Artifact_LoadsFromTheTextSegment_MatchTheInterpreterFromTheFirstInstruction()
+    {
+        var words = TextImageLoadWords();
+        var request = TextImageRequest();
+        var handoff = new ProgramEndHandoff(TextImageEntry + (uint)(words.Length * sizeof(uint)));
+        var program = ReachableProgramBuilder.Build(TextImageEntry, words, TextImageEntry);
+
+        using var dir = new TempDirectory();
+        using var artifactEngine = new RecompiledHostExecutionEngine(
+            program, words, TextImageEntry, new GeneratedHostBuildService(), dir.FullPath);
+        var artifact = new ExecutionOrchestrator().Execute(artifactEngine, handoff, request);
+
+        using var interpreterEngine = new InterpreterTitleExecutionEngine(words, TextImageEntry);
+        var interpreter = new ExecutionOrchestrator().Execute(interpreterEngine, handoff, request);
+
+        artifact.State.Should().Be(TitleExecutionState.Completed, artifact.DiagnosticMessage);
+        interpreter.State.Should().Be(TitleExecutionState.Completed, interpreter.DiagnosticMessage);
+
+        // Explicit values first: a zero-filled artifact RAM (the pre-#637 bug) would
+        // read 0 for every one of these.
+        var gpr = artifact.FinalSnapshot!.Gpr;
+        gpr[(int)R3000aRegister.S0].Should().Be(TextImageDataWord);
+        gpr[(int)R3000aRegister.S1].Should().Be(0xFFFFFF9Au);
+        gpr[(int)R3000aRegister.S2].Should().Be(0x56u);
+        gpr[(int)R3000aRegister.S3].Should().Be(words[0]);
+        gpr[(int)R3000aRegister.S4].Should().Be(0xFFFF9A78u);
+
+        // Then parity: the interpreter is the reference for initial guest RAM.
+        gpr.Should().Equal(interpreter.FinalSnapshot!.Gpr);
+    }
+
+    [Fact]
+    public void Engine_EmptyProgramImage_IsRejected()
+    {
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(TextImageEntry, words);
+
+        using var dir = new TempDirectory();
+        var act = () => new RecompiledHostExecutionEngine(
+            program, Array.Empty<uint>(), TextImageEntry, new GeneratedHostBuildService(), dir.FullPath);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("missing", RecompiledArtifactCodeGen.CannotOpenImageExitCode)]
+    [InlineData("truncated", RecompiledArtifactCodeGen.InvalidImageExitCode)]
+    [InlineData("oversized", RecompiledArtifactCodeGen.InvalidImageExitCode)]
+    public void Artifact_ProgramImageNotMatchingTheInputContract_FailsClosedBeforeExecution(string defect, int expectedExit)
+    {
+        var words = TextImageLoadWords();
+        var request = TextImageRequest();
+        var program = ReachableProgramBuilder.Build(TextImageEntry, words, TextImageEntry);
+
+        using var dir = new TempDirectory();
+        using (var engine = new RecompiledHostExecutionEngine(
+            program, words, TextImageEntry, new GeneratedHostBuildService(), dir.FullPath))
+        {
+            // One well-formed launch writes the input file and image sidecar the
+            // driver contract describes (and proves they are accepted as written).
+            engine.Load(request);
+            engine.RunSegment(new TitleExecutionSegmentRequest(request.InitialGpr, 0, 0, TextImageEntry, 64))
+                .Status.Should().Be(RecompilerExecutionStatus.Completed);
+        }
+
+        var imagePath = dir.Combine("artifact-image.bin");
+#pragma warning disable AARC003 // Test-only tampering with the artifact's own sidecar.
+        var image = File.ReadAllBytes(imagePath);
+        switch (defect)
+        {
+            case "missing": File.Delete(imagePath); break;
+            case "truncated": File.WriteAllBytes(imagePath, image[..^1]); break;
+            default: File.WriteAllBytes(imagePath, [.. image, 0]); break;
+        }
+
+        var binary = File.Exists(dir.Combine("recompiled-artifact.exe"))
+            ? dir.Combine("recompiled-artifact.exe")
+            : dir.Combine("recompiled-artifact");
+        var psi = new ProcessStartInfo(binary)
+        {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add(dir.Combine("artifact-input.txt"));
+        psi.ArgumentList.Add(imagePath);
+        using var process = Process.Start(psi)!;
+        var stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit(10000).Should().BeTrue();
+        var exitCode = process.ExitCode;
+#pragma warning restore AARC003
+
+        // Fail closed: a distinct driver exit and no snapshot, never a run over
+        // zero-filled (or partially filled) guest RAM.
+        exitCode.Should().Be(expectedExit);
+        stdout.Should().NotContain(RecompiledArtifactCodeGen.SnapshotBeginMarker);
     }
 
     private sealed class ProgramEndHandoff(uint programEnd) : ITitleExecutionHandoff
