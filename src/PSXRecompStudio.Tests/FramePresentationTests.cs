@@ -105,7 +105,6 @@ public class FramePresentationTests
         var image = window.FindControl<Image>("FrameImage")!;
         var bitmap = image.Source.Should().BeOfType<Bitmap>().Subject;
         // Avalonia.Headless stubs bitmaps as 1x1, so pixel/size fidelity is asserted on PresentationFrame above, not here.
-        // Avalonia.Headless stubs bitmaps as 1x1, so pixel/size fidelity is asserted on PresentationFrame above, not here.
         window.FindControl<TextBlock>("FrameStatusText")!.Text.Should().Be("Frame 2x1");
 
         var presented = vm.PresentedFrame.Bgra32.ToArray();
