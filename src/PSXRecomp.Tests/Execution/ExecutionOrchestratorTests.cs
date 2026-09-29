@@ -1,8 +1,10 @@
+using System.Reflection;
 using FluentAssertions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Tests.Recompiler;
 using PSXRecomp.Tests.Runtime;
 
@@ -372,6 +374,259 @@ public sealed class ExecutionOrchestratorTests
             "GP1(02h) must not clear the separately latched I_STAT IRQ1");
         (snapshot.Gpr[(int)R3000aRegister.S4] & (1u << DeviceScheduler.GpuIrq)).Should().Be(0u,
             "the guest must clear I_STAT IRQ1 independently");
+    }
+
+    [Fact]
+    public void Interpreter_LiveGuestCdRomMmio_ReachesDma3AndRaisesIrq2()
+    {
+        // Issue #587 (previous-review Blocker 1): the CD-ROM DMA3/IRQ2
+        // integration must be reachable from real guest execution, not only
+        // from focused unit tests. This drives the whole documented chain
+        // through the production InterpreterTitleExecutionEngine with real
+        // guest instructions:
+        //
+        //   guest CD-ROM MMIO (SB/LB 0x1F801800-0x1F801803)
+        //    -> the engine's own CdRomDevice
+        //    -> command/response/data state (ReadN -> INT3 -> INT1)
+        //    -> DMA channel 3 (guest SW to MADR/BCR/CHCR/DPCR/DICR)
+        //    -> guest RAM (guest LW reads the transferred words back)
+        //    -> IRQ2 / InterruptController (guest LW of I_STAT)
+        //
+        // The only thing driven through reflection (no product-code test
+        // hook added, same convention as
+        // InterpreterTitleExecutionEngineTests.Dispose_DisposesOwnedMmioAdapters)
+        // is CdRomDevice.LoadData: #587 deliberately keeps sector-content
+        // loading format-independent and out of guest-visible MMIO, exactly
+        // like the focused CdRomDmaTransferTests fixture.
+        const uint cdRomIndex = 0x1800;
+        const uint cdRomCommand = 0x1801;
+        const uint cdRomInterruptEnable = 0x1802;
+        const uint cdRomInterruptFlag = 0x1803;
+        const uint dmaMadr3 = 0x10B0;
+        const uint dmaBcr3 = 0x10B4;
+        const uint dmaChcr3 = 0x10B8;
+        const uint dmaDpcr = 0x10F0;
+        const uint dmaDicr = 0x10F4;
+        const uint iStat = 0x1070;
+        const uint dma3StartMask = 0x11000000u; // CHCR: start/busy | start/trigger, sync 0, device->RAM, incrementing
+        const uint dma3DicrFlagAndStatus = (1u << 3) | (1u << 31);
+
+        var words = new uint[]
+        {
+            // hwBase (T0) = 0xBF800000: KSEG1 alias over the same physical
+            // hardware-register window every other production-path test here uses.
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T0, rs: 0, immediate: 0xBF80),
+
+            // Enable every CD-ROM interrupt (index 1, port 2), then reselect index 0.
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 1),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomIndex),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomInterruptEnable),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomIndex),
+
+            // WriteCommand(0x06) = ReadN: activates INT3 (queues INT1). This is
+            // where segment 1 stops so the test can load sector bytes via
+            // CdRomDevice.LoadData between segments, exactly like #587's own
+            // synthetic DMA fixture (PrepareDataReady in CdRomDmaTransferTests).
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x06),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomCommand),
+
+            // --- segment 2 resumes here ---
+            MipsEncoding.Nop,
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S0, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)iStat),
+
+            // Pop INT3's one-byte response, then acknowledge it (promotes INT1).
+            MipsEncoding.Load(R3000aOpcode.Lb, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomCommand),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 1),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomIndex),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomInterruptFlag),
+
+            // Pop INT1's one-byte response, then acknowledge INT1 itself (the
+            // review's DataReady/ack-coupling gap: this must not discard the
+            // data CdRomDevice.LoadData already supplied).
+            MipsEncoding.Load(R3000aOpcode.Lb, rt: (byte)R3000aRegister.T2, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomCommand),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 1),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomIndex),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T1, rs: 0, immediate: 0x1F),
+            MipsEncoding.Load(R3000aOpcode.Sb, rt: (byte)R3000aRegister.T1, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)cdRomInterruptFlag),
+
+            // Arm DMA channel 3: DPCR channel-3 enable, DICR master+channel-3
+            // enable, MADR=0x100, BCR=2 words, CHCR start|trigger.
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T6, rs: 0, immediate: 0x0765),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T6, rs: (byte)R3000aRegister.T6, immediate: 0xC321),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T6, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaDpcr),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T7, rs: 0, immediate: 0x0880),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T7, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaDicr),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: 0x100),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T3, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaMadr3),
+            MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T4, rs: 0, immediate: 2),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T4, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaBcr3),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T5, rs: 0, immediate: 0x1100),
+            MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T5, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaChcr3),
+
+            // The production scheduler services channel 3 as soon as the next
+            // instruction retires (Advance runs after every step), so the
+            // transfer is already complete by the time these loads execute.
+            MipsEncoding.Nop,
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S1, baseRegister: (byte)R3000aRegister.T3, offset: 0),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S2, baseRegister: (byte)R3000aRegister.T3, offset: 4),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S3, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaChcr3),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S4, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaDicr),
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: (byte)R3000aRegister.S5, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)iStat),
+            MipsEncoding.Nop,
+        };
+
+        using var engine = new InterpreterTitleExecutionEngine(words, Entry);
+        engine.Load(new TitleExecutionRequest(
+            Entry, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: Array.Empty<RecompilerInitialMemoryItem>(), outerBudget: 1, segmentBudget: 64));
+
+        const int instructionsBeforeCommandWrite = 9; // through the ReadN command-byte store
+        var segment1 = new TitleExecutionSegmentRequest(
+            new uint[TitleExecutionRequest.GprCount], hi: 0, lo: 0, pc: Entry, budget: instructionsBeforeCommandWrite);
+        var afterCommand = engine.RunSegment(segment1);
+        afterCommand.Status.Should().Be(RecompilerExecutionStatus.Completed);
+
+        var cdRomDevice = GetPrivateField<CdRomDevice>(engine, "_cdRomDevice");
+        cdRomDevice.IsReading.Should().BeTrue("the guest's ReadN store must have reached the production CdRomDevice");
+        cdRomDevice.LoadData(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
+
+        var segment1Snapshot = afterCommand.Snapshot!;
+        var segment2 = new TitleExecutionSegmentRequest(
+            segment1Snapshot.Gpr, segment1Snapshot.HI, segment1Snapshot.LO, segment1Snapshot.PC, budget: 64);
+        var final = engine.RunSegment(segment2);
+
+        final.Status.Should().Be(RecompilerExecutionStatus.Completed);
+        var snapshot = final.Snapshot!;
+
+        (snapshot.Gpr[(int)R3000aRegister.S0] & (1u << DeviceScheduler.CdRomIrq)).Should().Be(
+            1u << DeviceScheduler.CdRomIrq, "ReadN's INT3 must reach IRQ2 through the production CD-ROM/scheduler path");
+        snapshot.Gpr[(int)R3000aRegister.S1].Should().Be(0x04030201u,
+            "DMA3 must move the CdRomDevice data FIFO into guest RAM through the production path");
+        snapshot.Gpr[(int)R3000aRegister.S2].Should().Be(0x08070605u);
+        (snapshot.Gpr[(int)R3000aRegister.S3] & dma3StartMask).Should().Be(0u,
+            "the production DMA controller must complete channel 3 (CHCR start/busy+trigger clear)");
+        (snapshot.Gpr[(int)R3000aRegister.S4] & dma3DicrFlagAndStatus).Should().Be(dma3DicrFlagAndStatus,
+            "channel 3's completion must set its own DICR flag and the aggregate IRQ status");
+        (snapshot.Gpr[(int)R3000aRegister.S5] & (1u << DeviceScheduler.DmaIrq)).Should().Be(
+            1u << DeviceScheduler.DmaIrq, "DMA3 completion must reach IRQ3 through the production scheduler");
+    }
+
+    [Fact]
+    public void Interpreter_LiveGuestCdRom_Int1Irq2Ack_KeepsDrqsts_AndDma3LeavesUnrelatedChannelAlone()
+    {
+        // Issue #587 production-path guarantees beyond the chain above, all
+        // driven by real guest instructions through InterpreterTitleExecutionEngine:
+        // INT1 raises its own IRQ2, the guest acknowledges IRQ2 by writing
+        // I_STAT, DRQSTS (0x40) survives the INT1 ack while data is unread,
+        // DMA3 completion sets only DICR channel 3's flag, and an unrelated
+        // started channel (4) is neither completed nor flagged. LoadData is
+        // reached through reflection, as in the test above.
+        const byte t0 = (byte)R3000aRegister.T0, t1 = (byte)R3000aRegister.T1, t2 = (byte)R3000aRegister.T2;
+        const byte t3 = (byte)R3000aRegister.T3, t4 = (byte)R3000aRegister.T4;
+        const ushort cdIndex = 0x1800, cdPort1 = 0x1801, cdPort2 = 0x1802, cdPort3 = 0x1803;
+        const ushort iStat = 0x1070, dpcr = 0x10F0, dicr = 0x10F4;
+        const ushort madr3 = 0x10B0, bcr3 = 0x10B4, chcr3 = 0x10B8;
+        const ushort madr4 = 0x10C0, bcr4 = 0x10C4, chcr4 = 0x10C8;
+        const ushort destination = 0x100, unrelatedMadr = 0x3000;
+        static uint Ori(byte rt, ushort value) => MipsEncoding.I(OriOpcodeField, rt: rt, rs: 0, immediate: value);
+        static uint Lui(byte rt, ushort value) => MipsEncoding.I(LuiOpcodeField, rt: rt, rs: 0, immediate: value);
+        static uint Hw(R3000aOpcode op, byte rt, ushort offset) => MipsEncoding.Load(op, rt, t0, offset);
+        uint[] AckCdRomInterrupt() =>
+        [
+            Ori(t2, 1), Hw(R3000aOpcode.Sb, t2, cdIndex),
+            Ori(t2, 0x1F), Hw(R3000aOpcode.Sb, t2, cdPort3),
+            Hw(R3000aOpcode.Sb, 0, cdIndex),
+        ];
+
+        uint[] part1 =
+        [
+            Lui(t0, 0xBF80),
+            Ori(t1, 1), Hw(R3000aOpcode.Sb, t1, cdIndex),
+            Ori(t1, 0x1F), Hw(R3000aOpcode.Sb, t1, cdPort2),
+            Hw(R3000aOpcode.Sb, 0, cdIndex),
+            Ori(t1, 0x06), Hw(R3000aOpcode.Sb, t1, cdPort1), // ReadN: INT3 now, INT1 queued
+        ];
+        uint[] part2 =
+        [
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S0, iStat),                    // IRQ2 for INT3
+            Lui(t1, 0xFFFF), MipsEncoding.I(OriOpcodeField, rt: t1, rs: t1, immediate: 0xFFFB),
+            Hw(R3000aOpcode.Sw, t1, iStat),                                         // guest acks IRQ2
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S1, iStat),                    // IRQ2 now clear
+            Hw(R3000aOpcode.Lbu, t2, cdPort1), .. AckCdRomInterrupt(),              // pop + ack INT3 -> INT1
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S2, iStat),                    // IRQ2 again, for INT1
+            Hw(R3000aOpcode.Sw, t1, iStat),
+            Hw(R3000aOpcode.Lbu, t2, cdPort1), .. AckCdRomInterrupt(),              // pop + ack INT1
+            Hw(R3000aOpcode.Lbu, (byte)R3000aRegister.S3, cdIndex),                 // DRQSTS after the ack
+
+            // DPCR: reset priorities plus channel 3 and 4 enables; DICR: master
+            // plus channel 3 and 4 IRQ enables.
+            Lui(t1, 0x076D), MipsEncoding.I(OriOpcodeField, rt: t1, rs: t1, immediate: 0xC321), Hw(R3000aOpcode.Sw, t1, dpcr),
+            Lui(t1, 0x1880), Hw(R3000aOpcode.Sw, t1, dicr),
+
+            // Unrelated channel 4: started, BCR 0 = 0x10000 words, so the
+            // generic per-word model cannot finish it within this program.
+            Ori(t1, unrelatedMadr), Hw(R3000aOpcode.Sw, t1, madr4),
+            Hw(R3000aOpcode.Sw, 0, bcr4),
+            Lui(t1, 0x1100), Hw(R3000aOpcode.Sw, t1, chcr4),
+
+            // Channel 3: 2 words device -> RAM at 0x100.
+            Ori(t3, destination), Hw(R3000aOpcode.Sw, t3, madr3),
+            Ori(t4, 2), Hw(R3000aOpcode.Sw, t4, bcr3),
+            Hw(R3000aOpcode.Sw, t1, chcr3),
+            MipsEncoding.Nop,
+
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S4, chcr3),
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S5, dicr),
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S6, chcr4),
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.S7, madr4),
+            Hw(R3000aOpcode.Lw, (byte)R3000aRegister.A0, iStat),
+            MipsEncoding.Load(R3000aOpcode.Lw, (byte)R3000aRegister.A1, t3, 0),
+            MipsEncoding.Load(R3000aOpcode.Lw, (byte)R3000aRegister.A2, t3, 4),
+            MipsEncoding.Nop,
+        ];
+
+        using var engine = new InterpreterTitleExecutionEngine([.. part1, .. part2], Entry);
+        engine.Load(new TitleExecutionRequest(
+            Entry, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: Array.Empty<RecompilerInitialMemoryItem>(), outerBudget: 1, segmentBudget: 256));
+
+        var afterCommand = engine.RunSegment(new TitleExecutionSegmentRequest(
+            new uint[TitleExecutionRequest.GprCount], hi: 0, lo: 0, pc: Entry, budget: (uint)part1.Length));
+        afterCommand.Status.Should().Be(RecompilerExecutionStatus.Completed);
+
+        var cdRomDevice = GetPrivateField<CdRomDevice>(engine, "_cdRomDevice");
+        cdRomDevice.IsReading.Should().BeTrue();
+        cdRomDevice.LoadData(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
+
+        var first = afterCommand.Snapshot!;
+        var final = engine.RunSegment(new TitleExecutionSegmentRequest(first.Gpr, first.HI, first.LO, first.PC, budget: 256));
+        final.Status.Should().Be(RecompilerExecutionStatus.Completed);
+        var gpr = final.Snapshot!.Gpr;
+
+        const uint cdRomBit = 1u << DeviceScheduler.CdRomIrq;
+        const uint dmaBit = 1u << DeviceScheduler.DmaIrq;
+        (gpr[(int)R3000aRegister.S0] & cdRomBit).Should().Be(cdRomBit, "INT3 raises IRQ2");
+        (gpr[(int)R3000aRegister.S1] & cdRomBit).Should().Be(0u, "the guest's I_STAT write acknowledges IRQ2");
+        (gpr[(int)R3000aRegister.S2] & cdRomBit).Should().Be(cdRomBit, "INT1 raises its own IRQ2 after the ack");
+        (gpr[(int)R3000aRegister.S3] & 0x40u).Should().Be(0x40u, "DRQSTS stays set after the INT1 ack while data is unread");
+        (gpr[(int)R3000aRegister.S4] & 0x11000000u).Should().Be(0u, "DMA3 completed");
+        (gpr[(int)R3000aRegister.S5] & 0x7Fu).Should().Be(1u << 3, "DMA3 completion flags channel 3 only");
+        (gpr[(int)R3000aRegister.S6] & (1u << 24)).Should().NotBe(0u, "unrelated channel 4 must still be busy");
+        gpr[(int)R3000aRegister.S7].Should().Be(unrelatedMadr, "unrelated channel 4's MADR must not move");
+        (gpr[(int)R3000aRegister.A0] & dmaBit).Should().Be(dmaBit, "DMA3 completion raises IRQ3");
+        gpr[(int)R3000aRegister.A1].Should().Be(0x04030201u);
+        gpr[(int)R3000aRegister.A2].Should().Be(0x08070605u);
+        cdRomDevice.DataBytesAvailable.Should().Be(0);
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        field.Should().NotBeNull($"the engine must retain its {fieldName} field to reach it");
+        return (T)field!.GetValue(instance)!;
     }
 
     [Fact]

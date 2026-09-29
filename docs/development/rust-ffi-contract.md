@@ -302,9 +302,12 @@ and sets its DICR flag. No data is ever moved.
 Its exports are **internal** to `PSXRecomp.Native`: `src/psx_api.cpp` calls
 them (declared in `src/psx_dma.h`) to implement the `PSXCore_*Dma*` functions
 of `include/psx_core.h`. #442 added one public entry point,
-`PSXCore_TickDma(PSXCore*, uint32_t cycles)`, mirrored in `NativeInterop.cs`;
-`ABI_VERSION` (which versions the `PSXRecompRust_*` substrate exports) is
-unchanged. The state
+`PSXCore_TickDma(PSXCore*, uint32_t cycles)`, and #587 added two more for the
+managed CD-ROM DMA3 bridge,
+`PSXCore_TickDmaExcludingChannel(PSXCore*, uint32_t cycles, uint32_t excluded_channel)`
+and `PSXCore_CompleteDmaChannel(PSXCore*, uint32_t channel)`, all mirrored in
+`NativeInterop.cs`; `ABI_VERSION` (which versions the `PSXRecompRust_*`
+substrate exports) is unchanged. The state
 (`PSXDmaState`, seven `PSXDmaChannelState` values, DPCR, DICR, and a
 seven-`u32` `remaining` array of per-channel cycles left, 120 bytes) is
 `#[repr(C)]`, POD, and passed/returned by value: no pointers, no allocation,
@@ -319,10 +322,22 @@ its result directly.
 | `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced (a CHCR write also resets that channel's `remaining`); DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
 | `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
 | `psx_dma_tick` | `PSXDmaState(PSXDmaState, uint32_t cycles)` | Each started channel (CHCR bit 24, its DPCR enable bit `3 + 4*ch`, and bit 28 for sync mode 0) counts down one cycle per word (sync 0: BCR[15:0]; sync 1: BCR[15:0] × BCR[31:16]; zero field = 0x10000; sync 2/3: one word). On completion CHCR bits 24/28 clear and DICR flag `ch` is set when DICR enable `24 + ch` is set. Excess cycles are discarded. |
+| `psx_dma_tick_excluding_channel` | `PSXDmaState(PSXDmaState, uint32_t cycles, uint32_t excluded_channel)` | As `psx_dma_tick`, except `excluded_channel`'s CHCR, `remaining`, and DICR flag never change, whatever its started state (#587). |
+| `psx_dma_complete_channel` | `PSXDmaState(PSXDmaState, uint32_t channel)` | If `channel` is started, completes it now as `psx_dma_tick` would (CHCR bits 24/28 clear, `remaining` zeroed, DICR flag when enabled). No other channel changes; an unstarted or out-of-range channel is a no-op (#587). |
 
 The DICR bit layout (flags 0–6, enables 24–30) is the one migrated from the C++
 controller; psx-spx places enables at 16–22 and flags at 24–30. Reconciling it
 is a separate change, since it alters guest-visible register semantics.
+
+#587 also added `PSXCore_SetCdRomMmioCallbacks(PSXCore*, void* context,
+PSXCdRomMmioRead8 read8, PSXCdRomMmioWrite8 write8)` with the callback types
+`uint8_t (*PSXCdRomMmioRead8)(void* context, uint32_t address)` and
+`void (*PSXCdRomMmioWrite8)(void* context, uint32_t address, uint8_t value)`
+(`include/psx_core.h`, mirrored in `NativeInterop.cs`). It is a pure C++
+forwarding seam, not a Rust export: `PSXMemory::Read8`/`Write8` hand 8-bit
+accesses to 0x1F801800-0x1F801803 to the managed CD-ROM model when attached;
+null callbacks detach it. Ownership, lifetime, and concurrency rules mirror
+`PSXCore_SetGpuMmioCallbacks`.
 
 ### Guest memory (#492)
 

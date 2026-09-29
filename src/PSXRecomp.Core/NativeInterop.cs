@@ -112,6 +112,26 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial void PSXCore_TickDma(IntPtr core, uint cycles);
 
+    /// <summary>Like <see cref="PSXCore_TickDma"/>, except <paramref name="excludedChannel"/> is skipped entirely (Issue #587).</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_TickDmaExcludingChannel(IntPtr core, uint cycles, uint excludedChannel);
+
+    /// <summary>Immediately completes <paramref name="channel"/>'s in-flight transfer, independent of elapsed cycles (Issue #587).</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_CompleteDmaChannel(IntPtr core, uint channel);
+
+    /// <summary>
+    /// Attaches the managed CD-ROM register bridge used by the production native CPU for
+    /// 8-bit accesses to the CD-ROM MMIO window. Passing zero callback pointers detaches it.
+    /// Callback/context ownership stays with the managed caller (Issue #587).
+    /// </summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_SetCdRomMmioCallbacks(
+        IntPtr core,
+        IntPtr context,
+        IntPtr read8,
+        IntPtr write8);
+
     /// <summary>Reads a timer (0-2) register at the given absolute address.</summary>
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_ReadTimerRegister(IntPtr core, uint address);

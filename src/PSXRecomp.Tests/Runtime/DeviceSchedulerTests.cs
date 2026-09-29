@@ -2,6 +2,7 @@ using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Core.Runtime.Gpu;
 
 namespace PSXRecomp.Tests.Runtime;
@@ -23,6 +24,9 @@ public sealed class DeviceSchedulerTests : IDisposable
     private const uint Dicr = 0x1F8010F4u;
     private const uint Ch6Bcr = 0x1F8010E4u;
     private const uint Ch6Chcr = 0x1F8010E8u;
+    private const uint Ch3Bcr = 0x1F8010B4u;
+    private const uint Ch3Chcr = 0x1F8010B8u;
+    private const uint Dma3DicrFlag = 1u << 3;
     private const uint ChcrStartTrigger = 0x11000000u;
     private const uint ChcrBusy = 1u << 24;
 
@@ -33,6 +37,7 @@ public sealed class DeviceSchedulerTests : IDisposable
 
     private const uint VblankBit = 1u << DeviceScheduler.VblankIrq;
     private const uint GpuBit = 1u << DeviceScheduler.GpuIrq;
+    private const uint CdRomBit = 1u << DeviceScheduler.CdRomIrq;
     private const uint DmaBit = 1u << DeviceScheduler.DmaIrq;
     private const uint Timer2Bit = 1u << (DeviceScheduler.Timer0Irq + 2);
     private const uint Sio0Bit = 1u << DeviceScheduler.Sio0Irq;
@@ -131,6 +136,38 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void Dma3_WithoutCdRomBridge_CompletesThroughTheGenericTick()
+    {
+        ArmDma3(words: 4);
+
+        _scheduler.Advance(4);
+
+        (_core.ReadDmaRegister(Ch3Chcr) & ChcrBusy).Should().Be(0u,
+            "without a CD-ROM DMA3 bridge, channel 3 keeps the generic per-word model");
+        (_core.ReadDmaRegister(Dicr) & Dma3DicrFlag).Should().Be(Dma3DicrFlag);
+        _interrupts.Status.Should().Be(DmaBit);
+    }
+
+    [Fact]
+    public void Dma3_WithCdRomBridge_IsExcludedFromTheGenericTick()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2()); // no data loaded
+        using var dma = new DmaMmioAdapter(_core);
+        using var bus = new MemoryBus(_core);
+        bus.AttachDmaAdapter(dma);
+        var scheduler = new DeviceScheduler(
+            _core, _interrupts, _gpu, cdRom, new CdRomDmaTransfer(cdRom, dma, bus));
+        ArmDma3(words: 4);
+
+        scheduler.Advance(1000);
+
+        (_core.ReadDmaRegister(Ch3Chcr) & ChcrBusy).Should().NotBe(0u,
+            "the bridge owns channel 3, so elapsed cycles alone must not complete it");
+        (_core.ReadDmaRegister(Dicr) & Dma3DicrFlag).Should().Be(0u);
+        _interrupts.Status.Should().Be(0u);
+    }
+
+    [Fact]
     public void DmaTransfer_WithoutDicrEnable_CompletesWithoutIrq3()
     {
         ArmOtc(words: 4, irqEnabled: false);
@@ -139,6 +176,56 @@ public sealed class DeviceSchedulerTests : IDisposable
 
         (_core.ReadDmaRegister(Ch6Chcr) & ChcrBusy).Should().Be(0u);
         _interrupts.Status.Should().Be(0u);
+    }
+
+    [Fact]
+    public void CdRomCommandResponse_RaisesIrq2OnceUntilANewPacketActivates()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        EnableAllCdRomInterrupts(cdRom);
+        var scheduler = new DeviceScheduler(_core, _interrupts, _gpu, cdRom);
+
+        cdRom.WriteCommand(0x01); // GetStat -> INT3 generation 1
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit);
+
+        _interrupts.Acknowledge(~CdRomBit);
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u, "the same CD-ROM response generation must not re-raise");
+
+        cdRom.ReadRegister(1); // drain status response
+        cdRom.AcknowledgeInterrupt();
+        cdRom.WriteCommand(0x01); // generation 2
+
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit, "a new response packet must raise a fresh IRQ2");
+    }
+
+    [Fact]
+    public void CdRomRead_Int3ThenInt1_AreDistinctIrq2Generations()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        EnableAllCdRomInterrupts(cdRom);
+        var scheduler = new DeviceScheduler(_core, _interrupts, _gpu, cdRom);
+
+        cdRom.WriteCommand(0x06); // ReadN: INT3 followed by queued INT1
+
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit);
+
+        // Guest acknowledges I_STAT separately from the CD-ROM controller.
+        _interrupts.Acknowledge(~CdRomBit);
+        cdRom.ReadRegister(1).Should().Be(0x22);
+        cdRom.AcknowledgeInterrupt(); // immediately promotes INT1 generation
+
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit, "INT1 must not be lost because INT3->INT1 had no sampled low gap");
+
+        _interrupts.Acknowledge(~CdRomBit);
+        cdRom.ReadRegister(1).Should().Be(0x22);
+        cdRom.AcknowledgeInterrupt();
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u, "both controller and I_STAT acknowledgements are deterministic");
     }
 
     [Fact]
@@ -254,10 +341,14 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenSio0ThenGpuThenVblank()
+    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenCdRomThenSio0ThenGpuThenVblank()
     {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        EnableAllCdRomInterrupts(cdRom);
+        cdRom.WriteCommand(0x01);
+
         var recorder = new RecordingInterrupts(_interrupts);
-        var scheduler = new DeviceScheduler(_core, recorder, _gpu);
+        var scheduler = new DeviceScheduler(_core, recorder, _gpu, cdRom);
         ArmTimer2(target: 100, ModeIrqOnTarget);
         ArmOtc(words: 8, irqEnabled: true);
         _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
@@ -269,9 +360,17 @@ public sealed class DeviceSchedulerTests : IDisposable
         recorder.Raised.Should().Equal(
             DeviceScheduler.Timer0Irq + 2,
             DeviceScheduler.DmaIrq,
+            DeviceScheduler.CdRomIrq,
             DeviceScheduler.Sio0Irq,
             DeviceScheduler.GpuIrq,
             DeviceScheduler.VblankIrq);
+    }
+
+    private static void EnableAllCdRomInterrupts(CdRomDevice cdRom)
+    {
+        cdRom.WriteRegister(0, 1);
+        cdRom.WriteRegister(2, 0x1F);
+        cdRom.WriteRegister(0, 0);
     }
 
     private void ArmTimer2(uint target, uint mode)
@@ -289,6 +388,14 @@ public sealed class DeviceSchedulerTests : IDisposable
         }
         _core.WriteDmaRegister(Ch6Bcr, words);
         _core.WriteDmaRegister(Ch6Chcr, ChcrStartTrigger | 0x2u);
+    }
+
+    private void ArmDma3(uint words)
+    {
+        _core.WriteDmaRegister(Dpcr, 0x07654321u | (1u << 15));
+        _core.WriteDmaRegister(Dicr, (1u << 23) | (1u << 27));
+        _core.WriteDmaRegister(Ch3Bcr, words);
+        _core.WriteDmaRegister(Ch3Chcr, ChcrStartTrigger);
     }
 
     /// <summary>Records <see cref="Raise"/> order and forwards to the real controller.</summary>

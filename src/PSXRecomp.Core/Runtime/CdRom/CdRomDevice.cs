@@ -29,15 +29,26 @@ public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed,
 /// one interrupt packet at a time: the next packet becomes visible only after
 /// the current response FIFO is drained and its interrupt is acknowledged.
 ///
-/// There is still no sector payload, audio, DMA3 or IRQ2 wiring (#587).
-/// ReadN/ReadS therefore expose one bounded INT1/data-ready event rather than a
-/// repeating hardware read stream; <see cref="HasInterrupt"/> remains only the
-/// device-side enabled-line state.
+/// Sector bytes arrive only through <see cref="LoadData"/>, which no production
+/// code calls yet, and there is no audio model; DMA3/IRQ2 wiring lives in
+/// CdRomDmaTransfer and DeviceScheduler (#587). ReadN/ReadS expose one
+/// bounded INT1/data-ready event rather than a repeating hardware read stream;
+/// <see cref="HasInterrupt"/> remains only the device-side enabled-line state.
 /// </summary>
 [Domain]
 public sealed class CdRomDevice : ICdRom
 {
+    /// <summary>Capacity of the parameter and response FIFOs, in bytes.</summary>
     public const int FifoCapacity = 16;
+
+    /// <summary>
+    /// Capacity of the data FIFO, in bytes: one raw 2352-byte CD sector (the
+    /// same size as <c>ChdCdCodec.CdSectorDataSize</c>). It holds either read
+    /// mode's per-sector payload — ReadN's 2048-byte user data or ReadS's
+    /// 2340-byte whole sector minus sync — so a single sector always fits.
+    /// Independent of <see cref="FifoCapacity"/>.
+    /// </summary>
+    public const int DataFifoCapacity = 2352;
 
     public const byte IntDataReady = 0x01;
     public const byte IntComplete = 0x02;
@@ -59,6 +70,7 @@ public sealed class CdRomDevice : ICdRom
 
     private readonly Queue<byte> _parameters = new(FifoCapacity);
     private readonly Queue<byte> _responses = new(FifoCapacity);
+    private readonly Queue<byte> _data = new();
     private readonly Queue<(byte Interrupt, byte[] Response, bool MarksDataReady)> _pendingResponses = new();
 
     private readonly CdRomDiscIdentity _discIdentity;
@@ -66,6 +78,7 @@ public sealed class CdRomDevice : ICdRom
     private byte _interruptEnable;
     private byte _interruptFlag;
     private bool _activeResponseMarksDataReady;
+    private ulong _interruptGeneration;
 
     public CdRomDevice()
         : this(CdRomDiscIdentity.NoDisc)
@@ -85,6 +98,10 @@ public sealed class CdRomDevice : ICdRom
 
     public int ResponseCount => _responses.Count;
 
+    public int DataBytesAvailable => _data.Count;
+
+    public ulong InterruptGeneration => _interruptGeneration;
+
     /// <summary>Interrupt enable bits 0-4.</summary>
     public byte InterruptEnable => _interruptEnable;
 
@@ -102,10 +119,17 @@ public sealed class CdRomDevice : ICdRom
     public bool ReadSectorsRaw { get; private set; }
 
     /// <summary>
-    /// One bounded sector-ready token for #586. It becomes true with the queued
-    /// INT1 response and is cleared when that INT1 is acknowledged.
+    /// One bounded sector-ready token (#586/#587). It becomes true once the
+    /// active response packet marks data ready (the queued INT1 from
+    /// ReadN/ReadS) and stays true as long as the data FIFO still has
+    /// unconsumed bytes — acknowledging that packet's interrupt does not
+    /// discard it. It goes false once the FIFO is actually drained via
+    /// <see cref="ReadData"/>, or a new command dispatch/<see cref="Reset"/>
+    /// retires the packet that announced it: interrupt acknowledgement and
+    /// data-FIFO availability are deliberately separate states, matching real
+    /// hardware's independent INT-ack and BFRD/DRQSTS handshakes.
     /// </summary>
-    public bool DataReady { get; private set; }
+    public bool DataReady => _activeResponseMarksDataReady && _data.Count > 0;
 
     public bool HasInterrupt => (_interruptFlag & _interruptEnable & 0x1F) != 0;
 
@@ -138,11 +162,27 @@ public sealed class CdRomDevice : ICdRom
         }
     }
 
+    /// <summary>Reads the oldest byte in the bounded data FIFO, or zero when empty.</summary>
+    public byte ReadData() => _data.TryDequeue(out var value) ? value : (byte)0;
+
     /// <summary>
-    /// No sector bytes are modeled yet. DataReady is the bounded #586 contract;
-    /// the actual data FIFO/DMA3 consumer is added by #587.
+    /// Supplies bytes from the disc/sector layer without coupling this device to
+    /// any image format. The active ReadN/ReadS command owns interpretation of
+    /// those bytes; DMA3 consumes them through <see cref="ReadData"/>.
+    /// The load is atomic: input that does not fit in the remaining
+    /// <see cref="DataFifoCapacity"/> is rejected before any byte is enqueued.
     /// </summary>
-    public byte ReadData() => 0;
+    public void LoadData(ReadOnlySpan<byte> data)
+    {
+        if (!IsReading)
+            throw new InvalidOperationException("CD-ROM data can be supplied only while ReadN/ReadS is active.");
+        if (data.Length > DataFifoCapacity - _data.Count)
+            throw new InvalidOperationException(
+                $"CD-ROM data FIFO overflow: {data.Length} bytes exceed the remaining {DataFifoCapacity - _data.Count} of {DataFifoCapacity}.");
+
+        foreach (var value in data)
+            _data.Enqueue(value);
+    }
 
     /// <summary>
     /// 0x1F801800 read: bits 0-1 index, bit3 PRMEMPT, bit4 PRMWRDY,
@@ -194,30 +234,24 @@ public sealed class CdRomDevice : ICdRom
         _interruptFlag &= (byte)~(value & 0x1F);
         if ((value & 0x40) != 0) _parameters.Clear();
 
-        if (_interruptFlag == 0 && _activeResponseMarksDataReady)
-        {
-            DataReady = false;
-            _activeResponseMarksDataReady = false;
-        }
-
+        // Acknowledging the interrupt flag must not discard unconsumed data:
+        // DataReady tracks the data FIFO independently of the interrupt ack
+        // (Issue #587), so no state is cleared here beyond the flag itself.
         TryPromotePendingResponse();
     }
 
     public void AcknowledgeInterrupt()
     {
         _interruptFlag = 0;
-        if (_activeResponseMarksDataReady)
-        {
-            DataReady = false;
-            _activeResponseMarksDataReady = false;
-        }
 
+        // See SetInterruptFlag: acknowledging must not discard unconsumed data.
         TryPromotePendingResponse();
     }
 
     public void Reset()
     {
         _parameters.Clear();
+        _data.Clear();
         ClearResponseSequence();
         _index = 0;
         _interruptEnable = 0;
@@ -253,7 +287,8 @@ public sealed class CdRomDevice : ICdRom
         HasPendingLocation = false;
         IsReading = false;
         ReadSectorsRaw = false;
-        DataReady = false;
+        _activeResponseMarksDataReady = false;
+        _data.Clear();
 
         QueueResponse(IntAcknowledge, CommandStatus);
         QueueResponse(IntComplete, CommandStatus);
@@ -318,6 +353,7 @@ public sealed class CdRomDevice : ICdRom
         IsReading = true;
         ReadSectorsRaw = raw;
         HasPendingLocation = false;
+        _data.Clear();
 
         QueueResponse(IntAcknowledge, CommandStatus);
         QueueResponse(IntDataReady, true, CommandStatus);
@@ -353,7 +389,10 @@ public sealed class CdRomDevice : ICdRom
         foreach (var value in response) _responses.Enqueue(value);
         _interruptFlag = interrupt;
         _activeResponseMarksDataReady = marksDataReady;
-        if (marksDataReady) DataReady = true;
+        unchecked
+        {
+            _interruptGeneration++;
+        }
     }
 
     private void TryPromotePendingResponse()
@@ -370,7 +409,6 @@ public sealed class CdRomDevice : ICdRom
         _pendingResponses.Clear();
         _interruptFlag = 0;
         _activeResponseMarksDataReady = false;
-        DataReady = false;
     }
 
     private void PushParameter(byte value)

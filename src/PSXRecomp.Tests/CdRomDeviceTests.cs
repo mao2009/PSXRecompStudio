@@ -133,11 +133,13 @@ public class CdRomDeviceTests
         cd.AcknowledgeInterrupt();
 
         cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 0x00 });
         cd.ReadRegister(1).Should().Be(0x22);
         cd.AcknowledgeInterrupt();
         cd.ReadRegister(1).Should().Be(0x22);
         cd.DataReady.Should().BeTrue();
         cd.AcknowledgeInterrupt();
+        cd.DataReady.Should().BeTrue("acknowledging INT1 must not discard unconsumed data (Issue #587)");
 
         cd.WriteCommand(0x0A);
 
@@ -247,6 +249,7 @@ public class CdRomDeviceTests
         cd.AcknowledgeInterrupt();
 
         cd.WriteCommand(command);
+        cd.LoadData(new byte[] { 0xAA });
 
         cd.IsReading.Should().BeTrue();
         cd.ReadSectorsRaw.Should().Be(raw);
@@ -264,9 +267,15 @@ public class CdRomDeviceTests
 
         cd.AcknowledgeInterrupt();
 
-        cd.DataReady.Should().BeFalse();
-        (cd.ReadStatus() & 0x40).Should().Be(0);
+        // Issue #587: acknowledging INT1 must not discard data the guest has
+        // not consumed yet. Interrupt acknowledgement and data-FIFO
+        // availability are separate states.
+        cd.DataReady.Should().BeTrue("unconsumed data must survive the INT1 acknowledgement");
+        (cd.ReadStatus() & 0x40).Should().Be(0x40);
         cd.GetInterruptFlag().Should().Be(0xE0, "no repeating INT1 is synthesized in the #586 slice");
+
+        cd.ReadData();
+        cd.DataReady.Should().BeFalse("DataReady clears once the FIFO is actually drained, not on interrupt ack");
     }
 
     [Fact]
@@ -280,6 +289,107 @@ public class CdRomDeviceTests
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorStat);
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorNotReady);
+    }
+
+    [Fact]
+    public void DataFifo_RequiresActiveRead_AndPreservesByteOrder()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+
+        var beforeRead = () => cd.LoadData(new byte[] { 1, 2, 3, 4 });
+        beforeRead.Should().Throw<InvalidOperationException>();
+
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 0x11, 0x22, 0x33, 0x44 });
+
+        cd.DataBytesAvailable.Should().Be(4);
+        cd.ReadData().Should().Be(0x11);
+        cd.ReadData().Should().Be(0x22);
+        cd.ReadData().Should().Be(0x33);
+        cd.ReadData().Should().Be(0x44);
+        cd.DataBytesAvailable.Should().Be(0);
+        cd.ReadData().Should().Be(0, "empty data FIFO reads fail closed as zero");
+    }
+
+    [Fact]
+    public void DataFifo_HasItsOwnCapacity_IndependentOfParameterAndResponseFifos()
+    {
+        CdRomDevice.DataFifoCapacity.Should().Be(2352, "one raw CD sector");
+        CdRomDevice.DataFifoCapacity.Should().NotBe(CdRomDevice.FifoCapacity);
+    }
+
+    [Fact]
+    public void LoadData_ExactlyFillingCapacity_IsAccepted()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+
+        cd.LoadData(new byte[CdRomDevice.DataFifoCapacity]);
+
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity);
+    }
+
+    [Fact]
+    public void LoadData_OneByteOverCapacity_EnqueuesNothing()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 0xA1, 0xA2 });
+
+        var overflow = () => cd.LoadData(new byte[CdRomDevice.DataFifoCapacity - 1]);
+
+        overflow.Should().Throw<InvalidOperationException>();
+        cd.DataBytesAvailable.Should().Be(2, "a rejected load must not partially enqueue");
+        cd.ReadData().Should().Be(0xA1);
+        cd.ReadData().Should().Be(0xA2);
+        cd.ReadData().Should().Be(0, "no byte of the rejected load may be visible");
+    }
+
+    [Fact]
+    public void LoadData_EmptyInput_IsANoOp_EvenWhenFull()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[CdRomDevice.DataFifoCapacity]);
+
+        cd.LoadData(ReadOnlySpan<byte>.Empty);
+
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity);
+    }
+
+    [Fact]
+    public void LoadData_AfterPartialDrain_AcceptsExactlyTheFreedSpace()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[CdRomDevice.DataFifoCapacity]);
+        cd.ReadData();
+        cd.ReadData();
+
+        var tooMuch = () => cd.LoadData(new byte[] { 1, 2, 3 });
+        tooMuch.Should().Throw<InvalidOperationException>();
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity - 2);
+
+        cd.LoadData(new byte[] { 1, 2 });
+        cd.DataBytesAvailable.Should().Be(CdRomDevice.DataFifoCapacity);
+    }
+
+    [Fact]
+    public void Reset_ClearsLoadedDataAndReadState_WithoutReusingInterruptGeneration()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x06);
+        cd.LoadData(new byte[] { 1, 2, 3, 4 });
+        var generation = cd.InterruptGeneration;
+        generation.Should().BeGreaterThan(0);
+
+        cd.Reset();
+
+        cd.DataBytesAvailable.Should().Be(0);
+        cd.DataReady.Should().BeFalse();
+        cd.HasInterrupt.Should().BeFalse();
+        cd.IsReading.Should().BeFalse();
+        cd.InterruptGeneration.Should().Be(generation, "packet identities are monotonic across device reset");
     }
 
     [Fact]

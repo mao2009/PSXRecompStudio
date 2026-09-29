@@ -90,6 +90,13 @@ public readonly struct MmioRoute
             Offset = offset,
         };
 
+    public static MmioRoute ForCdRom(uint offset) =>
+        new()
+        {
+            Target = MmioTarget.CdRom,
+            Offset = offset,
+        };
+
     public static MmioRoute Resolve(uint address)
     {
         // Every address in the SIO0 window routes to the SIO0 adapter, including
@@ -104,6 +111,9 @@ public readonly struct MmioRoute
                 return Unmapped;
             return ForGpu(_gpuType, address - Ps1MemoryMap.GpuPort);
         }
+
+        if (Ps1MemoryMap.IsCdRomRegister(address))
+            return ForCdRom(address - Ps1MemoryMap.CdRomBase);
 
         if (Ps1MemoryMap.IsSpuRegister(address))
         {
@@ -163,4 +173,5 @@ public enum MmioTarget
     Gpu,
     Sio0,
     Spu,
+    CdRom,
 }
