@@ -117,6 +117,62 @@ public sealed class ReachableProgramBuilderTests
     }
 
     [Fact]
+    public void Jalr_DiscoversReturnSiteAsReachableBlock()
+    {
+        // JALR at LoadAddress; delay slot NOP at LoadAddress+4;
+        // return continuation at LoadAddress+8 must be discovered (Issue #638).
+        var program = Build(
+            Word.JumpAndLinkRegister(31, 8),
+            Word.Nop,
+            Word.Addiu(10, 0, 3));
+
+        program.Blocks.Select(block => block.EntryPc)
+            .Should().Contain(LoadAddress + 8);
+    }
+
+    [Fact]
+    public void Jalr_DoesNotGuessCallTarget()
+    {
+        // The dynamic target of JALR must not be added as a static discovery.
+        // Only LoadAddress (the JALR block) and LoadAddress+8 (the return site)
+        // may appear in the reachable set (Issue #638).
+        var program = Build(
+            Word.JumpAndLinkRegister(31, 8),
+            Word.Nop,
+            Word.Addiu(10, 0, 3));
+
+        program.Blocks.Select(block => block.EntryPc)
+            .Should().Equal(LoadAddress, LoadAddress + 8);
+    }
+
+    [Fact]
+    public void Jr_DoesNotDiscoverContinuation()
+    {
+        // JR (no link) must not enqueue pc+8; only the JR block is reachable.
+        var program = Build(
+            Word.JumpRegister(8),
+            Word.Nop,
+            Word.Addiu(10, 0, 3));
+
+        program.Blocks.Select(block => block.EntryPc)
+            .Should().Equal(LoadAddress);
+    }
+
+    [Fact]
+    public void Jalr_IntoZeroRegister_DoesNotDiscoverContinuation()
+    {
+        // JALR rd=0 is architecturally JR: GPR[0] is immutable, no link is
+        // written, and the return site must not be enqueued (Issue #638 edge case).
+        var program = Build(
+            Word.JumpAndLinkRegister(0, 8),
+            Word.Nop,
+            Word.Addiu(10, 0, 3));
+
+        program.Blocks.Select(block => block.EntryPc)
+            .Should().Equal(LoadAddress);
+    }
+
+    [Fact]
     public void UnsupportedDelaySlot_FailsClosed()
     {
         var lower = () => Build(Word.Jump(0x90000000u), Word.Cop1Unusable);
