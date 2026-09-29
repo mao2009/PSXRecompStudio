@@ -150,24 +150,39 @@ static uint32_t artifact_translate(uint32_t va) {
     return 0xFFFFFFFFu;
 }
 
+/* Low-8-MiB RAM mirror, matching PSXMemory / memory.rs: a translated physical
+   address below 0x00800000 aliases the 2 MiB RAM through (& (RAM_SIZE - 1)),
+   and the width check runs on the aliased offset, so an access that would run
+   off the end of the physical buffer is unmapped rather than wrapped. */
+#define PSX_RAM_MIRROR_END 0x00800000u
+
+static int artifact_ram_offset(uint32_t address, uint32_t width, uint32_t* offset) {
+    uint32_t pa = artifact_translate(address);
+    if (pa >= PSX_RAM_MIRROR_END) return 0;
+    pa &= PSX_RAM_SIZE - 1u;
+    if (pa > PSX_RAM_SIZE - width) return 0;
+    *offset = pa;
+    return 1;
+}
+
 uint8_t recompiler_read_mem8(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa >= PSX_RAM_SIZE) return 0;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 1u, &pa)) return 0;
     return artifact_ram[pa];
 }
 
 uint16_t recompiler_read_mem16(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 2) return 0;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 2u, &pa)) return 0;
     return (uint16_t)(artifact_ram[pa] | ((uint16_t)artifact_ram[pa + 1] << 8));
 }
 
 uint32_t recompiler_read_mem32(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 4) return 0;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 4u, &pa)) return 0;
     return (uint32_t)(artifact_ram[pa]
         | ((uint32_t)artifact_ram[pa + 1] << 8)
         | ((uint32_t)artifact_ram[pa + 2] << 16)
@@ -176,23 +191,23 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
 
 void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa >= PSX_RAM_SIZE) return;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 1u, &pa)) return;
     artifact_ram[pa] = value;
 }
 
 void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 2) return;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 2u, &pa)) return;
     artifact_ram[pa] = (uint8_t)value;
     artifact_ram[pa + 1] = (uint8_t)(value >> 8);
 }
 
 void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 4) return;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 4u, &pa)) return;
     artifact_ram[pa] = (uint8_t)value;
     artifact_ram[pa + 1] = (uint8_t)(value >> 8);
     artifact_ram[pa + 2] = (uint8_t)(value >> 16);
@@ -278,7 +293,11 @@ int main(int argc, char** argv) {
     fclose(in);
     uint32_t image_pa = artifact_translate((uint32_t)a);
     unsigned long image_len = u;
-    if (image_len == 0ul || image_pa >= PSX_RAM_SIZE || image_len > PSX_RAM_SIZE - image_pa) return 95; /* InvalidImage */
+    /* The whole image must sit inside the mapped low-8-MiB window (bytes past it
+       are unmapped and cannot be represented); within it, bytes alias into the
+       2 MiB RAM exactly as PSXMemory does, including across the 2 MiB seam. */
+    if (image_len == 0ul || image_pa >= PSX_RAM_MIRROR_END
+        || (unsigned long long)image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa)) return 95; /* InvalidImage */
 
     state.gpr[0] = 0;
     state.core = (void*)0;
@@ -291,10 +310,15 @@ int main(int argc, char** argv) {
        writes. Its file length must equal the declared length exactly. */
     FILE* image = fopen(argv[2], ""rb"");
     if (!image) return 94; /* CannotOpenImage */
-    size_t image_read = fread(artifact_ram + image_pa, 1, (size_t)image_len, image);
+    unsigned long image_i;
+    for (image_i = 0; image_i < image_len; image_i++) {
+        int image_byte = fgetc(image);
+        if (image_byte == EOF) { fclose(image); return 95; } /* InvalidImage: truncated */
+        artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
+    }
     int image_extra = fgetc(image);
     fclose(image);
-    if (image_read != (size_t)image_len || image_extra != EOF) return 95; /* InvalidImage */
+    if (image_extra != EOF) return 95; /* InvalidImage: oversized */
 
     /* Opt-in only: a stray extra argument never enables the protocol, so a run
        with no parent listening can never block on the handshake. */

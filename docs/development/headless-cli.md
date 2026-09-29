@@ -225,7 +225,11 @@ takes them as `recompiled-artifact <artifact-input.txt> <artifact-image.bin>
   artifact copies it into guest RAM at the declared address after the
   initial-memory writes and before the first guest instruction, matching the
   interpreter's initial RAM. A missing image exits 94. An empty, truncated,
-  oversized, or out-of-RAM image exits 95. Either way, no guest code runs.
+  oversized, or unmapped image exits 95. Either way, no guest code runs. The image
+  is placed byte by byte through the low-8-MiB RAM mirror (translated physical
+  address below `0x00800000` aliases the 2 MiB RAM), exactly like `PSXMemory`, so
+  a load address such as `0x80210000` or an image straddling the 2 MiB seam is
+  accepted; bytes that would land at or beyond `0x00800000` are rejected.
 
 A successful build or launch implies only that the pipeline completed. Real
 games may still stop at an explicit unsupported/blocked boundary (exit code 2)

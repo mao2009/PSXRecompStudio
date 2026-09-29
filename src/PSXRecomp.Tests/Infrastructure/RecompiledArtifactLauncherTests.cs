@@ -286,7 +286,7 @@ public sealed class RecompiledArtifactLauncherTests
     /// preloaded image can supply these values. Word 8 is a data word the code never
     /// executes; the J leaves the image so both engines end at the same program end.
     /// </summary>
-    private static uint[] TextImageLoadWords()
+    private static uint[] TextImageLoadWords(uint entry = TextImageEntry)
     {
         const byte a0 = (byte)R3000aRegister.A0;
         static uint Load(byte opcode, R3000aRegister rt, uint offset) =>
@@ -298,19 +298,107 @@ public sealed class RecompiledArtifactLauncherTests
             Load(0x24, R3000aRegister.S2, 0x21), // lbu s2, 0x21(a0)
             Load(0x23, R3000aRegister.S3, 0x00), // lw  s3, 0(a0)     the first instruction word itself
             Load(0x21, R3000aRegister.S4, 0x22), // lh  s4, 0x22(a0)
-            0x02u << 26 | ((TextImageEntry + 0x24u) & 0x0FFFFFFCu) >> 2, // j program end
+            0x02u << 26 | ((entry + 0x24u) & 0x0FFFFFFCu) >> 2, // j program end
             0u, // delay slot
             0u, // unreachable padding
             TextImageDataWord,
         ];
     }
 
-    private static TitleExecutionRequest TextImageRequest()
+    private static TitleExecutionRequest TextImageRequest(
+        uint entry = TextImageEntry, Action<uint[]>? seedGpr = null)
     {
         var gpr = new uint[TitleExecutionRequest.GprCount];
-        gpr[(int)R3000aRegister.A0] = TextImageEntry;
+        gpr[(int)R3000aRegister.A0] = entry;
+        seedGpr?.Invoke(gpr);
         return new TitleExecutionRequest(
-            TextImageEntry, gpr, initialHi: 0, initialLo: 0, initialMemory: [], outerBudget: 1, segmentBudget: 64);
+            entry, gpr, initialHi: 0, initialLo: 0, initialMemory: [], outerBudget: 1, segmentBudget: 64);
+    }
+
+    /// <summary>Runs <paramref name="words"/> loaded at <paramref name="entry"/> through the
+    /// artifact and the interpreter and returns both final GPR files.</summary>
+    private static (uint[] Artifact, uint[] Interpreter) RunBothEngines(
+        uint entry, uint[] words, TitleExecutionRequest request)
+    {
+        var handoff = new ProgramEndHandoff(entry + (uint)(words.Length * sizeof(uint)));
+        var program = ReachableProgramBuilder.Build(entry, words, entry);
+
+        using var dir = new TempDirectory();
+        using var artifactEngine = new RecompiledHostExecutionEngine(
+            program, words, entry, new GeneratedHostBuildService(), dir.FullPath);
+        var artifact = new ExecutionOrchestrator().Execute(artifactEngine, handoff, request);
+
+        using var interpreterEngine = new InterpreterTitleExecutionEngine(words, entry);
+        var interpreter = new ExecutionOrchestrator().Execute(interpreterEngine, handoff, request);
+
+        artifact.State.Should().Be(TitleExecutionState.Completed, artifact.DiagnosticMessage);
+        interpreter.State.Should().Be(TitleExecutionState.Completed, interpreter.DiagnosticMessage);
+        return (artifact.FinalSnapshot!.Gpr.ToArray(), interpreter.FinalSnapshot!.Gpr.ToArray());
+    }
+
+    // Issue #637 review: the image loads at a virtual address whose physical address
+    // is beyond the 2 MiB RAM but inside the low-8-MiB mirror (0x80210000 -> RAM
+    // offset 0x10000), and one whose word run straddles the 2 MiB seam (words 0..6
+    // at the RAM tail, the rest aliasing to RAM offset 0). PSXMemory (the
+    // interpreter) accepts both; the artifact must place the same bytes.
+    [Theory]
+    [InlineData(0x80210000u)]
+    [InlineData(0xA0210000u)]
+    [InlineData(0x801FFFE4u)]
+    public void Artifact_ImageInLowEightMiBRamMirror_MatchesTheInterpreter(uint entry)
+    {
+        var words = TextImageLoadWords(entry);
+        var (artifact, interpreter) = RunBothEngines(entry, words, TextImageRequest(entry));
+
+        artifact[(int)R3000aRegister.S0].Should().Be(TextImageDataWord);
+        artifact[(int)R3000aRegister.S1].Should().Be(0xFFFFFF9Au);
+        artifact[(int)R3000aRegister.S2].Should().Be(0x56u);
+        artifact[(int)R3000aRegister.S3].Should().Be(words[0]);
+        artifact[(int)R3000aRegister.S4].Should().Be(0xFFFF9A78u);
+        artifact.Should().Equal(interpreter);
+    }
+
+    // Width boundary: the check runs on the aliased RAM offset, so a mirror address
+    // behaves exactly like its RAM twin, the last aligned word is valid and an access
+    // past the mirror window is unmapped. (A guest access that overruns the RAM tail is
+    // necessarily unaligned, which the interpreter turns into a CPU exception before
+    // memory is reached, so that edge is not comparable through guest code.)
+    [Fact]
+    public void Artifact_RamMirrorAndWidthBoundaries_MatchTheInterpreter()
+    {
+        const uint entry = TextImageEntry;
+        static uint I(byte op, R3000aRegister rs, R3000aRegister rt, uint imm) =>
+            (uint)op << 26 | (uint)rs << 21 | (uint)rt << 16 | imm;
+        const R3000aRegister t0 = R3000aRegister.T0;
+        uint[] words =
+        [
+            I(0x0F, 0, t0, 0xA1B2),                                          // lui t0, 0xA1B2
+            I(0x0D, t0, t0, 0xC3D4),                                         // ori t0, t0, 0xC3D4
+            I(0x2B, R3000aRegister.A0, t0, 0),                               // sw  t0, 0(a0)  last aligned word
+            I(0x23, R3000aRegister.A0, R3000aRegister.S0, 0),                // lw  s0, 0(a0)
+            I(0x23, R3000aRegister.A2, R3000aRegister.S1, 0),                // lw  s1, 0(a2)  mirror twin of a0
+            I(0x23, R3000aRegister.A3, R3000aRegister.S2, 0),                // lw  s2, 0(a3)  past the mirror window
+            I(0x2B, R3000aRegister.A3, t0, 0),                               // sw  t0, 0(a3)  dropped
+            I(0x20, R3000aRegister.A0, R3000aRegister.S3, 3),                // lb  s3, 3(a0)  last RAM byte
+            I(0x21, R3000aRegister.A0, R3000aRegister.S4, 2),                // lh  s4, 2(a0)
+            0x02u << 26 | ((entry + 0x2Cu) & 0x0FFFFFFCu) >> 2,             // j program end
+            0u,                                                              // delay slot
+        ];
+        var request = TextImageRequest(entry, gpr =>
+        {
+            gpr[(int)R3000aRegister.A0] = 0x801FFFFCu;
+            gpr[(int)R3000aRegister.A2] = 0x803FFFFCu;
+            gpr[(int)R3000aRegister.A3] = 0x80800000u;
+        });
+
+        var (artifact, interpreter) = RunBothEngines(entry, words, request);
+
+        artifact[(int)R3000aRegister.S0].Should().Be(0xA1B2C3D4u);
+        artifact[(int)R3000aRegister.S1].Should().Be(0xA1B2C3D4u);
+        artifact[(int)R3000aRegister.S2].Should().Be(0u);
+        artifact[(int)R3000aRegister.S3].Should().Be(0xFFFFFFA1u);
+        artifact[(int)R3000aRegister.S4].Should().Be(0xFFFFA1B2u);
+        artifact.Should().Equal(interpreter);
     }
 
     [Fact]
