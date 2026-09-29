@@ -133,10 +133,11 @@ public static class MipsToIrLowerer
     /// <c>PSXCpu::ExecBltzal</c>/<c>ExecBgezal</c>).</item>
     /// <item>JR / JALR — the target is a runtime register value, which
     /// <see cref="RecompilerIrFlow.Target"/> (a static address) cannot express, so
-    /// the delay slot retires and the block terminates with
-    /// <see cref="RecompilerIrTerminationReason.UnresolvedIndirectFlow"/>. JALR
-    /// still performs its link write, after reading the target register, so that
-    /// <c>JALR rd, rd</c> keeps the pre-link target.</item>
+    /// the register is read before the delay slot retires and the block exits with
+    /// <see cref="RecompilerIrTerminationReason.Success"/> and that value as
+    /// <see cref="RecompilerIrExit.TargetValueId"/> (Issue #635). JALR performs its
+    /// link write after reading the target register, so that <c>JALR rd, rd</c>
+    /// keeps the pre-link target.</item>
     /// </list>
     /// </summary>
     /// <param name="control">The control-transfer instruction, at <paramref name="entryPc"/>.</param>
@@ -705,12 +706,13 @@ public static class MipsToIrLowerer
     }
 
     /// <summary>
-    /// Lowers JR and JALR. The delay slot retires, then control leaves the program
-    /// through an address held in a register: no IR flow can carry a runtime
-    /// target, so the block terminates and says exactly that rather than inventing
-    /// a transfer. JALR additionally reads its target register before writing the
-    /// link register, which is what makes <c>JALR rd, rd</c> use the pre-link
-    /// value (<c>PSXCpu::ExecJalr</c>).
+    /// Lowers JR and JALR. The target register is read first — before JALR's link
+    /// write (so <c>JALR rd, rd</c> uses the pre-link value, <c>PSXCpu::ExecJalr</c>)
+    /// and before the delay slot — then the delay slot retires and the block exits
+    /// with that runtime value as its next PC (<see cref="RecompilerIrExit.TargetValueId"/>,
+    /// Issue #635). Whether the address is a compiled block, a BIOS vector or
+    /// nothing at all is decided at runtime by the dispatch loop and host transfer,
+    /// not here. A trapping delay slot (BREAK/SYSCALL) still suppresses the transfer.
     /// </summary>
     private static MipsToIrLoweringResult? TryEmitRegisterIndirectTransfer(
         BlockBuilder builder,
@@ -721,6 +723,7 @@ public static class MipsToIrLowerer
         out RecompilerIrExit exit)
     {
         exit = null!;
+        int target;
         if (control.LinkInfo.WritesLink)
         {
             if (!R3000aLinkSemantics.TryGetLinkValue(control, controlPc, out var returnAddress))
@@ -734,8 +737,12 @@ public static class MipsToIrLowerer
 
             // Reading the target register first is architectural, not decorative:
             // the link write below may target the same register.
-            builder.ReadGpr(control.Operand1.Register);
+            target = builder.ReadGpr(control.Operand1.Register);
             EmitLinkWrite(builder, control, returnAddress);
+        }
+        else
+        {
+            target = builder.ReadGpr(control.Operand0.Register);
         }
 
         var failure = TryEmitDelaySlot(builder, control, controlPc, delaySlot, pendingLoad, out var trapExit);
@@ -750,7 +757,7 @@ public static class MipsToIrLowerer
             return null;
         }
 
-        exit = new RecompilerIrExit(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        exit = new RecompilerIrExit(RecompilerIrTerminationReason.Success, targetValueId: target);
         return null;
     }
 

@@ -250,30 +250,34 @@ public class RecompilerIrMemoryEffectTests
     // --- 7/8: BIOS/runtime transfer and indirect flow stay explicit --------
 
     [Fact]
-    public void Jalr_ToARegisterHeldTarget_TerminatesAsExplicitUnresolvedIndirectFlow_NeverAJumpOrCall()
+    public void Jalr_ToARegisterHeldTarget_CarriesTheRuntimeTarget_NeverAJumpOrCall()
     {
         // The BIOS A0/B0/C0 call convention loads the vector address into a
         // register, then JALR through it: at lowering time the target is a
         // runtime register value, indistinguishable from any other indirect
         // call. The lowering stage must never invent a resolved Jump/Call flow
-        // for it — the BIOS/runtime boundary is resolved later, by the host
+        // for it — it only hands the runtime value on (Issue #635); the
+        // BIOS/runtime boundary is resolved later, by the host
         // (RecompilerInterpreterExecutor / the generated host_transfer hook),
         // never guessed here.
         var block = LowerControlTransferSupported(
             MipsEncoding.JumpAndLinkRegister(rd: 31, rs: 8), MipsEncoding.Nop);
 
-        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        block.Exit.TargetValueId.Should().Be(block.Operations[0].ResultValueId);
         block.Exit.Flow.Should().BeNull();
         block.Exit.NextPc.Should().BeNull();
     }
 
     [Fact]
-    public void Jr_ToARegisterHeldTarget_TerminatesAsExplicitUnresolvedIndirectFlow()
+    public void Jr_ToARegisterHeldTarget_CarriesTheRuntimeTarget_NeverAJump()
     {
         var block = LowerControlTransferSupported(MipsEncoding.JumpRegister(rs: 8), MipsEncoding.Nop);
 
-        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        block.Exit.TargetValueId.Should().Be(block.Operations[0].ResultValueId);
         block.Exit.Flow.Should().BeNull();
+        block.Exit.NextPc.Should().BeNull();
     }
 
     [Fact]

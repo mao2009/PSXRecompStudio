@@ -156,6 +156,12 @@ internal static class RecompilerIrEvaluator
 
     private static uint NextPc(RecompilerIrExit exit, Dictionary<int, uint> values)
     {
+        if (exit.TargetValueId is { } targetValueId)
+        {
+            // JR/JALR: the runtime target value is the next PC (Issue #635).
+            return values[targetValueId];
+        }
+
         var flow = exit.Flow;
         if (flow is null || flow.Kind == RecompilerIrFlowKind.Sequential)
         {

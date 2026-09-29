@@ -568,6 +568,13 @@ public static class RecompilerHostCodeGen
 
     private static string EmitExit(RecompilerIrExit exit)
     {
+        // A register-indirect transfer (Issue #635) hands its runtime target to
+        // the dispatch loop, which enters a compiled block or asks host_transfer.
+        if (exit.TargetValueId is { } targetValueId)
+        {
+            return $"{StateParam}->{NextPcField} = v{targetValueId}; {StateParam}->{TerminationField} = 0; return 0;";
+        }
+
         var flow = exit.Flow;
         if (flow is null || flow.Kind == RecompilerIrFlowKind.Sequential)
         {

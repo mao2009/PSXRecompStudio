@@ -299,11 +299,10 @@ internal static class RecompilerFixtures
             referenceStepBudget: 4);
 
     /// <summary>
-    /// A JR whose target is held in a register. The native interpreter can follow
-    /// it, but the recompiled host cannot statically resolve an indirect target, so
-    /// it must fail closed with UnresolvedIndirectFlow rather than invent a
-    /// transfer. This fixture is a host-side classification check, not a state
-    /// match against the interpreter.
+    /// A JR whose target is held in a register and names a compiled block. The
+    /// recompiled host hands the runtime target to its dispatch loop (Issue #635),
+    /// so it follows the transfer exactly like the native interpreter and the two
+    /// sides match.
     /// </summary>
     public static RecompilerDifferentialFixture Issue209IndirectJump() =>
         new(
@@ -314,11 +313,11 @@ internal static class RecompilerFixtures
                 MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x14),                     // 0x04 ADDIU $t0, $t0, 0x14
                 MipsEncoding.JumpRegister(rs: 8),                                        // 0x08 JR $t0
                 MipsEncoding.Nop,                                                        // 0x0C delay slot
-                MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 3),                        // 0x10 (not reached by host)
+                MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 3),                        // 0x10 (skipped)
                 MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 4),                       // 0x14 $t0 target
             },
             entryPc: EntryPc,
-            stepBudget: 3,
+            stepBudget: 4,
             referenceStepBudget: 5);
 
     /// <summary>

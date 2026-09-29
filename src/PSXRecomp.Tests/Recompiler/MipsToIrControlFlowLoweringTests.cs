@@ -156,19 +156,24 @@ public class MipsToIrControlFlowLoweringTests
     }
 
     [Fact]
-    public void Jr_RetiresTheDelaySlotAndTerminatesAsUnresolvedIndirectFlow()
+    public void Jr_ReadsTheTargetBeforeTheDelaySlotAndExitsWithItAsTheRuntimeNextPc()
     {
         // The target is a runtime register value; RecompilerIrFlow.Target is a
-        // static address, so the block states the frontier instead.
+        // static address, so the exit carries the value id instead (Issue #635).
+        // The register is read before the delay slot retires, so a delay slot that
+        // overwrites it does not change the target.
         var block = LowerControlTransfer(
-            MipsEncoding.JumpRegister(rs: 31),
+            MipsEncoding.JumpRegister(rs: 10),
             MipsEncoding.I(0x09, rt: 10, rs: 0, immediate: 1));
 
-        block.Operations.Should().HaveCount(4);
-        block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
-        block.Operations[3].Register.Should().Be(10);
+        block.Operations.Should().HaveCount(5);
+        block.Operations[0].Kind.Should().Be(RecompilerIrOperationKind.ReadGpr);
+        block.Operations[0].Register.Should().Be(10);
+        block.Operations[4].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
+        block.Operations[4].Register.Should().Be(10);
 
-        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        block.Exit.TargetValueId.Should().Be(block.Operations[0].ResultValueId);
         block.Exit.NextPc.Should().BeNull();
         block.Exit.Flow.Should().BeNull();
     }
@@ -256,7 +261,7 @@ public class MipsToIrControlFlowLoweringTests
     }
 
     [Fact]
-    public void Jalr_LinksAndTerminatesAsUnresolvedIndirectFlow()
+    public void Jalr_LinksAndExitsWithThePreLinkTargetAsTheRuntimeNextPc()
     {
         var block = LowerControlTransfer(MipsEncoding.JumpAndLinkRegister(rd: 31, rs: 8), MipsEncoding.Nop);
 
@@ -272,8 +277,9 @@ public class MipsToIrControlFlowLoweringTests
         block.Operations[3].Kind.Should().Be(RecompilerIrOperationKind.Nop);
 
         // The target is a runtime register value, which a static flow target
-        // cannot carry, so the frontier stays explicit.
-        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        // cannot carry, so the exit names the pre-link read as its next PC.
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        block.Exit.TargetValueId.Should().Be(block.Operations[0].ResultValueId);
         block.Exit.NextPc.Should().BeNull();
         block.Exit.Flow.Should().BeNull();
     }
@@ -287,6 +293,7 @@ public class MipsToIrControlFlowLoweringTests
         block.Operations[0].Register.Should().Be(8);
         block.Operations[2].Kind.Should().Be(RecompilerIrOperationKind.WriteGpr);
         block.Operations[2].Register.Should().Be(8);
+        block.Exit.TargetValueId.Should().Be(block.Operations[0].ResultValueId, "the transfer uses the pre-link value");
     }
 
     [Fact]
@@ -296,20 +303,21 @@ public class MipsToIrControlFlowLoweringTests
         var block = LowerControlTransfer(MipsEncoding.JumpAndLinkRegister(rd: 0, rs: 8), MipsEncoding.Nop);
 
         block.Operations.Should().NotContain(op => op.Kind == RecompilerIrOperationKind.WriteGpr);
-        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        block.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        block.Exit.TargetValueId.Should().Be(block.Operations[0].ResultValueId);
     }
 
     [Fact]
     public void JrRa_KeepsOrdinaryJrSemanticsWithoutAReturnFlow()
     {
-        // A return-like JR is not special-cased: RecompilerIrFlowKind.Return needs
-        // a register-held target the contract cannot carry, so JR $ra lowers
-        // exactly like any other JR.
+        // A return-like JR is not special-cased (Issue #635 decision): JR $ra
+        // lowers exactly like any other JR — a runtime next PC, no Return flow.
         var returnLike = LowerControlTransfer(MipsEncoding.JumpRegister(rs: 31), MipsEncoding.Nop);
         var ordinary = LowerControlTransfer(MipsEncoding.JumpRegister(rs: 8), MipsEncoding.Nop);
 
         returnLike.Exit.Should().Be(ordinary.Exit);
-        returnLike.Exit.Reason.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
+        returnLike.Exit.Reason.Should().Be(RecompilerIrTerminationReason.Success);
+        returnLike.Exit.TargetValueId.Should().NotBeNull();
         returnLike.Exit.Flow.Should().BeNull();
     }
 

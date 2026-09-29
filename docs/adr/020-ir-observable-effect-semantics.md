@@ -1,6 +1,6 @@
 # ADR-020: IR Observable Side-Effect Semantics for MMIO, Runtime Transfers, and Indirect Control Flow
 
-- Status: Accepted (amended 2026-09-24 by Issue #411 — see below)
+- Status: Accepted (amended 2026-09-24 by Issue #411 and 2026-09-29 by Issue #635 — see below)
 - Date: 2026-09-17
 - Issue: #411
 
@@ -201,6 +201,26 @@ Issue #411.
   - the differential diff localizes a stop-category mismatch to `termination`,
     deterministically;
   - `memoryEffect` is part of the deterministic IR serialization.
+
+## Amendment (2026-09-29, Issue #635): register-indirect targets reach the runtime
+
+The Context statement that JR/JALR lower to `UnresolvedIndirectFlow` is stale.
+The decision itself is unchanged — the IR still never guesses a `Jump`/`Call`
+for a register-held target, and BIOS/runtime transfers are still told apart only
+at runtime, by target address (`BiosJumpTables.TryResolveVectorFamily`, ADR-014).
+What changed is that the runtime target is no longer discarded:
+
+- JR/JALR exit with `Success` and `RecompilerIrExit.TargetValueId` naming the
+  target-register read (taken before JALR's link write and before the delay
+  slot). Exactly one of `NextPc` / `TargetValueId` is set; the validator rejects
+  anything else.
+- The generated block writes that value to `next_pc`. The dispatch loop enters a
+  compiled block there, or asks `host_transfer` (a BIOS vector), or ends the
+  segment so the title-level handoff decides; with no rule the run fails closed
+  as `UNRESOLVED_TRANSFER`. A register-indirect jump no longer ends a run as a
+  diagnostic-free `RuntimeHandoff`, including a program that ends in `jr $ra`.
+- No new flow kind was added (the rejection of a BIOS-specific flow kind above
+  still holds), and `JR $ra` is not special-cased.
 
 ## Related ADRs
 
