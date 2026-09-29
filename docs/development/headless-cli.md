@@ -214,6 +214,23 @@ alone is **not** supported: there is no `run <artifact>` mode and no manifest
 describing a solo artifact's request. That capability is out of scope for #460
 (the minimal CLI) and tracked under the #15 CLI framework discussion.
 
+Each launch writes two generated inputs next to the artifact, and the artifact
+takes them as `recompiled-artifact <artifact-input.txt> <artifact-image.bin>
+[--host-transfer]` (Issue #637):
+
+- `artifact-input.txt` — 32 GPRs, HI, LO, PC, budget, the small byte-level
+  initial-memory list (at most `MaxInitEntries`), then
+  `<image load address> <image byte length>`.
+- `artifact-image.bin` — the raw little-endian PS-X EXE text segment. The
+  artifact copies it into guest RAM at the declared address after the
+  initial-memory writes and before the first guest instruction, matching the
+  interpreter's initial RAM. A missing image exits 94. An empty, truncated,
+  oversized, or unmapped image exits 95. Either way, no guest code runs. The image
+  is placed byte by byte through the low-8-MiB RAM mirror (translated physical
+  address below `0x00800000` aliases the 2 MiB RAM), exactly like `PSXMemory`, so
+  a load address such as `0x80210000` or an image straddling the 2 MiB seam is
+  accepted; bytes that would land at or beyond `0x00800000` are rejected.
+
 A successful build or launch implies only that the pipeline completed. Real
 games may still stop at an explicit unsupported/blocked boundary (exit code 2)
 when control reaches behavior the compiled image cannot continue through;

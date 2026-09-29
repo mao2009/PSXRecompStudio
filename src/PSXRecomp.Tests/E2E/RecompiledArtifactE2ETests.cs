@@ -36,14 +36,14 @@ public sealed class RecompiledArtifactE2ETests
     /// Production input stage for one generated EXE: <see cref="PsxExe.Load"/>,
     /// <see cref="PsxExeTitleInput.Build"/>, then production IR lowering.
     /// </summary>
-    private static (RecompilerIrProgram Program, TitleExecutionRequest Request, uint LoadAddress, int WordCount)
+    private static (RecompilerIrProgram Program, PsxExeTitleExecution Input, uint LoadAddress, int WordCount)
         Compile(byte[] exeBytes)
     {
         var exe = PsxExe.Load(exeBytes, "generated-fixture.exe");
         var input = PsxExeTitleInput.Build(exe, outerBudget: 1, segmentBudget: 64);
         return (
             Lower(input.LoadAddress, input.InstructionWords),
-            input.Request,
+            input,
             input.LoadAddress,
             input.InstructionWords.Count);
     }
@@ -92,7 +92,7 @@ public sealed class RecompiledArtifactE2ETests
         // Stage 6 — production launch.
         var outcome = new RecompiledArtifactLauncher().Launch(
             program,
-            input.Request,
+            input,
             new ProgramEndHandoff(input.LoadAddress + (uint)(fixture.InstructionWords.Count * sizeof(uint))),
             dir.FullPath,
             resultRegister: (int)fixture.ResultRegister);
@@ -139,11 +139,11 @@ public sealed class RecompiledArtifactE2ETests
     public void GeneratedBlockedFixture_ProductionChain_IsClassifiedNotCrash()
     {
         var fixture = GeneratedPsxExeFixtures.UnresolvedJump;
-        var (program, request, _, _) = Compile(fixture.Generate());
+        var (program, input, _, _) = Compile(fixture.Generate());
 
         using var dir = new TempDirectory();
         var outcome = new RecompiledArtifactLauncher().Launch(
-            program, request, handoff: null, dir.FullPath, resultRegister: (int)fixture.ResultRegister);
+            program, input, handoff: null, dir.FullPath, resultRegister: (int)fixture.ResultRegister);
 
         outcome.Result.State.Should().Be(fixture.ExpectedState);
         outcome.Result.Outcome.Should().Be(fixture.ExpectedOutcome);
@@ -165,11 +165,11 @@ public sealed class RecompiledArtifactE2ETests
             GeneratedPsxExeFixtures.Jump(0x03, BiosJumpTables.A0VectorAddress),
             0u, // JAL delay slot
         };
-        var (program, request, _, _) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
+        var (program, input, _, _) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
 
         using var dir = new TempDirectory();
         var outcome = new RecompiledArtifactLauncher().Launch(
-            program, request, handoff: null, dir.FullPath, resultRegister: (int)R3000aRegister.V0);
+            program, input, handoff: null, dir.FullPath, resultRegister: (int)R3000aRegister.V0);
 
         outcome.Result.State.Should().Be(TitleExecutionState.RuntimeFailure);
         outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Failure);
@@ -201,12 +201,12 @@ public sealed class RecompiledArtifactE2ETests
             (uint)R3000aRegister.T2 << 21 | 0x08u,                                            // 7 JR $t2
             GeneratedPsxExeFixtures.Immediate(0x09, R3000aRegister.T1, function),             // 8 delay slot
         };
-        var (program, request, loadAddress, wordCount) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
+        var (program, input, loadAddress, wordCount) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
 
         using var dir = new TempDirectory();
         var outcome = new RecompiledArtifactLauncher().Launch(
             program,
-            request,
+            input,
             new ProgramEndHandoff(loadAddress + (uint)(wordCount * sizeof(uint))),
             dir.FullPath,
             resultRegister: (int)R3000aRegister.S1);
@@ -229,12 +229,12 @@ public sealed class RecompiledArtifactE2ETests
             (uint)R3000aRegister.T0 << 21 | 0x08u, // JR $t0
             0u,                                    // delay slot
         };
-        var (program, request, loadAddress, wordCount) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
+        var (program, input, loadAddress, wordCount) = Compile(GeneratedPsxExeFixtures.BuildExe(words));
 
         using var dir = new TempDirectory();
         var outcome = new RecompiledArtifactLauncher().Launch(
             program,
-            request,
+            input,
             new ProgramEndHandoff(loadAddress + (uint)(wordCount * sizeof(uint))),
             dir.FullPath,
             resultRegister: (int)R3000aRegister.V0);

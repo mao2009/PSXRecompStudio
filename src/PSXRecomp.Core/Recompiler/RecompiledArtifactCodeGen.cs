@@ -110,15 +110,28 @@ public static class RecompiledArtifactCodeGen
             null);
     }
 
+    /// <summary>Artifact exit code: the program image file named by <c>argv[2]</c> could not be opened.</summary>
+    public const int CannotOpenImageExitCode = 94;
+
+    /// <summary>Artifact exit code: the program image is empty, does not fit guest RAM, or its
+    /// file length differs from the length the input file declares (Issue #637).</summary>
+    public const int InvalidImageExitCode = 95;
+
     // Self-contained artifact entrypoint. Reads one guest state from the input
-    // file named by argv[1]: 32 GPRs, hi, lo, pc, budget, then an init-memory
-    // write list. Runs recompiler_dispatch exactly once, prints the resulting
+    // file named by argv[1]: 32 GPRs, hi, lo, pc, budget, an init-memory write
+    // list, then "<image load address> <image byte length>". argv[2] names the
+    // program image: the raw little-endian PS-X EXE text bytes, loaded into guest
+    // RAM at that address after the init-memory writes (so the code image wins
+    // any overlap, exactly as InterpreterTitleExecutionEngine.Load orders them).
+    // A missing, empty, truncated, oversized, or out-of-RAM image fails closed
+    // (exit 94/95) before any guest instruction runs (Issue #637).
+    // Runs recompiler_dispatch exactly once, prints the resulting
     // state as a stable snapshot, and exits with the raw termination reason —
     // a tested, stable byte value (RecompilerIrTerminationReasonTests / this
     // driver's own contract tests classify it into success/blocked/failure for
     // CLI use, so the artifact itself carries no extra classification logic).
     //
-    // With argv[2] == "--host-transfer", an unresolved control transfer is
+    // With argv[3] == "--host-transfer", an unresolved control transfer is
     // offered to a listening parent instead of stopping immediately, over the
     // same line protocol Issue #362 proved for the differential harness.
     private const string DriverSource = @"
@@ -137,24 +150,39 @@ static uint32_t artifact_translate(uint32_t va) {
     return 0xFFFFFFFFu;
 }
 
+/* Low-8-MiB RAM mirror, matching PSXMemory / memory.rs: a translated physical
+   address below 0x00800000 aliases the 2 MiB RAM through (& (RAM_SIZE - 1)),
+   and the width check runs on the aliased offset, so an access that would run
+   off the end of the physical buffer is unmapped rather than wrapped. */
+#define PSX_RAM_MIRROR_END 0x00800000u
+
+static int artifact_ram_offset(uint32_t address, uint32_t width, uint32_t* offset) {
+    uint32_t pa = artifact_translate(address);
+    if (pa >= PSX_RAM_MIRROR_END) return 0;
+    pa &= PSX_RAM_SIZE - 1u;
+    if (pa > PSX_RAM_SIZE - width) return 0;
+    *offset = pa;
+    return 1;
+}
+
 uint8_t recompiler_read_mem8(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa >= PSX_RAM_SIZE) return 0;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 1u, &pa)) return 0;
     return artifact_ram[pa];
 }
 
 uint16_t recompiler_read_mem16(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 2) return 0;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 2u, &pa)) return 0;
     return (uint16_t)(artifact_ram[pa] | ((uint16_t)artifact_ram[pa + 1] << 8));
 }
 
 uint32_t recompiler_read_mem32(void* core, uint32_t address) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 4) return 0;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 4u, &pa)) return 0;
     return (uint32_t)(artifact_ram[pa]
         | ((uint32_t)artifact_ram[pa + 1] << 8)
         | ((uint32_t)artifact_ram[pa + 2] << 16)
@@ -163,23 +191,23 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
 
 void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa >= PSX_RAM_SIZE) return;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 1u, &pa)) return;
     artifact_ram[pa] = value;
 }
 
 void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 2) return;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 2u, &pa)) return;
     artifact_ram[pa] = (uint8_t)value;
     artifact_ram[pa + 1] = (uint8_t)(value >> 8);
 }
 
 void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
     (void)core;
-    uint32_t pa = artifact_translate(address);
-    if (pa > PSX_RAM_SIZE - 4) return;
+    uint32_t pa;
+    if (!artifact_ram_offset(address, 4u, &pa)) return;
     artifact_ram[pa] = (uint8_t)value;
     artifact_ram[pa + 1] = (uint8_t)(value >> 8);
     artifact_ram[pa + 2] = (uint8_t)(value >> 16);
@@ -238,7 +266,7 @@ static int32_t artifact_host_transfer(RecompilerState* state) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) return 90; /* MissingInput */
+    if (argc < 3) return 90; /* MissingInput: argv[1] input file, argv[2] program image */
     FILE* in = fopen(argv[1], ""r"");
     if (!in) return 91;      /* CannotOpenInput */
 
@@ -261,7 +289,15 @@ int main(int argc, char** argv) {
         init_addrs[i] = (uint32_t)a;
         init_vals[i] = (uint32_t)v;
     }
+    if (fscanf(in, ""%lu %lu"", &a, &u) != 2) { fclose(in); return 92; }
     fclose(in);
+    uint32_t image_pa = artifact_translate((uint32_t)a);
+    unsigned long image_len = u;
+    /* The whole image must sit inside the mapped low-8-MiB window (bytes past it
+       are unmapped and cannot be represented); within it, bytes alias into the
+       2 MiB RAM exactly as PSXMemory does, including across the 2 MiB seam. */
+    if (image_len == 0ul || image_pa >= PSX_RAM_MIRROR_END
+        || (unsigned long long)image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa)) return 95; /* InvalidImage */
 
     state.gpr[0] = 0;
     state.core = (void*)0;
@@ -270,9 +306,23 @@ int main(int argc, char** argv) {
         recompiler_write_mem8((void*)0, init_addrs[i], (uint8_t)init_vals[i]);
     }
 
+    /* The program image goes in last so it wins any overlap with the init
+       writes. Its file length must equal the declared length exactly. */
+    FILE* image = fopen(argv[2], ""rb"");
+    if (!image) return 94; /* CannotOpenImage */
+    unsigned long image_i;
+    for (image_i = 0; image_i < image_len; image_i++) {
+        int image_byte = fgetc(image);
+        if (image_byte == EOF) { fclose(image); return 95; } /* InvalidImage: truncated */
+        artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
+    }
+    int image_extra = fgetc(image);
+    fclose(image);
+    if (image_extra != EOF) return 95; /* InvalidImage: oversized */
+
     /* Opt-in only: a stray extra argument never enables the protocol, so a run
        with no parent listening can never block on the handshake. */
-    if (argc >= 3 && strcmp(argv[2], ""--host-transfer"") == 0) {
+    if (argc >= 4 && strcmp(argv[3], ""--host-transfer"") == 0) {
         state.host_transfer = &artifact_host_transfer;
         printf(""RHOST_INIT\n"");
         fflush(stdout);

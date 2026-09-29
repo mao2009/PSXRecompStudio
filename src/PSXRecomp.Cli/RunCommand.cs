@@ -67,7 +67,7 @@ public static class RunCommand
 
             var outcome = new RecompiledArtifactLauncher().Launch(
                 program,
-                input.Request,
+                input,
                 new ProgramEndHandoff(programEnd),
                 outputDirectory,
                 resultRegister: (int)R3000aRegister.V0);
