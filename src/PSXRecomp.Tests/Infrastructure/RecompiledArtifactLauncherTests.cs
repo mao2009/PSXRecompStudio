@@ -489,8 +489,16 @@ public sealed class RecompiledArtifactLauncherTests
         psi.ArgumentList.Add(dir.Combine("artifact-input.txt"));
         psi.ArgumentList.Add(imagePath);
         using var process = Process.Start(psi)!;
-        var stdout = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(10000).Should().BeTrue();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var exited = process.WaitForExit(10000);
+        if (!exited)
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit();
+        }
+
+        exited.Should().BeTrue("the artifact process must terminate within the test timeout");
+        var stdout = stdoutTask.GetAwaiter().GetResult();
         var exitCode = process.ExitCode;
 #pragma warning restore AARC003
 
