@@ -1,0 +1,12 @@
+Generated synthetic input: synthetic.exe (2068 bytes, SHA-256 a863090b04d20a9f790c4cf533dd13edf5a222f3852c6178f28605a8c910ae6e)
+
+$ psxrecomp recompile synthetic.exe --output out --json
+
+kind    : recompile
+success : True
+status  : Succeeded
+
+
+$ psxrecomp run synthetic.exe --output out --json
+kind=run success=True engine=recompiled-host-artifact exitCode=0 tty='P'
+DEMO OK: generated code ran; TTY "P"; repeated run identical.
