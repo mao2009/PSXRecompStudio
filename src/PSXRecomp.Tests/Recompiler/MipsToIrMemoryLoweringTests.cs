@@ -166,18 +166,40 @@ public class MipsToIrMemoryLoweringTests
         block.Operations[1].Immediate.Should().Be(0x10u);
     }
 
-    [Fact]
-    public void Lwl_RemainsUnsupportedAndFailsFast()
+    [Theory]
+    [InlineData(R3000aOpcode.Lwl)]
+    [InlineData(R3000aOpcode.Lwr)]
+    [InlineData(R3000aOpcode.Swl)]
+    [InlineData(R3000aOpcode.Swr)]
+    public void UnalignedAccess_IsOneAlignedWordAccessMergedWithRt(R3000aOpcode opcode)
     {
-        var instruction = R3000aDecoder.Decode(MipsEncoding.Load(R3000aOpcode.Lwl, rt: 8, baseRegister: 9, offset: 0));
-        instruction.Opcode.Should().Be(R3000aOpcode.Lwl);
+        // Issue #599: the access is a single Load32 of the aligned word, merged with
+        // rt; SWL/SWR write the merged word back with a single Store32. The merge
+        // arithmetic itself is pinned differentially against the interpreter.
+        var block = LowerSupported(MipsEncoding.Load(opcode, rt: 10, baseRegister: 9, offset: 1));
+        var kinds = block.Operations.Select(operation => operation.Kind).ToArray();
+        var isStore = opcode is R3000aOpcode.Swl or R3000aOpcode.Swr;
 
-        var result = MipsToIrLowerer.Lower(instruction, EntryPc);
+        kinds.Should().ContainSingle(kind => kind == RecompilerIrOperationKind.Load32);
+        kinds.Should().NotContain(new[] { RecompilerIrOperationKind.Load8, RecompilerIrOperationKind.Load16 });
+        block.Operations.Where(operation => operation.Kind == RecompilerIrOperationKind.ReadGpr)
+            .Select(operation => operation.Register)
+            .Should().Equal(new byte[] { 9, 10 }, "the base and the merged rt are both read");
 
-        result.IsSupported.Should().BeFalse();
-        result.Block.Should().BeNull();
-        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Lwl);
-        result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidOperationShape);
+        if (isStore)
+        {
+            kinds.Last().Should().Be(RecompilerIrOperationKind.Store32);
+            kinds.Should().NotContain(RecompilerIrOperationKind.WriteGpr);
+            block.Operations.Last().InputValueA.Should().Be(
+                block.Operations.Single(operation => operation.Kind == RecompilerIrOperationKind.Load32).InputValueA,
+                "the store writes back the same aligned word it read");
+        }
+        else
+        {
+            kinds.Last().Should().Be(RecompilerIrOperationKind.WriteGpr);
+            block.Operations.Last().Register.Should().Be(10);
+            kinds.Should().NotContain(new[] { RecompilerIrOperationKind.Store8, RecompilerIrOperationKind.Store16, RecompilerIrOperationKind.Store32 });
+        }
     }
 
     [Fact]

@@ -666,19 +666,19 @@ public class MipsToIrLoweringTests
     }
 
     [Fact]
-    public void Unsupported_Lwl_ReturnsDiagnostic()
+    public void Unsupported_Sub_ReturnsDiagnostic()
     {
-        // LWL/LWR keep the paired load-delay behaviour of ADR-004 and are still
-        // outside the lowered subset, unlike the plain LW added alongside it.
-        var instruction = R3000aDecoder.Decode(EncodeI(0x22, 8, 9, 0));
-        instruction.Opcode.Should().Be(R3000aOpcode.Lwl);
+        // SUB (trapping subtract) is still outside the lowered subset. LWL was the
+        // probe here until Issue #599 lowered LWL/LWR/SWL/SWR.
+        var instruction = R3000aDecoder.Decode(EncodeR(0x22, 10, 8, 9, 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Sub);
 
         var result = MipsToIrLowerer.Lower(instruction, 0x80000000);
         result.IsSupported.Should().BeFalse();
         result.Block.Should().BeNull();
         result.DiagnosticCode.Should().Be(RecompilerIrDiagnosticCode.InvalidOperationShape);
         result.DiagnosticMessage.Should().NotBeNullOrEmpty();
-        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Lwl);
+        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Sub);
     }
 
     [Fact]

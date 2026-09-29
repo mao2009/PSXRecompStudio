@@ -164,6 +164,36 @@ internal static class RecompilerFixtures
             });
 
     /// <summary>
+    /// Issue #599: an LWR/LWL pair with no NOP between them reconstructs the
+    /// unaligned word at DataBase+1 (the LWL merges into the LWR's pending value),
+    /// then SWL/SWR store its halves into zeroed words at DataBase+8/+12.
+    /// The pair fuses into one host block, so the reference budget is one more.
+    /// </summary>
+    public static RecompilerDifferentialFixture Issue599UnalignedLoadStore() =>
+        new(
+            "issue-599-unaligned-load-store",
+            encodedInstructions: new[]
+            {
+                MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+                MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+                MipsEncoding.I(0x0F, rt: 10, rs: 0, immediate: 0xAABB),
+                MipsEncoding.I(0x0D, rt: 10, rs: 10, immediate: 0xCCDD),                // $t2 = 0xAABBCCDD
+                MipsEncoding.Load(R3000aOpcode.Lwr, rt: 10, baseRegister: 8, offset: 1),
+                MipsEncoding.Load(R3000aOpcode.Lwl, rt: 10, baseRegister: 8, offset: 4),  // $t2 = 0x55443322
+                MipsEncoding.Nop,
+                MipsEncoding.Load(R3000aOpcode.Swl, rt: 10, baseRegister: 8, offset: 9),
+                MipsEncoding.Load(R3000aOpcode.Swr, rt: 10, baseRegister: 8, offset: 14),
+                MipsEncoding.Nop,
+            },
+            entryPc: EntryPc,
+            stepBudget: 9,
+            referenceStepBudget: 10,
+            initialMemory: Enumerable.Range(0, 8)
+                .Select(i => new RecompilerInitialMemoryItem(DataBase + (uint)i, (byte)(0x11 * (i + 1))))
+                .ToArray(),
+            memoryWindow: Enumerable.Range(8, 8).Select(i => DataBase + (uint)i).ToArray());
+
+    /// <summary>
     /// An InitialMemory byte that overlaps the code image both through the KSEG0
     /// entry address and directly through its physical alias, plus one byte that
     /// is disjoint from the code. The interpreter must write the initial memory

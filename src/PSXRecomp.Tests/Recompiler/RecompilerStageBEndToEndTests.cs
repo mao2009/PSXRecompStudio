@@ -118,6 +118,25 @@ public sealed class RecompilerStageBEndToEndTests
     }
 
     [Fact]
+    public void UnalignedLoadPairAndStores_MatchTheInterpreter()
+    {
+        var fixture = RecompilerFixtures.Issue599UnalignedLoadStore();
+        var result = RecompilerDifferentialRunner.Run(
+            fixture, new RecompilerInterpreterExecutor(), new RecompilerHostExecutor());
+
+        Assert.True(result.BothCompleted, result.Reference.Status == RecompilerExecutionStatus.Completed
+            ? $"host executor failed: [{result.Actual.DiagnosticCode}] {result.Actual.DiagnosticMessage}"
+            : "interpreter executor failed.");
+        Assert.True(result.IsMatch, result.Diff!.Describe());
+
+        Assert.Equal(0x55443322u, result.Actual.Snapshot!.Gpr[10]);
+        // SWL at +9 stores the top two bytes (44 55) low; SWR at +14 the bottom two (22 33) high.
+        Assert.Equal(
+            new byte[] { 0x44, 0x55, 0x00, 0x00, 0x00, 0x00, 0x22, 0x33 },
+            WindowBytes(result.Actual.Snapshot!));
+    }
+
+    [Fact]
     public void MemoryHostSnapshots_Are_Deterministic_Across_Independent_Runs()
     {
         var executor = new RecompilerHostExecutor();

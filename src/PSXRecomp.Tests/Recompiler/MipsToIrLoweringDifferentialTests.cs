@@ -1093,6 +1093,161 @@ public class MipsToIrLoweringDifferentialTests
     /// at 0x1C, its delay slot at 0x20, the fall-through at 0x24 and the taken
     /// target at 0x28.
     /// </summary>
+    // Issue #599 — LWL/LWR/SWL/SWR. Expected values are the byte-merge table of
+    // src/PSXRecomp.Native/rust/src/cpu_unaligned.rs for MEM = 0x44332211 (the
+    // aligned word at DataBase) and REG = 0xAABBCCDD (the pre-existing rt), and
+    // every case is also compared against the native interpreter.
+
+    [Theory]
+    [InlineData(R3000aOpcode.Lwl, 0, 0x11BBCCDDu)]
+    [InlineData(R3000aOpcode.Lwl, 1, 0x2211CCDDu)]
+    [InlineData(R3000aOpcode.Lwl, 2, 0x332211DDu)]
+    [InlineData(R3000aOpcode.Lwl, 3, 0x44332211u)]
+    [InlineData(R3000aOpcode.Lwr, 0, 0x44332211u)]
+    [InlineData(R3000aOpcode.Lwr, 1, 0xAA443322u)]
+    [InlineData(R3000aOpcode.Lwr, 2, 0xAABB4433u)]
+    [InlineData(R3000aOpcode.Lwr, 3, 0xAABBCC44u)]
+    public void UnalignedLoad_EveryAlignment_MergesIntoRtPreservingUntouchedBytes(
+        R3000aOpcode opcode, ushort offset, uint expected)
+    {
+        var words = BuildUnalignedFixture(MipsEncoding.Load(opcode, rt: 10, baseRegister: 8, offset: offset));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        run.Ir.Gpr[10].Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(R3000aOpcode.Swl, 0, 0x443322AAu)]
+    [InlineData(R3000aOpcode.Swl, 1, 0x4433AABBu)]
+    [InlineData(R3000aOpcode.Swl, 2, 0x44AABBCCu)]
+    [InlineData(R3000aOpcode.Swl, 3, 0xAABBCCDDu)]
+    [InlineData(R3000aOpcode.Swr, 0, 0xAABBCCDDu)]
+    [InlineData(R3000aOpcode.Swr, 1, 0xBBCCDD11u)]
+    [InlineData(R3000aOpcode.Swr, 2, 0xCCDD2211u)]
+    [InlineData(R3000aOpcode.Swr, 3, 0xDD332211u)]
+    public void UnalignedStore_EveryAlignment_MergesIntoTheAlignedWordPreservingUntouchedBytes(
+        R3000aOpcode opcode, ushort offset, uint expected)
+    {
+        var words = BuildUnalignedFixture(MipsEncoding.Load(opcode, rt: 10, baseRegister: 8, offset: offset));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        BitConverter.ToUInt32(run.IrMemory, 0).Should().Be(expected);
+        BitConverter.ToUInt32(run.IrMemory, 4).Should().Be(0x88776655u, "the neighbouring word is untouched");
+        run.Ir.Gpr[10].Should().Be(0xAABBCCDDu, "a store leaves rt unchanged");
+    }
+
+    [Theory]
+    [InlineData(R3000aOpcode.Lwl, 1, 0x22116655u)]
+    [InlineData(R3000aOpcode.Lwr, 2, 0x88774433u)]
+    public void UnalignedLoad_AfterAPendingLoadToTheSameRt_MergesIntoThePendingValue(
+        R3000aOpcode opcode, ushort offset, uint expected)
+    {
+        // LW $t2 is still in its load delay when the LWL/LWR runs; the merge input
+        // is the pending 0x88776655, not the committed 0xAABBCCDD
+        // (docs/cpu/pipeline.md, Issue #539).
+        var words = BuildUnalignedFixture(
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 4),
+            MipsEncoding.Load(opcode, rt: 10, baseRegister: 8, offset: offset));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        run.Ir.Gpr[10].Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(R3000aOpcode.Lwr, 1, R3000aOpcode.Lwl, 4)]
+    [InlineData(R3000aOpcode.Lwl, 4, R3000aOpcode.Lwr, 1)]
+    public void UnalignedLoadPair_WithoutANop_ReconstructsTheUnalignedWord(
+        R3000aOpcode first, ushort firstOffset, R3000aOpcode second, ushort secondOffset)
+    {
+        // Bytes DataBase+1..+4 are 22 33 44 55, in either pair order.
+        var words = BuildUnalignedFixture(
+            MipsEncoding.Load(first, rt: 10, baseRegister: 8, offset: firstOffset),
+            MipsEncoding.Load(second, rt: 10, baseRegister: 8, offset: secondOffset));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        run.Ir.Gpr[10].Should().Be(0x55443322u);
+    }
+
+    [Fact]
+    public void UnalignedLoad_AfterAPendingLoadToAnotherRegister_MergesIntoTheCommittedRt()
+    {
+        var words = BuildUnalignedFixture(
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 11, baseRegister: 8, offset: 4),
+            MipsEncoding.Load(R3000aOpcode.Lwl, rt: 10, baseRegister: 8, offset: 1));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        run.Ir.Gpr[10].Should().Be(0x2211CCDDu);
+        run.Ir.Gpr[11].Should().Be(0x88776655u);
+    }
+
+    [Fact]
+    public void UnalignedLoad_HasItsOwnLoadDelay()
+    {
+        var words = BuildUnalignedFixture(
+            MipsEncoding.Load(R3000aOpcode.Lwl, rt: 10, baseRegister: 8, offset: 3),
+            MipsEncoding.R(0x21, rd: 11, rs: 10, rt: 0, shamt: 0),               // load-delay slot
+            MipsEncoding.R(0x21, rd: 12, rs: 10, rt: 0, shamt: 0));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        run.Ir.Gpr[11].Should().Be(0xAABBCCDDu, "the load-delay slot reads the pre-LWL register");
+        run.Ir.Gpr[12].Should().Be(0x44332211u);
+    }
+
+    [Fact]
+    public void UnalignedStore_AfterAPendingLoadToRt_StoresTheCommittedRt()
+    {
+        // Only LWL/LWR forward a pending load; SWL reads the committed rt
+        // (PSXCpu::ExecSwl uses gpr_[rt]).
+        var words = BuildUnalignedFixture(
+            MipsEncoding.Load(R3000aOpcode.Lw, rt: 10, baseRegister: 8, offset: 4),
+            MipsEncoding.Load(R3000aOpcode.Swl, rt: 10, baseRegister: 8, offset: 1));
+
+        var run = RunBoth(words, retiredInstructions: (uint)words.Length, dataWindowBytes: 8);
+
+        BitConverter.ToUInt32(run.IrMemory, 0).Should().Be(0x4433AABBu);
+        run.Ir.Gpr[10].Should().Be(0x88776655u);
+    }
+
+    [Fact]
+    public void UnalignedLoadPair_WhoseResultIsReadInItsLoadDelaySlot_FailsClosed()
+    {
+        // The pair fuses, and the second load's own delay would have to commit
+        // outside the fused block — rejected rather than committed early.
+        var words = BuildUnalignedFixture(
+            MipsEncoding.Load(R3000aOpcode.Lwr, rt: 10, baseRegister: 8, offset: 1),
+            MipsEncoding.Load(R3000aOpcode.Lwl, rt: 10, baseRegister: 8, offset: 4),
+            MipsEncoding.R(0x21, rd: 11, rs: 10, rt: 0, shamt: 0));
+        var instructions = words
+            .Select((word, index) => (R3000aDecoder.Decode(word), EntryPc + (uint)(index * 4)))
+            .ToArray();
+
+        var act = () => MipsToIrLowerer.LowerProgram(instructions);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*chained load delays*");
+    }
+
+    /// <summary>
+    /// $t0 = DataBase; memory = 0x44332211, 0x88776655; $t2 = 0xAABBCCDD; then
+    /// <paramref name="tail"/>.
+    /// </summary>
+    private static uint[] BuildUnalignedFixture(params uint[] tail) =>
+    [
+        MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),
+        MipsEncoding.I(0x09, rt: 8, rs: 8, immediate: 0x1000),
+        .. LoadConstant(9, 0x44332211),
+        MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 0),
+        .. LoadConstant(9, unchecked((int)0x88776655u)),
+        MipsEncoding.Load(R3000aOpcode.Sw, rt: 9, baseRegister: 8, offset: 4),
+        .. LoadConstant(10, unchecked((int)0xAABBCCDDu)),
+        .. tail,
+    ];
+
     private static uint[] BuildLoadDelayBranch(ushort compareValue) =>
     [
         MipsEncoding.I(0x0F, rt: 8, rs: 0, immediate: 0x8000),                            // 0x00

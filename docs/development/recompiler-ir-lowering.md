@@ -44,6 +44,15 @@ Every load and store first materialises the guest 32-bit effective address as
 | LB rt,off(base) | address → `Load8` → `ShiftLeftLogical 24` → `ShiftRightArithmetic 24` → `WriteGpr` | |
 | LH rt,off(base) | address → `Load16` → `ShiftLeftLogical 16` → `ShiftRightArithmetic 16` → `WriteGpr` | |
 | SB / SH / SW rt,off(base) | address, `ReadGpr(rt)` → `Store8` / `Store16` / `Store32` | Address is input A, value is input B |
+| LWL / LWR rt,off(base) | address → `And ~3` (aligned word), `(addr And 3) << 3` (byte shift `s`), merge source, `Load32` → mask/shift/`Or` merge → `WriteGpr` | Merge source is `ReadGpr(rt)`, or the pending value of a load to `rt` still in its delay (see [Load delay](#load-delay)) |
+| SWL / SWR rt,off(base) | address → aligned word and `s`, `ReadGpr(rt)`, `Load32` → mask/shift/`Or` merge → `Store32` to the aligned word | A read-modify-write of one aligned word; `rt` is the committed value, never a pending load |
+
+The unaligned merge (Issue #599) is composed from existing operations — `And`,
+`Or`, `Nor` (bitwise not), `Subtract` (`24 - s`) and the variable shifts — so no
+backend learns a new operation kind. Its byte-merge table is the one in
+`src/PSXRecomp.Native/rust/src/cpu_unaligned.rs`, the correctness oracle; the
+differential tests pin every `addr & 3` case of all four opcodes against the
+native interpreter.
 
 Every emitted memory operation's `RecompilerIrMemoryEffectKind` stays at its
 `Unknown` default (ADR-020, Issue #411): the effective address above is always
@@ -193,6 +202,15 @@ commit is emitted at all: on hardware that write cancels the pending load
 (`PSXCpu::SetGPR` / `WriteRegDelayed`), so the instruction's own value is the
 one that survives.
 
+LWL/LWR read `rt` as their merge input, so a load to `rt` followed by LWL/LWR to
+the same `rt` is fused like any other observed load. The one difference is the
+merge input: LWL/LWR merge into the **pending** loaded value rather than the
+committed register (`docs/cpu/pipeline.md` "Special LWL/LWR Behavior",
+`PSXCpu::ExecLwl`/`ExecLwr`, Issue #539), and — as a write to the same register —
+their result replaces the pending commit. This is what makes an LWR/LWL pair
+without a NOP reconstruct the unaligned word. SWL/SWR do not forward: they store
+the committed `rt`. LWL/LWR otherwise have an ordinary load delay of their own.
+
 Cases where an immediate commit is already equivalent, and no fusion happens:
 
 | Case | Why it is equivalent |
@@ -302,7 +320,6 @@ report it as such.
 |---|---|
 | Register-held control-flow targets (JR / JALR resolution, `Return` flow) | `RecompilerIrFlow.Target` is a static address and has no value-id form. Expressing a runtime target needs a #206 contract change, which this stage deliberately does not make; the frontier stays explicit as `UnresolvedIndirectFlow`. |
 | BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branch encodings (`0x06`-`0x07`, `0x01`) have no decoder entry yet; the signed comparison IR now exists (`CompareLessThanSigned`), so lowering them is a decoder + lowering extension. |
-| LWL / LWR, SWL / SWR | Unaligned pair access with the special ADR-004 load-delay pairing. |
 | ADDI / SUB / ADD, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
 | COP0 / COP2, SYSCALL | Coprocessor and exception semantics. |
 | Chained load delay, and a load in a branch delay slot | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
