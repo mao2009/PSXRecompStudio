@@ -166,7 +166,8 @@ public static class BiosVectorDispatch
         // execution path tracks the transfer instruction's own PC separately from
         // the live PC (which, at this point, IS the trampoline vector address), so
         // it is left null rather than misreported.
-        var identity = new BiosCallIdentity(family, functionNumber, guestPc: null, arguments);
+        var identity = new BiosCallIdentity(
+            family, functionNumber, guestPc: null, arguments, guestRegisters: gpr);
 
         var result = biosRuntime.Invoke(identity);
         switch (result.Status)

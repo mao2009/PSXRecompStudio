@@ -13,7 +13,8 @@ public sealed record BiosCallIdentity
         byte functionNumber,
         uint? guestPc = null,
         IEnumerable<uint>? arguments = null,
-        string? name = null)
+        string? name = null,
+        IEnumerable<uint>? guestRegisters = null)
     {
         if (!Enum.IsDefined(family))
         {
@@ -25,6 +26,9 @@ public sealed record BiosCallIdentity
         GuestPc = guestPc;
         Arguments = new ReadOnlyCollection<uint>((arguments ?? Array.Empty<uint>()).ToArray());
         Name = name;
+        GuestRegisters = guestRegisters is null
+            ? null
+            : new ReadOnlyCollection<uint>(guestRegisters.ToArray());
     }
 
     /// <summary>The BIOS jump-table family (A0, B0, or C0).</summary>
@@ -38,6 +42,14 @@ public sealed record BiosCallIdentity
 
     /// <summary>The ABI argument words in guest register order.</summary>
     public IReadOnlyList<uint> Arguments { get; }
+
+    /// <summary>
+    /// The full guest general-purpose register file at the call, indexed by
+    /// <c>R3000aRegister</c>, when the caller can supply it. Only services whose
+    /// documented behavior reads registers beyond the ABI arguments (such as
+    /// A0:13 setjmp) consume it; null when the call site has no register file.
+    /// </summary>
+    public IReadOnlyList<uint>? GuestRegisters { get; }
 
     /// <summary>Optional human-readable service name.</summary>
     public string? Name { get; }

@@ -1490,3 +1490,31 @@ fresh memory) gain the `(A0, 0x39)` case each, so InitHeap gets the same
 regression coverage every other registered slot already has. The production
 path gains `TitleExecutionServiceTests.RunDiagnostic_InitHeap_DrivesTheWholePipeline_ToAClassifiedCompletion_WithV0Untouched`
 (described in (b) above).
+
+## Amendment (2026-09-30): A0:13 setjmp registered
+
+Issue #648: after explicit entry roots (#644) the Persona production run stopped
+at `BIOS_HLE_UNSUPPORTED_CALL` `A0:13`. `A(13h) setjmp(buf)` is registered
+through `SetJmpService`.
+
+- **Documented effect (PSX-SPX kernelbios, misc-functions).** Store the
+  ABI-saved registers in the 0x30-byte guest buffer at `$a0`, little-endian:
+  +00 `$ra`, +04 `$sp`, +08 `$fp`, +0C..+28 `$s0..$s7`, +2C `$gp`; return 0
+  when called directly. Nothing else is saved. The effect is a guest-memory
+  write, so the service is registered only with the write boundary attached.
+- **Register file at the call.** The service reads registers beyond the ABI
+  arguments, so `BiosCallIdentity` gains an optional `GuestRegisters` (the full
+  GPR file). `BiosVectorDispatch.Dispatch` fills it for every call, so the
+  interpreter and the generated host both supply it; no path-specific code.
+- **Return and PC.** The service returns `Supported` with value 0; the caller
+  applies `$v0 = 0` and continues at the call site's `$ra` exactly once,
+  through the existing `BiosVectorDispatchOutcome`.
+- **Fail closed.** The buffer is written through
+  `IGuestMemoryWriter.TryWrite`, which is all-or-nothing and rejects wraparound,
+  untranslatable and out-of-RAM ranges. A rejected write, or a call carrying no
+  register file, is `BIOS_HLE_UNSUPPORTED_STATE`; a wrong argument count is
+  `BIOS_HLE_INVALID_ARGUMENTS`.
+- **Not in scope.** A0:14 `longjmp` (the "return again" half) stays
+  unregistered and reports `BIOS_HLE_UNSUPPORTED_CALL`.
+
+Tests: `SetJmpServiceTests`.

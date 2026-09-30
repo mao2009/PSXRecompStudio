@@ -170,6 +170,14 @@ regression in either.
    `BIOS_HLE_UNSUPPORTED_CALL` `A0:13` (exit 1, `RuntimeFailure`), a BIOS HLE gap
    and not a coverage gap. Roots are caller input only; nothing in production code
    names a title address (ADR-012 amendment).
+9. **Measured after #648 (A0:13 setjmp HLE, runtime stage).** A0:13 is now
+   registered (`SetJmpService`, 0x30-byte `jmp_buf`; `$v0 = 0`). Measured on
+   `main` 79a4859 plus the #648 change, same command with
+   `--entry-root 0x80025350`: the run passes `0x80025350` and A0:13 and stops at
+   `BIOS_HLE_UNSUPPORTED_CALL` `B0:19` (exit 1, `RuntimeFailure`, result guest PC
+   `176` / `0xB0`, the B0 vector); frame evidence reports the same code, `unavailable` /
+   `no-frame-activity`. B0:19 is the next BIOS HLE gap, tracked separately;
+   the A0:14 longjmp companion is not implemented.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU
