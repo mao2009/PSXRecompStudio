@@ -44,12 +44,12 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | ANALYSIS | ✅ Implemented | `RealRomAnalysisSkillTests` / `RealRomAnalyzer.RunAll()` |
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
 | RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests`; production PS-X EXE path via `TitleExecutionService.Run(PsxExe, ...)` (#409) |
-| BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 7 registered identities: A0:39, A0:3C, B0:3D, A0:3E, B0:3F, B0:56, B0:57 |
+| BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 13 registered identities; current inventory is maintained in `docs/runtime/bios-hle-evidence.md`, and the measured Persona path now passes A0:13, B0:19, B0:5B, C0:0A, A0:72 and A0:3F plus SYS(02h) |
 | GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493), production interpreter 32-bit guest MMIO reachability (#572), GPU command IRQ1 delivery (#574), and production `FrameSnapshot` headless evidence (#575); DMA2 remains |
 | SPU | ⚠ Partial | Rust-owned register/MMIO model at 0x1F801C00-0x1F801DFF (#445/#551); no ADPCM/ADSR/mixing/reverb/sound-RAM/audio-output model |
 | SIO0 | ⚠ Partial | Production-reachable register model + deterministic disconnected-pad transaction path + IRQ7 (#443 via #548/#549); no real host controller or memory-card wire protocol |
 | CD-ROM | ⚠ Partial | Register/FIFO substrate, minimum command protocol, DMA3 and IRQ2 are implemented and production-interpreter reachable (#585/#586/#587); sector bytes are test-supplied only — no real disc source, streaming, seek timing or CD audio (#14) |
-| GTE | ⚠ Partial | COP2 data/control register bank (#581 / PR #592), RTPS (#582 / PR #590), and NCLIP (#583 / PR #591) are implemented; AVSZ3/AVSZ4 (#584 / PR #589) is under review and native COP2 dispatch/integration remains #447 |
+| GTE | ⚠ Partial | COP2 data/control register bank (#581 / PR #592), RTPS (#582 / PR #590), NCLIP (#583 / PR #591), and AVSZ3/AVSZ4 (#584 / PR #589) are implemented; native COP2 dispatch/integration remains #447 |
 | TITLE_SCREEN | ❌ Not reached | — |
 
 The RUNTIME_EXECUTION row above is this gate's own real-ROM, fixture-gated test
@@ -60,41 +60,36 @@ be conflated.
 
 ## First Blocker toward TITLE_SCREEN (as of HEAD)
 
-**Stage:** Recompiler IR lowering (build stage, before RUNTIME_EXECUTION)
+**Stage:** Runtime execution (generated host)
 
-**Classification:** `recompiler/lowering coverage` — the production CLI's
-whole-program build fails on an unsupported opcode before any guest
-instruction executes; BIOS HLE, GPU, CD-ROM and every other runtime boundary
-below are unreached by definition until this stage succeeds.
+**Classification:** `unclassified runtime wait / execution-budget exhaustion`.
 
 **Description:**
 
-A fresh local run against a legally owned Persona fixture (`rom/PERSONA.chd`),
-using the production CLI:
+A fresh local run against a legally owned Persona fixture (`rom/PERSONA.chd`)
+now completes the production CLI's whole-program build and enters generated-host
+runtime execution. With only the two caller-supplied dynamic entry roots already
+identified by the preceding measured path:
 
 ```powershell
-dotnet run --project src/PSXRecomp.Cli -- run rom/PERSONA.chd --output out/persona --json --report --frame-evidence
+dotnet run --project src/PSXRecomp.Cli -- run rom/PERSONA.chd --output out/persona \
+  --entry-root 0x80025350 --entry-root 0x80025614 \
+  --json --report --frame-evidence
 ```
 
-showed that **BIOS HLE coverage is not the first blocker.** `psxrecomp run`
-fails during the build stage — `CliInput.Lower` → `ReachableProgramBuilder.Build`
-(`src/PSXRecomp.Core/Recompiler/ReachableProgramBuilder.cs`) — with exit code 1
-(tooling/build failure) and no JSON output (by design: no
-`RecompiledArtifactResult` exists yet for this failure class, so the CLI's
-`--json` diagnostic path is never reached; see `RunCommand.cs`). `--report` and
-`--frame-evidence` are consequently also unreached.
+the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-through
+without an extra root, passes A0:3F `printf`, and emits
+`CD_init:addr=800500e4`. It then stops with `OUTER_BUDGET_EXHAUSTED`
+(exit 2, state 3) at guest PC `0x800278A8`. Generated blocks around that PC
+compare a RAM counter with `0x3C0000`, but the condition the guest is waiting
+for has not been identified. GPU, CD-ROM, timer/VBlank, or another subsystem
+must not be promoted to the current blocker until execution evidence identifies
+the dependency.
 
-**Why the existing real-ROM tests never exposed this.** The production `run`
-path eagerly discovers and lowers the *entire* statically-reachable code graph
-from the EXE entry point in one pass (`ReachableProgramBuilder`). The existing
-real-ROM gates instead lower a bounded candidate window
-(`RealRomCandidateSelector`, used by `RealRomRecompilerVerticalSliceTests`) or
-execute segment-by-segment (`ExecutionOrchestrator`, used by
-`RealRomTitleExecutionTests`) — neither ever needs the *whole* reachable graph
-to be lowerable, so a PASS on either never guaranteed the production CLI's
-whole-program build would succeed. This is a structural gap between what the
-test suite validates and what the production CLI actually requires, not a
-regression in either.
+**Historical structural gap.** Earlier production runs failed before runtime
+because `ReachableProgramBuilder` lowers the entire statically reachable graph
+while the bounded real-ROM gates do not. The blocker history below records how
+that gap was exposed and resolved; it is no longer the current first blocker.
 
 **Blocker history, in the order actually measured (not guessed):**
 
@@ -333,20 +328,21 @@ What still does not exist:
   (#585/#586/#587), but sector bytes are test-supplied only: there is no real
   disc source, streaming, seek timing or CD audio (#14).
 - **GTE production integration.** The COP2 register bank (#581 / PR #592) and
-  isolated RTPS/NCLIP kernels (#582/#583 via PRs #590/#591) now exist; AVSZ3/4
-  is being reviewed in PR #589. Native COP2/LWC2/SWC2 dispatch is still not
-  wired to the implemented register/command semantics (#447).
+  isolated RTPS/NCLIP/AVSZ3/AVSZ4 kernels (#582/#583/#584 via PRs #590/#591/#589)
+  now exist. Native COP2/LWC2/SWC2 dispatch is still not wired to the implemented
+  register/command semantics (#447).
 - **An actual Persona title-screen proof.** No fake frame, hard-coded shortcut,
   or test-only presentation satisfies #351.
 
-**Anticipated generic runtime sub-blockers, once recompiler lowering coverage
-stops rejecting the production CLI's whole-program build (not yet reached, not
-measured evidence — see the lowering blocker history above):**
+**Background runtime sub-blockers (not a priority order).** The production CLI
+now reaches runtime execution, so these remain relevant only when the measured
+path actually reaches them:
 
-1. **BIOS HLE coverage (#279).** Seven identities are registered; unsupported
-   calls still stop explicitly with `BIOS_HLE_UNSUPPORTED_CALL`. A production
-   CLI run that actually reaches RUNTIME_EXECUTION is required to identify the
-   next concrete missing identity/state — none has been observed yet.
+1. **BIOS HLE coverage (#279).** Thirteen identities are registered. The current
+   Persona path has exercised the startup services through A0:3F `printf`, and
+   unsupported calls still fail explicitly with `BIOS_HLE_UNSUPPORTED_CALL`.
+   No unsupported BIOS identity is the current first blocker; add further
+   services only when a measured execution path requires them.
 
 2. **Production GPU/frame integration (#440 / #351).** Production interpreter
    32-bit GPU MMIO reaches the existing managed GPU state (#572) and GPU
