@@ -1657,3 +1657,41 @@ the kernel exception handler is now a Runtime contract, `BiosExceptionCompletion
   would fail closed today.
 
 Tests: `BiosExceptionCompletionTests`.
+
+## Amendment (2026-09-30): A0:72 CdRemove registered
+
+Issue #657: after C0:0A the Persona production run stopped at
+`BIOS_HLE_UNSUPPORTED_CALL` `A0:72`.
+
+- **CONFIRMED: identity and contract.** `A(72h) or A(56h)` is one routine,
+  `_96_remove` / `CdRemove` (psx-spx). PSY-Q / PSn00bSDK prototype:
+  `void _96_remove(void)` — no arguments, no return value.
+- **CONFIRMED: documented intent.** psx-spx: "DequeueCdIntr and _96_remove try
+  to remove priority 0 elements" — the kernel's CD-ROM IRQ handlers
+  (CdromDmaIrq, CdromIoIrq; chain 0 also holds SyscallException), which the
+  BIOS installs via `_96_init` before the boot executable starts.
+- **CONFIRMED (psx-spx.github.io): retail BIOS bug.** `A(72h)` "does NOT work
+  due to SysDeqIntRP bug" (same for `A(A3h) DequeueCdIntr`). `C(03h)
+  SysDeqIntRP` "does only check the first element properly, and, thereafter it
+  reads a garbage value from an uninitialized stack location, and acts more or
+  less unpredictable". **Sources disagree:** the current no$psx text (v2.3)
+  drops both notes, saying only that SysDeqIntRP "contains several nonsense
+  opcodes that are never executed". Either way, what the retail routine
+  actually leaves in chain 0 is **UNKNOWN**.
+- **Runtime behavior: accepted, no modelled effect.** The Runtime must not
+  claim a removal the retail BIOS does not reliably perform, and it models no
+  priority chain, CD-ROM IRQ dispatch or kernel event table, so no Runtime
+  state exists for the call to change. A0:72 is registered with arity 0 and a
+  void return: `$v0` untouched, the caller's `$ra` applied once by dispatch, no
+  guest memory written. Any argument is `BIOS_HLE_INVALID_ARGUMENTS`. This
+  reflects the known-broken semantics, not a skipped effect.
+- **INFERRED, not modelled.** PCSX-Redux OpenBIOS `deinitCDRom` (a
+  reimplementation, not retail behavior) also enters a critical section and
+  closes the five CD-ROM events. PSY-Q libetc `startIntr` calls
+  ExitCriticalSection right after `_96_remove` and does not use a result.
+- **Future CD-ROM IRQ work (#444)** must not assume that calling A0:72 removed
+  the kernel CD-ROM handler.
+- **Not registered.** The A0:56 alias (not observed on the production path) and
+  A0:71 `_96_init` stay `BIOS_HLE_UNSUPPORTED_CALL`.
+
+Tests: `BiosCdRemoveTests`.
