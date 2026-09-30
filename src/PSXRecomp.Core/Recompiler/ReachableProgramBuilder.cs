@@ -203,6 +203,18 @@ public static class ReachableProgramBuilder
                 return;
             }
 
+            if (instruction.Opcode == R3000aOpcode.Syscall)
+            {
+                // Issue #669: a SYSCALL outside a delay slot is a reachable-program
+                // fall-through. Discovery only says the code after it may run; whether
+                // the runtime actually completes the SYSCALL and resumes at PC + 4 is
+                // the host syscall hook's decision (#663), so an unhandled SYS still
+                // fails closed. A delay-slot SYSCALL is decoded by the branch case
+                // above and never reaches this point, so it gets no fall-through.
+                QueueStaticTarget(AddPc(pc, InstructionSize, "syscall successor"), image, leaders, pending, pc, "syscall successor");
+                return;
+            }
+
             if (instruction.ControlFlow != R3000aControlFlowKind.Sequential)
             {
                 return;

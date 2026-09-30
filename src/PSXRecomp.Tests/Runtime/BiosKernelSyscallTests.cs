@@ -198,15 +198,10 @@ public sealed class BiosKernelSyscallTests
 
     // ---- Generated host --------------------------------------------------
 
-    private static RecompilerIrProgram Lower(uint[] words)
-    {
-        var instructions = new List<(R3000aInstruction Instruction, uint EntryPc)>();
-        for (var i = 0; i < words.Length; i++)
-        {
-            instructions.Add((R3000aDecoder.Decode(words[i]), Entry + (uint)(i * 4)));
-        }
-        return MipsToIrLowerer.LowerProgram(instructions);
-    }
+    // The production discovery path (#669): the code after a SYSCALL exists only if
+    // reachable-program discovery compiles it, so the tests must not hand-lower it.
+    private static RecompilerIrProgram Lower(uint[] words) =>
+        ReachableProgramBuilder.Build(Entry, words, Entry);
 
     private static TitleExecutionResult RunGeneratedHost(uint[] words, out string directory)
     {
