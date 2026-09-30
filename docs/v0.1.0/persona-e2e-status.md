@@ -185,7 +185,10 @@ regression in either.
     restores only `ra/sp/fp/s0-s7/gp` with `$v0 = 1` (`BiosExceptionHook.TryComplete`).
     **The hook cannot fire in a real run yet**: its consumer is the kernel's
     exception-handler completion (C0:06), which this Runtime does not model
-    (no ExceptionHandler, TCB, or B0:17); tracked separately.
+    (no ExceptionHandler, TCB, or B0:17); tracked separately. #651 defined the
+    completion boundary (`BiosExceptionCompletion`) as a Runtime contract, but no
+    execution path reaches it yet (C0:06 entry #662, B0:17 #664, B0:18 #665), so
+    the production run is unchanged.
     Measured on `main` 79a4859 + #648 + #650 (PERSONA.chd):
     - `--entry-root 0x80025350` alone: A0:13 and B0:19 pass; stops at
       `UNRESOLVED_TRANSFER_IN_IMAGE` `0x80025614` (exit 2, `UnsupportedTransfer`).

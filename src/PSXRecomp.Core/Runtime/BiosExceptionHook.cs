@@ -5,7 +5,7 @@ namespace PSXRecomp.Core.Runtime;
 
 /// <summary>Outcome of <see cref="BiosExceptionHook.TryComplete"/>.</summary>
 [Domain]
-public enum BiosExceptionHookStatus : byte
+internal enum BiosExceptionHookStatus : byte
 {
     /// <summary>No hook is registered; nothing was changed.</summary>
     NotRegistered,
@@ -38,10 +38,9 @@ public enum BiosExceptionHookStatus : byte
 /// unused); the real kernel's variable location is not documented.
 /// </para>
 /// <para>
-/// The consumer is the kernel exception handler's completion step (C0:06
-/// ExceptionHandler), which this Runtime does not model yet; it calls
-/// <see cref="TryComplete"/>. Until it does, the hook is registered and
-/// observable but never fired.
+/// The hook fires only through <see cref="BiosExceptionCompletion.Complete"/>,
+/// the completion step of a fully executed kernel exception handler (#651);
+/// <see cref="TryComplete"/> is internal for that reason.
 /// </para>
 /// </remarks>
 [Domain]
@@ -82,7 +81,7 @@ public static class BiosExceptionHook
     /// <param name="reader">Guest-memory read boundary.</param>
     /// <param name="gpr">The full 32-entry register file; mutated only on <see cref="BiosExceptionHookStatus.Resolved"/>.</param>
     /// <param name="pc">The PC to continue at; 0 unless resolved.</param>
-    public static BiosExceptionHookStatus TryComplete(IGuestMemoryReader reader, uint[] gpr, out uint pc)
+    internal static BiosExceptionHookStatus TryComplete(IGuestMemoryReader reader, uint[] gpr, out uint pc)
     {
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(gpr);
