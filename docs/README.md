@@ -101,6 +101,7 @@ Constraints:
 - [Contributor Entry-Task Review](development/contributor-entry-tasks.md)
 - [Source-generated PS-X EXE Fixtures](development/generated-psx-exe-fixtures.md)
 - [Development Agent Guide](development/agent-guide.md)
+- [Optional Jujutsu (jj) Workflow](development/jujutsu.md)
 - [Quality and Verification Stack](development/quality-stack.md)
 - [Repository Artifact Policy](development/artifact-policy.md)
 - [Real-ROM Analysis Artifact Format](development/real-rom-analysis-artifacts.md)
