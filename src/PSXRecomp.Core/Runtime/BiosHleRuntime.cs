@@ -20,6 +20,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </summary>
     public const byte InitHeapFunction = 0x39;
 
+    /// <summary>A0:13 setjmp(buf) — saves the ABI-saved registers into a 0x30-byte guest buffer.</summary>
+    public const byte SetJmpFunction = 0x13;
+
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
@@ -108,6 +111,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
 
         services = new Dictionary<(BiosCallFamily, byte), (int ArgumentCount, Func<BiosCallIdentity, BiosServiceResult> Handler)>
         {
+            [(BiosCallFamily.A0, SetJmpFunction)] = (1, InvokeSetJmp),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
@@ -230,6 +234,10 @@ public sealed class BiosHleRuntime : IBiosRuntime
         argumentCount = 0;
         return false;
     }
+
+    /// <summary>A0:13 setjmp(buf). The behavior lives in <see cref="SetJmpService"/>.</summary>
+    private BiosServiceResult InvokeSetJmp(BiosCallIdentity identity) =>
+        SetJmpService.Invoke(identity, _guestMemoryWriter);
 
     /// <summary>
     /// A0:39 InitHeap(addr, size). Documented behavior (docs/REFERENCES.md): sets
