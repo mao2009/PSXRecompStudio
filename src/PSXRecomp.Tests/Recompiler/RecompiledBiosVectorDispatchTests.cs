@@ -320,6 +320,66 @@ public sealed class RecompiledBiosVectorDispatchTests
         hostSink.Bytes.Should().BeEquivalentTo("hi"u8.ToArray(), static o => o.WithStrictOrdering());
     }
 
+    // A0:3F printf (Issue #670): a variadic service registered with one fixed
+    // parameter. The format's fifth word onward is read from the guest stack at
+    // $sp+16 by the service, through the very same dispatch on both paths.
+    private static RecompilerDifferentialFixture PrintfProgram()
+    {
+        const uint formatAddress = 0x00000400u;
+        const uint textAddress = 0x00000440u;
+        const uint stackPointer = 0x00000800u;
+        var memory = StringBytes(formatAddress, "addr=%08x %s %d %u")
+            .Concat(StringBytes(textAddress, "ok"))
+            .Concat(WordBytes(stackPointer + 16, unchecked((uint)-5)))
+            .Concat(WordBytes(stackPointer + 20, 0xFFFFFFFFu));
+        return CallProgram(
+            Kseg0EntryPc, BiosJumpTables.A0VectorAddress, BiosHleRuntime.PrintfFunction,
+            a0: formatAddress, a1: 0xBEEFu, a2: textAddress, a3: 7u, initialMemory: memory, sp: stackPointer);
+    }
+
+    private static IEnumerable<RecompilerInitialMemoryItem> WordBytes(uint address, uint value)
+    {
+        for (var i = 0; i < 4; i++)
+        {
+            yield return new RecompilerInitialMemoryItem(address + (uint)i, (byte)(value >> (8 * i)));
+        }
+    }
+
+    [Fact]
+    public void GeneratedPath_Printf_FormatsRegisterAndStackArguments_AndContinuesAtRa()
+    {
+        var sink = new CapturedOutputSink();
+        var result = RunGenerated(PrintfProgram(), sink);
+
+        result.DiagnosticCode.Should().BeNull(result.DiagnosticMessage);
+        result.Snapshot!.Gpr[(int)R3000aRegister.S1].Should().Be(ReturnedMarker, "control returned past the call");
+        // Persona measured format `addr=%08x`; %d/%u take the first two stack words.
+        System.Text.Encoding.ASCII.GetString(sink.Bytes.ToArray()).Should().Be("addr=0000beef ok 7 4294967291");
+    }
+
+    [Fact]
+    public void PrintfDispatch_Matches_BetweenTheInterpreterAndTheRecompiledPath()
+    {
+        var (interpreterSink, hostSink) = AssertParity(PrintfProgram());
+        hostSink.Bytes.Should().BeEquivalentTo(interpreterSink.Bytes, static o => o.WithStrictOrdering());
+        hostSink.Bytes.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void GeneratedPath_Printf_UnsupportedConversion_StopsTheRun_AndWritesNothing()
+    {
+        const uint formatAddress = 0x00000400u;
+        var sink = new CapturedOutputSink();
+        var result = RunGenerated(
+            CallProgram(
+                Kseg0EntryPc, BiosJumpTables.A0VectorAddress, BiosHleRuntime.PrintfFunction,
+                a0: formatAddress, initialMemory: StringBytes(formatAddress, "a%fb")),
+            sink);
+
+        result.DiagnosticCode.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+        sink.Bytes.Should().BeEmpty();
+    }
+
     [Fact]
     public void UnresolvedDispatch_Matches_BetweenTheInterpreterAndTheRecompiledPath()
     {
@@ -486,7 +546,8 @@ public sealed class RecompiledBiosVectorDispatchTests
         uint a1 = 0,
         uint a2 = 0,
         uint a3 = 0,
-        IEnumerable<RecompilerInitialMemoryItem>? initialMemory = null)
+        IEnumerable<RecompilerInitialMemoryItem>? initialMemory = null,
+        uint sp = 0)
     {
         var words = new uint[CallTailIndex + 1];
         words[0] = MipsEncoding.JumpAndLink(vectorAddress);
@@ -500,6 +561,7 @@ public sealed class RecompiledBiosVectorDispatchTests
         initialGpr[(int)R3000aRegister.A1] = a1;
         initialGpr[(int)R3000aRegister.A2] = a2;
         initialGpr[(int)R3000aRegister.A3] = a3;
+        initialGpr[(int)R3000aRegister.Sp] = sp;
 
         return new RecompilerDifferentialFixture(
             name: "recompiled-bios-call",

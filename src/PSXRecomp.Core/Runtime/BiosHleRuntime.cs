@@ -51,6 +51,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </summary>
     public const byte PutsAliasFunction = 0x3F;
 
+    /// <summary>A0:3F printf(txt,param1,param2,etc.) — variadic; registered with the one fixed parameter (see <see cref="PrintfService"/>).</summary>
+    public const byte PrintfFunction = 0x3F;
+
     /// <summary>B0:56 GetC0Table — returns <see cref="BiosJumpTables.C0TableAddress"/>.</summary>
     public const byte GetC0TableFunction = 0x56;
 
@@ -133,6 +136,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
             [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.A0, PutsFunction)] = (1, InvokePuts),
             [(BiosCallFamily.B0, PutsAliasFunction)] = (1, InvokePuts),
+            [(BiosCallFamily.A0, PrintfFunction)] = (1, InvokePrintf),
             [(BiosCallFamily.B0, GetC0TableFunction)] = (0, InvokeGetC0Table),
             [(BiosCallFamily.B0, GetB0TableFunction)] = (0, InvokeGetB0Table),
         };
@@ -344,6 +348,10 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// </summary>
     private BiosServiceResult InvokePuts(BiosCallIdentity identity) =>
         PutsService.Invoke(identity, _guestMemoryReader, _outputSink);
+
+    /// <summary>A0:3F printf. The behavior lives in <see cref="PrintfService"/>.</summary>
+    private BiosServiceResult InvokePrintf(BiosCallIdentity identity) =>
+        PrintfService.Invoke(identity, _guestMemoryReader, _outputSink);
 
     /// <summary>
     /// B0:56 GetC0Table. Returns <see cref="BiosJumpTables.C0TableAddress"/>,

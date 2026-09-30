@@ -224,7 +224,7 @@ public sealed class BiosHleContractTests
     [InlineData(BiosCallFamily.A0, 0x3A)] // the A0 slot just above InitHeap
     [InlineData(BiosCallFamily.A0, 0x3B)] // getchar, adjacent to putchar
     [InlineData(BiosCallFamily.A0, 0x3D)] // gets, between putchar and puts
-    [InlineData(BiosCallFamily.A0, 0x3F)] // the next A0 slot above puts
+    [InlineData(BiosCallFamily.A0, 0x40)] // the next A0 slot above printf
     [InlineData(BiosCallFamily.B0, 0x3E)] // the B0 slot just below the puts alias
     [InlineData(BiosCallFamily.B0, 0x40)] // the next B0 slot above the puts alias
     public void NeighbouringFunctionNumbers_Are_Not_Caught_By_The_Registry(

@@ -11,10 +11,10 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds seven
-registrations — A0:39 `InitHeap` (the identity real-ROM analysis observed most
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds thirteen
+registrations — A0:13 `setjmp`, B0:19 `HookEntryInt`, B0:5B `ChangeClearPad`, C0:0A `ChangeClearRCnt`, A0:72 `CdRemove`, A0:39 `InitHeap` (the identity real-ROM analysis observed most
 broadly, 5 of 5 executables), A0:3C `putchar`, its registered B0:3D
-`putchar` alias, A0:3E `puts`, its real-ROM-evidence-selected B0:3F alias,
+`putchar` alias, A0:3E `puts`, its real-ROM-evidence-selected B0:3F alias, A0:3F `printf`,
 B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
 documented behavior under the shared
 ADR-014 contract (ADR-014 amendment 2026-09-17 "A0:39 InitHeap registered").
@@ -53,9 +53,11 @@ observed there.
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
 registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
-seven entries**: `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
+thirteen entries**: `(A0, 0x13)` → `InvokeSetJmp`, `(B0, 0x19)` → `InvokeHookEntryInt`,
+`(B0, 0x5B)` → `InvokeChangeClearPad`, `(C0, 0x0A)` → `InvokeChangeClearRCnt`,
+`(A0, 0x72)` → `InvokeCdRemove`, `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
 `(B0, 0x3D)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
-`(B0, 0x3F)` → `InvokePuts`, `(B0, 0x56)` → `InvokeGetC0Table`, and
+`(B0, 0x3F)` → `InvokePuts`, `(A0, 0x3F)` → `InvokePrintf`, `(B0, 0x56)` → `InvokeGetC0Table`, and
 `(B0, 0x57)` → `InvokeGetB0Table`.
 `InitHeap` validates argument shape only (no guest-observable heap state
 exists for this Runtime to model, since no malloc/free-family service is
@@ -76,7 +78,7 @@ state before reaching the registry. If the 4-byte slot at
 that is not that physical slot's own HLE sentinel (`BiosJumpTables.HleSentinelTarget`,
 computed from the slot's canonical identity — see below), `BiosServiceResult.PatchedTarget`
 is returned instead — carrying the raw patched guest address in `ReturnValue`
-(ADR-014 amendment 2026-09-11 for #360). Each of the seven registered slots is
+(ADR-014 amendment 2026-09-11 for #360). Each registered slot is
 seeded with that sentinel at construction time (a required `IGuestMemoryWriter`
 constructor dependency) **only when that slot currently reads as zero** — a
 pre-existing guest patch or a save-state's restored content is never
@@ -111,8 +113,9 @@ Verified (docs/REFERENCES.md, BiosCallNames):
   B0:4E _card_write, B0:50 _new_card, B0:56 GetC0Table, B0:57 GetB0Table
 
 Implemented (BiosHleRuntime registry):
-  A0:39 InitHeap, A0:3C putchar, A0:3E puts, B0:3F puts, B0:56 GetC0Table,
-  B0:57 GetB0Table
+  A0:13 setjmp, B0:19 HookEntryInt, B0:5B ChangeClearPad, C0:0A ChangeClearRCnt,
+  A0:72 CdRemove, A0:39 InitHeap, A0:3C putchar, B0:3D putchar, A0:3E puts,
+  B0:3F puts, A0:3F printf, B0:56 GetC0Table, B0:57 GetB0Table
 
 Implemented through C0 high-range physical-slot mirroring:
   C0:BF -> B0:3F puts
@@ -139,24 +142,25 @@ Implemented (ADR-014 amendment 2026-09-11 for #360).
 | Service | A0/B0 identity | Current state | Missing semantics | Blocked on (Runtime capability) |
 |---|---|---|---|---|
 | InitHeap | A0:39 | **Registered `Supported` (full documented behavior)** — `InvokeInitHeap` validates the two-argument ABI shape; no return value is written (ADR-014 amendment 2026-09-17) | None — no malloc/free-family service is registered, so no guest-observable heap state exists to under-model | None; registered |
+| printf | A0:3F | **Registered `Supported` (documented subset)** — `InvokePrintf` delegates to `PrintfService` (arity 1; variadic words from `$a1-$a3` then `$sp+16+4n`); `$v0` is not modeled; unsupported formats and output beyond `MaxOutputLength` (8192 bytes) fail closed with `BIOS_HLE_UNSUPPORTED_STATE` and write nothing | Return value (character count) not documented by any consulted source; only `%% %c %s %d %i %u %x %X` with optional `0` flag + width | None; registered |
 | getchar | A0:3B | **Unregistered** — falls through to `BIOS_HLE_UNSUPPORTED_CALL` | TTY input read/consume; blocking wait for input | Input sink (no design yet) |
 | putchar | A0:3C | **Registered `Supported` (full documented behavior)** — `InvokePutChar` writes `arg & 0xFF` to the injected `IRuntimeOutputSink` *and* returns it | None — TTY output is now emitted (ADR-014 amendment 2026-09-10) | None; `BiosHleRuntime` takes the sink by constructor injection |
 | gets | A0:3D | **Unregistered** — `BIOS_HLE_UNSUPPORTED_CALL` | TTY line input into a guest-memory buffer | Input sink (no design yet). `IGuestMemoryWriter` is already a required `BiosHleRuntime` dependency for registered jump-table sentinel seeding, but `gets` itself does not consume the writer yet |
 | puts | A0:3E | **Registered `Supported` (full documented behavior)** — `InvokePuts` delegates to `PutsService`, which reads the NUL-terminated string through `IGuestMemoryReader`, writes it to the injected `IRuntimeOutputSink`, and returns the incoming pointer | None — all three documented effects are implemented (ADR-014 amendment "A0:3E puts registered") | None; `BiosHleRuntime` takes both the sink and the reader by constructor injection |
-| putchar alias | B0:3D | **Unregistered** — no evidence selects the B0 entry | Same as A0:3C | Evidence that B0 is actually used (output sink already exists) |
+| putchar alias | B0:3D | **Registered `Supported`** — dispatches to `InvokePutChar`, same as A0:3C | None | None; registered |
 | puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11); also reachable as C0:BF through canonical physical-slot mirroring | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
 | GetC0Table | B0:56 | **Registered `Supported`** — returns `BiosJumpTables.C0TableAddress` (`0x674`); that address is backed by guest-visible RAM connected to dispatch; also reachable as C0:D6 | None for the documented behavior (return table base; base is now real and patchable) | None; registered. Note: `0x674` is this Runtime's design choice, not a primary-source-confirmed real-hardware fact — see ADR-014 amendment for #360 |
 | GetB0Table | B0:57 | **Registered `Supported`** — returns `BiosJumpTables.B0TableAddress` (`0x874`); same backing guarantee as GetC0Table; also reachable as C0:D7 | None | None; registered. Same caveat on `0x874` |
-| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the six registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
+| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the thirteen registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 
 - `BiosHleRuntime.InitHeapFunction == 0x39`, `PutCharFunction == 0x3C`,
   `PutsFunction == 0x3E`, `PutsAliasFunction == 0x3F`,
-  `GetC0TableFunction == 0x56`, and `GetB0TableFunction == 0x57`; the six
-  registrations are `(BiosCallFamily.A0, InitHeapFunction)`,
+  `GetC0TableFunction == 0x56`, and `GetB0TableFunction == 0x57`; the
+  thirteen registrations (see the registry list above) include `(BiosCallFamily.A0, InitHeapFunction)`,
   `(BiosCallFamily.A0, PutCharFunction)`, `(BiosCallFamily.A0, PutsFunction)`,
-  `(BiosCallFamily.B0, PutsAliasFunction)`, `(BiosCallFamily.B0, GetC0TableFunction)`,
+  `(BiosCallFamily.A0, PrintfFunction)`, `(BiosCallFamily.B0, PutsAliasFunction)`, `(BiosCallFamily.B0, GetC0TableFunction)`,
   and `(BiosCallFamily.B0, GetB0TableFunction)`; `InitHeapFunction` binds to
   `InvokeInitHeap`; the next three bind to `InvokePutChar`/`InvokePuts`; the
   last two bind to `InvokeGetC0Table`/
@@ -171,7 +175,7 @@ Notes verified against the code:
   The TTY output side effect is emitted; the rejection path writes nothing to
   the sink. The sink is a required constructor dependency
   (`ArgumentNullException` on null), so it can never be a silent no-op.
-- `BiosHleContractTests` pins A0:3B / A0:3D / A0:3F / B0:3D / B0:3E / B0:40 and a
+- `BiosHleContractTests` pins A0:3B / A0:3D / A0:40 / B0:3D / B0:3E / B0:40 and a
   non-contiguous A0:09 as `BIOS_HLE_UNSUPPORTED_CALL`, guarding against any
   accidental widening of the registry; it pins putchar's emitted byte, its call
   ordering, its determinism across fresh runtimes, all three required constructor
@@ -471,6 +475,7 @@ carry a "verify before register" marker.
 | ~~puts~~ — **done**, registered with full documented behavior | A0:3E `std_out_puts(src)` (B0:3F alias) | 1 pointer to NUL-terminated guest string | the incoming string-pointer | read guest string; write to TTY; return pointer | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High (differential: stub reads, compare output + R2) | **None observed for A0:3E**; the B0:3F alias *is* called (3.4). Identity verified (ADR-014) | Low–medium |
 | getchar | A0:3B (needs doc verification) | none | the character (with wait) | read/consume TTY input; **blocking** wait when empty | host — input sink | Low (blocking; determinism needs a designed input sink) | **None observed** — consistent with the expectation that real titles rarely use TTY input | Medium–high |
 | gets | A0:3D (needs doc verification) | 1 pointer to guest buffer | to be verified before registration | read a TTY input line into guest memory (NUL-terminated) | host + **guest write** — input sink + guest-memory write | Low (no input sink design; `IGuestMemoryWriter` exists and is wired for jump-table sentinel seeding, but `gets` does not use it yet) | Medium | High |
+| ~~printf~~ — **done (#670)**, subset | A0:3F `printf(txt,param1,param2,etc.)` | 1 fixed pointer (`txt`); variadic words: `$a1-$a3`, then guest stack at `$sp+16+4n` | **not modeled** (`$v0` untouched; no consulted source documents it) | read guest format and `%s` strings; write formatted bytes to TTY | host + **guest read** — `IGuestMemoryReader` and `IRuntimeOutputSink` | High | **Confirmed (measured).** Persona calls it with `addr=%08x` (`$a1=0x800500E4`) | Low — `PrintfService`: `%% %c %s %d %i %u %x %X`, optional `0` flag + width; everything else fails closed |
 | ~~B0:3F puts alias~~ — **done**, registered with full documented behavior | B0:3F `std_out_puts(src)` (alias of A0:3E) | same as A0:3E | same | same, through the B0 table, same `PutsService` | host + guest read (already exists) | High (differential: stub reads, compare output + R2) | **Confirmed.** A real title calls it at guest PC `0x800D0FF8` ([3.4](#34-real-rom-evidence-obtained)) | Low — reuse, no new implementation |
 | B0 putchar alias | B0:3D | same as A0:3C | same | same, through the B0 table | host (output sink already exists) | High (deterministic sink assertable) | **None observed.** | Low (capability-gated) |
 | ~~GetC0Table~~ — **done (#360)** | B0:56 `GetC0Table()` | none | address of the C0 jump-table list | exposes patchable guest-visible C0 table state connected to dispatch | **guest state** — modeled by `BiosJumpTables`, guest RAM, reader/writer boundaries, and HLE sentinels | High (contract tests cover returned base, patching, save/restore, aliasing, and dispatch) | **Confirmed** — 3 of 5 executables, 2–3 sites in one | Done |
