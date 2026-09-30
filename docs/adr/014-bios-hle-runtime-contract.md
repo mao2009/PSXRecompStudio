@@ -1534,7 +1534,8 @@ discard the hook's guest-visible meaning, so it is registered with real state.
   "table of tables" slot, a Runtime design choice like the B0/C0 table bases,
   since the real variable's location is undocumented). Some engines rebuild
   `BiosHleRuntime` per segment, so a Runtime field would lose the registration.
-- **Firing.** `BiosExceptionHook.TryComplete` reads all 0x30 bytes first
+- **Firing.** `BiosExceptionHook.TryComplete` (reached only through
+  `BiosExceptionCompletion.Complete`, see the #651 amendment) reads all 0x30 bytes first
   (all-or-nothing), then restores only `$ra/$sp/$fp/$s0-$s7/$gp`, sets `$v0 = 1`
   and reports the saved `$ra` as the PC. An unreadable buffer is
   `InvalidState` and changes nothing.
@@ -1620,3 +1621,39 @@ Issue #654: the B0:5B setting had no consumer.
   consulted here.
 
 Tests: `BiosPadCardIrqHandlerTests`.
+
+## Amendment (2026-09-30): exception-completion boundary
+
+Issue #651: B0:19 registered a hook that nothing fired. The completion step of
+the kernel exception handler is now a Runtime contract, `BiosExceptionCompletion`.
+
+- **CONFIRMED (psx-spx interrupt-exception-handling).** The hook runs "only if
+  the ExceptionHandler has been fully executed"; a chain element that calls
+  ReturnFromException skips it. The default Exit structure (B0:18) has
+  ReturnFromException as its PC. B0:17 restores R1-R31 except k0, HI, LO, SR
+  and PC from the current TCB, and its RFE re-enables interrupts.
+- **Completion.** `Complete` enters the hook when one is registered (the #650
+  semantics: `$v0 = 1`, PC = saved `$ra`); with `0x118 == 0` it reports
+  `ReturnFromException` and changes nothing, because the default Exit's only
+  effect is ReturnFromException; an unreadable buffer is `InvalidState`. It is
+  the only way the hook fires (`BiosExceptionHook.TryComplete` is internal). It
+  is called after the priority chains ran to the end — never at IRQ time and
+  never after an early ReturnFromException.
+- **Saved-state restore.** `TryReturnFromException` reads the current TCB
+  through the documented table-of-tables entry `0x108` → PCB → `[PCB+0]`, using
+  the documented TCB layout (08h r0..r31, 88h epc, 8Ch hi, 90h lo, 94h sr). It
+  reads all of it before writing anything; a zero or unreadable pointer, or an
+  unreadable TCB, changes nothing. SR is reported as saved: RFE is the CPU's to
+  apply, so it is not re-implemented here. k0 and r0 are left untouched.
+- **No second state.** The type holds no state: the hook pointer and the TCB
+  are guest RAM, and EPC/CAUSE/SR stay the CPU's. The interpreter's
+  `_inInterruptHandler` path for a guest-installed 0x80000080 handler is
+  unchanged.
+- **Not connected yet.** No execution path calls the boundary: the C0:06
+  entry (vector stub, kernel PCB/TCB/ExCB init, chain walk) is #662. B0:17
+  stays unregistered until the dispatch outcome can carry a full-state restore
+  and the CPU applies RFE (#664); B0:18 needs Runtime choices for the Exit
+  structure and exception stack (#665). A BIOS-less run has no PCB, so B0:17
+  would fail closed today.
+
+Tests: `BiosExceptionCompletionTests`.
