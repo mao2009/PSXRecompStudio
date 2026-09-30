@@ -67,6 +67,12 @@ public static class RecompiledArtifactCodeGen
     /// <summary>The child's acknowledgement of a completed write.</summary>
     public const string ProtocolWriteAck = "RHOST_OK";
 
+    /// <summary>Line prefix for the child's SYSCALL offer: <c>fault_pc a0 sr_at_entry</c> (Issue #663).</summary>
+    public const string ProtocolSyscallPrefix = "RHOST_SYSCALL ";
+
+    /// <summary>Line prefix for the parent's COP0 SR write, sent before its decision: <c>C sr</c> (Issue #663).</summary>
+    public const string ProtocolCop0SrCommand = "C";
+
     /// <summary>Prefix of the parent's decision reply: <c>D termination next_pc has_v0 v0</c>.</summary>
     public const string ProtocolDecisionPrefix = "D ";
 
@@ -244,6 +250,9 @@ static int32_t artifact_host_serve(RecompilerState* state) {
             recompiler_write_mem8((void*)0, (uint32_t)a, (uint8_t)v);
             printf(""RHOST_OK\n"");
             fflush(stdout);
+        } else if (cmd[0] == 'C') {
+            if (scanf(""%lu"", &v) != 1) return 1;
+            state->cop0_sr = (uint32_t)v;
         } else if (cmd[0] == 'D') {
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;
@@ -263,6 +272,22 @@ static int32_t artifact_host_transfer(RecompilerState* state) {
     printf(""\n"");
     fflush(stdout);
     return artifact_host_serve(state);
+}
+
+/* SYSCALL exception (Issue #663). The artifact is the CPU here: it does the exception
+   entry (SR KU/IE push), the host says what the kernel handler leaves in SR (C), and
+   the artifact does the return (RFE pop) and resumes after the SYSCALL. */
+static int32_t artifact_host_syscall(RecompilerState* state) {
+    uint32_t sr = state->cop0_sr;
+    uint32_t sr_entry = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);
+    printf(""RHOST_SYSCALL %lu %lu %lu\n"", (unsigned long)state->exception_fault_pc,
+           (unsigned long)state->gpr[4], (unsigned long)sr_entry);
+    fflush(stdout);
+    int32_t declined = artifact_host_serve(state);
+    if (declined == 0 && state->termination_reason == 0) {
+        state->cop0_sr = (state->cop0_sr & ~0xFu) | ((state->cop0_sr >> 2) & 0xFu);
+    }
+    return declined;
 }
 
 int main(int argc, char** argv) {
@@ -324,6 +349,7 @@ int main(int argc, char** argv) {
        with no parent listening can never block on the handshake. */
     if (argc >= 4 && strcmp(argv[3], ""--host-transfer"") == 0) {
         state.host_transfer = &artifact_host_transfer;
+        state.host_syscall = &artifact_host_syscall;
         printf(""RHOST_INIT\n"");
         fflush(stdout);
         /* The parent's Runtime seeds its own jump-table sentinels here (byte
@@ -346,6 +372,7 @@ int main(int argc, char** argv) {
     printf(""exception.code=0x%08X\n"", state.exception_code);
     printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
     printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
+    printf(""cop0.sr=0x%08X\n"", state.cop0_sr);
     printf(""RSNAPSHOT_END\n"");
 
     return (int)state.termination_reason;

@@ -30,6 +30,9 @@ public static class RecompilerHostCodeGen
     private const string ExceptionInDelaySlotField = "exception_in_delay_slot";
     private const string PcField = "pc";
     private const string HostTransferField = "host_transfer";
+    private const uint SyscallExcode = MipsToIrLowerer.SyscallExcode;
+    private const string HostSyscallField = "host_syscall";
+    private const string Cop0SrField = "cop0_sr";
     private const string HostTransferFnType = "recompiler_host_transfer_fn";
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
@@ -275,8 +278,15 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t exception_code;");
         sb.AppendLine("  uint32_t exception_fault_pc;");
         sb.AppendLine("  uint32_t exception_in_delay_slot;");
+        sb.AppendLine("  /* COP0 SR (Issue #663): the only COP0 state this CPU model carries. It is written");
+        sb.AppendLine("     only by a host-completed SYSCALL (host_syscall); no lowered instruction reads it. */");
+        sb.AppendLine("  uint32_t " + Cop0SrField + ";");
         sb.AppendLine("  void* " + CoreField + ";");
         sb.AppendLine("  " + HostTransferFnType + " " + HostTransferField + ";");
+        sb.AppendLine("  /* Optional host SYSCALL hook (Issue #663), same contract as host_transfer: 0 when the");
+        sb.AppendLine("     host completed the SYSCALL exception (termination_reason 0 resumes at next_pc),");
+        sb.AppendLine("     non-zero when it did not claim it, which leaves the Exception exit unchanged. */");
+        sb.AppendLine("  " + HostTransferFnType + " " + HostSyscallField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
     }
@@ -720,6 +730,25 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
+
+        // Issue #663: a SYSCALL exception exit (Excode 8, not in a delay slot) is offered
+        // to the host's syscall hook. A host that completes it resumes the guest; the
+        // exception state it raised is consumed, so the snapshot does not report a
+        // stale exception. Without a hook (or when it declines) the exit is unchanged.
+        // Emitted only for a program that has such an exit, so every other program's
+        // dispatch text stays byte for byte as it was.
+        if (program.Blocks.Any(static block => block.Exit.Exception is { IsRaised: true, Code: SyscallExcode }))
+        {
+            sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} == RECOMPILER_REASON_EXCEPTION && " +
+                $"{StateParam}->{ExceptionRaisedField} != 0u && {StateParam}->{ExceptionCodeField} == 8u && " +
+                $"{StateParam}->{ExceptionInDelaySlotField} == 0u && {StateParam}->{HostSyscallField} != 0) {{");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if ({StateParam}->{HostSyscallField}({StateParam}) == 0 && " +
+                $"{StateParam}->{TerminationField} == RECOMPILER_REASON_SUCCESS) {{");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{ExceptionRaisedField} = 0u; " +
+                $"{StateParam}->{ExceptionCodeField} = 0u; {StateParam}->{ExceptionFaultPcField} = 0u; {StateParam}->{ExceptionInDelaySlotField} = 0u;");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+            sb.AppendLine(IndentUnit + IndentUnit + "}");
+        }
 
         // Stop on a non-Success termination from the retired dispatch unit.
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} != RECOMPILER_REASON_SUCCESS) {{");

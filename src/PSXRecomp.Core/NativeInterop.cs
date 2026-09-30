@@ -229,6 +229,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetRfeExecuted(IntPtr core);
 
+    /// <summary>Pops the COP0 SR KU/IE stack exactly as RFE does, without executing an instruction (Issue #663).</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_PopExceptionSrStack(IntPtr core);
+
     /// <summary>Executes up to <paramref name="maxInstructions"/> instructions, stopping early on a native exception/halt condition.</summary>
     /// <returns>The number of instructions actually executed, or a negative status on error.</returns>
     [LibraryImport(LibName)]

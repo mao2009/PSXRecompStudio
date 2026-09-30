@@ -315,6 +315,33 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
             if (_core.ExceptionRaised)
             {
+                // Issue #663: with a Runtime attached, a SYSCALL is a kernel
+                // service, not a guest failure. The CPU has already done the
+                // exception entry (EPC, CAUSE, SR push); the shared kernel contract
+                // says what the handler leaves in SR, and the CPU then performs the
+                // RFE pop and the return. A delay-slot SYSCALL (EPC is the branch)
+                // is not modelled and keeps ending the segment.
+                if (biosRuntime is not null &&
+                    _core.ExceptionCode == BiosKernelSyscallDispatch.SyscallExcode &&
+                    !_core.ExceptionInDelaySlot)
+                {
+                    var syscall = BiosKernelSyscallDispatch.Dispatch(
+                        _core.GetGpr((int)R3000aRegister.A0), _core.GetCop0(Cop0Status));
+                    if (!syscall.Handled)
+                    {
+                        diagnosticCode = syscall.DiagnosticCode;
+                        diagnosticMessage = syscall.DiagnosticMessage;
+                        termination = RecompilerIrTerminationReason.UnresolvedIndirectFlow;
+                        break;
+                    }
+
+                    _core.SetCop0(Cop0Status, syscall.SrAtReturn);
+                    _core.PopExceptionSrStack();
+                    _core.Pc = unchecked(_core.ExceptionFaultPc + 4u);
+                    _scheduler!.Advance(CyclesPerInstruction);
+                    continue;
+                }
+
                 if (!TookHardwareInterrupt())
                 {
                     termination = RecompilerIrTerminationReason.Exception;

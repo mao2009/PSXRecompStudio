@@ -33,10 +33,14 @@ void PSXCpu::ExecMtc0(uint32_t rt, uint32_t rd) {
     }
 }
 
-void PSXCpu::ExecRfe() {
+void PSXCpu::PopExceptionSrStack() {
     // RFE pops the SR 3-level KU/IE stack, leaving KUo/IEo unchanged
     // (docs/cpu/cop0.md; Rust, psx_cpu_cop0.h, Issue #529).
-    // PC restore is a software (JR) responsibility and out of scope (ADR-005).
     cop0_[12] = psx_cpu_cop0_rfe(cop0_[12]);
+}
+
+void PSXCpu::ExecRfe() {
+    // PC restore is a software (JR) responsibility and out of scope (ADR-005).
+    PopExceptionSrStack();
     rfe_executed_ = true;
 }

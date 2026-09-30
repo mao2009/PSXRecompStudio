@@ -1728,6 +1728,25 @@ static void test_step_interrupt_guest_handler_round_trip() {
     PASS();
 }
 
+static void test_pop_exception_sr_stack_matches_rfe_without_arming_it() {
+    TEST("PSXCore_PopExceptionSrStack() pops the SR stack like RFE, touching nothing else (Issue #663)");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetCop0(core, 12, 0x40C | (1u << 30)); // kernel-left frame: bit2=IEp, bit3=KUp, IM2, CU0
+    PSXCore_SetGPR(core, 5, 0xABCDu);
+    PSXCore_SetPC(core, 0x2000u);
+
+    PSXCore_PopExceptionSrStack(core);
+
+    // Same transformation ExecRfe applies: (sr & ~0xF) | ((sr >> 2) & 0xF).
+    ASSERT_EQ(PSXCore_GetCop0(core, 12), (0x40Cu | (1u << 30)) & ~0xFu | 0x3u);
+    ASSERT_EQ(PSXCore_GetRfeExecuted(core), 0); // no instruction ran, nothing armed
+    ASSERT_EQ(PSXCore_GetGPR(core, 5), 0xABCDu);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x2000u);
+    PSXCore_PopExceptionSrStack(nullptr); // a null core is ignored like every other accessor
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 static void test_run_interrupt_taken() {
     TEST("PSXCore_Run() checks the pending interrupt on every instruction, not just the first");
     PSXCore* core = PSXCore_Create();
@@ -2071,6 +2090,7 @@ int main() {
     test_step_interrupt_vblank_full_flow();
     test_step_interrupt_guest_handler_round_trip();
     test_run_interrupt_taken();
+    test_pop_exception_sr_stack_matches_rfe_without_arming_it();
 
     test_mult_signed_positive_times_negative();
     test_mult_signed_negative_times_negative();

@@ -1695,3 +1695,43 @@ Issue #657: after C0:0A the Persona production run stopped at
   A0:71 `_96_init` stay `BIOS_HLE_UNSUPPORTED_CALL`.
 
 Tests: `BiosCdRemoveTests`.
+
+## Amendment (2026-09-30): SYSCALL SYS(02h) ExitCriticalSection
+
+Issue #663: after A0:72 the Persona production run stopped at `CPU_EXCEPTION`
+on a `syscall` with `$a0 = 2`. A SYSCALL is the kernel's own boundary, not an
+A0/B0/C0 vector call, so it does not go through `BiosVectorDispatch`.
+
+- **CONFIRMED (psx-spx interrupt-exception-handling).** SYS(02h)
+  ExitCriticalSection "enables interrupts by set SR (cop0r12) Bit 2 and 10 (of
+  which, Bit2 gets copied to Bit0 once when returning from the syscall
+  exception). There's no return value (all registers except SR and K0 are
+  unchanged)." The Issue text matches; the bits are those of the SR *inside*
+  the exception frame (bit 2 is IEp after the entry push), and the RFE on return
+  moves bit 2 to bit 0. The net guest-visible effect of a call is
+  `SR' = SR | 0x401` (IEc, IM2), which the tests assert.
+- **Contract.** `BiosKernelSyscallDispatch.Dispatch(number, srAtEntry)` is the
+  one definition, for every execution path: it returns the frame SR the kernel
+  leaves (`srAtEntry | 0x404`) or an explicit unsupported outcome
+  (`BIOS_SYSCALL_UNSUPPORTED`). It holds no state and no second SR.
+- **The execution path owns the CPU side.** A SYSCALL exception (Excode 8) with
+  a Runtime attached is completed by the path that owns the CPU: exception entry,
+  RFE pop, resume at EPC+4. Anything else — other Excodes, a SYSCALL in a branch
+  delay slot, or no Runtime — is unchanged (`CPU_EXCEPTION`).
+  - **Interpreter** (`InterpreterTitleExecutionEngine`): the native CPU has
+    already done the entry; the engine writes the frame SR (`SetCop0`) and calls
+    the new native `PSXCore_PopExceptionSrStack`, which is RFE's SR transform
+    without running an instruction. RFE is not re-implemented in managed code.
+  - **Generated host**: the artifact is the CPU here and gains one COP0 word,
+    `cop0_sr` (zero at start, like the native reset; no lowered instruction
+    reads it). Its `host_syscall` hook, emitted only for programs with a SYSCALL
+    exit, does the entry push, offers `RHOST_SYSCALL fault_pc a0 sr` to the
+    parent, applies the parent's `C sr` reply, does the RFE pop and resumes at
+    `fault_pc + 4`.
+- **Fail closed.** SYS(00h), SYS(01h) EnterCriticalSection, SYS(03h) and SYS(04h+)
+  are `BIOS_SYSCALL_UNSUPPORTED` and stop the run. (The real kernel also
+  services these; they are not modelled.)
+- **Not modelled:** the C0:06 exception handler and TCB save/restore (#662),
+  EnterCriticalSection, a SYSCALL in a delay slot.
+
+Tests: `BiosKernelSyscallTests`; native `PSXCore_PopExceptionSrStack`.
