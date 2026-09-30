@@ -257,13 +257,22 @@ regression in either.
     `BIOS_HLE_UNSUPPORTED_CALL` `A0:3F` printf (exit 1, `RuntimeFailure`, #670);
     the production interpreter reaches the same `A0:3F` without it. Frame
     evidence stays `unavailable` / `no-frame-activity`.
+15. **Measured after #669 (SYSCALL fall-through discovery).** Reachable-program
+    discovery now treats the `PC + 4` of a SYSCALL outside a delay slot as a
+    reachable successor (discovery only; whether the Runtime completes the
+    SYSCALL stays the #663 contract, unknown SYS still fails closed). Measured
+    with only `--entry-root 0x80025350 --entry-root 0x80025614`: the artifact
+    contains `recompiler_block_0x80041718` and the run stops at
+    `BIOS_HLE_UNSUPPORTED_CALL` `A0:3F` printf (exit 1, `RuntimeFailure`), i.e.
+    #670 is the next blocker. Frame evidence stays `unavailable` /
+    `no-frame-activity`.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is the unresolved transfer above; **GPU
-integration (#440) and CD-ROM (#444) remain unreached and unranked**. The
-generic sub-blocker ordering below is retained as the *anticipated* order once
-the recompiler's IR lowering coverage stops rejecting the production CLI's
-whole-program build; it is not itself measured evidence.
+first measured stop is now `BIOS_HLE_UNSUPPORTED_CALL` `A0:3F` printf
+(#670); **GPU integration (#440) and CD-ROM (#444) remain unreached and
+unranked**. The generic sub-blocker ordering below remains background context,
+not a priority order; the next implementation target is the first boundary
+actually measured by the production run.
 
 The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production

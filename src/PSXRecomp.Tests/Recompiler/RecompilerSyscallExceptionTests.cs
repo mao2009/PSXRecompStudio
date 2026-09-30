@@ -56,19 +56,43 @@ public sealed class RecompilerSyscallExceptionTests
     }
 
     [Fact]
-    public void ReachableProgram_SyscallBlock_IsATerminalLeaf_WithNoEdgeToTheVectorOrFallThrough()
+    public void ReachableProgram_Syscall_DiscoversTheFallThroughBlock_WithNoEdgeToTheVector()
     {
         var program = ReachableProgramBuilder.Build(EntryPc, [
             MipsEncoding.I(0x09, rt: 8, rs: 0, immediate: 1),
             MipsEncoding.Syscall(),
-            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2), // after SYSCALL: must not be reached statically
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2), // PC + 4: compiled; the runtime decides whether it runs
         ], EntryPc);
 
-        program.Blocks.Should().OnlyContain(b => b.EntryPc != EntryPc + 8);
+        program.Blocks.Should().Contain(b => b.EntryPc == EntryPc + 8);
         var syscall = program.Blocks.Single(b => b.Exit.Exception != null);
         syscall.Exit.Exception!.Code.Should().Be(MipsToIrLowerer.SyscallExcode);
         syscall.Exit.Flow.Should().BeNull();
+        syscall.Exit.NextPc.Should().BeNull("the SYSCALL block itself still ends in an exception exit");
         program.Blocks.Should().NotContain(b => b.EntryPc == Bev0Vector || b.EntryPc == Bev1Vector);
+    }
+
+    [Fact]
+    public void ReachableProgram_SyscallInADelaySlot_GetsNoFallThrough()
+    {
+        var program = ReachableProgramBuilder.Build(EntryPc, [
+            MipsEncoding.R(0x08, rd: 0, rs: 31, rt: 0, shamt: 0), // JR ra
+            MipsEncoding.Syscall(),                           // delay slot: unsupported, not a plain fall-through
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2), // only after the delay slot; nothing reaches it
+        ], EntryPc);
+
+        program.Blocks.Should().OnlyContain(b => b.EntryPc == EntryPc);
+    }
+
+    [Fact]
+    public void ReachableProgram_Break_StillGetsNoFallThrough()
+    {
+        var program = ReachableProgramBuilder.Build(EntryPc, [
+            MipsEncoding.Break(),
+            MipsEncoding.I(0x09, rt: 9, rs: 0, immediate: 2),
+        ], EntryPc);
+
+        program.Blocks.Should().OnlyContain(b => b.EntryPc == EntryPc);
     }
 
     [Fact]
