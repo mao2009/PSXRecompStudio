@@ -1545,3 +1545,26 @@ discard the hook's guest-visible meaning, so it is registered with real state.
   ReturnFromException and B0:18 ResetEntryInt stay unregistered.
 
 Tests: `BiosExceptionHookTests`.
+
+## Amendment (2026-09-30): B0:5B ChangeClearPAD registered
+
+Issue #652: after B0:19 the Persona production run stopped at
+`BIOS_HLE_UNSUPPORTED_CALL` `B0:5B`.
+
+- **CONFIRMED (psx-spx).** `B(5Bh) ChangeClearPAD(int)` applies to pad and card
+  and configures the Pad/Card IRQ handler's automatic IRQ0 (VBlank)
+  acknowledge. **Not documented:** which argument value enables it, any return
+  value, and any relation to `C0:0D SetIrqAutoAck` (the DefaultInterruptHandler's
+  per-IRQ auto-ack), so none is assumed.
+- **Configuration only.** The raw argument is stored as given
+  (`BiosPadCardAutoAck`); no polarity is interpreted, no return value is
+  reported (`$v0` untouched), and I_STAT and devices are never touched, so IRQ0
+  stays pending until the guest acknowledges it.
+- **State in guest RAM.** An 8-byte kernel variable at `0x00000128` (+0
+  configured flag, +4 last argument; inside psx-spx's unused "table of tables"
+  slot, a Runtime design choice) because some engines rebuild `BiosHleRuntime`
+  per segment. `BiosPadCardAutoAck.TryGetSetting` is the read contract.
+- **No consumer yet.** The Runtime has no BIOS Pad/Card IRQ handler, so the
+  setting is recorded but not acted on; tracked in #654.
+
+Tests: `BiosPadCardAutoAckTests`.
