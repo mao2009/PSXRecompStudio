@@ -182,6 +182,33 @@ public sealed class PrintfServiceTests
         output.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData(0, true)]  // exactly MaxOutputLength
+    [InlineData(1, false)] // one '%%' past the bound
+    public void Escaped_Percent_Respects_The_Output_Bound(int extraPercents, bool succeeds)
+    {
+        var ram = new RecompilerGuestMemory();
+        var stringLength = PrintfService.MaxStringArgumentLength - 1;
+        var percents = PrintfService.MaxOutputLength - 2 * stringLength; // bytes left for '%%'
+        Write(ram, Fmt, "%s%s" + string.Concat(Enumerable.Repeat("%%", percents + extraPercents)));
+        for (var i = 0; i < stringLength; i++)
+        {
+            ram.Write8(0x2000 + (uint)i, (byte)'y');
+        }
+
+        var (result, output) = Run(ram, Fmt, 0x2000, 0x2000);
+        if (succeeds)
+        {
+            result.Status.Should().Be(BiosServiceStatus.Supported);
+            output.Length.Should().Be(PrintfService.MaxOutputLength);
+        }
+        else
+        {
+            result.Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+            output.Should().BeEmpty();
+        }
+    }
+
     [Fact]
     public void Wrong_Argument_Count_Or_Missing_Register_File_Is_Rejected()
     {

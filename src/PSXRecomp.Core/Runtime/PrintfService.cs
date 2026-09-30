@@ -143,6 +143,11 @@ public static class PrintfService
                 if (spec == '%' && !hasModifier)
                 {
                     output.Add((byte)'%');
+                    if (output.Count > MaxOutputLength)
+                    {
+                        return Fail(identity, $"formatted output exceeds {MaxOutputLength} bytes");
+                    }
+
                     continue;
                 }
 
