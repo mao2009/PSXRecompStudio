@@ -71,6 +71,19 @@ public sealed class BiosPadCardAutoAckTests
         Setting(ram).Should().Be(expected);
     }
 
+    // The raw word is what is stored, not just a Zero/NonZero classification.
+    [Fact]
+    public void The_Raw_Argument_Word_Is_Stored_Unmodified()
+    {
+        var ram = new RecompilerGuestMemory();
+
+        ChangeClearPad(CreateRuntime(ram), 0xFFFFFFFFu);
+
+        var raw = new byte[8];
+        new GuestMemoryReader(ram.Read8).TryRead(BiosPadCardAutoAck.VariableAddress, raw).Should().BeTrue();
+        raw.Should().Equal(new byte[] { 1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF });
+    }
+
     [Fact]
     public void Repeated_Calls_Overwrite_The_Setting_Deterministically()
     {

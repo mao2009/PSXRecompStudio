@@ -1568,3 +1568,26 @@ Issue #652: after B0:19 the Persona production run stopped at
   setting is recorded but not acted on; tracked in #654.
 
 Tests: `BiosPadCardAutoAckTests`.
+
+## Amendment (2026-09-30): C0:0A ChangeClearRCnt registered
+
+Issue #655: after B0:5B the Persona production run stopped at
+`BIOS_HLE_UNSUPPORTED_CALL` `C0:0A`.
+
+- **CONFIRMED (psx-spx).** `C(0Ah) ChangeClearRCnt(t,flag)`: `t` 0..2 = timer
+  0..2, 3 = vblank; `flag` 0 = the kernel's IRQ handler does nothing after
+  processing, 1 = it acknowledges the IRQ and immediately returns from
+  exception; returns the previous flag.
+- **Configuration only, previous flag returned.** The new flag is stored and the
+  old one is the return value (written to `$v0` by dispatch). I_STAT and the
+  timers are never touched. `t > 3` and a `flag` other than 0/1 are undocumented
+  and are rejected with `BIOS_HLE_INVALID_ARGUMENTS` rather than guessed. The
+  initial flag is 0 (INFERRED: zero-initialised kernel memory).
+- **State in guest RAM.** Four words at `0x00000130` (one per `t`; inside
+  psx-spx's unused table-of-tables slots, a Runtime design choice) because some
+  engines rebuild `BiosHleRuntime` per segment. Read contract:
+  `BiosRootCounterClearPolicy.TryGetFlag`.
+- **No consumer yet.** The Runtime has no kernel timer/vblank IRQ handler;
+  tracked in #658.
+
+Tests: `BiosRootCounterClearPolicyTests`.
