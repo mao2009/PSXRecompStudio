@@ -459,6 +459,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return true;
             }
 
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal))
+            {
+                HandleSyscall(trimmed[RecompiledArtifactCodeGen.ProtocolSyscallPrefix.Length..]);
+                return true;
+            }
+
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolTransferPrefix, StringComparison.Ordinal))
             {
                 HandleTransfer(trimmed[RecompiledArtifactCodeGen.ProtocolTransferPrefix.Length..]);
@@ -513,6 +519,39 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
                 $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"));
+        }
+
+        /// <summary>
+        /// A SYSCALL exception offered by the artifact (Issue #663): <c>fault_pc a0 sr</c>.
+        /// The shared kernel contract decides; a serviced call answers with the SR the
+        /// handler leaves and a resume at the instruction after the SYSCALL, an
+        /// unimplemented one stops the run with the contract's diagnostic.
+        /// </summary>
+        private void HandleSyscall(string fields)
+        {
+            var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (_biosRuntime is null || parts.Length != 3)
+            {
+                Decline();
+                return;
+            }
+
+            var faultPc = ParseUInt(parts[0]);
+            var outcome = BiosKernelSyscallDispatch.Dispatch(ParseUInt(parts[1]), ParseUInt(parts[2]));
+            if (!outcome.Handled)
+            {
+                DiagnosticCode = outcome.DiagnosticCode;
+                DiagnosticMessage = outcome.DiagnosticMessage;
+                Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                return;
+            }
+
+            Send(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {outcome.SrAtReturn}"));
+            Send(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {unchecked(faultPc + 4u)} 0 0"));
         }
 
         private void Decline() => Send(RecompiledArtifactCodeGen.ProtocolDeclineReply);

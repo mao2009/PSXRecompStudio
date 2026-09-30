@@ -272,6 +272,11 @@ int PSXCore_GetRfeExecuted(PSXCore* core) {
     return core->cpu.RfeExecuted() ? 1 : 0;
 }
 
+void PSXCore_PopExceptionSrStack(PSXCore* core) {
+    if (!core) return;
+    core->cpu.PopExceptionSrStack();
+}
+
 int PSXCore_Run(PSXCore* core, uint32_t maxInstructions) {
     if (!core) return -1;
     // Re-sample the Interrupt Controller before every instruction (not just once

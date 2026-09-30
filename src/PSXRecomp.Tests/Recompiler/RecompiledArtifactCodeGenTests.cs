@@ -73,4 +73,40 @@ public sealed class RecompiledArtifactCodeGenTests
             .Should().Be((uint)RecompiledArtifactCodeGen.MaxInitEntries);
         source.Should().Contain($"#define PSX_MAX_INIT {RecompiledArtifactCodeGen.MaxInitEntries}u");
     }
+
+    [Fact]
+    public void Generate_SyscallHook_CommitsTheExceptionEntrySr_BeforeTheOffer_AndPopsOnlyOnAServicedReturn()
+    {
+        var dispatch = GenerateDispatch();
+
+        var source = RecompiledArtifactCodeGen.Generate(dispatch).Source!;
+
+        // The SYSCALL exception entry is state, not just the value offered to the
+        // host: the artifact is the CPU, so it must commit the pushed KU/IE to
+        // cop0_sr the way the interpreter's CPU does. The commit has to land before
+        // the offer, and the RFE pop has to stay gated on the serviced-return
+        // branch, so an unsupported SYS, a host decline, and a fail-closed decision
+        // all snapshot the post-entry SR instead of the pre-exception one.
+        var hook = Regex.Match(
+            source,
+            @"static int32_t artifact_host_syscall\(RecompilerState\* state\) \{(?<body>.*?)\n\}",
+            RegexOptions.Singleline);
+        hook.Success.Should().BeTrue("the driver must define the SYSCALL hook");
+        var body = hook.Groups["body"].Value;
+
+        var commit = body.IndexOf("state->cop0_sr = sr_entry;", StringComparison.Ordinal);
+        var offer = body.IndexOf(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal);
+        var serve = body.IndexOf("artifact_host_serve(state)", StringComparison.Ordinal);
+        var pop = body.IndexOf(
+            "state->cop0_sr = (state->cop0_sr & ~0xFu) | ((state->cop0_sr >> 2) & 0xFu);",
+            StringComparison.Ordinal);
+
+        commit.Should().BeGreaterThanOrEqualTo(0, "the exception entry must be written back to state, not only offered");
+        commit.Should().BeLessThan(offer, "the offer reports the post-entry SR, so the state must already hold it");
+        offer.Should().BeLessThan(serve, "the host decision is the last thing that happens on the way out");
+        pop.Should().BeGreaterThan(serve);
+        body[serve..pop].Should().Contain(
+            "if (declined == 0 && state->termination_reason == 0) {",
+            "the RFE pop must stay gated on the serviced-return branch so a declined, unsupported, or fail-closed path keeps the post-entry SR");
+    }
 }

@@ -72,6 +72,11 @@ public:
     // run knows the handler returned. Reset at the start of every Step().
     bool RfeExecuted() const { return rfe_executed_; }
 
+    // Pops the SR 3-level KU/IE stack exactly as RFE does, without executing an
+    // instruction: for a host that completes an exception handler in HLE (Issue
+    // #663). Unlike ExecRfe it does not set RfeExecuted().
+    void PopExceptionSrStack();
+
     // Golden Trace GPR write-event recording (Issue #157). A single MIPS I step
     // retires at most kMaxGprWritesPerStep writes: one instruction-result write
     // (SetGPR) plus at most one load-delay commit (ADR-004), so the recorder

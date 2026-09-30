@@ -146,6 +146,28 @@ public sealed class PSXCoreWrapper : IDisposable
         return NativeInterop.PSXCore_GetCop0(_handle, index);
     }
 
+    /// <summary>Writes COP0 register <paramref name="index"/> (raw; docs/cpu/cop0.md: 12 = SR).</summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="index"/> is outside 0..31.</exception>
+    public void SetCop0(int index, uint value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (index < 0 || index >= 32)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        NativeInterop.PSXCore_SetCop0(_handle, index, value);
+    }
+
+    /// <summary>
+    /// Pops the COP0 SR KU/IE stack exactly as RFE does, without executing an
+    /// instruction and without setting <see cref="RfeExecuted"/> (Issue #663). The
+    /// CPU owns this transformation; a host completing an exception in HLE calls it
+    /// instead of re-implementing it.
+    /// </summary>
+    public void PopExceptionSrStack()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_PopExceptionSrStack(_handle);
+    }
+
     /// <summary>Pointer to the native 2 MiB main-RAM buffer. Valid only until this instance is disposed; do not cache across a <see cref="Dispose"/> call.</summary>
     public IntPtr RamPointer
     {

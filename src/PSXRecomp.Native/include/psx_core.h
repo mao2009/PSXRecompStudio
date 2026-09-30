@@ -217,6 +217,8 @@ PSX_API uint32_t PSXCore_GetExceptionFaultPc(PSXCore* core);
 PSX_API int PSXCore_GetExceptionInDelaySlot(PSXCore* core);
 /** Returns non-zero when the most recent PSXCore_Step() executed RFE, i.e. the guest returned from an exception handler (PR #502). Reset by every step. */
 PSX_API int PSXCore_GetRfeExecuted(PSXCore* core);
+/** Pops the COP0 SR 3-level KU/IE stack exactly as RFE does, without executing an instruction and without setting PSXCore_GetRfeExecuted(). For a host that completes an exception handler in HLE (Issue #663). */
+PSX_API void PSXCore_PopExceptionSrStack(PSXCore* core);
 /** Executes up to `maxInstructions` instructions, stopping early on a native exception/halt condition. Returns the number of instructions actually executed, or a negative status on error. */
 PSX_API int PSXCore_Run(PSXCore* core, uint32_t maxInstructions);
 

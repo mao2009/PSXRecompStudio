@@ -243,6 +243,20 @@ regression in either.
     ExitCriticalSection, called from `0x8002540C`; frame evidence stays
     `unavailable` / `no-frame-activity`. This matches libetc `startIntr`'s
     `_96_remove(); ExitCriticalSection();` order and is the next gap (#663).
+14. **Measured after #663 (SYS(02h) ExitCriticalSection, runtime stage).**
+    A SYSCALL with a Runtime attached is completed through the shared kernel
+    contract (ADR-014 amendment): SR bits 2 and 10 are set in the exception
+    frame, the RFE pop moves bit 2 to IEc, and execution resumes after the
+    `syscall` (net `SR | 0x401`; measured `cop0.sr=0x00000401` in the artifact
+    snapshot). Unknown SYS numbers fail closed. Measured on `main` f6383e8 +
+    #663, `--entry-root 0x80025350 --entry-root 0x80025614`: the run passes
+    `0x80041714` and stops at `UNRESOLVED_TRANSFER_IN_IMAGE` at `0x80041718`
+    (exit 2, `UnsupportedTransfer`), the instruction after the `syscall`, which
+    reachable-program discovery does not compile (#669). Adding
+    `--entry-root 0x80041718` (measurement only) reaches
+    `BIOS_HLE_UNSUPPORTED_CALL` `A0:3F` printf (exit 1, `RuntimeFailure`, #670);
+    the production interpreter reaches the same `A0:3F` without it. Frame
+    evidence stays `unavailable` / `no-frame-activity`.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU

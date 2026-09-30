@@ -88,6 +88,12 @@ internal static class ArtifactSnapshotParser
                 if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) return null;
                 exceptionInDelaySlot = v != 0;
             }
+            else if (key == "cop0.sr")
+            {
+                // Issue #663: the artifact's SR is well-formed evidence on stdout, but
+                // RecompilerStateSnapshot carries no COP0 state, so it is validated and dropped.
+                if (!TryParseHex(value, out _)) return null;
+            }
             else if (key.StartsWith("gpr[", StringComparison.Ordinal) && key.EndsWith(']'))
             {
                 if (!int.TryParse(key.AsSpan(4, key.Length - 5), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
