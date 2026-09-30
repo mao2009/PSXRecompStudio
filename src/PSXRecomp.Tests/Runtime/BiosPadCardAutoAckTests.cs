@@ -6,8 +6,8 @@ using PSXRecomp.Tests.Recompiler;
 namespace PSXRecomp.Tests.Runtime;
 
 // B0:5B ChangeClearPAD(int) — PSX-SPX kernelbios. Issue #652.
-// Configuration only: no Pad/Card BIOS IRQ handler exists in the Runtime yet,
-// so nothing consumes the setting and these tests do not model any IRQ effect.
+// Configuration only: the consumer is BiosPadCardIrqHandler (#654), covered by
+// BiosPadCardIrqHandlerTests; these tests do not model any IRQ effect.
 [Test]
 public sealed class BiosPadCardAutoAckTests
 {

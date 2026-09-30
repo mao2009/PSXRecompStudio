@@ -1565,7 +1565,8 @@ Issue #652: after B0:19 the Persona production run stopped at
   slot, a Runtime design choice) because some engines rebuild `BiosHleRuntime`
   per segment. `BiosPadCardAutoAck.TryGetSetting` is the read contract.
 - **No consumer yet.** The Runtime has no BIOS Pad/Card IRQ handler, so the
-  setting is recorded but not acted on; tracked in #654.
+  setting is recorded but not acted on; tracked in #654 (see the #654
+  amendment below).
 
 Tests: `BiosPadCardAutoAckTests`.
 
@@ -1591,3 +1592,31 @@ Issue #655: after B0:5B the Persona production run stopped at
   tracked in #658.
 
 Tests: `BiosRootCounterClearPolicyTests`.
+
+## Amendment (2026-09-30): Pad/Card IRQ handler consumes the B0:5B setting
+
+Issue #654: the B0:5B setting had no consumer.
+
+- **Polarity CONFIRMED by two sources outside psx-spx.** OpenBIOS
+  (`sio0Handler`; B0:5B is its `setSIO0AutoAck`) acknowledges only IRQ0 when
+  the flag is set; PSn00bSDK calls `ChangeClearPAD(0)` to stop the kernel
+  acknowledging and `ChangeClearPAD(1)` to restore it. So 0 = leave IRQ0
+  pending, 1 = acknowledge IRQ0. **UNKNOWN:** other values (OpenBIOS treats any
+  non-zero as enable; the retail BIOS is undocumented) and the value before the
+  first B0:5B (OpenBIOS StartPAD sets 1; StartPAD is not modeled here). Both are
+  reported (`UnknownSetting`, `NotConfigured`) and leave IRQ0 pending.
+- **`BiosPadCardIrqHandler.Handle`.** Claims the exception only when IRQ0 is
+  set in both I_STAT and I_MASK (OpenBIOS `sio0Verifier`; INFERRED for the
+  retail BIOS). Acknowledges through the existing `IInterruptController` as an
+  I_STAT write-0-to-clear of bit 0 only; no interrupt or SIO0 state is
+  duplicated. B0:5B itself still never touches I_STAT.
+- **Not modeled.** Pad reads and the card state machine (SIO0 stays in the
+  native core), StartPAD/StartCARD, and the priority-chain enqueue. Calling
+  `Handle` from the exception path belongs to the kernel ExceptionHandler
+  boundary (#651); the wiring is tracked in #661, and until then the handler is
+  exercised by tests only.
+- **C0:0D SetIrqAutoAck** is the DefaultInterruptHandler's per-IRQ auto-ack, a
+  separate handler and setting (OpenBIOS keeps them separate too); it is not
+  consulted here.
+
+Tests: `BiosPadCardIrqHandlerTests`.

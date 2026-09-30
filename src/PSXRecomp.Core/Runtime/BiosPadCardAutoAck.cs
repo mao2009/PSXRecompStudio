@@ -27,16 +27,15 @@ public enum BiosPadCardAutoAckSetting : byte
 /// acknowledges IRQ0 on its own, and applies to pad and card alike. NOT
 /// documented: which argument value enables it, and any return value. The
 /// raw argument is therefore stored as given, with no polarity interpreted
-/// here, and B0:5B reports no return value. The obvious reading (0 disables)
-/// is INFERRED from the function's name only. The relation to C0:0D
+/// here, and B0:5B reports no return value. Its consumer interprets 0 and 1
+/// from sources outside psx-spx (see <see cref="BiosPadCardIrqHandler"/>). The relation to C0:0D
 /// <c>SetIrqAutoAck</c> (the DefaultInterruptHandler's per-IRQ auto-ack) is
 /// likewise undocumented, so this state is kept separate from it.
 /// </para>
 /// <para>
 /// This is configuration only. The call never touches I_STAT or any device;
-/// IRQ0 stays pending until the guest acknowledges it. The Runtime has no BIOS
-/// Pad/Card IRQ handler yet, so nothing consumes the setting (tracked as a
-/// follow-up Issue). The setting lives in a guest-RAM kernel variable, like
+/// IRQ0 stays pending until the guest acknowledges it. The consumer is
+/// <see cref="BiosPadCardIrqHandler"/>. The setting lives in a guest-RAM kernel variable, like
 /// <see cref="BiosExceptionHook"/>, because some engines rebuild
 /// <see cref="BiosHleRuntime"/> per segment; the address is this Runtime's own
 /// choice inside psx-spx's unused "table of tables" slot 00000128h.
@@ -71,11 +70,20 @@ public static class BiosPadCardAutoAck
     }
 
     /// <summary>Reads the current setting; false when the variable cannot be read.</summary>
-    public static bool TryGetSetting(IGuestMemoryReader reader, out BiosPadCardAutoAckSetting setting)
+    public static bool TryGetSetting(IGuestMemoryReader reader, out BiosPadCardAutoAckSetting setting) =>
+        TryGetSetting(reader, out setting, out _);
+
+    /// <summary>
+    /// Reads the current setting and the raw last argument (0 when not configured);
+    /// false when the variable cannot be read.
+    /// </summary>
+    public static bool TryGetSetting(
+        IGuestMemoryReader reader, out BiosPadCardAutoAckSetting setting, out uint argument)
     {
         ArgumentNullException.ThrowIfNull(reader);
 
         setting = BiosPadCardAutoAckSetting.NotConfigured;
+        argument = 0;
         Span<byte> bytes = stackalloc byte[8];
         if (!reader.TryRead(VariableAddress, bytes))
         {
@@ -87,7 +95,8 @@ public static class BiosPadCardAutoAck
             return true;
         }
 
-        setting = BitConverter.ToUInt32(bytes[4..]) == 0
+        argument = BitConverter.ToUInt32(bytes[4..]);
+        setting = argument == 0
             ? BiosPadCardAutoAckSetting.Zero
             : BiosPadCardAutoAckSetting.NonZero;
         return true;
