@@ -267,9 +267,20 @@ regression in either.
     #670 is the next blocker. Frame evidence stays `unavailable` /
     `no-frame-activity`.
 
+16. **Measured after #670 (A0:3F printf).** A0:3F is registered (`PrintfService`,
+    arity 1; variadic words from `$a1-$a3`, then the guest stack at `$sp+16`).
+    Measured with only `--entry-root 0x80025350 --entry-root 0x80025614`: the
+    call is `printf("addr=%08x", 0x800500E4)`; the run passes it, emits
+    `CD_init:addr=800500e4`, and now stops at `OUTER_BUDGET_EXHAUSTED`
+    (exit 2, `state=3`) with guest PC `0x800278A8`, the PC where the budget
+    expired. The generated blocks around it compare a RAM counter against
+    `0x3C0000`, but what the guest is waiting for is **not identified**
+    (unclassified; no cause is claimed). Frame evidence stays
+    `unavailable` / `no-frame-activity`.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is now `BIOS_HLE_UNSUPPORTED_CALL` `A0:3F` printf
-(#670); **GPU integration (#440) and CD-ROM (#444) remain unreached and
+first measured stop is now `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+#670 A0:3F printf, item 16); **GPU integration (#440) and CD-ROM (#444) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
 actually measured by the production run.
