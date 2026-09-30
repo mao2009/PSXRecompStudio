@@ -268,11 +268,11 @@ regression in either.
     `no-frame-activity`.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is the unresolved transfer above; **GPU
-integration (#440) and CD-ROM (#444) remain unreached and unranked**. The
-generic sub-blocker ordering below is retained as the *anticipated* order once
-the recompiler's IR lowering coverage stops rejecting the production CLI's
-whole-program build; it is not itself measured evidence.
+first measured stop is now `BIOS_HLE_UNSUPPORTED_CALL` `A0:3F` printf
+(#670); **GPU integration (#440) and CD-ROM (#444) remain unreached and
+unranked**. The generic sub-blocker ordering below remains background context,
+not a priority order; the next implementation target is the first boundary
+actually measured by the production run.
 
 The Studio itself is **not** blocked on having no execution entry point. As of
 ADR-015, `PSXRecompStudio.Services.TitleExecutionService` is the production
