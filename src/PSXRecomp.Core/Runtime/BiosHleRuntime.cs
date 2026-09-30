@@ -26,6 +26,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>B0:19 HookEntryInt(addr) — registers a guest register-state buffer as the exception-completion hook.</summary>
     public const byte HookEntryIntFunction = 0x19;
 
+    /// <summary>B0:5B ChangeClearPAD(int) — configures the Pad/Card IRQ handler's IRQ0 auto-ack policy.</summary>
+    public const byte ChangeClearPadFunction = 0x5B;
+
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
@@ -116,6 +119,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
         {
             [(BiosCallFamily.A0, SetJmpFunction)] = (1, InvokeSetJmp),
             [(BiosCallFamily.B0, HookEntryIntFunction)] = (1, InvokeHookEntryInt),
+            [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
@@ -238,6 +242,10 @@ public sealed class BiosHleRuntime : IBiosRuntime
         argumentCount = 0;
         return false;
     }
+
+    /// <summary>B0:5B ChangeClearPAD(int). The behavior lives in <see cref="BiosPadCardAutoAck"/>.</summary>
+    private BiosServiceResult InvokeChangeClearPad(BiosCallIdentity identity) =>
+        BiosPadCardAutoAck.Change(identity, _guestMemoryWriter);
 
     /// <summary>B0:19 HookEntryInt(addr). The behavior lives in <see cref="BiosExceptionHook"/>.</summary>
     private BiosServiceResult InvokeHookEntryInt(BiosCallIdentity identity) =>

@@ -194,6 +194,19 @@ regression in either.
       proceeds past `0x80025614` and stops at `BIOS_HLE_UNSUPPORTED_CALL` `B0:5B`
       (exit 1, `RuntimeFailure`); frame evidence stays `unavailable` /
       `no-frame-activity`. B0:5B is the next BIOS HLE gap and is not implemented here.
+11. **Measured after #652 (B0:5B ChangeClearPAD HLE, runtime stage).** B0:5B is
+    registered as *configuration only*: the raw argument is stored in a guest-RAM
+    kernel variable (`0x00000128`, this Runtime's own choice; survives the
+    per-segment Runtime rebuild). CONFIRMED (psx-spx): it controls the Pad/Card IRQ
+    handler's automatic IRQ0 (VBlank) acknowledge, for pad and card alike.
+    NOT documented, so not assumed: which value enables it, any return value
+    (none is reported, `$v0` untouched), and any relation to C0:0D. The call never
+    touches I_STAT. **Nothing consumes the setting yet** (no BIOS Pad/Card IRQ
+    handler exists in the Runtime; #654). Measured on `main` 79a4859 + #648 + #650 +
+    #652, `--entry-root 0x80025350 --entry-root 0x80025614` (caller input only):
+    the run passes `0x80025350`, A0:13, B0:19, `0x80025614` and B0:5B, and stops at
+    `BIOS_HLE_UNSUPPORTED_CALL` `C0:0A` (exit 1, `RuntimeFailure`); frame evidence
+    stays `unavailable` / `no-frame-activity`. C0:0A is the next gap (#655).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU
