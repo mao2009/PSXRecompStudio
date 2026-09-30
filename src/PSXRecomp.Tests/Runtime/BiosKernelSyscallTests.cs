@@ -257,7 +257,10 @@ public sealed class BiosKernelSyscallTests
 
         result.State.Should().Be(TitleExecutionState.RuntimeFailure);
         result.DiagnosticCode.Should().Be(BiosKernelSyscallDispatch.UnsupportedDiagnosticCode);
-        result.FinalSnapshot!.Gpr[(int)R3000aRegister.S1].Should().Be(0u);
+        var snap = result.FinalSnapshot!;
+        snap.Gpr[(int)R3000aRegister.S1].Should().Be(0u);
+        snap.Exception.IsRaised.Should().BeTrue("a declined syscall never returns, so its exception entry is not consumed");
+        snap.Exception.Code.Should().Be(0x08u);
     }
 
     [Fact]

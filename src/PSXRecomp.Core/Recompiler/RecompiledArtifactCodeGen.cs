@@ -278,8 +278,12 @@ static int32_t artifact_host_transfer(RecompilerState* state) {
    entry (SR KU/IE push), the host says what the kernel handler leaves in SR (C), and
    the artifact does the return (RFE pop) and resumes after the SYSCALL. */
 static int32_t artifact_host_syscall(RecompilerState* state) {
-    uint32_t sr = state->cop0_sr;
-    uint32_t sr_entry = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);
+    uint32_t sr_entry = (state->cop0_sr & ~0x3Fu) | ((state->cop0_sr << 2) & 0x3Cu);
+    /* The exception entry is part of the state, not just of the offer: commit the
+       pushed KU/IE now, as the interpreter's CPU does, so every path that does not
+       return to the guest (unsupported SYS, host decline, fail-closed) snapshots the
+       post-entry SR. A serviced call overwrites it with the parent's C <sr> first. */
+    state->cop0_sr = sr_entry;
     printf(""RHOST_SYSCALL %lu %lu %lu\n"", (unsigned long)state->exception_fault_pc,
            (unsigned long)state->gpr[4], (unsigned long)sr_entry);
     fflush(stdout);
