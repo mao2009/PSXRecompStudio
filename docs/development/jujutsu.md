@@ -36,13 +36,13 @@ The CLI changes between releases; if a command differs, trust `jj help <command>
 | Platform | Command |
 |---|---|
 | Windows | `winget install --id jj-vcs.jj -e` (restart the shell for `PATH`) |
-| Fedora / Nobara | `sudo dnf install jujutsu` |
+| Fedora / Nobara | Unofficial COPR: `sudo dnf copr enable aldantanneo/jj-vcs`, then `sudo dnf install jj-cli` |
 | Debian / Ubuntu | No maintained apt package is assumed; use a prebuilt binary or `cargo` |
 | Any (Rust toolchain) | `cargo install --locked jj-cli` |
 | Any (prebuilt) | Download the archive for your platform from <https://github.com/jj-vcs/jj/releases> and put `jj` on `PATH` |
 
-Check with `jj --version`. Package names and availability on Linux distributions
-were not re-verified here; see the
+Check with `jj --version`. The Fedora command above follows jj's official installation
+guide but uses an **unofficial COPR**; distribution packaging can change, so verify the
 [official installation guide](https://docs.jj-vcs.dev/latest/install-and-setup/).
 
 Set your identity once (use the same identity as `git config user.name/user.email`):
@@ -242,6 +242,8 @@ any Git branch; create a bookmark for them first (`jj bookmark create <name> -r 
 
 ## What not to commit
 
-`.jj/`, per-repo jj config (stored outside the repository under the user config
-directory), and your identity or paths. Do not migrate, rewrite history, or
-force-push as part of adopting jj.
+`.jj/`, repo/workspace jj config, and your identity or machine-specific paths.
+For security reasons, jj stores repo/workspace config outside the repository/workspace;
+inspect the actual location with `jj config path --repo` or
+`jj config path --workspace`. Do not migrate, rewrite history, or force-push as
+part of adopting jj.
