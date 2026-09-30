@@ -1518,3 +1518,30 @@ through `SetJmpService`.
   unregistered and reports `BIOS_HLE_UNSUPPORTED_CALL`.
 
 Tests: `SetJmpServiceTests`.
+
+## Amendment (2026-09-30): B0:19 HookEntryInt registered
+
+Issue #650: after A0:13 the Persona production run stopped at
+`BIOS_HLE_UNSUPPORTED_CALL` `B0:19`. Registering it as a bare `Supported` would
+discard the hook's guest-visible meaning, so it is registered with real state.
+
+- **Pointer, not copy.** psx-spx: "addr points to a structure (with same format
+  as for the setjmp function)". Registration stores only the address; the
+  0x30-byte buffer is read when the hook fires, so later guest edits to it are
+  observed. The A0:13 layout is now shared (`JmpBufLayout`).
+- **State lives in guest RAM.** The address is held in a 4-byte kernel variable
+  at `0x00000118` (`BiosExceptionHook.PointerAddress`; inside psx-spx's unused
+  "table of tables" slot, a Runtime design choice like the B0/C0 table bases,
+  since the real variable's location is undocumented). Some engines rebuild
+  `BiosHleRuntime` per segment, so a Runtime field would lose the registration.
+- **Firing.** `BiosExceptionHook.TryComplete` reads all 0x30 bytes first
+  (all-or-nothing), then restores only `$ra/$sp/$fp/$s0-$s7/$gp`, sets `$v0 = 1`
+  and reports the saved `$ra` as the PC. An unreadable buffer is
+  `InvalidState` and changes nothing.
+- **B0:19's own return.** No return value is documented, so `$v0` is untouched
+  and the caller's `$ra` is applied once by the existing dispatch outcome.
+- **Not yet connected.** The consumer is the kernel exception handler's
+  completion step (C0:06), which this Runtime does not model; B0:17
+  ReturnFromException and B0:18 ResetEntryInt stay unregistered.
+
+Tests: `BiosExceptionHookTests`.

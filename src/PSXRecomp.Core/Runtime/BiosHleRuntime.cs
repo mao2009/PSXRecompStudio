@@ -23,6 +23,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>A0:13 setjmp(buf) — saves the ABI-saved registers into a 0x30-byte guest buffer.</summary>
     public const byte SetJmpFunction = 0x13;
 
+    /// <summary>B0:19 HookEntryInt(addr) — registers a guest register-state buffer as the exception-completion hook.</summary>
+    public const byte HookEntryIntFunction = 0x19;
+
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
@@ -112,6 +115,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
         services = new Dictionary<(BiosCallFamily, byte), (int ArgumentCount, Func<BiosCallIdentity, BiosServiceResult> Handler)>
         {
             [(BiosCallFamily.A0, SetJmpFunction)] = (1, InvokeSetJmp),
+            [(BiosCallFamily.B0, HookEntryIntFunction)] = (1, InvokeHookEntryInt),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
@@ -234,6 +238,10 @@ public sealed class BiosHleRuntime : IBiosRuntime
         argumentCount = 0;
         return false;
     }
+
+    /// <summary>B0:19 HookEntryInt(addr). The behavior lives in <see cref="BiosExceptionHook"/>.</summary>
+    private BiosServiceResult InvokeHookEntryInt(BiosCallIdentity identity) =>
+        BiosExceptionHook.Register(identity, _guestMemoryWriter);
 
     /// <summary>A0:13 setjmp(buf). The behavior lives in <see cref="SetJmpService"/>.</summary>
     private BiosServiceResult InvokeSetJmp(BiosCallIdentity identity) =>
