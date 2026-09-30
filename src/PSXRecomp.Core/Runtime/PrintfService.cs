@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 
@@ -43,7 +44,7 @@ namespace PSXRecomp.Core.Runtime;
 [Domain]
 public static class PrintfService
 {
-    // ponytail: bounded ceilings, no evidence for longer TTY text — raise if a real title needs it.
+    // Bounded ceilings: raise them only when real-title evidence requires longer TTY text.
     internal const int MaxFormatLength = 4096;
     internal const int MaxStringArgumentLength = 4096;
     internal const int MaxOutputLength = 8192;
@@ -95,7 +96,7 @@ public static class PrintfService
             var address = registers[(int)R3000aRegister.Sp] + (uint)(StackArgumentBase + 4 * (k - 3));
             Span<byte> word = stackalloc byte[4];
             ok = address >= registers[(int)R3000aRegister.Sp] && reader.TryRead(address, word);
-            return ok ? BitConverter.ToUInt32(word) : 0u;
+            return ok ? BinaryPrimitives.ReadUInt32LittleEndian(word) : 0u;
         }
 
         for (var i = 0; i < format.Length; i++)
