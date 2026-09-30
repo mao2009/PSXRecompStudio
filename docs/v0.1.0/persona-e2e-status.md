@@ -207,6 +207,21 @@ regression in either.
     the run passes `0x80025350`, A0:13, B0:19, `0x80025614` and B0:5B, and stops at
     `BIOS_HLE_UNSUPPORTED_CALL` `C0:0A` (exit 1, `RuntimeFailure`); frame evidence
     stays `unavailable` / `no-frame-activity`. C0:0A is the next gap (#655).
+12. **Measured after #655 (C0:0A ChangeClearRCnt HLE, runtime stage).** C0:0A is
+    registered as *configuration only*. CONFIRMED (psx-spx timer-functions): `t` is
+    0..2 for timer 0..2 or 3 for vblank; `flag` 0 = kernel IRQ handler does nothing
+    after an IRQ, 1 = automatically acknowledge and immediately return from
+    exception; the call returns the previous flag. The four flags live in a
+    guest-RAM kernel variable (`0x00000130`, this Runtime's own choice; survives the
+    per-segment Runtime rebuild). INFERRED: the initial flag is 0 (zero-initialised
+    memory). Undocumented, so rejected with `BIOS_HLE_INVALID_ARGUMENTS` instead of
+    guessed: `t > 3` and `flag` other than 0/1. The call never touches I_STAT or a
+    timer. **Nothing consumes the flags yet** (no kernel timer/vblank IRQ handler in
+    the Runtime; #658). Measured on `main` 79a4859 + #648 + #650 + #652 + #655,
+    `--entry-root 0x80025350 --entry-root 0x80025614` (caller input only): the run
+    passes C0:0A and stops at `BIOS_HLE_UNSUPPORTED_CALL` `A0:72` (exit 1,
+    `RuntimeFailure`); frame evidence stays `unavailable` / `no-frame-activity`.
+    A0:72 is the next gap (#657), in the order the #639 probe predicted.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU
