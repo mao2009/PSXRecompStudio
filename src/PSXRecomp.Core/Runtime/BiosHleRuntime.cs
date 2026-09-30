@@ -32,6 +32,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>C0:0A ChangeClearRCnt(t,flag) — selects the timer/vblank IRQ handlers' post-IRQ behavior; returns the old flag.</summary>
     public const byte ChangeClearRCntFunction = 0x0A;
 
+    /// <summary>A0:72 CdRemove() (PSY-Q <c>_96_remove</c>) — void, no arguments; no modelled guest-visible effect (see the handler).</summary>
+    public const byte CdRemoveFunction = 0x72;
+
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
 
@@ -124,6 +127,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
             [(BiosCallFamily.B0, HookEntryIntFunction)] = (1, InvokeHookEntryInt),
             [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
             [(BiosCallFamily.C0, ChangeClearRCntFunction)] = (2, InvokeChangeClearRCnt),
+            [(BiosCallFamily.A0, CdRemoveFunction)] = (0, InvokeCdRemove),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
@@ -246,6 +250,27 @@ public sealed class BiosHleRuntime : IBiosRuntime
         argumentCount = 0;
         return false;
     }
+
+    /// <summary>
+    /// A0:72 CdRemove() (PSY-Q <c>void _96_remove(void)</c>; psx-spx alias A0:56,
+    /// same routine, not registered). Its documented intent is to remove the
+    /// kernel's priority-0 CD-ROM IRQ chain elements, but psx-spx marks it
+    /// "does NOT work due to SysDeqIntRP bug": SysDeqIntRP only checks the first
+    /// chain element properly and then reads an uninitialised stack value. (The
+    /// current no$psx text drops that note; the sources disagree.) What the
+    /// retail routine actually leaves in the chain is therefore not known, so
+    /// this Runtime must not claim the handler was removed. It also models no
+    /// priority chain, CD-ROM IRQ dispatch (#444) or kernel event table, so there
+    /// is no Runtime state to change: the call is accepted with its documented
+    /// arity and void return (<c>$v0</c> untouched, <c>$ra</c> applied by
+    /// dispatch) and no effect. OpenBIOS's event closing and critical-section
+    /// entry come from a reimplementation and are not modelled either.
+    /// A future CD-ROM IRQ path must not assume A0:72 removed anything.
+    /// </summary>
+    private static BiosServiceResult InvokeCdRemove(BiosCallIdentity identity) =>
+        identity.Arguments.Count == 0
+            ? BiosServiceResult.Supported(identity)
+            : BiosServiceResult.InvalidArguments(identity, $"{identity.StableKey} CdRemove takes no arguments.");
 
     /// <summary>C0:0A ChangeClearRCnt(t,flag). The behavior lives in <see cref="BiosRootCounterClearPolicy"/>.</summary>
     private BiosServiceResult InvokeChangeClearRCnt(BiosCallIdentity identity) =>

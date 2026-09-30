@@ -225,6 +225,24 @@ regression in either.
     passes C0:0A and stops at `BIOS_HLE_UNSUPPORTED_CALL` `A0:72` (exit 1,
     `RuntimeFailure`); frame evidence stays `unavailable` / `no-frame-activity`.
     A0:72 is the next gap (#657), in the order the #639 probe predicted.
+13. **Measured after #657 (A0:72 CdRemove HLE, runtime stage).** A0:72 is
+    registered with its documented contract only. CONFIRMED (psx-spx):
+    `A(72h) or A(56h)` is `_96_remove` / `CdRemove`, `void _96_remove(void)`,
+    intended to remove the kernel's priority-0 CD-ROM IRQ handlers. CONFIRMED
+    (psx-spx.github.io): it "does NOT work due to SysDeqIntRP bug"; the current
+    no$psx text omits that note, so the retail effect on the chain is UNKNOWN.
+    The Runtime therefore records **no** removal and writes no guest state:
+    arity 0, `$v0` untouched, `$ra` applied by dispatch. INFERRED only from
+    PCSX-Redux OpenBIOS and not modelled: entering a critical section and
+    closing the five CD-ROM events. Future CD-ROM IRQ work (#444) must not
+    assume A0:72 removed the handler. The A0:56 alias is not registered.
+    Measured on `main` d112677 + #657,
+    `--entry-root 0x80025350 --entry-root 0x80025614` (caller input only): the
+    run passes A0:72 and stops at `CPU_EXCEPTION` at guest PC `0x80041714`
+    (exit 1, `RuntimeFailure`): a `syscall` with `$a0 = 2`, i.e. SYS(02h)
+    ExitCriticalSection, called from `0x8002540C`; frame evidence stays
+    `unavailable` / `no-frame-activity`. This matches libetc `startIntr`'s
+    `_96_remove(); ExitCriticalSection();` order and is the next gap (#663).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU
