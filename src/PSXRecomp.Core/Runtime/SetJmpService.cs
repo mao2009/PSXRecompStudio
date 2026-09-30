@@ -19,16 +19,7 @@ namespace PSXRecomp.Core.Runtime;
 public static class SetJmpService
 {
     /// <summary>Size in bytes of the guest <c>jmp_buf</c> this service fills.</summary>
-    public const int BufferSize = 0x30;
-
-    // Order is the documented buffer order: word i of the buffer holds SavedRegisters[i].
-    private static readonly R3000aRegister[] SavedRegisters =
-    [
-        R3000aRegister.Ra, R3000aRegister.Sp, R3000aRegister.Fp,
-        R3000aRegister.S0, R3000aRegister.S1, R3000aRegister.S2, R3000aRegister.S3,
-        R3000aRegister.S4, R3000aRegister.S5, R3000aRegister.S6, R3000aRegister.S7,
-        R3000aRegister.Gp,
-    ];
+    public const int BufferSize = JmpBufLayout.Size;
 
     /// <summary>Invokes <c>setjmp</c> for the given call identity.</summary>
     /// <returns>
@@ -58,11 +49,7 @@ public static class SetJmpService
         }
 
         var address = identity.Arguments[0];
-        var buffer = new byte[BufferSize];
-        for (var i = 0; i < SavedRegisters.Length; i++)
-        {
-            BitConverter.TryWriteBytes(buffer.AsSpan(i * sizeof(uint)), registers[(int)SavedRegisters[i]]);
-        }
+        var buffer = JmpBufLayout.Encode(registers);
 
         // The writer rejects address wraparound, unmapped and out-of-RAM ranges
         // without a partial write.

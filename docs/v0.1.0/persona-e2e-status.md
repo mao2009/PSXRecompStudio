@@ -178,6 +178,22 @@ regression in either.
    `176` / `0xB0`, the B0 vector); frame evidence reports the same code, `unavailable` /
    `no-frame-activity`. B0:19 is the next BIOS HLE gap, tracked separately;
    the A0:14 longjmp companion is not implemented.
+10. **Measured after #650 (B0:19 HookEntryInt HLE, runtime stage).** B0:19 is now
+    registered: the address in `$a0` is stored *by pointer* in a guest-RAM kernel
+    variable (`0x00000118`, this Runtime's own choice; spec CONFIRMED: "addr points
+    to a structure"), and firing the hook reads the buffer's current contents and
+    restores only `ra/sp/fp/s0-s7/gp` with `$v0 = 1` (`BiosExceptionHook.TryComplete`).
+    **The hook cannot fire in a real run yet**: its consumer is the kernel's
+    exception-handler completion (C0:06), which this Runtime does not model
+    (no ExceptionHandler, TCB, or B0:17); tracked separately.
+    Measured on `main` 79a4859 + #648 + #650 (PERSONA.chd):
+    - `--entry-root 0x80025350` alone: A0:13 and B0:19 pass; stops at
+      `UNRESOLVED_TRANSFER_IN_IMAGE` `0x80025614` (exit 2, `UnsupportedTransfer`).
+      This matches the #639 stub-probe observation, now confirmed on the production run.
+    - `--entry-root 0x80025350 --entry-root 0x80025614` (caller input only): the run
+      proceeds past `0x80025614` and stops at `BIOS_HLE_UNSUPPORTED_CALL` `B0:5B`
+      (exit 1, `RuntimeFailure`); frame evidence stays `unavailable` /
+      `no-frame-activity`. B0:5B is the next BIOS HLE gap and is not implemented here.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is the unresolved transfer above; **GPU
