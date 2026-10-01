@@ -231,6 +231,14 @@ takes them as `recompiled-artifact <artifact-input.txt> <artifact-image.bin>
   a load address such as `0x80210000` or an image straddling the 2 MiB seam is
   accepted; bytes that would land at or beyond `0x00800000` are rejected.
 
+With `--host-transfer` the artifact also relays every guest access outside RAM
+to the parent's Runtime device graph (Issue #678): one width-aware request per
+access, so RAM never crosses the pipe. Without it there is no Runtime, so such an
+access stops the run with exit 96. A host refusal (unsupported address or device
+failure, classified as `ARTIFACT_MMIO_UNSUPPORTED` / `ARTIFACT_MMIO_DEVICE_FAILED`)
+exits 97 (for example a guest access to the BIOS-ROM window, which has no image), and a malformed or missing host reply exits 98; none of them prints a
+snapshot. A malformed request on the host side is `ARTIFACT_HOST_PROTOCOL_FAILED`.
+
 A successful build or launch implies only that the pipeline completed. Real
 games may still stop at an explicit unsupported/blocked boundary (exit code 2)
 when control reaches behavior the compiled image cannot continue through;

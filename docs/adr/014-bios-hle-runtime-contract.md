@@ -1735,3 +1735,37 @@ A0/B0/C0 vector call, so it does not go through `BiosVectorDispatch`.
   EnterCriticalSection, a SYSCALL in a delay slot.
 
 Tests: `BiosKernelSyscallTests`; native `PSXCore_PopExceptionSrStack`.
+
+## Amendment (2026-10-01): generated-host MMIO bridge
+
+Issue #678 (first slice of #676, evidence #675): a generated-host artifact owns
+guest RAM but read 0 / dropped every access outside it, so GPUSTAT, timers and
+every device write were invisible to the Runtime.
+
+- **RAM stays local.** `artifact_ram` is the single guest RAM. Accesses inside the
+  low-8-MiB RAM mirror never cross the protocol, and the byte-wise `R`/`W`
+  requests that carry BIOS HLE's own RAM access stay RAM-only, so an MMIO request
+  can never interleave with one.
+- **Everything else is one width-aware request.** A guest load/store outside RAM
+  is sent as `RHOST_MMIO_READ <width> <physical>` / `RHOST_MMIO_WRITE <width>
+  <physical> <value>` (width 1, 2 or 4) and answered `V <value>` or `X`. It is
+  never decomposed into bytes: MMIO has width-sensitive registers (the GPU window
+  is a 32-bit device), FIFOs and read side effects. Constants live in
+  `RecompiledArtifactCodeGen` and are emitted into the C driver.
+- **One Runtime device graph.** The parent serves the requests from
+  `PsxDeviceGraph` — the native core, `MemoryBus` and the DMA/timer/interrupt/GPU/
+  CD-ROM adapters, assembled once and shared with `InterpreterTitleExecutionEngine`
+  — entering through the same `PSXCoreWrapper` read/write path the interpreter's
+  guest loads and stores use. The artifact carries no device model and no address
+  list. The graph holds device state only: advancing it (#679) and delivering
+  interrupts (#680) are separate slices.
+- **Fail closed.** The Runtime answers for the scratchpad, the hardware-register
+  window (a routed device, or the core's flat register store for an unclaimed
+  address, as for the interpreter) and addresses outside every region (open bus:
+  read 0, write ignored). Main RAM and the BIOS-ROM window (no image) are refused:
+  `ARTIFACT_MMIO_UNSUPPORTED`. A device exception is `ARTIFACT_MMIO_DEVICE_FAILED`;
+  a malformed request is `ARTIFACT_HOST_PROTOCOL_FAILED`. The child exits 97 on a
+  refusal, 98 on a malformed or missing reply, and 96 when it has no host at all
+  (no Runtime attached) — never a snapshot, never a silent 0.
+
+Tests: `RecompiledArtifactMmioBridgeTests`.

@@ -318,14 +318,15 @@ public sealed class RecompiledArtifactLauncherTests
     /// <summary>Runs <paramref name="words"/> loaded at <paramref name="entry"/> through the
     /// artifact and the interpreter and returns both final GPR files.</summary>
     private static (uint[] Artifact, uint[] Interpreter) RunBothEngines(
-        uint entry, uint[] words, TitleExecutionRequest request)
+        uint entry, uint[] words, TitleExecutionRequest request, bool artifactWithRuntime = false)
     {
         var handoff = new ProgramEndHandoff(entry + (uint)(words.Length * sizeof(uint)));
         var program = ReachableProgramBuilder.Build(entry, words, entry);
 
         using var dir = new TempDirectory();
         using var artifactEngine = new RecompiledHostExecutionEngine(
-            program, words, entry, new GeneratedHostBuildService(), dir.FullPath);
+            program, words, entry, new GeneratedHostBuildService(), dir.FullPath,
+            artifactWithRuntime ? (reader, writer) => new BiosHleRuntime(new NullOutputSink(), reader, writer) : null);
         var artifact = new ExecutionOrchestrator().Execute(artifactEngine, handoff, request);
 
         using var interpreterEngine = new InterpreterTitleExecutionEngine(words, entry);
@@ -391,7 +392,11 @@ public sealed class RecompiledArtifactLauncherTests
             gpr[(int)R3000aRegister.A3] = 0x80800000u;
         });
 
-        var (artifact, interpreter) = RunBothEngines(entry, words, request);
+        // The access past the mirror window is outside RAM, so it needs the Runtime
+        // (Issue #678): an artifact with none stops instead of reading 0. With one
+        // attached the Runtime's own open-bus rule (read 0, write ignored) applies,
+        // which is what the interpreter does.
+        var (artifact, interpreter) = RunBothEngines(entry, words, request, artifactWithRuntime: true);
 
         artifact[(int)R3000aRegister.S0].Should().Be(0xA1B2C3D4u);
         artifact[(int)R3000aRegister.S1].Should().Be(0xA1B2C3D4u);
@@ -506,6 +511,13 @@ public sealed class RecompiledArtifactLauncherTests
         // zero-filled (or partially filled) guest RAM.
         exitCode.Should().Be(expectedExit);
         stdout.Should().NotContain(RecompiledArtifactCodeGen.SnapshotBeginMarker);
+    }
+
+    private sealed class NullOutputSink : IRuntimeOutputSink
+    {
+        public void WriteByte(byte value)
+        {
+        }
     }
 
     private sealed class ProgramEndHandoff(uint programEnd) : ITitleExecutionHandoff
