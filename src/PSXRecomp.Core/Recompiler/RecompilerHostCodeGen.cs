@@ -36,6 +36,11 @@ public static class RecompilerHostCodeGen
     private const string HostTransferFnType = "recompiler_host_transfer_fn";
     private const string HostRetiredFnType = "recompiler_host_retired_fn";
     private const string HostRetiredField = "host_retired";
+    private const string HostInterruptFnType = "recompiler_host_interrupt_fn";
+    private const string HostInterruptField = "host_interrupt";
+    private const string Cop0CauseField = "cop0_cause";
+    private const string Cop0EpcField = "cop0_epc";
+    private const string IrqLineField = "irq_line";
     private const string RetiredTotalField = "retired_total";
     private const string RetiredReportedField = "retired_reported";
     private const int IndentSpaces = 2;
@@ -269,6 +274,10 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("typedef int32_t (*" + HostTransferFnType + ")(struct " + StateStruct + "*);");
         sb.AppendLine("/* Optional guest-time hook (Issue #679), called after every dispatch unit that retires. */");
         sb.AppendLine("typedef void (*" + HostRetiredFnType + ")(struct " + StateStruct + "*);");
+        sb.AppendLine("/* Optional hardware-interrupt boundary hook (Issue #680), called at the top of every dispatch");
+        sb.AppendLine("   iteration — an instruction-fetch boundary outside any branch delay slot. When it accepts an");
+        sb.AppendLine("   interrupt it performs the INT exception entry in the state and leaves pc at the vector. */");
+        sb.AppendLine("typedef void (*" + HostInterruptFnType + ")(struct " + StateStruct + "*);");
         sb.AppendLine("typedef struct " + StateStruct + " {");
         sb.AppendLine("  uint32_t gpr[32];");
         sb.AppendLine("  uint32_t hi;");
@@ -284,9 +293,14 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t exception_code;");
         sb.AppendLine("  uint32_t exception_fault_pc;");
         sb.AppendLine("  uint32_t exception_in_delay_slot;");
-        sb.AppendLine("  /* COP0 SR (Issue #663): the only COP0 state this CPU model carries. It is written");
-        sb.AppendLine("     only by a host-completed SYSCALL (host_syscall); no lowered instruction reads it. */");
+        sb.AppendLine("  /* COP0 SR (Issue #663), and since Issue #680 CAUSE and EPC. SR is written by a host-completed");
+        sb.AppendLine("     SYSCALL (host_syscall) and by a hardware INT entry (host_interrupt); CAUSE/EPC only by the");
+        sb.AppendLine("     INT entry. No lowered instruction reads them. irq_line mirrors CAUSE.IP2: the aggregate");
+        sb.AppendLine("     interrupt-controller line as the host last reported it. */");
         sb.AppendLine("  uint32_t " + Cop0SrField + ";");
+        sb.AppendLine("  uint32_t " + Cop0CauseField + ";");
+        sb.AppendLine("  uint32_t " + Cop0EpcField + ";");
+        sb.AppendLine("  uint32_t " + IrqLineField + ";");
         sb.AppendLine("  void* " + CoreField + ";");
         sb.AppendLine("  " + HostTransferFnType + " " + HostTransferField + ";");
         sb.AppendLine("  /* Optional host SYSCALL hook (Issue #663), same contract as host_transfer: 0 when the");
@@ -300,6 +314,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint64_t " + RetiredTotalField + ";");
         sb.AppendLine("  uint64_t " + RetiredReportedField + ";");
         sb.AppendLine("  " + HostRetiredFnType + " " + HostRetiredField + ";");
+        sb.AppendLine("  " + HostInterruptFnType + " " + HostInterruptField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
     }
@@ -682,6 +697,12 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
         sb.AppendLine(IndentUnit + "for (;;) {");
         sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
+        // Issue #680: the interrupt boundary. Every iteration starts between dispatch units, and a unit
+        // fuses a branch with its delay slot, so this is never inside a branch + delay-slot pair —
+        // where the interpreter's CPU takes INT too (not while branch_pending_). Gated by the same
+        // budget guard as the blocks below, so budget == 0 still executes nothing. A null hook (every
+        // state that does not set one) keeps the pre-existing behavior.
+        sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostInterruptField} != 0 && steps < budget) {{ {StateParam}->{HostInterruptField}({StateParam}); }}");
 
         // A generated-host budget is a strict upper bound on retired dispatch
         // units. Known generated blocks and host-claimed transfers both spend one

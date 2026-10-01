@@ -88,10 +88,11 @@ internal static class ArtifactSnapshotParser
                 if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) return null;
                 exceptionInDelaySlot = v != 0;
             }
-            else if (key == "cop0.sr")
+            else if (key is "cop0.sr" or "cop0.cause" or "cop0.epc")
             {
-                // Issue #663: the artifact's SR is well-formed evidence on stdout, but
-                // RecompilerStateSnapshot carries no COP0 state, so it is validated and dropped.
+                // Issue #663 / #680: the artifact's COP0 state is well-formed evidence on stdout, but
+                // RecompilerStateSnapshot carries no COP0 state, so it is validated and dropped here;
+                // ReadCop0 gives a caller that wants it (the INT diagnostic) the values.
                 if (!TryParseHex(value, out _)) return null;
             }
             else if (key.StartsWith("gpr[", StringComparison.Ordinal) && key.EndsWith(']'))
@@ -131,6 +132,26 @@ internal static class ArtifactSnapshotParser
             pc.Value,
             exception: exception,
             termination: (RecompilerIrTerminationReason)termination.Value);
+    }
+
+    /// <summary>The artifact's final COP0 <c>sr</c>/<c>cause</c>/<c>epc</c> from <paramref name="stdout"/>'s snapshot, or null when absent or malformed.</summary>
+    public static (uint Sr, uint Cause, uint Epc)? ReadCop0(string stdout)
+    {
+        uint? sr = null, cause = null, epc = null;
+        foreach (var rawLine in stdout.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            var eq = line.IndexOf('=');
+            if (eq < 0 || !TryParseHex(line[(eq + 1)..].Trim(), out var v)) continue;
+            switch (line[..eq])
+            {
+                case "cop0.sr": sr = v; break;
+                case "cop0.cause": cause = v; break;
+                case "cop0.epc": epc = v; break;
+            }
+        }
+
+        return sr is { } s && cause is { } c && epc is { } e ? (s, c, e) : null;
     }
 
     private static bool TryParseHex(string value, out uint result)

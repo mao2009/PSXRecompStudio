@@ -204,7 +204,7 @@ public sealed class RecompiledArtifactDeviceTimeTests
 
         result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
         (result.FinalSnapshot!.Gpr[(int)S0] & VblankIrq).Should().Be(VblankIrq);
-        result.FinalSnapshot.Gpr[(int)T2].Should().Be(0u, "the loop ran to its end, so the pending IRQ0 was not taken as an INT exception (#680)");
+        result.FinalSnapshot.Gpr[(int)T2].Should().Be(0u, "the loop ran to its end: SR never enabled interrupts, so the pending IRQ0 was not taken as an INT exception (#680)");
     }
 
     [Fact]

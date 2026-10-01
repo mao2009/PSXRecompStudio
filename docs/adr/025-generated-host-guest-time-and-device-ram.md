@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Issue: #679 (parent #676; depends on #678; next #680)
+- Issue: #679, #680 (parent #676; depends on #678; #680 is the INT-delivery addendum below)
 
 ## Context
 
@@ -42,8 +42,19 @@ Scheduler or device failure while consuming a report: `ARTIFACT_SCHEDULER_FAILED
 ## Consequences
 
 - The artifact and the interpreter advance devices by the same time for the same retired instructions; Timer, VBlank and DMA3 effects appear in I_STAT / DMA state / `artifact_ram`.
-- Pending IRQs are only *observable* (I_STAT); delivering them as INT exceptions into the artifact's CPU state is #680.
+- Pending IRQs are observable in I_STAT and, since #680 (addendum below), reach the artifact CPU as a hardware INT exception.
 - A report round-trips with the host, so the pipe — not the instruction count — bounds artifact speed; the 1024 threshold and the MMIO-bound reports keep that proportional to device interaction.
+
+## Addendum (Issue #680): hardware INT delivery
+
+The pending state is the existing Interrupt Controller's (`I_STAT & I_MASK`, `PSXCore_GetInterruptPending()`, the line the interpreter's CPU reflects into CAUSE.IP2); no second interrupt model exists.
+
+- **Line transport.** The host's reply to `RHOST_RETIRED` becomes `A` (line deasserted) or `I` (asserted), read after the `DeviceScheduler` advance. The artifact mirrors it in `irq_line` / `CAUSE.IP2`. Everything that can change I_STAT, I_MASK or device time passes through a report (an MMIO write flushes at the end of its unit), so the line is current at every dispatch boundary. A device event is noticed at the next report: at most 1024 retired instructions after it (bounded and deterministic; the interpreter notices after one instruction).
+- **Acceptance point.** `recompiler_dispatch` calls `host_interrupt` at the top of each iteration, i.e. between dispatch units. A unit fuses a branch with its delay slot, so INT is never taken inside a branch + delay-slot pair (the native CPU does not check while `branch_pending_` either), and EPC is never a delay-slot address (`CAUSE.BD` stays 0). The hook is gated by the budget guard (`steps < budget`): a stop at the budget leaves the state unmutated.
+- **Acceptance condition.** `irq_line && SR.IEc (bit 0) && SR.IM2 (bit 10)`. Pending in I_STAT alone never raises an exception.
+- **Entry (R3000A, docs/cpu/exceptions.md).** `EPC = pc`; `CAUSE = (CAUSE & ~(Excode|CE|BD)) | IP2` (Excode INT = 0); SR KU/IE stack pushed (`(SR & ~0x3F) | ((SR << 2) & 0x3C)`, the SYSCALL entry's push); `pc = SR.BEV ? 0xBFC00180 : 0x80000080`. No instruction retires, so no device time. A test compares these values with the native `PSXCpu`'s for the same SR and line.
+- **Boundary.** No guest code is called on the guest's behalf. The artifact has no generated block at the vector, so the host-transfer offer for that pc is answered with `UnresolvedIndirectFlow` and `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` (the message carries EPC/CAUSE/SR): the kernel exception path (C0:06 ExceptionHandler, timer/VBlank priority chain, Pad/Card IRQ, B0:17/B0:18) is #662/#658/#661.
+- **SR bit layout (recorded, not changed).** The generated host and the kernel contract (`BiosKernelSyscallDispatch`, ADR-014) use the R3000A layout (IEc = bit 0, KUc = bit 1). `PSXCpu`'s INT check and `docs/cpu/cop0.md` name bit 1 as IEc. The two agree on every other value (the stack push is layout-neutral), but a guest that enables interrupts with SR bit 0 only (SYS 02h, `mtc0 0x401`) is not interrupted by the interpreter.
 
 ## Related
 
