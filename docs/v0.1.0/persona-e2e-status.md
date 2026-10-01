@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host)
 
-**Classification:** `unclassified runtime wait / execution-budget exhaustion`.
+**Classification:** `permanent guest wait for VBlank/CD-ROM interrupts the generated-host artifact cannot deliver` (measured in #675; follow-up #676).
 
 **Description:**
 
@@ -80,11 +80,9 @@ dotnet run --project src/PSXRecomp.Cli -- run rom/PERSONA.chd --output out/perso
 the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-through
 without an extra root, passes A0:3F `printf`, and emits
 `CD_init:addr=800500e4`. It then stops with `OUTER_BUDGET_EXHAUSTED`
-(exit 2, state 3) at guest PC `0x800278A8`. Generated blocks around that PC
-compare a RAM counter with `0x3C0000`, but the condition the guest is waiting
-for has not been identified. GPU, CD-ROM, timer/VBlank, or another subsystem
-must not be promoted to the current blocker until execution evidence identifies
-the dependency.
+(exit 2, state 3) at guest PC `0x800278A8`. #675 classified the wait (below);
+the dependency is the generated-host artifact's missing MMIO/device/IRQ path,
+tracked in #676.
 
 **Historical structural gap.** Earlier production runs failed before runtime
 because `ReachableProgramBuilder` lowers the entire statically reachable graph
@@ -270,12 +268,37 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     (exit 2, `state=3`) with guest PC `0x800278A8`, the PC where the budget
     expired. The generated blocks around it compare a RAM counter against
     `0x3C0000`, but what the guest is waiting for is **not identified**
-    (unclassified; no cause is claimed). Frame evidence stays
+    (classified in item 17). Frame evidence stays
     `unavailable` / `no-frame-activity`.
+
+17. **Measured in #675 (classification, no code change).** `0x800278A8` is the
+    return address of `jal 0x80025C98` (`VSync(-1)`) inside libcd `CD_sync`
+    (strings `CD_sync`, `CD timeout: `). The loop sets `deadline = VSync(-1) + 0x3C0`
+    (`[0x8005640C]`) and `iter = 0` (`[0x80056410]`), then per pass calls
+    `VSync(-1)`, takes the timeout path if `deadline < VSync(-1)` or
+    `iter++ > 0x3C0000`, else polls the RAM interrupt flag `[0x8004EC5A]` /
+    state byte `[0x800500E0]`. `VSync(-1)` returns `Vcount` (`[0x8004FD3C]`),
+    incremented only by the VBlank callback `0x80025BC8`. CONFIRMED from guest RAM
+    at the stop: the guest registered its callbacks (IRQ0 `0x80025BC8`, IRQ2
+    `0x800281F8`, IRQ3 `0x80025918`, I_MASK shadow `0x000D`) and Vcount is 0.
+    CONFIRMED: the generated artifact maps only the 2 MiB RAM; reads of
+    `0x1F801814`/`0x1F801110` return 0 and device writes are dropped, and
+    nothing delivers an interrupt. Diagnostic budget control (local, not
+    committed; wall-clock timeout lifted): the loop counter scales linearly with
+    budget (1M blocks: 0x4C3C, 5M: 0x191C2, 20M: 0x65676) with Vcount unchanged;
+    at 400M blocks the guest leaves the loop only via its own `0x3C0000` cap and
+    prints `CD timeout: CD_cw:(CdlNop) Sync=NoIntr, Ready=NoIntr`, retries
+    `CdlReset` (same), re-prints `CD_init:addr=800500e4` and cycles with Vcount
+    still 0. Hence a permanent wait, not budget shortage. INFERRED: delivering
+    VBlank IRQ0 alone would end the loop via the deadline path (a timeout, not
+    CD success); a successful CD_sync needs the CD-ROM IRQ2 callback. UNKNOWN: the
+    interpreter path's behaviour at this point (its frame-evidence run also
+    reports `OUTER_BUDGET_EXHAUSTED` at 400M). The device models exist and are
+    wired for the interpreter only; the generated-host gap is tracked in #676.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
-#670 A0:3F printf, item 16); **GPU integration (#440) and CD-ROM (#444) remain unreached and
+#670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host cannot deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
 actually measured by the production run.
