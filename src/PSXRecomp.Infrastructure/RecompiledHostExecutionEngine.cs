@@ -192,7 +192,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // retained from Load and re-applied to this rewrite.
         WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
-        var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs);
+        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs);
         var arguments = new List<string>(3) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -216,6 +216,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.TimedOut, "ARTIFACT_TIMEOUT", "The runnable artifact exceeded its bounded execution timeout.");
+        }
+
+        if (bridge?.MmioFailureCode is { } mmioFailureCode)
+        {
+            // The artifact stopped itself on a refused guest MMIO access (Issue #678).
+            // Classified here instead of the generic ARTIFACT_FAILED so an unsupported
+            // device address is never mistaken for a child crash, and never read as 0.
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed, mmioFailureCode, bridge.MmioFailureMessage!);
         }
 
         if (exit < 0 || exit > byte.MaxValue || !stdout.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
@@ -420,7 +429,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// against <see cref="RecompiledArtifactCodeGen"/>'s protocol instead of the
     /// differential driver's.
     /// </summary>
-    private sealed class HostTransferBridge
+    private sealed class HostTransferBridge : IDisposable
     {
         private const int TransferFieldCount = 33; // pc + 32 GPRs.
 
@@ -430,9 +439,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private TextReader? _fromArtifact;
         private TextWriter? _toArtifact;
         private IBiosRuntime? _biosRuntime;
+        private PsxDeviceGraph? _devices;
 
         public string? DiagnosticCode { get; private set; }
         public string? DiagnosticMessage { get; private set; }
+
+        /// <summary>Why the host refused a guest MMIO access, or null when none was refused (Issue #678).</summary>
+        public string? MmioFailureCode { get; private set; }
+        public string? MmioFailureMessage { get; private set; }
+
+        public void Dispose() => _devices?.Dispose();
 
         public HostTransferBridge(
             Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory, IReadOnlySet<uint> blockEntryPcs)
@@ -452,10 +468,26 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             var trimmed = line.TrimEnd();
             if (trimmed == RecompiledArtifactCodeGen.ProtocolInitLine)
             {
+                // The existing Runtime device graph the artifact's non-RAM accesses are
+                // relayed to (Issue #678). It holds device state only: nothing here
+                // advances time or delivers interrupts.
+                _devices = new PsxDeviceGraph();
                 _biosRuntime = _biosRuntimeFactory(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
                 Decline();
+                return true;
+            }
+
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioReadPrefix, StringComparison.Ordinal))
+            {
+                HandleMmio(trimmed[RecompiledArtifactCodeGen.ProtocolMmioReadPrefix.Length..], isWrite: false);
+                return true;
+            }
+
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioWritePrefix, StringComparison.Ordinal))
+            {
+                HandleMmio(trimmed[RecompiledArtifactCodeGen.ProtocolMmioWritePrefix.Length..], isWrite: true);
                 return true;
             }
 
@@ -552,6 +584,63 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {unchecked(faultPc + 4u)} 0 0"));
+        }
+
+        /// <summary>
+        /// One guest MMIO access offered by the artifact (Issue #678): <c>width physical</c>
+        /// for a read, <c>width physical value</c> for a write. It is relayed to the
+        /// Runtime device graph as one access of that width. A malformed request is a
+        /// protocol fault (the pump classifies it as <c>ARTIFACT_HOST_PROTOCOL_FAILED</c>);
+        /// an address the Runtime does not model, or a device failure, is refused with
+        /// <c>X</c> and a classified diagnostic — never a silent 0 or a dropped write.
+        /// </summary>
+        private void HandleMmio(string fields, bool isWrite)
+        {
+            var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            uint value = 0;
+            if (_devices is null
+                || parts.Length != (isWrite ? 3 : 2)
+                || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var width)
+                || width is not (1 or 2 or 4)
+                || !uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var physical)
+                || (isWrite && !uint.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out value))
+                || (width < 4 && value >> (8 * width) != 0))
+            {
+                throw new InvalidOperationException($"Malformed MMIO request '{fields}'.");
+            }
+
+            var kind = isWrite ? "write" : "read";
+            PsxDeviceAccessStatus status;
+            uint result = 0;
+            try
+            {
+                status = isWrite
+                    ? _devices.TryWrite(physical, width, value)
+                    : _devices.TryRead(physical, width, out result);
+            }
+            catch (Exception exception)
+            {
+                Trace.WriteLine($"MMIO device access failed: {exception}");
+                Refuse("ARTIFACT_MMIO_DEVICE_FAILED", $"The Runtime device failed a {width}-byte MMIO {kind} at physical 0x{physical:X8}.");
+                return;
+            }
+
+            if (status != PsxDeviceAccessStatus.Completed)
+            {
+                Refuse("ARTIFACT_MMIO_UNSUPPORTED", $"The Runtime does not model the {width}-byte MMIO {kind} at physical 0x{physical:X8}.");
+                return;
+            }
+
+            Send(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
+        }
+
+        private void Refuse(string code, string message)
+        {
+            MmioFailureCode = code;
+            MmioFailureMessage = message;
+            Send(RecompiledArtifactCodeGen.ProtocolMmioRefusedReply);
         }
 
         private void Decline() => Send(RecompiledArtifactCodeGen.ProtocolDeclineReply);

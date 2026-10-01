@@ -296,6 +296,13 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     reports `OUTER_BUDGET_EXHAUSTED` at 400M). The device models exist and are
     wired for the interpreter only; the generated-host gap is tracked in #676.
 
+18. **#678 MMIO bridge landed; the blocker is unchanged.** The generated-host
+    artifact now relays guest accesses outside RAM to the Runtime device graph, so
+    `0x1F801814` / `0x1F801110` reads reach the existing GPU/Timer state instead of
+    returning 0 and device writes are no longer dropped. Nothing advances those
+    devices or delivers an interrupt yet (#679, #680), so the same run still ends
+    `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` with Vcount unchanged.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host cannot deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and

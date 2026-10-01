@@ -22,10 +22,10 @@ public sealed class InterpreterTitleExecutionEngineTests
     {
         var engine = new InterpreterTitleExecutionEngine(new[] { MipsEncoding.Nop }, Entry);
 
-        var dmaAdapter = GetAdapter<DmaMmioAdapter>(engine, "_dmaAdapter");
-        var timerAdapter = GetAdapter<TimerMmioAdapter>(engine, "_timerAdapter");
-        var interruptAdapter = GetAdapter<InterruptControllerMmioAdapter>(engine, "_interruptControllerAdapter");
-        var gpuAdapter = GetAdapter<GpuMmioAdapter>(engine, "_gpuAdapter");
+        var dmaAdapter = GetAdapter<DmaMmioAdapter>(engine, "DmaAdapter");
+        var timerAdapter = GetAdapter<TimerMmioAdapter>(engine, "TimerAdapter");
+        var interruptAdapter = GetAdapter<InterruptControllerMmioAdapter>(engine, "InterruptControllerAdapter");
+        var gpuAdapter = GetAdapter<GpuMmioAdapter>(engine, "GpuAdapter");
 
         engine.Dispose();
 
@@ -53,8 +53,12 @@ public sealed class InterpreterTitleExecutionEngineTests
 
     private static T GetAdapter<T>(InterpreterTitleExecutionEngine engine, string fieldName)
     {
-        var field = typeof(InterpreterTitleExecutionEngine).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
-        field.Should().NotBeNull($"the engine must retain its {fieldName} field to dispose it");
-        return (T)field!.GetValue(engine)!;
+        // The adapters live on the shared Runtime device graph the engine owns and disposes.
+        var graphField = typeof(InterpreterTitleExecutionEngine).GetField("_devices", BindingFlags.NonPublic | BindingFlags.Instance);
+        graphField.Should().NotBeNull("the engine must retain its device graph to dispose it");
+        var graph = graphField!.GetValue(engine)!;
+        var property = graph.GetType().GetProperty(fieldName);
+        property.Should().NotBeNull($"the device graph must expose {fieldName}");
+        return (T)property!.GetValue(graph)!;
     }
 }

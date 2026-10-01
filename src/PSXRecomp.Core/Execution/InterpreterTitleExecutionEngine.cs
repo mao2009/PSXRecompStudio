@@ -49,15 +49,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
-    private readonly PSXCoreWrapper _core = new();
+    private readonly PsxDeviceGraph _devices = new();
+    private readonly PSXCoreWrapper _core;
     private readonly MemoryBus _bus;
-    private readonly DmaMmioAdapter _dmaAdapter;
-    private readonly TimerMmioAdapter _timerAdapter;
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
     private readonly GpuDevice _gpuDevice;
     private readonly GpuMmioAdapter _gpuAdapter;
     private readonly CdRomDevice _cdRomDevice;
-    private readonly CdRomMmioAdapter _cdRomAdapter;
     private readonly CdRomDmaTransfer _cdRomDmaTransfer;
     private DeviceScheduler? _scheduler;
     private bool _loaded;
@@ -159,49 +157,19 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
 
-        // Wire the managed MMIO layer (DMA/timers/interrupt controller) into
-        // the production engine so it is reachable from the real execution path
-        // instead of only from unit tests (Issue #386). The BIOS runtime seam
-        // travels through this bus, so guest RAM/mirror/device semantics all
-        // come from one routing point while the interpreter drives the same
-        // native core.
-        _bus = new MemoryBus(_core);
-        _dmaAdapter = new DmaMmioAdapter(_core);
-        _timerAdapter = new TimerMmioAdapter(_core);
-        _interruptControllerAdapter = new InterruptControllerMmioAdapter(_core);
-        _gpuDevice = new GpuDevice();
-        _gpuAdapter = new GpuMmioAdapter(_gpuDevice);
-        // A licensed disc is always "present" so ReadN/ReadS/GetID reach their
-        // success path and DMA3/IRQ2 stay production-reachable; disc-image
-        // content/format and swap UX remain out of scope (#587 non-goals).
-        // LoadData still supplies sector bytes as a separate, format-independent
-        // boundary (Issue #586/#587), same as every focused CD-ROM test.
-        _cdRomDevice = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
-        _cdRomAdapter = new CdRomMmioAdapter(_cdRomDevice);
-        _cdRomDmaTransfer = new CdRomDmaTransfer(_cdRomDevice, _dmaAdapter, _bus);
-        _bus.AttachDmaAdapter(_dmaAdapter);
-        _bus.AttachTimerAdapter(_timerAdapter);
-        _bus.AttachInterruptControllerAdapter(_interruptControllerAdapter);
-        _bus.AttachGpuAdapter(_gpuAdapter);
-        _bus.AttachCdRomAdapter(_cdRomAdapter);
-
-        // Production guest LW/SW executes inside the native interpreter, so it
-        // bypasses the managed MemoryBus object itself. Route only the GPU's
-        // 32-bit register window back to the same managed adapter; the native
-        // side owns no GPU semantics (Issue #572).
-        _core.AttachGpuMmio(_gpuAdapter.ReadRegister, _gpuAdapter.WriteRegister);
-
-        // Same bridge as the GPU above, but for the CD-ROM controller's 8-bit
-        // port window: the native side owns no CD-ROM semantics either
-        // (Issue #587).
-        _core.AttachCdRomMmio(
-            address => (byte)_cdRomAdapter.ReadRegister(address),
-            (address, value) => _cdRomAdapter.WriteRegister(address, value));
-
-        // SIO0 register model (Issue #542): native/Rust-owned inside
-        // PSXMemory (see MemoryBus.ReadMmio/WriteMmio's Sio0 case and
-        // crate::sio0's module documentation), so no adapter is attached
-        // here — Load()'s _core.Reset() already resets it.
+        // The managed MMIO layer (DMA/timers/interrupt controller/GPU/CD-ROM) is
+        // the shared Runtime device graph, so it is reachable from the real
+        // execution path (Issue #386) and is the same one the generated-host
+        // artifact relays to (Issue #678). The BIOS runtime seam travels through
+        // its bus, so guest RAM/mirror/device semantics all come from one routing
+        // point while the interpreter drives the same native core.
+        _core = _devices.Core;
+        _bus = _devices.Bus;
+        _interruptControllerAdapter = _devices.InterruptControllerAdapter;
+        _gpuDevice = _devices.GpuDevice;
+        _gpuAdapter = _devices.GpuAdapter;
+        _cdRomDevice = _devices.CdRomDevice;
+        _cdRomDmaTransfer = _devices.CdRomDmaTransfer;
     }
 
     /// <inheritdoc />
@@ -461,23 +429,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             return;
         }
 
-        // The native CPU may call back into the managed GPU/CD-ROM adapters
-        // while stepping, so sever both edges before either side of either
-        // bridge is disposed (Issues #572/#587).
-        _core.DetachGpuMmio();
-        _core.DetachCdRomMmio();
-        _bus.Dispose();
-        _gpuAdapter.Dispose();
-        _gpuDevice.Dispose();
-        _cdRomAdapter.Dispose();
-
-        // The native-owned adapters unregister their callbacks in Dispose();
-        // MemoryBus.Dispose() only clears its own references to them, so they
-        // must be disposed before _core.Dispose().
-        _dmaAdapter.Dispose();
-        _timerAdapter.Dispose();
-        _interruptControllerAdapter.Dispose();
-        _core.Dispose();
+        _devices.Dispose();
         _disposed = true;
         GC.SuppressFinalize(this);
     }
