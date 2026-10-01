@@ -298,7 +298,7 @@ that gap was exposed and resolved; it is no longer the current first blocker.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
-#670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host cannot deliver (#676); **GPU integration (#440) and real CD-ROM data (#14) remain unreached and
+#670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host cannot deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
 actually measured by the production run.
