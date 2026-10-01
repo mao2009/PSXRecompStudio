@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `hardware INT delivered; no kernel exception handler at the exception vector (BIOS-less)` (measured in #680; next: #662).
+**Classification:** `kernel exception handler entered; priority chain reaches an unmodelled element (VBlank IRQ0 pending)` (measured in #662; next: #658/#660, then #661).
 
 **Description:**
 
@@ -81,10 +81,12 @@ the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-throug
 without an extra root, passes A0:3F `printf`, and emits
 `CD_init:addr=800500e4`. It then takes the VBlank interrupt as a hardware INT
 exception and stops, fail-closed, at the general exception vector
-`0x80000080` with `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` (exit 1, state 5
-`RuntimeFailure`; EPC `0x80025CBC`, CAUSE `0x400`, SR `0x404`, I_STAT `0x0001`,
-I_MASK `0x000D`). Nothing is generated at the vector in a BIOS-less run: the kernel
-exception path is #662 (item 20). The earlier `OUTER_BUDGET_EXHAUSTED` wait at
+`0x80000080` (item 20, #680). Since #662 (item 21) that vector is the Runtime's
+kernel exception handler (C0:06): the run enters it, saves the context, and stops,
+fail-closed, at the priority chain with `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1,
+state 5 `RuntimeFailure`; EPC `0x80025CBC`, CAUSE `0x400`, SR `0x404`, I_STAT
+`0x0001`, I_MASK `0x000D`) because the pending enabled VBlank IRQ0 needs a kernel
+chain element the Runtime does not model. The earlier `OUTER_BUDGET_EXHAUSTED` wait at
 `0x800278A8` (#675, items 16-19) is no longer where the run ends.
 
 **Historical structural gap.** Earlier production runs failed before runtime
@@ -180,11 +182,11 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     to a structure"), and firing the hook reads the buffer's current contents and
     restores only `ra/sp/fp/s0-s7/gp` with `$v0 = 1` (`BiosExceptionHook.TryComplete`).
     **The hook cannot fire in a real run yet**: its consumer is the kernel's
-    exception-handler completion (C0:06), which this Runtime does not model
-    (no ExceptionHandler, TCB, or B0:17); tracked separately. #651 defined the
-    completion boundary (`BiosExceptionCompletion`) as a Runtime contract, but no
-    execution path reaches it yet (C0:06 entry #662, B0:17 #664, B0:18 #665), so
-    the production run is unchanged.
+    exception-handler completion (C0:06). #651 defined the completion boundary
+    (`BiosExceptionCompletion`) as a Runtime contract; #662 (item 21) now reaches it
+    from both execution paths through the shared C0:06 entry, but only once the
+    priority chains ran to the end, which the production run does not reach yet
+    (B0:17 #664, B0:18 #665).
     Measured on `main` 79a4859 + #648 + #650 (PERSONA.chd):
     - `--entry-root 0x80025350` alone: A0:13 and B0:19 pass; stops at
       `UNRESOLVED_TRANSFER_IN_IMAGE` `0x80025614` (exit 2, `UnsupportedTransfer`).
@@ -349,12 +351,33 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     whether the handler chain then lets `CD_sync` complete (IRQ2).
     Recorded, not changed: the interpreter's INT check treats SR bit 1 as IEc while the
     kernel contract and generated host use bit 0 (ADR-025 addendum), so a guest enabling
-    interrupts via SYS(02h) is interrupted on the generated host and not on the interpreter.
+    interrupts via SYS(02h) is interrupted on the generated host and not on the interpreter
+    (tracked as #684).
+
+21. **#662 C0:06 ExceptionHandler entry; the stop moves to the priority chain.** The
+    unpopulated RAM vector `0x80000080` now enters the shared BIOS-less kernel exception
+    handler (`BiosExceptionHandler`, ADR-014 amendment): it saves the interrupted
+    context into the current TCB (seeding a PCB/TCB because `[0x108]` is 0 in a BIOS-less
+    run), walks the priority chains, and only after they ran to the end performs
+    the completion step (B0:19 hook, else ReturnFromException). Measured on `main`
+    35cc954 + #662, with only `--entry-root 0x80025350 --entry-root 0x80025614`
+    (`run rom/PERSONA.chd --json --report --frame-evidence`): output unchanged
+    (`CD_init:addr=800500e4`); `RuntimeFailure` / `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`,
+    `guestPc` `0x80000080` (exit 1); EPC `0x80025CBC`, CAUSE `0x00000400`, SR
+    `0x00000404`, I_STAT `0x0001`, I_MASK `0x000D` (unchanged: the entry only reads
+    them). So the entry is crossed: the bare `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` is
+    gone. **First blocker: the VBlank IRQ0 chain element.** The default chain
+    stops at the first pending enabled IRQ (IRQ0), whose kernel handlers are priority 1
+    (timer/VBlank: #658 clear flags, #660 root-counter events) and priority 2 (Pad/Card:
+    #661; its B0:5B setting is modelled by #654 but not invoked). Which of them is first
+    needed is decided when #658/#661 are implemented; #664/#665 sit behind that. Frame
+    evidence stays `unavailable` / `no-frame-activity`. Not reached: the title screen;
+    not measured: whether the chain lets `CD_sync` complete (IRQ2).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is now the exception vector `0x80000080` with
-`ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` (item 20, #680): CPU INT delivery works and the
-missing piece is the kernel exception handler (#662). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+first measured stop is now the kernel exception handler's priority chain
+(`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662): CPU INT delivery (#680) and the
+C0:06 entry work and the missing piece is the VBlank IRQ0 chain element (#658/#661). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

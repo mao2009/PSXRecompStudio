@@ -54,6 +54,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly Action<PsxDeviceGraph>? _configureDevices;
+    private readonly BiosExceptionChain? _exceptionChain;
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly string _binaryPath;
     private readonly string _inputPath;
@@ -97,6 +98,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// runs: the seam a disc/sector source attaches to (a device's own input, never guest RAM,
     /// which stays the artifact's). Null leaves the devices as constructed.
     /// </param>
+    /// <param name="exceptionChain">
+    /// The kernel exception handler's priority-chain walk (Issue #662); null is
+    /// <see cref="BiosExceptionHandler.DefaultChain"/>. The seam the modelled kernel handlers plug into.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -108,7 +113,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         IGeneratedHostBuildService buildService,
         string outputDirectory,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
-        Action<PsxDeviceGraph>? configureDevices = null)
+        Action<PsxDeviceGraph>? configureDevices = null,
+        BiosExceptionChain? exceptionChain = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -122,6 +128,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         _biosRuntimeFactory = biosRuntimeFactory;
         _configureDevices = configureDevices;
+        _exceptionChain = exceptionChain;
         _blockEntryPcs = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
         _inputPath = Path.Combine(outputDirectory, "artifact-input.txt");
         _imagePath = Path.Combine(outputDirectory, "artifact-image.bin");
@@ -204,7 +211,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // retained from Load and re-applied to this rewrite.
         WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
-        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices);
+        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain);
         var arguments = new List<string>(3) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -474,6 +481,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private DeviceScheduler? _scheduler;
         private ArtifactDeviceRam? _deviceRam;
         private readonly Action<PsxDeviceGraph>? _configureDevices;
+        private readonly BiosExceptionChain? _exceptionChain;
 
         /// <summary>Why the host refused the artifact's guest-time report, or null when it did not (Issue #679).</summary>
         public string? RetiredFailureCode { get; private set; }
@@ -501,11 +509,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public HostTransferBridge(
             Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
             IReadOnlySet<uint> blockEntryPcs,
-            Action<PsxDeviceGraph>? configureDevices)
+            Action<PsxDeviceGraph>? configureDevices,
+            BiosExceptionChain? exceptionChain)
         {
             _biosRuntimeFactory = biosRuntimeFactory;
             _blockEntryPcs = blockEntryPcs;
             _configureDevices = configureDevices;
+            _exceptionChain = exceptionChain;
         }
 
         public void Attach(TextReader fromArtifact, TextWriter toArtifact)
@@ -586,19 +596,26 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             if (!BiosJumpTables.TryResolveVectorFamily(pc, out var family))
             {
+                if (pc == BiosExceptionHandler.GeneralExceptionVector &&
+                    BiosExceptionHandler.IsKernelVector(new GuestMemoryReader(ReadPhysicalByte)))
+                {
+                    HandleKernelException(gpr);
+                    return;
+                }
+
                 if (pc is GeneralExceptionVectorBev0 or GeneralExceptionVectorBev1)
                 {
-                    // Issue #680: a hardware INT leaves the artifact at the general exception vector, where
-                    // the guest's own kernel exception path must run. A BIOS-less run has none generated
-                    // there, so this is the end of CPU INT delivery and the start of the kernel handler work:
-                    // fail closed with a diagnostic rather than hand a bare unresolved pc to the handoff.
+                    // Issue #680: a hardware INT leaves the artifact at the general exception vector. The
+                    // kernel handler is the Runtime's only when the guest left the RAM vector unpopulated
+                    // (above); a guest-installed vector or the BEV = 1 ROM vector has no generated block
+                    // here, so fail closed with a diagnostic rather than hand a bare unresolved pc to the handoff.
                     ExceptionVectorReached = true;
                     DiagnosticCode = ExceptionVectorUnhandledDiagnosticCode;
                     var iStat = _devices!.Core.ReadInterruptControllerRegister(InterruptStatusAddress);
                     var iMask = _devices.Core.ReadInterruptControllerRegister(InterruptMaskAddress);
                     DiagnosticMessage = $"{ExceptionVectorUnhandledDiagnosticCode}|pc=0x{pc:X8}|I_STAT=0x{iStat:X4}, I_MASK=0x{iMask:X4}|Control reached the general exception " +
-                        "vector and the artifact has no generated block there: the kernel exception path (C0:06 ExceptionHandler, " +
-                        "the timer/VBlank priority chain, Pad/Card IRQ handling, B0:17/B0:18 return) is not modelled (#662/#658/#661).";
+                        "vector and the artifact has no generated block there: guest-installed vector code and the BEV = 1 ROM vector are not entered " +
+                        "(the Runtime's kernel exception handler serves only an unpopulated RAM vector, #662).";
                     Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                     return;
                 }
@@ -633,6 +650,71 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
                 $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"));
+        }
+
+        /// <summary>
+        /// The artifact reached the unpopulated RAM general exception vector after taking an INT (Issue #662).
+        /// The CPU state is the artifact's: it is read with <c>E</c>, the shared kernel exception handler decides,
+        /// and a handled exception is applied back to the artifact's CPU (registers, HI/LO, RFE) before the
+        /// decision. An unhandled one stops the run with the contract's diagnostic.
+        /// </summary>
+        private void HandleKernelException(uint[] gpr)
+        {
+            Send(RecompiledArtifactCodeGen.ProtocolCop0QueryCommand);
+            var reply = ReadReply();
+            var fields = reply.StartsWith(RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix, StringComparison.Ordinal)
+                ? reply[RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                : [];
+            if (fields.Length != 5)
+            {
+                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}' reply, received '{reply}'.");
+            }
+
+            var context = new BiosExceptionContext(
+                ParseUInt(fields[0]), ParseUInt(fields[1]), ParseUInt(fields[2]), ParseUInt(fields[3]), ParseUInt(fields[4]));
+            var outcome = BiosExceptionHandler.Handle(
+                new GuestMemoryReader(ReadPhysicalByte),
+                new GuestMemoryWriter(WritePhysicalByte),
+                _devices!.InterruptControllerAdapter,
+                gpr,
+                context,
+                _exceptionChain);
+            if (!outcome.Handled)
+            {
+                DiagnosticCode = outcome.DiagnosticCode;
+                DiagnosticMessage = outcome.DiagnosticMessage;
+                Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                return;
+            }
+
+            for (var i = 1; i < gpr.Length; i++)
+            {
+                if (outcome.Gpr[i] != gpr[i])
+                {
+                    Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolGprCommand} {i} {outcome.Gpr[i]}"));
+                }
+            }
+
+            if (outcome.Hi != context.Hi || outcome.Lo != context.Lo)
+            {
+                Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolHiLoCommand} {outcome.Hi} {outcome.Lo}"));
+            }
+
+            if (outcome.RestoredSr is uint sr)
+            {
+                Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {sr}"));
+                Send(RecompiledArtifactCodeGen.ProtocolRfeCommand);
+            }
+
+            // The chain may have acknowledged I_STAT: the artifact's line is the controller's now, not what the last
+            // guest-time ack said. The artifact still takes the next INT only if its own SR (just restored) allows it.
+            Send(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.InterruptControllerAdapter.HasPendingInterrupts ? 1 : 0)}"));
+
+            Send(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"));
         }
 
         /// <summary>

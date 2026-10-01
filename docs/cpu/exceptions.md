@@ -173,9 +173,24 @@ The generated-host artifact is its own CPU model for this exception: at a dispat
 (between blocks, never inside a branch + delay-slot pair) it takes INT when the host reports
 the Interrupt Controller line asserted and `SR.IEc` (bit 0) and `SR.IM2` are set, performing
 the entry described under Exception Processing (EPC = interrupted pc, CAUSE.Excode 0 / BD 0 /
-IP2, SR stack push, BEV vector). It never calls a guest handler; with no generated code at the
-vector it stops with `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`. See ADR-025 (addendum), including
-the IEc bit-position difference from `PSXCpu`.
+IP2, SR stack push, BEV vector). It never calls a guest handler. At the unpopulated RAM vector
+(`0x80000080`) the host serves the Runtime's kernel exception handler (below); a guest-installed
+vector or the BEV = 1 vector stops with `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`. See ADR-025
+(addendum), including the IEc bit-position difference from `PSXCpu`.
+
+### Kernel exception handler at the vector (Issue #662)
+
+With a BIOS Runtime attached, an INT that lands on `0x80000080` while the four words there are
+all zero (a real BIOS places a 4-instruction stub that jumps to C0:06; a BIOS-less run places
+nothing) is handled by `BiosExceptionHandler`, the same Runtime contract for the interpreter
+(`InterpreterTitleExecutionEngine`) and the generated host (`RecompiledHostExecutionEngine`).
+It reads the EPC / CAUSE / SR the CPU already set (no second copy), saves the interrupted
+registers, HI/LO, EPC, SR and CAUSE into the current TCB, walks the priority chains and, only
+when they ran to the end, completes (B0:19 hook, else ReturnFromException). The CPU applies
+the result: the registers, HI/LO, and for ReturnFromException the saved SR followed by its own
+RFE, then the PC. The interpreter's `_inInterruptHandler` / `_rfePending` guest-handler path is
+untouched: any non-zero word at the vector keeps it guest-owned. Only a hardware INT is served;
+other exceptions are unchanged (SYSCALL is #663's).
 
 ## Exception Vectors
 

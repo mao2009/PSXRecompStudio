@@ -1654,7 +1654,8 @@ the kernel exception handler is now a Runtime contract, `BiosExceptionCompletion
   stays unregistered until the dispatch outcome can carry a full-state restore
   and the CPU applies RFE (#664); B0:18 needs Runtime choices for the Exit
   structure and exception stack (#665). A BIOS-less run has no PCB, so B0:17
-  would fail closed today.
+  would fail closed today. *(The C0:06 entry and the PCB/TCB seeding are #662; see
+  the 2026-10-01 amendment below.)*
 
 Tests: `BiosExceptionCompletionTests`.
 
@@ -1769,3 +1770,52 @@ every device write were invisible to the Runtime.
   (no Runtime attached) — never a snapshot, never a silent 0.
 
 Tests: `RecompiledArtifactMmioBridgeTests`.
+
+## Amendment (2026-10-01): BIOS-less C0:06 ExceptionHandler entry
+
+Issue #662: nothing called the #651 completion boundary, because a BIOS-less run has
+no code at the general exception vector (the real BIOS places a stub that jumps to
+C0:06). After #680 delivered the device IRQ to the generated-host CPU as an INT, the
+Persona production run stopped there (`ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`).
+
+- **One shared entry.** `BiosExceptionHandler.Handle` is the kernel handler for every
+  execution path, as `BiosKernelSyscallDispatch` is for SYSCALL: the interpreter and the
+  generated host pass the CPU's exception state (`BiosExceptionContext`: EPC/CAUSE/SR read from
+  the CPU, plus HI/LO) and apply the returned `BiosExceptionHandlerOutcome` to their own CPU.
+  The type holds no CPU state, no interrupt state and no ExCB; interrupts are reached through
+  the existing `IInterruptController`.
+- **Vector ownership.** The vector is the kernel's only when the four words at `0x80`
+  (the size of the real stub) are all zero (`IsKernelVector`) and a Runtime is attached. Any
+  non-zero word keeps it guest-owned, so the `_inInterruptHandler` / `_rfePending` path (#499)
+  is unchanged. SR.BEV = 1 (`0xBFC00180`) is not served. Only Excode INT is served; SYSCALL stays
+  #663's and anything else is `BIOS_EXCEPTION_UNSUPPORTED`.
+- **Order (PSX-SPX interrupt-exception-handling).** Save the interrupted context into the
+  current TCB (r1-r31, EPC, HI, LO, SR at the TCB layout of the #651 amendment, plus CAUSE at
+  `98h`); walk the priority chains; only if they ran to the end call
+  `BiosExceptionCompletion.Complete` (hook, else the default Exit); the default Exit and a chain
+  element's own ReturnFromException both restore through `TryReturnFromException`, the same
+  read B0:17 will use (#664). The hook is never fired at IRQ time, nor after an early
+  ReturnFromException. After a hook, SR is left as the CPU has it (no RFE ran); after
+  ReturnFromException the saved SR is handed to the CPU, which applies its own RFE.
+- **PCB/TCB in a BIOS-less run.** A real kernel builds them at boot; here `[0x108] == 0`.
+  Only then does the first exception seed one PCB (`0xE000`, `[PCB+0]` -> TCB) and one zeroed
+  TCB (`0xE100`) and point `[0x108]` at it. These addresses are this Runtime's own choice in
+  the kernel-reserved page, like `0x118`; the real ones are not documented (UNKNOWN). Nothing
+  else is invented: no thread status, no ExCB, no sizes. A non-zero `[0x108]` is guest state:
+  an unusable PCB/TCB is `BIOS_EXCEPTION_KERNEL_STATE_INVALID` and is never replaced.
+- **The chain is a seam.** `BiosExceptionChain` walks the priority chains; both engines take
+  it as an optional constructor argument (null = `DefaultChain`). Today no element is modelled:
+  `DefaultChain` ends only when no enabled IRQ is pending, otherwise it fails closed with
+  `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (I_STAT/I_MASK/EPC/CAUSE/SR in the message) instead of
+  pretending a handler ran. The default elements plug in here: timer/VBlank (#658, #660),
+  Pad/Card (#661, `BiosPadCardIrqHandler`), guest elements (C0:02). Per-IRQ handler
+  ownership was not verified and is not encoded.
+- **Generated host.** The artifact remains the CPU; the wire additions (read `E`; write `G`,
+  `H`, `C`, `P`, `L`) are in the ADR-025 addendum.
+- **Measured (Persona).** The entry is crossed; the run now stops at the chain with the
+  VBlank IRQ0 pending (`docs/v0.1.0/persona-e2e-status.md`, item 21).
+- **Not modelled:** any chain element, B0:17/B0:18 registration (#664/#665), BEV = 1, a
+  delay-slot-specific EPC adjustment (EPC is restored verbatim, as the CPU stored it).
+
+Tests: `BiosExceptionHandlerTests`, `KernelExceptionEntryTests` (interpreter),
+`RecompiledArtifactInterruptTests` (generated host).
