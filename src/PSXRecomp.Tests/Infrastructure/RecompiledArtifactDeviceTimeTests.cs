@@ -338,6 +338,70 @@ public sealed class RecompiledArtifactDeviceTimeTests
         write.Should().Throw<ArtifactDeviceRam.UnroutableException>();
     }
 
+    /// <summary>A stand-in child that answers the host's first RAM write request with <c>reply</c>.</summary>
+    private sealed class BadWriteAckChildBuildService(string reply) : IGeneratedHostBuildService
+    {
+        public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
+        {
+            var source =
+                "#include <stdio.h>\n" +
+                "int main(void) {\n" +
+                "  char b[64]; unsigned long a, v;\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolInitLine}\\n\"); fflush(stdout);\n" +
+                // The handshake: the Runtime's construction reads RAM bytes before it declines (N).
+                "  for (;;) {\n" +
+                "    if (scanf(\"%63s\", b) != 1) return 1;\n" +
+                "    if (b[0] == 'N') break;\n" +
+                "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
+                "    else if (b[0] == 'W' && scanf(\"%lu %lu\", &a, &v) == 2) { printf(\"RHOST_OK\\n\"); fflush(stdout); }\n" +
+                "    else return 1;\n" +
+                "  }\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolRetiredPrefix}1\\n\"); fflush(stdout);\n" +
+                // Answer every RAM write with the same reply until the host sends anything else.
+                "  while (scanf(\"%63s\", b) == 1 && b[0] == 'W') {\n" +
+                "    if (scanf(\"%lu %lu\", &a, &v) != 2) return 1;\n" +
+                $"    printf(\"{reply}\\n\"); fflush(stdout);\n" +
+                "  }\n" +
+                "  return 0;\n" +
+                "}\n";
+            return new GeneratedHostBuildService().Build(request with { Source = source });
+        }
+    }
+
+    [Theory]
+    [InlineData("RHOST_DATA 0")]
+    [InlineData("Q")]
+    [InlineData("A")]
+    [InlineData("X")]
+    [InlineData("OK")]
+    [InlineData("RHOST_OKAY")]
+    [InlineData("RHOST_OK extra")]
+    [InlineData("")]
+    public void Host_RamWriteAnsweredWithAnythingButRhostOk_IsAProtocolFailure(string reply)
+    {
+        using var dir = new TempDirectory();
+
+        // CD-ROM DMA3 is armed host-side; the child's guest-time report makes the scheduler write
+        // the sector into RAM through ArtifactDeviceRam -> WritePhysicalByte.
+        var result = Run(
+            Program([Nop]),
+            dir,
+            withRuntime: true,
+            new BadWriteAckChildBuildService(reply),
+            configureDevices: static graph =>
+            {
+                MakeCdRomDataReady(graph);
+                graph.TryWrite(Dpcr, 4, 0x0765C321u);
+                graph.TryWrite(Dma3Madr, 4, 0x3000u);
+                graph.TryWrite(Dma3Bcr, 4, 2u);
+                graph.TryWrite(Dma3Chcr, 4, 0x11000000u);
+            });
+
+        result.State.Should().NotBe(TitleExecutionState.Completed);
+        result.DiagnosticCode.Should().Be("ARTIFACT_HOST_PROTOCOL_FAILED");
+        result.FinalSnapshot.Should().BeNull();
+    }
+
     // ---- fail closed ---------------------------------------------------------------
 
     [Fact]

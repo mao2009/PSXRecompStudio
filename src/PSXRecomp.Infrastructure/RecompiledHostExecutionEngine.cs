@@ -786,7 +786,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private void WritePhysicalByte(uint physicalAddress, byte value)
         {
             Send($"{RecompiledArtifactCodeGen.ProtocolWriteCommand} {physicalAddress.ToString(CultureInfo.InvariantCulture)} {value.ToString(CultureInfo.InvariantCulture)}");
-            ReadReply();
+            // The artifact answers a RAM write with exactly RHOST_OK. Anything else means the write is not
+            // known to have reached artifact_ram (BIOS HLE seeding and device DMA both land here), so it
+            // is a protocol fault, never a completed write.
+            var reply = ReadReply();
+            if (!string.Equals(reply, RecompiledArtifactCodeGen.ProtocolWriteAck, StringComparison.Ordinal))
+            {
+                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolWriteAck}' reply to a RAM write, received '{reply}'.");
+            }
         }
 
         private string ReadReply() =>
