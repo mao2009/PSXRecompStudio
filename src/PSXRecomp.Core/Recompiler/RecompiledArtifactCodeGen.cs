@@ -76,7 +76,8 @@ public static class RecompiledArtifactCodeGen
 
     /// <summary>
     /// The parent's request for the CPU's exception state: <c>E</c>. The child answers
-    /// <c>RHOST_COP0 epc cause sr hi lo</c> (<see cref="ProtocolCop0ReplyPrefix"/>) (Issue #662).
+    /// <c>RHOST_COP0 epc cause sr hi lo intEntry</c> (<see cref="ProtocolCop0ReplyPrefix"/>); <c>intEntry</c> is 1 only
+    /// when the pc the artifact is at was reached by its hardware INT entry (Issue #662).
     /// </summary>
     public const string ProtocolCop0QueryCommand = "E";
 
@@ -286,6 +287,9 @@ static void artifact_ram_write8(uint32_t address, uint8_t value) {
 /* Set once the parent has completed the host handshake; without it a non-RAM
    access has no Runtime to reach and stops the run instead of reading 0. */
 static int artifact_mmio_bridge = 0;
+/* Provenance of a vector arrival (Issue #662): 1 only between artifact_interrupt_boundary
+   accepting a hardware INT and control leaving the vector it set pc to. */
+static int artifact_int_entry = 0;
 
 /* Guest time (Issue #679). The dispatch counts the guest instructions its completed
    units retired; the parent turns them into device time. A report always precedes the
@@ -451,7 +455,7 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
    parent -> child:  R <physical address>
                      W <physical address> <byte>
                      N                                        (pc not claimed)
-                     E                                        (reply: RHOST_COP0 <epc> <cause> <sr> <hi> <lo>; Issue #662)
+                     E                                        (reply: RHOST_COP0 <epc> <cause> <sr> <hi> <lo> <int entry>; Issue #662)
                      G <gpr index> <value> | H <hi> <lo>      (state write before a decision; Issue #662)
                      C <sr> | P                               (SR write | RFE pop, before a decision; Issues #663/#662)
                      L <0|1>                                  (interrupt line after a kernel handler; Issue #662)
@@ -484,8 +488,8 @@ static int32_t artifact_host_serve(RecompilerState* state) {
             if (scanf(""%lu"", &v) != 1) return 1;
             state->cop0_sr = (uint32_t)v;
         } else if (cmd[0] == 'E') {
-            printf(""RHOST_COP0 %lu %lu %lu %lu %lu\n"", (unsigned long)state->cop0_epc, (unsigned long)state->cop0_cause,
-                   (unsigned long)state->cop0_sr, (unsigned long)state->hi, (unsigned long)state->lo);
+            printf(""RHOST_COP0 %lu %lu %lu %lu %lu %d\n"", (unsigned long)state->cop0_epc, (unsigned long)state->cop0_cause,
+                   (unsigned long)state->cop0_sr, (unsigned long)state->hi, (unsigned long)state->lo, artifact_int_entry);
             fflush(stdout);
         } else if (cmd[0] == 'G') {
             if (scanf(""%lu %lu"", &a, &v) != 2 || a == 0ul || a > 31ul) return 1;
@@ -519,7 +523,11 @@ static int32_t artifact_host_transfer(RecompilerState* state) {
     for (i = 0; i < 32; i++) printf("" %lu"", (unsigned long)state->gpr[i]);
     printf(""\n"");
     fflush(stdout);
-    return artifact_host_serve(state);
+    {
+        int32_t declined = artifact_host_serve(state);
+        artifact_int_entry = 0; /* the vector arrival is consumed by this transfer */
+        return declined;
+    }
 }
 
 /* SYSCALL exception (Issue #663). The artifact is the CPU here: it does the exception
@@ -553,11 +561,14 @@ static int32_t artifact_host_syscall(RecompilerState* state) {
    no instruction retires (no device time): the guest's own kernel path starts at the vector. */
 static void artifact_interrupt_boundary(RecompilerState* state) {
     uint32_t sr = state->cop0_sr;
+    /* Provenance only lasts while control is still at the vector the entry set. */
+    if (state->pc != 0x80000080u && state->pc != 0xBFC00180u) artifact_int_entry = 0;
     if (state->irq_line == 0u || (sr & 0x1u) == 0u || (sr & 0x400u) == 0u) return;
     state->cop0_epc = state->pc;
     state->cop0_cause = (state->cop0_cause & ~(0x7Cu | 0x30000000u | 0x80000000u)) | 0x400u;
     state->cop0_sr = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);
     state->pc = (sr & 0x400000u) != 0u ? 0xBFC00180u : 0x80000080u;
+    artifact_int_entry = 1;
 }
 
 int main(int argc, char** argv) {

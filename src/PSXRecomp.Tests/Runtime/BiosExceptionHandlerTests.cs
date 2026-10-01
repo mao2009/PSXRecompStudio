@@ -196,7 +196,7 @@ public sealed class BiosExceptionHandlerTests : IDisposable
     {
         _interrupts.SetMask(0);
 
-        BiosExceptionHandler.DefaultChain(_interrupts).Status.Should().Be(BiosExceptionChainStatus.Completed);
+        BiosExceptionHandler.DefaultChain(new BiosExceptionChainContext(Reader, Writer, _interrupts, Context())).Status.Should().Be(BiosExceptionChainStatus.Completed);
     }
 
     // ---- completion -----------------------------------------------------------------------
@@ -267,13 +267,42 @@ public sealed class BiosExceptionHandlerTests : IDisposable
     {
         RaiseEnabledVblank();
 
-        var outcome = Handle(Registers(1), interrupts =>
+        var outcome = Handle(Registers(1), ctx =>
         {
-            interrupts.Acknowledge(~VblankBit);
+            ctx.Interrupts.Acknowledge(~VblankBit);
             return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
         });
 
         outcome.Handled.Should().BeTrue();
         (_interrupts.Status & VblankBit).Should().Be(0u);
+    }
+
+    [Fact]
+    public void The_Chain_Context_Carries_Guest_Memory_The_Interrupt_Controller_And_The_Exception()
+    {
+        // What a #658/#661 element needs: read guest kernel state, act on the controller, know the exception.
+        const uint probe = 0x00004000;
+        _ram.Write8(probe, 0x5A);
+        RaiseEnabledVblank();
+        BiosExceptionChainContext? seen = null;
+        byte read = 0;
+
+        var outcome = Handle(Registers(1), ctx =>
+        {
+            seen = ctx;
+            Span<byte> b = stackalloc byte[1];
+            ctx.Reader.TryRead(probe, b).Should().BeTrue();
+            read = b[0];
+            ctx.Interrupts.Acknowledge(~VblankBit);
+            return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
+        });
+
+        outcome.Handled.Should().BeTrue();
+        read.Should().Be(0x5A);
+        (_interrupts.Status & VblankBit).Should().Be(0u);
+        seen!.Value.Exception.Epc.Should().Be(Epc);
+        seen.Value.Exception.Cause.Should().Be(Cause);
+        seen.Value.Exception.Sr.Should().Be(EntrySr);
+        seen.Value.Writer.Should().NotBeNull();
     }
 }

@@ -596,10 +596,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             if (!BiosJumpTables.TryResolveVectorFamily(pc, out var family))
             {
+                // Only a vector the artifact reached by its own hardware INT entry is the kernel's: landing
+                // on the unpopulated vector by an ordinary transfer is not an exception (Issue #662).
                 if (pc == BiosExceptionHandler.GeneralExceptionVector &&
-                    BiosExceptionHandler.IsKernelVector(new GuestMemoryReader(ReadPhysicalByte)))
+                    BiosExceptionHandler.IsKernelVector(new GuestMemoryReader(ReadPhysicalByte)) &&
+                    QueryCop0() is { IntEntry: true } cop0)
                 {
-                    HandleKernelException(gpr);
+                    HandleKernelException(gpr, cop0.Context);
                     return;
                 }
 
@@ -652,26 +655,37 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"));
         }
 
+        private readonly record struct Cop0Query(BiosExceptionContext Context, bool IntEntry);
+
         /// <summary>
-        /// The artifact reached the unpopulated RAM general exception vector after taking an INT (Issue #662).
-        /// The CPU state is the artifact's: it is read with <c>E</c>, the shared kernel exception handler decides,
-        /// and a handled exception is applied back to the artifact's CPU (registers, HI/LO, RFE) before the
-        /// decision. An unhandled one stops the run with the contract's diagnostic.
+        /// The artifact's exception state and whether the vector it is at was reached by its own hardware INT entry
+        /// (the provenance; CAUSE/IRQ state alone cannot prove it, Issue #662).
         /// </summary>
-        private void HandleKernelException(uint[] gpr)
+        private Cop0Query QueryCop0()
         {
             Send(RecompiledArtifactCodeGen.ProtocolCop0QueryCommand);
             var reply = ReadReply();
             var fields = reply.StartsWith(RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix, StringComparison.Ordinal)
                 ? reply[RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries)
                 : [];
-            if (fields.Length != 5)
+            if (fields.Length != 6)
             {
                 throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}' reply, received '{reply}'.");
             }
 
-            var context = new BiosExceptionContext(
-                ParseUInt(fields[0]), ParseUInt(fields[1]), ParseUInt(fields[2]), ParseUInt(fields[3]), ParseUInt(fields[4]));
+            return new Cop0Query(
+                new BiosExceptionContext(ParseUInt(fields[0]), ParseUInt(fields[1]), ParseUInt(fields[2]), ParseUInt(fields[3]), ParseUInt(fields[4])),
+                ParseUInt(fields[5]) == 1);
+        }
+
+        /// <summary>
+        /// The artifact reached the unpopulated RAM general exception vector after taking an INT (Issue #662).
+        /// The CPU state is the artifact's: it is read with <c>E</c>, the shared kernel exception handler decides,
+        /// and a handled exception is applied back to the artifact's CPU (registers, HI/LO, RFE) before the
+        /// decision. An unhandled one stops the run with the contract's diagnostic.
+        /// </summary>
+        private void HandleKernelException(uint[] gpr, BiosExceptionContext context)
+        {
             var outcome = BiosExceptionHandler.Handle(
                 new GuestMemoryReader(ReadPhysicalByte),
                 new GuestMemoryWriter(WritePhysicalByte),

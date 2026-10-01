@@ -232,6 +232,27 @@ public sealed class RecompiledArtifactInterruptTests
     }
 
     [Fact]
+    public void OrdinaryTransferToAZeroFilledVector_WithoutAnIntEntry_IsNotTheKernelHandler()
+    {
+        // No interrupt is ever enabled: the guest merely jumps to the unpopulated 0x80000080. CAUSE.ExcCode is 0 and
+        // the vector is zero, but no INT entry happened, so the kernel handler must not run (it would save state to a
+        // seeded TCB and RFE). The generic fail-closed vector diagnostic is what remains.
+        var code = new List<uint>([.. Li(T0, VectorBev0), MipsEncoding.JumpRegister((byte)T0), Nop]);
+        var chainCalls = 0;
+        using var dir = new TempDirectory();
+
+        var result = Run([.. code], dir, withRuntime: true, segmentBudget: 1_000, exceptionChain: ctx =>
+        {
+            chainCalls++;
+            return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
+        });
+
+        chainCalls.Should().Be(0, "an ordinary transfer is not a kernel exception entry");
+        result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.ExceptionVectorUnhandledDiagnosticCode);
+        result.FinalSnapshot!.PC.Should().Be(VectorBev0);
+    }
+
+    [Fact]
     public void ChainCompletion_ReturnsToEpc_ThroughTheArtifactsOwnRfe_AndTakesAnUnacknowledgedIrqAgain()
     {
         // The first pass completes without acknowledging IRQ6: it is taken again only if the return resumed the
@@ -249,11 +270,11 @@ public sealed class RecompiledArtifactInterruptTests
         var calls = 0;
         using var dir = new TempDirectory();
 
-        var result = Run([.. code], dir, withRuntime: true, segmentBudget: 100_000, exceptionChain: interrupts =>
+        var result = Run([.. code], dir, withRuntime: true, segmentBudget: 100_000, exceptionChain: ctx =>
         {
             if (++calls == 2)
             {
-                interrupts.Acknowledge(~Timer2Irq);
+                ctx.Interrupts.Acknowledge(~Timer2Irq);
             }
 
             return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
@@ -297,10 +318,10 @@ public sealed class RecompiledArtifactInterruptTests
 
         var result = Run(
             [.. words], dir, withRuntime: true, segmentBudget: 100_000, additionalRoots: [landing],
-            exceptionChain: interrupts =>
+            exceptionChain: ctx =>
             {
                 calls++;
-                interrupts.Acknowledge(~Timer2Irq);
+                ctx.Interrupts.Acknowledge(~Timer2Irq);
                 return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
             });
 

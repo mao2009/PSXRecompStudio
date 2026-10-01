@@ -34,14 +34,27 @@ public enum BiosExceptionChainStatus : byte
 public readonly record struct BiosExceptionChainResult(BiosExceptionChainStatus Status, string? Detail = null);
 
 /// <summary>
+/// Everything a kernel priority-chain element needs: the guest-visible kernel state (read and write),
+/// the existing interrupt controller, and the exception the CPU took. No engine or CPU object is
+/// exposed, so a chain element cannot become a second CPU semantics; the CPU side stays the execution
+/// path's (<see cref="BiosExceptionHandlerOutcome"/>).
+/// </summary>
+[Domain]
+public readonly record struct BiosExceptionChainContext(
+    IGuestMemoryReader Reader,
+    IGuestMemoryWriter Writer,
+    IInterruptController Interrupts,
+    BiosExceptionContext Exception);
+
+/// <summary>
 /// Walks the kernel's interrupt priority chains (ExCB, psx-spx control-blocks).
 /// The chain is a seam: the default kernel elements (timer/VBlank #658/#660,
 /// Pad/Card #661) and guest-enqueued elements (C0:02 SysEnqIntRP) plug in here
 /// as the Runtime models them. Elements act through the existing
-/// <see cref="IInterruptController"/>, so no interrupt state is duplicated.
+/// <see cref="IInterruptController"/> and guest memory, so no interrupt state is duplicated.
 /// </summary>
 [Domain]
-public delegate BiosExceptionChainResult BiosExceptionChain(IInterruptController interrupts);
+public delegate BiosExceptionChainResult BiosExceptionChain(BiosExceptionChainContext context);
 
 /// <summary>Outcome of <see cref="BiosExceptionHandler.Handle"/>.</summary>
 /// <param name="Handled">True when the handler ran to its end and the caller applies the state below; false when the run must stop with the diagnostic.</param>
@@ -96,7 +109,8 @@ public sealed record BiosExceptionHandlerOutcome(
 /// <see cref="SeededPcbAddress"/>/<see cref="SeededTcbAddress"/> — this Runtime's
 /// own choice inside the kernel-reserved page, as for the hook pointer
 /// (<see cref="BiosExceptionHook.PointerAddress"/>); the real locations are not
-/// documented. The TCB holds only what this handler saves; no thread, status or
+/// documented. This is Runtime-reserved kernel state: a future ExCB/EvCB/TCB allocator must take
+/// these addresses from one SSOT so it cannot collide with them. The TCB holds only what this handler saves; no thread, status or
 /// ExCB content is invented. A pointer that is non-zero but unusable is guest
 /// state and fails closed. The ExCB (<c>[0x100]</c>) is not modelled: the chain
 /// is <see cref="BiosExceptionChain"/>.
@@ -182,7 +196,7 @@ public static class BiosExceptionHandler
                 $"{KernelStateInvalidDiagnosticCode}|[0x108]->PCB->TCB|the current TCB could not be used to save the interrupted context; {Describe(context)}.");
         }
 
-        var chainResult = (chain ?? DefaultChain)(interrupts);
+        var chainResult = (chain ?? DefaultChain)(new BiosExceptionChainContext(reader, writer, interrupts, context));
         if (chainResult.Status == BiosExceptionChainStatus.Unsupported)
         {
             return Stop(gpr, context, ChainUnsupportedDiagnosticCode,
@@ -217,11 +231,11 @@ public static class BiosExceptionHandler
     /// nothing for any element to claim and the chain ends; otherwise the default kernel handlers (timer/VBlank
     /// #658/#660, Pad/Card #661, CD-ROM) would run, and the run stops instead of pretending they did.
     /// </summary>
-    public static BiosExceptionChainResult DefaultChain(IInterruptController interrupts)
+    public static BiosExceptionChainResult DefaultChain(BiosExceptionChainContext context)
     {
-        ArgumentNullException.ThrowIfNull(interrupts);
-        var status = interrupts.Status;
-        var mask = interrupts.Mask;
+        ArgumentNullException.ThrowIfNull(context.Interrupts);
+        var status = context.Interrupts.Status;
+        var mask = context.Interrupts.Mask;
         return (status & mask) == 0
             ? new BiosExceptionChainResult(BiosExceptionChainStatus.Completed)
             : new BiosExceptionChainResult(

@@ -106,11 +106,11 @@ public sealed class KernelExceptionEntryTests
         var calls = 0;
         var program = ArmTimer2Irq(3000).Concat(CountDownThenMark(Entry)).ToArray();
 
-        var result = Run(program, chain: interrupts =>
+        var result = Run(program, chain: ctx =>
         {
             if (++calls == 2)
             {
-                interrupts.Acknowledge(~Timer2Bit);
+                ctx.Interrupts.Acknowledge(~Timer2Bit);
             }
 
             return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
@@ -135,10 +135,10 @@ public sealed class KernelExceptionEntryTests
             out var landing,
             landingMark: Marker);
 
-        var result = Run(program, Words(HookBuffer, HookBufferWords(landing, hookS0)), chain: interrupts =>
+        var result = Run(program, Words(HookBuffer, HookBufferWords(landing, hookS0)), chain: ctx =>
         {
             chainCalls++;
-            interrupts.Acknowledge(~Timer2Bit);
+            ctx.Interrupts.Acknowledge(~Timer2Bit);
             return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
         });
 
