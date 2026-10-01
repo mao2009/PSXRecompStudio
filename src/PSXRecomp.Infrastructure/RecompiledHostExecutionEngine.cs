@@ -46,6 +46,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 {
     public const string EngineName = "recompiled-host-artifact";
 
+    /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
+    public const string ExceptionVectorUnhandledDiagnosticCode = "ARTIFACT_EXCEPTION_VECTOR_UNHANDLED";
+
     private const int RunTimeoutMs = 30000;
     private const int PumpDrainTimeoutMs = 5000;
 
@@ -256,6 +259,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         {
             var message = stdout.Length <= 2000 ? stdout : stdout[..2000] + "...";
             return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", message);
+        }
+
+        if (bridge is { ExceptionVectorReached: true })
+        {
+            // Issue #680: the INT entry state, so the diagnostic says what the CPU delivered.
+            var entry = ArtifactSnapshotParser.ReadCop0(stdout) is { } c
+                ? $"EPC=0x{c.Epc:X8}, CAUSE=0x{c.Cause:X8}, SR=0x{c.Sr:X8}"
+                : "COP0 state unavailable";
+            return new RecompilerExecutionResult(
+                RecompilerExecutionStatus.Completed, snapshot, bridge.DiagnosticCode, $"{bridge.DiagnosticMessage}|{entry}");
         }
 
         return new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, snapshot, bridge?.DiagnosticCode, bridge?.DiagnosticMessage);
@@ -469,6 +482,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public string? DiagnosticCode { get; private set; }
         public string? DiagnosticMessage { get; private set; }
 
+        /// <summary>The R3000A general exception vector, SR.BEV = 0 (RAM) and BEV = 1 (BIOS ROM), docs/cpu/exceptions.md.</summary>
+        public const uint GeneralExceptionVectorBev0 = 0x80000080u;
+        public const uint GeneralExceptionVectorBev1 = 0xBFC00180u;
+
+        private const uint InterruptStatusAddress = 0x1F801070u;
+        private const uint InterruptMaskAddress = 0x1F801074u;
+
+        /// <summary>The run stopped because control reached the general exception vector and nothing was generated there (Issue #680).</summary>
+        public bool ExceptionVectorReached { get; private set; }
+
         /// <summary>Why the host refused a guest MMIO access, or null when none was refused (Issue #678).</summary>
         public string? MmioFailureCode { get; private set; }
         public string? MmioFailureMessage { get; private set; }
@@ -563,6 +586,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             if (!BiosJumpTables.TryResolveVectorFamily(pc, out var family))
             {
+                if (pc is GeneralExceptionVectorBev0 or GeneralExceptionVectorBev1)
+                {
+                    // Issue #680: a hardware INT leaves the artifact at the general exception vector, where
+                    // the guest's own kernel exception path must run. A BIOS-less run has none generated
+                    // there, so this is the end of CPU INT delivery and the start of the kernel handler work:
+                    // fail closed with a diagnostic rather than hand a bare unresolved pc to the handoff.
+                    ExceptionVectorReached = true;
+                    DiagnosticCode = ExceptionVectorUnhandledDiagnosticCode;
+                    var iStat = _devices!.Core.ReadInterruptControllerRegister(InterruptStatusAddress);
+                    var iMask = _devices.Core.ReadInterruptControllerRegister(InterruptMaskAddress);
+                    DiagnosticMessage = $"{ExceptionVectorUnhandledDiagnosticCode}|pc=0x{pc:X8}|I_STAT=0x{iStat:X4}, I_MASK=0x{iMask:X4}|Control reached the general exception " +
+                        "vector and the artifact has no generated block there: the kernel exception path (C0:06 ExceptionHandler, " +
+                        "the timer/VBlank priority chain, Pad/Card IRQ handling, B0:17/B0:18 return) is not modelled (#662/#658/#661).";
+                    Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                    return;
+                }
+
                 Decline();
                 return;
             }
@@ -738,7 +778,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 _deviceRam.EndServing();
             }
 
-            Send(RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
+            // The Interrupt Controller's aggregate line (I_STAT & I_MASK != 0) after the advance, read from the
+            // same native core the interpreter's CPU reads it from. Whether the CPU takes it is the artifact's
+            // own SR decision at its next dispatch boundary (Issue #680).
+            bool interruptLine;
+            try
+            {
+                interruptLine = _devices!.Core.GetInterruptPending();
+            }
+            catch (Exception exception)
+            {
+                Trace.WriteLine($"Interrupt controller read failed: {exception}");
+                RefuseRetired("ARTIFACT_INTERRUPT_CONTROLLER_FAILED", "The Runtime interrupt controller failed reporting its pending line.");
+                return;
+            }
+
+            Send(interruptLine
+                ? RecompiledArtifactCodeGen.ProtocolRetiredAckInterruptReply
+                : RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
         }
 
         private static bool TryScale(ulong count, uint factor, out ulong product)

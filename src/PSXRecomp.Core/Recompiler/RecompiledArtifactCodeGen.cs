@@ -99,6 +99,14 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Tag of the parent's acceptance of a guest-time report: <c>A</c>, sent after any device-originated RAM requests.</summary>
     public const string ProtocolRetiredAckReply = "A";
 
+    /// <summary>
+    /// Tag of the parent's acceptance of a guest-time report while the Interrupt Controller's aggregate line
+    /// (<c>I_STAT &amp; I_MASK != 0</c>, the CPU's CAUSE.IP2) is asserted: <c>I</c> (Issue #680). <see cref="ProtocolRetiredAckReply"/>
+    /// means the line is deasserted. The artifact takes the INT exception itself, at its next dispatch boundary, only if
+    /// its own SR enables it; the host never injects an exception.
+    /// </summary>
+    public const string ProtocolRetiredAckInterruptReply = "I";
+
     /// <summary>Tag of the parent's refusal of a guest-time report: <c>X</c>. The child stops with <see cref="RetiredRefusedExitCode"/>.</summary>
     public const string ProtocolRetiredRefusedReply = "X";
 
@@ -154,6 +162,7 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@EXIT_MMIO_PROTOCOL@", MmioProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@RETIRED@", ProtocolRetiredPrefix, StringComparison.Ordinal)
                 .Replace("@RETIRED_ACK@", ProtocolRetiredAckReply, StringComparison.Ordinal)
+                .Replace("@RETIRED_ACK_IRQ@", ProtocolRetiredAckInterruptReply, StringComparison.Ordinal)
                 .Replace("@RETIRED_REFUSED@", ProtocolRetiredRefusedReply, StringComparison.Ordinal)
                 .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
@@ -285,7 +294,10 @@ static void artifact_report_retired(void) {
             artifact_ram_write8((uint32_t)a, (uint8_t)v);
             printf(""RHOST_OK\n"");
             fflush(stdout);
-        } else if (strcmp(cmd, ""@RETIRED_ACK@"") == 0) {
+        } else if (strcmp(cmd, ""@RETIRED_ACK@"") == 0 || strcmp(cmd, ""@RETIRED_ACK_IRQ@"") == 0) {
+            /* The ack also carries the interrupt line: CAUSE.IP2 mirrors it (Issue #680). */
+            artifact_state->irq_line = strcmp(cmd, ""@RETIRED_ACK_IRQ@"") == 0 ? 1u : 0u;
+            artifact_state->cop0_cause = (artifact_state->cop0_cause & ~0x400u) | (artifact_state->irq_line ? 0x400u : 0u);
             return;
         } else if (strcmp(cmd, ""@RETIRED_REFUSED@"") == 0) {
             exit(@EXIT_RETIRED_REFUSED@);
@@ -416,7 +428,7 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
                      N                                        (pc not claimed)
                      D <termination> <next pc> <has v0> <v0>   (decision)
                      V <value> | X                            (reply to an MMIO request)
-                     A | X                                    (reply to RHOST_RETIRED)
+                     A | I | X                                (reply to RHOST_RETIRED; I = interrupt line asserted, Issue #680)
 
    R/W stay RAM-only byte requests: they carry the BIOS HLE's own RAM access and, since
    Issue #679, the device-originated RAM access a scheduler advance can cause (CD-ROM
@@ -485,6 +497,23 @@ static int32_t artifact_host_syscall(RecompilerState* state) {
     return declined;
 }
 
+/* Hardware INT delivery (Issue #680). Called by the dispatch at every instruction-fetch
+   boundary outside a delay slot. The line (CAUSE.IP2) is the Interrupt Controller's aggregate
+   pending state the host reported in its last guest-time ack; the artifact accepts it exactly
+   as the interpreter's CPU does: only with SR.IEc (bit 0) and SR.IM2 (bit 10) set. The entry
+   is the R3000A one (docs/cpu/exceptions.md): EPC = the interrupted instruction's pc, CAUSE
+   Excode 0 / BD 0 with IP2 kept, the SR KU/IE stack pushed (the same push as the SYSCALL entry
+   above), pc = the general exception vector chosen by SR.BEV. No guest handler is called and
+   no instruction retires (no device time): the guest's own kernel path starts at the vector. */
+static void artifact_interrupt_boundary(RecompilerState* state) {
+    uint32_t sr = state->cop0_sr;
+    if (state->irq_line == 0u || (sr & 0x1u) == 0u || (sr & 0x400u) == 0u) return;
+    state->cop0_epc = state->pc;
+    state->cop0_cause = (state->cop0_cause & ~(0x7Cu | 0x30000000u | 0x80000000u)) | 0x400u;
+    state->cop0_sr = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);
+    state->pc = (sr & 0x400000u) != 0u ? 0xBFC00180u : 0x80000080u;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) return 90; /* MissingInput: argv[1] input file, argv[2] program image */
     FILE* in = fopen(argv[1], ""r"");
@@ -546,6 +575,7 @@ int main(int argc, char** argv) {
         state.host_transfer = &artifact_host_transfer;
         state.host_syscall = &artifact_host_syscall;
         state.host_retired = &artifact_after_unit;
+        state.host_interrupt = &artifact_interrupt_boundary;
         artifact_state = &state;
         artifact_mmio_bridge = 1;
         printf(""RHOST_INIT\n"");
@@ -572,6 +602,8 @@ int main(int argc, char** argv) {
     printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
     printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
     printf(""cop0.sr=0x%08X\n"", state.cop0_sr);
+    printf(""cop0.cause=0x%08X\n"", state.cop0_cause);
+    printf(""cop0.epc=0x%08X\n"", state.cop0_epc);
     printf(""RSNAPSHOT_END\n"");
 
     return (int)state.termination_reason;

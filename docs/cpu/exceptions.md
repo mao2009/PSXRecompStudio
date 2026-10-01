@@ -167,6 +167,16 @@ block as a terminal leaf: no edge to the vector (a runtime, BEV-dependent target
 and no fall-through to PC+4. Executing the guest handler and returning through
 RFE/JR is not part of this lowering.
 
+### Hardware INT through the generated host (Issue #680)
+
+The generated-host artifact is its own CPU model for this exception: at a dispatch boundary
+(between blocks, never inside a branch + delay-slot pair) it takes INT when the host reports
+the Interrupt Controller line asserted and `SR.IEc` (bit 0) and `SR.IM2` are set, performing
+the entry described under Exception Processing (EPC = interrupted pc, CAUSE.Excode 0 / BD 0 /
+IP2, SR stack push, BEV vector). It never calls a guest handler; with no generated code at the
+vector it stops with `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`. See ADR-025 (addendum), including
+the IEc bit-position difference from `PSXCpu`.
+
 ## Exception Vectors
 
 | Exception | BEV=0 | BEV=1 |

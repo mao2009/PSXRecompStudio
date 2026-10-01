@@ -93,7 +93,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         IReadOnlyList<string> Requests,
         IReadOnlyDictionary<string, uint> Gpr,
         bool HasSnapshot,
-        IReadOnlyList<ulong> Retired);
+        IReadOnlyList<ulong> Retired,
+        IReadOnlyDictionary<string, uint>? Snapshot = null);
 
     /// <summary>
     /// Re-launches the artifact an earlier <see cref="Run"/> built in <paramref name="dir"/>
@@ -101,7 +102,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
     /// answers each MMIO request line; null closes the child's stdin instead.
     /// </summary>
     internal static ScriptedRun RunScripted(
-        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null)
+        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null)
     {
 #pragma warning disable AARC003 // Test-only: drives the artifact's own wire protocol.
         var binary = File.Exists(dir.Combine("recompiled-artifact.exe"))
@@ -123,6 +124,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         var requests = new List<string>();
         var retired = new List<ulong>();
         var gpr = new Dictionary<string, uint>();
+        var snapshot = new Dictionary<string, uint>();
         var hasSnapshot = false;
         string? line;
         while ((line = process.StandardOutput.ReadLine()) is not null)
@@ -134,6 +136,16 @@ public sealed class RecompiledArtifactMmioBridgeTests
             {
                 // The handshake and the program's unresolved end: this parent claims no pc.
                 process.StandardInput.WriteLine(RecompiledArtifactCodeGen.ProtocolDeclineReply);
+            }
+            else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal))
+            {
+                // Issue #680 setup: a serviced SYSCALL, the way the Runtime answers SYS(02h) — SR as the exception
+                // entry pushed it with IEp/IM2 set (or a caller-chosen SR) — and a resume after the SYSCALL.
+                var parts = line[RecompiledArtifactCodeGen.ProtocolSyscallPrefix.Length..].Split(' ');
+                var faultPc = uint.Parse(parts[0], CultureInfo.InvariantCulture);
+                var sr = syscallSr ?? (uint.Parse(parts[2], CultureInfo.InvariantCulture) | 0x404u);
+                process.StandardInput.WriteLine($"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {sr}");
+                process.StandardInput.WriteLine($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}0 {faultPc + 4} 0 0");
             }
             else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
             {
@@ -171,12 +183,17 @@ public sealed class RecompiledArtifactMmioBridgeTests
                 var parts = line.Split('=');
                 gpr[parts[0]] = uint.Parse(parts[1][2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
             }
+            else if (hasSnapshot && line.Contains("=0x", StringComparison.Ordinal))
+            {
+                var parts = line.Split('=');
+                snapshot[parts[0]] = uint.Parse(parts[1][2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            }
         }
 
         process.WaitForExit(10000).Should().BeTrue("the artifact must terminate");
         var exit = process.ExitCode;
 #pragma warning restore AARC003
-        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired);
+        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot);
     }
 
     internal static string Read(int width, uint pa) =>

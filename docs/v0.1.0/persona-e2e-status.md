@@ -4,7 +4,7 @@
 
 **Authority:** Reference
 
-**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, resolved), #599 (LWL/LWR/SWL/SWR lowering, resolved), #628 (Syscall lowering, resolved), #635 (register-indirect JR/JALR relay, resolved), #440 (GPU remaining integration), #444 (CD-ROM), #447 (GTE), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #601 (this status synchronization)
+**Related Issues:** #351 (verification gate), #9 (v0.1.0 milestone), #279 (BIOS-less execution), #205 (Recompiler roadmap), #593 (REGIMM/zero-comparison branch lowering, resolved), #596 (register-shift-amount opcode lowering, resolved), #597 (MULT/DIV/HI-LO lowering, resolved), #599 (LWL/LWR/SWL/SWR lowering, resolved), #628 (Syscall lowering, resolved), #635 (register-indirect JR/JALR relay, resolved), #440 (GPU remaining integration), #444 (CD-ROM), #447 (GTE), #441 (rasterization/frame snapshot, completed), #442 (device scheduling, completed), #445 (SPU register/MMIO, completed), #443 (SIO0 scoped model, completed), #601 (this status synchronization), #676 (generated-host device integration), #680 (generated-host hardware INT delivery)
 
 ## Purpose
 
@@ -60,9 +60,9 @@ be conflated.
 
 ## First Blocker toward TITLE_SCREEN (as of HEAD)
 
-**Stage:** Runtime execution (generated host)
+**Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `permanent guest wait for VBlank/CD-ROM interrupts the generated-host artifact cannot deliver` (measured in #675; follow-up #676).
+**Classification:** `hardware INT delivered; no kernel exception handler at the exception vector (BIOS-less)` (measured in #680; next: #662).
 
 **Description:**
 
@@ -79,10 +79,13 @@ dotnet run --project src/PSXRecomp.Cli -- run rom/PERSONA.chd --output out/perso
 
 the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-through
 without an extra root, passes A0:3F `printf`, and emits
-`CD_init:addr=800500e4`. It then stops with `OUTER_BUDGET_EXHAUSTED`
-(exit 2, state 3) at guest PC `0x800278A8`. #675 classified the wait (below);
-the dependency is the generated-host artifact's missing MMIO/device/IRQ path,
-tracked in #676.
+`CD_init:addr=800500e4`. It then takes the VBlank interrupt as a hardware INT
+exception and stops, fail-closed, at the general exception vector
+`0x80000080` with `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` (exit 1, state 5
+`RuntimeFailure`; EPC `0x80025CBC`, CAUSE `0x400`, SR `0x404`, I_STAT `0x0001`,
+I_MASK `0x000D`). Nothing is generated at the vector in a BIOS-less run: the kernel
+exception path is #662 (item 20). The earlier `OUTER_BUDGET_EXHAUSTED` wait at
+`0x800278A8` (#675, items 16-19) is no longer where the run ends.
 
 **Historical structural gap.** Earlier production runs failed before runtime
 because `ReachableProgramBuilder` lowers the entire statically reachable graph
@@ -321,9 +324,38 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     artifact CPU, so no callback runs and `CD_sync` keeps waiting: #680 is the next
     step. Not measured: whether delivering IRQ0/IRQ2 ends the wait.
 
+20. **#680 hardware INT delivery; the stop moves to the exception vector.** The
+    artifact takes the Interrupt Controller's line as an R3000A INT at a dispatch
+    boundary when `SR.IEc` and `SR.IM2` are set (ADR-025 addendum). Measured on
+    `main` d3c4ef6 + #680, with only
+    `--entry-root 0x80025350 --entry-root 0x80025614`
+    (`run rom/PERSONA.chd --json --report --frame-evidence`): the run passes
+    SYS(02h) (SR `0x401`), A0:3F, `CD_init:addr=800500e4` (the only guest output),
+    and stops with `RuntimeFailure` / `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`,
+    `guestPc` `0x80000080` (exit 1). CONFIRMED from the diagnostic: EPC
+    `0x80025CBC` (inside libetc `VSync`, the polling code from item 17), CAUSE
+    `0x00000400` (Excode INT, BD 0, IP2), SR `0x00000404` (the SR `0x401` stack-pushed,
+    IEc cleared), I_STAT `0x0001` (VBlank IRQ0) with I_MASK `0x000D`. So the
+    previous permanent wait is left: the VBlank IRQ reached the CPU. It produced no
+    guest-visible progress yet: no guest callback ran (`Vcount` is still produced
+    only by the VBlank callback `0x80025BC8`), because the artifact has no kernel
+    code at `0x80000080` (the real BIOS places a stub that enters C0:06
+    ExceptionHandler; BIOS-less runs place nothing). **First blocker: #662**
+    (C0:06 ExceptionHandler entry). #658/#660 (timer/VBlank handlers, root-counter
+    events), #661 (Pad/Card IRQ), #664/#665 (B0:17 / B0:18) sit behind it and were
+    not reached. Frame evidence stays `unavailable` / `no-frame-activity`
+    (the frame-evidence run is the interpreter's and still reports
+    `OUTER_BUDGET_EXHAUSTED`). Not reached: the title screen; not measured:
+    whether the handler chain then lets `CD_sync` complete (IRQ2).
+    Recorded, not changed: the interpreter's INT check treats SR bit 1 as IEc while the
+    kernel contract and generated host use bit 0 (ADR-025 addendum), so a guest enabling
+    interrupts via SYS(02h) is interrupted on the generated host and not on the interpreter.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is now `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
-#670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host cannot deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
+first measured stop is now the exception vector `0x80000080` with
+`ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` (item 20, #680): CPU INT delivery works and the
+missing piece is the kernel exception handler (#662). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+#670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
 actually measured by the production run.
