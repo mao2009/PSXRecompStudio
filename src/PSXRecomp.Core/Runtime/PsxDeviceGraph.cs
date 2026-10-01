@@ -36,7 +36,11 @@ public sealed class PsxDeviceGraph : IDisposable
 {
     private bool _disposed;
 
-    public PsxDeviceGraph()
+    /// <param name="deviceRam">Where RAM traffic a device originates itself (today: CD-ROM DMA3 writing a
+    /// sector into guest RAM) goes. Null routes it to <see cref="Bus"/>, i.e. this graph's native core RAM,
+    /// which is the guest RAM of the interpreter. A backend whose guest RAM lives elsewhere (the generated-host
+    /// artifact, Issue #679) passes its own seam, so a device never writes a second, private RAM.</param>
+    public PsxDeviceGraph(IMemoryBus? deviceRam = null)
     {
         Core = new PSXCoreWrapper();
         Bus = new MemoryBus(Core);
@@ -52,7 +56,7 @@ public sealed class PsxDeviceGraph : IDisposable
         // boundary (Issue #586/#587), same as every focused CD-ROM test.
         CdRomDevice = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
         CdRomAdapter = new CdRomMmioAdapter(CdRomDevice);
-        CdRomDmaTransfer = new CdRomDmaTransfer(CdRomDevice, DmaAdapter, Bus);
+        CdRomDmaTransfer = new CdRomDmaTransfer(CdRomDevice, DmaAdapter, deviceRam ?? Bus);
         Bus.AttachDmaAdapter(DmaAdapter);
         Bus.AttachTimerAdapter(TimerAdapter);
         Bus.AttachInterruptControllerAdapter(InterruptControllerAdapter);

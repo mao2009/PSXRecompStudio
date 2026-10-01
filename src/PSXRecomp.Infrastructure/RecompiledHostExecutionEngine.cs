@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
@@ -49,6 +50,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private const int PumpDrainTimeoutMs = 5000;
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
+    private readonly Action<PsxDeviceGraph>? _configureDevices;
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly string _binaryPath;
     private readonly string _inputPath;
@@ -87,6 +89,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// unresolved transfer then stops the run immediately, a legitimate classified
     /// boundary rather than a failure.
     /// </param>
+    /// <param name="configureDevices">
+    /// Seeds the Runtime device graph once the artifact's handshake has built it, before the guest
+    /// runs: the seam a disc/sector source attaches to (a device's own input, never guest RAM,
+    /// which stays the artifact's). Null leaves the devices as constructed.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -97,7 +104,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         uint imageLoadAddress,
         IGeneratedHostBuildService buildService,
         string outputDirectory,
-        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
+        Action<PsxDeviceGraph>? configureDevices = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -110,6 +118,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         }
 
         _biosRuntimeFactory = biosRuntimeFactory;
+        _configureDevices = configureDevices;
         _blockEntryPcs = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
         _inputPath = Path.Combine(outputDirectory, "artifact-input.txt");
         _imagePath = Path.Combine(outputDirectory, "artifact-image.bin");
@@ -192,7 +201,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // retained from Load and re-applied to this rewrite.
         WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
-        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs);
+        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices);
         var arguments = new List<string>(3) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -225,6 +234,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             // device address is never mistaken for a child crash, and never read as 0.
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed, mmioFailureCode, bridge.MmioFailureMessage!);
+        }
+
+        if (bridge?.RetiredFailureCode is { } retiredFailureCode)
+        {
+            // The scheduler or a device failed while consuming the artifact's guest time
+            // (Issue #679): the run stopped rather than continue with devices that
+            // diverged from the guest.
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed, retiredFailureCode, bridge.RetiredFailureMessage!);
         }
 
         if (exit < 0 || exit > byte.MaxValue || !stdout.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
@@ -440,6 +458,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private TextWriter? _toArtifact;
         private IBiosRuntime? _biosRuntime;
         private PsxDeviceGraph? _devices;
+        private DeviceScheduler? _scheduler;
+        private ArtifactDeviceRam? _deviceRam;
+        private readonly Action<PsxDeviceGraph>? _configureDevices;
+
+        /// <summary>Why the host refused the artifact's guest-time report, or null when it did not (Issue #679).</summary>
+        public string? RetiredFailureCode { get; private set; }
+        public string? RetiredFailureMessage { get; private set; }
 
         public string? DiagnosticCode { get; private set; }
         public string? DiagnosticMessage { get; private set; }
@@ -451,10 +476,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public void Dispose() => _devices?.Dispose();
 
         public HostTransferBridge(
-            Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory, IReadOnlySet<uint> blockEntryPcs)
+            Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
+            IReadOnlySet<uint> blockEntryPcs,
+            Action<PsxDeviceGraph>? configureDevices)
         {
             _biosRuntimeFactory = biosRuntimeFactory;
             _blockEntryPcs = blockEntryPcs;
+            _configureDevices = configureDevices;
         }
 
         public void Attach(TextReader fromArtifact, TextWriter toArtifact)
@@ -469,9 +497,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             if (trimmed == RecompiledArtifactCodeGen.ProtocolInitLine)
             {
                 // The existing Runtime device graph the artifact's non-RAM accesses are
-                // relayed to (Issue #678). It holds device state only: nothing here
-                // advances time or delivers interrupts.
-                _devices = new PsxDeviceGraph();
+                // relayed to (Issue #678). Guest RAM is the artifact's alone: the graph's own
+                // native RAM is never used for it, and a device that moves data into RAM
+                // (CD-ROM DMA3) does so through _deviceRam, i.e. into artifact_ram (Issue #679).
+                _deviceRam = new ArtifactDeviceRam(ReadPhysicalByte, WritePhysicalByte);
+                _devices = new PsxDeviceGraph(_deviceRam);
+                _configureDevices?.Invoke(_devices);
+                // The same wiring the interpreter engine builds (InterpreterTitleExecutionEngine.Load):
+                // device time, order and interrupt delivery to the controller are the existing
+                // scheduler's, fed by the guest time the artifact reports.
+                _scheduler = new DeviceScheduler(
+                    _devices.Core, _devices.InterruptControllerAdapter, _devices.GpuAdapter, _devices.CdRomDevice, _devices.CdRomDmaTransfer);
                 _biosRuntime = _biosRuntimeFactory(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
@@ -488,6 +524,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioWritePrefix, StringComparison.Ordinal))
             {
                 HandleMmio(trimmed[RecompiledArtifactCodeGen.ProtocolMmioWritePrefix.Length..], isWrite: true);
+                return true;
+            }
+
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
+            {
+                HandleRetired(trimmed[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..]);
                 return true;
             }
 
@@ -636,6 +678,90 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
         }
 
+        /// <summary>
+        /// Guest time offered by the artifact (Issue #679): <c>count</c> guest instructions retired
+        /// since its previous report. The elapsed device time is <c>count × CyclesPerInstruction</c> —
+        /// the interpreter's own contract (one retired instruction, one fixed cost), so this
+        /// backend and that one advance devices by the same time for the same retired instructions —
+        /// handed to the existing <see cref="DeviceScheduler"/> in chunks that fit its 32-bit
+        /// argument. A device that moves data into guest RAM during the advance reaches
+        /// artifact_ram through <see cref="ArtifactDeviceRam"/>, which the artifact serves while it
+        /// waits for the reply. A count that is not a positive integer is a protocol fault (the
+        /// artifact never reports 0); a scheduler or device failure refuses the report.
+        /// </summary>
+        private void HandleRetired(string fields)
+        {
+            if (_scheduler is null
+                || _deviceRam is null
+                || !ulong.TryParse(fields, NumberStyles.None, CultureInfo.InvariantCulture, out var retired)
+                || retired == 0
+                || retired > MaxRetiredPerReport)
+            {
+                throw new ProtocolFaultException($"Malformed guest-time report '{fields}'.");
+            }
+
+            // Overflow is a refusal, never a wrapped (shorter) elapsed time.
+            if (!TryScale(retired, InterpreterTitleExecutionEngine.CyclesPerInstruction, out var cycles))
+            {
+                RefuseRetired("ARTIFACT_CYCLES_OVERFLOW", $"{retired} retired instructions overflow the 64-bit device-cycle count.");
+                return;
+            }
+
+            try
+            {
+                _deviceRam.BeginServing();
+                for (var remaining = cycles; remaining != 0;)
+                {
+                    var chunk = (uint)Math.Min(remaining, MaxAdvanceCycles);
+                    _scheduler.Advance(chunk);
+                    remaining -= chunk;
+                }
+            }
+            catch (ProtocolFaultException)
+            {
+                throw;
+            }
+            catch (ArtifactDeviceRam.UnroutableException exception)
+            {
+                Trace.WriteLine($"Device RAM access refused: {exception}");
+                RefuseRetired("ARTIFACT_DEVICE_RAM_UNROUTABLE", exception.Message);
+                return;
+            }
+            catch (Exception exception)
+            {
+                Trace.WriteLine($"DeviceScheduler advance failed: {exception}");
+                RefuseRetired("ARTIFACT_SCHEDULER_FAILED", $"The Runtime device scheduler failed advancing {cycles} cycles.");
+                return;
+            }
+            finally
+            {
+                _deviceRam.EndServing();
+            }
+
+            Send(RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
+        }
+
+        private static bool TryScale(ulong count, uint factor, out ulong product)
+        {
+            try
+            {
+                product = checked(count * factor);
+                return true;
+            }
+            catch (OverflowException)
+            {
+                product = 0;
+                return false;
+            }
+        }
+
+        private void RefuseRetired(string code, string message)
+        {
+            RetiredFailureCode = code;
+            RetiredFailureMessage = message;
+            Send(RecompiledArtifactCodeGen.ProtocolRetiredRefusedReply);
+        }
+
         private void Refuse(string code, string message)
         {
             MmioFailureCode = code;
@@ -664,11 +790,20 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         }
 
         private string ReadReply() =>
-            _fromArtifact?.ReadLine() ?? throw new InvalidOperationException("The artifact closed its output mid-protocol.");
+            _fromArtifact?.ReadLine() ?? throw new ProtocolFaultException("The artifact closed its output mid-protocol.");
 
         private void Send(string line) =>
-            (_toArtifact ?? throw new InvalidOperationException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
+            (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
 
         private static uint ParseUInt(string value) => uint.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
+
+        /// <summary>The largest single <see cref="DeviceScheduler.Advance"/> argument: well inside <see cref="uint"/>, so no chunk can wrap.</summary>
+        private const ulong MaxAdvanceCycles = int.MaxValue;
+
+        /// <summary>The most one report can honestly carry: the artifact's 32-bit dispatch budget times the largest fused block (three instructions).</summary>
+        private const ulong MaxRetiredPerReport = 3ul * uint.MaxValue;
+
+        /// <summary>The wire protocol itself broke (a malformed or missing message): never a device or guest failure.</summary>
+        private sealed class ProtocolFaultException(string message) : InvalidOperationException(message);
     }
 }

@@ -357,15 +357,30 @@ public sealed record RecompilerIrExit
 [Domain]
 public sealed record RecompilerIrBlock
 {
-    public RecompilerIrBlock(uint entryPc, IEnumerable<RecompilerIrOperation> operations, RecompilerIrExit exit)
+    public RecompilerIrBlock(
+        uint entryPc,
+        IEnumerable<RecompilerIrOperation> operations,
+        RecompilerIrExit exit,
+        int retiredInstructionCount = 1)
     {
         ArgumentNullException.ThrowIfNull(operations);
+        ArgumentOutOfRangeException.ThrowIfLessThan(retiredInstructionCount, 1);
         Exit = exit ?? throw new ArgumentNullException(nameof(exit));
         EntryPc = entryPc;
         Operations = new ReadOnlyCollection<RecompilerIrOperation>(operations.ToArray());
+        RetiredInstructionCount = retiredInstructionCount;
     }
 
     public uint EntryPc { get; }
+
+    /// <summary>
+    /// The guest instructions this block retires when it completes (Issue #679): one for a
+    /// straight-line instruction, two for a control transfer fused with its delay slot or a
+    /// load fused with its load-delay observer, three for a load, the control transfer that
+    /// observes it, and that transfer's delay slot. It is what a backend reports as elapsed
+    /// guest time; a block that exits with an exception retires nothing.
+    /// </summary>
+    public int RetiredInstructionCount { get; }
     public IReadOnlyList<RecompilerIrOperation> Operations { get; }
     public RecompilerIrExit Exit { get; }
 }

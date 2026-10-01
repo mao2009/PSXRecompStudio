@@ -34,6 +34,10 @@ public static class RecompilerHostCodeGen
     private const string HostSyscallField = "host_syscall";
     private const string Cop0SrField = "cop0_sr";
     private const string HostTransferFnType = "recompiler_host_transfer_fn";
+    private const string HostRetiredFnType = "recompiler_host_retired_fn";
+    private const string HostRetiredField = "host_retired";
+    private const string RetiredTotalField = "retired_total";
+    private const string RetiredReportedField = "retired_reported";
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
@@ -263,6 +267,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("   the host claims the current pc — having set termination_reason (0 to continue at");
         sb.AppendLine("   next_pc, otherwise a stop reason) — and non-zero when it does not claim it. */");
         sb.AppendLine("typedef int32_t (*" + HostTransferFnType + ")(struct " + StateStruct + "*);");
+        sb.AppendLine("/* Optional guest-time hook (Issue #679), called after every dispatch unit that retires. */");
+        sb.AppendLine("typedef void (*" + HostRetiredFnType + ")(struct " + StateStruct + "*);");
         sb.AppendLine("typedef struct " + StateStruct + " {");
         sb.AppendLine("  uint32_t gpr[32];");
         sb.AppendLine("  uint32_t hi;");
@@ -287,6 +293,13 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("     host completed the SYSCALL exception (termination_reason 0 resumes at next_pc),");
         sb.AppendLine("     non-zero when it did not claim it, which leaves the Exception exit unchanged. */");
         sb.AppendLine("  " + HostTransferFnType + " " + HostSyscallField + ";");
+        sb.AppendLine("  /* Guest-time accounting (Issue #679): the guest instructions the dispatch units that");
+        sb.AppendLine("     completed have retired (RecompilerIrBlock.RetiredInstructionCount), and how many of");
+        sb.AppendLine("     them the host has already been told about. A host-claimed transfer, a block that");
+        sb.AppendLine("     exits with an unserviced exception and a budget stop retire nothing. */");
+        sb.AppendLine("  uint64_t " + RetiredTotalField + ";");
+        sb.AppendLine("  uint64_t " + RetiredReportedField + ";");
+        sb.AppendLine("  " + HostRetiredFnType + " " + HostRetiredField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
     }
@@ -668,6 +681,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
         sb.AppendLine(IndentUnit + "for (;;) {");
+        sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
 
         // A generated-host budget is a strict upper bound on retired dispatch
         // units. Known generated blocks and host-claimed transfers both spend one
@@ -699,6 +713,7 @@ public static class RecompilerHostCodeGen
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"retired = {program.Blocks[i].RetiredInstructionCount}u;");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + bodyLine);
             sb.AppendLine(IndentUnit + IndentUnit + "}");
         }
@@ -755,7 +770,12 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"return {StateParam}->{TerminationField};");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
-        // Advance only after a dispatch unit successfully retires.
+        // Advance only after a dispatch unit successfully retires. Its guest instructions
+        // are accounted here (Issue #679) and only here, so every path that does not reach
+        // this point — an exception exit the host did not service, a budget stop — charges
+        // no time, as the interpreter (no Advance after a faulting Step) does.
+        sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{RetiredTotalField} += retired;");
+        sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostRetiredField} != 0) {{ {StateParam}->{HostRetiredField}({StateParam}); }}");
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{PcField} = {StateParam}->{NextPcField};");
         sb.AppendLine(IndentUnit + IndentUnit + "steps++;");
         sb.AppendLine(IndentUnit + "}");
