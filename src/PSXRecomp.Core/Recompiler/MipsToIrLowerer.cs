@@ -156,7 +156,8 @@ public static class MipsToIrLowerer
 
         var builder = new BlockBuilder();
         var failure = TryEmitControlTransfer(builder, control, entryPc, delaySlot, pendingLoad: null, out var exit);
-        return failure ?? MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
+        return failure ?? MipsToIrLoweringResult.Success(
+            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2));
     }
 
     /// <summary>
@@ -285,7 +286,7 @@ public static class MipsToIrLowerer
             }
 
             consumed = 3;
-            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit);
+            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3);
         }
 
         // LWL/LWR to the load's own target merge into the still-pending value
@@ -306,7 +307,7 @@ public static class MipsToIrLowerer
         var exit = new RecompilerIrExit(
             RecompilerIrTerminationReason.Success,
             unchecked(loadPc + (2 * InstructionSize)));
-        return new RecompilerIrBlock(loadPc, builder.Operations, exit);
+        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2);
     }
 
     /// <summary>

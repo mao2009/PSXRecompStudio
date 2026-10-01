@@ -303,6 +303,24 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     devices or delivers an interrupt yet (#679, #680), so the same run still ends
     `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` with Vcount unchanged.
 
+19. **#679 guest time reaches the `DeviceScheduler`; the stop is unchanged.** The
+    artifact now reports retired guest instructions and the host advances the
+    existing scheduler (ADR-025), so device time passes on the generated-host path.
+    Measured with the same production command (exit 2, `state=3`,
+    `OUTER_BUDGET_EXHAUSTED`, guest PC `0x800278A8`, BIOS output
+    `CD_init:addr=800500e4`, frame evidence `unavailable` / `no-frame-activity`),
+    plus a local, uncommitted diagnostic dump of the device graph and guest RAM
+    at the end of the run: 39,164 reports totalling 1,230,686 retired instructions
+    (about 2.2 VBlank intervals); I_STAT `0x00000001` (IRQ0 pending, never
+    acknowledged) with I_MASK `0x0000000D`; Timer 0 and Timer 2 (mode `0x1800`)
+    counters `0xC75E`, which is exactly 1,230,686 mod 65,536; Timer 1 (mode
+    `0x507`) `0`; DICR `0`, DMA3 CHCR `0`; CD-ROM `InterruptGeneration` 1 with
+    `HasInterrupt` false and `DataReady` false; guest RAM `Vcount`
+    (`[0x8004FD3C]`) `0`, `[0x800500E0]` `0`, `iter` (`[0x80056410]`) `0x4C3C`.
+    IRQ0 is pending in the controller but nothing delivers it to the
+    artifact CPU, so no callback runs and `CD_sync` keeps waiting: #680 is the next
+    step. Not measured: whether delivering IRQ0/IRQ2 ends the wait.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host cannot deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and

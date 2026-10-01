@@ -35,39 +35,44 @@ public sealed class RecompiledArtifactMmioBridgeTests
 
     // ---- instruction helpers ---------------------------------------------
 
-    private static uint Lui(R3000aRegister rt, ushort imm) => MipsEncoding.I(0x0F, (byte)rt, 0, imm);
+    internal static uint Lui(R3000aRegister rt, ushort imm) => MipsEncoding.I(0x0F, (byte)rt, 0, imm);
 
-    private static uint Ori(R3000aRegister rt, R3000aRegister rs, ushort imm) => MipsEncoding.I(0x0D, (byte)rt, (byte)rs, imm);
+    internal static uint Ori(R3000aRegister rt, R3000aRegister rs, ushort imm) => MipsEncoding.I(0x0D, (byte)rt, (byte)rs, imm);
 
-    private static uint Mem(R3000aOpcode opcode, R3000aRegister rt, R3000aRegister baseRegister, ushort offset) =>
+    internal static uint Mem(R3000aOpcode opcode, R3000aRegister rt, R3000aRegister baseRegister, ushort offset) =>
         MipsEncoding.Load(opcode, (byte)rt, (byte)baseRegister, offset);
 
     /// <summary>Loads a 32-bit constant: LUI + ORI.</summary>
-    private static uint[] Li(R3000aRegister rt, uint value) => [Lui(rt, (ushort)(value >> 16)), Ori(rt, rt, (ushort)value)];
+    internal static uint[] Li(R3000aRegister rt, uint value) => [Lui(rt, (ushort)(value >> 16)), Ori(rt, rt, (ushort)value)];
 
     /// <summary>One load with its delay slot filled, so the result is architecturally visible.</summary>
-    private static uint[] Load(R3000aOpcode opcode, R3000aRegister rt, R3000aRegister baseRegister, ushort offset) =>
+    internal static uint[] Load(R3000aOpcode opcode, R3000aRegister rt, R3000aRegister baseRegister, ushort offset) =>
         [Mem(opcode, rt, baseRegister, offset), MipsEncoding.Nop];
 
-    private static uint[] Program(params uint[][] parts) => [.. parts.SelectMany(static p => p), MipsEncoding.Nop];
+    internal static uint[] Program(params uint[][] parts) => [.. parts.SelectMany(static p => p), MipsEncoding.Nop];
 
-    private sealed class NullSink : IRuntimeOutputSink
+    internal sealed class NullSink : IRuntimeOutputSink
     {
         public void WriteByte(byte value)
         {
         }
     }
 
-    private sealed class ExitHandoff : ITitleExecutionHandoff
+    internal sealed class ExitHandoff : ITitleExecutionHandoff
     {
         public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot snapshot) => TitleExecutionHandoffResult.Exit();
     }
 
-    private static TitleExecutionRequest Request() =>
-        new(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 256);
+    internal static TitleExecutionRequest Request(uint segmentBudget = 256) =>
+        new(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: segmentBudget);
 
-    private static TitleExecutionResult Run(
-        uint[] words, TempDirectory dir, bool withRuntime, IGeneratedHostBuildService? buildService = null)
+    internal static TitleExecutionResult Run(
+        uint[] words,
+        TempDirectory dir,
+        bool withRuntime,
+        IGeneratedHostBuildService? buildService = null,
+        Action<PsxDeviceGraph>? configureDevices = null,
+        uint segmentBudget = 256)
     {
         var program = ReachableProgramBuilder.Build(Entry, words, Entry);
         using var engine = new RecompiledHostExecutionEngine(
@@ -76,21 +81,27 @@ public sealed class RecompiledArtifactMmioBridgeTests
             Entry,
             buildService ?? new GeneratedHostBuildService(),
             dir.FullPath,
-            withRuntime ? (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer) : null);
-        return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request());
+            withRuntime ? (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer) : null,
+            configureDevices);
+        return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget));
     }
 
     // ---- scripted parent ---------------------------------------------------
 
-    private sealed record ScriptedRun(
-        int ExitCode, IReadOnlyList<string> Requests, IReadOnlyDictionary<string, uint> Gpr, bool HasSnapshot);
+    internal sealed record ScriptedRun(
+        int ExitCode,
+        IReadOnlyList<string> Requests,
+        IReadOnlyDictionary<string, uint> Gpr,
+        bool HasSnapshot,
+        IReadOnlyList<ulong> Retired);
 
     /// <summary>
     /// Re-launches the artifact an earlier <see cref="Run"/> built in <paramref name="dir"/>
     /// with the host-transfer protocol, playing the parent by hand. <paramref name="reply"/>
     /// answers each MMIO request line; null closes the child's stdin instead.
     /// </summary>
-    private static ScriptedRun RunScripted(TempDirectory dir, Func<string, string?> reply)
+    internal static ScriptedRun RunScripted(
+        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null)
     {
 #pragma warning disable AARC003 // Test-only: drives the artifact's own wire protocol.
         var binary = File.Exists(dir.Combine("recompiled-artifact.exe"))
@@ -110,6 +121,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         using var process = Process.Start(psi)!;
         process.StandardInput.AutoFlush = true;
         var requests = new List<string>();
+        var retired = new List<ulong>();
         var gpr = new Dictionary<string, uint>();
         var hasSnapshot = false;
         string? line;
@@ -122,6 +134,20 @@ public sealed class RecompiledArtifactMmioBridgeTests
             {
                 // The handshake and the program's unresolved end: this parent claims no pc.
                 process.StandardInput.WriteLine(RecompiledArtifactCodeGen.ProtocolDeclineReply);
+            }
+            else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
+            {
+                // Issue #679 guest-time report: counted, and accepted (no device behind this parent).
+                retired.Add(ulong.Parse(line[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..], CultureInfo.InvariantCulture));
+                var retiredAnswer = retiredReply is null ? RecompiledArtifactCodeGen.ProtocolRetiredAckReply : retiredReply(retired[^1]);
+                if (retiredAnswer is null)
+                {
+                    process.StandardInput.Close();
+                }
+                else
+                {
+                    process.StandardInput.WriteLine(retiredAnswer);
+                }
             }
             else if (isRequest)
             {
@@ -150,16 +176,16 @@ public sealed class RecompiledArtifactMmioBridgeTests
         process.WaitForExit(10000).Should().BeTrue("the artifact must terminate");
         var exit = process.ExitCode;
 #pragma warning restore AARC003
-        return new ScriptedRun(exit, requests, gpr, hasSnapshot);
+        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired);
     }
 
-    private static string Read(int width, uint pa) =>
+    internal static string Read(int width, uint pa) =>
         $"{RecompiledArtifactCodeGen.ProtocolMmioReadPrefix}{width} {pa}";
 
-    private static string Write(int width, uint pa, uint value) =>
+    internal static string Write(int width, uint pa, uint value) =>
         $"{RecompiledArtifactCodeGen.ProtocolMmioWritePrefix}{width} {pa} {value}";
 
-    private static uint G(ScriptedRun run, R3000aRegister r) => run.Gpr[$"gpr[{(int)r}]"];
+    internal static uint G(ScriptedRun run, R3000aRegister r) => run.Gpr[$"gpr[{(int)r}]"];
 
     // ---- RAM stays local ---------------------------------------------------
 
@@ -476,7 +502,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
     }
 
     /// <summary>Builds a stand-in child that speaks the handshake, then sends <c>line</c>.</summary>
-    private sealed class FakeChildBuildService(string line) : IGeneratedHostBuildService
+    internal sealed class FakeChildBuildService(string line) : IGeneratedHostBuildService
     {
         public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
         {

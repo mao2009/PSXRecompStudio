@@ -89,6 +89,26 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Tag of the parent's MMIO refusal: <c>X</c>. The child stops with <see cref="MmioRefusedExitCode"/>.</summary>
     public const string ProtocolMmioRefusedReply = "X";
 
+    /// <summary>
+    /// Line prefix for the child's guest-time report: <c>RHOST_RETIRED count</c> (Issue #679). <c>count</c> is the
+    /// number of guest instructions retired since the previous report — a positive integer; the child never sends 0.
+    /// The artifact knows no cycle costs: converting instructions to device time is the parent's Runtime contract.
+    /// </summary>
+    public const string ProtocolRetiredPrefix = "RHOST_RETIRED ";
+
+    /// <summary>Tag of the parent's acceptance of a guest-time report: <c>A</c>, sent after any device-originated RAM requests.</summary>
+    public const string ProtocolRetiredAckReply = "A";
+
+    /// <summary>Tag of the parent's refusal of a guest-time report: <c>X</c>. The child stops with <see cref="RetiredRefusedExitCode"/>.</summary>
+    public const string ProtocolRetiredRefusedReply = "X";
+
+    /// <summary>
+    /// Retired guest instructions the artifact accumulates, at a dispatch-unit boundary, before it reports them without
+    /// being asked to by an MMIO access, a host transfer, a SYSCALL or the end of the run. It bounds how long a device
+    /// event can go unobserved by a parent that has no other reason to hear from the child.
+    /// </summary>
+    public const int RetiredReportThreshold = 1024;
+
     /// <summary>Marks the start of the stable state snapshot on stdout.</summary>
     public const string SnapshotBeginMarker = "RSNAPSHOT_BEGIN";
 
@@ -131,7 +151,13 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@MMIO_REFUSED@", ProtocolMmioRefusedReply, StringComparison.Ordinal)
                 .Replace("@EXIT_MMIO_UNAVAILABLE@", MmioUnavailableExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_MMIO_REFUSED@", MmioRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@EXIT_MMIO_PROTOCOL@", MmioProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                .Replace("@EXIT_MMIO_PROTOCOL@", MmioProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@RETIRED@", ProtocolRetiredPrefix, StringComparison.Ordinal)
+                .Replace("@RETIRED_ACK@", ProtocolRetiredAckReply, StringComparison.Ordinal)
+                .Replace("@RETIRED_REFUSED@", ProtocolRetiredRefusedReply, StringComparison.Ordinal)
+                .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal),
             null,
             null);
     }
@@ -151,6 +177,12 @@ public static class RecompiledArtifactCodeGen
 
     /// <summary>Artifact exit code: the host's reply to an MMIO request was malformed or missing (Issue #678).</summary>
     public const int MmioProtocolExitCode = 98;
+
+    /// <summary>Artifact exit code: the host refused a guest-time report (a device or scheduler failure; Issue #679).</summary>
+    public const int RetiredRefusedExitCode = 99;
+
+    /// <summary>Artifact exit code: the host's reply to a guest-time report was malformed or missing (Issue #679).</summary>
+    public const int RetiredProtocolExitCode = 100;
 
     // Self-contained artifact entrypoint. Reads one guest state from the input
     // file named by argv[1]: 32 GPRs, hi, lo, pc, budget, an init-memory write
@@ -221,6 +253,61 @@ static void artifact_ram_write8(uint32_t address, uint8_t value) {
    access has no Runtime to reach and stops the run instead of reading 0. */
 static int artifact_mmio_bridge = 0;
 
+/* Guest time (Issue #679). The dispatch counts the guest instructions its completed
+   units retired; the parent turns them into device time. A report always precedes the
+   event that could observe device state (an MMIO access, a host transfer, a SYSCALL, the
+   end of the run), so the parent's devices are current at that point, and it is also
+   made once 1024 unreported instructions accumulate. Between two reports the guest does
+   nothing a device can see, so one batch is equivalent to the same instructions reported
+   one at a time. The parent's reply phase serves its device-originated RAM requests
+   (R/W, the same byte requests the BIOS HLE uses) against artifact_ram, then ends with
+   the tag that accepts or refuses the report. */
+static RecompilerState* artifact_state = (RecompilerState*)0;
+
+static void artifact_report_retired(void) {
+    char cmd[8];
+    unsigned long a, v;
+    unsigned long long pending;
+    if (!artifact_mmio_bridge || artifact_state == (RecompilerState*)0) return;
+    pending = artifact_state->retired_total - artifact_state->retired_reported;
+    if (pending == 0ull) return;
+    artifact_state->retired_reported = artifact_state->retired_total;
+    printf(""%s%llu\n"", ""@RETIRED@"", pending);
+    fflush(stdout);
+    for (;;) {
+        if (scanf(""%7s"", cmd) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+        if (strcmp(cmd, ""R"") == 0) {
+            if (scanf(""%lu"", &a) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+            printf(""RHOST_DATA %u\n"", (unsigned)artifact_ram_read8((uint32_t)a));
+            fflush(stdout);
+        } else if (strcmp(cmd, ""W"") == 0) {
+            if (scanf(""%lu %lu"", &a, &v) != 2) exit(@EXIT_RETIRED_PROTOCOL@);
+            artifact_ram_write8((uint32_t)a, (uint8_t)v);
+            printf(""RHOST_OK\n"");
+            fflush(stdout);
+        } else if (strcmp(cmd, ""@RETIRED_ACK@"") == 0) {
+            return;
+        } else if (strcmp(cmd, ""@RETIRED_REFUSED@"") == 0) {
+            exit(@EXIT_RETIRED_REFUSED@);
+        } else {
+            exit(@EXIT_RETIRED_PROTOCOL@);
+        }
+    }
+}
+
+/* An MMIO write is reported as soon as its unit retires, not at the next observation: the
+   interpreter advances its devices after every instruction, so what a store sets going (a
+   DMA kick, a CD-ROM command) has already happened — device-originated RAM writes included
+   — before the next guest instruction runs. */
+static int artifact_flush_after_unit = 0;
+
+static void artifact_after_unit(RecompilerState* state) {
+    if (artifact_flush_after_unit || state->retired_total - state->retired_reported >= @RETIRED_THRESHOLD@ull) {
+        artifact_flush_after_unit = 0;
+        artifact_report_retired();
+    }
+}
+
 /* One width-aware request: the access is relayed as a single read/write of its
    guest width, never as bytes (MMIO has width-sensitive registers, FIFOs and
    read side effects). The parent answers V <value> or X; anything else, or no
@@ -229,12 +316,14 @@ static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t a
     char reply[8];
     unsigned long v;
     if (!artifact_mmio_bridge) exit(@EXIT_MMIO_UNAVAILABLE@);
+    artifact_report_retired();
     if (is_write) printf(""%s%u %lu %lu\n"", tag, (unsigned)width, (unsigned long)artifact_translate(address), (unsigned long)value);
     else printf(""%s%u %lu\n"", tag, (unsigned)width, (unsigned long)artifact_translate(address));
     fflush(stdout);
     if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
     if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
     if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);
+    if (is_write) artifact_flush_after_unit = 1;
     return (uint32_t)v;
 }
 
@@ -321,14 +410,19 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
                      RHOST_OK                                 (reply to W)
                      RHOST_MMIO_READ <width> <physical>       (guest load outside RAM)
                      RHOST_MMIO_WRITE <width> <physical> <v>  (guest store outside RAM)
+                     RHOST_RETIRED <count>                    (guest instructions retired; Issue #679)
    parent -> child:  R <physical address>
                      W <physical address> <byte>
                      N                                        (pc not claimed)
                      D <termination> <next pc> <has v0> <v0>   (decision)
                      V <value> | X                            (reply to an MMIO request)
+                     A | X                                    (reply to RHOST_RETIRED)
 
-   R/W stay RAM-only byte requests: they carry the BIOS HLE's own RAM access, so
-   an MMIO request can never interleave with one. */
+   R/W stay RAM-only byte requests: they carry the BIOS HLE's own RAM access and, since
+   Issue #679, the device-originated RAM access a scheduler advance can cause (CD-ROM
+   DMA3). They are only ever sent while the child is waiting in a reply phase that serves
+   them (a host transfer, a SYSCALL, the RHOST_RETIRED reply), so an MMIO request can
+   never interleave with one. */
 #define PSX_REG_V0 2
 
 static int32_t artifact_host_serve(RecompilerState* state) {
@@ -362,6 +456,7 @@ static int32_t artifact_host_serve(RecompilerState* state) {
 
 static int32_t artifact_host_transfer(RecompilerState* state) {
     int i;
+    artifact_report_retired();
     printf(""RHOST_TRANSFER %lu"", (unsigned long)state->pc);
     for (i = 0; i < 32; i++) printf("" %lu"", (unsigned long)state->gpr[i]);
     printf(""\n"");
@@ -374,6 +469,7 @@ static int32_t artifact_host_transfer(RecompilerState* state) {
    the artifact does the return (RFE pop) and resumes after the SYSCALL. */
 static int32_t artifact_host_syscall(RecompilerState* state) {
     uint32_t sr_entry = (state->cop0_sr & ~0x3Fu) | ((state->cop0_sr << 2) & 0x3Cu);
+    artifact_report_retired();
     /* The exception entry is part of the state, not just of the offer: commit the
        pushed KU/IE now, as the interpreter's CPU does, so every path that does not
        return to the guest (unsupported SYS, host decline, fail-closed) snapshots the
@@ -449,6 +545,8 @@ int main(int argc, char** argv) {
     if (argc >= 4 && strcmp(argv[3], ""--host-transfer"") == 0) {
         state.host_transfer = &artifact_host_transfer;
         state.host_syscall = &artifact_host_syscall;
+        state.host_retired = &artifact_after_unit;
+        artifact_state = &state;
         artifact_mmio_bridge = 1;
         printf(""RHOST_INIT\n"");
         fflush(stdout);
@@ -461,6 +559,7 @@ int main(int argc, char** argv) {
     }
 
     recompiler_dispatch(&state, (uint32_t)budget);
+    artifact_report_retired(); /* whatever the last units retired below the threshold */
 
     printf(""RSNAPSHOT_BEGIN\n"");
     printf(""termination=%d\n"", (int)state.termination_reason);
