@@ -673,9 +673,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}' reply, received '{reply}'.");
             }
 
+            // intEntry is a boolean on the wire: exactly "0" or "1"; anything else fails closed, never reads as false.
+            var intEntry = fields[5] switch
+            {
+                "0" => false,
+                "1" => true,
+                _ => throw new ProtocolFaultException($"Malformed intEntry in '{reply}'."),
+            };
+
             return new Cop0Query(
                 new BiosExceptionContext(ParseUInt(fields[0]), ParseUInt(fields[1]), ParseUInt(fields[2]), ParseUInt(fields[3]), ParseUInt(fields[4])),
-                ParseUInt(fields[5]) == 1);
+                intEntry);
         }
 
         /// <summary>

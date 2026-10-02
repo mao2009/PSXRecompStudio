@@ -252,6 +252,71 @@ public sealed class RecompiledArtifactInterruptTests
         result.FinalSnapshot!.PC.Should().Be(VectorBev0);
     }
 
+    /// <summary>Handshakes, transfers to the unpopulated general vector, answers the host's E query with <c>RHOST_COP0 ... intEntry</c>.</summary>
+    private sealed class Cop0ReplyChildBuildService(string intEntry) : IGeneratedHostBuildService
+    {
+        public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
+        {
+            var gprs = string.Concat(Enumerable.Repeat(" 0", 32));
+            var source =
+                "#include <stdio.h>\n" +
+                "int main(void) {\n" +
+                "  char b[64]; unsigned long a, v;\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolInitLine}\\n\"); fflush(stdout);\n" +
+                "  for (;;) {\n" +
+                "    if (scanf(\"%63s\", b) != 1) return 1;\n" +
+                "    if (b[0] == 'N') break;\n" +
+                "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
+                "    else if (b[0] == 'W' && scanf(\"%lu %lu\", &a, &v) == 2) { printf(\"RHOST_OK\\n\"); fflush(stdout); }\n" +
+                "    else return 1;\n" +
+                "  }\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolTransferPrefix}{VectorBev0}{gprs}\\n\"); fflush(stdout);\n" +
+                // The host first reads the vector's RAM (zero-filled: unpopulated), then asks for COP0.
+                "  for (;;) {\n" +
+                "    if (scanf(\"%63s\", b) != 1) return 1;\n" +
+                $"    if (b[0] == '{RecompiledArtifactCodeGen.ProtocolCop0QueryCommand}') break;\n" +
+                "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
+                "    else return 1;\n" +
+                "  }\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}0 0 0 0 0 {intEntry}\\n\"); fflush(stdout);\n" +
+                "  while (getchar() != EOF) {}\n" +
+                "  return 0;\n" +
+                "}\n";
+            return new GeneratedHostBuildService().Build(request with { Source = source });
+        }
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("1")]
+    public void QueryCop0_IntEntryZeroOrOne_IsAccepted(string intEntry)
+    {
+        using var dir = new TempDirectory();
+
+        var result = Run(Program([Nop]), dir, withRuntime: true, new Cop0ReplyChildBuildService(intEntry));
+
+        result.DiagnosticCode.Should().NotBe("ARTIFACT_HOST_PROTOCOL_FAILED", result.DiagnosticMessage);
+    }
+
+    [Theory]
+    [InlineData("2")]
+    [InlineData("123")]
+    [InlineData("4294967295")]
+    [InlineData("-1")]
+    [InlineData("01")]
+    [InlineData("true")]
+    [InlineData("x")]
+    public void QueryCop0_IntEntryOtherThanZeroOrOne_IsAProtocolFailure(string intEntry)
+    {
+        using var dir = new TempDirectory();
+
+        var result = Run(Program([Nop]), dir, withRuntime: true, new Cop0ReplyChildBuildService(intEntry));
+
+        result.State.Should().NotBe(TitleExecutionState.Completed);
+        result.DiagnosticCode.Should().Be("ARTIFACT_HOST_PROTOCOL_FAILED");
+        result.FinalSnapshot.Should().BeNull();
+    }
+
     [Fact]
     public void ChainCompletion_ReturnsToEpc_ThroughTheArtifactsOwnRfe_AndTakesAnUnacknowledgedIrqAgain()
     {
