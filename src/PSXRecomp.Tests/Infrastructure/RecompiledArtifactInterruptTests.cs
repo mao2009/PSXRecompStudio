@@ -28,7 +28,8 @@ public sealed class RecompiledArtifactInterruptTests
     private const uint Timer2Target = 0x1F801128u;
     private const uint Timer2Irq = 1u << (DeviceScheduler.Timer0Irq + 2);
 
-    private const uint SrIec = 0x1u;      // SR bit 0 (R3000A IEc; BiosKernelSyscallDispatch / ADR-014)
+    private const uint SrIec = 0x1u;      // SR bit 0 (R3000A IEc; docs/cpu/cop0.md, ADR-014)
+    private const uint SrKuc = 0x2u;      // SR bit 1 (KUc): never an interrupt enable (Issue #684)
     private const uint SrIm2 = 0x400u;
     private const uint SrBev = 0x400000u;
     private const uint CauseIp2 = 0x400u;
@@ -78,12 +79,14 @@ public sealed class RecompiledArtifactInterruptTests
         G(run, T1).Should().Be(0u, "the interrupted instruction did not execute; no instruction retired for the INT");
     }
 
-    [Fact]
-    public void Entry_MatchesTheInterpretersNativeCpu_ForTheSameSrAndLine()
+    [Theory]
+    [InlineData(SrIec | SrIm2)]                 // SR = 0x401: SYS(02h)'s value
+    [InlineData(SrIec | SrIm2 | SrBev)]         // BIOS-ROM vector
+    [InlineData(SrIec | SrKuc | SrIm2 | 0xFF00u)] // KUc and the other IM bits ride along in the push
+    public void Entry_MatchesTheInterpretersNativeCpu_ForTheSameSrAndLine(uint sr)
     {
-        // SR bit 1 is the interpreter's IEc (docs/cpu/cop0.md) and bit 0 the generated host's (R3000A):
-        // SR = IEc(0) | bit 1 | IM2 enables INT on both, so every other COP0 value must agree.
-        const uint sr = SrIec | 0x2u | SrIm2;
+        // Issue #684: both CPUs read IEc from SR bit 0, so the same SR gives the same INT entry:
+        // vector pc, EPC, CAUSE (Excode, BD, IP2) and the pushed SR stack.
         using var core = new PSXCoreWrapper();
         core.WriteInterruptControllerRegister(InterruptMask, 1u << 6);
         core.RaiseInterrupt(6);
@@ -101,6 +104,25 @@ public sealed class RecompiledArtifactInterruptTests
         run.Snapshot["cop0.epc"].Should().Be(core.GetCop0(14));
         run.Snapshot["cop0.cause"].Should().Be(core.GetCop0(13));
         run.Snapshot["cop0.sr"].Should().Be(core.GetCop0(12));
+    }
+
+    [Theory]
+    [InlineData(SrIec | SrIm2, true, true)]   // SR = 0x401 + asserted line: accepted
+    [InlineData(SrKuc | SrIm2, true, false)]  // KUc (bit 1) without IEc (bit 0): rejected
+    [InlineData(SrIec, true, false)]          // IM2 clear: rejected
+    [InlineData(SrIec | SrIm2, false, false)] // line not asserted: rejected
+    public void InterpreterNativeCpu_AcceptsInt_OnlyWithIecBit0_Im2_AndAnAssertedLine(uint sr, bool asserted, bool accepted)
+    {
+        using var core = new PSXCoreWrapper();
+        core.WriteInterruptControllerRegister(InterruptMask, 1u << 6);
+        if (asserted) core.RaiseInterrupt(6);
+        core.SetCop0(12, sr);
+        core.Pc = Entry;
+
+        core.Step().Should().Be(0);
+
+        core.ExceptionRaised.Should().Be(accepted);
+        core.Pc.Should().Be(accepted ? VectorBev0 : Entry + 4u);
     }
 
     [Fact]
@@ -127,6 +149,7 @@ public sealed class RecompiledArtifactInterruptTests
 
     [Theory]
     [InlineData(SrIm2, "I")]                 // IEc clear: interrupts disabled
+    [InlineData(SrKuc | SrIm2, "I")]         // KUc (bit 1) is not IEc
     [InlineData(SrIec, "I")]                 // IM2 clear: the line is masked
     [InlineData(SrIec | SrIm2, "A")]         // nothing pending
     [InlineData(SrIec | 0x0000FB00u, "I")]   // every IM bit but IM2

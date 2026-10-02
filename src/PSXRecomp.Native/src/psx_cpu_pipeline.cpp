@@ -137,7 +137,7 @@ int PSXCpu::Step(PSXMemory& memory) {
     // docs/cpu/exceptions.md "IEc=1 の場合、例外として処理").
     if (!branch_pending_) {
         uint32_t sr = cop0_[12];
-        bool iec = (sr & 0x2u) != 0;
+        bool iec = (sr & 0x1u) != 0; // SR.IEc is bit 0 (R3000A; docs/cpu/cop0.md, Issue #684)
         uint32_t im = (sr >> 8) & 0xFFu;
         uint32_t ip = (cause >> 8) & 0xFFu;
         if (iec && (ip & im) != 0) {

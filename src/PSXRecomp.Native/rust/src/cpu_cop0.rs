@@ -107,8 +107,8 @@ mod tests {
         assert_eq!(psx_cpu_cop0_rfe(0x03), 0x00);
         assert_eq!(psx_cpu_cop0_rfe(0x0C), 0x03);
         assert_eq!(psx_cpu_cop0_rfe(0x30), 0x3C);
-        assert_eq!(psx_cpu_cop0_rfe(0x14), 0x15); // KUp=1, KUo=1
-        assert_eq!(psx_cpu_cop0_rfe(0x28), 0x2A); // IEp=1, IEo=1
+        assert_eq!(psx_cpu_cop0_rfe(0x14), 0x15); // IEp=1, IEo=1
+        assert_eq!(psx_cpu_cop0_rfe(0x28), 0x2A); // KUp=1, KUo=1
         // Bits above 5 (IM, BEV, CU, ...) preserved.
         assert_eq!(psx_cpu_cop0_rfe(0xFFFF_FFC0), 0xFFFF_FFC0);
         assert_eq!(psx_cpu_cop0_rfe(0x1040_040F), 0x1040_0403);

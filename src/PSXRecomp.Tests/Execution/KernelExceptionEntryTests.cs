@@ -21,7 +21,7 @@ public sealed class KernelExceptionEntryTests
     private const uint Vector = 0x80000080u;
     private const uint HookBuffer = 0x80002000u;
     private const uint Timer2Bit = 1u << (DeviceScheduler.Timer0Irq + 2);
-    private const ushort Sr = 0x0403; // IM2 | the interpreter's IEc (bit 1, docs/cpu/cop0.md) | the R3000A's (bit 0)
+    private const ushort Sr = 0x0401; // IM2 | IEc (bit 0, docs/cpu/cop0.md)
     private const ushort Marker = 0x77;
 
     private const R3000aRegister T1 = R3000aRegister.T1;

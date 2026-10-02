@@ -752,7 +752,7 @@ public sealed class ExecutionOrchestratorTests
     [InlineData("Ov", new uint[] { 0x3C087FFFu, 0x01084020u })] // LUI $t0, 0x7FFF; ADD $t0, $t0, $t0
     // Software interrupt: SR = IM0 | IEc, CAUSE.IP0 set by MTC0. It is an INT
     // exception, but not one the hardware interrupt line raised.
-    [InlineData("software INT", new uint[] { 0x340A0102u, 0x408A6000u, 0x340A0100u, 0x408A6800u, 0x00000000u })]
+    [InlineData("software INT", new uint[] { 0x340A0101u, 0x408A6000u, 0x340A0100u, 0x408A6800u, 0x00000000u })]
     public void Interpreter_NonHardwareInterruptException_StillFails_EvenWithAHandlerInstalled(string kind, uint[] words)
     {
         // Issue #499 continues only hardware interrupts. Every other exception —
@@ -1048,7 +1048,7 @@ public sealed class ExecutionOrchestratorTests
     }
 
     private const uint ExceptionVector = 0x80000080u;
-    private const ushort SrIec = 0x0002; // SR bit 1 (docs/cpu/cop0.md)
+    private const ushort SrIec = 0x0001; // SR bit 0 (R3000A IEc, docs/cpu/cop0.md)
     private const ushort SrIm2 = 0x0400; // SR bit 10; also CAUSE.IP2's bit
     private const uint WaitLoopIndex = 5;
 

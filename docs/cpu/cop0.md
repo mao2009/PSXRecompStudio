@@ -26,23 +26,33 @@
 The R3000A uses a three-level status stack.
 
 ```text
-Bit  Name    Description
-0    KUc     Current Kernel/User mode (0=Kernel, 1=User)
-1    IEc     Current Interrupt Enable
-2    KUp     Previous Kernel/User mode
-3    IEp     Previous Interrupt Enable
-4    KUo     Oldest Kernel/User mode
-5    IEo     Oldest Interrupt Enable
-6    CU0     Coprocessor 0 Usability (unused, always 1 on PSX)
-7    CU1     Coprocessor 1 Usability (FPU, unused on PSX)
-8-15 IM[7:0] Interrupt Mask (hardware)
-16-17 SW     Software Interrupt (R/W)
-18-25 IM[9:8] Interrupt Mask (software)
-26-27 *      Unused
-28    CU2     Coprocessor 2 Usability (GTE)
-29    CU3     Coprocessor 3 Usability
-30-31 *      Unused
+Bit   Name    Description
+0     IEc     Current Interrupt Enable
+1     KUc     Current Kernel/User mode (0=Kernel, 1=User)
+2     IEp     Previous Interrupt Enable
+3     KUp     Previous Kernel/User mode
+4     IEo     Oldest Interrupt Enable
+5     KUo     Oldest Kernel/User mode
+6-7   *       Unused
+8-15  IM[7:0] Interrupt Mask (IM0-1 software, IM2 = Interrupt Controller line, CAUSE.IP2)
+16    IsC     Isolate Cache
+17    SwC     Swap Caches
+18    PZ      Parity Zero
+19    CM      Cache Miss
+20    PE      Parity Error
+21    TS      TLB Shutdown
+22    BEV     Bootstrap Exception Vector
+23-24 *       Unused
+25    RE      Reverse Endianness (user mode)
+26-27 *       Unused
+28    CU0     Coprocessor 0 Usability
+29    CU1     Coprocessor 1 Usability (FPU, unused on PSX)
+30    CU2     Coprocessor 2 Usability (GTE)
+31    CU3     Coprocessor 3 Usability
 ```
+
+The interpreter (`PSXCpu`), the generated host and the BIOS-less kernel contract
+(`BiosKernelSyscallDispatch`, ADR-014) all use this layout (Issue #684).
 
 ### KUc (Kernel/User Current)
 
@@ -53,6 +63,10 @@ Bit  Name    Description
 
 - 0: Interrupts disabled
 - 1: Interrupts enabled
+
+A hardware INT is accepted only when `SR.IEc` (bit 0), `SR.IM2` (bit 10) and the
+Interrupt Controller line (CAUSE.IP2) are all set. KUc (bit 1) never enables
+interrupts. ExitCriticalSection (SYS 02h) leaves `SR | 0x401`.
 
 ### 3-Level Stack
 
