@@ -72,9 +72,11 @@ public sealed class RecompiledArtifactMmioBridgeTests
         bool withRuntime,
         IGeneratedHostBuildService? buildService = null,
         Action<PsxDeviceGraph>? configureDevices = null,
-        uint segmentBudget = 256)
+        uint segmentBudget = 256,
+        BiosExceptionChain? exceptionChain = null,
+        IEnumerable<uint>? additionalRoots = null)
     {
-        var program = ReachableProgramBuilder.Build(Entry, words, Entry);
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, additionalRoots ?? []);
         using var engine = new RecompiledHostExecutionEngine(
             program,
             words,
@@ -82,7 +84,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
             buildService ?? new GeneratedHostBuildService(),
             dir.FullPath,
             withRuntime ? (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer) : null,
-            configureDevices);
+            configureDevices,
+            exceptionChain);
         return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget));
     }
 

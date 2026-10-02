@@ -240,10 +240,13 @@ exits 97 (for example a guest access to the BIOS-ROM window, which has no image)
 snapshot. A malformed request on the host side is `ARTIFACT_HOST_PROTOCOL_FAILED`.
 
 With `--host-transfer` the artifact also takes a pending, enabled device IRQ as an
-R3000A hardware INT exception (Issue #680, ADR-025 addendum). A BIOS-less run has no
-kernel exception handler at the exception vector, so the run then stops, classified as
-`RuntimeFailure` / `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED` (exit 1), with the vector as the
-guest PC and EPC / CAUSE / SR / I_STAT / I_MASK in the diagnostic message.
+R3000A hardware INT exception (Issue #680, ADR-025 addendum). When the guest left the RAM
+exception vector `0x80000080` unpopulated (every BIOS-less run), the INT enters the Runtime's
+kernel exception handler (Issue #662, ADR-014 amendment). Until the kernel priority-chain
+elements it would run are modelled, a pending enabled IRQ stops the run, classified as
+`RuntimeFailure` / `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1), with the vector as the guest PC and
+I_STAT / I_MASK / EPC / CAUSE / SR in the diagnostic message. A guest-installed vector, or the
+SR.BEV = 1 ROM vector, still stops as `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`.
 
 A successful build or launch implies only that the pipeline completed. Real
 games may still stop at an explicit unsupported/blocked boundary (exit code 2)

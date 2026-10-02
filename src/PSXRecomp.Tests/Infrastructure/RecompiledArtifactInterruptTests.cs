@@ -188,9 +188,214 @@ public sealed class RecompiledArtifactInterruptTests
 
         result.FinalSnapshot.Should().NotBeNull(result.DiagnosticMessage);
         result.FinalSnapshot!.PC.Should().Be(VectorBev0, "the INT entered the general exception vector");
+        // Issue #662: the unpopulated vector is the Runtime's kernel exception handler, not a bare dead end. It
+        // saved the context and walked the chain up to the first element the Runtime does not model.
+        result.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
+        result.DiagnosticMessage.Should().Contain("EPC=0x8000").And.Contain("CAUSE=0x00000400")
+            .And.Contain("I_STAT=0x0040").And.Contain("#658").And.Contain("#661");
+        result.State.Should().Be(TitleExecutionState.RuntimeFailure, "an unmodelled kernel chain element fails closed");
+    }
+
+    // ---- the kernel exception handler (Issue #662) -------------------------------------------
+
+    private const ushort Marker = 0x77;
+    private const R3000aRegister T5 = R3000aRegister.T5;
+    private const R3000aRegister S2 = R3000aRegister.S2;
+    private const uint HookBuffer = 0x80002000u;
+
+    /// <summary>SYS(02h), then I_MASK = IRQ6 and Timer 2 raising IRQ6 at counter 100.</summary>
+    private static uint[] ArmTimer2Irq() =>
+    [
+        .. ExitCriticalSection(),
+        Lui(T0, 0x1F80),
+        Ori(T1, Zero, 1 << 6), Mem(R3000aOpcode.Sw, T1, T0, (ushort)(InterruptMask & 0xFFFF)),
+        Ori(T1, Zero, 100), Mem(R3000aOpcode.Sw, T1, T0, (ushort)(Timer2Target & 0xFFFF)),
+        Ori(T1, Zero, 0x10), Mem(R3000aOpcode.Sw, T1, T0, (ushort)(Timer2Mode & 0xFFFF)),
+    ];
+
+    private static uint[] StoreWord(uint address, uint value) =>
+        [.. Li(T0, address & ~0xFFFFu), .. Li(T1, value), Mem(R3000aOpcode.Sw, T1, T0, (ushort)(address & 0xFFFF))];
+
+    [Fact]
+    public void Int_WithAGuestInstalledVector_KeepsTheGuestOwnedBoundary_NotTheKernelHandler()
+    {
+        // The guest wrote its own code at the RAM vector: the kernel handler must not claim it. The artifact has
+        // no generated block there, so the run still ends at the classified vector boundary.
+        var code = new List<uint>([.. StoreWord(VectorBev0, 0x42000010u), .. ArmTimer2Irq()]);
+        code.AddRange(BranchToSelf(Entry + (uint)code.Count * 4u));
+        using var dir = new TempDirectory();
+
+        var result = Run([.. code], dir, withRuntime: true, segmentBudget: 100_000);
+
         result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.ExceptionVectorUnhandledDiagnosticCode);
-        result.DiagnosticMessage.Should().Contain("EPC=0x8000").And.Contain("CAUSE=0x00000400").And.Contain("#662");
-        result.State.Should().Be(TitleExecutionState.RuntimeFailure, "an unmodelled kernel exception path fails closed");
+        result.FinalSnapshot!.PC.Should().Be(VectorBev0);
+    }
+
+    [Fact]
+    public void OrdinaryTransferToAZeroFilledVector_WithoutAnIntEntry_IsNotTheKernelHandler()
+    {
+        // No interrupt is ever enabled: the guest merely jumps to the unpopulated 0x80000080. CAUSE.ExcCode is 0 and
+        // the vector is zero, but no INT entry happened, so the kernel handler must not run (it would save state to a
+        // seeded TCB and RFE). The generic fail-closed vector diagnostic is what remains.
+        var code = new List<uint>([.. Li(T0, VectorBev0), MipsEncoding.JumpRegister((byte)T0), Nop]);
+        var chainCalls = 0;
+        using var dir = new TempDirectory();
+
+        var result = Run([.. code], dir, withRuntime: true, segmentBudget: 1_000, exceptionChain: ctx =>
+        {
+            chainCalls++;
+            return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
+        });
+
+        chainCalls.Should().Be(0, "an ordinary transfer is not a kernel exception entry");
+        result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.ExceptionVectorUnhandledDiagnosticCode);
+        result.FinalSnapshot!.PC.Should().Be(VectorBev0);
+    }
+
+    /// <summary>Handshakes, transfers to the unpopulated general vector, answers the host's E query with <c>RHOST_COP0 ... intEntry</c>.</summary>
+    private sealed class Cop0ReplyChildBuildService(string intEntry) : IGeneratedHostBuildService
+    {
+        public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
+        {
+            var gprs = string.Concat(Enumerable.Repeat(" 0", 32));
+            var source =
+                "#include <stdio.h>\n" +
+                "int main(void) {\n" +
+                "  char b[64]; unsigned long a, v;\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolInitLine}\\n\"); fflush(stdout);\n" +
+                "  for (;;) {\n" +
+                "    if (scanf(\"%63s\", b) != 1) return 1;\n" +
+                "    if (b[0] == 'N') break;\n" +
+                "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
+                "    else if (b[0] == 'W' && scanf(\"%lu %lu\", &a, &v) == 2) { printf(\"RHOST_OK\\n\"); fflush(stdout); }\n" +
+                "    else return 1;\n" +
+                "  }\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolTransferPrefix}{VectorBev0}{gprs}\\n\"); fflush(stdout);\n" +
+                // The host first reads the vector's RAM (zero-filled: unpopulated), then asks for COP0.
+                "  for (;;) {\n" +
+                "    if (scanf(\"%63s\", b) != 1) return 1;\n" +
+                $"    if (b[0] == '{RecompiledArtifactCodeGen.ProtocolCop0QueryCommand}') break;\n" +
+                "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
+                "    else return 1;\n" +
+                "  }\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}0 0 0 0 0 {intEntry}\\n\"); fflush(stdout);\n" +
+                "  while (getchar() != EOF) {}\n" +
+                "  return 0;\n" +
+                "}\n";
+            return new GeneratedHostBuildService().Build(request with { Source = source });
+        }
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("1")]
+    public void QueryCop0_IntEntryZeroOrOne_IsAccepted(string intEntry)
+    {
+        using var dir = new TempDirectory();
+
+        var result = Run(Program([Nop]), dir, withRuntime: true, new Cop0ReplyChildBuildService(intEntry));
+
+        result.DiagnosticCode.Should().NotBe("ARTIFACT_HOST_PROTOCOL_FAILED", result.DiagnosticMessage);
+    }
+
+    [Theory]
+    [InlineData("2")]
+    [InlineData("123")]
+    [InlineData("4294967295")]
+    [InlineData("-1")]
+    [InlineData("01")]
+    [InlineData("true")]
+    [InlineData("x")]
+    public void QueryCop0_IntEntryOtherThanZeroOrOne_IsAProtocolFailure(string intEntry)
+    {
+        using var dir = new TempDirectory();
+
+        var result = Run(Program([Nop]), dir, withRuntime: true, new Cop0ReplyChildBuildService(intEntry));
+
+        result.State.Should().NotBe(TitleExecutionState.Completed);
+        result.DiagnosticCode.Should().Be("ARTIFACT_HOST_PROTOCOL_FAILED");
+        result.FinalSnapshot.Should().BeNull();
+    }
+
+    [Fact]
+    public void ChainCompletion_ReturnsToEpc_ThroughTheArtifactsOwnRfe_AndTakesAnUnacknowledgedIrqAgain()
+    {
+        // The first pass completes without acknowledging IRQ6: it is taken again only if the return resumed the
+        // interrupted countdown with its registers intact and the artifact's RFE re-enabled interrupts.
+        var code = new List<uint>([.. ArmTimer2Irq(), Ori(T5, Zero, 1000)]);
+        var loop = Entry + (uint)code.Count * 4u;
+        code.AddRange(
+        [
+            MipsEncoding.I(0x09, (byte)T5, (byte)T5, 0xFFFF),                     // addiu t5, t5, -1
+            MipsEncoding.Branch(0x05, (byte)T5, (byte)Zero, loop + 4, loop),      // bne t5, zero, loop
+            Nop,
+            Ori(S2, Zero, Marker),
+            Nop,
+        ]);
+        var calls = 0;
+        using var dir = new TempDirectory();
+
+        var result = Run([.. code], dir, withRuntime: true, segmentBudget: 100_000, exceptionChain: ctx =>
+        {
+            if (++calls == 2)
+            {
+                ctx.Interrupts.Acknowledge(~Timer2Irq);
+            }
+
+            return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
+        });
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        calls.Should().Be(2);
+        result.FinalSnapshot!.Gpr[(int)T5].Should().Be(0u, "the countdown finished: its register survived the save/restore");
+        result.FinalSnapshot.Gpr[(int)S2].Should().Be(Marker);
+    }
+
+    [Fact]
+    public void ChainCompletion_WithARegisteredHook_AppliesTheHooksRegistersAndPc_ToTheArtifact()
+    {
+        // The guest writes a hook buffer (ra, sp, fp, s0..s7, gp), registers it through B0:19, and spins. The
+        // completed chain fires the hook: the artifact's registers change over the protocol's G commands and
+        // control lands on the hook's saved ra — a block reachable only that way, so it is an explicit root.
+        const uint s0 = 0x1234;
+        List<uint> Build(uint landing)
+        {
+            uint[] saved = [landing, 0x801FFF00, 0x801FFF10, s0, 0, 0, 0, 0, 0, 0, 0, 0x80008000];
+            var code = new List<uint>();
+            for (var i = 0; i < saved.Length; i++)
+            {
+                code.AddRange(StoreWord(HookBuffer + (uint)i * 4u, saved[i]));
+            }
+
+            code.Add(Ori(T1, Zero, BiosHleRuntime.HookEntryIntFunction));
+            code.AddRange(Li(R3000aRegister.A0, HookBuffer));
+            code.AddRange([MipsEncoding.JumpAndLink(BiosJumpTables.B0VectorAddress), Nop]);
+            code.AddRange(ArmTimer2Irq());
+            code.AddRange(BranchToSelf(Entry + (uint)code.Count * 4u));
+            return code;
+        }
+
+        var landing = Entry + (uint)Build(0).Count * 4u;
+        var words = Build(landing);
+        words.AddRange([Ori(S2, Zero, Marker), Nop]);
+        var calls = 0;
+        using var dir = new TempDirectory();
+
+        var result = Run(
+            [.. words], dir, withRuntime: true, segmentBudget: 100_000, additionalRoots: [landing],
+            exceptionChain: ctx =>
+            {
+                calls++;
+                ctx.Interrupts.Acknowledge(~Timer2Irq);
+                return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
+            });
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        calls.Should().Be(1);
+        result.FinalSnapshot!.Gpr[(int)S2].Should().Be(Marker, "control continued at the hook's saved ra");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.V0].Should().Be(1u, "the hook is entered with $v0 = 1");
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.S0].Should().Be(s0);
+        result.FinalSnapshot.Gpr[(int)R3000aRegister.Sp].Should().Be(0x801FFF00u);
     }
 
     [Theory]

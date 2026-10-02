@@ -49,6 +49,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
+    private readonly BiosExceptionChain? _exceptionChain;
     private readonly PsxDeviceGraph _devices = new();
     private readonly PSXCoreWrapper _core;
     private readonly MemoryBus _bus;
@@ -109,6 +110,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <param name="biosRuntimeFactory">Builds the BIOS runtime this engine dispatches
     /// A0/B0/C0 vector hits to, over the engine's own guest memory. Null runs without
     /// BIOS dispatch, so a vector hit is simply an unresolved transfer.</param>
+    /// <param name="exceptionChain">The kernel exception handler's priority-chain walk (Issue #662);
+    /// null is <see cref="BiosExceptionHandler.DefaultChain"/>. The seam modelled kernel handlers plug into.</param>
     /// <exception cref="ArgumentNullException"><paramref name="instructions"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty, or the
     /// program image overflows the 32-bit address space or does not map to a contiguous
@@ -116,7 +119,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public InterpreterTitleExecutionEngine(
         IReadOnlyList<uint> instructions,
         uint loadAddress,
-        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
+        BiosExceptionChain? exceptionChain = null)
     {
         ArgumentNullException.ThrowIfNull(instructions);
         if (instructions.Count == 0)
@@ -156,6 +160,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _loadAddress = loadAddress;
         _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
+        _exceptionChain = exceptionChain;
 
         // The managed MMIO layer (DMA/timers/interrupt controller/GPU/CD-ROM) is
         // the shared Runtime device graph, so it is reachable from the real
@@ -316,6 +321,35 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     break;
                 }
 
+                // Issue #662: with a Runtime attached and nothing of the guest's own at the
+                // general exception vector, the INT is the kernel exception handler's (C0:06):
+                // the shared contract saves the context, walks the chains and completes it,
+                // and the CPU applies the result. The guest's handler never runs.
+                var guestMemory = new GuestMemoryReader(_bus.Read8);
+                if (biosRuntime is not null &&
+                    _core.Pc == BiosExceptionHandler.GeneralExceptionVector &&
+                    BiosExceptionHandler.IsKernelVector(guestMemory))
+                {
+                    var kernel = BiosExceptionHandler.Handle(
+                        guestMemory,
+                        new GuestMemoryWriter(_bus.Write8),
+                        _interruptControllerAdapter,
+                        ReadGpr(),
+                        new BiosExceptionContext(
+                            _core.GetCop0(Cop0Epc), _core.GetCop0(Cop0Cause), _core.GetCop0(Cop0Status), _core.Hi, _core.Lo),
+                        _exceptionChain);
+                    if (!kernel.Handled)
+                    {
+                        diagnosticCode = kernel.DiagnosticCode;
+                        diagnosticMessage = kernel.DiagnosticMessage;
+                        termination = RecompilerIrTerminationReason.UnresolvedIndirectFlow;
+                        break;
+                    }
+
+                    ApplyKernelOutcome(kernel);
+                    continue;
+                }
+
                 // Issue #499: a device IRQ taken as INT is ordinary guest control
                 // flow. The CPU has already set EPC/CAUSE/SR and vectored; the
                 // guest's handler runs from here and returns with its own
@@ -459,6 +493,31 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             }
         }
         return true;
+    }
+
+    /// <summary>
+    /// Applies a handled kernel exception to the CPU. Only registers that changed are written, so an
+    /// identity restore leaves in-flight pipeline state alone; RFE is the CPU's own SR pop.
+    /// </summary>
+    private void ApplyKernelOutcome(BiosExceptionHandlerOutcome kernel)
+    {
+        for (var i = 1; i < kernel.Gpr.Length; i++)
+        {
+            if (_core.GetGpr(i) != kernel.Gpr[i])
+            {
+                _core.SetGpr(i, kernel.Gpr[i]);
+            }
+        }
+
+        _core.Hi = kernel.Hi;
+        _core.Lo = kernel.Lo;
+        if (kernel.RestoredSr is uint sr)
+        {
+            _core.SetCop0(Cop0Status, sr);
+            _core.PopExceptionSrStack();
+        }
+
+        _core.Pc = kernel.NextPc;
     }
 
     private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
