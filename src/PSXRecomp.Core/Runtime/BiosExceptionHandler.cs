@@ -227,13 +227,21 @@ public static class BiosExceptionHandler
     }
 
     /// <summary>
-    /// The chain as the Runtime models it today: no element is modelled. With no enabled IRQ pending there is
-    /// nothing for any element to claim and the chain ends; otherwise the default kernel handlers (timer/VBlank
-    /// #658/#660, Pad/Card #661, CD-ROM) would run, and the run stops instead of pretending they did.
+    /// The chain as the Runtime models it today: priority 1 is <see cref="BiosTimerVblankIrqHandler"/> (#658) and
+    /// ends the walk when a flag-1 element returns from the exception. Past it, with no enabled IRQ pending there is
+    /// nothing for any further element to claim and the chain ends; otherwise the remaining default kernel handlers
+    /// (Pad/Card #661, CD-ROM) would run, and the run stops instead of pretending they did. Root-counter event
+    /// delivery (#660) is not modelled, so a claimed timer/VBlank source stops here too.
     /// </summary>
     public static BiosExceptionChainResult DefaultChain(BiosExceptionChainContext context)
     {
         ArgumentNullException.ThrowIfNull(context.Interrupts);
+        var priority1 = BiosTimerVblankIrqHandler.Run(context);
+        if (priority1.Status != BiosExceptionChainStatus.Completed)
+        {
+            return priority1;
+        }
+
         var status = context.Interrupts.Status;
         var mask = context.Interrupts.Mask;
         return (status & mask) == 0
@@ -241,7 +249,7 @@ public static class BiosExceptionHandler
             : new BiosExceptionChainResult(
                 BiosExceptionChainStatus.Unsupported,
                 $"I_STAT=0x{status:X4}, I_MASK=0x{mask:X4}|a pending enabled IRQ needs a kernel priority-chain element the Runtime does not model " +
-                "(timer/VBlank handlers #658/#660, Pad/Card handler #661)");
+                "(Pad/Card handler #661)");
     }
 
     private static string Describe(BiosExceptionContext c) =>

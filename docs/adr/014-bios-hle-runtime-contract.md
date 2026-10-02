@@ -1808,11 +1808,18 @@ Persona production run stopped there (`ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`).
   engine object, so #658/#661 elements can read guest kernel state without a second CPU semantics). The seeded
   PCB/TCB (`0xE000`/`0xE100`) is Runtime-reserved kernel state: a future ExCB/EvCB/TCB allocator needs one SSOT
   for it. Both engines take
-  it as an optional constructor argument (null = `DefaultChain`). Today no element is modelled:
-  `DefaultChain` ends only when no enabled IRQ is pending, otherwise it fails closed with
-  `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (I_STAT/I_MASK/EPC/CAUSE/SR in the message) instead of
-  pretending a handler ran. The default elements plug in here: timer/VBlank (#658, #660),
-  Pad/Card (#661, `BiosPadCardIrqHandler`), guest elements (C0:02). Per-IRQ handler
+  it as an optional constructor argument (null = `DefaultChain`). `DefaultChain` runs priority 1 first
+  (`BiosTimerVblankIrqHandler`, #658: VBlank/IRQ0, Timer2/IRQ6, Timer1/IRQ5, Timer0/IRQ4, in that INFERRED
+  order; a source is claimed when its IRQ is pending in I_STAT and enabled in I_MASK). A claimed source
+  first has its root-counter events delivered through `BiosRootCounterEventDelivery`; the default delivers
+  none (#660 is not modelled), so it fails closed with `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` naming the source,
+  its C0:0A flag and #660. Then the existing `BiosRootCounterClearPolicy` flag (the only state) decides:
+  0 = no acknowledge, no return, the chain continues; 1 = acknowledge only that IRQ through
+  `IInterruptController` (W0C) and return from the exception at once (`ReturnedFromException`: lower
+  priorities and the hook are skipped); anything else, or an unreadable flag, fails closed and guest state is
+  not corrected. Priority 2 (Pad/Card, #661) is reached only when no priority-1 element returned;
+  `DefaultChain` then ends when no enabled IRQ is pending, otherwise it fails closed as before. Other default
+  elements plug in here: Pad/Card (#661, `BiosPadCardIrqHandler`), guest elements (C0:02). Per-IRQ handler
   ownership was not verified and is not encoded.
 - **Generated host.** The artifact remains the CPU; the wire additions (read `E`; write `G`,
   `H`, `C`, `P`, `L`) are in the ADR-025 addendum.
