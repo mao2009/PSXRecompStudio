@@ -185,19 +185,94 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
         (_interrupts.Status & 1u).Should().Be(1u);
     }
 
+    // ---- default delivery (#660): DeliverEvent(F2000000h + t, 2) over the kernel EvCB table ----
+
     [Theory]
-    [InlineData(0u)]
-    [InlineData(1u)]
-    public void Without_Event_Delivery_A_Claimed_Source_Fails_Closed_Naming_660(uint flag)
+    [MemberData(nameof(Sources))]
+    public void Default_Delivery_With_No_EvCB_Table_Keeps_Flag_0_Pending_And_Continuing(uint t, int irq)
     {
-        Pend(0, 1u << 0);
-        SetFlag(3, flag);
+        Pend(irq, 1u << irq);
+        SetFlag(t, 0);
 
         var result = BiosTimerVblankIrqHandler.Run(Context());
 
-        result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-        result.Detail.Should().Contain("VBlank IRQ0").And.Contain($"flag={flag}").And.Contain("#660");
-        (_interrupts.Status & 1u).Should().Be(1u, "nothing was serviced, so nothing is acknowledged");
+        result.Status.Should().Be(BiosExceptionChainStatus.Completed);
+        (_interrupts.Status & (1u << irq)).Should().Be(1u << irq, "flag 0 leaves the IRQ pending");
+        TableWords().Should().Be(0UL, "delivery writes nothing");
+    }
+
+    [Theory]
+    [MemberData(nameof(Sources))]
+    public void Default_Delivery_With_No_EvCB_Table_Then_Flag_1_Acks_Only_Its_Own_Bit(uint t, int irq)
+    {
+        const int Cdrom = 2;
+        var bits = (1u << irq) | (1u << Cdrom);
+        _interrupts.SetMask(bits);
+        _interrupts.Raise(irq);
+        _interrupts.Raise(Cdrom);
+        SetFlag(t, 1);
+
+        var result = BiosTimerVblankIrqHandler.Run(Context());
+
+        result.Status.Should().Be(BiosExceptionChainStatus.ReturnedFromException);
+        (_interrupts.Status & bits).Should().Be(1u << Cdrom);
+    }
+
+    [Theory]
+    [MemberData(nameof(Sources))]
+    public void An_Existing_EvCB_Table_Fails_Closed_Naming_Only_The_Sources_Event(uint t, int irq)
+    {
+        foreach (var flag in new[] { 0u, 1u })
+        {
+            Pend(irq, 1u << irq);
+            SetFlag(t, flag);
+            WriteTable(0x00008000, 0x1C0);
+
+            var result = BiosTimerVblankIrqHandler.Run(Context());
+
+            result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
+            result.Detail.Should().Contain($"IRQ{irq}").And.Contain($"flag={flag}")
+                .And.Contain($"event 0x{0xF2000000u + t:X8},2").And.Contain("#687");
+            for (var other = 0u; other <= 3; other++)
+            {
+                if (other != t)
+                {
+                    result.Detail.Should().NotContain($"0x{0xF2000000u + other:X8}");
+                }
+            }
+
+            (_interrupts.Status & (1u << irq)).Should().Be(1u << irq, "nothing was serviced, so nothing is acknowledged");
+            TableWords().Should().Be(0x000001C0_00008000UL, "the guest's table is not corrected");
+        }
+    }
+
+    [Theory]
+    [InlineData(0x00008000u, 0u)]
+    [InlineData(0u, 0x1C0u)]
+    public void Either_Non_Zero_Table_Word_Means_The_Table_Exists(uint address, uint size)
+    {
+        WriteTable(address, size);
+
+        BiosTimerVblankIrqHandler.DeliverEvents(Context(), 3).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Delivery_Fails_Closed_For_An_Unreadable_Table_Or_An_Unknown_Source()
+    {
+        BiosTimerVblankIrqHandler.DeliverEvents(Context(new UnreadableReader()), 3).Should().BeFalse();
+        BiosTimerVblankIrqHandler.DeliverEvents(Context(), 4).Should().BeFalse();
+        BiosTimerVblankIrqHandler.DeliverEvents(Context(), 3).Should().BeTrue();
+    }
+
+    private void WriteTable(uint address, uint size) =>
+        Writer.TryWrite(BiosTimerVblankIrqHandler.EventControlBlockTableAddress,
+            BitConverter.GetBytes(address).Concat(BitConverter.GetBytes(size)).ToArray()).Should().BeTrue();
+
+    private ulong TableWords()
+    {
+        var table = new byte[8];
+        Reader.TryRead(BiosTimerVblankIrqHandler.EventControlBlockTableAddress, table).Should().BeTrue();
+        return BitConverter.ToUInt64(table);
     }
 
     [Fact]
@@ -215,17 +290,19 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
     // ---- inside the exception handler -------------------------------------------------------
 
     [Fact]
-    public void The_Default_Chain_Reaches_The_VBlank_Element_Persona_Stops_At()
+    public void The_Default_Chain_Delivers_The_Persona_VBlank_And_Continues_With_It_Pending()
     {
-        Pend(0, 0x000D); // I_STAT=0x0001, I_MASK=0x000D as measured
+        Pend(0, 0x000D); // I_STAT=0x0001, I_MASK=0x000D as measured; C0:0A t=3 flag=0, no EvCB table
 
         var outcome = BiosExceptionHandler.Handle(
             Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(Epc, 0x400, 0x404, 0, 0));
 
+        // Delivered with flag 0: no acknowledge, so IRQ0 is still pending for an element past priority 1.
         outcome.Handled.Should().BeFalse();
         outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain("I_STAT=0x0001").And.Contain("I_MASK=0x000D")
-            .And.Contain("VBlank IRQ0").And.Contain("#660");
+        outcome.DiagnosticMessage.Should().Contain("pendingEnabled=0x0001")
+            .And.NotContain("VBlank IRQ0").And.NotContain("could not be delivered");
+        (_interrupts.Status & 1u).Should().Be(1u);
     }
 
     [Fact]

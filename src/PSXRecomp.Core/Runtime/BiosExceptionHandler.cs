@@ -230,8 +230,8 @@ public static class BiosExceptionHandler
     /// The chain as the Runtime models it today: priority 1 is <see cref="BiosTimerVblankIrqHandler"/> (#658) and
     /// ends the walk when a flag-1 element returns from the exception. Past it, with no enabled IRQ pending there is
     /// nothing for any further element to claim and the chain ends; otherwise a kernel handler the Runtime does not
-    /// model would run (its owner is not identified here), and the run stops instead of pretending it did. Root-counter event
-    /// delivery (#660) is not modelled, so a claimed timer/VBlank source stops here too.
+    /// model would run (its owner is not identified here), and the run stops instead of pretending it did. A claimed
+    /// timer/VBlank source whose root-counter events cannot be delivered (#660: an EvCB table exists) stops here too.
     /// </summary>
     public static BiosExceptionChainResult DefaultChain(BiosExceptionChainContext context)
     {
