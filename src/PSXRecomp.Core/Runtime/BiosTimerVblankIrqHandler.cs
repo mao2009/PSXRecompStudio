@@ -4,8 +4,8 @@ namespace PSXRecomp.Core.Runtime;
 
 /// <summary>
 /// Delivers the root-counter events (psx-spx event-summary <c>F2000000h..F2000003h,2</c>) of one
-/// timer/VBlank source. Returns false when the Runtime cannot deliver them. The default is none: that
-/// delivery is Issue #660, and a handler that skipped it would pretend the IRQ was serviced.
+/// timer/VBlank source. Returns false when the Runtime cannot deliver them: a handler that skipped
+/// delivery would pretend the IRQ was serviced. The default is <see cref="BiosTimerVblankIrqHandler.DeliverEvents"/> (#660).
 /// </summary>
 /// <param name="context">The chain context (guest memory, interrupt controller, exception).</param>
 /// <param name="source">C0:0A <c>t</c>: 0..2 timer 0..2, 3 VBlank.</param>
@@ -45,14 +45,42 @@ public static class BiosTimerVblankIrqHandler
         (0, DeviceScheduler.Timer0Irq, "Timer0"),
     ];
 
+    /// <summary>Guest address of the kernel's EvCB table entry (psx-spx "table of tables": <c>00000120h</c> address, <c>00000124h</c> size).</summary>
+    public const uint EventControlBlockTableAddress = 0x00000120;
+
+    /// <summary>The root-counter event class of <c>t</c> = 0..3 is <c>F2000000h + t</c> (psx-spx event-summary).</summary>
+    public const uint RootCounterEventClassBase = 0xF2000000;
+
+    /// <summary>The spec every root-counter event is delivered with (psx-spx event-summary: <c>F200000xh,2</c>).</summary>
+    public const uint RootCounterEventSpec = 2;
+
+    /// <summary>
+    /// B0:07 <c>DeliverEvent(F2000000h + t, 2)</c> as far as the Runtime can perform it. DeliverEvent marks the EvCBs
+    /// matching class and spec (psx-spx), and an EvCB exists only inside the kernel's EvCB table. A BIOS-less run has
+    /// none (<c>[0x120]</c> and <c>[0x124]</c> are 0) and registers no event opener (B0:08 OpenEvent is unregistered,
+    /// so a call to it stops the run), so nothing can match and the delivery succeeds with no effect. A table that
+    /// exists is guest state needing EvCB matching and callbacks, which are not modelled (#687): false, as is an
+    /// unreadable table or <c>t</c> &gt; 3. Nothing is written.
+    /// </summary>
+    public static bool DeliverEvents(BiosExceptionChainContext context, uint source)
+    {
+        ArgumentNullException.ThrowIfNull(context.Reader);
+
+        Span<byte> table = stackalloc byte[2 * sizeof(uint)];
+        return source <= BiosRootCounterClearPolicy.MaxSource
+            && context.Reader.TryRead(EventControlBlockTableAddress, table)
+            && BitConverter.ToUInt64(table) == 0;
+    }
+
     /// <summary>
     /// Runs the priority-1 elements once. <see cref="BiosExceptionChainStatus.Completed"/> means none returned from
-    /// the exception and the next priority runs; a null <paramref name="deliverEvents"/> cannot deliver, so a claimed source is Unsupported.
+    /// the exception and the next priority runs. <paramref name="deliverEvents"/> defaults to <see cref="DeliverEvents"/>.
     /// </summary>
     public static BiosExceptionChainResult Run(BiosExceptionChainContext context, BiosRootCounterEventDelivery? deliverEvents = null)
     {
         ArgumentNullException.ThrowIfNull(context.Reader);
         ArgumentNullException.ThrowIfNull(context.Interrupts);
+        deliverEvents ??= DeliverEvents;
 
         foreach (var (source, irq, name) in Elements)
         {
@@ -68,9 +96,11 @@ public static class BiosTimerVblankIrqHandler
                 return Unsupported($"{label}|the ChangeClearRCnt flag is unreadable or not 0/1 (undocumented; not guessed)");
             }
 
-            if (deliverEvents is null || !deliverEvents(context, source))
+            if (!deliverEvents(context, source))
             {
-                return Unsupported($"{label} flag={flag}|root-counter event delivery (#660) is not modelled");
+                return Unsupported(
+                    $"{label} flag={flag}|event 0x{RootCounterEventClassBase + source:X8},{RootCounterEventSpec} could not be " +
+                    "delivered (default delivery requires an absent, readable EvCB table at [0x120]; EvCB matching is not modelled, #687; a custom delivery callback may also fail)");
             }
 
             if (flag == 1)

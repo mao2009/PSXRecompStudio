@@ -1832,3 +1832,37 @@ Persona production run stopped there (`ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`).
 
 Tests: `BiosExceptionHandlerTests`, `KernelExceptionEntryTests` (interpreter),
 `RecompiledArtifactInterruptTests` (generated host).
+
+## Amendment (2026-10-02): root-counter event delivery (#660)
+
+The priority-1 timer/VBlank element (#658) attempts the currently modelled root-counter event delivery by default
+(`BiosTimerVblankIrqHandler.DeliverEvents`, the default of `BiosRootCounterEventDelivery`).
+
+- **Mapping (CONFIRMED, psx-spx event-summary).** C0:0A `t` → event: t=0 Timer0/IRQ4 →
+  `F2000000h,2`; t=1 Timer1/IRQ5 → `F2000001h,2`; t=2 Timer2/IRQ6 → `F2000002h,2`; t=3
+  VBlank/IRQ0 → `F2000003h,2`. That these handlers are the ones delivering them is INFERRED (#660).
+- **Contract.** Delivery is B0:07 `DeliverEvent(F2000000h + t, 2)`: it marks the EvCBs matching
+  class and spec (psx-spx). An EvCB lives only in the kernel's EvCB table (psx-spx "table of tables":
+  `[0x120]` address, `[0x124]` size). A BIOS-less run has no table (both words 0), and the Runtime
+  registers no event opener (B0:08 OpenEvent is unregistered, so a call to it stops the run), so
+  nothing can match: the delivery succeeds and has no effect (INFERRED from the two facts above).
+  It writes nothing, seeds no table and creates no second event or interrupt state.
+- **Fail closed.** An unreadable table, a table that exists (either word non-zero: guest state that
+  would need EvCB matching and callbacks, #687) or `t > 3` is a failed delivery:
+  `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` naming the source, its flag and the event; the IRQ is not
+  acknowledged and the table is not corrected.
+- **#658 unchanged.** The C0:0A flag is still validated first; after a successful delivery flag 0 =
+  no acknowledge, no return, the chain continues; flag 1 = W0C-acknowledge only that IRQ and
+  `ReturnedFromException` (hook and lower priorities skipped).
+- **UNKNOWN (not guessed).** Whether the real handler delivers only when an EvCB exists or checks
+  conditions other than I_MASK; how a mode-1000h callback runs (execution context, re-entry);
+  real-hardware side effects of delivering an event nobody opened; repeat-delivery semantics while an
+  event is already ready. EvCB matching and the event functions are #687, taken up when measured.
+- **Scope.** The step is a no-op when no EvCB table exists; it matches no EvCB and runs no callback (mode 1000h included). It does not resolve Pad/Card ownership (#661), the EvCB allocator or B0:17/B0:18 (#664, #665), DMA2 or GTE.
+- **Measured (Persona).** The VBlank IRQ0 element's currently modelled delivery step is a successful no-op (no EvCB table, flag 0); the chain then continues past priority 1 with IRQ0 still pending, and the
+  stop moves to the source-neutral `DefaultChain` diagnostic
+  (`docs/v0.1.0/persona-e2e-status.md`, item 23).
+
+Tests: `BiosTimerVblankIrqHandlerTests` (mapping, flag 0/1 after delivery, fail-closed table states),
+plus the updated chain assertions in `BiosExceptionHandlerTests`, `KernelExceptionEntryTests` and
+`RecompiledArtifactInterruptTests`.
