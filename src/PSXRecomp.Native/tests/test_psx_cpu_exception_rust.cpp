@@ -23,12 +23,12 @@ static void test_exception_vector_bev1() {
 static void test_sr_stack_shift() {
     TEST("SR 3-level stack shifts on exception");
     PSXCore* core = PSXCore_Create();
-    // Seed: KUc=1,IEc=1,KUp=0,IEp=1,KUo=1,IEo=1 -> bits0-5 = 0x3B
+    // Seed: IEc=1,KUc=1,IEp=0,KUp=1,IEo=1,KUo=1 -> bits0-5 = 0x3B
     PSXCore_SetCop0(core, 12, 0x3Bu);
     PSXCore_WriteMemory32(core, 0, 0x0000000Cu); // SYSCALL
     PSXCore_SetPC(core, 0);
     PSXCore_Step(core);
-    // KUo<-KUp(0),IEo<-IEp(1),KUp<-KUc(1),IEp<-IEc(1),KUc=0,IEc=0 -> 0x2C
+    // KUo<-KUp(1),IEo<-IEp(0),KUp<-KUc(1),IEp<-IEc(1),KUc=0,IEc=0 -> 0x2C
     ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3F, 0x2Cu);
     PSXCore_Destroy(core);
     PASS();

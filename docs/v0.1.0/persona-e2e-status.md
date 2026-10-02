@@ -352,7 +352,7 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     Recorded, not changed: the interpreter's INT check treats SR bit 1 as IEc while the
     kernel contract and generated host use bit 0 (ADR-025 addendum), so a guest enabling
     interrupts via SYS(02h) is interrupted on the generated host and not on the interpreter
-    (tracked as #684).
+    (fixed by #684: the interpreter now reads IEc from SR bit 0).
 
 21. **#662 C0:06 ExceptionHandler entry; the stop moves to the priority chain.** The
     unpopulated RAM vector `0x80000080` now enters the shared BIOS-less kernel exception

@@ -176,7 +176,7 @@ the entry described under Exception Processing (EPC = interrupted pc, CAUSE.Exco
 IP2, SR stack push, BEV vector). It never calls a guest handler. At the unpopulated RAM vector
 (`0x80000080`) the host serves the Runtime's kernel exception handler (below); a guest-installed
 vector or the BEV = 1 vector stops with `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`. See ADR-025
-(addendum), including the IEc bit-position difference from `PSXCpu`.
+(addendum); `PSXCpu` uses the same acceptance condition and bit layout (Issue #684).
 
 ### Kernel exception handler at the vector (Issue #662)
 

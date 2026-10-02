@@ -1452,7 +1452,7 @@ static void test_interrupt_null_safety() {
 static void test_step_no_interrupt_baseline() {
     TEST("Step() with no pending interrupt behaves like a normal step (baseline)");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x3u); // IEc=1, KUc=1 (SR bit0-1)
+    PSXCore_SetCop0(core, 12, 0x3u); // IEc=1 (bit 0), KUc=1 (bit 1)
     PSXCore_SetGPR(core, 1, 10);
     PSXCore_SetGPR(core, 2, 20);
     PSXCore_WriteMemory32(core, 0, 0x00221820u); // ADD $3,$1,$2
@@ -1470,8 +1470,8 @@ static void test_step_interrupt_taken_when_enabled() {
     // The Interrupt Controller's aggregate pending line is wired to CAUSE.IP2
     // (bit 10, docs/cpu/exceptions.md + psx_cpu.cpp comment), so it is gated by
     // SR.IM2 (bit 10), not by the individual I_MASK bit of the source IRQ.
-    // SR: IEc=1 (bit1), IM2=1 (bit10).
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10));
+    // SR: IEc=1 (bit0), IM2=1 (bit10).
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 10));
     PSXCore_WriteMemory32(core, 0, 0x00221820u); // ADD $3,$1,$2 (would-be next instr)
     PSXCore_SetPC(core, 0x1000u);
     // Raise VBlank (irq 0) and unmask it in the Interrupt Controller.
@@ -1494,7 +1494,7 @@ static void test_step_interrupt_taken_when_enabled() {
 static void test_step_without_interrupts_holds_line_low() {
     TEST("StepWithoutInterrupts: pending + enabled interrupt is not taken, I_STAT kept");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 10)); // IEc=1, IM2=1
     PSXCore_SetGPR(core, 1, 10);
     PSXCore_SetGPR(core, 2, 20);
     PSXCore_WriteMemory32(core, 0x1000u, 0x00221820u); // ADD $3,$1,$2
@@ -1539,7 +1539,7 @@ static void test_step_interrupt_masked_by_iec() {
 static void test_step_interrupt_masked_by_im() {
     TEST("Pending interrupt not in SR.IM2 is not taken (masked at CPU level)");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 9)); // IEc=1, IM1=1 only (not IM2, bit10)
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 9)); // IEc=1, IM1=1 only (not IM2, bit10)
     PSXCore_SetGPR(core, 1, 10);
     PSXCore_SetGPR(core, 2, 20);
     PSXCore_WriteMemory32(core, 0, 0x00221820u); // ADD $3,$1,$2
@@ -1582,7 +1582,7 @@ static void test_step_interrupt_cause_ip_tracks_controller() {
 static void test_step_interrupt_deferred_across_delay_slot() {
     TEST("Interrupt pending during a delay slot is deferred until it completes");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 10)); // IEc=1, IM2=1
     // BEQ $0,$0,+1 at PC=0 (branch to 8); delay slot ADD $3,$1,$2 at PC=4.
     PSXCore_SetGPR(core, 1, 10);
     PSXCore_SetGPR(core, 2, 20);
@@ -1634,11 +1634,11 @@ static void test_step_interrupt_nested_sr_stack() {
     // Handler re-enables interrupts (simulating a nested-interrupt handler) and a
     // second INT exception is taken.
     uint32_t sr = PSXCore_GetCop0(core, 12);
-    PSXCore_SetCop0(core, 12, sr | 0x2u); // IEc=1
+    PSXCore_SetCop0(core, 12, sr | 0x1u); // IEc=1
     PSXCore_Step(core);
     ASSERT_EQ((PSXCore_GetCop0(core, 13) & 0x7Cu) >> 2, 0x00u); // INT again
-    // 2nd shift: KUo<-KUp(0),IEo<-IEp(1),KUp<-KUc(0),IEp<-IEc(1),KUc=0,IEc=0 -> 0x38
-    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3Fu, 0x38u); // stack shifted a 2nd time
+    // 2nd shift: KUo<-KUp(1),IEo<-IEp(1),KUp<-KUc(0),IEp<-IEc(1),KUc=0,IEc=0 -> 0x34
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x3Fu, 0x34u); // stack shifted a 2nd time
     ASSERT_EQ(PSXCore_GetPC(core), 0x80000080u);
     PSXCore_Destroy(core);
     PASS();
@@ -1647,7 +1647,7 @@ static void test_step_interrupt_nested_sr_stack() {
 static void test_step_interrupt_vblank_full_flow() {
     TEST("Full VBlank flow: raise -> exception -> handler acks -> RFE -> resumes");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 10)); // IEc=1, IM2=1
     PSXCore_WriteMemory32(core, 0x2000u, 0x00000000u); // main: NOP (interrupted before this runs)
     PSXCore_SetPC(core, 0x2000u);
 
@@ -1671,7 +1671,7 @@ static void test_step_interrupt_vblank_full_flow() {
     ASSERT_EQ(PSXCore_GetInterruptPending(core), 0);
 
     PSXCore_Step(core); // RFE: pops SR stack, PC <- EPC path is manual (RFE doesn't jump)
-    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x2u, 0x2u); // IEc restored to 1
+    ASSERT_EQ(PSXCore_GetCop0(core, 12) & 0x1u, 0x1u); // IEc restored to 1
 
     // Simulate the handler's final "jr $ra"-equivalent by returning PC to EPC.
     PSXCore_SetPC(core, PSXCore_GetCop0(core, 14));
@@ -1690,7 +1690,7 @@ static void test_step_interrupt_vblank_full_flow() {
 static void test_step_interrupt_guest_handler_round_trip() {
     TEST("Guest handler: INT -> SW ack I_STAT -> MFC0 EPC -> JR + RFE -> resumes (Step only)");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 10)); // IEc=1, IM2=1
     PSXCore_WriteMemory32(core, 0x2000u, 0x34030055u); // main: ORI $3,$0,0x55
     PSXCore_WriteMemory32(core, 0x80u, 0x3C1A1F80u);   // LUI  $k0,0x1F80
     PSXCore_WriteMemory32(core, 0x84u, 0xAF401070u);   // SW   $0,0x1070($k0)  (I_STAT &= 0)
@@ -1717,7 +1717,7 @@ static void test_step_interrupt_guest_handler_round_trip() {
     ASSERT_EQ(PSXCore_ReadInterruptControllerRegister(core, 0x1F801070u), 0u); // acked by the SW
     ASSERT_EQ(PSXCore_GetGPR(core, 27), 0x2000u);                // $k1 = EPC
     ASSERT_EQ(PSXCore_GetPC(core), 0x2000u);                     // JR applied after RFE
-    ASSERT_EQ(PSXCore_GetCop0(core, 12), 0x2u | (1u << 10));     // RFE popped IEc back
+    ASSERT_EQ(PSXCore_GetCop0(core, 12), 0x1u | (1u << 10));     // RFE popped IEc back
 
     ASSERT_EQ(PSXCore_Step(core), 0); // the interrupted ORI now runs, no re-entry
     ASSERT_EQ(PSXCore_GetExceptionRaised(core), 0);
@@ -1750,7 +1750,7 @@ static void test_pop_exception_sr_stack_matches_rfe_without_arming_it() {
 static void test_run_interrupt_taken() {
     TEST("PSXCore_Run() checks the pending interrupt on every instruction, not just the first");
     PSXCore* core = PSXCore_Create();
-    PSXCore_SetCop0(core, 12, 0x2u | (1u << 10)); // IEc=1, IM2=1
+    PSXCore_SetCop0(core, 12, 0x1u | (1u << 10)); // IEc=1, IM2=1
     PSXCore_WriteMemory32(core, 0, 0x00000000u); // main: NOP (preempted, never executed)
     PSXCore_WriteMemory32(core, 0x80u, 0x00000000u); // handler: NOP (physical offset of 0x80000080)
     PSXCore_SetPC(core, 0);
