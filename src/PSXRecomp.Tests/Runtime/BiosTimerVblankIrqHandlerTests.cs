@@ -229,6 +229,21 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
     }
 
     [Fact]
+    public void A_Remaining_Non_Timer_Irq_Fails_Closed_With_A_Source_Neutral_Diagnostic()
+    {
+        Pend(2, 1u << 2); // CD-ROM: not a timer/VBlank source
+
+        var outcome = BiosExceptionHandler.Handle(
+            Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(Epc, 0x400, 0x404, 0, 0));
+
+        outcome.Handled.Should().BeFalse();
+        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
+        outcome.DiagnosticMessage.Should().Contain("I_STAT=0x0004").And.Contain("I_MASK=0x0004")
+            .And.Contain("pendingEnabled=0x0004").And.Contain("priority-chain element the Runtime does not model")
+            .And.NotContain("#661").And.NotContain("Pad/Card").And.NotContain("#660");
+    }
+
+    [Fact]
     public void A_Flag_1_Early_Return_Skips_The_Hook_And_Returns_Through_The_Saved_Context()
     {
         Pend(0, 1u << 0);
