@@ -284,6 +284,8 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
         var result = BiosTimerVblankIrqHandler.Run(Context(), (_, _) => false);
 
         result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
+        result.Detail.Should().Contain("a custom delivery callback may also fail")
+            .And.NotContain("is unreadable or exists");
         (_interrupts.Status & 1u).Should().Be(1u);
     }
 
@@ -297,7 +299,7 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
         var outcome = BiosExceptionHandler.Handle(
             Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(Epc, 0x400, 0x404, 0, 0));
 
-        // Delivered with flag 0: no acknowledge, so IRQ0 is still pending for an element past priority 1.
+        // Modelled delivery was a successful no-op with flag 0: no acknowledge, so IRQ0 is still pending for an element past priority 1.
         outcome.Handled.Should().BeFalse();
         outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
         outcome.DiagnosticMessage.Should().Contain("pendingEnabled=0x0001")

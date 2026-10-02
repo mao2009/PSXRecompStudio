@@ -100,7 +100,7 @@ public static class BiosTimerVblankIrqHandler
             {
                 return Unsupported(
                     $"{label} flag={flag}|event 0x{RootCounterEventClassBase + source:X8},{RootCounterEventSpec} could not be " +
-                    "delivered (the EvCB table at [0x120] is unreadable or exists, and EvCB matching is not modelled, #687)");
+                    "delivered (default delivery requires an absent, readable EvCB table at [0x120]; EvCB matching is not modelled, #687; a custom delivery callback may also fail)");
             }
 
             if (flag == 1)

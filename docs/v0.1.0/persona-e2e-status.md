@@ -393,7 +393,7 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     delivery**, then #661 (Pad/Card, priority 2) once VBlank continues past priority 1.
 
 23. **#660 root-counter event delivery; VBlank continues past priority 1.** The element
-    now delivers `F2000000h + t, 2` (B0:07 DeliverEvent contract, ADR-014 amendment): with
+    performs the currently modelled delivery of `F2000000h + t, 2` (B0:07 DeliverEvent contract, ADR-014 amendment): with
     no kernel EvCB table (`[0x120]`/`[0x124]` = 0, B0:08 unregistered) nothing can match, so
     delivery succeeds with no effect; an existing or unreadable table fails closed (#687).
     Measured on `main` b584899 + #660, with only `--entry-root 0x80025350 --entry-root
@@ -401,8 +401,8 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     (`CD_init:addr=800500e4`); `RuntimeFailure` / `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`
     (exit 1), `guestPc` `0x80000080`; EPC `0x80025CBC`, CAUSE `0x00000400`, SR `0x00000404`;
     message `I_STAT=0x0001, I_MASK=0x000D, pendingEnabled=0x0001|a pending enabled IRQ needs
-    a kernel priority-chain element the Runtime does not model`. So VBlank was delivered with
-    flag 0 (no acknowledge) and IRQ0 is still pending after priority 1. Frame evidence stays
+    a kernel priority-chain element the Runtime does not model`. So the modelled VBlank delivery step was a successful no-op with
+    flag 0 (no acknowledge); the chain continued past priority 1 and IRQ0 is still pending. Frame evidence stays
     `unavailable` / `no-frame-activity`. **Next blocker: an unmodelled chain element for the
     still-pending IRQ0 past priority 1.** The measurement does not identify which element
     (the diagnostic is source-neutral by design); psx-spx's priority-2 Pad/Card handler (#661)
@@ -411,7 +411,7 @@ that gap was exposed and resolved; it is no longer the current first blocker.
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now the kernel exception handler's priority chain
 (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662): CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element delivers its event and continues, and the stop is IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop is IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

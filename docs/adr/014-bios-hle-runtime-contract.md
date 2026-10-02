@@ -1835,7 +1835,7 @@ Tests: `BiosExceptionHandlerTests`, `KernelExceptionEntryTests` (interpreter),
 
 ## Amendment (2026-10-02): root-counter event delivery (#660)
 
-The priority-1 timer/VBlank element (#658) now delivers its root-counter events by default
+The priority-1 timer/VBlank element (#658) attempts the currently modelled root-counter event delivery by default
 (`BiosTimerVblankIrqHandler.DeliverEvents`, the default of `BiosRootCounterEventDelivery`).
 
 - **Mapping (CONFIRMED, psx-spx event-summary).** C0:0A `t` → event: t=0 Timer0/IRQ4 →
@@ -1858,8 +1858,8 @@ The priority-1 timer/VBlank element (#658) now delivers its root-counter events 
   conditions other than I_MASK; how a mode-1000h callback runs (execution context, re-entry);
   real-hardware side effects of delivering an event nobody opened; repeat-delivery semantics while an
   event is already ready. EvCB matching and the event functions are #687, taken up when measured.
-- **Measured (Persona).** The VBlank IRQ0 element now delivers (flag 0) and the chain continues; the
-  stop moves to the source-neutral `DefaultChain` diagnostic with IRQ0 still pending
+- **Measured (Persona).** The VBlank IRQ0 element's currently modelled delivery step is a successful no-op (no EvCB table, flag 0); the chain then continues past priority 1 with IRQ0 still pending, and the
+  stop moves to the source-neutral `DefaultChain` diagnostic
   (`docs/v0.1.0/persona-e2e-status.md`, item 23).
 
 Tests: `BiosTimerVblankIrqHandlerTests` (mapping, flag 0/1 after delivery, fail-closed table states),
