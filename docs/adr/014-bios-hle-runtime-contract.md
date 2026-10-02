@@ -1858,6 +1858,7 @@ The priority-1 timer/VBlank element (#658) attempts the currently modelled root-
   conditions other than I_MASK; how a mode-1000h callback runs (execution context, re-entry);
   real-hardware side effects of delivering an event nobody opened; repeat-delivery semantics while an
   event is already ready. EvCB matching and the event functions are #687, taken up when measured.
+- **Scope.** The step is a no-op when no EvCB table exists; it matches no EvCB and runs no callback (mode 1000h included). It does not resolve Pad/Card ownership (#661), the EvCB allocator or B0:17/B0:18 (#664, #665), DMA2 or GTE.
 - **Measured (Persona).** The VBlank IRQ0 element's currently modelled delivery step is a successful no-op (no EvCB table, flag 0); the chain then continues past priority 1 with IRQ0 still pending, and the
   stop moves to the source-neutral `DefaultChain` diagnostic
   (`docs/v0.1.0/persona-e2e-status.md`, item 23).

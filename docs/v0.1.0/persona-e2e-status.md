@@ -407,6 +407,8 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     still-pending IRQ0 past priority 1.** The measurement does not identify which element
     (the diagnostic is source-neutral by design); psx-spx's priority-2 Pad/Card handler (#661)
     is the documented candidate, not yet confirmed by measurement.
+    Scope: this only lets the chain get past priority 1 when no EvCB table exists. No EvCB is matched and no guest callback
+    (mode 0x1000 included) runs; Pad/Card ownership, the EvCB allocator, B0:17/B0:18, DMA2 and GTE are not addressed (#661, #687, #664, #665, #440, #447).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now the kernel exception handler's priority chain
