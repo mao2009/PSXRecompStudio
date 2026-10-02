@@ -374,10 +374,28 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     evidence stays `unavailable` / `no-frame-activity`. Not reached: the title screen;
     not measured: whether the chain lets `CD_sync` complete (IRQ2).
 
+22. **#658 priority-1 timer/VBlank chain element; the stop moves to root-counter event
+    delivery.** The default chain now runs `BiosTimerVblankIrqHandler` (VBlank/IRQ0,
+    Timer2..0/IRQ6..4; claim = pending in I_STAT and enabled in I_MASK) and consumes the
+    existing C0:0A `BiosRootCounterClearPolicy` flags: 0 = no acknowledge/return, the chain
+    continues; 1 = acknowledge only that IRQ and return from the exception (hook and
+    priority 2 skipped); other values fail closed. A claimed source first needs its
+    root-counter events delivered, which is #660 and not implemented, so it fails closed
+    rather than acknowledging an IRQ nothing serviced. Measured on `main` 24b7bdb + #658,
+    with only `--entry-root 0x80025350 --entry-root 0x80025614`
+    (`run rom/PERSONA.chd --json --report --frame-evidence`): output unchanged
+    (`CD_init:addr=800500e4`); `RuntimeFailure` / `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`
+    (exit 1), `guestPc` `0x80000080`; EPC `0x80025CBC`, CAUSE `0x00000400`, SR
+    `0x00000404`, I_STAT `0x0001`, I_MASK `0x000D`; message
+    `VBlank IRQ0 (C0:0A t=3) flag=0|root-counter event delivery (#660) is not modelled`
+    (flag 0 is the unset default; the guest never called C0:0A). Frame evidence stays
+    `unavailable` / `no-frame-activity`. **Next blocker: #660 root-counter event
+    delivery**, then #661 (Pad/Card, priority 2) once VBlank continues past priority 1.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now the kernel exception handler's priority chain
 (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662): CPU INT delivery (#680) and the
-C0:06 entry work and the missing piece is the VBlank IRQ0 chain element (#658/#661). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #658 the VBlank IRQ0 element is reached and the missing piece is root-counter event delivery (#660, item 22), then Pad/Card (#661). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

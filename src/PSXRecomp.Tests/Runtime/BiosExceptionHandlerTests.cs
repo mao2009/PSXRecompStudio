@@ -186,7 +186,7 @@ public sealed class BiosExceptionHandlerTests : IDisposable
         outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
         outcome.DiagnosticMessage.Should().Contain($"I_STAT=0x{VblankBit:X4}")
             .And.Contain("EPC=0x80025CBC").And.Contain("CAUSE=0x00000400").And.Contain("SR=0x00000404")
-            .And.Contain("#658").And.Contain("#661");
+            .And.Contain("VBlank IRQ0").And.Contain("#660");
         outcome.Gpr.Should().Equal(gpr, "the hook did not fire: the chain never ran to the end");
         (_interrupts.Status & VblankBit).Should().Be(VblankBit, "nothing acknowledged the IRQ");
     }

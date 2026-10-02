@@ -192,7 +192,7 @@ public sealed class RecompiledArtifactInterruptTests
         // saved the context and walked the chain up to the first element the Runtime does not model.
         result.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
         result.DiagnosticMessage.Should().Contain("EPC=0x8000").And.Contain("CAUSE=0x00000400")
-            .And.Contain("I_STAT=0x0040").And.Contain("#658").And.Contain("#661");
+            .And.Contain("I_STAT=0x0040").And.Contain("Timer2 IRQ6").And.Contain("#660");
         result.State.Should().Be(TitleExecutionState.RuntimeFailure, "an unmodelled kernel chain element fails closed");
     }
 

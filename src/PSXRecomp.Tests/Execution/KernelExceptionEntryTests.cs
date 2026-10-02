@@ -90,7 +90,7 @@ public sealed class KernelExceptionEntryTests
 
         result.State.Should().Be(TitleExecutionState.RuntimeFailure, Describe(result));
         result.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        result.DiagnosticMessage.Should().Contain($"I_STAT=0x{Timer2Bit:X4}").And.Contain("CAUSE=0x00000400").And.Contain("#658");
+        result.DiagnosticMessage.Should().Contain($"I_STAT=0x{Timer2Bit:X4}").And.Contain("CAUSE=0x00000400").And.Contain("Timer2 IRQ6").And.Contain("#660");
         G(result, R3000aRegister.V0).Should().NotBe(1u, "the hook fires only after the chains ran to the end");
         G(result, R3000aRegister.S0).Should().NotBe(0x1234u);
         result.FinalSnapshot!.PC.Should().Be(Vector, "the run stops where the unmodelled chain element is reached");

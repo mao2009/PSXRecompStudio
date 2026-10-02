@@ -18,9 +18,8 @@ namespace PSXRecomp.Core.Runtime;
 /// zero-initialised memory, and 0 is the non-acknowledging behavior).
 /// </para>
 /// <para>
-/// Configuration only: the call never touches I_STAT or any timer. The Runtime
-/// has no kernel timer/vblank IRQ handler yet, so nothing consumes the flags
-/// (tracked as a follow-up Issue). The four flags live in a 16-byte guest-RAM
+/// Configuration only: the call never touches I_STAT or any timer. The flags are
+/// consumed by <see cref="BiosTimerVblankIrqHandler"/> (#658). The four flags live in a 16-byte guest-RAM
 /// kernel variable (one word per <c>t</c>) because some engines rebuild
 /// <see cref="BiosHleRuntime"/> per segment; the address is this Runtime's
 /// own choice inside psx-spx's unused "table of tables" slots 00000130h and
