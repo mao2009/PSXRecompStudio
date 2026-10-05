@@ -82,11 +82,14 @@ without an extra root, passes A0:3F `printf`, and emits
 `CD_init:addr=800500e4`. It then takes the VBlank interrupt as a hardware INT
 exception and stops, fail-closed, at the general exception vector
 `0x80000080` (item 20, #680). Since #662 (item 21) that vector is the Runtime's
-kernel exception handler (C0:06): the run enters it, saves the context, and stops,
+kernel exception handler (C0:06): the run enters it and saves the context. It used to stop,
 fail-closed, at the priority chain with `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1,
 state 5 `RuntimeFailure`; EPC `0x80025CBC`, CAUSE `0x400`, SR `0x404`, I_STAT
-`0x0001`, I_MASK `0x000D`) because the pending enabled VBlank IRQ0 needs a kernel
-chain element the Runtime does not model. The earlier `OUTER_BUDGET_EXHAUSTED` wait at
+`0x0001`, I_MASK `0x000D`) because the pending enabled VBlank IRQ0 needed a kernel
+chain element the Runtime did not model. Since #690 (item 24) that chain completes into the
+guest's B0:19 hook, and with these two roots the run now stops at `UNRESOLVED_TRANSFER_IN_IMAGE`
+`0x80025BC8` (exit 2, the guest's VBlank callback, #693); with `--entry-root 0x80025BC8` added
+(measurement only) it reaches `B0:17` (#664). The earlier `OUTER_BUDGET_EXHAUSTED` wait at
 `0x800278A8` (#675, items 16-19) is no longer where the run ends.
 
 **Historical structural gap.** Earlier production runs failed before runtime
@@ -426,15 +429,14 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     `0x80025BC8`, the callback the dispatcher calls; a caller-supplied root, as for items 7-9). With
     `--entry-root 0x80025BC8` added the guest calls `B0:17` and the run stops at
     `BIOS_HLE_UNSUPPORTED_CALL` `B0:17` (exit 1); the interpreter path (frame evidence) stops at the
-    same `B0:17`. **Next blocker: B0:17 ReturnFromException (#664).** The IRQ0 ack, the hook-entry
+    same `B0:17`. **Next boundary: with the established two roots, the manual-root / callback
+coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664).** The IRQ0 ack, the hook-entry
     registers and the ack PC were observed with a local-only, uncommitted trace before this change.
     UNKNOWN: retail DefInt event delivery, `$k0/$k1` and SR at hook entry, priority 0, `C0:0D`.
     Scope: no Pad/Card (#661), no EvCB matching (#687), no B0:17/B0:18 (#664, #665), no `C0:0D`.
 
-The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
-first measured stop is now the kernel exception handler's priority chain
-(`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662): CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23); since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook and the next stop is `B0:17` (item 24). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the current artifact boundary is `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693). Only with the measurement-only `--entry-root 0x80025BC8` added does the run reach the downstream `B0:17` stop (#664; the interpreter path reaches it too). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

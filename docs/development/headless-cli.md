@@ -242,10 +242,11 @@ snapshot. A malformed request on the host side is `ARTIFACT_HOST_PROTOCOL_FAILED
 With `--host-transfer` the artifact also takes a pending, enabled device IRQ as an
 R3000A hardware INT exception (Issue #680, ADR-025 addendum). When the guest left the RAM
 exception vector `0x80000080` unpopulated (every BIOS-less run), the INT enters the Runtime's
-kernel exception handler (Issue #662, ADR-014 amendment). An IRQ0 that no modelled element
-acknowledges runs the chain to its end (priority-3 DefInt, Issue #690) and enters the guest's B0:19
-hook; until the other kernel priority-chain elements it would run are modelled, any other pending
-enabled IRQ stops the run, classified as
+kernel exception handler (Issue #662, ADR-014 amendment). When IRQ0 is the only pending enabled
+IRQ and no EvCB table exists, the chain runs to its end (priority-3 DefInt, Issue #690): the guest's
+B0:19 hook is entered if one is registered, otherwise the default Exit applies. Until the other
+kernel priority-chain elements are modelled, an existing EvCB table, any other pending enabled IRQ,
+or several of them stop the run, classified as
 `RuntimeFailure` / `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1), with the vector as the guest PC and
 I_STAT / I_MASK / EPC / CAUSE / SR in the diagnostic message. A guest-installed vector, or the
 SR.BEV = 1 ROM vector, still stops as `ARTIFACT_EXCEPTION_VECTOR_UNHANDLED`.

@@ -1888,8 +1888,11 @@ pending past priority 1, although the guest had registered a B0:19 hook and set 
   (disabled); `BiosDefaultInterruptHandler.DefaultAutoAck` is the seam a future C0:0D replaces.
 - **UNKNOWN (not guessed).** Retail DefInt event behaviour without an EvCB, `$k0/$k1` and SR on hook
   entry, priority-0 owners, the full C0:0D.
-- **Measured (Persona).** The artifact enters the hook, the guest's own dispatcher acknowledges IRQ0, and
-  the next stop is `B0:17` (#664; `docs/v0.1.0/persona-e2e-status.md`, item 24).
+- **Measured (Persona).** The artifact enters the hook and the guest's own dispatcher acknowledges IRQ0.
+  With the established two entry roots the run then stops at `UNRESOLVED_TRANSFER_IN_IMAGE`
+  `0x80025BC8` (the guest's callback; a manual-root / callback coverage gap, #693); with the
+  measurement-only `--entry-root 0x80025BC8` it reaches `B0:17` (#664)
+  (`docs/v0.1.0/persona-e2e-status.md`, item 24).
 
 Tests: `BiosDefaultInterruptHandlerTests`, plus the updated chain assertions in
 `BiosExceptionHandlerTests` and `BiosTimerVblankIrqHandlerTests`.
