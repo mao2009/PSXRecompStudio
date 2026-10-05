@@ -409,11 +409,32 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     is the documented candidate, not yet confirmed by measurement.
     Scope: this only lets the chain get past priority 1 when no EvCB table exists. No EvCB is matched and no guest callback
     (mode 0x1000 included) runs; Pad/Card ownership, the EvCB allocator, B0:17/B0:18, DMA2 and GTE are not addressed (#661, #687, #664, #665, #440, #447).
+24. **#690 priority-3 DefInt; the chain completes into the B0:19 hook.** The stop in item 23 was not
+    Pad/Card: the guest itself calls `B0:19(8004EC90)`, `B0:5B(0)` and `C0:0A(3,0)` (the call order
+    is `A0:39`, `A0:13`, `B0:19`, `B0:5B`, `C0:0A`, `A0:72`, `B0:3F`, `A0:3F`, then the VBlank INT),
+    so priority 1 does not acknowledge and its own hook is meant to. CONFIRMED (psx-spx): the hook
+    runs only when the exception handler ran to the end, DefInt (priority 3) does not acknowledge
+    unless `C0:0D` enabled it, and `PadCardIrq` (priority 2) is enqueued only by StartPAD2/StartCARD.
+    `DefaultChain` now skips the empty priority 2 and runs `BiosDefaultInterruptHandler`: nothing
+    pending, or only IRQ0 with no EvCB table, completes the chain (existing
+    `BiosExceptionCompletion`: the B0:19 hook, else the default Exit); any other pending enabled IRQ,
+    several, or an existing EvCB table still stops as `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`.
+    Measured on `main` 2c312e6 + #690 (`run rom/PERSONA.chd --json --report --frame-evidence`):
+    with only the two entry roots the artifact enters the hook (`$v0 = 1`, PC = the saved `$ra`
+    `0x800253B8`), the guest's own interrupt dispatcher acknowledges IRQ0 (`I_STAT` written
+    `0xFFFE`, from `0x800254F8`), and the run stops at `UNRESOLVED_TRANSFER_IN_IMAGE` (exit 2,
+    `0x80025BC8`, the callback the dispatcher calls; a caller-supplied root, as for items 7-9). With
+    `--entry-root 0x80025BC8` added the guest calls `B0:17` and the run stops at
+    `BIOS_HLE_UNSUPPORTED_CALL` `B0:17` (exit 1); the interpreter path (frame evidence) stops at the
+    same `B0:17`. **Next blocker: B0:17 ReturnFromException (#664).** The IRQ0 ack, the hook-entry
+    registers and the ack PC were observed with a local-only, uncommitted trace before this change.
+    UNKNOWN: retail DefInt event delivery, `$k0/$k1` and SR at hook entry, priority 0, `C0:0D`.
+    Scope: no Pad/Card (#661), no EvCB matching (#687), no B0:17/B0:18 (#664, #665), no `C0:0D`.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`, where the
 first measured stop is now the kernel exception handler's priority chain
 (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662): CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop is IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23); since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook and the next stop is `B0:17` (item 24). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

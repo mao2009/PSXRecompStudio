@@ -228,10 +228,13 @@ public static class BiosExceptionHandler
 
     /// <summary>
     /// The chain as the Runtime models it today: priority 1 is <see cref="BiosTimerVblankIrqHandler"/> (#658) and
-    /// ends the walk when a flag-1 element returns from the exception. Past it, with no enabled IRQ pending there is
-    /// nothing for any further element to claim and the chain ends; otherwise a kernel handler the Runtime does not
-    /// model would run (its owner is not identified here), and the run stops instead of pretending it did. A claimed
-    /// timer/VBlank source whose root-counter events cannot be delivered (#660: an EvCB table exists) stops here too.
+    /// ends the walk when a flag-1 element returns from the exception. Priority 2 (<c>PadCardIrq</c>) is skipped:
+    /// it is enqueued only by StartPAD2/StartCARD, which the Runtime does not model, so it is empty (#661). Priority 3
+    /// is <see cref="BiosDefaultInterruptHandler"/> (#690): it never acknowledges by default and never returns from
+    /// the exception, so a chain that reaches it has run to the end and the completion step (the B0:19 hook, else the
+    /// default Exit) follows; a pending enabled IRQ outside what DefInt models stops the run instead of pretending a
+    /// handler ran. A claimed timer/VBlank source whose root-counter events cannot be delivered (#660: an EvCB table
+    /// exists) stops at priority 1.
     /// </summary>
     public static BiosExceptionChainResult DefaultChain(BiosExceptionChainContext context)
     {
@@ -242,14 +245,7 @@ public static class BiosExceptionHandler
             return priority1;
         }
 
-        var status = context.Interrupts.Status;
-        var mask = context.Interrupts.Mask;
-        return (status & mask) == 0
-            ? new BiosExceptionChainResult(BiosExceptionChainStatus.Completed)
-            : new BiosExceptionChainResult(
-                BiosExceptionChainStatus.Unsupported,
-                $"I_STAT=0x{status:X4}, I_MASK=0x{mask:X4}, pendingEnabled=0x{status & mask:X4}|" +
-                "a pending enabled IRQ needs a kernel priority-chain element the Runtime does not model");
+        return BiosDefaultInterruptHandler.Run(context);
     }
 
     private static string Describe(BiosExceptionContext c) =>

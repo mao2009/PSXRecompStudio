@@ -66,10 +66,14 @@ public static class BiosTimerVblankIrqHandler
     {
         ArgumentNullException.ThrowIfNull(context.Reader);
 
+        return source <= BiosRootCounterClearPolicy.MaxSource && EventTableIsAbsent(context.Reader);
+    }
+
+    /// <summary>True when the kernel's EvCB table address and size (<c>[0x120]</c>, <c>[0x124]</c>) are readable and both 0: no EvCB can match any delivered event.</summary>
+    internal static bool EventTableIsAbsent(IGuestMemoryReader reader)
+    {
         Span<byte> table = stackalloc byte[2 * sizeof(uint)];
-        return source <= BiosRootCounterClearPolicy.MaxSource
-            && context.Reader.TryRead(EventControlBlockTableAddress, table)
-            && BitConverter.ToUInt64(table) == 0;
+        return reader.TryRead(EventControlBlockTableAddress, table) && BitConverter.ToUInt64(table) == 0;
     }
 
     /// <summary>

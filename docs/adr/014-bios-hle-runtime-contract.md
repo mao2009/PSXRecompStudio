@@ -1866,3 +1866,30 @@ The priority-1 timer/VBlank element (#658) attempts the currently modelled root-
 Tests: `BiosTimerVblankIrqHandlerTests` (mapping, flag 0/1 after delivery, fail-closed table states),
 plus the updated chain assertions in `BiosExceptionHandlerTests`, `KernelExceptionEntryTests` and
 `RecompiledArtifactInterruptTests`.
+
+## Amendment (2026-10-05): priority-3 DefInt completes the chain into the B0:19 hook
+
+Issue #690: after #660 the Persona run stopped at `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` with IRQ0 still
+pending past priority 1, although the guest had registered a B0:19 hook and set `C0:0A(3,0)` itself.
+
+- **CONFIRMED (psx-spx interrupt-exception-handling).** The hook runs only when the exception handler
+  ran to the end (an element that calls ReturnFromException skips it). Priority 3 is `DefInt`, which
+  delivers a default IRQ event (`F0000001h,1000h` for IRQ0) and does not acknowledge unless
+  `C(0Dh) SetIrqAutoAck` enabled it ("By default, AutoAck is disabled for all IRQs"). `PadCardIrq`
+  (priority 2) is enqueued by StartPAD2/StartCARD and not by InitPAD2.
+- **Model.** `DefaultChain` runs priority 1, skips priority 2 (empty: the Runtime registers neither
+  StartPAD/StartCARD nor C0:02), then runs `BiosDefaultInterruptHandler`. Nothing pending, or exactly
+  IRQ0 pending and enabled with no EvCB table (`[0x120]`/`[0x124]` = 0, the #660 no-op delivery),
+  completes the chain; the existing `BiosExceptionCompletion` then enters the B0:19 hook (`$v0 = 1`,
+  PC = saved `$ra`) or takes the default Exit. DefInt does not acknowledge: the hook does.
+- **Fail closed (unchanged diagnostic).** Any other pending enabled IRQ, several, or an existing EvCB
+  table (matching and the 1000h callback mode are #687) stop as `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`.
+- **C0:0D.** Not registered, so DefInt's per-IRQ auto-ack can only hold its documented default
+  (disabled); `BiosDefaultInterruptHandler.DefaultAutoAck` is the seam a future C0:0D replaces.
+- **UNKNOWN (not guessed).** Retail DefInt event behaviour without an EvCB, `$k0/$k1` and SR on hook
+  entry, priority-0 owners, the full C0:0D.
+- **Measured (Persona).** The artifact enters the hook, the guest's own dispatcher acknowledges IRQ0, and
+  the next stop is `B0:17` (#664; `docs/v0.1.0/persona-e2e-status.md`, item 24).
+
+Tests: `BiosDefaultInterruptHandlerTests`, plus the updated chain assertions in
+`BiosExceptionHandlerTests` and `BiosTimerVblankIrqHandlerTests`.

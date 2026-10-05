@@ -173,9 +173,12 @@ public sealed class BiosExceptionHandlerTests : IDisposable
     // ---- the chain ------------------------------------------------------------------------
 
     [Fact]
-    public void The_Default_Chain_Stops_On_A_Pending_Enabled_Irq_Instead_Of_Pretending_A_Handler_Ran()
+    public void The_Default_Chain_Stops_On_A_Pending_Enabled_Irq_It_Does_Not_Model_Instead_Of_Pretending_A_Handler_Ran()
     {
-        RaiseEnabledVblank();
+        // IRQ2 (CD-ROM) belongs to priority 0, which the Runtime does not model (#690 models only IRQ0 at priority 3).
+        const uint cdromBit = 1u << 2;
+        _interrupts.SetMask(cdromBit);
+        _interrupts.Raise(2);
         var saved = Registers(0x1000);
         RegisterHook(saved);
         var gpr = Registers(0x5000);
@@ -184,11 +187,26 @@ public sealed class BiosExceptionHandlerTests : IDisposable
 
         outcome.Handled.Should().BeFalse();
         outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain($"I_STAT=0x{VblankBit:X4}")
+        outcome.DiagnosticMessage.Should().Contain($"I_STAT=0x{cdromBit:X4}")
             .And.Contain("EPC=0x80025CBC").And.Contain("CAUSE=0x00000400").And.Contain("SR=0x00000404")
-            .And.Contain($"pendingEnabled=0x{VblankBit:X4}");
+            .And.Contain($"pendingEnabled=0x{cdromBit:X4}");
         outcome.Gpr.Should().Equal(gpr, "the hook did not fire: the chain never ran to the end");
-        (_interrupts.Status & VblankBit).Should().Be(VblankBit, "nothing acknowledged the IRQ");
+        (_interrupts.Status & cdromBit).Should().Be(cdromBit, "nothing acknowledged the IRQ");
+    }
+
+    [Fact]
+    public void The_Default_Chain_Runs_To_The_End_For_An_Unacknowledged_Vblank_And_Leaves_It_To_The_Hook()
+    {
+        RaiseEnabledVblank();
+        var saved = Registers(0x1000);
+        RegisterHook(saved);
+
+        var outcome = Handle(Registers(0x5000));
+
+        outcome.Handled.Should().BeTrue("priority 1 (flag 0) continues, priority 2 is empty, DefInt does not acknowledge (#690)");
+        outcome.NextPc.Should().Be(saved[31]);
+        outcome.Gpr[(int)R3000aRegister.V0].Should().Be(1u);
+        (_interrupts.Status & VblankBit).Should().Be(VblankBit, "the guest's hook acknowledges, not the kernel");
     }
 
     [Fact]
