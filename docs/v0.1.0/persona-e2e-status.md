@@ -388,9 +388,18 @@ that gap was exposed and resolved; it is no longer the current first blocker.
     (exit 1), `guestPc` `0x80000080`; EPC `0x80025CBC`, CAUSE `0x00000400`, SR
     `0x00000404`, I_STAT `0x0001`, I_MASK `0x000D`; message
     `VBlank IRQ0 (C0:0A t=3) flag=0|root-counter event delivery (#660) is not modelled`
-    (flag 0 is the unset default; the guest never called C0:0A). Frame evidence stays
+    (flag 0 here is **not** an unset default: the guest does call `C0:0A(3,0)`, after `B0:19`
+    and `B0:5B(0)`; measured on `main` 2c312e6 with a local-only, uncommitted trace of
+    `BiosHleRuntime.Invoke`, see the corrected note below). Frame evidence stays
     `unavailable` / `no-frame-activity`. **Next blocker: #660 root-counter event
     delivery**, then #661 (Pad/Card, priority 2) once VBlank continues past priority 1.
+    **Correction (measured on `main` 2c312e6).** The Persona guest calls `C0:0A(3,0)`
+    itself: `A0:39`, `A0:13(8004EC90)`, `B0:19(8004EC90)`, `B0:5B(0)`, `C0:0A(3,0)`, `A0:72`,
+    `B0:3F`, `A0:3F`, then the VBlank INT (item 12's "passes C0:0A" is the accurate
+    statement). So `0x130[3] = 0` is a value the guest set, not a boot default of this
+    Runtime, and it is not evidence for or against a Pad/Card owner: StartPAD/StartCARD
+    were not called before the stop, so #661's ownership (a handler enqueued in priority 2)
+    does not apply to this stop.
 
 23. **#660 root-counter event delivery; VBlank continues past priority 1.** The element
     performs the currently modelled delivery of `F2000000h + t, 2` (B0:07 DeliverEvent contract, ADR-014 amendment): with
