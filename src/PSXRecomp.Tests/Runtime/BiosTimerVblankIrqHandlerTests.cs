@@ -292,18 +292,18 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
     // ---- inside the exception handler -------------------------------------------------------
 
     [Fact]
-    public void The_Default_Chain_Delivers_The_Persona_VBlank_And_Continues_With_It_Pending()
+    public void The_Default_Chain_Delivers_The_Persona_VBlank_And_Continues_With_It_Pending_Past_Priority_1()
     {
         Pend(0, 0x000D); // I_STAT=0x0001, I_MASK=0x000D as measured; C0:0A t=3 flag=0, no EvCB table
 
         var outcome = BiosExceptionHandler.Handle(
             Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(Epc, 0x400, 0x404, 0, 0));
 
-        // Modelled delivery was a successful no-op with flag 0: no acknowledge, so IRQ0 is still pending for an element past priority 1.
-        outcome.Handled.Should().BeFalse();
-        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain("pendingEnabled=0x0001")
-            .And.NotContain("VBlank IRQ0").And.NotContain("could not be delivered");
+        // Modelled delivery was a successful no-op with flag 0: no acknowledge, so IRQ0 is still pending past priority 1.
+        // Priority 2 is empty and DefInt (#690) does not acknowledge, so the chain runs to the end (no hook here: the default Exit).
+        outcome.Handled.Should().BeTrue();
+        outcome.DiagnosticCode.Should().BeNull();
+        outcome.NextPc.Should().Be(Epc);
         (_interrupts.Status & 1u).Should().Be(1u);
     }
 
