@@ -21,7 +21,12 @@ namespace PSXRecomp.Infrastructure;
 public sealed class RecompiledArtifactLauncher
 {
     /// <summary>One launch's classified result, its canonical JSON encoding, and the guest's TTY bytes.</summary>
-    public sealed record LaunchOutcome(RecompiledArtifactResult Result, string Json, IReadOnlyList<byte> Output);
+    public sealed record LaunchOutcome(
+        RecompiledArtifactResult Result,
+        string Json,
+        IReadOnlyList<byte> Output,
+        MixedFallbackEvidence? FallbackEvidence = null,
+        MixedFallbackTimings? FallbackTimings = null);
 
     /// <summary>
     /// Builds and runs one runnable artifact for <paramref name="program"/> from
@@ -43,6 +48,8 @@ public sealed class RecompiledArtifactLauncher
     /// <see cref="GeneratedHostBuildService"/> adapter.</param>
     /// <param name="resultRegister">GPR index treated as the generated program's observable
     /// result marker (e.g. <c>2</c> for V0); null reports none.</param>
+    /// <param name="mixedFallback">Opt-in mixed execution (Issue #693): an unresolved in-image indirect transfer runs on the
+    /// interpreter and returns to the artifact at a clean block entry. Null keeps the pre-existing stop.</param>
     /// <param name="biosRuntimeFactory">Builds the Runtime the artifact's unresolved control
     /// transfers are relayed to; defaults to the shared <see cref="BiosHleRuntime"/> attached
     /// to this launch's output sink.</param>
@@ -59,7 +66,8 @@ public sealed class RecompiledArtifactLauncher
         string outputDirectory,
         IGeneratedHostBuildService? buildService = null,
         int? resultRegister = null,
-        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null)
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
+        MixedFallbackOptions? mixedFallback = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(input);
@@ -88,7 +96,8 @@ public sealed class RecompiledArtifactLauncher
             input.LoadAddress,
             buildService ?? new GeneratedHostBuildService(),
             outputDirectory,
-            biosRuntimeFactory ?? ((reader, writer) => new BiosHleRuntime(sink, reader, writer)));
+            biosRuntimeFactory ?? ((reader, writer) => new BiosHleRuntime(sink, reader, writer)),
+            mixedFallback: mixedFallback);
 
         var execution = InImageTransferDiagnostic.Apply(
             new ExecutionOrchestrator().Execute(engine, handoff, request),
@@ -97,7 +106,7 @@ public sealed class RecompiledArtifactLauncher
             input.InstructionWords.Count);
         var result = RecompiledArtifactResult.From(execution, resultRegister);
 
-        return new LaunchOutcome(result, ArtifactJson.Serialize(result), sink.Bytes);
+        return new LaunchOutcome(result, ArtifactJson.Serialize(result), sink.Bytes, engine.FallbackEvidence, engine.FallbackTimings);
     }
 
     /// <summary>Collects the guest's TTY bytes, encoding-free, as <see cref="IRuntimeOutputSink"/> requires.</summary>

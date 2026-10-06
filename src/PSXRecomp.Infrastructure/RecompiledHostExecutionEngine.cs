@@ -46,6 +46,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 {
     public const string EngineName = "recompiled-host-artifact";
 
+    /// <summary>Mixed-execution evidence of the last run, or null when mixed execution was not enabled (Issue #693).</summary>
+    public MixedFallbackEvidence? FallbackEvidence { get; private set; }
+
+    /// <summary>Wall-clock costs of the last run's mixed execution; measurement only (Issue #693).</summary>
+    public MixedFallbackTimings? FallbackTimings { get; private set; }
+
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
     public const string ExceptionVectorUnhandledDiagnosticCode = "ARTIFACT_EXCEPTION_VECTOR_UNHANDLED";
 
@@ -56,6 +62,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly Action<PsxDeviceGraph>? _configureDevices;
     private readonly BiosExceptionChain? _exceptionChain;
     private readonly IReadOnlySet<uint> _blockEntryPcs;
+    private readonly MixedFallbackOptions? _mixedFallback;
     private readonly string _binaryPath;
     private readonly string _inputPath;
     private readonly string _imagePath;
@@ -102,6 +109,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// The kernel exception handler's priority-chain walk (Issue #662); null is
     /// <see cref="BiosExceptionHandler.DefaultChain"/>. The seam the modelled kernel handlers plug into.
     /// </param>
+    /// <param name="mixedFallback">
+    /// Opt-in mixed execution (Issue #693): when set, an unresolved in-image indirect transfer is handed to the interpreter
+    /// and control returns to the artifact at a clean compiled block entry. Null (the default) keeps the pre-existing stop.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -114,7 +125,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         string outputDirectory,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
         Action<PsxDeviceGraph>? configureDevices = null,
-        BiosExceptionChain? exceptionChain = null)
+        BiosExceptionChain? exceptionChain = null,
+        MixedFallbackOptions? mixedFallback = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -128,6 +140,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         _biosRuntimeFactory = biosRuntimeFactory;
         _configureDevices = configureDevices;
+        if (mixedFallback is { IsValid: false })
+        {
+            throw new ArgumentException("Mixed fallback needs positive instruction and transition budgets.", nameof(mixedFallback));
+        }
+
+        _mixedFallback = mixedFallback;
         _exceptionChain = exceptionChain;
         _blockEntryPcs = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
         _inputPath = Path.Combine(outputDirectory, "artifact-input.txt");
@@ -211,7 +229,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // retained from Load and re-applied to this rewrite.
         WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
-        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain);
+        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress);
         var arguments = new List<string>(3) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -253,6 +271,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             // diverged from the guest.
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed, retiredFailureCode, bridge.RetiredFailureMessage!);
+        }
+
+        FallbackEvidence = bridge?.FallbackEvidence;
+        FallbackTimings = bridge?.FallbackTimings;
+        if (exit == RecompiledArtifactCodeGen.FallbackProtocolExitCode)
+        {
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed, "ARTIFACT_FALLBACK_PROTOCOL_FAILED",
+                "The artifact rejected a malformed mixed-execution fallback command.");
         }
 
         if (exit < 0 || exit > byte.MaxValue || !stdout.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
@@ -482,6 +509,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private ArtifactDeviceRam? _deviceRam;
         private readonly Action<PsxDeviceGraph>? _configureDevices;
         private readonly BiosExceptionChain? _exceptionChain;
+        private readonly MixedFallbackOptions? _mixedFallback;
+        private readonly IReadOnlyList<uint> _imageWords;
+        private readonly uint _imageLoadAddress;
+        private ArtifactFallbackSession? _fallback;
+
+        /// <summary>Evidence of this run's mixed execution, or null when it was not enabled (Issue #693).</summary>
+        public MixedFallbackEvidence? FallbackEvidence => _fallback?.Evidence;
+
+        /// <summary>Wall-clock costs of this run's mixed execution (Issue #693).</summary>
+        public MixedFallbackTimings? FallbackTimings => _fallback?.Timings;
 
         /// <summary>Why the host refused the artifact's guest-time report, or null when it did not (Issue #679).</summary>
         public string? RetiredFailureCode { get; private set; }
@@ -504,14 +541,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public string? MmioFailureCode { get; private set; }
         public string? MmioFailureMessage { get; private set; }
 
-        public void Dispose() => _devices?.Dispose();
+        public void Dispose()
+        {
+            _fallback?.Dispose();
+            _devices?.Dispose();
+        }
 
         public HostTransferBridge(
             Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
             IReadOnlySet<uint> blockEntryPcs,
             Action<PsxDeviceGraph>? configureDevices,
-            BiosExceptionChain? exceptionChain)
+            BiosExceptionChain? exceptionChain,
+            MixedFallbackOptions? mixedFallback,
+            IReadOnlyList<uint> imageWords,
+            uint imageLoadAddress)
         {
+            _mixedFallback = mixedFallback;
+            _imageWords = imageWords;
+            _imageLoadAddress = imageLoadAddress;
             _biosRuntimeFactory = biosRuntimeFactory;
             _blockEntryPcs = blockEntryPcs;
             _configureDevices = configureDevices;
@@ -542,6 +589,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 _scheduler = new DeviceScheduler(
                     _devices.Core, _devices.InterruptControllerAdapter, _devices.GpuAdapter, _devices.CdRomDevice, _devices.CdRomDmaTransfer);
                 _biosRuntime = _biosRuntimeFactory(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
+                if (_mixedFallback is not null)
+                {
+                    // Mixed execution (Issue #693): the interpreter steps this graph's own core, so the devices and scheduler
+                    // above stay the only ones; only RAM and CPU state are copied.
+                    _fallback = new ArtifactFallbackSession(
+                        _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply);
+                }
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
                 Decline();
@@ -621,6 +676,22 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                         "(the Runtime's kernel exception handler serves only an unpopulated RAM vector, #662).";
                     Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                     return;
+                }
+
+                // Issue #693: an in-image indirect target with no compiled block may be run by the interpreter and
+                // handed back at a clean block entry. Not a case unless mixed execution was opted into.
+                if (_fallback is not null)
+                {
+                    switch (_fallback.Handle(pc, gpr))
+                    {
+                        case ArtifactFallbackSession.Decision.Resumed:
+                            return;
+                        case ArtifactFallbackSession.Decision.Stopped:
+                            DiagnosticCode = _fallback.StopCode;
+                            DiagnosticMessage = _fallback.StopMessage;
+                            Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                            return;
+                    }
                 }
 
                 Decline();
