@@ -8,8 +8,17 @@ namespace PSXRecomp.Tests.Cli;
 [Test]
 public sealed class CliDoctorTests
 {
+    // The OS x architecture decision table is the subject here, so the toolchain
+    // probes are stubbed: a real `gcc --version` has a wall-clock budget and turns
+    // this table's verdict into a function of how busy the machine happens to be.
+    // The genuine probe stays covered by MissingCompiler() below (a real launch of
+    // a real missing executable) and by Execute_Doctor_HostRunHonors*.
     private static DoctorCommand.Probes Healthy(string os = "Windows", string arch = "X64") =>
-        new(os, arch, ".NET 10", "gcc", () => true);
+        new(os, arch, ".NET 10", "gcc", () => true, () => true);
+
+    /// <summary>Same, but with no compiler-availability override, so the real probe runs.</summary>
+    private static DoctorCommand.Probes MissingCompiler() =>
+        Healthy() with { CompilerExecutable = "psxrecomp-no-such-compiler", CompilerAvailable = null };
 
     private static (int Exit, string Output) Doctor(bool json, DoctorCommand.Probes probes)
     {
@@ -24,7 +33,7 @@ public sealed class CliDoctorTests
     [Fact]
     public void Doctor_UnavailableCompiler_ExitOneWithStableId()
     {
-        var probes = Healthy() with { CompilerExecutable = "psxrecomp-no-such-compiler" };
+        var probes = MissingCompiler();
         var (exit, output) = Doctor(json: true, probes);
 
         exit.Should().Be(RecompiledArtifactExitCode.Failure);
@@ -57,6 +66,20 @@ public sealed class CliDoctorTests
         Statuses(output)["os"].Should().Be("ok");
     }
 
+    /// <summary>
+    /// The compiler probe is bounded by a wall-clock budget, so a machine busy enough to
+    /// delay the probe past it must still report a tooling failure, never a pass.
+    /// </summary>
+    [Fact]
+    public void Doctor_SlowCompiler_ExitOneRatherThanExitZero()
+    {
+        var (exit, output) = Doctor(json: true, Healthy() with { CompilerAvailable = () => false });
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        Statuses(output)["c-compiler"].Should().Be("failed");
+        output.Should().Contain("TOOLCHAIN_UNAVAILABLE");
+    }
+
     [Theory]
     [InlineData("FreeBSD", "X64")]
     [InlineData("Windows", "X86")]
@@ -74,7 +97,7 @@ public sealed class CliDoctorTests
     [Fact]
     public void Doctor_Json_IsDeterministicWithStableIdOrder()
     {
-        var probes = Healthy() with { CompilerExecutable = "psxrecomp-no-such-compiler" };
+        var probes = MissingCompiler();
         var first = Doctor(json: true, probes).Output;
         var second = Doctor(json: true, probes).Output;
 
@@ -85,7 +108,7 @@ public sealed class CliDoctorTests
     [Fact]
     public void Doctor_HumanOutput_ListsEveryCheck()
     {
-        var (_, output) = Doctor(json: false, Healthy() with { CompilerExecutable = "psxrecomp-no-such-compiler" });
+        var (_, output) = Doctor(json: false, MissingCompiler());
 
         output.Should().Contain("OS").And.Contain(".NET").And.Contain("Native runtime").And.Contain("C compiler");
         output.Should().Contain("FAILED");
