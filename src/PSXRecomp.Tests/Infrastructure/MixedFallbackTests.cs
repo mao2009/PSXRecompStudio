@@ -289,6 +289,32 @@ public sealed class MixedFallbackTests
         run.Evidence!.Returns.Should().Be(0, "nothing was written back to the artifact");
     }
 
+    // ---- evidence survives a later failure ---------------------------------------------------------------------------
+
+    [Fact]
+    public void Evidence_SurvivesALaterFailureThatReturnsEarly()
+    {
+        // A handoff happens and returns; the artifact then reads the BIOS-ROM window, which the Runtime refuses
+        // (ARTIFACT_MMIO_UNSUPPORTED, an early-return path of RunSegment). The evidence of the earlier handoff must not be lost.
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), [Jalr(T0), Nop]);
+        main.Emit(Li(T1, 0xBFC00000u), [Lw(T2, T1, 0), Nop]);
+        main.Emit(End());
+        var target = new Block(Target);
+        target.Emit(Addiu(S0, Zero, 3), Jr(Ra), Nop);
+        using var dir = new TempDirectory();
+
+        var run = RunArtifact(Image(main, target), dir, On);
+
+
+        run.Result.DiagnosticCode.Should().Be("ARTIFACT_MMIO_UNSUPPORTED", "the run ended on the refused MMIO access, an early return");
+        run.Evidence.Should().NotBeNull("the handoff before the failure is still reported");
+        run.Evidence!.Transitions.Should().Be(1);
+        run.Evidence.Returns.Should().Be(1);
+        run.Evidence.Targets.Should().ContainSingle().Which.Target.Should().Be(Target);
+        run.Timings.Should().NotBeNull();
+    }
+
     // ---- the clean-boundary rule, against the pure interpreter -------------------------------------------------------
 
     [Fact]

@@ -238,6 +238,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         var (exit, stdout, _, hostProtocolFaulted) = RunProcess(_binaryPath, arguments, RunTimeoutMs, out var timedOut, bridge);
 
+        // Mixed-execution evidence is captured before any early return below: a handoff that happened is reported
+        // even when the run then ends on a protocol fault, a timeout, or an MMIO or guest-time failure (Issue #693).
+        FallbackEvidence = bridge?.FallbackEvidence;
+        FallbackTimings = bridge?.FallbackTimings;
+
         if (hostProtocolFaulted)
         {
             // A host-transfer pump fault (a BIOS factory, protocol, or stream
@@ -273,8 +278,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 RecompilerExecutionStatus.ExecutionFailed, retiredFailureCode, bridge.RetiredFailureMessage!);
         }
 
-        FallbackEvidence = bridge?.FallbackEvidence;
-        FallbackTimings = bridge?.FallbackTimings;
         if (exit == RecompiledArtifactCodeGen.FallbackProtocolExitCode)
         {
             return RecompilerExecutionResult.Failed(

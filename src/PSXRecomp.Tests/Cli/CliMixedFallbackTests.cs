@@ -54,6 +54,45 @@ public sealed class CliMixedFallbackTests
         return dir.WriteFile("program.exe", file);
     }
 
+    private const uint RomReadCallee = 0x8001002Cu;
+    private const uint RomReadEnd = 0x80010038u;
+
+    /// <summary>An indirect call whose callee returns, after which the guest reads the BIOS-ROM window (refused by the Runtime).</summary>
+    private static uint[] IndirectCallThenRomReadProgram() =>
+    [
+        I(0x0F, 0, 8, RomReadCallee >> 16),              // 00 lui  $t0, hi
+        I(0x0D, 8, 8, RomReadCallee & 0xFFFFu),          // 04 ori  $t0, $t0, lo
+        8u << 21 | 31u << 11 | 0x09u,                    // 08 jalr $ra, $t0
+        0u,                                              // 0C delay slot
+        I(0x0F, 0, 9, 0xBFC0),                           // 10 lui  $t1, 0xBFC0 (return site)
+        I(0x23, 9, 10, 0),                               // 14 lw   $t2, 0($t1): BIOS-ROM window, refused
+        0u,                                              // 18 nop
+        0x08000000u | ((RomReadEnd & 0x0FFFFFFFu) >> 2), // 1C j end
+        0u,                                              // 20 delay slot
+        0u,                                              // 24
+        0u,                                              // 28
+        I(0x0D, 0, 17, 0x1234),                          // 2C ori  $s1, $zero, 0x1234 (callee)
+        31u << 21 | 0x08u,                               // 30 jr   $ra
+        0u,                                              // 34 delay slot
+    ];
+
+    private static string WriteRomReadExe(TempDirectory dir)
+    {
+        var words = IndirectCallThenRomReadProgram();
+        var file = new byte[PsxExeHeader.HeaderSize + words.Length * 4];
+        BitConverter.GetBytes(PsxExeHeader.Magic).CopyTo(file, 0);
+        BitConverter.GetBytes(Load).CopyTo(file, 0x10);
+        BitConverter.GetBytes(Load).CopyTo(file, 0x18);
+        BitConverter.GetBytes((uint)(words.Length * 4)).CopyTo(file, 0x1C);
+        BitConverter.GetBytes(0x801FFF00u).CopyTo(file, 0x30);
+        for (var i = 0; i < words.Length; i++)
+        {
+            BitConverter.GetBytes(words[i]).CopyTo(file, PsxExeHeader.HeaderSize + i * 4);
+        }
+
+        return dir.WriteFile("rom-read.exe", file);
+    }
+
     private static (int Exit, string Output, string Error) Invoke(params string[] args)
     {
         var output = new StringWriter();
@@ -95,6 +134,22 @@ public sealed class CliMixedFallbackTests
         target.GetProperty("target").GetString().Should().Be("0x8001001C");
         target.GetProperty("lastReturnPc").GetString().Should().Be("0x80010010");
         fallback.TryGetProperty("transferMilliseconds", out _).Should().BeFalse("timings never enter the deterministic document");
+    }
+
+    [Fact]
+    public void Run_WithTheFlag_TheEvidenceIsKeptWhenALaterFailureEndsTheRun()
+    {
+        using var dir = new TempDirectory();
+
+        var (exit, output, _) = Invoke(
+            "run", WriteRomReadExe(dir), "--mixed-fallback", "--output", dir.CreateSubdirectory("out"), "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure, "the refused BIOS-ROM read ends the run after the handoff");
+        using var json = JsonDocument.Parse(output);
+        json.RootElement.GetProperty("result").GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_MMIO_UNSUPPORTED");
+        var fallback = json.RootElement.GetProperty("mixedFallback");
+        fallback.GetProperty("transitions").GetUInt32().Should().Be(1, "the handoff that happened before the failure is still reported");
+        fallback.GetProperty("returns").GetUInt32().Should().Be(1);
     }
 
     [Fact]
