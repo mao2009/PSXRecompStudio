@@ -24,7 +24,7 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 
 ```
 psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
-psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--report] [--json]
+psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]] [--report] [--json]
 psxrecomp doctor    [--json]
 ```
 
@@ -66,6 +66,19 @@ runs (and for a classified runtime failure that returns a result); input/build/
 launcher failures that produce no result do not fabricate one. `--json` (valid
 for both commands) emits the machine-readable envelope (see below) as the sole
 stdout document.
+
+`--mixed-fallback` (run only, off by default; Issue #693, ADR-012 / ADR-025 amendments) opts into mixed
+execution: when the artifact reaches an in-image, aligned PC it has no compiled block for through a
+register-indirect jump (a callback the guest registered in RAM, found only at run time), the host runs
+that code on the interpreter over the same device graph and hands control back to the artifact at a clean
+compiled block entry. Nothing else changes: an unaligned or out-of-image target, RAM-generated code, a BIOS
+or exception vector, or a direct transfer still stops exactly as without the flag, and a run without the flag is
+byte-for-byte unchanged. `--fallback-segment-budget <n>` (default 1,000,000 retired instructions per segment)
+and `--fallback-max-transitions <n>` (default 100,000 handoffs per run) bound the fallback and require
+`--mixed-fallback`; exhausting either is its own classified failure (`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`,
+`ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`), never a silent stop. Other fail-closed diagnostics are
+`ARTIFACT_FALLBACK_UNSUPPORTED_STATE`, `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` and
+`ARTIFACT_FALLBACK_SYNC_FAILED`.
 
 ### `doctor`
 
@@ -169,6 +182,22 @@ reason explicitly. Expected native interop availability failures use
 `production-frame-preparation-failed`.
 The `productionState` belongs to the supplemental production-interpreter
 evidence run; the top-level `result` remains the generated-host run.
+
+With `--mixed-fallback`, one deterministic `mixedFallback` object is appended (counts only; wall-clock timings are
+never part of the document):
+
+```json
+{ "mixedFallback": {
+    "transitions": 1,
+    "returns": 1,
+    "fallbackInstructions": 84,
+    "pagesToInterpreter": 74,
+    "pagesToArtifact": 1,
+    "targets": [ { "target": "0x80025BC8", "entries": 1, "instructions": 84, "lastReturnPc": "0x80025514" } ]
+} }
+```
+
+Without the flag the field is absent.
 
 Without `--report`, the diagnostic-bundle field remains absent. With `--report`,
 the same envelope adds one final field:

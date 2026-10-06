@@ -444,8 +444,27 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     UNKNOWN: retail DefInt event delivery, `$k0/$k1` and SR at hook entry, priority 0, `C0:0D`.
     Scope: no Pad/Card (#661), no EvCB matching (#687), no B0:17/B0:18 (#664, #665), no `C0:0D`.
 
+25. **#693 opt-in mixed execution; the artifact crosses the callback.** The manual-root gap of item 24
+    (`UNRESOLVED_TRANSFER_IN_IMAGE` at `0x80025BC8`) is closed by an **opt-in** mechanism, not by a root. The target
+    is a runtime-discovered, in-image, register-indirect target: CONFIRMED provenance (investigation in #693) is
+    that the guest library routine at `0x80025614` (the established root) stores the callback pointer with an
+    ordinary store (`sw` at `0x8002568C`) into a RAM table at `0x8004EC5C + 4*IRQ`, and the guest dispatcher
+    reads it (`lw` at `0x800254FC`) and calls it with `jalr` at `0x8002550C`. With `--mixed-fallback` the host runs
+    the callback on the interpreter over the host-owned device graph and returns to the artifact at the compiled
+    block `0x80025514`. Measured on `main` d4d729c + #693 with only
+    `--entry-root 0x80025350 --entry-root 0x80025614 --mixed-fallback` (`run rom/PERSONA.chd --json`): 1 handoff,
+    84 interpreter instructions, 74 RAM pages in (303,104 bytes; 606,208 hex characters on the pipe), 1 page back;
+    the run then continues in the artifact and stops at `BIOS_HLE_UNSUPPORTED_CALL` `B0:17` (exit 1; #664), the
+    same next blocker as with the measurement-only `--entry-root 0x80025BC8`. Timings (measurement only, three runs):
+    sync 10.2-12.3 ms in total for the Persona handoff, interpreter execution 2.3-2.4 ms; a synthetic full-RAM
+    entry (all 512 pages dirty, 2,097,152 bytes, 4,194,304 hex characters) costs 36-38 ms, against 0.265 ms for the
+    bare in-process memory copy. Without the flag the run is byte-for-byte what item 24 recorded
+    (`UNRESOLVED_TRANSFER_IN_IMAGE`, exit 2, guest PC `0x80025BC8`).
+    Scope: no Persona address enters `src/`; no Pad/Card (#661), no EvCB matching (#687), no B0:17/B0:18
+    (#664, #665); the mechanism is generic and opt-in (ADR-012 amendment).
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the current artifact boundary is `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693). Only with the measurement-only `--entry-root 0x80025BC8` added does the run reach the downstream `B0:17` stop (#664; the interpreter path reaches it too). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the current artifact boundary is `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693). With the opt-in `--mixed-fallback` (item 25) the same two roots cross that callback and stop at `B0:17` (#664). Only with the measurement-only `--entry-root 0x80025BC8` added does the run reach the downstream `B0:17` stop (#664; the interpreter path reaches it too). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

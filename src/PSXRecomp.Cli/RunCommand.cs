@@ -70,7 +70,12 @@ public static class RunCommand
                 input,
                 new ProgramEndHandoff(programEnd),
                 outputDirectory,
-                resultRegister: (int)R3000aRegister.V0);
+                resultRegister: (int)R3000aRegister.V0,
+                mixedFallback: arguments.MixedFallback
+                    ? new MixedFallbackOptions(
+                        arguments.FallbackSegmentBudget ?? MixedFallbackOptions.DefaultSegmentInstructionBudget,
+                        arguments.FallbackMaxTransitions ?? MixedFallbackOptions.DefaultMaxTransitions)
+                    : null);
 
             var artifactPath = ResolveArtifactPath(outputDirectory);
             var frameEvidence = arguments.FrameEvidence
@@ -103,7 +108,7 @@ public static class RunCommand
                 var success = outcome.Result.Outcome == RecompiledArtifactOutcome.Success;
                 if (diagnosticBundlePath is not null && frameEvidence is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResultWithDiagnosticBundleAndFrameEvidence(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, outcome.FallbackEvidence, new CliJson.RunResultWithDiagnosticBundleAndFrameEvidence(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,
@@ -114,7 +119,7 @@ public static class RunCommand
                 }
                 else if (diagnosticBundlePath is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResultWithDiagnosticBundle(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, outcome.FallbackEvidence, new CliJson.RunResultWithDiagnosticBundle(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,
@@ -124,7 +129,7 @@ public static class RunCommand
                 }
                 else if (frameEvidence is not null)
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResultWithFrameEvidence(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, outcome.FallbackEvidence, new CliJson.RunResultWithFrameEvidence(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,
@@ -134,7 +139,7 @@ public static class RunCommand
                 }
                 else
                 {
-                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, new CliJson.RunResult(
+                    standardOutput.WriteLine(CliJson.Serialize(arguments.EntryRoots, outcome.FallbackEvidence, new CliJson.RunResult(
                         Kind: CliJson.RunKind,
                         Success: success,
                         Artifact: artifactPath,

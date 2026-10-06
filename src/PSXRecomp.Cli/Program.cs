@@ -26,7 +26,7 @@ public static class Program
 {
     private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--json]";
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
-    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--report] [--frame-evidence] [--json]";
+    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]] [--report] [--frame-evidence] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
 
@@ -105,6 +105,9 @@ public static class Program
         var report = false;
         var frameEvidence = false;
         uint? segmentBudget = null;
+        var mixedFallback = false;
+        uint? fallbackSegmentBudget = null;
+        uint? fallbackMaxTransitions = null;
         var entryRoots = new SortedSet<uint>();
         var help = false;
 
@@ -146,6 +149,44 @@ public static class Program
                         return false;
                     }
                     segmentBudget = budget;
+                    break;
+                case "--mixed-fallback":
+                    if (!allowSegmentBudget)
+                    {
+                        parsed = default;
+                        error = $"'{token}' is only valid for 'run'.";
+                        return false;
+                    }
+                    mixedFallback = true;
+                    break;
+                case "--fallback-segment-budget" or "--fallback-max-transitions":
+                    if (!allowSegmentBudget)
+                    {
+                        parsed = default;
+                        error = $"'{token}' is only valid for 'run'.";
+                        return false;
+                    }
+                    if (i + 1 >= arguments.Count)
+                    {
+                        parsed = default;
+                        error = $"missing value for option '{token}'.";
+                        return false;
+                    }
+                    var fallbackText = arguments[++i];
+                    if (!uint.TryParse(fallbackText, out var fallbackBudget) || fallbackBudget == 0)
+                    {
+                        parsed = default;
+                        error = $"invalid value '{fallbackText}' for '{token}': expected a positive integer.";
+                        return false;
+                    }
+                    if (token == "--fallback-segment-budget")
+                    {
+                        fallbackSegmentBudget = fallbackBudget;
+                    }
+                    else
+                    {
+                        fallbackMaxTransitions = fallbackBudget;
+                    }
                     break;
                 case "--entry-root":
                     if (i + 1 >= arguments.Count)
@@ -202,9 +243,16 @@ public static class Program
             }
         }
 
+        if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
+        {
+            parsed = default;
+            error = "'--fallback-segment-budget' and '--fallback-max-transitions' require '--mixed-fallback'.";
+            return false;
+        }
+
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: true);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
             error = null;
             return true;
         }
@@ -223,7 +271,7 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: false);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
         error = null;
         return true;
     }
@@ -317,4 +365,7 @@ internal sealed record ParsedArguments(
     bool Report,
     bool FrameEvidence,
     IReadOnlyList<uint> EntryRoots,
-    bool Help);
+    bool Help,
+    bool MixedFallback = false,
+    uint? FallbackSegmentBudget = null,
+    uint? FallbackMaxTransitions = null);
