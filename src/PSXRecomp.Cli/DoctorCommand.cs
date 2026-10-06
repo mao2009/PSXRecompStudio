@@ -30,13 +30,21 @@ internal static class DoctorCommand
     [Infrastructure]
     public sealed record Report(string Kind, bool Success, string Status, IReadOnlyList<Check> Checks);
 
-    /// <summary>The probed facts, injectable so tests can simulate a missing toolchain or OS.</summary>
+    /// <summary>
+    /// The probed facts, injectable so tests can simulate a missing toolchain or OS.
+    /// </summary>
+    /// <param name="CompilerAvailable">
+    /// Overrides the C compiler probe. Left null the real
+    /// <see cref="ProbeCompiler"/> runs <paramref name="CompilerExecutable"/>, so
+    /// tests that need the genuine missing-toolchain path stay covered.
+    /// </param>
     internal sealed record Probes(
         string OsPlatform,
         string Architecture,
         string DotNetDescription,
         string CompilerExecutable,
-        Func<bool> NativeRuntimeAvailable);
+        Func<bool> NativeRuntimeAvailable,
+        Func<bool>? CompilerAvailable = null);
 
     internal static Probes HostProbes() => new(
         OperatingSystem.IsWindows() ? "Windows" : OperatingSystem.IsLinux() ? "Linux" : OperatingSystem.IsMacOS() ? "macOS" : "Unknown",
@@ -49,12 +57,13 @@ internal static class DoctorCommand
     {
         // Validated release matrix (linux-x64, win-x64, osx-arm64); not the OS x arch product.
         var supported = (probes.OsPlatform, probes.Architecture) is ("Windows", "X64") or ("Linux", "X64") or ("macOS", "Arm64");
+        var compilerAvailable = probes.CompilerAvailable ?? (() => ProbeCompiler(probes.CompilerExecutable));
         var checks = new[]
         {
             new Check("os", supported ? Ok : Unsupported, supported ? null : "UNSUPPORTED_PLATFORM"),
             new Check("dotnet", Ok, null),
             Probe("native-runtime", probes.NativeRuntimeAvailable(), "NATIVE_RUNTIME_UNAVAILABLE"),
-            Probe("c-compiler", ProbeCompiler(probes.CompilerExecutable), "TOOLCHAIN_UNAVAILABLE"),
+            Probe("c-compiler", compilerAvailable(), "TOOLCHAIN_UNAVAILABLE"),
         };
 
         var status = checks.Any(c => c.Status == Unsupported) ? Unsupported

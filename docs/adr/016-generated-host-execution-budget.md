@@ -57,3 +57,9 @@ Rejected. Keeping N+1 behavior while documenting it would leave `budget` unsuita
 ### One common instruction-exact budget for every backend
 
 Rejected for this issue. Generated blocks and guest instructions are not one-to-one because of lowering/fusion semantics. Converting all backends to one unit would be a larger execution-model change and is unnecessary to fix the correctness bug.
+
+## Amendment (Issue #693): the unit of a mixed-execution handoff
+
+A handoff to the interpreter is **one claimed host-transfer unit**: it spends exactly one step of the generated-host dispatch budget, like a BIOS call (the existing rule above for a claimed transfer), and the budget guard runs before the host callback, so a stop at the budget leaves the state unmutated.
+
+The interpreter segment inside it is bounded by its own, separately named budget in **retired MIPS instructions** (`MixedFallbackOptions.SegmentInstructionBudget`); the two units are deliberately not unified (see "Backend relationship"). The number of handoffs per run is bounded by `MixedFallbackOptions.MaxTransitions`. There is deliberately **no repeated-PC limit**: a legitimate callback is entered every frame. Exhausting either budget is an explicit diagnostic (`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`), never a silent clamp and never `ExecutionBudgetExceeded`.

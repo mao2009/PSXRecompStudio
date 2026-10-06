@@ -217,6 +217,14 @@ PSX_API uint32_t PSXCore_GetExceptionFaultPc(PSXCore* core);
 PSX_API int PSXCore_GetExceptionInDelaySlot(PSXCore* core);
 /** Returns non-zero when the most recent PSXCore_Step() executed RFE, i.e. the guest returned from an exception handler (PR #502). Reset by every step. */
 PSX_API int PSXCore_GetRfeExecuted(PSXCore* core);
+/**
+ * Returns the CPU's in-flight pipeline state as a bit mask (Issue #693): bit 0 (1) = a branch/jump
+ * has executed and its delay slot has not; bit 1 (2) = a load's result is not yet committed to the
+ * register file (load delay). Zero means the PC is an architecturally clean resume boundary: a host
+ * that continues the guest elsewhere (a generated-host artifact) may only take over at such a PC.
+ * Read-only; it never flushes the pipeline. A null core reports 3 (not clean).
+ */
+PSX_API uint32_t PSXCore_GetPipelineState(PSXCore* core);
 /** Pops the COP0 SR 3-level KU/IE stack exactly as RFE does, without executing an instruction and without setting PSXCore_GetRfeExecuted(). For a host that completes an exception handler in HLE (Issue #663). */
 PSX_API void PSXCore_PopExceptionSrStack(PSXCore* core);
 /** Executes up to `maxInstructions` instructions, stopping early on a native exception/halt condition. Returns the number of instructions actually executed, or a negative status on error. */

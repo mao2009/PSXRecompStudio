@@ -249,6 +249,32 @@ static void test_pipeline_set_pc_flushes_pending_load() {
     PASS();
 }
 
+static void test_pipeline_state_reports_branch_and_load_delay() {
+    TEST("Pipeline (#693): PSXCore_GetPipelineState reports branch-delay and load-delay boundaries");
+    PSXCore* core = PSXCore_Create();
+    ASSERT_EQ(PSXCore_GetPipelineState(core), 0u);                // clean at reset
+    ASSERT_EQ(PSXCore_GetPipelineState(nullptr), 3u);             // a null core is never clean
+    PSXCore_SetGPR(core, 29, 0x1000);
+    PSXCore_WriteMemory32(core, 0x1000, 0x12345678u);
+    PSXCore_WriteMemory32(core, 0x00, 0x8FA10000u);               // LW  $1,0($29)
+    PSXCore_WriteMemory32(core, 0x04, 0x00000000u);               // NOP (the load-delay slot)
+    PSXCore_WriteMemory32(core, 0x08, 0x08000010u);               // J   0x40
+    PSXCore_WriteMemory32(core, 0x0C, 0x00000000u);               // NOP (the branch delay slot)
+    PSXCore_SetPC(core, 0);
+    PSXCore_Step(core);                                           // LW: result queued
+    ASSERT_EQ(PSXCore_GetPipelineState(core), 2u);
+    PSXCore_Step(core);                                           // NOP: load commits
+    ASSERT_EQ(PSXCore_GetPipelineState(core), 0u);
+    ASSERT_EQ(PSXCore_GetGPR(core, 1), 0x12345678u);
+    PSXCore_Step(core);                                           // J: delay slot pending
+    ASSERT_EQ(PSXCore_GetPipelineState(core), 1u);
+    PSXCore_Step(core);                                           // delay slot retires, target applied
+    ASSERT_EQ(PSXCore_GetPipelineState(core), 0u);
+    ASSERT_EQ(PSXCore_GetPC(core), 0x40u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_pipeline_rust_tests() {
     test_step_branch_delay_slot();
     test_load_delay();
@@ -260,4 +286,5 @@ void run_psx_cpu_pipeline_rust_tests() {
     test_pipeline_pending_and_new_load_commit_in_order();
     test_pipeline_exception_in_delay_slot_discards_branch();
     test_pipeline_set_pc_flushes_pending_load();
+    test_pipeline_state_reports_branch_and_load_delay();
 }

@@ -97,4 +97,43 @@ internal static class CliJson
         var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
         return node.ToJsonString(options).ReplaceLineEndings("\n") + "\n";
     }
+
+    /// <summary>
+    /// <see cref="Serialize{T}(IReadOnlyList{uint}, T)"/> plus, only when mixed execution was enabled (Issue #693), a
+    /// <c>mixedFallback</c> object with the run's deterministic evidence (counts and per-target totals; no timings), so
+    /// the output alone says what the interpreter did. With no evidence the output is byte-identical to the overload above.
+    /// </summary>
+    public static string Serialize<T>(IReadOnlyList<uint> entryRoots, MixedFallbackEvidence? mixedFallback, T document)
+    {
+        var json = Serialize(entryRoots, document);
+        if (mixedFallback is null)
+        {
+            return json;
+        }
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        var targets = new System.Text.Json.Nodes.JsonArray();
+        foreach (var target in mixedFallback.Targets)
+        {
+            targets.Add(new System.Text.Json.Nodes.JsonObject
+            {
+                ["target"] = $"0x{target.Target:X8}",
+                ["entries"] = target.Entries,
+                ["instructions"] = target.Instructions,
+                ["lastReturnPc"] = $"0x{target.LastReturnPc:X8}",
+            });
+        }
+
+        node["mixedFallback"] = new System.Text.Json.Nodes.JsonObject
+        {
+            ["transitions"] = mixedFallback.Transitions,
+            ["returns"] = mixedFallback.Returns,
+            ["fallbackInstructions"] = mixedFallback.FallbackInstructions,
+            ["pagesToInterpreter"] = mixedFallback.PagesToInterpreter,
+            ["pagesToArtifact"] = mixedFallback.PagesToArtifact,
+            ["targets"] = targets,
+        };
+        var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+        return node.ToJsonString(options).ReplaceLineEndings("\n") + "\n";
+    }
 }

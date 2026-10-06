@@ -20,6 +20,15 @@ namespace PSXRecomp.Infrastructure;
 internal sealed class ArtifactDeviceRam(Func<uint, byte> readByte, Action<uint, byte> writeByte) : IMemoryBus
 {
     private bool _serving;
+    private IMemoryBus? _redirect;
+
+    /// <summary>
+    /// While a mixed-execution fallback segment runs (Issue #693) the interpreter works on the graph core's RAM, a
+    /// copy that is only written back to <c>artifact_ram</c> at the segment's end. A device that moves data into
+    /// guest RAM during that time must reach the copy the CPU is executing on, or the write-back would erase it:
+    /// the fallback owner redirects here for the segment and clears the redirect (null) afterwards.
+    /// </summary>
+    public void RedirectTo(IMemoryBus? coreBus) => _redirect = coreBus;
 
     /// <summary>A device accessed guest RAM while the artifact was not serving it.</summary>
     public sealed class UnroutableException(string message) : InvalidOperationException(message);
@@ -30,6 +39,11 @@ internal sealed class ArtifactDeviceRam(Func<uint, byte> readByte, Action<uint, 
 
     public uint Read(uint address)
     {
+        if (_redirect is not null)
+        {
+            return _redirect.Read(address);
+        }
+
         Require(address);
         return readByte(address)
             | (uint)readByte(address + 1) << 8
@@ -39,6 +53,12 @@ internal sealed class ArtifactDeviceRam(Func<uint, byte> readByte, Action<uint, 
 
     public void Write(uint address, uint value)
     {
+        if (_redirect is not null)
+        {
+            _redirect.Write(address, value);
+            return;
+        }
+
         Require(address);
         for (var i = 0u; i < sizeof(uint); i++)
         {

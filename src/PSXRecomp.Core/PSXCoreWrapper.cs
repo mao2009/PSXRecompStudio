@@ -178,6 +178,39 @@ public sealed class PSXCoreWrapper : IDisposable
         }
     }
 
+    /// <summary>
+    /// Copies the whole 2 MiB main RAM into <paramref name="destination"/> (Issue #693). A bulk read of the
+    /// native buffer, not a CPU-address-space access: no MMIO, mirror or device side effect.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="destination"/> is not exactly <see cref="RamSize"/> bytes.</exception>
+    public unsafe void CopyRamTo(Span<byte> destination)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (destination.Length != RamSize)
+        {
+            throw new ArgumentException($"RAM copies are exactly {RamSize} bytes.", nameof(destination));
+        }
+
+        new ReadOnlySpan<byte>((void*)NativeInterop.PSXCore_GetRAM(_handle), (int)RamSize).CopyTo(destination);
+    }
+
+    /// <summary>
+    /// Overwrites <paramref name="length"/> bytes of main RAM at the 0-based RAM offset <paramref name="offset"/>
+    /// with <paramref name="source"/> (Issue #693). The bulk counterpart of <see cref="CopyRamTo"/>; the range
+    /// must lie inside RAM (no wrap, no mirror).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The range does not lie inside the 2 MiB RAM.</exception>
+    public unsafe void CopyRamFrom(uint offset, ReadOnlySpan<byte> source)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if ((ulong)offset + (ulong)source.Length > RamSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset), "The RAM range does not lie inside main RAM.");
+        }
+
+        source.CopyTo(new Span<byte>((byte*)NativeInterop.PSXCore_GetRAM(_handle) + offset, source.Length));
+    }
+
     /// <summary>Returns the fixed PS1 main-RAM size in bytes. Equivalent to <see cref="RamSize"/>; does not require a live instance.</summary>
     public static uint GetRamSize() => NativeInterop.PSXCore_GetRAMSize();
 
@@ -517,6 +550,20 @@ public sealed class PSXCoreWrapper : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             return NativeInterop.PSXCore_GetRfeExecuted(_handle) != 0;
+        }
+    }
+
+    /// <summary>
+    /// Whether the CPU is at an architecturally clean resume boundary (Issue #693): no branch has executed
+    /// whose delay slot is still to run, and no load's result is still uncommitted (load delay). Read-only; it
+    /// never flushes the pipeline. A host may continue the guest on another engine only at such a PC.
+    /// </summary>
+    public bool IsPipelineClean
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return NativeInterop.PSXCore_GetPipelineState(_handle) == 0;
         }
     }
 

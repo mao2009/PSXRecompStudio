@@ -143,6 +143,55 @@ public static class RecompiledArtifactCodeGen
     /// </summary>
     public const int RetiredReportThreshold = 1024;
 
+    /// <summary>
+    /// The parent's request for the mixed-execution fallback state (Issue #693): <c>F version</c>. The child answers
+    /// <c>RHOST_FALLBACK version indirect irq hi lo sr cause epc dirtyPages</c> (<see cref="ProtocolFallbackReplyPrefix"/>) or
+    /// <c>RHOST_FALLBACK_REFUSED reason</c>. <c>indirect</c> is 1 only when the pc the artifact is at is the runtime target of its most
+    /// recent register-indirect (JR/JALR) block exit. The request changes no artifact state.
+    /// </summary>
+    public const string ProtocolFallbackQueryCommand = "F";
+
+    /// <summary>Prefix of the child's reply to <see cref="ProtocolFallbackQueryCommand"/>.</summary>
+    public const string ProtocolFallbackReplyPrefix = "RHOST_FALLBACK ";
+
+    /// <summary>Prefix of the child's refusal of a fallback request or commit: <c>RHOST_FALLBACK_REFUSED reason</c>.</summary>
+    public const string ProtocolFallbackRefusedPrefix = "RHOST_FALLBACK_REFUSED ";
+
+    /// <summary>
+    /// The parent's request for the dirty RAM pages: <c>Y</c>. The child sends one <c>RHOST_PAGE index hex</c> line per page that differs
+    /// from the image the host last held (ascending index, 4096 bytes as 8192 lowercase hex characters), then
+    /// <c>RHOST_PAGES_END hash</c>, and records those pages as held by the host.
+    /// </summary>
+    public const string ProtocolFallbackPagesCommand = "Y";
+
+    /// <summary>Line prefix of one page the child sends in answer to <see cref="ProtocolFallbackPagesCommand"/>.</summary>
+    public const string ProtocolFallbackPagePrefix = "RHOST_PAGE ";
+
+    /// <summary>Line prefix of the child's end-of-pages line carrying the FNV-1a hash of every (index, page bytes) it sent.</summary>
+    public const string ProtocolFallbackPagesEndPrefix = "RHOST_PAGES_END ";
+
+    /// <summary>The parent's staged write-back of one RAM page: <c>B index hex</c>, ascending and distinct. Applied only by <see cref="ProtocolFallbackCommitCommand"/>.</summary>
+    public const string ProtocolFallbackStageCommand = "B";
+
+    /// <summary>
+    /// The parent's commit of the staged pages: <c>K count hash</c>. The child applies all staged pages to guest RAM only if the count and
+    /// the FNV-1a hash match what it received, then answers <c>RHOST_OK</c>; otherwise it discards them and answers
+    /// <c>RHOST_FALLBACK_REFUSED checksum</c>, leaving guest RAM unchanged.
+    /// </summary>
+    public const string ProtocolFallbackCommitCommand = "K";
+
+    /// <summary>The parent's full CPU-state write: <c>S hi lo sr cause epc irq gpr1 .. gpr31</c> (CAUSE.IP2 follows <c>irq</c>).</summary>
+    public const string ProtocolFallbackStateCommand = "S";
+
+    /// <summary>The fallback protocol version this driver implements.</summary>
+    public const int ProtocolFallbackVersion = 1;
+
+    /// <summary>RAM page size of the fallback copy-sync.</summary>
+    public const int FallbackPageSize = 4096;
+
+    /// <summary>Artifact exit code: a fallback command was malformed (Issue #693).</summary>
+    public const int FallbackProtocolExitCode = 101;
+
     /// <summary>Marks the start of the stable state snapshot on stdout.</summary>
     public const string SnapshotBeginMarker = "RSNAPSHOT_BEGIN";
 
@@ -192,7 +241,8 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@RETIRED_REFUSED@", ProtocolRetiredRefusedReply, StringComparison.Ordinal)
                 .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal),
             null,
             null);
     }
@@ -459,6 +509,11 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
                      G <gpr index> <value> | H <hi> <lo>      (state write before a decision; Issue #662)
                      C <sr> | P                               (SR write | RFE pop, before a decision; Issues #663/#662)
                      L <0|1>                                  (interrupt line after a kernel handler; Issue #662)
+                     F <version>                              (mixed-fallback query; reply RHOST_FALLBACK <version> <indirect> <irq>
+                                                               <hi> <lo> <sr> <cause> <epc> <dirty pages> | RHOST_FALLBACK_REFUSED <why>; Issue #693)
+                     Y                                        (reply RHOST_PAGE <index> <hex> ... RHOST_PAGES_END <hash>)
+                     B <index> <hex> ... K <count> <hash>     (staged RAM write-back, applied only by a verified K -> RHOST_OK)
+                     S <hi> <lo> <sr> <cause> <epc> <irq> <gpr1..gpr31>   (full CPU state write)
                      D <termination> <next pc> <has v0> <v0>   (decision)
                      V <value> | X                            (reply to an MMIO request)
                      A | I | X                                (reply to RHOST_RETIRED; I = interrupt line asserted, Issue #680)
@@ -470,12 +525,136 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
    never interleave with one. */
 #define PSX_REG_V0 2
 
+/* Mixed-execution fallback (Issue #693). Guest RAM stays artifact_ram; the interpreter works on a private copy the
+   host keeps in step by page-granular copy-sync. fallback_shadow is the RAM image the host last held (all zero
+   before the first sync, like the host's own fresh core RAM), so a page is dirty exactly when it differs from it.
+   Pages travel as 4096 bytes in 8192 lowercase hex characters in ascending index order, covered by an FNV-1a hash
+   over (index as 4 little-endian bytes, page bytes) per page. The write-back is staged and applied only by a
+   verified commit (K), so artifact_ram is never left half-updated. Any malformed fallback command is fatal. */
+#define PSX_PAGE_SIZE 4096u
+#define PSX_PAGE_COUNT (PSX_RAM_SIZE / PSX_PAGE_SIZE)
+#define PSX_FALLBACK_VERSION 1ul
+static uint8_t fallback_shadow[PSX_RAM_SIZE];
+static uint8_t fallback_stage[PSX_RAM_SIZE];
+static uint32_t fallback_stage_page[PSX_PAGE_COUNT];
+static uint32_t fallback_stage_count = 0u;
+static uint32_t fallback_stage_hash = 2166136261u;
+
+static uint32_t fallback_hash_page(uint32_t hash, uint32_t page, const uint8_t* data) {
+    uint32_t i;
+    for (i = 0; i < 4u; i++) { hash ^= (uint8_t)(page >> (8u * i)); hash *= 16777619u; }
+    for (i = 0; i < PSX_PAGE_SIZE; i++) { hash ^= data[i]; hash *= 16777619u; }
+    return hash;
+}
+
+static uint32_t fallback_dirty_count(void) {
+    uint32_t p, n = 0u;
+    for (p = 0; p < PSX_PAGE_COUNT; p++) {
+        if (memcmp(artifact_ram + p * PSX_PAGE_SIZE, fallback_shadow + p * PSX_PAGE_SIZE, PSX_PAGE_SIZE) != 0) n++;
+    }
+    return n;
+}
+
+static int fallback_nibble(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+/* Reads exactly one page of hex (leading whitespace skipped, a line end required after it). */
+static int fallback_read_page(uint8_t* dst) {
+    int c;
+    uint32_t i;
+    do { c = getchar(); } while (c == ' ' || c == '\n' || c == '\r');
+    for (i = 0; i < PSX_PAGE_SIZE; i++) {
+        int hi = fallback_nibble(c);
+        int lo;
+        if (hi < 0) return 0;
+        lo = fallback_nibble(getchar());
+        if (lo < 0) return 0;
+        dst[i] = (uint8_t)((hi << 4) | lo);
+        c = getchar();
+    }
+    return c == '\n' || c == '\r' || c == EOF;
+}
+
+static void fallback_send_pages(void) {
+    static const char hex_digits[] = ""0123456789abcdef"";
+    static char line[2u * PSX_PAGE_SIZE + 1u];
+    uint32_t p, i, hash = 2166136261u;
+    for (p = 0; p < PSX_PAGE_COUNT; p++) {
+        uint8_t* page = artifact_ram + p * PSX_PAGE_SIZE;
+        if (memcmp(page, fallback_shadow + p * PSX_PAGE_SIZE, PSX_PAGE_SIZE) == 0) continue;
+        for (i = 0; i < PSX_PAGE_SIZE; i++) {
+            line[2u * i] = hex_digits[page[i] >> 4];
+            line[2u * i + 1u] = hex_digits[page[i] & 15u];
+        }
+        line[2u * PSX_PAGE_SIZE] = 0;
+        printf(""RHOST_PAGE %lu %s\n"", (unsigned long)p, line);
+        hash = fallback_hash_page(hash, p, page);
+        memcpy(fallback_shadow + p * PSX_PAGE_SIZE, page, PSX_PAGE_SIZE);
+    }
+    printf(""RHOST_PAGES_END %lu\n"", (unsigned long)hash);
+    fflush(stdout);
+}
+
 static int32_t artifact_host_serve(RecompilerState* state) {
     for (;;) {
         char cmd[8];
         unsigned long a, v, t, np, has_v0;
         if (scanf(""%7s"", cmd) != 1) return 1;
-        if (cmd[0] == 'R') {
+        if (cmd[0] == 'F') {
+            if (scanf(""%lu"", &v) != 1) exit(@EXIT_FALLBACK_PROTOCOL@);
+            if (v != PSX_FALLBACK_VERSION) {
+                printf(""RHOST_FALLBACK_REFUSED version\n"");
+            } else {
+                printf(""RHOST_FALLBACK %lu %d %u %lu %lu %lu %lu %lu %lu\n"", PSX_FALLBACK_VERSION,
+                       state->pc == state->indirect_target ? 1 : 0, (unsigned)state->irq_line,
+                       (unsigned long)state->hi, (unsigned long)state->lo, (unsigned long)state->cop0_sr,
+                       (unsigned long)state->cop0_cause, (unsigned long)state->cop0_epc, (unsigned long)fallback_dirty_count());
+            }
+            fflush(stdout);
+        } else if (cmd[0] == 'Y') {
+            fallback_send_pages();
+        } else if (cmd[0] == 'B') {
+            if (scanf(""%lu"", &a) != 1 || a >= PSX_PAGE_COUNT || fallback_stage_count >= PSX_PAGE_COUNT
+                || (fallback_stage_count != 0u && a <= fallback_stage_page[fallback_stage_count - 1u])
+                || !fallback_read_page(fallback_stage + fallback_stage_count * PSX_PAGE_SIZE)) exit(@EXIT_FALLBACK_PROTOCOL@);
+            fallback_stage_page[fallback_stage_count] = (uint32_t)a;
+            fallback_stage_hash = fallback_hash_page(fallback_stage_hash, (uint32_t)a, fallback_stage + fallback_stage_count * PSX_PAGE_SIZE);
+            fallback_stage_count++;
+        } else if (cmd[0] == 'K') {
+            if (scanf(""%lu %lu"", &a, &v) != 2) exit(@EXIT_FALLBACK_PROTOCOL@);
+            if (a != (unsigned long)fallback_stage_count || v != (unsigned long)fallback_stage_hash) {
+                fallback_stage_count = 0u;
+                fallback_stage_hash = 2166136261u;
+                printf(""RHOST_FALLBACK_REFUSED checksum\n"");
+            } else {
+                uint32_t s;
+                for (s = 0; s < fallback_stage_count; s++) {
+                    memcpy(artifact_ram + fallback_stage_page[s] * PSX_PAGE_SIZE, fallback_stage + s * PSX_PAGE_SIZE, PSX_PAGE_SIZE);
+                    memcpy(fallback_shadow + fallback_stage_page[s] * PSX_PAGE_SIZE, fallback_stage + s * PSX_PAGE_SIZE, PSX_PAGE_SIZE);
+                }
+                fallback_stage_count = 0u;
+                fallback_stage_hash = 2166136261u;
+                printf(""RHOST_OK\n"");
+            }
+            fflush(stdout);
+        } else if (cmd[0] == 'S') {
+            unsigned long hi, lo, sr, cause, epc, irq;
+            int g;
+            if (scanf(""%lu %lu %lu %lu %lu %lu"", &hi, &lo, &sr, &cause, &epc, &irq) != 6 || irq > 1ul) exit(@EXIT_FALLBACK_PROTOCOL@);
+            state->hi = (uint32_t)hi;
+            state->lo = (uint32_t)lo;
+            state->cop0_sr = (uint32_t)sr;
+            state->cop0_epc = (uint32_t)epc;
+            state->irq_line = (uint32_t)irq;
+            state->cop0_cause = ((uint32_t)cause & ~0x400u) | (irq ? 0x400u : 0u);
+            for (g = 1; g < 32; g++) {
+                if (scanf(""%lu"", &v) != 1) exit(@EXIT_FALLBACK_PROTOCOL@);
+                state->gpr[g] = (uint32_t)v;
+            }
+        } else if (cmd[0] == 'R') {
             if (scanf(""%lu"", &a) != 1) return 1;
             printf(""RHOST_DATA %u\n"", (unsigned)artifact_ram_read8((uint32_t)a));
             fflush(stdout);

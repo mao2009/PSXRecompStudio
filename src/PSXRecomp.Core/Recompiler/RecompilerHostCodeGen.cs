@@ -41,6 +41,7 @@ public static class RecompilerHostCodeGen
     private const string Cop0CauseField = "cop0_cause";
     private const string Cop0EpcField = "cop0_epc";
     private const string IrqLineField = "irq_line";
+    private const string IndirectTargetField = "indirect_target";
     private const string RetiredTotalField = "retired_total";
     private const string RetiredReportedField = "retired_reported";
     private const int IndentSpaces = 2;
@@ -301,6 +302,9 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t " + Cop0CauseField + ";");
         sb.AppendLine("  uint32_t " + Cop0EpcField + ";");
         sb.AppendLine("  uint32_t " + IrqLineField + ";");
+        sb.AppendLine("  /* The runtime target of the most recent register-indirect (JR/JALR) block exit (Issue #693). A");
+        sb.AppendLine("     host transfer for a pc equal to it came from an indirect transfer; written only by such exits. */");
+        sb.AppendLine("  uint32_t " + IndirectTargetField + ";");
         sb.AppendLine("  void* " + CoreField + ";");
         sb.AppendLine("  " + HostTransferFnType + " " + HostTransferField + ";");
         sb.AppendLine("  /* Optional host SYSCALL hook (Issue #663), same contract as host_transfer: 0 when the");
@@ -610,7 +614,8 @@ public static class RecompilerHostCodeGen
         // the dispatch loop, which enters a compiled block or asks host_transfer.
         if (exit.TargetValueId is { } targetValueId)
         {
-            return $"{StateParam}->{NextPcField} = v{targetValueId}; {StateParam}->{TerminationField} = 0; return 0;";
+            return $"{StateParam}->{IndirectTargetField} = v{targetValueId}; " +
+                   $"{StateParam}->{NextPcField} = v{targetValueId}; {StateParam}->{TerminationField} = 0; return 0;";
         }
 
         var flow = exit.Flow;

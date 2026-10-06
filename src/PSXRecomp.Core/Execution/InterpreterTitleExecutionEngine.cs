@@ -50,7 +50,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly BiosExceptionChain? _exceptionChain;
-    private readonly PsxDeviceGraph _devices = new();
+    private readonly PsxDeviceGraph _devices;
+    private readonly bool _ownsDevices;
     private readonly PSXCoreWrapper _core;
     private readonly MemoryBus _bus;
     private readonly InterruptControllerMmioAdapter _interruptControllerAdapter;
@@ -121,6 +122,46 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         uint loadAddress,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
         BiosExceptionChain? exceptionChain = null)
+        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates an engine <i>attached</i> to a device graph and scheduler another backend already owns
+    /// (Issue #693, ADR-025 amendment): the generated-host artifact's host-owned graph. It is for mixed-execution
+    /// fallback only — it never <see cref="Load"/>s an image (guest RAM is copy-synced into the graph's core by the
+    /// caller), never builds a graph or scheduler of its own, and does not dispose the graph it was handed. Its
+    /// <see cref="RunFallbackSegment"/> steps the graph core's CPU, so interrupt controller, timers, DMA, GPU and
+    /// CD-ROM state are the very objects the artifact path already relays to: nothing is copied.
+    /// </summary>
+    /// <param name="instructions">The guest program image words (bounds the in-image execution region).</param>
+    /// <param name="loadAddress">The guest address <paramref name="instructions"/> is loaded at.</param>
+    /// <param name="sharedDevices">The host-owned graph whose native core is stepped.</param>
+    /// <param name="sharedScheduler">The host-owned scheduler advanced one cycle per retired fallback instruction.</param>
+    /// <param name="biosRuntimeFactory">Builds the Runtime over the graph core's RAM (state lives in guest RAM).</param>
+    /// <param name="exceptionChain">The kernel exception handler's chain; null is the default chain.</param>
+    /// <exception cref="ArgumentNullException">An argument other than the optional ones is null.</exception>
+    public static InterpreterTitleExecutionEngine Attach(
+        IReadOnlyList<uint> instructions,
+        uint loadAddress,
+        PsxDeviceGraph sharedDevices,
+        DeviceScheduler sharedScheduler,
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
+        BiosExceptionChain? exceptionChain = null)
+    {
+        ArgumentNullException.ThrowIfNull(sharedDevices);
+        ArgumentNullException.ThrowIfNull(sharedScheduler);
+        return new InterpreterTitleExecutionEngine(
+            instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices, sharedScheduler);
+    }
+
+    private InterpreterTitleExecutionEngine(
+        IReadOnlyList<uint> instructions,
+        uint loadAddress,
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory,
+        BiosExceptionChain? exceptionChain,
+        PsxDeviceGraph? sharedDevices,
+        DeviceScheduler? sharedScheduler)
     {
         ArgumentNullException.ThrowIfNull(instructions);
         if (instructions.Count == 0)
@@ -168,6 +209,15 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // artifact relays to (Issue #678). The BIOS runtime seam travels through
         // its bus, so guest RAM/mirror/device semantics all come from one routing
         // point while the interpreter drives the same native core.
+        _devices = sharedDevices ?? new PsxDeviceGraph();
+        _ownsDevices = sharedDevices is null;
+        if (sharedScheduler is not null)
+        {
+            // Attached (Issue #693): the owner's scheduler, and no Load — the image arrives by RAM sync.
+            _scheduler = sharedScheduler;
+            _loaded = true;
+        }
+
         _core = _devices.Core;
         _bus = _devices.Bus;
         _interruptControllerAdapter = _devices.InterruptControllerAdapter;
@@ -184,6 +234,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public void Load(TitleExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (!_ownsDevices)
+        {
+            // Load resets the native core: on an attached engine that is the host-owned graph's core.
+            throw new InvalidOperationException("An attached engine never loads an image; its RAM arrives by copy-sync.");
+        }
 
         // Mirrors RecompilerInterpreterExecutor: initial memory first (translated
         // to physical), then the program words so the code image wins any overlap.
@@ -236,6 +291,107 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _core.Pc = segmentRequest.Pc;
         }
 
+        return RunLoop(segmentRequest.Budget, returnPcs: null, out _, out _);
+    }
+
+    /// <summary>
+    /// Runs one mixed-execution fallback segment on this attached engine's graph core (Issue #693): seeds the CPU
+    /// from <paramref name="entry"/> as a fresh dispatch, steps the interpreter until it is about to execute a PC in
+    /// <paramref name="returnPcs"/> at a clean boundary (or stops/exhausts), and reports the CPU state to write back.
+    /// Every outcome other than <see cref="FallbackSegmentStatus.Returned"/> is a fail-closed stop for the caller.
+    /// </summary>
+    /// <param name="entry">The artifact's CPU state at the transfer.</param>
+    /// <param name="returnPcs">The PCs the artifact has a compiled block for.</param>
+    /// <param name="instructionBudget">The most interpreter steps this segment may take; positive.</param>
+    /// <exception cref="InvalidOperationException">The engine was not created by <see cref="Attach"/>.</exception>
+    /// <exception cref="ArgumentException">The state is malformed or the budget is zero.</exception>
+    public FallbackSegmentOutcome RunFallbackSegment(
+        FallbackCpuState entry, IReadOnlySet<uint> returnPcs, uint instructionBudget)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(returnPcs);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_ownsDevices)
+        {
+            throw new InvalidOperationException("RunFallbackSegment requires an engine created by Attach.");
+        }
+
+        if (entry.Gpr.Count != TitleExecutionRequest.GprCount || instructionBudget == 0)
+        {
+            throw new ArgumentException("A fallback entry carries 32 GPRs and a positive instruction budget.");
+        }
+
+        for (var i = 0; i < TitleExecutionRequest.GprCount; i++)
+        {
+            _core.SetGpr(i, entry.Gpr[i]);
+        }
+
+        _core.Hi = entry.Hi;
+        _core.Lo = entry.Lo;
+        _core.SetCop0(Cop0Status, entry.Sr);
+        _core.SetCop0(Cop0Cause, entry.Cause);
+        _core.SetCop0(Cop0Epc, entry.Epc);
+        _core.Pc = entry.Pc; // a fresh dispatch: flushes the native pipeline exactly as a jump must
+        _inInterruptHandler = false;
+        _rfePending = false;
+        _handlerEpc = 0;
+        _resumable = false;
+
+        var result = RunLoop(instructionBudget, returnPcs, out var returned, out var retired);
+        var snapshot = result.Snapshot!;
+        var state = new FallbackCpuState(
+            snapshot.Gpr.ToArray(), snapshot.HI, snapshot.LO, snapshot.PC,
+            _core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause), _core.GetCop0(Cop0Epc));
+
+        if (returned)
+        {
+            return new FallbackSegmentOutcome(FallbackSegmentStatus.Returned, state, retired, null, null);
+        }
+
+        switch (snapshot.Termination)
+        {
+            case RecompilerIrTerminationReason.ExecutionBudgetExceeded:
+                // Still inside the program (or a guest handler) with no clean block entry reached.
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.BudgetExhausted, state, retired,
+                    MixedFallbackDiagnostics.SegmentBudgetExhausted,
+                    $"A fallback segment retired its {instructionBudget}-instruction budget without reaching a compiled block entry " +
+                    $"at a clean boundary; it stopped at pc 0x{snapshot.PC:X8}.");
+
+            case RecompilerIrTerminationReason.UnresolvedIndirectFlow when result.DiagnosticCode is not null:
+                // A BIOS/kernel boundary the Runtime says why (for example an unregistered vector): the same stop the
+                // artifact path would report for it.
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired, result.DiagnosticCode, result.DiagnosticMessage);
+
+            case RecompilerIrTerminationReason.Exception:
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired,
+                    MixedFallbackDiagnostics.ExceptionUnsupported,
+                    $"The fallback raised an exception the interpreter loop does not service at pc 0x{snapshot.PC:X8} " +
+                    $"(Excode 0x{_core.ExceptionCode:X2}); mixed execution does not continue past it.");
+
+            default:
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired,
+                    MixedFallbackDiagnostics.UnsupportedState,
+                    $"The fallback left the program image at pc 0x{snapshot.PC:X8} (termination {snapshot.Termination}); " +
+                    "mixed execution only continues inside the executable text image.");
+        }
+    }
+
+    /// <summary>
+    /// The step loop shared by <see cref="RunSegment"/> and <see cref="RunFallbackSegment"/> (Issue #693), so a
+    /// fallback executes with exactly the interpreter's semantics (BIOS vectors, SYSCALL service, hardware INT and
+    /// the kernel exception handler, device time) and never a second copy of them. With
+    /// <paramref name="returnPcs"/> it additionally stops, <i>before</i> executing, at the first PC (after at least
+    /// one step) that is a member of the set while the CPU is at an architecturally clean boundary.
+    /// </summary>
+    private RecompilerExecutionResult RunLoop(
+        uint budget, IReadOnlySet<uint>? returnPcs, out bool returned, out ulong retiredInstructions)
+    {
+        returned = false;
+        retiredInstructions = 0;
         var biosRuntime = _biosRuntimeFactory?.Invoke(
             new GuestMemoryReader(_bus.Read8),
             new GuestMemoryWriter(_bus.Write8));
@@ -244,8 +400,20 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         string? diagnosticCode = null;
         string? diagnosticMessage = null;
 
-        for (uint step = 0; step < segmentRequest.Budget; step++)
+        for (uint step = 0; step < budget; step++)
         {
+            // Clean-boundary return (Issue #693). The PC must be an entry the artifact compiled, no guest interrupt
+            // handler may be running (its out-of-image permission is this engine's alone), and the native CPU must
+            // report no pending branch delay slot and no uncommitted load: the artifact only ever starts a block at a
+            // fused-unit boundary, where neither exists. The CPU's own state decides; nothing is inferred from the
+            // previous instruction.
+            if (returnPcs is not null && step > 0 && !_inInterruptHandler
+                && returnPcs.Contains(_core.Pc) && _core.IsPipelineClean)
+            {
+                returned = true;
+                break;
+            }
+
             // A vector dispatch costs a step from the same budget that bounds
             // ordinary instructions, exactly like the interpreter executor.
             if (biosRuntime is not null && BiosJumpTables.TryResolveVectorFamily(_core.Pc, out var family))
@@ -389,11 +557,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // Devices advance by the time the retired instruction took, so
             // Timer/DMA/VBlank interrupts reach the CPU during a real run.
             _scheduler!.Advance(CyclesPerInstruction);
+            retiredInstructions++;
         }
 
         var stillRunning = PcWithinProgram(_core.Pc) || _inInterruptHandler ||
                            (biosRuntime is not null && BiosJumpTables.TryResolveVectorFamily(_core.Pc, out _));
-        if (termination == RecompilerIrTerminationReason.Success && stillRunning)
+        if (!returned && termination == RecompilerIrTerminationReason.Success && stillRunning)
         {
             termination = RecompilerIrTerminationReason.ExecutionBudgetExceeded;
         }
@@ -463,7 +632,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             return;
         }
 
-        _devices.Dispose();
+        if (_ownsDevices)
+        {
+            _devices.Dispose();
+        }
         _disposed = true;
         GC.SuppressFinalize(this);
     }

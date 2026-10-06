@@ -78,6 +78,7 @@ constexpr const char* RequiredSymbols[] = {
     "PSXCore_GetExceptionFaultPc",
     "PSXCore_GetExceptionInDelaySlot",
     "PSXCore_GetRfeExecuted",
+    "PSXCore_GetPipelineState",
     "PSXCore_PopExceptionSrStack",
     "PSXCore_Run",
     "PSXCore_ReadMemory32",

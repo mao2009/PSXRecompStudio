@@ -72,6 +72,15 @@ public:
     // run knows the handler returned. Reset at the start of every Step().
     bool RfeExecuted() const { return rfe_executed_; }
 
+    // True while a branch/jump has executed but its delay slot has not (Issue #693). The
+    // next instruction is that delay slot, so the PC is not an architectural resume point.
+    bool BranchDelayPending() const { return branch_pending_; }
+
+    // True while a load's result has not yet been committed to the register file (Issue #693):
+    // either the load issued by the previous instruction (queued) or one committing in the
+    // next step. A register read at this boundary is the load-delay (old) value.
+    bool LoadDelayPending() const { return load_delay_reg_ >= 0 || next_load_delay_reg_ >= 0; }
+
     // Pops the SR 3-level KU/IE stack exactly as RFE does, without executing an
     // instruction: for a host that completes an exception handler in HLE (Issue
     // #663). Unlike ExecRfe it does not set RfeExecuted().

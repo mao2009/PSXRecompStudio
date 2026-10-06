@@ -229,6 +229,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial int PSXCore_GetRfeExecuted(IntPtr core);
 
+    /// <summary>Returns the in-flight pipeline state: bit 0 = branch delay slot pending, bit 1 = load delay pending; 0 is a clean resume boundary (Issue #693).</summary>
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetPipelineState(IntPtr core);
+
     /// <summary>Pops the COP0 SR KU/IE stack exactly as RFE does, without executing an instruction (Issue #663).</summary>
     [LibraryImport(LibName)]
     internal static partial void PSXCore_PopExceptionSrStack(IntPtr core);

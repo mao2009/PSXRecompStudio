@@ -209,6 +209,14 @@ A sketch for whoever picks up the remaining points, so the analysis is not redon
    engine-agnostic today; a host-backed engine drops into the same seam. The
    Studio's `TitleExecutionService` would gain an engine choice, not a rewrite.
 
+## Amendment (Issue #693): mixed execution and attached engines
+
+The one-`RunSegment`, no-RAM-continuity limit of `RecompiledHostExecutionEngine` (amendment #459 above) stands for *artifact launches*: a run is still one artifact process. What changes is that, inside that run and only when `MixedFallbackOptions` is supplied, the host may run the interpreter on the host-owned device graph and give control back to the same artifact process.
+
+- **Engine ownership.** `InterpreterTitleExecutionEngine` gains an *attached* form (`Attach`) that borrows a `PsxDeviceGraph` and `DeviceScheduler` it does not own: it never `Load`s an image (it would reset the host-owned core), never builds a graph, and does not dispose the graph. Its `RunFallbackSegment` shares one step loop with `RunSegment` (the loop was extracted, not copied), so a fallback has exactly the interpreter's semantics.
+- **Layering.** The attached engine and the segment contract (`MixedFallbackOptions`, `FallbackCpuState`, `FallbackSegmentOutcome`, diagnostics) are Domain; the protocol, RAM copy-sync and bridge wiring (`ArtifactFallbackSession`) are Infrastructure. The Application layer still reaches neither (the engine-selector gap in the sketch above is unchanged).
+- **Production engine statement.** The production backend selected by the Studio remains the interpreter (this ADR's decision); mixed execution is an opt-in capability of the generated-host adapter and does not make that adapter production-default.
+
 ## Alternatives Considered
 
 - **Option B — put the production engine in a new `PSXRecomp.Infrastructure`

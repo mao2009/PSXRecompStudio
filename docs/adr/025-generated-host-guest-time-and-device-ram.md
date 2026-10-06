@@ -67,6 +67,36 @@ At the unpopulated RAM vector the host serves the shared `BiosExceptionHandler` 
 - **Reachability.** A hook or return target must be a block the artifact compiled; the same rule as a patched jump-table target. The EPC of an INT is a dispatch-boundary pc and always is.
 - **Fail closed.** An unmodelled chain element, a non-INT exception or an unusable PCB/TCB stops the run with the handler's diagnostic (`BIOS_EXCEPTION_*`); nothing continues on a guess.
 
+## Amendment (Issue #693): mixed execution - state ownership, RAM copy-sync, time, protocol
+
+When an in-image indirect target has no compiled block and mixed execution is enabled (ADR-012 amendment), the host runs the interpreter on **the host-owned device graph's own native core** and gives control back to the artifact at a clean compiled block entry.
+
+**Ownership during a fallback.**
+
+| State | Owner | How it crosses |
+|---|---|---|
+| Devices, interrupt controller (I_STAT/I_MASK), timers, DMA, GPU, CD-ROM, scratchpad, other COP0 registers | the host's single `PsxDeviceGraph` / its core | not copied: the interpreter steps that same core |
+| `DeviceScheduler` | the host | the same instance; one `CyclesPerInstruction` cycle per instruction the interpreter retires, exactly as for the interpreter engine |
+| GPR, HI/LO, PC | the artifact before and after; the interpreter core during | copied in and out explicitly |
+| SR, CAUSE, EPC | the artifact before and after; the core during | copied in and out explicitly (the artifact models only these three) |
+| BIOS HLE state | guest RAM (no C# state) | follows RAM |
+| Guest RAM | `artifact_ram` (SSOT before and after); the core's RAM is a working copy during | **copy-sync** below |
+| Pending interrupt line | the controller | `S` carries it back; the artifact still takes the INT only by its own SR decision |
+
+This supersedes "no second RAM and no copy/sync" **for the duration of one fallback segment only**: the graph core's RAM (otherwise unused) is the segment's working copy.
+
+**RAM copy-sync (page-granular, correctness first).** RAM is split into 4096-byte pages. `_synced` / `fallback_shadow` is the image the two sides last agreed on (all zero at first, like a fresh core). *Entry*: the artifact sends the pages that differ from the shadow (`Y`), ascending, 8192 lowercase hex characters each, covered by an FNV-1a hash over `(page index as 4 little-endian bytes, page bytes)`; before applying them the host restores any page of its core RAM that drifted from the agreed image, so the core equals artifact RAM when the segment starts; a count or hash mismatch is a protocol fault and nothing is applied. *Return*: the host stages the pages the segment changed (`B`) and commits them (`K count hash`); the artifact applies them to `artifact_ram` **only** if count and hash verify, so guest RAM is never left half-updated, and otherwise answers `RHOST_FALLBACK_REFUSED checksum` leaving RAM unchanged (the run stops with `ARTIFACT_FALLBACK_SYNC_FAILED`). Every other outcome (a stop, a budget exhaustion) writes nothing back. A device that moves data into RAM during the segment (CD-ROM DMA3) targets the core's working copy through `ArtifactDeviceRam.RedirectTo`, and is back on `artifact_ram` afterwards. The page diff keeps the dirty-page optimisation a property of the protocol: the measured Persona handoff dirtied 1 of 512 pages; a shared backing store (one RAM for both engines) remains a later optimisation behind the same contract.
+
+**Clean return boundary.** The artifact starts blocks only at fused-unit boundaries, where no branch delay slot or load delay is in flight. The interpreter returns at a PC the artifact compiled only when the native CPU says the same (`PSXCore_GetPipelineState`: bit 0 branch delay pending, bit 1 uncommitted load; read-only, never a flush) and no guest interrupt handler is running. A compiled block entry that is the delay slot of an uncompiled branch, or follows an uncompiled load, is therefore not a return point.
+
+**Time.** Guest time stays the host's. The artifact reports its retired instructions before offering a transfer (existing rule), so devices are current at entry; during the segment the host advances the scheduler per interpreter instruction; nothing about the segment needs to be reported to the artifact afterwards.
+
+**Protocol (version 1; everything is opt-in, an unmodified run never sends it).** Host to artifact: `F version` (query; reply `RHOST_FALLBACK version indirect irq hi lo sr cause epc dirtyPages` or `RHOST_FALLBACK_REFUSED reason`; changes no state), `Y` (pull dirty pages: `RHOST_PAGE index hex` lines, then `RHOST_PAGES_END hash`), `B index hex` (stage one page; ascending and distinct), `K count hash` (verified commit; `RHOST_OK` or `RHOST_FALLBACK_REFUSED checksum`), `S hi lo sr cause epc irq gpr1..gpr31` (full CPU write; CAUSE.IP2 is set from the `irq` field), then the existing `D 0 pc 0 0`. `RHOST_TRANSFER` and every existing message are unchanged. A malformed fallback command is fatal to the artifact (exit 101, `ARTIFACT_FALLBACK_PROTOCOL_FAILED` on the host); a host-side malformed reply is `ARTIFACT_HOST_PROTOCOL_FAILED`. `indirect` is 1 only when the offered pc equals the runtime target of the last register-indirect block exit (`state->indirect_target`, written only by such exits).
+
+**Fail-closed diagnostics.** `ARTIFACT_FALLBACK_UNSUPPORTED_STATE` (left the image), `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` (an exception the interpreter loop does not service), `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_SYNC_FAILED`; a BIOS or kernel boundary inside a segment keeps the Runtime's own diagnostic.
+
+**Evidence.** Counts only, deterministic: transitions, returns, instructions retired by the interpreter, pages copied each way, and per target `(entries, instructions, last return PC)`. Timings are measurement-only and never enter a canonical document.
+
 ## Related
 
 - ADR-014, ADR-016, #442 (`DeviceScheduler`), #587 (CD-ROM DMA3), #678, #680
