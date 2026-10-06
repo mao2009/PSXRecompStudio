@@ -272,6 +272,11 @@ int PSXCore_GetRfeExecuted(PSXCore* core) {
     return core->cpu.RfeExecuted() ? 1 : 0;
 }
 
+uint32_t PSXCore_GetPipelineState(PSXCore* core) {
+    if (!core) return 3u;
+    return (core->cpu.BranchDelayPending() ? 1u : 0u) | (core->cpu.LoadDelayPending() ? 2u : 0u);
+}
+
 void PSXCore_PopExceptionSrStack(PSXCore* core) {
     if (!core) return;
     core->cpu.PopExceptionSrStack();
