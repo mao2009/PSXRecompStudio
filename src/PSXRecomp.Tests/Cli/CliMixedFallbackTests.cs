@@ -9,9 +9,9 @@ using PSXRecomp.Tests.RealRomAnalysis;
 namespace PSXRecomp.Tests.Cli;
 
 /// <summary>
-/// Issue #693: the opt-in <c>--mixed-fallback</c> gate of <c>psxrecomp run</c>. The fixture is #644's synthetic PS-X
-/// EXE whose only route to the callee is a register-indirect <c>jalr</c>, so the artifact has no block for it unless the
-/// interpreter runs it. Off by default, the pre-existing in-image stop is untouched.
+/// Issue #693: the mixed-execution gate of <c>psxrecomp run</c>, on by default with
+/// <c>--no-mixed-fallback</c> as the opt-out. The fixture is #644's synthetic PS-X EXE whose only route to the callee is
+/// a register-indirect <c>jalr</c>, so the artifact has no block for it unless the interpreter runs it.
 /// </summary>
 [Test]
 public sealed class CliMixedFallbackTests
@@ -102,15 +102,34 @@ public sealed class CliMixedFallbackTests
     }
 
     [Fact]
-    public void Run_WithoutTheFlag_KeepsTheInImageStop_AndEmitsNoFallbackEvidence()
+    public void Run_WithoutAnyFlag_RunsTheInImageTargetOnTheInterpreterByDefault()
     {
         using var dir = new TempDirectory();
 
-        var (exit, output, _) = Invoke("run", WriteExe(dir), "--output", dir.CreateSubdirectory("out"), "--json");
+        var (exit, output, error) = Invoke("run", WriteExe(dir), "--output", dir.CreateSubdirectory("out"), "--json");
+
+        error.Should().BeEmpty();
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        using var json = JsonDocument.Parse(output);
+        json.RootElement.TryGetProperty("entryRoots", out _).Should().BeFalse("no root was added: the interpreter ran the callee");
+        json.RootElement.GetProperty("result").GetProperty("state").GetInt32().Should().Be((int)TitleExecutionState.Completed);
+        var fallback = json.RootElement.GetProperty("mixedFallback");
+        fallback.GetProperty("transitions").GetUInt32().Should().Be(1);
+        var target = fallback.GetProperty("targets").EnumerateArray().Should().ContainSingle().Subject;
+        target.GetProperty("target").GetString().Should().Be("0x8001001C");
+    }
+
+    [Fact]
+    public void Run_WithFallbackDisabled_KeepsTheInImageStop_AndEmitsNoFallbackEvidence()
+    {
+        using var dir = new TempDirectory();
+
+        var (exit, output, _) = Invoke(
+            "run", WriteExe(dir), "--no-mixed-fallback", "--output", dir.CreateSubdirectory("out"), "--json");
 
         exit.Should().Be(RecompiledArtifactExitCode.Blocked);
         using var json = JsonDocument.Parse(output);
-        json.RootElement.TryGetProperty("mixedFallback", out _).Should().BeFalse("mixed execution is off by default");
+        json.RootElement.TryGetProperty("mixedFallback", out _).Should().BeFalse("mixed execution was disabled explicitly");
         json.RootElement.GetProperty("result").GetProperty("diagnosticCode").GetString().Should().Be("UNRESOLVED_TRANSFER_IN_IMAGE");
     }
 
@@ -195,6 +214,7 @@ public sealed class CliMixedFallbackTests
 
     [Theory]
     [InlineData("recompile", "--mixed-fallback")]
+    [InlineData("recompile", "--no-mixed-fallback")]
     [InlineData("recompile", "--fallback-segment-budget", "5")]
     public void RecompileDoesNotAcceptTheRunOnlyFallbackOptions(params string[] args)
     {
@@ -207,16 +227,31 @@ public sealed class CliMixedFallbackTests
     }
 
     [Theory]
-    [InlineData("--fallback-segment-budget", "5", "require '--mixed-fallback'")]
-    [InlineData("--fallback-max-transitions", "5", "require '--mixed-fallback'")]
-    public void BudgetsWithoutTheFlag_AreRejected(string option, string value, string expected)
+    [InlineData("--fallback-segment-budget", "5", "require mixed execution")]
+    [InlineData("--fallback-max-transitions", "5", "require mixed execution")]
+    public void BudgetsWithoutMixedExecution_AreRejected(string option, string value, string expected)
     {
         using var dir = new TempDirectory();
 
-        var (exit, _, error) = Invoke("run", WriteExe(dir), option, value);
+        var (exit, _, error) = Invoke("run", WriteExe(dir), "--no-mixed-fallback", option, value);
 
         exit.Should().Be(RecompiledArtifactExitCode.Failure);
         error.Should().Contain(expected);
+    }
+
+    [Theory]
+    [InlineData("--mixed-fallback", "--no-mixed-fallback")]
+    [InlineData("--no-mixed-fallback", "--mixed-fallback")]
+    [InlineData("--no-mixed-fallback", "--fallback-segment-budget", "5", "--mixed-fallback")]
+    [InlineData("--mixed-fallback", "--fallback-segment-budget", "5", "--no-mixed-fallback")]
+    public void MixedFallbackFlags_CannotBeCombined_InEitherOrder(params string[] flags)
+    {
+        using var dir = new TempDirectory();
+
+        var (exit, _, error) = Invoke(["run", WriteExe(dir), "--output", dir.CreateSubdirectory("out"), .. flags]);
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        error.Should().Contain("'--mixed-fallback' and '--no-mixed-fallback' cannot be used together.");
     }
 
     [Theory]

@@ -24,7 +24,7 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 
 ```
 psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
-psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]] [--report] [--json]
+psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--json]
 psxrecomp doctor    [--json]
 ```
 
@@ -67,15 +67,17 @@ launcher failures that produce no result do not fabricate one. `--json` (valid
 for both commands) emits the machine-readable envelope (see below) as the sole
 stdout document.
 
-`--mixed-fallback` (run only, off by default; Issue #693, ADR-012 / ADR-025 amendments) opts into mixed
-execution: when the artifact reaches an in-image, aligned PC it has no compiled block for through a
-register-indirect jump (a callback the guest registered in RAM, found only at run time), the host runs
-that code on the interpreter over the same device graph and hands control back to the artifact at a clean
-compiled block entry. Nothing else changes: an unaligned or out-of-image target, RAM-generated code, a BIOS
-or exception vector, or a direct transfer still stops exactly as without the flag, and a run without the flag is
-byte-for-byte unchanged. `--fallback-segment-budget <n>` (default 1,000,000 retired instructions per segment)
-and `--fallback-max-transitions <n>` (default 100,000 handoffs per run) bound the fallback and require
-`--mixed-fallback`; exhausting either is its own classified failure (`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`,
+Mixed execution is on by default for `run` (Issue #693, ADR-012 / ADR-025 amendments): when the artifact reaches an
+in-image, aligned PC it has no compiled block for through a register-indirect jump (a callback the guest registered
+in RAM, found only at run time), the host runs that code on the interpreter over the same device graph and hands
+control back to the artifact at a clean compiled block entry. `--no-mixed-fallback` (run only) turns it off and
+restores exactly the pre-#693 stop (`UNRESOLVED_TRANSFER_IN_IMAGE` for an in-image target, `UNRESOLVED_TRANSFER`
+otherwise); `--mixed-fallback` is still accepted and is now simply the default. Nothing else changes: an unaligned
+or out-of-image target, RAM-generated code, a BIOS or exception vector, or a direct transfer still stops with its own
+diagnostic whether or not mixed execution is on. `--fallback-segment-budget <n>` (default 1,000,000 retired
+instructions per segment) and `--fallback-max-transitions <n>` (default 100,000 handoffs per run) bound the fallback
+and require mixed execution (they are rejected with `--no-mixed-fallback`); exhausting either is its own classified
+failure (`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`,
 `ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`), never a silent stop. Other fail-closed diagnostics are
 `ARTIFACT_FALLBACK_UNSUPPORTED_STATE`, `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` and
 `ARTIFACT_FALLBACK_SYNC_FAILED`.
@@ -154,8 +156,9 @@ because no production result exists to serialize. When the run succeeds but is
 blocked (exit code 2), the JSON document is still emitted with
 `"success": false`.
 
-Without `--report` or `--frame-evidence`, the run JSON field set is unchanged.
-With `--frame-evidence`, one `frameEvidence` object is appended:
+By default, the run JSON envelope includes `mixedFallback` even without `--report` or
+`--frame-evidence`; `--no-mixed-fallback` omits that field. With `--frame-evidence`, one
+`frameEvidence` object is appended:
 
 ```json
 { "frameEvidence": {
@@ -183,8 +186,8 @@ reason explicitly. Expected native interop availability failures use
 The `productionState` belongs to the supplemental production-interpreter
 evidence run; the top-level `result` remains the generated-host run.
 
-With `--mixed-fallback`, one deterministic `mixedFallback` object is appended (counts only; wall-clock timings are
-never part of the document):
+Whenever mixed execution is enabled (the default), one deterministic `mixedFallback` object is appended (counts
+only; wall-clock timings are never part of the document):
 
 ```json
 { "mixedFallback": {
@@ -197,7 +200,7 @@ never part of the document):
 } }
 ```
 
-Without the flag the field is absent.
+With `--no-mixed-fallback` the field is absent.
 
 Without `--report`, the diagnostic-bundle field remains absent. With `--report`,
 the same envelope adds one final field:

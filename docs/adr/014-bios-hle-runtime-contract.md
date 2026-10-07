@@ -1281,7 +1281,7 @@ guard is part of the contract rather than an implementation detail.
   mid-run is a separate design decision nobody has taken, and introducing it as
   a side effect of a dispatch hook would be exactly the kind of silent
   capability creep this ADR exists to prevent.
-  *(Superseded for in-image, register-indirect targets, behind an opt-in gate, by the 2026-10-06 amendment (#693) at the end of this ADR.)*
+  *(Superseded for in-image, register-indirect targets by the 2026-10-06 amendment (#693) at the end of this ADR — mixed execution, the `run` default since 2026-10-07.)*
 
 ### Test binding: the boundary is crossed, not simulated
 
@@ -1900,7 +1900,7 @@ Tests: `BiosDefaultInterruptHandlerTests`, plus the updated chain assertions in
 
 ## Amendment (2026-10-06): mixed execution supersedes decision 3(f) for in-image indirect targets (#693)
 
-Decision 3(f) above said that mixing execution engines mid-run "is a separate design decision nobody has taken". Issue #693 takes it, for one class only and behind an opt-in gate: an unresolved transfer to an in-image, 4-byte-aligned PC reached by a register-indirect jump (ADR-012, amendment #693). Decision 3's other statements stand.
+Decision 3(f) above said that mixing execution engines mid-run "is a separate design decision nobody has taken". Issue #693 takes it, for one class only: an unresolved transfer to an in-image, 4-byte-aligned PC reached by a register-indirect jump (ADR-012, amendment #693). The gate is the engine's explicit `MixedFallbackOptions` (a null option means disabled); `psxrecomp run` supplies it by default since 2026-10-07 and `--no-mixed-fallback` withholds it. Decision 3's other statements stand.
 
 - The host hook is still generic: `HostTransferBridge` consults the BIOS vector tables first, then the kernel exception vector (#662/#680), and only then, if mixed execution is enabled, offers the transfer to the fallback session. A BIOS vector or an exception vector is **never** a fallback case (the Runtime's own diagnostic stands).
 - A patched jump-table target whose address has no generated block (`BIOS_PATCHED_TARGET_NO_GENERATED_BLOCK`, #379) keeps its advisory: it is a *BIOS-vector* flow, not an indirect-jump target, and this amendment does not change it. Open design question (r) (how a `PatchedTarget` falls back to raw guest execution) stays open; a mixed-execution target is a different mechanism.
