@@ -1962,7 +1962,7 @@ Issue #697: after #698 the Persona run stopped at `BIOS_EXCEPTION_CHAIN_UNSUPPOR
 
 Tests: `BiosDefaultInterruptHandlerTests` (IRQ2 cases).
 
-## Amendment (2026-10-08): BIOS services reach device registers through `IGuestDeviceAccess`
+## Amendment (2026-10-07): BIOS services reach device registers through `IGuestDeviceAccess`
 
 Issue #701: A0:49 `GPU_cw` is a register access (GP0 write after `GPU_sync`), which the memory reader/writer boundary
 cannot express (it serves RAM only).
