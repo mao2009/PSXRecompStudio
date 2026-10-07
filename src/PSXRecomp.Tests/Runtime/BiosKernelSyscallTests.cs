@@ -38,8 +38,43 @@ public sealed class BiosKernelSyscallTests
     }
 
     [Theory]
+    [InlineData(0x00000404u, 0x00000000u, 1u)] // both bits set -> both cleared, returns 1
+    [InlineData(0x00000004u, 0x00000000u, 0u)] // bit 10 already clear -> returns 0
+    [InlineData(0x00000400u, 0x00000000u, 0u)] // bit 2 already clear -> returns 0
+    [InlineData(0x00000000u, 0x00000000u, 0u)] // already disabled
+    [InlineData(0xFFFFFFFFu, 0xFFFFFBFBu, 1u)] // every other bit survives
+    [InlineData(0x40000404u, 0x40000000u, 1u)]
+    public void EnterCriticalSection_ClearsSrBit2AndBit10_ReturnsWhetherBothWereSet_AndChangesNothingElse(
+        uint srAtEntry, uint expectedSr, uint expectedV0)
+    {
+        var outcome = BiosKernelSyscallDispatch.Dispatch((uint)BiosKernelSyscall.EnterCriticalSection, srAtEntry);
+
+        outcome.Handled.Should().BeTrue();
+        outcome.SrAtReturn.Should().Be(expectedSr);
+        outcome.V0.Should().Be(expectedV0);
+        outcome.DiagnosticCode.Should().BeNull();
+    }
+
+    [Fact]
+    public void ExitCriticalSection_StillLeavesV0Unchanged()
+    {
+        BiosKernelSyscallDispatch.Dispatch((uint)BiosKernelSyscall.ExitCriticalSection, 0).V0.Should().BeNull();
+    }
+
+    [Fact]
+    public void EnterCriticalSection_HasNoNestingCount_EnterEnterExitLeavesInterruptsEnabled()
+    {
+        var first = BiosKernelSyscallDispatch.Dispatch((uint)BiosKernelSyscall.EnterCriticalSection, 0x404);
+        var second = BiosKernelSyscallDispatch.Dispatch((uint)BiosKernelSyscall.EnterCriticalSection, first.SrAtReturn);
+        var exit = BiosKernelSyscallDispatch.Dispatch((uint)BiosKernelSyscall.ExitCriticalSection, second.SrAtReturn);
+
+        first.V0.Should().Be(1u);
+        second.V0.Should().Be(0u, "the bits were already clear");
+        exit.SrAtReturn.Should().Be(0x404u, "one Exit re-enables, however many Enters preceded it");
+    }
+
+    [Theory]
     [InlineData(0u)]
-    [InlineData(1u)] // EnterCriticalSection: real, but not implemented yet — must not be a silent success
     [InlineData(3u)]
     [InlineData(4u)]
     [InlineData(uint.MaxValue)]
@@ -127,12 +162,94 @@ public sealed class BiosKernelSyscallTests
         snap.LO.Should().Be(0x22222222u);
     }
 
+    // SR = 0x401 (IEc, IM2) is "interrupts enabled"; the exception entry pushes it to 0x404, which the kernel edits.
+    private static uint[] SyscallProgram(ushort initialSr, params (ushort Number, R3000aRegister? Capture)[] calls)
+    {
+        var words = new List<uint>
+        {
+            Ori(R3000aRegister.T0, R3000aRegister.Zero, initialSr),
+            Mtc0(R3000aRegister.T0, 12),
+        };
+        foreach (var (number, capture) in calls)
+        {
+            words.Add(Ori(R3000aRegister.A0, R3000aRegister.Zero, number));
+            words.Add(MipsEncoding.Syscall());
+            if (capture is R3000aRegister register)
+            {
+                words.Add(Ori(register, R3000aRegister.V0, 0)); // copy $v0
+            }
+        }
+
+        words.Add(Mfc0(R3000aRegister.S2, 12));
+        words.Add(MipsEncoding.Nop);
+        return [.. words];
+    }
+
+    [Fact]
+    public void Interpreter_EnterCriticalSection_ClearsIecAndIm2_ReturnsOne_AndResumesAfterTheSyscall()
+    {
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        gpr[(int)R3000aRegister.S3] = 0xA5A5A5A5u;
+        gpr[(int)R3000aRegister.K0] = 0x1234u;
+        gpr[(int)R3000aRegister.Ra] = 0x80001234u;
+        var words = SyscallProgram(0x0401, (1, R3000aRegister.S4));
+
+        var result = RunInterpreter(words, gpr: gpr, hi: 0x11111111u, lo: 0x22222222u);
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        var snap = result.FinalSnapshot!;
+        snap.Gpr[(int)R3000aRegister.S2].Should().Be(0u, "IEp and IM2 cleared, then the RFE pop moves IEp to IEc: interrupts are off");
+        snap.Gpr[(int)R3000aRegister.V0].Should().Be(1u);
+        snap.Gpr[(int)R3000aRegister.S4].Should().Be(1u);
+        snap.PC.Should().Be(Entry + (uint)words.Length * 4);
+        snap.Gpr[(int)R3000aRegister.S3].Should().Be(0xA5A5A5A5u);
+        snap.Gpr[(int)R3000aRegister.K0].Should().Be(0x1234u);
+        snap.Gpr[(int)R3000aRegister.Ra].Should().Be(0x80001234u);
+        snap.Gpr[(int)R3000aRegister.V1].Should().Be(0u);
+        snap.HI.Should().Be(0x11111111u);
+        snap.LO.Should().Be(0x22222222u);
+    }
+
+    [Fact]
+    public void Interpreter_EnterCriticalSection_WhenAlreadyDisabled_ReturnsZero_AndKeepsInterruptsOff()
+    {
+        var result = RunInterpreter(SyscallProgram(0x0000, (1, R3000aRegister.S4)));
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        var snap = result.FinalSnapshot!;
+        snap.Gpr[(int)R3000aRegister.S4].Should().Be(0u);
+        snap.Gpr[(int)R3000aRegister.S2].Should().Be(0u);
+    }
+
+    [Fact]
+    public void Interpreter_EnterThenExit_RestoresTheEnabledState()
+    {
+        var result = RunInterpreter(SyscallProgram(0x0401, (1, R3000aRegister.S4), (2, null)));
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        var snap = result.FinalSnapshot!;
+        snap.Gpr[(int)R3000aRegister.S4].Should().Be(1u);
+        snap.Gpr[(int)R3000aRegister.S2].Should().Be(0x0401u);
+    }
+
+    [Fact]
+    public void Interpreter_EnterEnterExit_LeavesInterruptsEnabled_AndTheSecondEnterReturnsZero()
+    {
+        var result = RunInterpreter(SyscallProgram(0x0401, (1, R3000aRegister.S4), (1, R3000aRegister.S5), (2, null)));
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        var snap = result.FinalSnapshot!;
+        snap.Gpr[(int)R3000aRegister.S4].Should().Be(1u);
+        snap.Gpr[(int)R3000aRegister.S5].Should().Be(0u);
+        snap.Gpr[(int)R3000aRegister.S2].Should().Be(0x0401u);
+    }
+
     [Fact]
     public void Interpreter_UnknownSyscall_StopsWithDiagnostic_NotASilentSuccess()
     {
         uint[] words =
         [
-            Ori(R3000aRegister.A0, R3000aRegister.Zero, 0x0001),
+            Ori(R3000aRegister.A0, R3000aRegister.Zero, 0x0004),
             MipsEncoding.Syscall(),
             Ori(R3000aRegister.S1, R3000aRegister.Zero, 0x0055),
             MipsEncoding.Nop,
@@ -203,7 +320,7 @@ public sealed class BiosKernelSyscallTests
     private static RecompilerIrProgram Lower(uint[] words) =>
         ReachableProgramBuilder.Build(Entry, words, Entry);
 
-    private static TitleExecutionResult RunGeneratedHost(uint[] words, out string directory)
+    private static TitleExecutionResult RunGeneratedHost(uint[] words, out string directory, uint[]? gpr = null)
     {
         var dir = new TempDirectory();
         directory = dir.FullPath;
@@ -214,7 +331,7 @@ public sealed class BiosKernelSyscallTests
             new GeneratedHostBuildService(),
             dir.FullPath,
             (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer));
-        return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(Entry));
+        return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(Entry, gpr));
     }
 
     [Fact]
@@ -235,6 +352,29 @@ public sealed class BiosKernelSyscallTests
         snap.Gpr[(int)R3000aRegister.S1].Should().Be(0x55u);
         snap.Gpr[(int)R3000aRegister.V0].Should().Be(0u);
         snap.Exception.IsRaised.Should().BeFalse("the completed SYSCALL exception is consumed");
+    }
+
+    [Fact]
+    public void GeneratedHost_EnterCriticalSection_WritesV0_AndResumesAfterTheSyscall()
+    {
+        // The artifact starts with SR = 0 (interrupts off), so the kernel's answer is 0: a stale $v0 proves it was written.
+        uint[] words =
+        [
+            Ori(R3000aRegister.A0, R3000aRegister.Zero, 0x0001),
+            MipsEncoding.Syscall(),
+            Ori(R3000aRegister.S1, R3000aRegister.Zero, 0x0055),
+            MipsEncoding.Nop,
+        ];
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        gpr[(int)R3000aRegister.V0] = 0xDEAD;
+
+        var result = RunGeneratedHost(words, out _, gpr);
+
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        var snap = result.FinalSnapshot!;
+        snap.Gpr[(int)R3000aRegister.V0].Should().Be(0u);
+        snap.Gpr[(int)R3000aRegister.S1].Should().Be(0x55u);
+        snap.Exception.IsRaised.Should().BeFalse();
     }
 
     [Fact]

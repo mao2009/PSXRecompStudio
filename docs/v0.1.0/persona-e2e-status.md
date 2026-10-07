@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `BIOS_SYSCALL_UNSUPPORTED` `SYS(01h)` (EnterCriticalSection) right after B0:15 (exit 1, `state=5`, guest PC `0x8004143C`; item 32; tracked by #705 under the gate #351).
+**Classification:** `BIOS_HLE_UNSUPPORTED_CALL` `B0:08` (OpenEvent) after the SPU register initialisation and `SYS(01h)` (exit 1, `state=5`; item 33; tracked by the existing #687 under the gate #351).
 
 **Description:**
 
@@ -85,8 +85,8 @@ path, B0:17 ReturnFromException, and the CD-ROM IRQ2 path through DefInt and the
 The `CdlDemute` / `CD_init` retry blocker (item 29: `CdlDemute` (0Ch) answered with INT5,
 libcd `DiskError` / `CdInit: Init failed`) is now historical. With item 30 (#699) `CD_init`
 completes and execution continues into `ResetGraph`; item 31 (#701) registers `A0:49` (GPU_cw) and item 32 (#703) registers
-`B0:15` (OutdatedPadInitAndStart). The current measured stop is `BIOS_SYSCALL_UNSUPPORTED` `SYS(01h)`
-(EnterCriticalSection), tracked by #705. The earlier `OUTER_BUDGET_EXHAUSTED` stop at
+`B0:15` (OutdatedPadInitAndStart) and item 33 (#705) implements `SYS(01h)` (EnterCriticalSection). The current
+measured stop is `BIOS_HLE_UNSUPPORTED_CALL` `B0:08` (OpenEvent), tracked by #687. The earlier `OUTER_BUDGET_EXHAUSTED` stop at
 `0x80025CCC` in the `CD_sync` VSync loop (items 26-27) is now historical, as is the
 `UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8`, which is reproduced only with
 `--no-mixed-fallback`; the measurement-only extra root is no longer required. Likewise,
@@ -576,6 +576,18 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     exception (IRQ0 pending and enabled) instead of silently skipping it. Measured with the same two roots: B0:15 is accepted,
     the run continues and stops with `BIOS_SYSCALL_UNSUPPORTED` `SYS(01h)` (#705). No Pad IRQ was taken and no SIO0 access
     occurred, so #661 is not yet required. Frame evidence stays `no-frame-activity`; no sector read (#14).
+
+33. **#705: SYS(01h) EnterCriticalSection implemented; the stop moves to B0:08.**
+    Reproduced on `main` `f0beb42`: `BIOS_SYSCALL_UNSUPPORTED` `SYS(01h)` at guest PC `0x8004143C` after B0:15. CONFIRMED
+    (psx-spx; PCSX-Redux OpenBIOS `syscallVerifier` agrees): SYS(01h) clears SR bits 2 and 10 of the exception frame
+    (bit 2 reaches IEc through the RFE on return) and returns 1 if both were set, else 0; there is no nesting count or
+    saved state, so Enter, Enter, Exit leaves interrupts enabled. Fix: `BiosKernelSyscallDispatch` handles number 1 as the
+    mirror of the existing SYS(02h) on the same SR the exception entry pushed; the outcome gains an optional `$v0` that
+    the interpreter engine and the generated-host bridge apply (SYS(02h) leaves `$v0` unchanged). No new state. Measured
+    with the same two roots: one SYS(01h), `SR 0x404 -> 0`, `$v0 = 1` (an earlier SYS(02h) at `0x80041714` is unrelated);
+    SYS(02h) is not reached again before the stop. The run then initialises the SPU registers (`0x1F801Dxx` writes) and
+    stops with `BIOS_HLE_UNSUPPORTED_CALL` `B0:08` OpenEvent (exit 1, `state=5`; #687). No pending enabled IRQ was taken, no
+    Pad IRQ/SIO0 access (#661 not required), no sector read, no DMA, no GPU frame activity (`no-frame-activity`).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
 C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, and the current first blocker is `SYS(01h)` EnterCriticalSection (#705). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after

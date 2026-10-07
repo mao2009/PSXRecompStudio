@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -860,6 +861,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
+            if (outcome.V0 is uint v0)
+            {
+                Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolGprCommand} {(int)R3000aRegister.V0} {v0}"));
+            }
+
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {outcome.SrAtReturn}"));
@@ -913,6 +919,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
+            { var tp = Environment.GetEnvironmentVariable("PSX_TRACE"); if (tp is not null) File.AppendAllText(tp, $"MMIO {kind} w{width} {physical:X8} {(isWrite ? value : result):X8}" + Environment.NewLine); }
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
