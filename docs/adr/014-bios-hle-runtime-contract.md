@@ -1940,3 +1940,24 @@ the contract did not have.
 
 Tests: `BiosReturnFromExceptionTests`, `MixedFallbackTests` (production generated-host path),
 `KernelExceptionEntryTests` (interpreter regression).
+
+## Amendment (2026-10-07): DefInt delivers the CD-ROM IRQ2 event
+
+Issue #697: after #698 the Persona run stopped at `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` with IRQ2 pending
+(I_STAT=0x0004, I_MASK=0x000D).
+
+- **CONFIRMED (PCSX-Redux OpenBIOS `IRQVerifier`, `common/kernel/events.h`; psx-spx).** DefInt (priority 3)
+  delivers `EVENT_CDROM = F0000003h` with spec `1000h` when `I_STAT & I_MASK` has IRQ2, and acknowledges only if
+  auto-ack is enabled for it. The retail priority-0 CD handlers are enqueued by the BIOS CD driver init, not by DefInt.
+- **Model.** `BiosDefaultInterruptHandler` accepts exactly one of IRQ0 or IRQ2 pending and enabled; with no EvCB table
+  the delivery is the same no-op as for IRQ0, the chain completes into the B0:19 hook (or the default Exit). Nothing is
+  acknowledged by the Runtime: neither I_STAT nor the CD controller's own interrupt flag; the guest's callback does both.
+- **Priority 0 is empty in this kernel (INFERRED design position).** A BIOS-less run never executes the BIOS CD driver
+  init and C0:02 SysEnqIntRP is unregistered (a guest enqueue stops the run), so no priority-0 element exists to claim IRQ2
+  first. A0:72 CdRemove therefore still has nothing to change, consistent with the amendment above.
+- **Fail closed.** Several pending IRQs (including IRQ0 + IRQ2), any other IRQ, or an existing EvCB table (#687) stop as
+  `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`.
+- **Measured (Persona).** The guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit; the next stop is
+  CdlDemute being unimplemented in the CD-ROM device (#699; `docs/v0.1.0/persona-e2e-status.md`, item 29).
+
+Tests: `BiosDefaultInterruptHandlerTests` (IRQ2 cases).

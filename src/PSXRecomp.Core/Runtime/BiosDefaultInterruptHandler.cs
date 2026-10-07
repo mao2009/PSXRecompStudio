@@ -18,11 +18,18 @@ namespace PSXRecomp.Core.Runtime;
 /// pending for the hook to acknowledge.
 /// </para>
 /// <para>
-/// Modelled: only IRQ0 pending and enabled (or nothing pending). The element delivers IRQ0's event as far as
-/// the Runtime can (no EvCB table: nothing can match, a no-op, as for #660); an EvCB table that exists needs EvCB
-/// matching and the <c>1000h</c> callback mode (#687), so it fails closed. Not modelled and failing closed: any other
-/// pending enabled IRQ (priority 0 owners such as the CD-ROM handlers, #444; the other DefInt events), because an
-/// unmodelled element could claim or acknowledge it first.
+/// Modelled: exactly one of IRQ0 (VBlank, <c>F0000001h</c>) or IRQ2 (CD-ROM, <c>F0000003h</c>) pending and enabled
+/// (or nothing pending). CONFIRMED (PCSX-Redux OpenBIOS <c>IRQVerifier</c>, <c>common/kernel/events.h</c>; psx-spx
+/// event-summary): DefInt is the element that delivers <c>EVENT_CDROM = F0000003h</c> with spec <c>1000h</c> when
+/// <c>I_STAT &amp; I_MASK</c> has IRQ2, acknowledging only when auto-ack is on. The element delivers the event as far
+/// as the Runtime can (no EvCB table: nothing can match, a no-op, as for #660); an EvCB table that exists needs EvCB
+/// matching and the <c>1000h</c> callback mode (#687), so it fails closed. IRQ2 is reached here only because this
+/// Runtime's kernel has no priority-0 CD-ROM elements: the retail BIOS enqueues <c>CdromDmaIrq</c>/<c>CdromIoIrq</c>
+/// in its CD driver init (OpenBIOS <c>initializeCDRomHandlersAndEvents</c>), which a BIOS-less run never executes,
+/// and the only way to enqueue one (C0:02 SysEnqIntRP) is unregistered, so a guest that tried stops the run. The CD
+/// controller's own interrupt flag is never touched here: the guest's callback (run by the B0:19 hook) owns it.
+/// Not modelled and failing closed: any other pending enabled IRQ, or several, because an unmodelled element could
+/// claim or acknowledge it first.
 /// </para>
 /// <para>
 /// Priority 2 (<c>PadCardIrq</c>) is skipped by the caller: psx-spx has InitPAD2 not enqueue it and StartPAD2
@@ -40,6 +47,9 @@ public static class BiosDefaultInterruptHandler
 {
     /// <summary>The DefInt event class of IRQ0 / VBlank (psx-spx event-summary: <c>F0000001h,1000h</c>).</summary>
     public const uint VblankEventClass = 0xF0000001;
+
+    /// <summary>The DefInt event class of IRQ2 / CD-ROM (OpenBIOS <c>EVENT_CDROM</c>, psx-spx event-summary: <c>F0000003h,1000h</c>).</summary>
+    public const uint CdRomEventClass = 0xF0000003;
 
     /// <summary>The spec every DefInt event is delivered with (psx-spx event-summary: <c>,1000h</c>).</summary>
     public const uint EventSpec = 0x1000;
@@ -67,25 +77,32 @@ public static class BiosDefaultInterruptHandler
             return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
         }
 
-        const uint vblankBit = 1u << DeviceScheduler.VblankIrq;
+        var irq = pending switch
+        {
+            1u << DeviceScheduler.VblankIrq => DeviceScheduler.VblankIrq,
+            1u << DeviceScheduler.CdRomIrq => DeviceScheduler.CdRomIrq,
+            _ => -1,
+        };
         var label = $"I_STAT=0x{status:X4}, I_MASK=0x{mask:X4}, pendingEnabled=0x{pending:X4}";
-        if (pending != vblankBit)
+        if (irq < 0)
         {
             return Unsupported(
-                $"{label}|a pending enabled IRQ other than IRQ0 (or several) needs a kernel priority-chain element the Runtime does not model " +
+                $"{label}|a pending enabled IRQ other than IRQ0 or IRQ2 (or several) needs a kernel priority-chain element the Runtime does not model " +
                 "(priority 0 owners, other DefInt events)");
         }
+
+        var eventClass = irq == DeviceScheduler.CdRomIrq ? CdRomEventClass : VblankEventClass;
 
         if (!BiosTimerVblankIrqHandler.EventTableIsAbsent(context.Reader))
         {
             return Unsupported(
-                $"{label}|DefInt event 0x{VblankEventClass:X8},{EventSpec:X} could not be delivered (requires an absent, readable EvCB table at [0x120]; " +
+                $"{label}|DefInt event 0x{eventClass:X8},{EventSpec:X} could not be delivered (requires an absent, readable EvCB table at [0x120]; " +
                 "EvCB matching and the 1000h callback mode are not modelled, #687)");
         }
 
-        if (autoAck(DeviceScheduler.VblankIrq))
+        if (autoAck(irq))
         {
-            context.Interrupts.Acknowledge(~vblankBit);
+            context.Interrupts.Acknowledge(~pending);
         }
 
         return new BiosExceptionChainResult(BiosExceptionChainStatus.Completed);
