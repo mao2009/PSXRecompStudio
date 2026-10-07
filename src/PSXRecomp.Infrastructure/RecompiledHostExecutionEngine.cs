@@ -919,7 +919,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
-            { var tp = Environment.GetEnvironmentVariable("PSX_TRACE"); if (tp is not null) File.AppendAllText(tp, $"MMIO {kind} w{width} {physical:X8} {(isWrite ? value : result):X8}" + Environment.NewLine); }
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));

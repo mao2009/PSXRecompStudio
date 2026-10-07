@@ -590,7 +590,7 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     Pad IRQ/SIO0 access (#661 not required), no sector read, no DMA, no GPU frame activity (`no-frame-activity`).
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, and the current first blocker is `SYS(01h)` EnterCriticalSection (#705). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, item 33 resolves `SYS(01h)`, and the current first blocker is `B0:08` OpenEvent (#687). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
@@ -654,11 +654,11 @@ What still does not exist:
 now reaches runtime execution, so these remain relevant only when the measured
 path actually reaches them:
 
-1. **BIOS HLE coverage (#279).** Thirteen identities are registered. The current
-   Persona path has exercised the startup services through A0:3F `printf`, and
-   unsupported calls still fail explicitly with `BIOS_HLE_UNSUPPORTED_CALL`.
-   No unsupported BIOS identity is the current first blocker; add further
-   services only when a measured execution path requires them.
+1. **BIOS HLE coverage (#279).** The current Persona path has exercised the
+   startup services through A0:49 `GPU_cw` and B0:15, and unsupported calls
+   still fail explicitly with `BIOS_HLE_UNSUPPORTED_CALL`. The current first
+   blocker is the unsupported `B0:08` OpenEvent (#687); add further services
+   only when a measured execution path requires them.
 
 2. **Production GPU/frame integration (#440 / #351).** Production interpreter
    32-bit GPU MMIO reaches the existing managed GPU state (#572) and GPU
