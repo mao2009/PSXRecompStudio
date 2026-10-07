@@ -113,7 +113,16 @@ public sealed class MixedFallbackProtocolTests
 
         public int WaitForFatalExit()
         {
-            _process.StandardInput.Close();
+            // A write that lost the race with the artifact's fatal exit leaves its line unflushed in the
+            // writer, so Close() re-flushes into the same broken pipe: the same expected race, not a failure.
+            try
+            {
+                _process.StandardInput.Close();
+            }
+            catch (IOException)
+            {
+            }
+
             return _process.WaitForExit(15000) ? _process.ExitCode : int.MinValue;
         }
 
