@@ -1977,7 +1977,7 @@ cannot express (it serves RAM only).
 
 Tests: `BiosGpuCommandServiceTests`.
 
-## Amendment (2026-10-08): B0:15 records the PadCardIrq enqueue; the chain refuses to skip it
+## Amendment (2026-10-07): B0:15 records the PadCardIrq enqueue; the chain refuses to skip it
 
 Issue #703: Persona's next call after `GPU_cw` is B0:15 `OutdatedPadInitAndStart(type, button_dest, unused, unused)`.
 
