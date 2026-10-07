@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -858,6 +859,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 DiagnosticMessage = outcome.DiagnosticMessage;
                 Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                 return;
+            }
+
+            if (outcome.V0 is uint v0)
+            {
+                Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolGprCommand} {(int)R3000aRegister.V0} {v0}"));
             }
 
             Send(string.Create(

@@ -489,6 +489,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     }
 
                     _core.SetCop0(Cop0Status, syscall.SrAtReturn);
+                    if (syscall.V0 is uint v0)
+                    {
+                        _core.SetGpr((int)R3000aRegister.V0, v0);
+                    }
+
                     _core.PopExceptionSrStack();
                     _core.Pc = unchecked(_core.ExceptionFaultPc + 4u);
                     _scheduler!.Advance(CyclesPerInstruction);
