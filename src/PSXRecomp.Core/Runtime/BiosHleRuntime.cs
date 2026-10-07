@@ -42,6 +42,9 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
     /// <summary>A0:72 CdRemove() (PSY-Q <c>_96_remove</c>) — void, no arguments; no modelled guest-visible effect (see the handler).</summary>
     public const byte CdRemoveFunction = 0x72;
 
+    /// <summary>B0:15 OutdatedPadInitAndStart(type, button_dest, unused, unused) — see <see cref="BiosPadState"/>.</summary>
+    public const byte OutdatedPadInitAndStartFunction = 0x15;
+
     /// <summary>A0:49 GPU_cw(cmd): waits for the GPU, then writes one word to GP0 (see <see cref="BiosGpuCommandService"/>).</summary>
     public const byte GpuCommandWordFunction = 0x49;
 
@@ -141,6 +144,7 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
             [(BiosCallFamily.B0, HookEntryIntFunction)] = (1, InvokeHookEntryInt),
             [(BiosCallFamily.B0, ReturnFromExceptionFunction)] = (0, InvokeReturnFromException),
             [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
+            [(BiosCallFamily.B0, OutdatedPadInitAndStartFunction)] = (4, identity => BiosPadState.OutdatedPadInitAndStart(identity, _guestMemoryWriter)),
             [(BiosCallFamily.C0, ChangeClearRCntFunction)] = (2, InvokeChangeClearRCnt),
             [(BiosCallFamily.A0, CdRemoveFunction)] = (0, InvokeCdRemove),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
