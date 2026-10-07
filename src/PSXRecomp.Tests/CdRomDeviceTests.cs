@@ -178,19 +178,29 @@ public class CdRomDeviceTests
     }
 
     [Theory]
-    [InlineData(0x0B)]
-    [InlineData(0x0C)]
-    public void MuteAndDemute_WithAParameter_FailClosedAndKeepTheFlag(byte command)
+    [InlineData(0x0B, false)]
+    [InlineData(0x0B, true)]
+    [InlineData(0x0C, false)]
+    [InlineData(0x0C, true)]
+    public void MuteAndDemute_WithAParameter_FailClosedAndKeepTheExistingFlag(byte command, bool initiallyMuted)
     {
         var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
-        cd.WriteRegister(2, 0x01);
+        if (initiallyMuted)
+        {
+            cd.WriteCommand(0x0B);
+            cd.ReadRegister(1);
+            cd.AcknowledgeInterrupt();
+        }
 
+        cd.IsMuted.Should().Be(initiallyMuted);
+
+        cd.WriteRegister(2, 0x01);
         cd.WriteCommand(command);
 
-        cd.IsMuted.Should().BeFalse();
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
         cd.ReadRegister(1).Should().Be(0x03);
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorWrongParameterCount);
+        cd.IsMuted.Should().Be(initiallyMuted, "an invalid Mute/Demute must not mutate the existing mute state");
     }
 
     [Fact]
