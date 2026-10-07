@@ -1,6 +1,8 @@
 using FluentAssertions;
+using PSXRecomp.Core;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.Runtime;
 using PSXRecomp.Tests.RealRomAnalysis;
 using PSXRecomp.Tests.Recompiler;
 using Xunit;
@@ -231,6 +233,87 @@ public sealed class MixedFallbackTests
 
         run.Result.DiagnosticCode.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
         run.Evidence!.Transitions.Should().Be(0);
+    }
+
+    [Fact]
+    public void ReturnFromException_ThroughTheProductionGeneratedHost_ResumesAtTheSavedEpc_LikeTheInterpreter()
+    {
+        // The production generated-host engine (not the differential harness) drives the real
+        // artifact: its CpuState replacement has to restore the machine and continue at the saved
+        // EPC exactly as the interpreter's shared ApplyTo does. The program seeds the current TCB
+        // into guest RAM the way the kernel's own save would, then reaches B0:17.
+        const uint PcbAddress = BiosExceptionCompletion.ProcessControlBlockPointerAddress;
+        const uint Pcb = 0x0000E100u;
+        const uint Tcb = 0x0000E200u;
+        const uint Epc = 0x80001100u;
+        const uint TcbRegisters = 0x08u;
+        const uint RegOffset = 4u;
+        const uint TailMarker = 0x77u;
+        const uint RaMarker = 0xAAu;
+        const uint SavedSlot2 = 0x1022u;
+        const uint SavedS0 = 0x00C0FFEEu;
+        const uint SavedS1 = 0x1121u;
+        const uint SavedSp = 0x0000FFFFu;
+        const uint SavedRa = 0xDEAD0001u;
+        const uint SavedHi = 0x11111111u;
+        const uint SavedLo = 0x22222222u;
+        const uint SavedSr = 0x40000404u;
+
+        var main = new Block(Entry);
+        // PCB pointer -> Pcb -> Tcb, then the saved context (Tcb layout: psx-spx control-blocks).
+        main.Emit(Li(T2, PcbAddress));
+        main.Emit(Li(T3, Pcb));
+        main.Emit(Sw(T3, T2, 0));
+        main.Emit(Li(T2, Pcb));
+        main.Emit(Li(T3, Tcb));
+        main.Emit(Sw(T3, T2, 0));
+        main.Emit(Li(T2, Tcb));
+        main.Emit(Li(T3, SavedSlot2));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.V0 * RegOffset)));
+        main.Emit(Li(T3, SavedS0));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.S0 * RegOffset)));
+        main.Emit(Li(T3, SavedS1));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.S1 * RegOffset)));
+        main.Emit(Li(T3, 0u));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.S2 * RegOffset)));
+        main.Emit(Li(T3, SavedSp));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.Sp * RegOffset)));
+        main.Emit(Li(T3, SavedRa));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.Ra * RegOffset)));
+        main.Emit(Li(T3, 0x0BAD0BADu));
+        main.Emit(Sw(T3, T2, (short)(TcbRegisters + (uint)R3000aRegister.K0 * RegOffset)));
+        main.Emit(Li(T3, Epc));
+        main.Emit(Sw(T3, T2, 0x88));
+        main.Emit(Li(T3, SavedHi));
+        main.Emit(Sw(T3, T2, 0x8C));
+        main.Emit(Li(T3, SavedLo));
+        main.Emit(Sw(T3, T2, 0x90));
+        main.Emit(Li(T3, SavedSr));
+        main.Emit(Sw(T3, T2, 0x94));
+        // Reach B0:17 the same way the differential tests do: a call to the B0 trampoline.
+        main.Emit(Li(T1, BiosHleRuntime.ReturnFromExceptionFunction));
+        main.Emit(Li(T0, BiosJumpTables.B0VectorAddress));
+        main.Emit(Jalr(T0), Nop);
+        // The $ra path marks a mistake: this call continues at the saved EPC, never at the call site.
+        main.Emit(Ori(S2, Zero, (ushort)RaMarker));
+        main.Emit(MipsEncoding.Jump(Epc), Nop);
+        var epc = new Block(Epc);
+        epc.Emit(Ori(S1, Zero, (ushort)TailMarker));
+        epc.Emit(End());
+        var words = Image(main, epc);
+        using var dir = new TempDirectory();
+
+        var run = RunArtifact(words, dir, On);
+
+        run.Result.State.Should().Be(TitleExecutionState.Completed);
+        Gpr(run.Result, S1).Should().Be(TailMarker, "the restored EPC's own instruction ran");
+        Gpr(run.Result, S2).Should().Be(0u, "control resumed at the EPC, never at the call site's $ra");
+        Gpr(run.Result, V0).Should().Be(SavedSlot2);
+        Gpr(run.Result, S0).Should().Be(SavedS0);
+        Gpr(run.Result, R3000aRegister.Sp).Should().Be(SavedSp);
+        Gpr(run.Result, R3000aRegister.Ra).Should().Be(SavedRa);
+        Gpr(run.Result, R3000aRegister.K0).Should().Be(0u, "a restore never overwrites the live $k0");
+        AssertSameCpuAsInterpreter(run.Result, RunInterpreter(words));
     }
 
     // ---- budgets and unsupported states -----------------------------------------------------------------------------

@@ -78,7 +78,16 @@ public sealed record BiosExceptionHandlerOutcome(
     uint Lo,
     uint? RestoredSr,
     string? DiagnosticCode,
-    string? DiagnosticMessage);
+    string? DiagnosticMessage)
+{
+    /// <summary>
+    /// This outcome as the shared CPU-state replacement, so an execution path applies the
+    /// kernel exception completion and a BIOS service that replaces the state — B0:17,
+    /// #664 — through one implementation instead of two that can restore different subsets.
+    /// Meaningful only when <paramref name="Handled"/> is true.
+    /// </summary>
+    public BiosCpuStateMutation CpuState => new(Gpr, Hi, Lo, RestoredSr, NextPc);
+}
 
 /// <summary>
 /// The BIOS-less entry of the kernel exception handler (C0:06 ExceptionHandler),

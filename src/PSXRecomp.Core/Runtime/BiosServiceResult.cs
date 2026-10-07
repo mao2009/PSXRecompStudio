@@ -3,15 +3,40 @@ using PSXRecomp.Architecture;
 namespace PSXRecomp.Core.Runtime;
 
 /// <summary>Machine-readable outcome of a Runtime BIOS service invocation.</summary>
+/// <param name="Status">Whether the Runtime serviced the call, or rejected it.</param>
+/// <param name="ReturnValue">
+/// The value a service produced for <c>$v0</c>, or — for
+/// <see cref="BiosServiceStatus.PatchedTarget"/> — the patched guest target address.
+/// </param>
+/// <param name="Diagnostic">Stable diagnostic data when the call was not serviced.</param>
+/// <param name="CpuState">
+/// The complete CPU state the service leaves behind, for the services that replace
+/// the machine state instead of returning from the call (Issue #664). Null for every
+/// ordinary service. When present it <b>is</b> the post-dispatch state — including
+/// <c>$v0</c> and the continuation PC — so <paramref name="ReturnValue"/> must be null.
+/// </param>
 [Domain]
 public sealed record BiosServiceResult(
     BiosServiceStatus Status,
     uint? ReturnValue,
-    BiosDiagnostic? Diagnostic)
+    BiosDiagnostic? Diagnostic,
+    BiosCpuStateMutation? CpuState = null)
 {
     /// <summary>Creates a successful service result.</summary>
     public static BiosServiceResult Supported(BiosCallIdentity identity, uint? returnValue = null) =>
         CreateSupported(identity, returnValue);
+
+    /// <summary>
+    /// Creates a successful result for a service that replaces the CPU state rather
+    /// than returning from the call — B0:17 ReturnFromException, which restores the
+    /// interrupted context and continues at the saved EPC (Issue #664).
+    /// </summary>
+    public static BiosServiceResult CpuStateReplacement(BiosCallIdentity identity, BiosCpuStateMutation cpuState)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(cpuState);
+        return new(BiosServiceStatus.Supported, null, null, cpuState);
+    }
 
     /// <summary>Creates the explicit result for a service not implemented by HLE.</summary>
     public static BiosServiceResult Unsupported(BiosCallIdentity identity) =>
@@ -48,7 +73,7 @@ public sealed record BiosServiceResult(
     private static BiosServiceResult CreateSupported(BiosCallIdentity identity, uint? returnValue)
     {
         ArgumentNullException.ThrowIfNull(identity);
-        return new(BiosServiceStatus.Supported, returnValue, null);
+        return new(BiosServiceStatus.Supported, returnValue, null, null);
     }
 
     private static BiosServiceResult CreateUnsupported(BiosCallIdentity identity)

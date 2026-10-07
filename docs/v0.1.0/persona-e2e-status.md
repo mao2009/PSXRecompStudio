@@ -44,7 +44,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | ANALYSIS | ✅ Implemented | `RealRomAnalysisSkillTests` / `RealRomAnalyzer.RunAll()` |
 | RECOMPILER_SLICE | ✅ Implemented | `RealRomRecompilerVerticalSliceTests` / `RealRomCandidateSelector.SelectBest()` |
 | RUNTIME_EXECUTION | ✅ Implemented | `ExecutionOrchestrator` over `HostTitleExecutionEngine` (Test) / `RealRomTitleExecutionTests`; production PS-X EXE path via `TitleExecutionService.Run(PsxExe, ...)` (#409) |
-| BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 13 registered identities; current inventory is maintained in `docs/runtime/bios-hle-evidence.md`, and the measured Persona path now passes A0:13, B0:19, B0:5B, C0:0A, A0:72 and A0:3F plus SYS(02h) |
+| BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 14 registered identities; current inventory is maintained in `docs/runtime/bios-hle-evidence.md`, and the measured Persona path now passes A0:13, B0:19, B0:5B, C0:0A, A0:72 and A0:3F plus SYS(02h) and B0:17 |
 | GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493), production interpreter 32-bit guest MMIO reachability (#572), GPU command IRQ1 delivery (#574), and production `FrameSnapshot` headless evidence (#575); DMA2 remains |
 | SPU | ⚠ Partial | Rust-owned register/MMIO model at 0x1F801C00-0x1F801DFF (#445/#551); no ADPCM/ADSR/mixing/reverb/sound-RAM/audio-output model |
 | SIO0 | ⚠ Partial | Production-reachable register model + deterministic disconnected-pad transaction path + IRQ7 (#443 via #548/#549); no real host controller or memory-card wire protocol |
@@ -463,8 +463,33 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     Scope: no Persona address enters `src/`; no Pad/Card (#661), no EvCB matching (#687), no B0:17/B0:18
     (#664, #665); the mechanism is generic and opt-in (ADR-012 amendment).
 
+26. **#664 B0:17 ReturnFromException registered; the stop moves off the BIOS call and onto the
+    budget.** The remaining B0:17 stop of items 24-25 was a real BIOS-service gap: `B0(17h)`
+    ReturnFromException was unregistered. It is now registered (arity 0) as the kernel's
+    exception-return operation, and it restores through the *same* `BiosExceptionCompletion`
+    source of truth the #662 completion uses: read the current TCB through
+    `[0x108]`→PCB→TCB, produce the restored register file/HI/LO/SR/PC as one CPU-state
+    replacement (`BiosCpuStateMutation`), and every execution form (interpreter, generated host,
+    mixed fallback) applies that replacement through one shared implementation each — the
+    continuation is the saved EPC, not `$ra`, and RFE stays the CPU's own pop
+    (ADR-014 amendment). Fail closed: wrong arity = `BIOS_HLE_INVALID_ARGUMENTS`; no live register
+    file or an unreadable TCB = `BIOS_HLE_UNSUPPORTED_STATE`; B0:18 ResetEntryInt stays
+    unregistered (#665). Measured on `main` HEAD (B0:17 branch) with only
+    `--entry-root 0x80025350 --entry-root 0x80025614 --mixed-fallback`
+    (`run rom/PERSONA.chd --json`): the B0:17 stop is gone. The run now crosses the callback
+    (2 handoffs, 168 interpreter instructions at `0x80025BC8`, 75 RAM pages in, 2 pages back;
+    last return PC `0x80025514`) and ReturnFromException, and then stops at
+    `OUTER_BUDGET_EXHAUSTED` (exit 2, `state=3`, `recompiled-host-artifact`) with guest PC
+    `0x80025CCC`, output unchanged (`CD_init:addr=800500e4`). **The B0:17 blocker (#664) is
+    resolved.** Vcount now advances (each VBlank callback runs), so the run is no longer the
+    item-17 permanent wait; it is the CD_sync VSync loop consuming the outer execution budget.
+    **Next boundary: whether `CD_sync` completes.** Not yet measured (budget): whether the
+    VBlank deadline path (`VSync(-1) + 0x3C0` from item 17) times out and retries CD, and whether
+    the CD-ROM IRQ2 callback `0x800281F8` is needed to end the wait (#444). Frame evidence stays
+    `unavailable` / `no-frame-activity`.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the current artifact boundary is `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693). With the opt-in `--mixed-fallback` (item 25) the same two roots cross that callback and stop at `B0:17` (#664). Only with the measurement-only `--entry-root 0x80025BC8` added does the run reach the downstream `B0:17` stop (#664; the interpreter path reaches it too). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693). With the opt-in `--mixed-fallback` (item 25) the same two roots cross that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and the current stop is `OUTER_BUDGET_EXHAUSTED` at `0x80025CCC` while the guest is still inside the `CD_sync` VSync loop. Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

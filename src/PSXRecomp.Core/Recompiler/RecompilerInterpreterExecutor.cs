@@ -264,6 +264,14 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             core.SetGpr((int)R3000aRegister.V0, returnValue);
         }
 
+        // Issue #664: a CPU-state replacement is the whole post-dispatch state —
+        // its own register file and its own continuation PC, not this call's $ra.
+        if (outcome.CpuState is { } cpuState)
+        {
+            cpuState.ApplyTo(core);
+            return true;
+        }
+
         // A translatable patched target is jumped to verbatim — a KUSEG alias
         // stays a KUSEG alias, never normalised — because the interpreter can
         // fetch from any translatable address.

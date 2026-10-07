@@ -11,11 +11,11 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds thirteen
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds fourteen
 registrations — A0:13 `setjmp`, B0:19 `HookEntryInt`, B0:5B `ChangeClearPad`, C0:0A `ChangeClearRCnt`, A0:72 `CdRemove`, A0:39 `InitHeap` (the identity real-ROM analysis observed most
 broadly, 5 of 5 executables), A0:3C `putchar`, its registered B0:3D
 `putchar` alias, A0:3E `puts`, its real-ROM-evidence-selected B0:3F alias, A0:3F `printf`,
-B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
+B0:17 `ReturnFromException`, B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
 documented behavior under the shared
 ADR-014 contract (ADR-014 amendment 2026-09-17 "A0:39 InitHeap registered").
 Both parallel Runtime
@@ -53,7 +53,8 @@ observed there.
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
 registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
-thirteen entries**: `(A0, 0x13)` → `InvokeSetJmp`, `(B0, 0x19)` → `InvokeHookEntryInt`,
+fourteen entries**: `(A0, 0x13)` → `InvokeSetJmp`, `(B0, 0x19)` → `InvokeHookEntryInt`,
+`(B0, 0x17)` → `InvokeReturnFromException`,
 `(B0, 0x5B)` → `InvokeChangeClearPad`, `(C0, 0x0A)` → `InvokeChangeClearRCnt`,
 `(A0, 0x72)` → `InvokeCdRemove`, `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
 `(B0, 0x3D)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
@@ -115,9 +116,10 @@ Verified (docs/REFERENCES.md, BiosCallNames):
 Implemented (BiosHleRuntime registry):
   A0:13 setjmp, B0:19 HookEntryInt, B0:5B ChangeClearPad, C0:0A ChangeClearRCnt,
   A0:72 CdRemove, A0:39 InitHeap, A0:3C putchar, B0:3D putchar, A0:3E puts,
-  B0:3F puts, A0:3F printf, B0:56 GetC0Table, B0:57 GetB0Table
+  B0:3F puts, A0:3F printf, B0:17 ReturnFromException, B0:56 GetC0Table, B0:57 GetB0Table
 
 Implemented through C0 high-range physical-slot mirroring:
+  C0:97 -> B0:17 ReturnFromException
   C0:BF -> B0:3F puts
   C0:D6 -> B0:56 GetC0Table
   C0:D7 -> B0:57 GetB0Table

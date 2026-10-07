@@ -432,6 +432,17 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     _core.SetGpr((int)R3000aRegister.V0, returnValue);
                 }
 
+                // Issue #664: a service that replaced the CPU state owns the whole
+                // post-dispatch machine — its register file already fixes $v0, and
+                // its NextPc is where the hardware resumes (the saved EPC for
+                // B0:17), not this call's $ra. Apply it through the one shared
+                // implementation every execution form uses.
+                if (outcome.CpuState is { } cpuState)
+                {
+                    cpuState.ApplyTo(_core);
+                    continue;
+                }
+
                 // A translatable patched target is jumped to verbatim — the core
                 // fetches from any translatable address.
                 _core.Pc = outcome.NextPc;
@@ -668,29 +679,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     }
 
     /// <summary>
-    /// Applies a handled kernel exception to the CPU. Only registers that changed are written, so an
-    /// identity restore leaves in-flight pipeline state alone; RFE is the CPU's own SR pop.
+    /// Applies a handled kernel exception to the CPU through the same shared CPU-state
+    /// replacement a BIOS service uses (Issue #664), so the exception-completion path and
+    /// B0:17 cannot restore different subsets of the machine.
     /// </summary>
-    private void ApplyKernelOutcome(BiosExceptionHandlerOutcome kernel)
-    {
-        for (var i = 1; i < kernel.Gpr.Length; i++)
-        {
-            if (_core.GetGpr(i) != kernel.Gpr[i])
-            {
-                _core.SetGpr(i, kernel.Gpr[i]);
-            }
-        }
-
-        _core.Hi = kernel.Hi;
-        _core.Lo = kernel.Lo;
-        if (kernel.RestoredSr is uint sr)
-        {
-            _core.SetCop0(Cop0Status, sr);
-            _core.PopExceptionSrStack();
-        }
-
-        _core.Pc = kernel.NextPc;
-    }
+    private void ApplyKernelOutcome(BiosExceptionHandlerOutcome kernel) => kernel.CpuState.ApplyTo(_core);
 
     private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
 
