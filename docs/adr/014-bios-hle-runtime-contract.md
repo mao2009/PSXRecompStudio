@@ -1906,3 +1906,37 @@ Decision 3(f) above said that mixing execution engines mid-run "is a separate de
 - A patched jump-table target whose address has no generated block (`BIOS_PATCHED_TARGET_NO_GENERATED_BLOCK`, #379) keeps its advisory: it is a *BIOS-vector* flow, not an indirect-jump target, and this amendment does not change it. Open design question (r) (how a `PatchedTarget` falls back to raw guest execution) stays open; a mixed-execution target is a different mechanism.
 - The Runtime is unchanged: the interpreter loop calls the same `BiosVectorDispatch`, `BiosKernelSyscallDispatch` and `BiosExceptionHandler` over the host graph core's RAM (guest state in RAM, ADR-025 amendment). An unregistered BIOS call inside a fallback segment stops the run with the same `BIOS_HLE_UNSUPPORTED_CALL` as outside it.
 - Registration is not a Runtime concept here: the guest's callback table is ordinary guest RAM and the Runtime has no registration event, which is why the target is discovered when it is *entered*, not when it is stored.
+
+## Amendment (2026-10-06): B0:17 ReturnFromException registered
+
+Issue #664: after #693 the Persona production run crossed the VBlank callback through the mixed
+fallback and stopped at `BIOS_HLE_UNSUPPORTED_CALL` `B0:17`. B0:17 is not a call the guest returns
+from — it *is* the kernel's exception-return operation — so registering it required a result shape
+the contract did not have.
+
+- **The restore is the existing source of truth.** `BiosExceptionCompletion.TryReturnFromException`
+  (the #662 completion, already used by the exception handler's hook/exit path) reads the current
+  TCB through `[0x108]`→PCB→TCB and produces the restored Hi/Lo/SR/PC. B0:17's handler only shapes
+  that into a `BiosCpuStateMutation`; it cannot restore a different subset than the exception path.
+- **One CPU-state replacement for every execution form.** `BiosCpuStateMutation` (Gpr, Hi, Lo,
+  RestoredSr, NextPc) is the outcome of a service that replaces the machine instead of returning
+  from the call: `$v0` comes from the restored register file, and continuation is the saved EPC,
+  not `$ra`. `BiosServiceResult` carries it (exclusive of `ReturnValue`); interpreter, generated
+  host and mixed fallback all apply it through one implementation each (`BiosCpuStateMutation.ApplyTo`
+  on the core; `RecompiledHostExecutionEngine.ApplyCpuState` over the artifact's G/H/C/RFE wire
+  commands, then the interrupt line as the restored SR judges it).
+- **RFE stays the CPU's own.** `RestoredSr` is written and the native exception-stack pop
+  (`PSXCore_PopExceptionSrStack` / the artifact's RFE) follows; EPC/CAUSE are deliberately not
+  carried, because RFE does not rewrite them. Nothing re-implements RFE in managed code.
+- **Fail closed.** A wrong argument count is `BIOS_HLE_INVALID_ARGUMENTS`; a call carrying no live
+  register file, or a TCB that cannot be read in full through the table of tables, is
+  `BIOS_HLE_UNSUPPORTED_STATE` and restores nothing.
+- **B0:18 ResetEntryInt stays unregistered** (#665): a separate operation, not a case of this one.
+- **Measured (Persona).** With the established entry roots
+  (`--entry-root 0x80025350 --entry-root 0x80025614 --mixed-fallback`) the B0:17 stop is gone: the
+  run crosses the callback and ReturnFromException, resumes at the EPC after RFE, and the new stop
+  is `OUTER_BUDGET_EXHAUSTED` with Vcount now advancing (the VBlank callback runs) instead of a
+  permanent wait (`docs/v0.1.0/persona-e2e-status.md`, item 26).
+
+Tests: `BiosReturnFromExceptionTests`, `MixedFallbackTests` (production generated-host path),
+`KernelExceptionEntryTests` (interpreter regression).

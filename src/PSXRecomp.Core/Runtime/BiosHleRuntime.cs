@@ -26,6 +26,13 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>B0:19 HookEntryInt(addr) — registers a guest register-state buffer as the exception-completion hook.</summary>
     public const byte HookEntryIntFunction = 0x19;
 
+    /// <summary>
+    /// B0:17 ReturnFromException() — not a call the guest returns from but the
+    /// kernel's exception-return operation: restore the interrupted context from the
+    /// current TCB, RFE, and continue at the saved EPC (Issue #664).
+    /// </summary>
+    public const byte ReturnFromExceptionFunction = 0x17;
+
     /// <summary>B0:5B ChangeClearPAD(int) — configures the Pad/Card IRQ handler's IRQ0 auto-ack policy.</summary>
     public const byte ChangeClearPadFunction = 0x5B;
 
@@ -128,6 +135,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
         {
             [(BiosCallFamily.A0, SetJmpFunction)] = (1, InvokeSetJmp),
             [(BiosCallFamily.B0, HookEntryIntFunction)] = (1, InvokeHookEntryInt),
+            [(BiosCallFamily.B0, ReturnFromExceptionFunction)] = (0, InvokeReturnFromException),
             [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
             [(BiosCallFamily.C0, ChangeClearRCntFunction)] = (2, InvokeChangeClearRCnt),
             [(BiosCallFamily.A0, CdRemoveFunction)] = (0, InvokeCdRemove),
@@ -287,6 +295,48 @@ public sealed class BiosHleRuntime : IBiosRuntime
     /// <summary>B0:19 HookEntryInt(addr). The behavior lives in <see cref="BiosExceptionHook"/>.</summary>
     private BiosServiceResult InvokeHookEntryInt(BiosCallIdentity identity) =>
         BiosExceptionHook.Register(identity, _guestMemoryWriter);
+
+    /// <summary>
+    /// B0:17 ReturnFromException(). This is the one registered service that takes no
+    /// arguments and returns no value, because it is not a call at all: it completes
+    /// the exception the CPU took and continues at the EPC the kernel saved. The
+    /// restore itself is <see cref="BiosExceptionCompletion.TryReturnFromException"/>
+    /// — the same source of truth <see cref="BiosExceptionHandler"/> uses — and this
+    /// handler only shapes its result into a CPU-state replacement the caller applies
+    /// (Issue #664).
+    /// </summary>
+    /// <remarks>
+    /// The register file is cloned before the restore so the <c>k0</c> the kernel
+    /// left in place survives, and so a rejected restore provably leaves the live
+    /// register file untouched: nothing is applied until the whole TCB has been read
+    /// and the replacement has been built.
+    /// </remarks>
+    private BiosServiceResult InvokeReturnFromException(BiosCallIdentity identity)
+    {
+        if (identity.Arguments.Count != 0)
+        {
+            return BiosServiceResult.InvalidArguments(identity, $"{identity.StableKey} ReturnFromException takes no arguments.");
+        }
+
+        if (identity.GuestRegisters is not { Count: PSXCoreWrapper.GprCount } live)
+        {
+            return BiosServiceResult.UnsupportedState(
+                identity,
+                $"{identity.StableKey} ReturnFromException needs the live register file to restore the context onto; " +
+                "the caller supplied no registers.");
+        }
+
+        var gpr = live.ToArray();
+        if (!BiosExceptionCompletion.TryReturnFromException(_guestMemoryReader, gpr, out var hi, out var lo, out var sr, out var pc))
+        {
+            return BiosServiceResult.UnsupportedState(
+                identity,
+                $"{identity.StableKey} ReturnFromException could not read the current TCB through " +
+                $"[0x{BiosExceptionCompletion.ProcessControlBlockPointerAddress:X8}]->PCB->TCB in full, so no register was restored.");
+        }
+
+        return BiosServiceResult.CpuStateReplacement(identity, new BiosCpuStateMutation(gpr, hi, lo, sr, pc));
+    }
 
     /// <summary>A0:13 setjmp(buf). The behavior lives in <see cref="SetJmpService"/>.</summary>
     private BiosServiceResult InvokeSetJmp(BiosCallIdentity identity) =>

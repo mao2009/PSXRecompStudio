@@ -723,6 +723,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     "has no generated block for; the recompiled path stops there instead of entering it.";
             }
 
+            // Issue #664: a BIOS service that replaced the CPU state (B0:17 ReturnFromException) carries its own
+            // register file, HI/LO, restored SR and continuation PC — the artifact's own protocol applies each
+            // part, and the decision line then resumes at the saved EPC rather than the call's $ra.
+            if (outcome.CpuState is { } cpuState)
+            {
+                ApplyCpuState(gpr, cpuState);
+            }
+
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
@@ -783,34 +791,47 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
-            for (var i = 1; i < gpr.Length; i++)
+            ApplyCpuState(gpr, outcome.CpuState);
+
+            Send(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"));
+        }
+
+        /// <summary>
+        /// Writes a CPU-state replacement onto the artifact's own machine: the register file, HI/LO, the
+        /// restored SR followed by the RFE pop, and then the controller's interrupt line as the just-restored
+        /// SR judges it (Issue #664).
+        /// </summary>
+        /// <remarks>
+        /// One implementation serves both routes into a replaced CPU state — the kernel exception completion
+        /// and a BIOS service that replaces the state (B0:17) — so the generated host cannot restore a
+        /// different subset than the interpreter does. The artifact's own protocol carries each part
+        /// separately; the continuation PC then rides the usual decision line.
+        /// </remarks>
+        private void ApplyCpuState(uint[] gpr, BiosCpuStateMutation cpuState)
+        {
+            for (var i = BiosCpuStateMutation.FirstRestoredGpr; i < gpr.Length; i++)
             {
-                if (outcome.Gpr[i] != gpr[i])
+                if (cpuState.Gpr[i] != gpr[i])
                 {
-                    Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolGprCommand} {i} {outcome.Gpr[i]}"));
+                    Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolGprCommand} {i} {cpuState.Gpr[i]}"));
                 }
             }
 
-            if (outcome.Hi != context.Hi || outcome.Lo != context.Lo)
-            {
-                Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolHiLoCommand} {outcome.Hi} {outcome.Lo}"));
-            }
-
-            if (outcome.RestoredSr is uint sr)
+            Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolHiLoCommand} {cpuState.Hi} {cpuState.Lo}"));
+            if (cpuState.RestoredSr is uint sr)
             {
                 Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {sr}"));
                 Send(RecompiledArtifactCodeGen.ProtocolRfeCommand);
             }
 
-            // The chain may have acknowledged I_STAT: the artifact's line is the controller's now, not what the last
-            // guest-time ack said. The artifact still takes the next INT only if its own SR (just restored) allows it.
+            // A chain may have acknowledged I_STAT, and an RFE changes which interrupts the CPU may now take:
+            // the artifact's line is the controller's, not what the last guest-time ack said. It still takes the
+            // next INT only if its own SR (just restored) allows it.
             Send(string.Create(
                 CultureInfo.InvariantCulture,
-                $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.InterruptControllerAdapter.HasPendingInterrupts ? 1 : 0)}"));
-
-            Send(string.Create(
-                CultureInfo.InvariantCulture,
-                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"));
+                $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices!.InterruptControllerAdapter.HasPendingInterrupts ? 1 : 0)}"));
         }
 
         /// <summary>

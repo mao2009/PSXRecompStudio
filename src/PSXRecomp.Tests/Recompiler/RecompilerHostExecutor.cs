@@ -644,6 +644,26 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                     "runtime is dynamic overlay recompilation (Issue #249), out of scope here.";
             }
 
+            // Issue #664: apply a CPU-state replacement (B0:17) the same way the production generated
+            // host does, so the differential comparison sees the same restored state.
+            if (outcome.CpuState is { } cpuState)
+            {
+                for (var i = 1; i < gpr.Length; i++)
+                {
+                    if (cpuState.Gpr[i] != gpr[i])
+                    {
+                        Send(string.Create(CultureInfo.InvariantCulture, $"G {i} {cpuState.Gpr[i]}"));
+                    }
+                }
+
+                Send(string.Create(CultureInfo.InvariantCulture, $"H {cpuState.Hi} {cpuState.Lo}"));
+                if (cpuState.RestoredSr is uint sr)
+                {
+                    Send(string.Create(CultureInfo.InvariantCulture, $"C {sr}"));
+                    Send("P");
+                }
+            }
+
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"D {(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
@@ -866,9 +886,13 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
                      RHOST_DATA <byte>
                      RHOST_OK
    parent -> child:  R <physical address>
-                     W <physical address> <byte>
-                     N                                   (pc not claimed)
-                     D <termination> <next pc> <has v0> <v0>  */
+                      W <physical address> <byte>
+                      N                                   (pc not claimed)
+                      G <gpr index> <value>
+                      H <hi> <lo>
+                      C <sr>
+                      P                                       (RFE pop)
+                      D <termination> <next pc> <has v0> <v0>  */
 #define PSX_REG_V0 2
 
 static int32_t host_serve(RecompilerState* state) {
@@ -885,6 +909,18 @@ static int32_t host_serve(RecompilerState* state) {
             recompiler_write_mem8((void*)0, (uint32_t)a, (uint8_t)v);
             printf(""RHOST_OK\n"");
             fflush(stdout);
+        } else if (cmd[0] == 'G') {
+            if (scanf(""%lu %lu"", &a, &v) != 2 || a == 0ul || a > 31ul) return 1;
+            state->gpr[a] = (uint32_t)v;
+        } else if (cmd[0] == 'H') {
+            if (scanf(""%lu %lu"", &a, &v) != 2) return 1;
+            state->hi = (uint32_t)a;
+            state->lo = (uint32_t)v;
+        } else if (cmd[0] == 'C') {
+            if (scanf(""%lu"", &v) != 1) return 1;
+            state->cop0_sr = (uint32_t)v;
+        } else if (cmd[0] == 'P') {
+            state->cop0_sr = (state->cop0_sr & ~0xFu) | ((state->cop0_sr >> 2) & 0xFu);
         } else if (cmd[0] == 'D') {
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;

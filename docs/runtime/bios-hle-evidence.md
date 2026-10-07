@@ -11,11 +11,11 @@
 Issue #279 makes BIOS-less execution the default user path: recompiled software
 must reach BIOS services through a shared Runtime/HLE boundary instead of a
 required Sony BIOS image. The Runtime abstraction already exists
-(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds thirteen
+(`IBiosRuntime`, `BiosCallIdentity`, `BiosServiceResult`) and holds fourteen
 registrations — A0:13 `setjmp`, B0:19 `HookEntryInt`, B0:5B `ChangeClearPad`, C0:0A `ChangeClearRCnt`, A0:72 `CdRemove`, A0:39 `InitHeap` (the identity real-ROM analysis observed most
 broadly, 5 of 5 executables), A0:3C `putchar`, its registered B0:3D
 `putchar` alias, A0:3E `puts`, its real-ROM-evidence-selected B0:3F alias, A0:3F `printf`,
-B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
+B0:17 `ReturnFromException`, B0:56 `GetC0Table`, and B0:57 `GetB0Table` — each implementing its
 documented behavior under the shared
 ADR-014 contract (ADR-014 amendment 2026-09-17 "A0:39 InitHeap registered").
 Both parallel Runtime
@@ -53,7 +53,8 @@ observed there.
 
 State of `PSXRecomp.Core.Runtime.BiosHleRuntime` as of this document. The
 registry is a dictionary keyed by `(BiosCallFamily, byte)` holding **exactly
-thirteen entries**: `(A0, 0x13)` → `InvokeSetJmp`, `(B0, 0x19)` → `InvokeHookEntryInt`,
+fourteen entries**: `(A0, 0x13)` → `InvokeSetJmp`, `(B0, 0x19)` → `InvokeHookEntryInt`,
+`(B0, 0x17)` → `InvokeReturnFromException`,
 `(B0, 0x5B)` → `InvokeChangeClearPad`, `(C0, 0x0A)` → `InvokeChangeClearRCnt`,
 `(A0, 0x72)` → `InvokeCdRemove`, `(A0, 0x39)` → `InvokeInitHeap`, `(A0, 0x3C)` → `InvokePutChar`,
 `(B0, 0x3D)` → `InvokePutChar`, `(A0, 0x3E)` → `InvokePuts`,
@@ -115,9 +116,10 @@ Verified (docs/REFERENCES.md, BiosCallNames):
 Implemented (BiosHleRuntime registry):
   A0:13 setjmp, B0:19 HookEntryInt, B0:5B ChangeClearPad, C0:0A ChangeClearRCnt,
   A0:72 CdRemove, A0:39 InitHeap, A0:3C putchar, B0:3D putchar, A0:3E puts,
-  B0:3F puts, A0:3F printf, B0:56 GetC0Table, B0:57 GetB0Table
+  B0:3F puts, A0:3F printf, B0:17 ReturnFromException, B0:56 GetC0Table, B0:57 GetB0Table
 
 Implemented through C0 high-range physical-slot mirroring:
+  C0:97 -> B0:17 ReturnFromException
   C0:BF -> B0:3F puts
   C0:D6 -> B0:56 GetC0Table
   C0:D7 -> B0:57 GetB0Table
@@ -151,7 +153,7 @@ Implemented (ADR-014 amendment 2026-09-11 for #360).
 | puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11); also reachable as C0:BF through canonical physical-slot mirroring | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
 | GetC0Table | B0:56 | **Registered `Supported`** — returns `BiosJumpTables.C0TableAddress` (`0x674`); that address is backed by guest-visible RAM connected to dispatch; also reachable as C0:D6 | None for the documented behavior (return table base; base is now real and patchable) | None; registered. Note: `0x674` is this Runtime's design choice, not a primary-source-confirmed real-hardware fact — see ADR-014 amendment for #360 |
 | GetB0Table | B0:57 | **Registered `Supported`** — returns `BiosJumpTables.B0TableAddress` (`0x874`); same backing guarantee as GetC0Table; also reachable as C0:D7 | None | None; registered. Same caveat on `0x874` |
-| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the thirteen registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
+| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the fourteen registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 

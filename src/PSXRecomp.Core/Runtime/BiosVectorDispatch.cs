@@ -18,7 +18,8 @@ namespace PSXRecomp.Core.Runtime;
 /// </param>
 /// <param name="ReturnValue">
 /// The value to write into <c>$v0</c> before continuing, when the dispatched
-/// service produced one. Null means <c>$v0</c> is left untouched.
+/// service produced one. Null means <c>$v0</c> is left untouched. Always null
+/// when <paramref name="CpuState"/> is present, which already fixes <c>$v0</c>.
 /// </param>
 /// <param name="IsPatchedTarget">
 /// True when <paramref name="NextPc"/> is the raw guest address a patched
@@ -28,6 +29,11 @@ namespace PSXRecomp.Core.Runtime;
 /// </param>
 /// <param name="DiagnosticCode">Stable diagnostic code when the run must stop.</param>
 /// <param name="DiagnosticMessage">Human-readable diagnostic when the run must stop.</param>
+/// <param name="CpuState">
+/// The full CPU state the service replaced, when it replaced one at all
+/// (Issue #664). Null for every ordinary service, where the caller continues at
+/// <paramref name="NextPc"/> with only <paramref name="ReturnValue"/> applied.
+/// </param>
 [Domain]
 public sealed record BiosVectorDispatchOutcome(
     bool ContinueExecution,
@@ -35,7 +41,8 @@ public sealed record BiosVectorDispatchOutcome(
     uint? ReturnValue,
     bool IsPatchedTarget,
     string? DiagnosticCode,
-    string? DiagnosticMessage);
+    string? DiagnosticMessage,
+    BiosCpuStateMutation? CpuState = null);
 
 /// <summary>
 /// The BIOS trampoline-vector dispatch semantics, stated once for every
@@ -195,13 +202,17 @@ public static class BiosVectorDispatch
                     DiagnosticMessage: null);
 
             case BiosServiceStatus.Supported:
+                // A state-replacing service (B0:17 ReturnFromException) names its own
+                // continuation — the saved EPC — and its own register file, so neither
+                // $ra nor $v0 applies to it (Issue #664).
                 return new BiosVectorDispatchOutcome(
                     ContinueExecution: true,
-                    NextPc: gpr[(int)R3000aRegister.Ra],
-                    ReturnValue: result.ReturnValue,
+                    NextPc: result.CpuState?.NextPc ?? gpr[(int)R3000aRegister.Ra],
+                    ReturnValue: result.CpuState is null ? result.ReturnValue : null,
                     IsPatchedTarget: false,
                     DiagnosticCode: null,
-                    DiagnosticMessage: null);
+                    DiagnosticMessage: null,
+                    CpuState: result.CpuState);
 
             default:
                 return Stop(

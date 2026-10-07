@@ -49,7 +49,9 @@ public sealed class BiosExceptionHookTests
         runtime.TryGetServiceArgumentCount(BiosCallFamily.B0, 0x19, out var count).Should().BeTrue();
         count.Should().Be(1);
 
-        foreach (byte neighbour in new byte[] { 0x17, 0x18, 0x1A })
+        // B0:17 (ReturnFromException) now occupies the neighbour below the hook, so only the other
+        // two neighbours may still decline the call.
+        foreach (byte neighbour in new byte[] { 0x18, 0x1A })
         {
             runtime.Invoke(new BiosCallIdentity(BiosCallFamily.B0, neighbour, arguments: [BufferA]))
                 .Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_CALL");
