@@ -270,14 +270,19 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
     }
 
     [Fact]
-    public void An_Enabled_CdRom_Auto_Ack_Acknowledges_Only_Irq2()
+    public void An_Enabled_CdRom_Auto_Ack_Clears_Irq2_And_Keeps_A_Masked_Pending_Irq()
     {
-        Pend(CdromBit | DmaBit, DeviceScheduler.CdRomIrq);
+        // pendingEnabled = IRQ2 only; I_STAT = IRQ2 + IRQ3 (DMA is pending but masked).
+        _interrupts.SetMask(CdromBit);
+        _interrupts.Raise(DeviceScheduler.CdRomIrq);
+        _interrupts.Raise(DeviceScheduler.DmaIrq);
+        (_interrupts.Status & (CdromBit | DmaBit)).Should().Be(CdromBit | DmaBit);
 
         var result = BiosDefaultInterruptHandler.Run(Context(), irq => irq == DeviceScheduler.CdRomIrq);
 
         result.Status.Should().Be(BiosExceptionChainStatus.Completed);
-        (_interrupts.Status & CdromBit).Should().Be(0u);
+        (_interrupts.Status & CdromBit).Should().Be(0u, "IRQ2 was auto-acknowledged");
+        (_interrupts.Status & DmaBit).Should().Be(DmaBit, "the masked IRQ3 stays latched");
     }
 
     [Fact]
