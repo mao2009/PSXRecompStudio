@@ -81,13 +81,15 @@ the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-throug
 without an extra root, passes A0:3F `printf`, and emits
 `CD_init:addr=800500e4`. The generated host now crosses the VBlank exception chain,
 the guest's B0:19 hook, the runtime-discovered VBlank callback through the default mixed-execution
-path, and B0:17 ReturnFromException. The current measured stop is
-`OUTER_BUDGET_EXHAUSTED` (exit 2, `state=3`) at guest PC `0x80025CCC` while the guest
-remains in the `CD_sync` VSync loop (items 26-27). The earlier
-`UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8` is now historical and is reproduced
-only with `--no-mixed-fallback`; the measurement-only extra root is no longer required.
-Likewise, the still earlier `OUTER_BUDGET_EXHAUSTED` wait at `0x800278A8` (#675,
-items 16-19) is no longer where the run ends.
+path, B0:17 ReturnFromException, and the CD-ROM IRQ2 path through DefInt and the guest callback.
+The current measured stop is the libcd `CD_init` retry loop after `CdlDemute` (0Ch) is
+answered with INT5: libcd reports `DiskError` / `CdInit: Init failed` and the run ends on
+the wall-clock/outer budget (item 29, #699). The earlier `OUTER_BUDGET_EXHAUSTED` stop at
+`0x80025CCC` in the `CD_sync` VSync loop (items 26-27) is now historical, as is the
+`UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8`, which is reproduced only with
+`--no-mixed-fallback`; the measurement-only extra root is no longer required. Likewise,
+the still earlier `OUTER_BUDGET_EXHAUSTED` wait at `0x800278A8` (#675, items 16-19)
+is no longer where the run ends.
 
 **Historical structural gap.** Earlier production runs failed before runtime
 because `ReachableProgramBuilder` lowers the entire statically reachable graph
