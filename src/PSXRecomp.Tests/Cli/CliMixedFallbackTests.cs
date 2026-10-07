@@ -240,6 +240,21 @@ public sealed class CliMixedFallbackTests
     }
 
     [Theory]
+    [InlineData("--mixed-fallback", "--no-mixed-fallback")]
+    [InlineData("--no-mixed-fallback", "--mixed-fallback")]
+    [InlineData("--no-mixed-fallback", "--fallback-segment-budget", "5", "--mixed-fallback")]
+    [InlineData("--mixed-fallback", "--fallback-segment-budget", "5", "--no-mixed-fallback")]
+    public void MixedFallbackFlags_CannotBeCombined_InEitherOrder(params string[] flags)
+    {
+        using var dir = new TempDirectory();
+
+        var (exit, _, error) = Invoke(["run", WriteExe(dir), "--output", dir.CreateSubdirectory("out"), .. flags]);
+
+        exit.Should().Be(RecompiledArtifactExitCode.Failure);
+        error.Should().Contain("'--mixed-fallback' and '--no-mixed-fallback' cannot be used together.");
+    }
+
+    [Theory]
     [InlineData("0")]
     [InlineData("abc")]
     [InlineData("-3")]

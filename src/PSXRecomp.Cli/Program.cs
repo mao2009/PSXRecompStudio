@@ -107,8 +107,9 @@ public static class Program
         uint? segmentBudget = null;
         // Mixed execution is on by default for 'run' (ADR-012 amendment, Issue #693); the engine and
         // launcher keep their own explicit opt-in for embedders, and '--no-mixed-fallback' restores
-        // the fail-closed in-image stop on the command line.
-        var mixedFallback = allowSegmentBudget;
+        // the fail-closed in-image stop on the command line. The two flags are mutually exclusive,
+        // so an explicit choice is tracked separately from the derived default.
+        bool? explicitMixedFallback = null;
         uint? fallbackSegmentBudget = null;
         uint? fallbackMaxTransitions = null;
         var entryRoots = new SortedSet<uint>();
@@ -160,7 +161,13 @@ public static class Program
                         error = $"'{token}' is only valid for 'run'.";
                         return false;
                     }
-                    mixedFallback = true;
+                    if (explicitMixedFallback == false)
+                    {
+                        parsed = default;
+                        error = "'--mixed-fallback' and '--no-mixed-fallback' cannot be used together.";
+                        return false;
+                    }
+                    explicitMixedFallback = true;
                     break;
                 case "--no-mixed-fallback":
                     if (!allowSegmentBudget)
@@ -169,7 +176,13 @@ public static class Program
                         error = $"'{token}' is only valid for 'run'.";
                         return false;
                     }
-                    mixedFallback = false;
+                    if (explicitMixedFallback == true)
+                    {
+                        parsed = default;
+                        error = "'--mixed-fallback' and '--no-mixed-fallback' cannot be used together.";
+                        return false;
+                    }
+                    explicitMixedFallback = false;
                     break;
                 case "--fallback-segment-budget" or "--fallback-max-transitions":
                     if (!allowSegmentBudget)
@@ -254,6 +267,8 @@ public static class Program
                     break;
             }
         }
+
+        var mixedFallback = explicitMixedFallback ?? allowSegmentBudget;
 
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {
