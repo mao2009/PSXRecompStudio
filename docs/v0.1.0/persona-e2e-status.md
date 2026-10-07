@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** libcd `CD_init` retry loop after `CdlDemute` (0Ch) is answered with INT5 (`DiskError` / `CdInit: Init failed`); the run ends on the wall-clock/outer budget, not on a diagnostic (item 29; tracked by #699 under the gate #351).
+**Classification:** `BIOS_HLE_UNSUPPORTED_CALL` `A0:49` (GPU_cw) right after `ResetGraph` (exit 1, `state=5`; item 30; tracked by #701 under the gate #351).
 
 **Description:**
 
@@ -82,9 +82,10 @@ without an extra root, passes A0:3F `printf`, and emits
 `CD_init:addr=800500e4`. The generated host now crosses the VBlank exception chain,
 the guest's B0:19 hook, the runtime-discovered VBlank callback through the default mixed-execution
 path, B0:17 ReturnFromException, and the CD-ROM IRQ2 path through DefInt and the guest callback.
-The current measured stop is the libcd `CD_init` retry loop after `CdlDemute` (0Ch) is
-answered with INT5: libcd reports `DiskError` / `CdInit: Init failed` and the run ends on
-the wall-clock/outer budget (item 29, #699). The earlier `OUTER_BUDGET_EXHAUSTED` stop at
+The `CdlDemute` / `CD_init` retry blocker (item 29: `CdlDemute` (0Ch) answered with INT5,
+libcd `DiskError` / `CdInit: Init failed`) is now historical. With item 30 (#699) `CD_init`
+completes and execution continues into `ResetGraph`. The current measured stop is
+`BIOS_HLE_UNSUPPORTED_CALL` `A0:49` (GPU_cw), tracked by #701. The earlier `OUTER_BUDGET_EXHAUSTED` stop at
 `0x80025CCC` in the `CD_sync` VSync loop (items 26-27) is now historical, as is the
 `UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8`, which is reproduced only with
 `--no-mixed-fallback`; the measurement-only extra root is no longer required. Likewise,
@@ -535,8 +536,20 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     `CdInit: Init failed` and retries `CD_init` indefinitely. Frame evidence stays `no-frame-activity`; no real sector
     data is read. Next blocker: #699.
 
+30. **#699: CdlMute/CdlDemute implemented; `CD_init` completes; the stop moves to A0:49.**
+    Reproduced on `main` `102a0cc`: the CD commands written to `0x1F801801` repeat `0x01`, `0x0A`, `0x0C`, then libcd prints
+    `DiskError` / `CdInit: Init failed` and retries (`ARTIFACT_TIMEOUT`). CONFIRMED (psx-spx: `0Bh Mute` and `0Ch Demute`
+    answer `INT3(stat)`, `0Ah Init` answers `INT3(late-stat), INT2(stat)`; DuckStation: Mute/Demute set a `muted` flag
+    and send ACK + stat, `SoftReset` (Init) and `Reset` clear it). Fix: `CdRomDevice` supports Mute/Demute with the existing
+    response/IRQ path (INT3 + stat, no parameters else INT5, `IsMuted` cleared by Init/Reset; no audio consumer exists yet);
+    every other unknown command still answers INT5. Measured with the same two roots: the commands are now `0x01`, `0x0A`,
+    `0x0C` once each, then the guest writes the CD volume registers (indexes 2/3, accepted and ignored by the device) and
+    `CD_init` returns: no `DiskError`, no retry. Output continues with `ResetGraph:jtb=80054dbc,env=80054e04`, then the
+    run stops with `BIOS_HLE_UNSUPPORTED_CALL` `A0:49` (exit 1, `state=5`, #701). No sector read command was issued:
+    real disc data is not reached (#14). Frame evidence stays `no-frame-activity`.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. The current first blocker is the unimplemented CdlDemute (`0x0C`) in `CdRomDevice`, which libcd reports as `DiskError` / `CdInit: Init failed` while retrying `CD_init` (#699). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves it, `CD_init` completes, and the current first blocker is the unregistered `A0:49` (#701). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary

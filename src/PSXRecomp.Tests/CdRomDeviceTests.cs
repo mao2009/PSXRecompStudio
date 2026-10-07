@@ -154,6 +154,86 @@ public class CdRomDeviceTests
         cd.ReadRegister(1).Should().Be(0x02);
     }
 
+    [Theory]
+    [InlineData(0x0B, true)]
+    [InlineData(0x0C, false)]
+    public void MuteAndDemute_AnswerInt3WithStat_AndSetTheMuteFlag(byte command, bool expectMuted)
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteCommand(0x0B); // start muted so Demute's effect is observable
+
+        cd.AcknowledgeInterrupt();
+        cd.ReadRegister(1);
+        cd.WriteCommand(command);
+
+        cd.IsMuted.Should().Be(expectMuted);
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge, "INT3, not INT5");
+        cd.HasInterrupt.Should().BeTrue();
+        cd.ResponseCount.Should().Be(1);
+        cd.ReadRegister(1).Should().Be(0x02, "stat: motor on");
+        cd.ReadStatus().Should().Be(StatusIdle);
+
+        cd.SetInterruptFlag(0x1F);
+        cd.HasInterrupt.Should().BeFalse("the guest acknowledge lowers the line");
+    }
+
+    [Theory]
+    [InlineData(0x0B, false)]
+    [InlineData(0x0B, true)]
+    [InlineData(0x0C, false)]
+    [InlineData(0x0C, true)]
+    public void MuteAndDemute_WithAParameter_FailClosedAndKeepTheExistingFlag(byte command, bool initiallyMuted)
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        if (initiallyMuted)
+        {
+            cd.WriteCommand(0x0B);
+            cd.ReadRegister(1);
+            cd.AcknowledgeInterrupt();
+        }
+
+        cd.IsMuted.Should().Be(initiallyMuted);
+
+        cd.WriteRegister(2, 0x01);
+        cd.WriteCommand(command);
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        cd.ReadRegister(1).Should().Be(0x03);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorWrongParameterCount);
+        cd.IsMuted.Should().Be(initiallyMuted, "an invalid Mute/Demute must not mutate the existing mute state");
+    }
+
+    [Fact]
+    public void MuteFlag_IsClearedByInitAndReset_AndIsUnmutedAfterConstruction()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.IsMuted.Should().BeFalse();
+
+        cd.WriteCommand(0x0B);
+        cd.IsMuted.Should().BeTrue();
+        cd.WriteCommand(0x0A);
+        cd.IsMuted.Should().BeFalse("Init is a soft reset (DuckStation SoftReset clears muted)");
+
+        cd.WriteCommand(0x0B);
+        cd.Reset();
+        cd.IsMuted.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0x0D)]
+    [InlineData(0x0E)]
+    [InlineData(0x30)]
+    public void CommandsThatAreNotModelled_StillFailClosedWithInt5(byte command)
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+
+        cd.WriteCommand(command);
+
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
+        cd.ReadRegister(1).Should().Be(0x03);
+        cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidCommand);
+    }
+
     [Fact]
     public void GetId_LicensedMode2_QueuesInt3ThenLicensedIdentityInt2()
     {

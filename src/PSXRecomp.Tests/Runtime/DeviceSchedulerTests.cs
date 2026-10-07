@@ -214,6 +214,23 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void CdlDemute_Response_RaisesIrq2_AndStaysLowAfterTheGuestAcknowledge()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        var scheduler = new DeviceScheduler(_core, _interrupts, _gpu, cdRom);
+
+        cdRom.WriteCommand(0x0C);
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(CdRomBit);
+
+        cdRom.ReadRegister(1);
+        cdRom.SetInterruptFlag(0x1F);
+        _interrupts.Acknowledge(~CdRomBit);
+        scheduler.Advance(1);
+        _interrupts.Status.Should().Be(0u);
+    }
+
+    [Fact]
     public void CdRomRead_Int3ThenInt1_AreDistinctIrq2Generations()
     {
         var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
