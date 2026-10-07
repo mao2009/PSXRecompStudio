@@ -153,7 +153,7 @@ Implemented (ADR-014 amendment 2026-09-11 for #360).
 | puts alias | B0:3F | **Registered `Supported` (full documented behavior)** — dispatches to the same `PutsService` as A0:3E, per the ADR-014 amendment *B0:3F registered* (2026-09-11); also reachable as C0:BF through canonical physical-slot mirroring | None — selected by real-ROM evidence ([3.4](#34-real-rom-evidence-obtained)) and now implemented | None; registered |
 | GetC0Table | B0:56 | **Registered `Supported`** — returns `BiosJumpTables.C0TableAddress` (`0x674`); that address is backed by guest-visible RAM connected to dispatch; also reachable as C0:D6 | None for the documented behavior (return table base; base is now real and patchable) | None; registered. Note: `0x674` is this Runtime's design choice, not a primary-source-confirmed real-hardware fact — see ADR-014 amendment for #360 |
 | GetB0Table | B0:57 | **Registered `Supported`** — returns `BiosJumpTables.B0TableAddress` (`0x874`); same backing guarantee as GetC0Table; also reachable as C0:D7 | None | None; registered. Same caveat on `0x874` |
-| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the thirteen registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
+| all other non-registered canonical identities | — | **Unregistered** — calls whose canonical physical-slot identity is not one of the fourteen registry entries fail loudly via `BIOS_HLE_UNSUPPORTED_CALL`; no dummy success is returned | Per-service | Per-service |
 
 Notes verified against the code:
 
