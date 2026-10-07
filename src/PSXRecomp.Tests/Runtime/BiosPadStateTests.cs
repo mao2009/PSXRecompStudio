@@ -121,6 +121,19 @@ public sealed class BiosPadStateTests : IDisposable
         State().Should().Be((false, 0u));
     }
 
+    [Fact]
+    public void A_Disliked_Type_Returns_Zero_And_Preserves_Existing_Pad_State()
+    {
+        PadInitAndStart(0x20000001, ButtonDest, 0, 0).ReturnValue.Should().Be(2u);
+        State().Should().Be((true, ButtonDest));
+
+        var result = PadInitAndStart(0x20000002, ButtonDest + 4, 0, 0);
+
+        result.Status.Should().Be(BiosServiceStatus.Supported);
+        result.ReturnValue.Should().Be(0u, "the BIOS rejects the type without undoing an earlier successful start");
+        State().Should().Be((true, ButtonDest), "a disliked type must not mutate the existing pad state");
+    }
+
     // ---- state that cannot be written / read -----------------------------------------------------------
 
     private sealed class RejectingWriter : IGuestMemoryWriter
