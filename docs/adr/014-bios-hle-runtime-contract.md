@@ -1976,3 +1976,19 @@ cannot express (it serves RAM only).
 - **A0:49.** `GPU_cw(cmd)`: `GPU_sync`, then GP0 write, return 0 (OpenBIOS `gpu.c`).
 
 Tests: `BiosGpuCommandServiceTests`.
+
+## Amendment (2026-10-07): B0:15 records the PadCardIrq enqueue; the chain refuses to skip it
+
+Issue #703: Persona's next call after `GPU_cw` is B0:15 `OutdatedPadInitAndStart(type, button_dest, unused, unused)`.
+
+- **CONFIRMED (psx-spx; OpenBIOS `initPadHighLevel`).** Returns 0 unless `type` is `20000000h`/`20000001h`; otherwise
+  fills the hidden buffers, runs `InitPad` and `StartPad` (which enqueues the priority-2 `PadCardIrq` handler),
+  memorizes `button_dest`, returns 2.
+- **Model.** `BiosPadState` keeps "enqueued" and `button_dest` in a guest-RAM kernel variable (`0x140`, this Runtime's
+  own choice). The hidden buffers, StartPad's other flags (including auto-ack = 1, which remains #661's together with
+  B0:5B) and the unused-parameter stack stores are not modelled; `button_dest` is never dereferenced at call time.
+- **Chain invariant.** The #690 amendment skipped priority 2 because nothing could be enqueued. B0:15 can now enqueue it, so
+  `DefaultChain` stops with `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` when PadCardIrq is enqueued and would claim the exception
+  (IRQ0 pending and enabled) rather than skip an element that exists. Running the element is #661.
+
+Tests: `BiosPadStateTests`.
