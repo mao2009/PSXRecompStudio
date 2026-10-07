@@ -175,10 +175,10 @@ public sealed class BiosExceptionHandlerTests : IDisposable
     [Fact]
     public void The_Default_Chain_Stops_On_A_Pending_Enabled_Irq_It_Does_Not_Model_Instead_Of_Pretending_A_Handler_Ran()
     {
-        // IRQ2 (CD-ROM) belongs to priority 0, which the Runtime does not model (#690 models only IRQ0 at priority 3).
-        const uint cdromBit = 1u << 2;
+        // IRQ3 (DMA) is outside the DefInt sources the Runtime models (IRQ0 #690, IRQ2 #697).
+        const uint cdromBit = 1u << 3;
         _interrupts.SetMask(cdromBit);
-        _interrupts.Raise(2);
+        _interrupts.Raise(3);
         var saved = Registers(0x1000);
         RegisterHook(saved);
         var gpr = Registers(0x5000);

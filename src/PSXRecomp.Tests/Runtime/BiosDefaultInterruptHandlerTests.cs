@@ -15,7 +15,8 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
 {
     private const uint VblankBit = 1u << DeviceScheduler.VblankIrq;
     private const uint Timer0Bit = 1u << DeviceScheduler.Timer0Irq;
-    private const uint CdromBit = 1u << 2;
+    private const uint CdromBit = 1u << DeviceScheduler.CdRomIrq;
+    private const uint DmaBit = 1u << DeviceScheduler.DmaIrq;
     private const uint HookBuffer = 0x00001000;
     private const uint Epc = 0x80025CBC;
     private const uint EntrySr = 0x00000404;
@@ -138,9 +139,9 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
     // ---- fail-closed boundaries ---------------------------------------------------------------------------
 
     [Fact]
-    public void A_Pending_Enabled_Irq_Other_Than_Irq0_Fails_Closed()
+    public void A_Pending_Enabled_Irq_Outside_The_Modelled_Set_Fails_Closed()
     {
-        Pend(CdromBit, 2);
+        Pend(DmaBit, DeviceScheduler.DmaIrq);
         RegisterHook(Registers(0x1000));
         var live = Registers(0x5000);
 
@@ -148,9 +149,9 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
 
         outcome.Handled.Should().BeFalse();
         outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain($"pendingEnabled=0x{CdromBit:X4}").And.Contain("EPC=0x80025CBC");
+        outcome.DiagnosticMessage.Should().Contain($"pendingEnabled=0x{DmaBit:X4}").And.Contain("EPC=0x80025CBC");
         outcome.Gpr.Should().Equal(live, "the hook did not fire");
-        (_interrupts.Status & CdromBit).Should().Be(CdromBit);
+        (_interrupts.Status & DmaBit).Should().Be(DmaBit);
     }
 
     [Fact]
@@ -196,6 +197,102 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
         RegisterHook(Registers(0x1000));
 
         Handle(Registers(0x5000)).DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
+    }
+
+    // ---- IRQ2 / CD-ROM: DefInt's EVENT_CDROM (F0000003h,1000h) -----------------------------------------
+
+    [Fact]
+    public void An_Unacknowledged_CdRom_Irq_Runs_The_Chain_To_The_End_And_Enters_The_Registered_Hook()
+    {
+        Pend(CdromBit, DeviceScheduler.CdRomIrq);
+        var saved = Registers(0x1000);
+        RegisterHook(saved);
+
+        var outcome = Handle(Registers(0x5000));
+
+        outcome.Handled.Should().BeTrue();
+        outcome.NextPc.Should().Be(saved[31]);
+        outcome.Gpr[(int)R3000aRegister.V0].Should().Be(1u);
+        outcome.RestoredSr.Should().BeNull("no ReturnFromException: the guest's hook returns itself");
+        (_interrupts.Status & CdromBit).Should().Be(CdromBit, "DefInt does not acknowledge I_STAT: the guest's callback does");
+    }
+
+    [Fact]
+    public void A_CdRom_Irq_Without_A_Hook_Takes_The_Default_Exit_And_Stays_Pending()
+    {
+        Pend(CdromBit, DeviceScheduler.CdRomIrq);
+        var live = Registers(0x5000);
+
+        var outcome = Handle(live);
+
+        outcome.Handled.Should().BeTrue();
+        outcome.NextPc.Should().Be(Epc);
+        outcome.RestoredSr.Should().Be(EntrySr);
+        (_interrupts.Status & CdromBit).Should().Be(CdromBit);
+    }
+
+    [Fact]
+    public void A_CdRom_Irq_That_Is_Not_Enabled_Is_Not_Pending_For_The_Chain()
+    {
+        _interrupts.SetMask(VblankBit);
+        _interrupts.Raise(DeviceScheduler.CdRomIrq);
+
+        BiosDefaultInterruptHandler.Run(Context()).Status.Should().Be(BiosExceptionChainStatus.Completed);
+    }
+
+    [Fact]
+    public void A_CdRom_Irq_With_Another_Pending_Irq_Fails_Closed()
+    {
+        Pend(CdromBit | VblankBit, DeviceScheduler.CdRomIrq, DeviceScheduler.VblankIrq);
+        RegisterHook(Registers(0x1000));
+
+        var outcome = Handle(Registers(0x5000));
+
+        outcome.Handled.Should().BeFalse();
+        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
+        outcome.DiagnosticMessage.Should().Contain($"pendingEnabled=0x{CdromBit | VblankBit:X4}");
+        (_interrupts.Status & (CdromBit | VblankBit)).Should().Be(CdromBit | VblankBit, "nothing is acknowledged");
+    }
+
+    [Fact]
+    public void A_CdRom_Irq_With_An_Existing_EvCB_Table_Fails_Closed_Naming_The_Cdrom_Event()
+    {
+        Pend(CdromBit, DeviceScheduler.CdRomIrq);
+        Writer.TryWrite(BiosTimerVblankIrqHandler.EventControlBlockTableAddress, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
+        RegisterHook(Registers(0x1000));
+
+        var result = BiosDefaultInterruptHandler.Run(Context());
+
+        result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
+        result.Detail.Should().Contain("0xF0000003,1000").And.Contain("#687");
+        Handle(Registers(0x5000)).DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
+        (_interrupts.Status & CdromBit).Should().Be(CdromBit);
+    }
+
+    [Fact]
+    public void An_Enabled_CdRom_Auto_Ack_Clears_Irq2_And_Keeps_A_Masked_Pending_Irq()
+    {
+        // pendingEnabled = IRQ2 only; I_STAT = IRQ2 + IRQ3 (DMA is pending but masked).
+        _interrupts.SetMask(CdromBit);
+        _interrupts.Raise(DeviceScheduler.CdRomIrq);
+        _interrupts.Raise(DeviceScheduler.DmaIrq);
+        (_interrupts.Status & (CdromBit | DmaBit)).Should().Be(CdromBit | DmaBit);
+
+        var result = BiosDefaultInterruptHandler.Run(Context(), irq => irq == DeviceScheduler.CdRomIrq);
+
+        result.Status.Should().Be(BiosExceptionChainStatus.Completed);
+        (_interrupts.Status & CdromBit).Should().Be(0u, "IRQ2 was auto-acknowledged");
+        (_interrupts.Status & DmaBit).Should().Be(DmaBit, "the masked IRQ3 stays latched");
+    }
+
+    [Fact]
+    public void Priority_1_Elements_Do_Not_Claim_A_CdRom_Irq()
+    {
+        Pend(CdromBit, DeviceScheduler.CdRomIrq);
+        SetFlag(3, 1);
+
+        BiosTimerVblankIrqHandler.Run(Context()).Status.Should().Be(BiosExceptionChainStatus.Completed);
+        (_interrupts.Status & CdromBit).Should().Be(CdromBit);
     }
 
     // ---- priority 1 still comes first ----------------------------------------------------------------------

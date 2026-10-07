@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1, `state=5`) for a pending enabled IRQ2 (CD-ROM), EPC `0x80027848`, right after the guest's first CD command (item 28; tracked by #697 under the gate #351).
+**Classification:** libcd `CD_init` retry loop after `CdlDemute` (0Ch) is answered with INT5 (`DiskError` / `CdInit: Init failed`); the run ends on the wall-clock/outer budget, not on a diagnostic (item 29; tracked by #699 under the gate #351).
 
 **Description:**
 
@@ -81,13 +81,15 @@ the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-throug
 without an extra root, passes A0:3F `printf`, and emits
 `CD_init:addr=800500e4`. The generated host now crosses the VBlank exception chain,
 the guest's B0:19 hook, the runtime-discovered VBlank callback through the default mixed-execution
-path, and B0:17 ReturnFromException. The current measured stop is
-`OUTER_BUDGET_EXHAUSTED` (exit 2, `state=3`) at guest PC `0x80025CCC` while the guest
-remains in the `CD_sync` VSync loop (items 26-27). The earlier
-`UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8` is now historical and is reproduced
-only with `--no-mixed-fallback`; the measurement-only extra root is no longer required.
-Likewise, the still earlier `OUTER_BUDGET_EXHAUSTED` wait at `0x800278A8` (#675,
-items 16-19) is no longer where the run ends.
+path, B0:17 ReturnFromException, and the CD-ROM IRQ2 path through DefInt and the guest callback.
+The current measured stop is the libcd `CD_init` retry loop after `CdlDemute` (0Ch) is
+answered with INT5: libcd reports `DiskError` / `CdInit: Init failed` and the run ends on
+the wall-clock/outer budget (item 29, #699). The earlier `OUTER_BUDGET_EXHAUSTED` stop at
+`0x80025CCC` in the `CD_sync` VSync loop (items 26-27) is now historical, as is the
+`UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8`, which is reproduced only with
+`--no-mixed-fallback`; the measurement-only extra root is no longer required. Likewise,
+the still earlier `OUTER_BUDGET_EXHAUSTED` wait at `0x800278A8` (#675, items 16-19)
+is no longer where the run ends.
 
 **Historical structural gap.** Earlier production runs failed before runtime
 because `ReachableProgramBuilder` lowers the entire statically reachable graph
@@ -516,8 +518,25 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     (I_STAT=0x0004, I_MASK=0x000D, EPC `0x80027848`): IRQ2 is pending but the kernel priority chain has no CD-ROM
     element (#697). Not measured: whether the chain lets `CD_sync` complete; real disc data is not reached.
 
+29. **#697: CD-ROM IRQ2 is DefInt's (priority 3); the guest callback runs and `CD_sync` completes.**
+    Reproduced on `main` `d9782b6` (item-28 command): exit 1, `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, I_STAT=0x0004,
+    I_MASK=0x000D, EPC `0x80027848`, CAUSE=0x400, SR=0x404. CONFIRMED (PCSX-Redux OpenBIOS `IRQVerifier`, `EVENT_CDROM =
+    0xF0000003` in `common/kernel/events.h`; psx-spx priority list): the kernel delivers IRQ2's event `F0000003h,1000h`
+    from `DefInt` (priority 3) after priorities 0-2, acknowledging I_STAT only when `C0:0D` auto-ack is on (default off); the
+    retail priority-0 `CdromDmaIrq`/`CdromIoIrq` are enqueued by the BIOS's own CD init, which a BIOS-less run never
+    executes (C0:02 is unregistered). Fix: `BiosDefaultInterruptHandler` now models exactly one of IRQ0 or IRQ2 pending
+    and enabled (no EvCB table: no-op delivery); anything else (several, other IRQs, an existing EvCB table, #687)
+    still fails closed. Neither the CD controller flag nor I_STAT is touched by the kernel: the guest's B0:19 hook
+    dispatches `InterruptCallback(2)` itself. Measured with the same two roots: the hook is entered, the IRQ2 callback
+    (guest `0x800281F8`, runtime-discovered through mixed execution, 1706 entries) acknowledges the controller (I_STAT write `0xFFFB` by the guest dispatcher, then CD
+    interrupt flag `0x1F801803` and the response read), and the guest issues CD commands `0x01` (CdlNop), `0x0A` (CdlInit)
+    and `0x0C` (CdlDemute) in turn: `CD_sync` completed for Nop and Init (the next command is issued only afterwards),
+    while `CdlDemute` is unimplemented in `CdRomDevice` and answered with INT5. libcd then prints `DiskError: ...` and
+    `CdInit: Init failed` and retries `CD_init` indefinitely. Frame evidence stays `no-frame-activity`; no real sector
+    data is read. Next blocker: #699.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 moves the current stop to `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`), tracked by #697. Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. The current first blocker is the unimplemented CdlDemute (`0x0C`) in `CdRomDevice`, which libcd reports as `DiskError` / `CdInit: Init failed` while retrying `CD_init` (#699). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
