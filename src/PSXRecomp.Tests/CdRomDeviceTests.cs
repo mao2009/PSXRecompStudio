@@ -492,7 +492,7 @@ public class CdRomDeviceTests
         var cd = new CdRomDevice();
         cd.WriteRegister(2, 0x01);
         cd.WriteRegister(0, 1);
-        cd.WriteRegister(2, 0x1F);
+        cd.WriteRegister(2, 0x00);
         cd.WriteCommand(0x0A);
         cd.WriteRegister(0, 0);
         cd.WriteRegister(2, 0x99);
