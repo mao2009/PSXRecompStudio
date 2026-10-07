@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `kernel exception handler entered; priority chain reaches an unmodelled element (VBlank IRQ0 pending)` (measured in #662; next: #658/#660, then #661).
+**Classification:** `OUTER_BUDGET_EXHAUSTED` at guest PC `0x80025CCC` while the guest is inside the `CD_sync` VSync loop (items 26-27; next boundary: whether `CD_sync` completes, tracked by #351).
 
 **Description:**
 
@@ -79,18 +79,15 @@ dotnet run --project src/PSXRecomp.Cli -- run rom/PERSONA.chd --output out/perso
 
 the run passes SYS(02h) `ExitCriticalSection`, discovers the SYSCALL fall-through
 without an extra root, passes A0:3F `printf`, and emits
-`CD_init:addr=800500e4`. It then takes the VBlank interrupt as a hardware INT
-exception and stops, fail-closed, at the general exception vector
-`0x80000080` (item 20, #680). Since #662 (item 21) that vector is the Runtime's
-kernel exception handler (C0:06): the run enters it and saves the context. It used to stop,
-fail-closed, at the priority chain with `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1,
-state 5 `RuntimeFailure`; EPC `0x80025CBC`, CAUSE `0x400`, SR `0x404`, I_STAT
-`0x0001`, I_MASK `0x000D`) because the pending enabled VBlank IRQ0 needed a kernel
-chain element the Runtime did not model. Since #690 (item 24) that chain completes into the
-guest's B0:19 hook, and with these two roots the run now stops at `UNRESOLVED_TRANSFER_IN_IMAGE`
-`0x80025BC8` (exit 2, the guest's VBlank callback, #693); with `--entry-root 0x80025BC8` added
-(measurement only) it reaches `B0:17` (#664). The earlier `OUTER_BUDGET_EXHAUSTED` wait at
-`0x800278A8` (#675, items 16-19) is no longer where the run ends.
+`CD_init:addr=800500e4`. The generated host now crosses the VBlank exception chain,
+the guest's B0:19 hook, the runtime-discovered VBlank callback through the default mixed-execution
+path, and B0:17 ReturnFromException. The current measured stop is
+`OUTER_BUDGET_EXHAUSTED` (exit 2, `state=3`) at guest PC `0x80025CCC` while the guest
+remains in the `CD_sync` VSync loop (items 26-27). The earlier
+`UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8` is now historical and is reproduced
+only with `--no-mixed-fallback`; the measurement-only extra root is no longer required.
+Likewise, the still earlier `OUTER_BUDGET_EXHAUSTED` wait at `0x800278A8` (#675,
+items 16-19) is no longer where the run ends.
 
 **Historical structural gap.** Earlier production runs failed before runtime
 because `ReachableProgramBuilder` lowers the entire statically reachable graph
