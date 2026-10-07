@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `OUTER_BUDGET_EXHAUSTED` at guest PC `0x80025CCC` while the guest is inside the `CD_sync` VSync loop (items 26-27; next boundary: whether `CD_sync` completes, tracked by #351).
+**Classification:** `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` (exit 1, `state=5`) for a pending enabled IRQ2 (CD-ROM), EPC `0x80027848`, right after the guest's first CD command (item 28; tracked by #697 under the gate #351).
 
 **Description:**
 
@@ -503,8 +503,21 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     whether `CD_sync` completes (item 26), tracked by the gate #351; no new stop appeared.**
     Scope: no Persona address enters `src/`; `psxrecomp recompile` and embedders unchanged.
 
+28. **CD_sync root cause (#351): the CD-ROM interrupt-enable reset value was 0; the stop moves to the IRQ2 chain.**
+    Measured on `main` `f1c445a` (item-27 command): `OUTER_BUDGET_EXHAUSTED` at `0x80025CCC` is only where the
+    budget ended (inside libgpu `VSync`, called from `CD_sync`). Retired instructions 1,230,672; two VBlank exceptions
+    (I_STAT=0x0001, I_MASK=0x000D); the guest issued exactly one CD command, `CdlNop` (`0x01` to `0x1F801801`, never
+    a write to `0x1F801802`), then polled `VSync(-1)` (2 MMIO reads per pass, 19,517 passes) with no further CD
+    register access: `CD_sync` waits for the IRQ2 callback. Raising the budget does not help (no CD state change).
+    ROOT CAUSE: `CdRomDevice` reset its interrupt-enable register to 0, so `HasInterrupt` stayed false and the
+    scheduler never raised IRQ2. libcd never writes the register (the boot BIOS leaves it as reset); DuckStation's
+    `CDROM::Reset`/`SoftReset` set it to `0x1F`. Fix: the reset value is `0x1F` (constructor and `Reset()`); a guest
+    write of 0 still masks the line. After the fix the same command stops at `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`
+    (I_STAT=0x0004, I_MASK=0x000D, EPC `0x80027848`): IRQ2 is pending but the kernel priority chain has no CD-ROM
+    element (#697). Not measured: whether the chain lets `CD_sync` complete; real disc data is not reached.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and the current stop is `OUTER_BUDGET_EXHAUSTED` at `0x80025CCC` while the guest is still inside the `CD_sync` VSync loop. Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 moves the current stop to `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`), tracked by #697. Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
