@@ -25,7 +25,7 @@ public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed,
 /// deterministic command protocol tracked by Issues #585/#586.
 ///
 /// Implemented commands: GetStat/Nop (01h), SetLoc (02h), ReadN (06h),
-/// Init (0Ah), GetID (1Ah) and ReadS (1Bh). Multi-response commands are exposed
+/// Mute (0Bh), Demute (0Ch), Init (0Ah), GetID (1Ah) and ReadS (1Bh). Multi-response commands are exposed
 /// one interrupt packet at a time: the next packet becomes visible only after
 /// the current response FIFO is drained and its interrupt is acknowledged.
 ///
@@ -121,6 +121,9 @@ public sealed class CdRomDevice : ICdRom
     public bool HasPendingLocation { get; private set; }
 
     public bool IsReading { get; private set; }
+
+    /// <summary>CD audio mute flag set by Mute (0Bh) and cleared by Demute (0Ch), Init (0Ah) and <see cref="Reset"/>. No audio consumer exists yet.</summary>
+    public bool IsMuted { get; private set; }
 
     /// <summary>True for ReadS, false for ReadN. Meaningful only while <see cref="IsReading"/> is true.</summary>
     public bool ReadSectorsRaw { get; private set; }
@@ -223,6 +226,8 @@ public sealed class CdRomDevice : ICdRom
             case 0x02: ExecuteSetLoc(parameters); break;
             case 0x06: ExecuteRead(parameters, raw: false); break;
             case 0x0A: ExecuteInit(parameters); break;
+            case 0x0B: ExecuteSetMuted(parameters, muted: true); break;
+            case 0x0C: ExecuteSetMuted(parameters, muted: false); break;
             case 0x1A: ExecuteGetId(parameters); break;
             case 0x1B: ExecuteRead(parameters, raw: true); break;
             default: QueueError(ErrorInvalidCommand); break;
@@ -267,6 +272,7 @@ public sealed class CdRomDevice : ICdRom
         HasPendingLocation = false;
         IsReading = false;
         ReadSectorsRaw = false;
+        IsMuted = false;
     }
 
     private byte CommandStatus
@@ -286,9 +292,24 @@ public sealed class CdRomDevice : ICdRom
         QueueResponse(IntAcknowledge, CommandStatus);
     }
 
+    /// <summary>
+    /// Mute (0Bh) / Demute (0Ch): no parameters, one INT3(stat) response (psx-spx: <c>INT3(stat)</c>; DuckStation
+    /// sets its muted flag and sends ACK + stat). Only the flag is kept: this Runtime has no CD-DA/XA audio path
+    /// yet, so nothing reads <see cref="IsMuted"/> but the command contract and its tests.
+    /// </summary>
+    private void ExecuteSetMuted(IReadOnlyCollection<byte> parameters, bool muted)
+    {
+        if (!RequireParameterCount(parameters, 0)) return;
+
+        IsMuted = muted;
+        QueueResponse(IntAcknowledge, CommandStatus);
+    }
+
     private void ExecuteInit(IReadOnlyCollection<byte> parameters)
     {
         if (!RequireParameterCount(parameters, 0)) return;
+
+        IsMuted = false; // DuckStation SoftReset clears muted
 
         Location = null;
         HasPendingLocation = false;
