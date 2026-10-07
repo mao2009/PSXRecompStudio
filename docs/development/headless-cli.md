@@ -156,8 +156,9 @@ because no production result exists to serialize. When the run succeeds but is
 blocked (exit code 2), the JSON document is still emitted with
 `"success": false`.
 
-Without `--report` or `--frame-evidence`, the run JSON field set is unchanged.
-With `--frame-evidence`, one `frameEvidence` object is appended:
+By default, the run JSON envelope includes `mixedFallback` even without `--report` or
+`--frame-evidence`; `--no-mixed-fallback` omits that field. With `--frame-evidence`, one
+`frameEvidence` object is appended:
 
 ```json
 { "frameEvidence": {
