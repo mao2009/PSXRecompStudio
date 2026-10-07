@@ -8,7 +8,7 @@ namespace PSXRecomp.Core.Runtime;
 /// address range, or generated-code provenance.
 /// </summary>
 [Domain]
-public sealed class BiosHleRuntime : IBiosRuntime
+public sealed class BiosHleRuntime : IDeviceBiosRuntime
 {
     /// <summary>
     /// A0:39 InitHeap(addr,size) — the identity real-ROM analysis observed most
@@ -41,6 +41,9 @@ public sealed class BiosHleRuntime : IBiosRuntime
 
     /// <summary>A0:72 CdRemove() (PSY-Q <c>_96_remove</c>) — void, no arguments; no modelled guest-visible effect (see the handler).</summary>
     public const byte CdRemoveFunction = 0x72;
+
+    /// <summary>A0:49 GPU_cw(cmd): waits for the GPU, then writes one word to GP0 (see <see cref="BiosGpuCommandService"/>).</summary>
+    public const byte GpuCommandWordFunction = 0x49;
 
     /// <summary>A0:3C putchar, the first deterministic service in this vertical slice.</summary>
     public const byte PutCharFunction = 0x3C;
@@ -78,6 +81,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
     private readonly IRuntimeOutputSink _outputSink;
     private readonly IGuestMemoryReader _guestMemoryReader;
     private readonly IGuestMemoryWriter _guestMemoryWriter;
+    private IGuestDeviceAccess? _devices;
 
     /// <summary>
     /// Creates the registry over the three Runtime boundaries its services need:
@@ -140,6 +144,7 @@ public sealed class BiosHleRuntime : IBiosRuntime
             [(BiosCallFamily.C0, ChangeClearRCntFunction)] = (2, InvokeChangeClearRCnt),
             [(BiosCallFamily.A0, CdRemoveFunction)] = (0, InvokeCdRemove),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
+            [(BiosCallFamily.A0, GpuCommandWordFunction)] = (1, identity => BiosGpuCommandService.Invoke(identity, _devices)),
             [(BiosCallFamily.A0, PutCharFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.B0, PutCharAliasFunction)] = (1, InvokePutChar),
             [(BiosCallFamily.A0, PutsFunction)] = (1, InvokePuts),
@@ -336,6 +341,13 @@ public sealed class BiosHleRuntime : IBiosRuntime
         }
 
         return BiosServiceResult.CpuStateReplacement(identity, new BiosCpuStateMutation(gpr, hi, lo, sr, pc));
+    }
+
+    /// <inheritdoc />
+    public void AttachDevices(IGuestDeviceAccess devices)
+    {
+        ArgumentNullException.ThrowIfNull(devices);
+        _devices = devices;
     }
 
     /// <summary>A0:13 setjmp(buf). The behavior lives in <see cref="SetJmpService"/>.</summary>

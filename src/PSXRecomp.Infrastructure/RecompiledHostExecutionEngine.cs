@@ -592,6 +592,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 _scheduler = new DeviceScheduler(
                     _devices.Core, _devices.InterruptControllerAdapter, _devices.GpuAdapter, _devices.CdRomDevice, _devices.CdRomDmaTransfer);
                 _biosRuntime = _biosRuntimeFactory(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
+                (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)
                 {
                     // Mixed execution (Issue #693): the interpreter steps this graph's own core, so the devices and scheduler

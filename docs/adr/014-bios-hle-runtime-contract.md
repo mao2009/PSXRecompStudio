@@ -1961,3 +1961,18 @@ Issue #697: after #698 the Persona run stopped at `BIOS_EXCEPTION_CHAIN_UNSUPPOR
   CdlDemute being unimplemented in the CD-ROM device (#699; `docs/v0.1.0/persona-e2e-status.md`, item 29).
 
 Tests: `BiosDefaultInterruptHandlerTests` (IRQ2 cases).
+
+## Amendment (2026-10-08): BIOS services reach device registers through `IGuestDeviceAccess`
+
+Issue #701: A0:49 `GPU_cw` is a register access (GP0 write after `GPU_sync`), which the memory reader/writer boundary
+cannot express (it serves RAM only).
+
+- **Boundary.** `IGuestDeviceAccess` (32-bit physical read/write) is implemented by `PsxDeviceGraph`, the one device graph
+  every backend shares. `IDeviceBiosRuntime.AttachDevices` is called by the execution backend that owns the graph (the
+  interpreter engine, which also serves mixed-execution fallback, and the generated-host bridge) right after the factory
+  built the runtime; the factory signature is unchanged. It never advances device time.
+- **Fail closed.** A service that needs devices and has none attached, a register the graph does not model, or a wait
+  (`GPU_sync`) that is not already satisfied returns `BIOS_HLE_UNSUPPORTED_STATE`; the retail timeout/abort path is not modelled.
+- **A0:49.** `GPU_cw(cmd)`: `GPU_sync`, then GP0 write, return 0 (OpenBIOS `gpu.c`).
+
+Tests: `BiosGpuCommandServiceTests`.
