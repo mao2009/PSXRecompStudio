@@ -395,6 +395,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         var biosRuntime = _biosRuntimeFactory?.Invoke(
             new GuestMemoryReader(_bus.Read8),
             new GuestMemoryWriter(_bus.Write8));
+        (biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
 
         var termination = RecompilerIrTerminationReason.Success;
         string? diagnosticCode = null;

@@ -32,7 +32,7 @@ public enum PsxDeviceAccessStatus
 /// width, never a byte-wise decomposition.
 /// </remarks>
 [Domain]
-public sealed class PsxDeviceGraph : IDisposable
+public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
 {
     private bool _disposed;
 
@@ -146,6 +146,12 @@ public sealed class PsxDeviceGraph : IDisposable
         }
         return PsxDeviceAccessStatus.Completed;
     }
+
+    bool IGuestDeviceAccess.TryRead32(uint physicalAddress, out uint value) =>
+        TryRead(physicalAddress, 4, out value) == PsxDeviceAccessStatus.Completed;
+
+    bool IGuestDeviceAccess.TryWrite32(uint physicalAddress, uint value) =>
+        TryWrite(physicalAddress, 4, value) == PsxDeviceAccessStatus.Completed;
 
     /// <summary>Releases the native core, memory bus and MMIO adapters this graph owns.</summary>
     public void Dispose()
