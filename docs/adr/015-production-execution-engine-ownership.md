@@ -215,7 +215,7 @@ The one-`RunSegment`, no-RAM-continuity limit of `RecompiledHostExecutionEngine`
 
 - **Engine ownership.** `InterpreterTitleExecutionEngine` gains an *attached* form (`Attach`) that borrows a `PsxDeviceGraph` and `DeviceScheduler` it does not own: it never `Load`s an image (it would reset the host-owned core), never builds a graph, and does not dispose the graph. Its `RunFallbackSegment` shares one step loop with `RunSegment` (the loop was extracted, not copied), so a fallback has exactly the interpreter's semantics.
 - **Layering.** The attached engine and the segment contract (`MixedFallbackOptions`, `FallbackCpuState`, `FallbackSegmentOutcome`, diagnostics) are Domain; the protocol, RAM copy-sync and bridge wiring (`ArtifactFallbackSession`) are Infrastructure. The Application layer still reaches neither (the engine-selector gap in the sketch above is unchanged).
-- **Production engine statement.** The production backend selected by the Studio remains the interpreter (this ADR's decision); mixed execution is an opt-in capability of the generated-host adapter and does not make that adapter production-default.
+- **Production engine statement.** The production backend selected by the Studio remains the interpreter (this ADR's decision); mixed execution is a capability of the generated-host adapter that embedders enable by supplying `MixedFallbackOptions` and that `psxrecomp run` supplies by default (#693), and it does not make that adapter production-default.
 
 ## Alternatives Considered
 

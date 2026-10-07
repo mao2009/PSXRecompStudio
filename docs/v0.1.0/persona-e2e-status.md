@@ -461,7 +461,8 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     bare in-process memory copy. Without the flag the run is byte-for-byte what item 24 recorded
     (`UNRESOLVED_TRANSFER_IN_IMAGE`, exit 2, guest PC `0x80025BC8`).
     Scope: no Persona address enters `src/`; no Pad/Card (#661), no EvCB matching (#687), no B0:17/B0:18
-    (#664, #665); the mechanism is generic and opt-in (ADR-012 amendment).
+    (#664, #665); the mechanism is generic (ADR-012 amendment) and was opt-in at measurement time; the CLI gate
+    became the default in item 27.
 
 26. **#664 B0:17 ReturnFromException registered; the stop moves off the BIOS call and onto the
     budget.** The remaining B0:17 stop of items 24-25 was a real BIOS-service gap: `B0(17h)`
@@ -488,8 +489,25 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     the CD-ROM IRQ2 callback `0x800281F8` is needed to end the wait (#444). Frame evidence stays
     `unavailable` / `no-frame-activity`.
 
+27. **#693 closed: the callback needs no flag and no root.** The mechanism of item 25 is now the
+    `run` default: `psxrecomp run` enables mixed execution unless `--no-mixed-fallback` is given,
+    while the engine/launcher keep their explicit `MixedFallbackOptions` and every eligibility
+    rule is untouched (ADR-012 amendment). Measured on this branch with the item-24 command exactly
+    as recorded (`run rom/PERSONA.chd --entry-root 0x80025350 --entry-root 0x80025614 --json
+    --report --frame-evidence`): exit 2, `OUTER_BUDGET_EXHAUSTED` (`state=3`,
+    `recompiled-host-artifact`) at guest PC `0x80025CCC` — the same stop item 26 recorded with the
+    flag — output unchanged (`CD_init:addr=800500e4`); `mixedFallback` reports 2 handoffs, 2
+    returns, 168 interpreter instructions, 75 RAM pages in, 2 back, `0x80025BC8` entered twice,
+    last return PC `0x80025514`, and `--report` wrote its bundle. `--no-mixed-fallback` on the same
+    input reproduces item 24 byte-for-byte (`UNRESOLVED_TRANSFER_IN_IMAGE`, exit 2, `state=4`,
+    `0x80025BC8`), so the fail-closed stop is one flag away and stays tested. The `run --json`
+    envelope now always carries `mixedFallback` while mixed execution is on (zero counts when
+    nothing handed off) and omits it under `--no-mixed-fallback`. **Next boundary: unchanged —
+    whether `CD_sync` completes (item 26), tracked by the gate #351; no new stop appeared.**
+    Scope: no Persona address enters `src/`; `psxrecomp recompile` and embedders unchanged.
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693). With the opt-in `--mixed-fallback` (item 25) the same two roots cross that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and the current stop is `OUTER_BUDGET_EXHAUSTED` at `0x80025CCC` while the guest is still inside the `CD_sync` VSync loop. Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and the current stop is `OUTER_BUDGET_EXHAUSTED` at `0x80025CCC` while the guest is still inside the `CD_sync` VSync loop. Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
