@@ -288,7 +288,7 @@ public sealed class CliRunTests
         var chdRoot = chdJson.RootElement;
         // The run JSON envelope is unchanged by the CHD path.
         chdRoot.EnumerateObject().Select(static p => p.Name).Should().BeEquivalentTo(
-            "kind", "success", "artifact", "output", "result");
+            "kind", "success", "artifact", "output", "result", "mixedFallback");
         chdRoot.GetProperty("kind").GetString().Should().Be("run");
         chdRoot.GetProperty("success").GetBoolean().Should().BeTrue();
         var artifact = chdRoot.GetProperty("artifact").GetString();
@@ -429,7 +429,7 @@ public sealed class CliRunTests
         using var json = JsonDocument.Parse(output);
         var root = json.RootElement;
         root.EnumerateObject().Select(static p => p.Name).Should().Equal(
-            "kind", "success", "artifact", "output", "result", "diagnosticBundle");
+            "kind", "success", "artifact", "output", "result", "diagnosticBundle", "mixedFallback");
 
         var bundlePath = root.GetProperty("diagnosticBundle").GetString();
         bundlePath.Should().Be(Path.Combine(Path.GetFullPath(outDir), RunCommand.DiagnosticBundleFileName));
@@ -592,7 +592,7 @@ public sealed class CliRunTests
 
         using var json = JsonDocument.Parse(output);
         json.RootElement.EnumerateObject().Select(static p => p.Name).Should().Equal(
-            "kind", "success", "artifact", "output", "result");
+            "kind", "success", "artifact", "output", "result", "mixedFallback");
         ArtifactExists(Path.Combine(outDir, RunCommand.DiagnosticBundleFileName)).Should().BeFalse();
     }
 

@@ -71,11 +71,12 @@ public sealed class CliEntryRootTests
     }
 
     [Fact]
-    public void Run_InImageIndirectTargetWithoutRoot_ReportsInImageUncompiledDiagnostic()
+    public void Run_WithFallbackDisabledAndNoRoot_ReportsInImageUncompiledDiagnostic()
     {
         using var dir = new TempDirectory();
 
-        var (exit, output, _) = Invoke("run", WriteExe(dir), "--output", dir.CreateSubdirectory("out"), "--json");
+        var (exit, output, _) = Invoke(
+            "run", WriteExe(dir), "--no-mixed-fallback", "--output", dir.CreateSubdirectory("out"), "--json");
 
         exit.Should().Be(RecompiledArtifactExitCode.Blocked);
         using var json = JsonDocument.Parse(output);

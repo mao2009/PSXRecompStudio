@@ -26,7 +26,7 @@ public static class Program
 {
     private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--json]";
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
-    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]] [--report] [--frame-evidence] [--json]";
+    private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--frame-evidence] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
 
@@ -105,7 +105,10 @@ public static class Program
         var report = false;
         var frameEvidence = false;
         uint? segmentBudget = null;
-        var mixedFallback = false;
+        // Mixed execution is on by default for 'run' (ADR-012 amendment, Issue #693); the engine and
+        // launcher keep their own explicit opt-in for embedders, and '--no-mixed-fallback' restores
+        // the fail-closed in-image stop on the command line.
+        var mixedFallback = allowSegmentBudget;
         uint? fallbackSegmentBudget = null;
         uint? fallbackMaxTransitions = null;
         var entryRoots = new SortedSet<uint>();
@@ -158,6 +161,15 @@ public static class Program
                         return false;
                     }
                     mixedFallback = true;
+                    break;
+                case "--no-mixed-fallback":
+                    if (!allowSegmentBudget)
+                    {
+                        parsed = default;
+                        error = $"'{token}' is only valid for 'run'.";
+                        return false;
+                    }
+                    mixedFallback = false;
                     break;
                 case "--fallback-segment-budget" or "--fallback-max-transitions":
                     if (!allowSegmentBudget)
@@ -246,7 +258,7 @@ public static class Program
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {
             parsed = default;
-            error = "'--fallback-segment-budget' and '--fallback-max-transitions' require '--mixed-fallback'.";
+            error = "'--fallback-segment-budget' and '--fallback-max-transitions' require mixed execution ('--mixed-fallback' is the default; drop '--no-mixed-fallback').";
             return false;
         }
 
