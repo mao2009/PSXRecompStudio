@@ -102,7 +102,7 @@ public class CdRomDeviceTests
         cd.Parameters.Should().BeEmpty("command dispatch consumes the parameter FIFO");
         cd.ReadStatus().Should().Be(StatusIdle | 0x20, "response FIFO holds the error");
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntError);
-        cd.HasInterrupt.Should().BeFalse("interrupt enable is 0");
+        cd.HasInterrupt.Should().BeTrue("the reset interrupt enable (0x1F) includes INT5");
 
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorStat);
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidCommand);
@@ -425,6 +425,29 @@ public class CdRomDeviceTests
     }
 
     [Fact]
+    public void FreshDevice_HasAllInterruptSourcesEnabled_SoAGuestThatNeverWritesTheEnableGetsIrq()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+
+        cd.InterruptEnable.Should().Be(0x1F);
+        cd.WriteCommand(0x01); // GetStat -> INT3, no enable write by the guest
+        cd.HasInterrupt.Should().BeTrue();
+    }
+
+    [Fact]
+    public void GuestClearingTheEnable_StillMasksTheInterruptLine()
+    {
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        cd.WriteRegister(0, 1);
+        cd.WriteRegister(2, 0x00);
+        cd.WriteRegister(0, 0);
+
+        cd.WriteCommand(0x01);
+
+        cd.HasInterrupt.Should().BeFalse();
+    }
+
+    [Fact]
     public void InterruptEnableAndFlag_ThroughIndexedPorts()
     {
         var cd = WithIndex(1);
@@ -480,7 +503,7 @@ public class CdRomDeviceTests
         cd.Index.Should().Be(0);
         cd.Parameters.Should().BeEmpty();
         cd.ResponseCount.Should().Be(0);
-        cd.InterruptEnable.Should().Be(0);
+        cd.InterruptEnable.Should().Be(CdRomDevice.ResetInterruptEnable);
         cd.LastCommand.Should().BeNull();
         cd.ReadStatus().Should().Be(StatusIdle);
         cd.GetInterruptFlag().Should().Be(0xE0);

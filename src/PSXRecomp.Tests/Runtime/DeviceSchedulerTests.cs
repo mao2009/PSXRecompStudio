@@ -202,6 +202,18 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void CdRomCommandFromAGuestThatNeverWritesTheEnable_RaisesIrq2()
+    {
+        var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        var scheduler = new DeviceScheduler(_core, _interrupts, _gpu, cdRom);
+
+        cdRom.WriteCommand(0x01); // CdlNop as libcd issues it; the enable register is left at its reset value
+        scheduler.Advance(1);
+
+        _interrupts.Status.Should().Be(CdRomBit);
+    }
+
+    [Fact]
     public void CdRomRead_Int3ThenInt1_AreDistinctIrq2Generations()
     {
         var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());

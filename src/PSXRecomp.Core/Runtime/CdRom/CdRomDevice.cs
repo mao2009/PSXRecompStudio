@@ -50,6 +50,13 @@ public sealed class CdRomDevice : ICdRom
     /// </summary>
     public const int DataFifoCapacity = 2352;
 
+    /// <summary>
+    /// Interrupt-enable register value after a hardware reset: all five sources enabled. Guest libraries such as
+    /// libcd never write the register (the boot BIOS leaves it as reset), so a zero default would mask every
+    /// CD-ROM response and no IRQ2 would ever be raised.
+    /// </summary>
+    public const byte ResetInterruptEnable = 0x1F;
+
     public const byte IntDataReady = 0x01;
     public const byte IntComplete = 0x02;
     public const byte IntAcknowledge = 0x03;
@@ -75,7 +82,7 @@ public sealed class CdRomDevice : ICdRom
 
     private readonly CdRomDiscIdentity _discIdentity;
     private int _index;
-    private byte _interruptEnable;
+    private byte _interruptEnable = ResetInterruptEnable;
     private byte _interruptFlag;
     private bool _activeResponseMarksDataReady;
     private ulong _interruptGeneration;
@@ -254,7 +261,7 @@ public sealed class CdRomDevice : ICdRom
         _data.Clear();
         ClearResponseSequence();
         _index = 0;
-        _interruptEnable = 0;
+        _interruptEnable = ResetInterruptEnable;
         LastCommand = null;
         Location = null;
         HasPendingLocation = false;
