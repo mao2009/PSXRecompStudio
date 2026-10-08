@@ -2075,3 +2075,41 @@ Issue #710: Persona calls `StartCARD2()` right after `InitCARD2(1)`; the result 
 
 Tests: `BiosStartCard2Tests`.
 
+
+## Amendment (2026-10-08): blocking HLE calls wait at the vector (`Pending`)
+
+Issue #717 (for #712 `_bu_init`): a real BIOS call such as `_bu_init` busy-waits across several VBlanks while the
+priority-2 PadCardIrq advances its state. Every HLE service so far completed synchronously, so there was no way to
+express "not done yet" without a fake immediate return.
+
+- **Result.** `BiosServiceStatus.Pending` (`BiosServiceResult.Pending`): the service's completion condition does not hold
+  yet. Nothing is returned and no register changes. The service must decide completion only from guest-visible / Core
+  state (guest RAM, the EvCB table, card/pad state, device registers), so a re-invocation is a pure re-poll.
+- **Continuation is the guest's own state.** The CPU stays at the A0/B0/C0 vector with `$t1`, `$a0`-`$a3` and `$ra`
+  intact. Each poll advances the existing `DeviceScheduler` by `BiosBlockingCallWait.PollCycles` (1/64 VBlank interval),
+  and the CPU takes a pending enabled INT right there (EPC = the vector), so the kernel exception handler and its chains
+  (#662) — or, in the interpreter, a guest-owned vector — run normally, and their return re-enters the call. The call completes on the first
+  poll after the condition holds and returns once through the ordinary `Supported` path (`$v0`, `$ra`). Nothing about the
+  in-progress call is saved in host or guest memory beyond those registers.
+- **Both execution forms, one dispatch.** `BiosVectorDispatch.Dispatch(…, wait)` maps `Pending` to
+  `BiosVectorDispatchOutcome.IsPending`. The interpreter advances its scheduler and, when the native CPU's own INT test
+  (SR.IEc, CAUSE.IP & SR.IM) holds, steps once so the INT preempts the fetch at the vector. The generated host advances
+  the bridge's scheduler, sends the controller line (`L`) and resumes the artifact at the same vector, where the artifact's
+  own INT boundary (#680) decides. Both poll on identical device time.
+- **Fail closed, deterministic.** `BiosBlockingCallWait` is the only host-side state: the pending call's
+  `(family, function, $ra)` and its poll count. A call still pending after `MaxPolls` (= 600 VBlank intervals of device
+  time, never wall clock) stops with `BIOS_HLE_WAIT_TIMEOUT`; a second, different pending call while one is outstanding
+  stops with `BIOS_HLE_WAIT_NESTED`; a dispatch path that passes no wait (the differential `RecompilerInterpreterExecutor`)
+  stops with `BIOS_HLE_WAIT_UNSUPPORTED`. Unrelated calls neither complete nor reset the wait. Interrupts disabled during
+  a wait (no IRQ can change the condition) end in the timeout, never a hang. Each poll also spends one step of the
+  segment budget, so a segment ending mid-wait resumes at the vector and polls on.
+- **Scope.** This is the mechanism only. No real BIOS call returns `Pending` yet; A0:70/A0:55 `_bu_init` stay
+  unregistered (#712), and running the PadCardIrq element is still #661. A service with its own semantic timeout (the
+  card state machine's per-VBlank timeout) completes through its condition; `MaxPolls` is only the backstop.
+- **Known ceiling.** The poll quantum is fixed: a device edge that fires more than once within one quantum latches once,
+  as a long `DeviceScheduler.Advance` already does. In the generated host the wait lives as long as the launch's device
+  graph (one per launch), like every other device state there.
+
+Tests: `BiosBlockingCallWaitTests` (synthetic test-only B0:F0 wait on a VBlank-counted guest-RAM word: 1 and 5 VBlanks,
+a timer IRQ during the wait, single return, timeout, repeated-run determinism, generated host, unrelated calls,
+nested and unsupported fail-closed).

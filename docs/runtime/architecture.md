@@ -392,7 +392,10 @@ run. Responsibilities are split so no device behavior is duplicated:
   interpreter has no cycle model, so its retired-instruction count is the time
   source (1 instruction = 1 cycle). The scheduler keeps no clock of its own —
   only the phase inside the current VBlank interval and the DMA IRQ line's last
-  level. BIOS HLE vector dispatch retires no instruction and advances nothing.
+  level. BIOS HLE vector dispatch retires no instruction and advances nothing,
+  except a blocking call that is still `Pending` (Issue #717): each poll at the
+  vector advances `BiosBlockingCallWait.PollCycles` so VBlank and other IRQs keep
+  arriving while the guest waits (ADR-014 amendment).
 - **Device semantics stay native/Rust.** Timers advance via `PSXCore_TickTimers`
   and DMA via `PSXCore_TickDma` — or, when a CD-ROM DMA3 bridge is configured
   (as in production), via `PSXCore_TickDmaExcludingChannel(…, 3)`, because

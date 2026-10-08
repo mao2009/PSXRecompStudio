@@ -225,7 +225,9 @@ transfer to an A0/B0/C0 trampoline vector builds the identity from the PS1 ABI
 (`$t1` selects the function, `$a0`–`$a3` carry up to the registered service's own
 argument count), and the Runtime's answer either moves the PC to a patched
 jump-table target, returns to `$ra` — writing `$v0` only when the service
-produced a return value, leaving it untouched otherwise — or stops the run with
+produced a return value, leaving it untouched otherwise — keeps a still-pending
+blocking call waiting at the vector while devices and interrupts advance
+(bounded in guest time, Issue #717), or stops the run with
 an explicit diagnostic; never a silent success. The interpreter applies that
 outcome to a live core; the generated host is offered its unresolved PCs through
 a generic control-transfer hook in the emitted state struct, so no BIOS address,
