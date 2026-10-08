@@ -22,8 +22,9 @@ public sealed class PsxDeviceGraphMemoryCardSlotTests
     public void ExplicitEmpty_EqualsDefault()
     {
         using var graph = new PsxDeviceGraph(memoryCardSlots: MemoryCardSlotConfiguration.Empty);
+        using var defaultGraph = new PsxDeviceGraph();
 
-        graph.MemoryCardSlots.Should().Be(new PsxDeviceGraph().MemoryCardSlots);
+        graph.MemoryCardSlots.Should().Be(defaultGraph.MemoryCardSlots);
     }
 
     [Theory]
