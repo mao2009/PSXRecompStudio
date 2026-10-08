@@ -2050,3 +2050,28 @@ Issue #708: Persona's next call after `EnableEvent` is `InitCARD2(pad_enable = 1
 
 Tests: `BiosCardStateTests`.
 
+## Amendment (2026-10-08): B0:4B StartCARD2 enqueues the shared PadCardIrq; it is not run
+
+Issue #710: Persona calls `StartCARD2()` right after `InitCARD2(1)`; the result is not read.
+
+- **CONFIRMED (OpenBIOS `startCard`; psx-spx has the signature only) / INFERRED for retail.** No arguments, returns 1. Resets
+  SIO0, dequeues then enqueues the single `PadCardIrq` element (priority 2) that B0:15 / StartPAD2 also use, sets `I_MASK |= IRQ0`,
+  forces the SIO0 auto-ack to 1 and the VBlank timer auto-ack to 0, sets "card started". No I_STAT, IRQ7 or event effect.
+- **Model.** The enqueue is `BiosPadState`'s existing enqueued flag (one shared element: B0:15 and StartCARD2 are the same
+  fact; `button_dest` is kept). "Card started" is bit 1 of the `BiosCardState` flags word (`0x148`, bit 0 "InitCARD2 ran");
+  InitCARD2 leaves it alone. I_MASK is written through `IGuestDeviceAccess`. The priority-2 guard is unchanged and now also
+  fires for a card-only start (tested).
+- **VBlank/root-counter clear policy := 0 (modelled now).** `BiosTimerVblankIrqHandler` already reads
+  `BiosRootCounterClearPolicy` at priority 1; a stale `ChangeClearRCnt(3, 1)` would make it acknowledge IRQ0 and return before
+  the enqueued element is reached, so StartCARD2 writes `t = 3` := 0 into the existing state (other sources untouched, no new state).
+- **PadCard/SIO0 auto-ack := 1 (not modelled; stays with #661).** Only the PadCardIrq handler reads it, like B0:15's StartPAD
+  auto-ack. `BiosPadCardAutoAck` is unchanged.
+- **Not modelled.** The SIO0 reset writes (nothing reads them until a SIO0 transfer exists).
+- **Fail closed.** Before InitCARD2 (psx-spx order; retail UNKNOWN, OpenBIOS would call a NULL handler), without attached
+  devices, or with an unreadable/unwritable state variable or I_MASK: `BIOS_HLE_UNSUPPORTED_STATE`. The pre-checks (including
+  the VBlank flag being readable) run before any write; the writes run in the order VBlank policy, I_MASK, enqueue, started and are
+  not transactional (no rollback), so a failure partway leaves the earlier ones.
+- **#661.** Required only when an exception reaches the enqueued element; the guard stops the chain there.
+
+Tests: `BiosStartCard2Tests`.
+
