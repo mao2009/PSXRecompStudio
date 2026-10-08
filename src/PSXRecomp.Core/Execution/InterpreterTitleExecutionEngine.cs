@@ -50,6 +50,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
+    // Firmware boot needs to execute the kernel's dynamically installed low-RAM code and vectors.
+    // The legacy bounded game-image interpreter intentionally keeps this off by default.
+    private readonly bool _allowRuntimeRamExecution;
     private readonly BiosExceptionChain? _exceptionChain;
     private readonly PsxDeviceGraph _devices;
     private readonly bool _ownsDevices;
@@ -132,8 +135,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         uint loadAddress,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
         BiosExceptionChain? exceptionChain = null,
-        MemoryCardSlotConfiguration? memoryCardSlots = null)
-        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots)
+        MemoryCardSlotConfiguration? memoryCardSlots = null,
+        bool allowRuntimeRamExecution = false)
+        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots, allowRuntimeRamExecution)
     {
     }
 
@@ -173,7 +177,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         BiosExceptionChain? exceptionChain,
         PsxDeviceGraph? sharedDevices,
         DeviceScheduler? sharedScheduler,
-        MemoryCardSlotConfiguration? memoryCardSlots = null)
+        MemoryCardSlotConfiguration? memoryCardSlots = null,
+        bool allowRuntimeRamExecution = false)
     {
         ArgumentNullException.ThrowIfNull(instructions);
         if (instructions.Count == 0)
@@ -213,6 +218,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _loadAddress = loadAddress;
         _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
+        _allowRuntimeRamExecution = allowRuntimeRamExecution;
         _exceptionChain = exceptionChain;
 
         // The managed MMIO layer (DMA/timers/interrupt controller/GPU/CD-ROM) is
@@ -732,7 +738,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     private void ApplyKernelOutcome(BiosExceptionHandlerOutcome kernel) => kernel.CpuState.ApplyTo(_core);
 
-    private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
+    private bool PcWithinProgram(uint pc) =>
+        (pc >= _loadAddress && pc < _programEnd) ||
+        (_allowRuntimeRamExecution && Ps1AddressTranslation.TryTranslate(pc, out var physical) &&
+         physical < 0x00800000u);
 
     /// <summary>
     /// Whether the exception the last step raised is an INT the hardware
