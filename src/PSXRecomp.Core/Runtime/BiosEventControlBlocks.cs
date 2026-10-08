@@ -36,6 +36,14 @@ namespace PSXRecomp.Core.Runtime;
 /// FFFFh and does not check, which would write outside the table, so an invalid handle is a no-op returning 1 as
 /// psx-spx documents. TestEvent, DisableEvent, CloseEvent and WaitEvent are not implemented (not measured).
 /// </para>
+/// <para>
+/// Write-failure contract: fail closed means no EvCB table becomes visible or is silently trusted, not that guest RAM is
+/// left unmodified. <see cref="IGuestMemoryWriter"/> is Try-style with no transaction, and a rollback write could fail
+/// too, so none is attempted. (1) Seeding: the pointer pair <c>[0x120]/[0x124]</c> is the publication boundary; if the
+/// write fails after the seed area was zero-filled but before the pointers are published, the unreferenced seed bytes may
+/// remain modified and the table stays absent. (2) <see cref="Deliver"/> marks matching ready-mode events one write at a
+/// time after validating the whole table; if a later write fails, earlier events stay ready and it returns false.
+/// </para>
 /// </remarks>
 [Domain]
 public static class BiosEventControlBlocks
@@ -174,7 +182,9 @@ public static class BiosEventControlBlocks
     /// <summary>
     /// The matching step of B0:07 <c>DeliverEvent(class, spec)</c> as far as the Runtime performs it. No table: nothing can match,
     /// true. Otherwise every enabled-busy EvCB matching class and spec with mode 2000h becomes ready. False (nothing written) when
-    /// the table is unusable or a match is a mode 1000h event with a callback, which is not modelled.
+    /// the table is unusable or a match is a mode 1000h event with a callback, which is not modelled (decided before any write).
+    /// Not atomic once writing starts: if a status write fails, the events written before it stay ready and the result is
+    /// false (see the type remarks).
     /// </summary>
     public static bool Deliver(IGuestMemoryReader reader, IGuestMemoryWriter writer, uint eventClass, uint spec)
     {
@@ -253,6 +263,7 @@ public static class BiosEventControlBlocks
         return valid ? new Table(TableState.Present, address, (int)(size / EventControlBlockSize)) : new Table(TableState.Invalid, 0, 0);
     }
 
+    // The pointer pair is the publication boundary: a failure after the zero-fill leaves orphan seed bytes, no visible table.
     private static bool Seed(IGuestMemoryWriter writer)
     {
         var size = SeededSlotCount * EventControlBlockSize;

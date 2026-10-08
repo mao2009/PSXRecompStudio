@@ -2016,3 +2016,19 @@ Issue #687: Persona's first blocker after SYS(01h) is `OpenEvent(F0000009h, 0020
   B0:07 entry itself are not implemented (not measured).
 
 Tests: `BiosEventControlBlocksTests`, `BiosTimerVblankIrqHandlerTests`, `BiosDefaultInterruptHandlerTests`.
+
+## Amendment (2026-10-08): EvCB write-failure contract (#687, PR review)
+
+"Fail closed" for the EvCB table means no table becomes visible or is silently trusted; it does not mean guest RAM is
+left unmodified. `IGuestMemoryWriter` is Try-style without a transaction and a rollback write could itself fail, so no
+rollback is attempted.
+
+- **Seeding.** The pointer pair `[0x120]/[0x124]` is the publication boundary. If writing fails after the seed area
+  (`0xE400..0xE5BF`) was zero-filled but before the pointers are published, the unreferenced seed bytes may remain modified.
+  `OpenEvent` reports `BIOS_HLE_UNSUPPORTED_STATE`, no EvCB table becomes visible to the kernel, and the next call sees an
+  absent table again.
+- **Delivery.** `BiosEventControlBlocks.Deliver` validates the whole table and rejects a matching enabled callback event
+  before writing. Marking several matching mode-2000h events ready is then one write each; if a later write fails, earlier
+  events stay READY, later ones stay ENABLED, and `Deliver` returns false (the exception chain stops).
+
+Tests: `BiosEventControlBlocksTests` (fault-injecting writer).

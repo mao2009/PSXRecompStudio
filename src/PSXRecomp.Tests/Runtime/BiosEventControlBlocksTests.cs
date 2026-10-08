@@ -312,4 +312,47 @@ public sealed class BiosEventControlBlocksTests : IDisposable
 
         Field(0, 0x04).Should().Be(BiosEventControlBlocks.StatusEnabled, "a failed delivery writes nothing");
     }
+
+    // ---- write-failure contracts (PR #709 review) -----------------------------------------------------
+
+    private sealed class FaultingWriter(IGuestMemoryWriter inner, Func<uint, bool> fails) : IGuestMemoryWriter
+    {
+        public bool TryWriteByte(uint address, byte value) => !fails(address) && inner.TryWriteByte(address, value);
+
+        public bool TryWrite(uint address, ReadOnlySpan<byte> buffer) => !fails(address) && inner.TryWrite(address, buffer);
+    }
+
+    [Fact]
+    public void Deliver_Write_Failure_After_The_First_Ready_Leaves_A_Partial_Update_And_Returns_False()
+    {
+        OpenAndEnable(SpuClass, CommandCompleted, BiosEventControlBlocks.ModeReady, 0);
+        OpenAndEnable(SpuClass, CommandCompleted, BiosEventControlBlocks.ModeReady, 0);
+        var secondStatus = Table + BiosEventControlBlocks.EventControlBlockSize + 4;
+
+        BiosEventControlBlocks.Deliver(Reader, new FaultingWriter(Writer, a => a == secondStatus), SpuClass, CommandCompleted)
+            .Should().BeFalse();
+
+        Field(0, 0x04).Should().Be(BiosEventControlBlocks.StatusReady, "the write before the failure is not rolled back");
+        Field(1, 0x04).Should().Be(BiosEventControlBlocks.StatusEnabled);
+    }
+
+    [Fact]
+    public void A_Failed_Pointer_Publication_Leaves_Orphan_Seed_Bytes_But_No_Visible_Table()
+    {
+        // Dirty the seed area so the zero-fill is observable.
+        WriteWords(Table, 0xDEADBEEF);
+        var faulting = new BiosHleRuntime(
+            new CapturedOutputSink(), Reader, new FaultingWriter(Writer, a => a == BiosEventControlBlocks.TableAddressPointer));
+
+        Open(SpuClass, CommandCompleted, BiosEventControlBlocks.ModeReady, 0, faulting)
+            .Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+
+        Word(BiosEventControlBlocks.TableAddressPointer).Should().Be(0u);
+        Word(BiosEventControlBlocks.TableSizePointer).Should().Be(0u);
+        Word(Table).Should().Be(0u, "the seed area was zero-filled before the publication failed (orphan bytes)");
+
+        // The next call with a healthy writer still sees an absent table and seeds normally.
+        Open(SpuClass, CommandCompleted, BiosEventControlBlocks.ModeReady, 0).ReturnValue.Should().Be(0xF1000000u);
+        Word(BiosEventControlBlocks.TableAddressPointer).Should().Be(Table);
+    }
 }
