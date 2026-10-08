@@ -547,7 +547,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     continue;
                 }
 
-                if (!TookHardwareInterrupt())
+                // With a complete guest BIOS, *all* architectural exceptions (including
+                // SYSCALL, BREAK and address faults) must reach firmware-owned vectors.
+                // The legacy HLE slice still fails on non-IRQ exceptions exactly as before.
+                if (!TookHardwareInterrupt() && !_allowRuntimeRamExecution)
                 {
                     termination = RecompilerIrTerminationReason.Exception;
                     break;
@@ -741,7 +744,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private bool PcWithinProgram(uint pc) =>
         (pc >= _loadAddress && pc < _programEnd) ||
         (_allowRuntimeRamExecution && Ps1AddressTranslation.TryTranslate(pc, out var physical) &&
-         physical < 0x00800000u);
+         (physical < 0x00800000u || physical is >= 0x1FC00000u and < 0x1FC80000u));
 
     /// <summary>
     /// Whether the exception the last step raised is an INT the hardware

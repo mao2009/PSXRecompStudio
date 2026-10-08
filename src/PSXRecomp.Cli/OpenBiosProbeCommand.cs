@@ -55,6 +55,11 @@ internal static class OpenBiosProbeCommand
         {
             // Firmware must be built/provided locally from audited OpenBIOS sources.
             // Never download or embed ROM bytes, and do not reveal the user path in JSON.
+            var size = new FileInfo(args[0]).Length;
+            if (size != OpenBiosFirmware.ImageSize)
+            {
+                throw new InvalidDataException($"Expected {OpenBiosFirmware.ImageSize} ROM bytes; got {size}.");
+            }
             var bytes = File.ReadAllBytes(args[0]);
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(bytes));
