@@ -72,15 +72,21 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     // permission: EPC/CAUSE/SR stay owned by the native CPU.
     private bool _inInterruptHandler;
 
+    // Issue #717: the outstanding blocking BIOS call's poll bound. Kept across a resumed segment, so a wait that
+    // spans a segment boundary keeps one bound; reset wherever the CPU is re-seeded (Load, a fresh dispatch, a
+    // fallback entry), because the guest state that was its continuation is gone then.
+    private readonly BiosBlockingCallWait _blockingCallWait = new();
+
     // The PC of the interrupted instruction (cop0 EPC) captured when the first —
     // outermost — hardware interrupt of the current handler nesting was taken.
     // It is the PC the handler must finally return to: a nested interrupt
     // overwrites cop0 EPC inside the handler, so re-reading EPC after nesting
     // would lose the outermost return target, but this private copy never does.
-    // It is always inside the program image, because the engine only steps the
-    // CPU while PC is inside the image (or inside a handler it already knows),
-    // so a *nested* take is the only way EPC lands outside the image and that
-    // take never overwrites this value.
+    // It is inside the program image, or the A0/B0/C0 vector when the INT was
+    // taken while a blocking BIOS call waited there (Issue #717), because the
+    // engine only steps the CPU at those PCs (or inside a handler it already
+    // knows), so a *nested* take is the only other way EPC lands elsewhere and
+    // that take never overwrites this value.
     private uint _handlerEpc;
 
     // Set when the CPU reports the handler executed RFE (ExecRfe, psx_cpu.cpp):
@@ -269,6 +275,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
+        _blockingCallWait.Reset();
         _resumable = false;
         _loaded = true;
     }
@@ -295,6 +302,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _core.Hi = segmentRequest.Hi;
             _core.Lo = segmentRequest.Lo;
             _core.Pc = segmentRequest.Pc;
+            _blockingCallWait.Reset();
         }
 
         return RunLoop(segmentRequest.Budget, returnPcs: null, out _, out _);
@@ -341,6 +349,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
+        _blockingCallWait.Reset();
         _resumable = false;
 
         var result = RunLoop(instructionBudget, returnPcs, out var returned, out var retired);
@@ -423,9 +432,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
             // A vector dispatch costs a step from the same budget that bounds
             // ordinary instructions, exactly like the interpreter executor.
+            var interruptAtVector = false;
             if (biosRuntime is not null && BiosJumpTables.TryResolveVectorFamily(_core.Pc, out var family))
             {
-                var outcome = BiosVectorDispatch.Dispatch(biosRuntime, family, ReadGpr());
+                var outcome = BiosVectorDispatch.Dispatch(biosRuntime, family, ReadGpr(), _blockingCallWait);
                 if (!outcome.ContinueExecution)
                 {
                     diagnosticCode = outcome.DiagnosticCode;
@@ -434,29 +444,54 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     break;
                 }
 
-                if (outcome.ReturnValue is uint returnValue)
+                // Issue #717: a blocking call that has not completed. The guest stays at the vector, device time
+                // passes, and an interrupt the CPU would take is taken right here by the Step below — it preempts
+                // the fetch, so nothing at the vector executes — with EPC = the vector, so the handler's return
+                // re-enters the call. Otherwise the next iteration simply polls again.
+                if (outcome.IsPending)
                 {
-                    _core.SetGpr((int)R3000aRegister.V0, returnValue);
-                }
+                    if (BiosBlockingCallWait.RefuseSoftwareInterrupt(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)) is { } refusal)
+                    {
+                        diagnosticCode = refusal.Code;
+                        diagnosticMessage = refusal.Message;
+                        termination = RecompilerIrTerminationReason.UnresolvedIndirectFlow;
+                        break;
+                    }
 
-                // Issue #664: a service that replaced the CPU state owns the whole
-                // post-dispatch machine — its register file already fixes $v0, and
-                // its NextPc is where the hardware resumes (the saved EPC for
-                // B0:17), not this call's $ra. Apply it through the one shared
-                // implementation every execution form uses.
-                if (outcome.CpuState is { } cpuState)
+                    _scheduler!.Advance(BiosBlockingCallWait.PollCycles);
+                    if (!CpuTakesInterruptNow())
+                    {
+                        continue;
+                    }
+
+                    interruptAtVector = true;
+                }
+                else
                 {
-                    cpuState.ApplyTo(_core);
+                    if (outcome.ReturnValue is uint returnValue)
+                    {
+                        _core.SetGpr((int)R3000aRegister.V0, returnValue);
+                    }
+
+                    // Issue #664: a service that replaced the CPU state owns the whole
+                    // post-dispatch machine — its register file already fixes $v0, and
+                    // its NextPc is where the hardware resumes (the saved EPC for
+                    // B0:17), not this call's $ra. Apply it through the one shared
+                    // implementation every execution form uses.
+                    if (outcome.CpuState is { } cpuState)
+                    {
+                        cpuState.ApplyTo(_core);
+                        continue;
+                    }
+
+                    // A translatable patched target is jumped to verbatim — the core
+                    // fetches from any translatable address.
+                    _core.Pc = outcome.NextPc;
                     continue;
                 }
-
-                // A translatable patched target is jumped to verbatim — the core
-                // fetches from any translatable address.
-                _core.Pc = outcome.NextPc;
-                continue;
             }
 
-            if (!PcWithinProgram(_core.Pc) && !_inInterruptHandler)
+            if (!interruptAtVector && !PcWithinProgram(_core.Pc) && !_inInterruptHandler)
             {
                 break;
             }
@@ -708,6 +743,22 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private bool TookHardwareInterrupt() =>
         _core.ExceptionCode == InterruptExcode &&
         (_core.GetCop0(Cop0Cause) & _core.GetCop0(Cop0Status) & HardwareInterruptBit) != 0;
+
+    /// <summary>
+    /// Whether the next <see cref="PSXCoreWrapper.Step"/> would take an INT instead of fetching (Issue #717): the
+    /// native CPU's own test (SR.IEc and CAUSE.IP &amp; SR.IM, with IP2 the controller line it samples), read
+    /// without stepping, so a blocking call's wait never executes whatever lies at the vector. A pending enabled software
+    /// interrupt (IP0/IP1) has already stopped the wait (<see cref="BiosBlockingCallWait.RefuseSoftwareInterrupt"/>), so
+    /// what remains is IP2: the same condition the artifact's INT boundary accepts. The native check's
+    /// <c>!branch_pending_</c> is left out because it always holds here: the vector is reached after a call's delay slot
+    /// or by a full PC re-seed (a kernel handler's return), never inside a branch + delay-slot pair.
+    /// </summary>
+    private bool CpuTakesInterruptNow()
+    {
+        var sr = _core.GetCop0(Cop0Status);
+        var ip = (_core.GetCop0(Cop0Cause) & ~HardwareInterruptBit) | (_core.GetInterruptPending() ? HardwareInterruptBit : 0u);
+        return (sr & 0x1u) != 0 && (ip & sr & 0xFF00u) != 0;
+    }
 
     private static uint TranslateAddress(uint virtualAddress)
     {

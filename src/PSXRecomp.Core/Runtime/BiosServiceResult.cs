@@ -38,6 +38,19 @@ public sealed record BiosServiceResult(
         return new(BiosServiceStatus.Supported, null, null, cpuState);
     }
 
+    /// <summary>
+    /// Creates the result of a blocking service whose completion condition does not hold yet
+    /// (Issue #717). Nothing is returned and nothing about the call is consumed: the guest stays
+    /// at the vector with its registers untouched, the execution path advances the devices and
+    /// lets a pending interrupt run, and the call is invoked again. The service must decide
+    /// completion only from guest-visible / Core state, so a re-invocation is a pure re-poll.
+    /// </summary>
+    public static BiosServiceResult Pending(BiosCallIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        return new(BiosServiceStatus.Pending, null, null);
+    }
+
     /// <summary>Creates the explicit result for a service not implemented by HLE.</summary>
     public static BiosServiceResult Unsupported(BiosCallIdentity identity) =>
         CreateUnsupported(identity);
@@ -129,6 +142,9 @@ public enum BiosServiceStatus : byte
     Supported,
     Unsupported,
     PatchedTarget,
+
+    /// <summary>A blocking service has not completed yet; see <see cref="BiosServiceResult.Pending"/>.</summary>
+    Pending,
 }
 
 /// <summary>Stable diagnostic data for an unsupported or otherwise rejected BIOS call.</summary>
