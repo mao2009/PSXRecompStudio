@@ -14,7 +14,7 @@ namespace PSXRecomp.Core.Runtime;
 /// </param>
 /// <param name="NextPc">
 /// The guest address control continues at. Meaningful only when
-/// <paramref name="ContinueExecution"/> is true.
+/// <paramref name="ContinueExecution"/> is true and <paramref name="IsPending"/> is false.
 /// </param>
 /// <param name="ReturnValue">
 /// The value to write into <c>$v0</c> before continuing, when the dispatched
@@ -34,6 +34,11 @@ namespace PSXRecomp.Core.Runtime;
 /// (Issue #664). Null for every ordinary service, where the caller continues at
 /// <paramref name="NextPc"/> with only <paramref name="ReturnValue"/> applied.
 /// </param>
+/// <param name="IsPending">
+/// True when a blocking service has not completed (Issue #717). The caller changes no register and
+/// stays at the vector it is at, advances its devices by <see cref="BiosBlockingCallWait.PollCycles"/>,
+/// lets the CPU take a pending enabled interrupt there (EPC = the vector), and dispatches again.
+/// </param>
 [Domain]
 public sealed record BiosVectorDispatchOutcome(
     bool ContinueExecution,
@@ -42,7 +47,8 @@ public sealed record BiosVectorDispatchOutcome(
     bool IsPatchedTarget,
     string? DiagnosticCode,
     string? DiagnosticMessage,
-    BiosCpuStateMutation? CpuState = null);
+    BiosCpuStateMutation? CpuState = null,
+    bool IsPending = false);
 
 /// <summary>
 /// The BIOS trampoline-vector dispatch semantics, stated once for every
@@ -82,6 +88,12 @@ public sealed record BiosVectorDispatchOutcome(
 /// the call nor name a guest target for it. Execution stops with the Runtime's
 /// own diagnostic rather than continuing past a call whose effects never
 /// happened (Issue #279: never a silent success).
+/// </description></item>
+/// <item><description>
+/// <see cref="BiosServiceStatus.Pending"/> — a blocking service has not completed
+/// yet (Issue #717). The guest does not return; the caller keeps waiting at the
+/// vector under <see cref="BiosBlockingCallWait"/>'s bound, or fails closed when it
+/// passed none.
 /// </description></item>
 /// </list>
 /// </remarks>
@@ -124,12 +136,19 @@ public static class BiosVectorDispatch
     /// <c>$ra</c> holds the call site's own link — the trampoline is transparent
     /// to it. Must hold <see cref="RecompilerGprCount"/> entries.
     /// </param>
+    /// <param name="wait">
+    /// The caller's blocking-call wait (Issue #717). Only an execution path that can advance its devices
+    /// and take interrupts while the guest stays at the vector passes one; without it a
+    /// <see cref="BiosServiceStatus.Pending"/> service fails closed with
+    /// <see cref="BiosBlockingCallWait.UnsupportedDiagnosticCode"/>.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="biosRuntime"/> or <paramref name="gpr"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="gpr"/> is not a full register file.</exception>
     public static BiosVectorDispatchOutcome Dispatch(
         IBiosRuntime biosRuntime,
         BiosCallFamily family,
-        IReadOnlyList<uint> gpr)
+        IReadOnlyList<uint> gpr,
+        BiosBlockingCallWait? wait = null)
     {
         ArgumentNullException.ThrowIfNull(biosRuntime);
         ArgumentNullException.ThrowIfNull(gpr);
@@ -177,6 +196,33 @@ public static class BiosVectorDispatch
             family, functionNumber, guestPc: null, arguments, guestRegisters: gpr);
 
         var result = biosRuntime.Invoke(identity);
+        var ra = gpr[(int)R3000aRegister.Ra];
+        if (result.Status == BiosServiceStatus.Pending)
+        {
+            if (wait is null)
+            {
+                return Stop(
+                    BiosBlockingCallWait.UnsupportedDiagnosticCode,
+                    $"{identity.StableKey} is a blocking call that has not completed, and this execution path cannot " +
+                    "advance devices or take interrupts while the guest waits at the vector.");
+            }
+
+            if (wait.Poll(identity, ra) is { } refusal)
+            {
+                return Stop(refusal.Code, refusal.Message);
+            }
+
+            return new BiosVectorDispatchOutcome(
+                ContinueExecution: true,
+                NextPc: 0,
+                ReturnValue: null,
+                IsPatchedTarget: false,
+                DiagnosticCode: null,
+                DiagnosticMessage: null,
+                IsPending: true);
+        }
+
+        wait?.Complete(identity, ra);
         switch (result.Status)
         {
             case BiosServiceStatus.PatchedTarget:
