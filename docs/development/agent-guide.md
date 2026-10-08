@@ -15,9 +15,10 @@ Provide a predictable bootstrap path for AI development agents working on PSXRec
 3. Read `docs/architecture/README.md`.
 4. Identify the relevant subsystem SSOT.
 5. Inspect related open Issues and recent implementation PRs.
-6. Inspect the relevant code.
-7. Check architectural constraints before proposing changes.
-8. When changing analyzers, tests, CI gates, or quality policy, read
+6. Inspect the relevant code and suitable OSS implementations before proposing a new implementation; prefer vetted reuse or adaptation over reinvention and record why any candidate is rejected.
+7. For external code to be copied or ported, consult [References and reuse-first license review](../REFERENCES.md), pin the exact file/revision/license and dependencies, and require human provenance/notice approval before incorporation.
+8. Check architectural constraints before proposing changes.
+9. When changing analyzers, tests, CI gates, or quality policy, read
    [Quality and Verification Stack](quality-stack.md) before choosing an enforcement mechanism.
 
 ## Git Workflow
