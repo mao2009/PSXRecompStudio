@@ -114,6 +114,19 @@ Card-management strategies are configuration, not separate mechanisms:
   application created and a card living in another emulator's directory are the
   same kind of value; nothing distinguishes them.
 
+### BIOS-less Runtime slot policy (Issue #715)
+
+The Runtime takes the configuration once, at `PsxDeviceGraph` construction
+(`RecompiledHostExecutionEngine` forwards its `memoryCardSlots` argument), and
+exposes it read-only as `MemoryCardSlots`. It is host configuration, never
+guest-visible state, and cannot change for the graph's life. The production
+default is `MemoryCardSlotConfiguration.Empty`: both slots empty, in CI too.
+`HasMemoryCard(port)` (port 0 = slot 1, 1 = slot 2; any other port throws) is the
+read-only query the SIO0 side asks, and `MemoryCardSlotSummary` renders
+`slot0=Empty slot1=Empty` for diagnostics without disclosing card paths. No CLI
+option exists yet: with only the empty state there is nothing to choose. The
+native SIO0 model does not consult this query yet (tracked with PR #718).
+
 ## Write safety
 
 Saving a card is a four-step sequence in `FileMemoryCardStorage`:
