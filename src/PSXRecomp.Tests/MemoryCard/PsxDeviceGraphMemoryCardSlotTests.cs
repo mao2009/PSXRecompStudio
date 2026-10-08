@@ -41,8 +41,8 @@ public sealed class PsxDeviceGraphMemoryCardSlotTests
     [Fact]
     public void Configuration_IsFixedForTheGraphsLife_AndDeterministicAcrossGraphs()
     {
-        // The graph outlives per-segment BIOS-runtime rebuilds (it is shared), so a graph-owned immutable value is
-        // what a rebuilt runtime sees; a freshly built graph with the same input reports the same state.
+        // Each segment rebuilds the graph from the engine's immutable configuration, so a rebuilt graph reports
+        // the same state; two graphs built from one input are the proxy for that.
         var config = MemoryCardSlotConfiguration.Empty.WithCard(MemoryCardSlot.Slot1, "/cards/a.mcr");
         using var first = new PsxDeviceGraph(memoryCardSlots: config);
         using var second = new PsxDeviceGraph(memoryCardSlots: config);

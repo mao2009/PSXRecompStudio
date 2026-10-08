@@ -1,6 +1,7 @@
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
+using PSXRecomp.Core.MemoryCard;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.CdRom;
@@ -113,6 +114,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// BIOS dispatch, so a vector hit is simply an unresolved transfer.</param>
     /// <param name="exceptionChain">The kernel exception handler's priority-chain walk (Issue #662);
     /// null is <see cref="BiosExceptionHandler.DefaultChain"/>. The seam modelled kernel handlers plug into.</param>
+    /// <param name="memoryCardSlots">Which card is in each slot (Issue #715), the same immutable configuration
+    /// <c>RecompiledHostExecutionEngine</c> takes so both backends report one slot state; null is
+    /// <see cref="MemoryCardSlotConfiguration.Empty"/>.</param>
     /// <exception cref="ArgumentNullException"><paramref name="instructions"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="instructions"/> is empty, or the
     /// program image overflows the 32-bit address space or does not map to a contiguous
@@ -121,8 +125,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         IReadOnlyList<uint> instructions,
         uint loadAddress,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
-        BiosExceptionChain? exceptionChain = null)
-        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null)
+        BiosExceptionChain? exceptionChain = null,
+        MemoryCardSlotConfiguration? memoryCardSlots = null)
+        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots)
     {
     }
 
@@ -161,7 +166,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory,
         BiosExceptionChain? exceptionChain,
         PsxDeviceGraph? sharedDevices,
-        DeviceScheduler? sharedScheduler)
+        DeviceScheduler? sharedScheduler,
+        MemoryCardSlotConfiguration? memoryCardSlots = null)
     {
         ArgumentNullException.ThrowIfNull(instructions);
         if (instructions.Count == 0)
@@ -209,7 +215,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // artifact relays to (Issue #678). The BIOS runtime seam travels through
         // its bus, so guest RAM/mirror/device semantics all come from one routing
         // point while the interpreter drives the same native core.
-        _devices = sharedDevices ?? new PsxDeviceGraph();
+        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots);
         _ownsDevices = sharedDevices is null;
         if (sharedScheduler is not null)
         {
