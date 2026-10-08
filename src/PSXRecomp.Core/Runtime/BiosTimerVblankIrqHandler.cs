@@ -45,9 +45,6 @@ public static class BiosTimerVblankIrqHandler
         (0, DeviceScheduler.Timer0Irq, "Timer0"),
     ];
 
-    /// <summary>Guest address of the kernel's EvCB table entry (psx-spx "table of tables": <c>00000120h</c> address, <c>00000124h</c> size).</summary>
-    public const uint EventControlBlockTableAddress = 0x00000120;
-
     /// <summary>The root-counter event class of <c>t</c> = 0..3 is <c>F2000000h + t</c> (psx-spx event-summary).</summary>
     public const uint RootCounterEventClassBase = 0xF2000000;
 
@@ -55,25 +52,18 @@ public static class BiosTimerVblankIrqHandler
     public const uint RootCounterEventSpec = 2;
 
     /// <summary>
-    /// B0:07 <c>DeliverEvent(F2000000h + t, 2)</c> as far as the Runtime can perform it. DeliverEvent marks the EvCBs
-    /// matching class and spec (psx-spx), and an EvCB exists only inside the kernel's EvCB table. A BIOS-less run has
-    /// none (<c>[0x120]</c> and <c>[0x124]</c> are 0) and registers no event opener (B0:08 OpenEvent is unregistered,
-    /// so a call to it stops the run), so nothing can match and the delivery succeeds with no effect. A table that
-    /// exists is guest state needing EvCB matching and callbacks, which are not modelled (#687): false, as is an
-    /// unreadable table or <c>t</c> &gt; 3. Nothing is written.
+    /// B0:07 <c>DeliverEvent(F2000000h + t, 2)</c> as far as the Runtime can perform it: the EvCB matching of
+    /// <see cref="BiosEventControlBlocks.Deliver"/> over the one EvCB table (#687). A BIOS-less run with no table has nothing
+    /// to match and succeeds with no effect. False for <c>t</c> &gt; 3, an unusable table, or a matching enabled mode 1000h
+    /// event with a callback (callback execution is not modelled).
     /// </summary>
     public static bool DeliverEvents(BiosExceptionChainContext context, uint source)
     {
         ArgumentNullException.ThrowIfNull(context.Reader);
+        ArgumentNullException.ThrowIfNull(context.Writer);
 
-        return source <= BiosRootCounterClearPolicy.MaxSource && EventTableIsAbsent(context.Reader);
-    }
-
-    /// <summary>True when the kernel's EvCB table address and size (<c>[0x120]</c>, <c>[0x124]</c>) are readable and both 0: no EvCB can match any delivered event.</summary>
-    internal static bool EventTableIsAbsent(IGuestMemoryReader reader)
-    {
-        Span<byte> table = stackalloc byte[2 * sizeof(uint)];
-        return reader.TryRead(EventControlBlockTableAddress, table) && BitConverter.ToUInt64(table) == 0;
+        return source <= BiosRootCounterClearPolicy.MaxSource &&
+               BiosEventControlBlocks.Deliver(context.Reader, context.Writer, RootCounterEventClassBase + source, RootCounterEventSpec);
     }
 
     /// <summary>
@@ -104,7 +94,7 @@ public static class BiosTimerVblankIrqHandler
             {
                 return Unsupported(
                     $"{label} flag={flag}|event 0x{RootCounterEventClassBase + source:X8},{RootCounterEventSpec} could not be " +
-                    "delivered (default delivery requires an absent, readable EvCB table at [0x120]; EvCB matching is not modelled, #687; a custom delivery callback may also fail)");
+                    "delivered (default delivery fails on an unusable EvCB table or a matching enabled 1000h callback event, which is not modelled, #687; a custom delivery callback may also fail)");
             }
 
             if (flag == 1)

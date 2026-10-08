@@ -220,13 +220,14 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
 
     [Theory]
     [MemberData(nameof(Sources))]
-    public void An_Existing_EvCB_Table_Fails_Closed_Naming_Only_The_Sources_Event(uint t, int irq)
+    public void A_Matching_Enabled_Callback_EvCB_Fails_Closed_Naming_Only_The_Sources_Event(uint t, int irq)
     {
         foreach (var flag in new[] { 0u, 1u })
         {
             Pend(irq, 1u << irq);
             SetFlag(t, flag);
             WriteTable(0x00008000, 0x1C0);
+            WriteEvCb(0x00008000, 0xF2000000u + t, BiosEventControlBlocks.StatusEnabled, 2, BiosEventControlBlocks.ModeCallback, 0x80010000);
 
             var result = BiosTimerVblankIrqHandler.Run(Context());
 
@@ -264,14 +265,40 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
         BiosTimerVblankIrqHandler.DeliverEvents(Context(), 3).Should().BeTrue();
     }
 
+    private void WriteEvCb(uint address, uint eventClass, uint status, uint spec, uint mode, uint function) =>
+        Writer.TryWrite(address, new[] { eventClass, status, spec, mode, function }.SelectMany(BitConverter.GetBytes).ToArray()).Should().BeTrue();
+
+    [Fact]
+    public void A_Usable_EvCB_Table_Without_A_Match_Is_A_Successful_No_Op()
+    {
+        WriteTable(0x00008000, 0x1C0);
+        WriteEvCb(0x00008000, 0xF0000009, BiosEventControlBlocks.StatusEnabled, 0x20, BiosEventControlBlocks.ModeReady, 0);
+        WriteEvCb(0x0000801C, 0xF2000003, BiosEventControlBlocks.StatusDisabled, 2, BiosEventControlBlocks.ModeReady, 0);
+
+        BiosTimerVblankIrqHandler.DeliverEvents(Context(), 3).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_Matching_Enabled_Ready_Mode_EvCB_Becomes_Ready()
+    {
+        WriteTable(0x00008000, 0x1C0);
+        WriteEvCb(0x0000801C, 0xF2000003, BiosEventControlBlocks.StatusEnabled, 2, BiosEventControlBlocks.ModeReady, 0);
+
+        BiosTimerVblankIrqHandler.DeliverEvents(Context(), 3).Should().BeTrue();
+
+        var status = new byte[4];
+        Reader.TryRead(0x00008020, status).Should().BeTrue();
+        BitConverter.ToUInt32(status).Should().Be(BiosEventControlBlocks.StatusReady);
+    }
+
     private void WriteTable(uint address, uint size) =>
-        Writer.TryWrite(BiosTimerVblankIrqHandler.EventControlBlockTableAddress,
+        Writer.TryWrite(BiosEventControlBlocks.TableAddressPointer,
             BitConverter.GetBytes(address).Concat(BitConverter.GetBytes(size)).ToArray()).Should().BeTrue();
 
     private ulong TableWords()
     {
         var table = new byte[8];
-        Reader.TryRead(BiosTimerVblankIrqHandler.EventControlBlockTableAddress, table).Should().BeTrue();
+        Reader.TryRead(BiosEventControlBlocks.TableAddressPointer, table).Should().BeTrue();
         return BitConverter.ToUInt64(table);
     }
 

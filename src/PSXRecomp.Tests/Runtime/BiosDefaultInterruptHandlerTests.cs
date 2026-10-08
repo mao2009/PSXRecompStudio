@@ -177,10 +177,10 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
     }
 
     [Fact]
-    public void An_Existing_EvCB_Table_Fails_Closed_Because_Event_Matching_Is_Not_Modelled()
+    public void An_Unusable_EvCB_Table_Fails_Closed()
     {
         Pend(VblankBit, DeviceScheduler.VblankIrq);
-        Writer.TryWrite(BiosTimerVblankIrqHandler.EventControlBlockTableAddress, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
+        Writer.TryWrite(BiosEventControlBlocks.TableAddressPointer, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
 
         var result = BiosDefaultInterruptHandler.Run(Context());
 
@@ -190,10 +190,10 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
     }
 
     [Fact]
-    public void An_Existing_EvCB_Table_Stops_The_Default_Chain_Before_Any_Completion()
+    public void An_Unusable_EvCB_Table_Stops_The_Default_Chain_Before_Any_Completion()
     {
         Pend(VblankBit, DeviceScheduler.VblankIrq);
-        Writer.TryWrite(BiosTimerVblankIrqHandler.EventControlBlockTableAddress, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
+        Writer.TryWrite(BiosEventControlBlocks.TableAddressPointer, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
         RegisterHook(Registers(0x1000));
 
         Handle(Registers(0x5000)).DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
@@ -255,10 +255,10 @@ public sealed class BiosDefaultInterruptHandlerTests : IDisposable
     }
 
     [Fact]
-    public void A_CdRom_Irq_With_An_Existing_EvCB_Table_Fails_Closed_Naming_The_Cdrom_Event()
+    public void A_CdRom_Irq_With_An_Unusable_EvCB_Table_Fails_Closed_Naming_The_Cdrom_Event()
     {
         Pend(CdromBit, DeviceScheduler.CdRomIrq);
-        Writer.TryWrite(BiosTimerVblankIrqHandler.EventControlBlockTableAddress, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
+        Writer.TryWrite(BiosEventControlBlocks.TableAddressPointer, BitConverter.GetBytes(0x00002000u)).Should().BeTrue();
         RegisterHook(Registers(0x1000));
 
         var result = BiosDefaultInterruptHandler.Run(Context());

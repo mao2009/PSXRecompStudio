@@ -22,8 +22,8 @@ namespace PSXRecomp.Core.Runtime;
 /// (or nothing pending). CONFIRMED (PCSX-Redux OpenBIOS <c>IRQVerifier</c>, <c>common/kernel/events.h</c>; psx-spx
 /// event-summary): DefInt is the element that delivers <c>EVENT_CDROM = F0000003h</c> with spec <c>1000h</c> when
 /// <c>I_STAT &amp; I_MASK</c> has IRQ2, acknowledging only when auto-ack is on. The element delivers the event as far
-/// as the Runtime can (no EvCB table: nothing can match, a no-op, as for #660); an EvCB table that exists needs EvCB
-/// matching and the <c>1000h</c> callback mode (#687), so it fails closed. IRQ2 is reached here only because this
+/// as the Runtime can (<see cref="BiosEventControlBlocks.Deliver"/> over the one EvCB table: no table or no match is a no-op, as for #660);
+/// an enabled matching <c>1000h</c> callback event needs callback execution (#687) and fails closed. IRQ2 is reached here only because this
 /// Runtime's kernel has no priority-0 CD-ROM elements: the retail BIOS enqueues <c>CdromDmaIrq</c>/<c>CdromIoIrq</c>
 /// in its CD driver init (OpenBIOS <c>initializeCDRomHandlersAndEvents</c>), which a BIOS-less run never executes,
 /// and the only way to enqueue one (C0:02 SysEnqIntRP) is unregistered, so a guest that tried stops the run. The CD
@@ -93,11 +93,11 @@ public static class BiosDefaultInterruptHandler
 
         var eventClass = irq == DeviceScheduler.CdRomIrq ? CdRomEventClass : VblankEventClass;
 
-        if (!BiosTimerVblankIrqHandler.EventTableIsAbsent(context.Reader))
+        if (!BiosEventControlBlocks.Deliver(context.Reader, context.Writer, eventClass, EventSpec))
         {
             return Unsupported(
-                $"{label}|DefInt event 0x{eventClass:X8},{EventSpec:X} could not be delivered (requires an absent, readable EvCB table at [0x120]; " +
-                "EvCB matching and the 1000h callback mode are not modelled, #687)");
+                $"{label}|DefInt event 0x{eventClass:X8},{EventSpec:X} could not be delivered (unusable EvCB table, or a matching enabled 1000h " +
+                "callback event, whose execution is not modelled, #687)");
         }
 
         if (autoAck(irq))
