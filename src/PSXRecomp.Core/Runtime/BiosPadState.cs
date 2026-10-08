@@ -78,6 +78,26 @@ public static class BiosPadState
     }
 
     /// <summary>
+    /// Marks <c>PadCardIrq</c> enqueued without changing the memorized <c>button_dest</c> (0 when it was not enqueued before),
+    /// as StartCARD2's dequeue-then-enqueue of the shared element does (see <see cref="BiosCardState"/>). Idempotent.
+    /// False when the variable cannot be read or written.
+    /// </summary>
+    internal static bool TryEnqueue(IGuestMemoryReader reader, IGuestMemoryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        if (!TryGetState(reader, out _, out var buttonDestination))
+        {
+            return false;
+        }
+
+        var bytes = new byte[8];
+        BitConverter.TryWriteBytes(bytes.AsSpan(0, 4), 1u);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4, 4), buttonDestination);
+        return writer.TryWrite(VariableAddress, bytes);
+    }
+
+    /// <summary>
     /// Reads the state; false when the variable cannot be read. <paramref name="enqueued"/> is whether
     /// <c>PadCardIrq</c> was enqueued by B0:15.
     /// </summary>

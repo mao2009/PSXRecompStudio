@@ -2050,3 +2050,23 @@ Issue #708: Persona's next call after `EnableEvent` is `InitCARD2(pad_enable = 1
 
 Tests: `BiosCardStateTests`.
 
+## Amendment (2026-10-08): B0:4B StartCARD2 enqueues the shared PadCardIrq; it is not run
+
+Issue #710: Persona calls `StartCARD2()` right after `InitCARD2(1)`; the result is not read.
+
+- **CONFIRMED (OpenBIOS `startCard`; psx-spx has the signature only) / INFERRED for retail.** No arguments, returns 1. Resets
+  SIO0, dequeues then enqueues the single `PadCardIrq` element (priority 2) that B0:15 / StartPAD2 also use, sets `I_MASK |= IRQ0`,
+  forces the SIO0 auto-ack to 1 and the VBlank timer auto-ack to 0, sets "card started". No I_STAT, IRQ7 or event effect.
+- **Model.** The enqueue is `BiosPadState`'s existing enqueued flag (one shared element: B0:15 and StartCARD2 are the same
+  fact; `button_dest` is kept). "Card started" is bit 1 of the `BiosCardState` flags word (`0x148`, bit 0 "InitCARD2 ran");
+  InitCARD2 leaves it alone. I_MASK is written through `IGuestDeviceAccess`. The priority-2 guard is unchanged and now also
+  fires for a card-only start (tested).
+- **Not modelled.** The SIO0 reset writes (nothing reads them until a SIO0 transfer exists) and the two auto-ack forcings, which
+  only the PadCardIrq handler and the VBlank timer return path read; they stay with #661 like B0:15's StartPAD auto-ack.
+- **Fail closed.** Before InitCARD2 (psx-spx order; retail UNKNOWN, OpenBIOS would call a NULL handler), without attached
+  devices, or with an unreadable/unwritable state variable or I_MASK: `BIOS_HLE_UNSUPPORTED_STATE`. The pre-checks run before any
+  write; the writes (I_MASK, enqueue, started) are not transactional, so a failure partway leaves the earlier ones.
+- **#661.** Required only when an exception reaches the enqueued element; the guard stops the chain there.
+
+Tests: `BiosStartCard2Tests`.
+
