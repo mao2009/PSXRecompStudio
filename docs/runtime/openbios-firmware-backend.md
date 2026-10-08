@@ -15,6 +15,24 @@ commit `openbios.bin`, `openbios.elf`, any commercial BIOS or game data. A
 future source/binary distribution must complete #730's **file-by-file** license,
 dependencies and NOTICE audit (an MIT repo badge alone is insufficient).
 
+### Local OpenBIOS build
+
+```bash
+# Checkout Nugget at the exact pinned revision, once, outside this repository:
+git clone https://github.com/pcsx-redux/nugget.git /your/nugget
+git -C /your/nugget checkout c950e18a168944ec2d4e6d3c408fc224317483a7
+bash scripts/openbios/build.sh /your/nugget
+psxrecomp openbios-probe out/openbios/openbios.bin --json
+```
+
+The helper does not vendor code, checks the revision and tracked-worktree state,
+builds using upstream's Docker wrapper, verifies the 512 KiB output, copies the
+observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
+image digest under the git-ignored `out/` folder. Upstream's Docker wrapper
+uses an unpinned `:latest` image: source is pinned, **builder is not**; an
+independent toolchain pin and end-to-end compatibility proof are still required.
+Local building does not itself approve distribution.
+
 ### Executable slice
 
 `psxrecomp openbios-probe /path/to/openbios.bin --segment-budget 100000 --segments 10 --json`
