@@ -443,6 +443,14 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // re-enters the call. Otherwise the next iteration simply polls again.
                 if (outcome.IsPending)
                 {
+                    if (BiosBlockingCallWait.RefuseSoftwareInterrupt(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)) is { } refusal)
+                    {
+                        diagnosticCode = refusal.Code;
+                        diagnosticMessage = refusal.Message;
+                        termination = RecompilerIrTerminationReason.UnresolvedIndirectFlow;
+                        break;
+                    }
+
                     _scheduler!.Advance(BiosBlockingCallWait.PollCycles);
                     if (!CpuTakesInterruptNow())
                     {
@@ -732,7 +740,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>
     /// Whether the next <see cref="PSXCoreWrapper.Step"/> would take an INT instead of fetching (Issue #717): the
     /// native CPU's own test (SR.IEc and CAUSE.IP &amp; SR.IM, with IP2 the controller line it samples), read
-    /// without stepping, so a blocking call's wait never executes whatever lies at the vector.
+    /// without stepping, so a blocking call's wait never executes whatever lies at the vector. A pending enabled software
+    /// interrupt (IP0/IP1) has already stopped the wait (<see cref="BiosBlockingCallWait.RefuseSoftwareInterrupt"/>), so
+    /// what remains is IP2: the same condition the artifact's INT boundary accepts. The native check's
+    /// <c>!branch_pending_</c> is left out because it always holds here: the vector is reached after a call's delay slot
+    /// or by a full PC re-seed (a kernel handler's return), never inside a branch + delay-slot pair.
     /// </summary>
     private bool CpuTakesInterruptNow()
     {

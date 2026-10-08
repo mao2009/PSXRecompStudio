@@ -718,9 +718,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             // Issue #717: a blocking call that has not completed. No instruction retires, so the artifact reports no
             // time: the host advances the devices by one poll, hands the artifact the controller line, and resumes it
             // at the same vector. The artifact's own INT boundary then takes a pending enabled IRQ there (EPC = the
-            // vector), and the handler's return re-enters this call.
+            // vector), and the handler's return re-enters this call. A pending enabled software interrupt stops the wait
+            // first, exactly as in the interpreter (the artifact's INT boundary would never take it).
             if (outcome.IsPending)
             {
+                var cop0 = QueryCop0().Context;
+                if (BiosBlockingCallWait.RefuseSoftwareInterrupt(cop0.Sr, cop0.Cause) is { } refusal)
+                {
+                    DiagnosticCode = refusal.Code;
+                    DiagnosticMessage = refusal.Message;
+                    Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                    return;
+                }
+
                 if (AdvanceDevices(BiosBlockingCallWait.PollCycles) is { } failure)
                 {
                     DiagnosticCode = failure.Code;

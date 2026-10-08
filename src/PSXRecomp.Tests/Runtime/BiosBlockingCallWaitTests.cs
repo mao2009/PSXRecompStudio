@@ -7,6 +7,7 @@ using PSXRecomp.Infrastructure;
 using PSXRecomp.Tests.RealRomAnalysis;
 using PSXRecomp.Tests.Recompiler;
 using static PSXRecomp.Tests.Infrastructure.RecompiledArtifactMmioBridgeTests;
+using Mixed = PSXRecomp.Tests.Infrastructure.MixedFallbackTestSupport;
 
 namespace PSXRecomp.Tests.Runtime;
 
@@ -325,6 +326,64 @@ public sealed class BiosBlockingCallWaitTests
         var interpreter = RunInterpreter(words);
         runtime.WaitInvocations.Should().Be(interpreter.WaitInvocations, "both paths poll on the same device time");
     }
+
+    // ---- software interrupt during a wait: both forms agree (PR #724 review) -------------------------
+
+    /// <summary>
+    /// The same wait reached by both forms with a software interrupt pending and enabled. The interpreter is seeded at
+    /// the vector directly (an attached fallback entry carries SR/CAUSE). The artifact cannot execute COP0 moves, so an
+    /// uncompiled routine run by mixed execution sets CAUSE, then SR in its return's delay slot, sets up the call and
+    /// hands back; the artifact's INT boundary ignores software interrupts, so it reaches the vector in that state.
+    /// </summary>
+    [Theory]
+    [InlineData(0x0000_0101u, 0x0000_0100u)] // IP0 / IM0
+    [InlineData(0x0000_0201u, 0x0000_0200u)] // IP1 / IM1
+    [InlineData(0x0000_0501u, 0x0000_0100u)] // IP0 / IM0 with IM2 also enabled (no hardware IRQ pending)
+    public void SoftwareInterruptDuringAWait_StopsBothForms_WithTheSameDiagnostic_AfterTheSamePolls(uint sr, uint cause)
+    {
+        var main = new Mixed.Block(Entry);
+        main.Emit(Mixed.Li(T0, Mixed.Target), [Mixed.Jalr(T0), MipsEncoding.Nop]);
+        main.Emit(MipsEncoding.JumpAndLink(BiosJumpTables.B0VectorAddress), MipsEncoding.Nop);
+        var ra = main.Here;
+        main.Emit(Mixed.End());
+        var target = new Mixed.Block(Mixed.Target);
+        target.Emit(
+            [Ori(T1, Zero, SyntheticRuntime.WaitFunction)], Mixed.Li(A0, Counter), [Ori(A1, Zero, 1)],
+            Mixed.Li(Mixed.T2, cause), [Mixed.Mtc0(Mixed.T2, 13)], Mixed.Li(Mixed.T2, sr), [Mixed.Jr(R3000aRegister.Ra), Mixed.Mtc0(Mixed.T2, 12)]);
+        var words = Mixed.Image(main, target);
+
+        var hostRuntimes = new List<SyntheticRuntime>();
+        using var dir = new TempDirectory();
+        using var host = new RecompiledHostExecutionEngine(
+            ReachableProgramBuilder.Build(Entry, words, Entry, []),
+            words,
+            Entry,
+            new GeneratedHostBuildService(),
+            dir.FullPath,
+            (reader, _) => { var r = new SyntheticRuntime(reader); hostRuntimes.Add(r); return r; },
+            mixedFallback: new MixedFallbackOptions());
+        var hostResult = new ExecutionOrchestrator().Execute(host, new Mixed.ExitAtZeroHandoff(), Mixed.Request());
+
+        var (graph, interpreter, interpreterRuntimes) = Attached();
+        using var _ = graph;
+        using var __ = interpreter;
+        var interpreterOutcome = interpreter.RunFallbackSegment(AtTheVector(ra, sr, cause), NoReturn, 100);
+
+        hostResult.DiagnosticCode.Should().Be(BiosBlockingCallWait.SoftwareInterruptDiagnosticCode, Describe(hostResult));
+        interpreterOutcome.DiagnosticCode.Should().Be(BiosBlockingCallWait.SoftwareInterruptDiagnosticCode, interpreterOutcome.DiagnosticMessage);
+        interpreterOutcome.Status.Should().Be(FallbackSegmentStatus.Stopped);
+        hostResult.FinalSnapshot!.PC.Should().Be(B0Vector);
+        interpreterOutcome.State.Pc.Should().Be(B0Vector);
+        hostRuntimes.Sum(r => r.WaitInvocations).Should().Be(1);
+        interpreterRuntimes.Sum(r => r.WaitInvocations).Should().Be(1, "both forms stop on the first poll");
+    }
+
+    [Theory]
+    [InlineData(0x0000_0100u, 0x0000_0100u)] // IP0 pending, IM0 set, IEc off
+    [InlineData(0x0000_0001u, 0x0000_0300u)] // IP0/IP1 pending, masked
+    [InlineData(0x0000_0401u, 0x0000_0400u)] // IP2 only: a hardware IRQ, taken normally
+    public void RefuseSoftwareInterrupt_OnlyWhenOneIsPendingAndEnabled(uint sr, uint cause) =>
+        BiosBlockingCallWait.RefuseSoftwareInterrupt(sr, cause).Should().BeNull();
 
     // ---- the shared dispatch -------------------------------------------------------------------------
 

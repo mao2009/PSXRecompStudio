@@ -44,8 +44,29 @@ public sealed class BiosBlockingCallWait
     /// <summary>Reported when a second, different blocking call starts while one is still pending.</summary>
     public const string NestedDiagnosticCode = "BIOS_HLE_WAIT_NESTED";
 
+    /// <summary>
+    /// Reported when a software interrupt (CAUSE.IP0/IP1 enabled by SR.IM0/IM1, with SR.IEc) is pending while a call
+    /// waits. The R3000A would take it at the vector, but no execution form models a software interrupt's handler, and
+    /// they would otherwise disagree (the interpreter's CPU takes it and stops, the artifact never takes it and polls on).
+    /// Both stop here with this one diagnostic instead.
+    /// </summary>
+    public const string SoftwareInterruptDiagnosticCode = "BIOS_HLE_WAIT_SOFTWARE_INTERRUPT";
+
+    private const uint SoftwareInterruptBits = 0x300u; // CAUSE.IP0/IP1, SR.IM0/IM1
+
     private (BiosCallFamily Family, byte Function, uint Ra)? _call;
     private uint _polls;
+
+    /// <summary>
+    /// The check every execution form makes on a pending poll before it lets time pass: null unless a software
+    /// interrupt is pending and enabled in <paramref name="sr"/>/<paramref name="cause"/>, else the diagnostic to stop with.
+    /// </summary>
+    internal static (string Code, string Message)? RefuseSoftwareInterrupt(uint sr, uint cause) =>
+        (sr & 0x1u) != 0 && (cause & sr & SoftwareInterruptBits) != 0
+            ? (SoftwareInterruptDiagnosticCode,
+                $"A software interrupt is pending and enabled (CAUSE=0x{cause:X8}, SR=0x{sr:X8}) while a blocking call waits " +
+                "at the vector; software interrupts are not modelled.")
+            : null;
 
     /// <summary>
     /// Forgets the outstanding call. Called wherever an execution form re-seeds its CPU (a load, a fresh dispatch): the
