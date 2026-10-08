@@ -116,16 +116,31 @@ Card-management strategies are configuration, not separate mechanisms:
 
 ### BIOS-less Runtime slot policy (Issue #715)
 
-The Runtime takes the configuration once, at `PsxDeviceGraph` construction
-(`RecompiledHostExecutionEngine` forwards its `memoryCardSlots` argument), and
-exposes it read-only as `MemoryCardSlots`. It is host configuration, never
-guest-visible state, and cannot change for the graph's life. The production
-default is `MemoryCardSlotConfiguration.Empty`: both slots empty, in CI too.
-`HasMemoryCard(port)` (port 0 = slot 1, 1 = slot 2; any other port throws) is the
-read-only query the SIO0 side asks, and `MemoryCardSlotSummary` renders
-`slot0=Empty slot1=Empty` for diagnostics without disclosing card paths. No CLI
-option exists yet: with only the empty state there is nothing to choose. The
-native SIO0 model does not consult this query yet (tracked with PR #718).
+The Runtime takes the configuration once, at `PsxDeviceGraph` construction, and
+exposes it read-only as `MemoryCardSlots`. Both execution backends accept the
+same optional immutable `memoryCardSlots` argument and hand it to the graph they
+build: `InterpreterTitleExecutionEngine` and `RecompiledHostExecutionEngine`
+(which rebuilds its graph per segment from the engine's configuration), so the
+backends cannot disagree on card presence for one title. It is host
+configuration, never guest-visible state, and cannot change for the graph's
+life. The production default is `MemoryCardSlotConfiguration.Empty`: both slots
+empty, in CI too. No production caller supplies a configuration yet, and no CLI
+option exists: with only the empty state there is nothing to choose.
+
+`HasMemoryCard(port)` takes the SIO0 port number (CTRL.13) and maps it to
+`MemoryCardSlot` (port 0 = slot 1, 1 = slot 2); an out-of-range port throws. It
+is the query the SIO0 side **will** ask; nothing asks it yet. After PR #718
+(Issue #716), a follow-up adds an additive `extern "C"` setter that pushes slot
+presence into `sio0.rs`, keyed on CTRL.13 (`ABI_VERSION` unchanged;
+`test_psx_abi_contract.cpp` and `NativeInterop` are updated then).
+
+`MemoryCardSlotSummary` renders `slot0=Empty slot1=Empty` without disclosing
+card paths. **Diagnostics status:** only this API exists. No existing run
+report, diagnostic bundle or trace carries device-graph state (the graph lives
+in the artifact host process and the bundle is built from the launch result), so
+emitting the summary is deferred to the follow-up that introduces the first
+configuration source (the CLI option, with Issues #661/#712) rather than adding
+a new reporting channel now.
 
 ## Write safety
 
