@@ -15,7 +15,8 @@ namespace PSXRecomp.Core.Runtime;
 /// </para>
 /// <para>
 /// Each poll advances the devices by <see cref="PollCycles"/>, so the bound is guest time, never wall
-/// clock: <see cref="MaxPolls"/> polls are <see cref="MaxWaitVblanks"/> VBlank intervals of device time.
+/// clock: <see cref="MaxPolls"/> polls are <see cref="MaxWaitVblanks"/> VBlank intervals of device time. Interrupt
+/// handlers that run during the wait advance the devices too, so at least that much guest time passes before the timeout.
 /// </para>
 /// </remarks>
 [Domain]

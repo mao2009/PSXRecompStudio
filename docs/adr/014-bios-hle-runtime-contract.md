@@ -2097,12 +2097,24 @@ express "not done yet" without a fake immediate return.
   the bridge's scheduler, sends the controller line (`L`) and resumes the artifact at the same vector, where the artifact's
   own INT boundary (#680) decides. Both poll on identical device time.
 - **Fail closed, deterministic.** `BiosBlockingCallWait` is the only host-side state: the pending call's
-  `(family, function, $ra)` and its poll count. A call still pending after `MaxPolls` (= 600 VBlank intervals of device
-  time, never wall clock) stops with `BIOS_HLE_WAIT_TIMEOUT`; a second, different pending call while one is outstanding
+  `(family, function, $ra)` and its poll count. A call still pending after `MaxPolls` polls (600 VBlank intervals of
+  polling time; handlers that run during the wait add their own time, so at least 600 VBlank intervals of guest time,
+  never wall clock) stops with `BIOS_HLE_WAIT_TIMEOUT`; a second, different pending call while one is outstanding
   stops with `BIOS_HLE_WAIT_NESTED`; a dispatch path that passes no wait (the differential `RecompilerInterpreterExecutor`)
   stops with `BIOS_HLE_WAIT_UNSUPPORTED`. Unrelated calls neither complete nor reset the wait. Interrupts disabled during
   a wait (no IRQ can change the condition) end in the timeout, never a hang. Each poll also spends one step of the
   segment budget, so a segment ending mid-wait resumes at the vector and polls on.
+- **The wait belongs to one CPU state.** The interpreter resets it wherever it re-seeds the CPU (`Load`, a segment that
+  is not a resume of the last one, every mixed-execution fallback entry): the continuation was that guest state, so a
+  new call never inherits an old poll count or is refused as nested by a call that can no longer return. The generated
+  host creates it per launch and allows one launch per engine. A guest that abandons a pending call without
+  re-seeding (a handler that never returns to the vector) still makes the next different pending call stop with
+  `BIOS_HLE_WAIT_NESTED`; that is fail-closed, never a silent resume.
+- **Software interrupts.** CAUSE.IP0/IP1 enabled by SR.IM0/IM1 with SR.IEc is takeable on the R3000A, but no execution
+  form models its handler, and the forms differ (the interpreter's CPU takes it and stops, the artifact's INT boundary
+  accepts only IP2). So every pending poll first checks for one and both forms stop with
+  `BIOS_HLE_WAIT_SOFTWARE_INTERRUPT` before any time passes; the generated host reads SR/CAUSE with the existing `E`
+  query. Outside a wait the IP2-only artifact boundary is unchanged (ADR-025).
 - **Scope.** This is the mechanism only. No real BIOS call returns `Pending` yet; A0:70/A0:55 `_bu_init` stay
   unregistered (#712), and running the PadCardIrq element is still #661. A service with its own semantic timeout (the
   card state machine's per-VBlank timeout) completes through its condition; `MaxPolls` is only the backstop.
@@ -2111,5 +2123,6 @@ express "not done yet" without a fake immediate return.
   graph (one per launch), like every other device state there.
 
 Tests: `BiosBlockingCallWaitTests` (synthetic test-only B0:F0 wait on a VBlank-counted guest-RAM word: 1 and 5 VBlanks,
-a timer IRQ during the wait, single return, timeout, repeated-run determinism, generated host, unrelated calls,
-nested and unsupported fail-closed).
+a timer IRQ during the wait, single return, timeout, a wait spanning segments, repeated-run determinism, generated host,
+unrelated calls, nested and unsupported fail-closed, reset on `Load` and on a fallback entry, the masked-interrupt timeout
+and the software-interrupt stop compared across both execution forms).

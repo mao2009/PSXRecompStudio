@@ -81,10 +81,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     // It is the PC the handler must finally return to: a nested interrupt
     // overwrites cop0 EPC inside the handler, so re-reading EPC after nesting
     // would lose the outermost return target, but this private copy never does.
-    // It is always inside the program image, because the engine only steps the
-    // CPU while PC is inside the image (or inside a handler it already knows),
-    // so a *nested* take is the only way EPC lands outside the image and that
-    // take never overwrites this value.
+    // It is inside the program image, or the A0/B0/C0 vector when the INT was
+    // taken while a blocking BIOS call waited there (Issue #717), because the
+    // engine only steps the CPU at those PCs (or inside a handler it already
+    // knows), so a *nested* take is the only other way EPC lands elsewhere and
+    // that take never overwrites this value.
     private uint _handlerEpc;
 
     // Set when the CPU reports the handler executed RFE (ExecRfe, psx_cpu.cpp):
