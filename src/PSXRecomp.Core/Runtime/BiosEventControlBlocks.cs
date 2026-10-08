@@ -192,6 +192,8 @@ public static class BiosEventControlBlocks
         ArgumentNullException.ThrowIfNull(writer);
 
         var table = Locate(reader);
+        ProbeTrace.EventDeliveries++; // DO NOT MERGE — TEMPORARY RUNTIME PROBE
+        ProbeTrace.Emit("event_deliver", new { eventClass = ProbeTrace.Hex(eventClass), spec = ProbeTrace.Hex(spec), table = table.State.ToString() });
         if (table.State != TableState.Present)
         {
             return table.State == TableState.Absent;

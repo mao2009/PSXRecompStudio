@@ -731,6 +731,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             if (outcome.IsPending)
             {
                 var cop0 = QueryCop0().Context;
+                // DO NOT MERGE — TEMPORARY RUNTIME PROBE
+                ProbeTrace.Emit("pending_poll", new
+                {
+                    path = "generated-host",
+                    pc = ProbeTrace.Hex(pc),
+                    sr = ProbeTrace.Hex(cop0.Sr),
+                    cause = ProbeTrace.Hex(cop0.Cause),
+                    epc = ProbeTrace.Hex(cop0.Epc),
+                    swInterruptPendingEnabled = ProbeTrace.SoftwareInterruptPendingEnabled(cop0.Sr, cop0.Cause),
+                    iStat = ProbeTrace.Hex(_devices!.InterruptControllerAdapter.Status),
+                    iMask = ProbeTrace.Hex(_devices.InterruptControllerAdapter.Mask),
+                });
                 if (BiosBlockingCallWait.RefuseSoftwareInterrupt(cop0.Sr, cop0.Cause) is { } refusal)
                 {
                     DiagnosticCode = refusal.Code;
@@ -747,6 +759,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     return;
                 }
 
+                ProbeTrace.Emit("pending_int_line", new { line = _devices!.InterruptControllerAdapter.HasPendingInterrupts, iStat = ProbeTrace.Hex(_devices.InterruptControllerAdapter.Status), iMask = ProbeTrace.Hex(_devices.InterruptControllerAdapter.Mask) }); // DO NOT MERGE — TEMPORARY RUNTIME PROBE
                 Send(string.Create(
                     CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices!.InterruptControllerAdapter.HasPendingInterrupts ? 1 : 0)}"));

@@ -450,6 +450,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // re-enters the call. Otherwise the next iteration simply polls again.
                 if (outcome.IsPending)
                 {
+                    // DO NOT MERGE — TEMPORARY RUNTIME PROBE
+                    ProbeTrace.Emit("pending_poll", new
+                    {
+                        path = "interpreter",
+                        pc = ProbeTrace.Hex(_core.Pc),
+                        sr = ProbeTrace.Hex(_core.GetCop0(Cop0Status)),
+                        cause = ProbeTrace.Hex(_core.GetCop0(Cop0Cause)),
+                        epc = ProbeTrace.Hex(_core.GetCop0(Cop0Epc)),
+                        swInterruptPendingEnabled = ProbeTrace.SoftwareInterruptPendingEnabled(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)),
+                        iStat = ProbeTrace.Hex(_interruptControllerAdapter.Status),
+                        iMask = ProbeTrace.Hex(_interruptControllerAdapter.Mask),
+                    });
                     if (BiosBlockingCallWait.RefuseSoftwareInterrupt(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)) is { } refusal)
                     {
                         diagnosticCode = refusal.Code;

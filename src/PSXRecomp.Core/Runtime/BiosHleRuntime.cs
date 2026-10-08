@@ -172,6 +172,10 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
             [(BiosCallFamily.A0, PrintfFunction)] = (1, InvokePrintf),
             [(BiosCallFamily.B0, GetC0TableFunction)] = (0, InvokeGetC0Table),
             [(BiosCallFamily.B0, GetB0TableFunction)] = (0, InvokeGetB0Table),
+            // DO NOT MERGE — TEMPORARY RUNTIME PROBE: A0:70 _bu_init (OpenBIOS initBackupUnit(), no arguments)
+            // registered only so a run waits on it. Stateless: every call is Pending, nothing is returned,
+            // nothing is written. Never completes; the #717 600-VBlank bound ends the wait.
+            [(BiosCallFamily.A0, 0x70)] = (0, ProbeBuInitPending),
         };
 
         // Seed every registered slot's own guest-visible table entry with its HLE
@@ -308,6 +312,27 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
         identity.Arguments.Count == 0
             ? BiosServiceResult.Supported(identity)
             : BiosServiceResult.InvalidArguments(identity, $"{identity.StableKey} CdRemove takes no arguments.");
+
+    // DO NOT MERGE — TEMPORARY RUNTIME PROBE. Returns Pending on every call; the trace call only observes.
+    private BiosServiceResult ProbeBuInitPending(BiosCallIdentity identity)
+    {
+        var n = ++ProbeTrace.A070Calls;
+        if (ProbeTrace.Enabled)
+        {
+            var r = identity.GuestRegisters;
+            uint R(int i) => r is { Count: > 31 } ? r[i] : 0;
+            ProbeTrace.Emit("a070_poll", new
+            {
+                call = n,
+                argCount = identity.Arguments.Count,
+                a0 = ProbeTrace.Hex(R(4)), a1 = ProbeTrace.Hex(R(5)), a2 = ProbeTrace.Hex(R(6)), a3 = ProbeTrace.Hex(R(7)),
+                ra = ProbeTrace.Hex(R(31)), sp = ProbeTrace.Hex(R(29)), v0 = ProbeTrace.Hex(R(2)), t1 = ProbeTrace.Hex(R(9)),
+                kernel = ProbeTrace.KernelState(_guestMemoryReader),
+            });
+        }
+
+        return BiosServiceResult.Pending(identity);
+    }
 
     /// <summary>C0:0A ChangeClearRCnt(t,flag). The behavior lives in <see cref="BiosRootCounterClearPolicy"/>.</summary>
     private BiosServiceResult InvokeChangeClearRCnt(BiosCallIdentity identity) =>

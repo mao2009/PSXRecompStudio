@@ -193,6 +193,18 @@ public static class BiosExceptionHandler
             throw new ArgumentException("A full 32-entry register file is required.", nameof(gpr));
         }
 
+        // DO NOT MERGE — TEMPORARY RUNTIME PROBE: observe every kernel exception entry.
+        ProbeTrace.ExceptionEntries++;
+        ProbeTrace.Emit("exception_entry", new
+        {
+            excode = context.Excode,
+            epc = ProbeTrace.Hex(context.Epc),
+            cause = ProbeTrace.Hex(context.Cause),
+            sr = ProbeTrace.Hex(context.Sr),
+            iStat = ProbeTrace.Hex(interrupts.Status),
+            iMask = ProbeTrace.Hex(interrupts.Mask),
+            swInterruptPendingEnabled = ProbeTrace.SoftwareInterruptPendingEnabled(context.Sr, context.Cause),
+        });
         if (context.Excode != InterruptExcode)
         {
             return Stop(gpr, context, UnsupportedExceptionDiagnosticCode,
@@ -206,6 +218,7 @@ public static class BiosExceptionHandler
         }
 
         var chainResult = (chain ?? DefaultChain)(new BiosExceptionChainContext(reader, writer, interrupts, context));
+        ProbeTrace.Emit("chain_result", new { status = chainResult.Status.ToString(), detail = chainResult.Detail }); // DO NOT MERGE — TEMPORARY RUNTIME PROBE
         if (chainResult.Status == BiosExceptionChainStatus.Unsupported)
         {
             return Stop(gpr, context, ChainUnsupportedDiagnosticCode,
@@ -248,19 +261,49 @@ public static class BiosExceptionHandler
     public static BiosExceptionChainResult DefaultChain(BiosExceptionChainContext context)
     {
         ArgumentNullException.ThrowIfNull(context.Interrupts);
+        // DO NOT MERGE — TEMPORARY RUNTIME PROBE: the walk is unchanged; each step is only recorded.
+        ProbeTrace.ChainWalks++;
+        var iStatBefore = context.Interrupts.Status;
+        var iMaskBefore = context.Interrupts.Mask;
+        var kernelBefore = ProbeTrace.Enabled ? ProbeTrace.KernelState(context.Reader) : null;
         var priority1 = BiosTimerVblankIrqHandler.Run(context);
         if (priority1.Status != BiosExceptionChainStatus.Completed)
         {
+            ProbeTrace.Emit("chain", new
+            {
+                iStatBefore = ProbeTrace.Hex(iStatBefore), iMaskBefore = ProbeTrace.Hex(iMaskBefore),
+                p1 = priority1.Status.ToString(), p1Detail = priority1.Detail, p2Considered = false,
+                kernel = kernelBefore,
+            });
             return priority1;
         }
 
+        var iStatAfterP1 = context.Interrupts.Status;
         var priority2 = PadCardIrqIsEnqueuedAndWouldClaim(context);
         if (priority2 is not null)
         {
+            ProbeTrace.Emit("chain", new
+            {
+                iStatBefore = ProbeTrace.Hex(iStatBefore), iMaskBefore = ProbeTrace.Hex(iMaskBefore),
+                p1 = priority1.Status.ToString(), iStatAfterP1 = ProbeTrace.Hex(iStatAfterP1),
+                p2Considered = true, p2PadCardIrqClaim = true, p2GuardHit = true,
+                p2Status = priority2.Value.Status.ToString(), p2Detail = priority2.Value.Detail,
+                kernel = kernelBefore,
+            });
             return priority2.Value;
         }
 
-        return BiosDefaultInterruptHandler.Run(context);
+        var priority3 = BiosDefaultInterruptHandler.Run(context);
+        ProbeTrace.Emit("chain", new
+        {
+            iStatBefore = ProbeTrace.Hex(iStatBefore), iMaskBefore = ProbeTrace.Hex(iMaskBefore),
+            p1 = priority1.Status.ToString(), iStatAfterP1 = ProbeTrace.Hex(iStatAfterP1),
+            p2Considered = true, p2PadCardIrqClaim = false, p2GuardHit = false,
+            p3 = priority3.Status.ToString(), p3Detail = priority3.Detail,
+            iStatAfterP3 = ProbeTrace.Hex(context.Interrupts.Status),
+            kernel = kernelBefore,
+        });
+        return priority3;
     }
 
     /// <summary>

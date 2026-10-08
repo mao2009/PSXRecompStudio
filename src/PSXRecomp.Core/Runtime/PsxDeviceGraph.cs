@@ -150,6 +150,7 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
             2 => Core.ReadMemory16(physicalAddress),
             _ => Core.ReadMemory32(physicalAddress),
         };
+        ProbeSio0(physicalAddress, width, value, write: false); // DO NOT MERGE — TEMPORARY RUNTIME PROBE
         return PsxDeviceAccessStatus.Completed;
     }
 
@@ -170,7 +171,20 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
             case 2: Core.WriteMemory16(physicalAddress, (ushort)value); break;
             default: Core.WriteMemory32(physicalAddress, value); break;
         }
+        ProbeSio0(physicalAddress, width, value, write: true); // DO NOT MERGE — TEMPORARY RUNTIME PROBE
         return PsxDeviceAccessStatus.Completed;
+    }
+
+    // DO NOT MERGE — TEMPORARY RUNTIME PROBE: records generated-host SIO0 (0x1F801040-0x1F80104F) accesses only.
+    private static void ProbeSio0(uint physicalAddress, int width, uint value, bool write)
+    {
+        if (physicalAddress is < 0x1F801040 or > 0x1F80104F)
+        {
+            return;
+        }
+
+        ProbeTrace.Sio0Accesses++;
+        ProbeTrace.Emit("sio0_access", new { address = ProbeTrace.Hex(physicalAddress), width, value = ProbeTrace.Hex(value), write, path = "generated-host" });
     }
 
     bool IGuestDeviceAccess.TryRead32(uint physicalAddress, out uint value) =>

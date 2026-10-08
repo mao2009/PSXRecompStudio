@@ -103,6 +103,8 @@ public sealed class DeviceScheduler
             return;
         }
 
+        ProbeTrace.Cycles += cycles; // DO NOT MERGE — TEMPORARY RUNTIME PROBE
+
         // Timers: the latch is the timer's edge to the controller, so it is
         // consumed on delivery and a repeat-mode timer can fire again.
         _core.TickTimers(cycles);
@@ -157,6 +159,8 @@ public sealed class DeviceScheduler
         {
             _core.ClearSio0Interrupt();
             _interrupts.Raise(Sio0Irq);
+            ProbeTrace.Irq7Latches++; // DO NOT MERGE — TEMPORARY RUNTIME PROBE
+            ProbeTrace.Emit("irq7_latch", new { iStat = ProbeTrace.Hex(_interrupts.Status), iMask = ProbeTrace.Hex(_interrupts.Mask) });
         }
 
         // GPU command interrupt: GP0(1Fh) asserts the GPU-internal source
@@ -178,6 +182,17 @@ public sealed class DeviceScheduler
         if (phase >= VblankIntervalCycles)
         {
             _interrupts.Raise(VblankIrq);
+            ProbeTrace.Vblanks++; // DO NOT MERGE — TEMPORARY RUNTIME PROBE
+            ProbeTrace.Emit("vblank", new
+            {
+                iStat = ProbeTrace.Hex(_interrupts.Status),
+                iMask = ProbeTrace.Hex(_interrupts.Mask),
+                irq0Enabled = (_interrupts.Mask & 1u) != 0,
+                irq7Latches = ProbeTrace.Irq7Latches,
+                sio0Accesses = ProbeTrace.Sio0Accesses,
+                eventDeliveries = ProbeTrace.EventDeliveries,
+                chainWalks = ProbeTrace.ChainWalks,
+            });
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);
     }
