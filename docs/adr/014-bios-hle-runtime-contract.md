@@ -1992,3 +1992,27 @@ Issue #703: Persona's next call after `GPU_cw` is B0:15 `OutdatedPadInitAndStart
   (IRQ0 pending and enabled) rather than skip an element that exists. Running the element is #661.
 
 Tests: `BiosPadStateTests`.
+
+## Amendment (2026-10-08): B0:08 OpenEvent / B0:0C EnableEvent and the single EvCB table
+
+Issue #687: Persona's first blocker after SYS(01h) is `OpenEvent(F0000009h, 0020h, 2000h, 0)` followed by `EnableEvent(handle)`.
+
+- **CONFIRMED (psx-spx event-functions, control-blocks; PCSX-Redux OpenBIOS `events.c`).** The table is `[0x120]` address /
+  `[0x124]` size; an EvCB is 1Ch bytes (class, status, spec, mode, callback, 8 unused). Status: 0 free, 1000h disabled,
+  2000h enabled-busy, 4000h enabled-ready. OpenEvent takes the first free slot (duplicates allowed), stores
+  class/spec/mode/func, leaves it disabled and returns `F1000000h + slot`, or `FFFFFFFFh` when the table is full (a documented
+  return, not a diagnostic). EnableEvent always returns 1. DeliverEvent marks matching enabled events ready (mode 2000h) or
+  runs their callback (mode 1000h).
+- **Ownership.** `BiosEventControlBlocks` is the only owner; the table lives in guest RAM. A BIOS-less run seeds it on the
+  first OpenEvent at `0xE400` (16 entries, `[0x124]` in bytes; this Runtime's own choice after the PCB/TCB, the real location
+  is undocumented). `BiosTimerVblankIrqHandler.DeliverEvents` and `BiosDefaultInterruptHandler` now call
+  `BiosEventControlBlocks.Deliver` instead of requiring an absent table, so no second event state exists.
+- **Fail closed.** An unusable table (one pointer 0, size not a multiple of 1Ch, unreadable/unwritable) is
+  `BIOS_HLE_UNSUPPORTED_STATE`. Delivery to an enabled mode-1000h event with a callback is not modelled and fails the
+  delivery (the chain stops `BIOS_EXCEPTION_CHAIN_UNSUPPORTED`); OpenEvent itself never runs a callback.
+- **UNKNOWN / INFERRED.** The real table location and the five BIOS-internal CD-ROM events (not opened here). An invalid mode
+  is stored as given (neither source validates it) and never matches. An invalid EnableEvent handle is a no-op returning 1
+  (psx-spx); OpenBIOS would index out of the table. TestEvent, DisableEvent, CloseEvent, WaitEvent, UnDeliverEvent and the
+  B0:07 entry itself are not implemented (not measured).
+
+Tests: `BiosEventControlBlocksTests`, `BiosTimerVblankIrqHandlerTests`, `BiosDefaultInterruptHandlerTests`.

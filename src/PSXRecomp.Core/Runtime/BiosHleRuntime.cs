@@ -36,6 +36,12 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
     /// <summary>B0:5B ChangeClearPAD(int) — configures the Pad/Card IRQ handler's IRQ0 auto-ack policy.</summary>
     public const byte ChangeClearPadFunction = 0x5B;
 
+    /// <summary>B0:08 OpenEvent(class,spec,mode,func): takes a free EvCB slot and returns its handle.</summary>
+    public const byte OpenEventFunction = 0x08;
+
+    /// <summary>B0:0C EnableEvent(event): enables an opened EvCB; always returns 1.</summary>
+    public const byte EnableEventFunction = 0x0C;
+
     /// <summary>C0:0A ChangeClearRCnt(t,flag) — selects the timer/vblank IRQ handlers' post-IRQ behavior; returns the old flag.</summary>
     public const byte ChangeClearRCntFunction = 0x0A;
 
@@ -145,6 +151,8 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
             [(BiosCallFamily.B0, ReturnFromExceptionFunction)] = (0, InvokeReturnFromException),
             [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
             [(BiosCallFamily.B0, OutdatedPadInitAndStartFunction)] = (4, identity => BiosPadState.OutdatedPadInitAndStart(identity, _guestMemoryWriter)),
+            [(BiosCallFamily.B0, OpenEventFunction)] = (4, InvokeOpenEvent),
+            [(BiosCallFamily.B0, EnableEventFunction)] = (1, InvokeEnableEvent),
             [(BiosCallFamily.C0, ChangeClearRCntFunction)] = (2, InvokeChangeClearRCnt),
             [(BiosCallFamily.A0, CdRemoveFunction)] = (0, InvokeCdRemove),
             [(BiosCallFamily.A0, InitHeapFunction)] = (2, InvokeInitHeap),
@@ -296,6 +304,14 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
     /// <summary>C0:0A ChangeClearRCnt(t,flag). The behavior lives in <see cref="BiosRootCounterClearPolicy"/>.</summary>
     private BiosServiceResult InvokeChangeClearRCnt(BiosCallIdentity identity) =>
         BiosRootCounterClearPolicy.Change(identity, _guestMemoryReader, _guestMemoryWriter);
+
+    /// <summary>B0:08 OpenEvent. The behavior lives in <see cref="BiosEventControlBlocks"/>.</summary>
+    private BiosServiceResult InvokeOpenEvent(BiosCallIdentity identity) =>
+        BiosEventControlBlocks.OpenEvent(identity, _guestMemoryReader, _guestMemoryWriter);
+
+    /// <summary>B0:0C EnableEvent. The behavior lives in <see cref="BiosEventControlBlocks"/>.</summary>
+    private BiosServiceResult InvokeEnableEvent(BiosCallIdentity identity) =>
+        BiosEventControlBlocks.EnableEvent(identity, _guestMemoryReader, _guestMemoryWriter);
 
     /// <summary>B0:5B ChangeClearPAD(int). The behavior lives in <see cref="BiosPadCardAutoAck"/>.</summary>
     private BiosServiceResult InvokeChangeClearPad(BiosCallIdentity identity) =>
