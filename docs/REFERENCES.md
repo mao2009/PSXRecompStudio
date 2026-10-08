@@ -24,6 +24,42 @@ When source code is not directly reused, implementation should be derived indepe
 
 If third-party source or other material is later incorporated, its applicable license and notice obligations must be handled separately, for example through `THIRD_PARTY_NOTICES.md` or an equivalent mechanism. This file is not a substitute for those notices.
 
+## Reuse-first license and provenance gate (Issue #730)
+
+**Decision order:** (1) directly reuse a technically appropriate, licensed OSS implementation; (2) adapt/port licensed code into the existing C#/Rust/C++ Runtime; (3) use public behavior, specifications and contract tests as prior art; (4) write new code only when the earlier options are unsuitable. Preserve an existing Runtime model instead of introducing parallel state.
+
+Before directly copying, translating, porting or adapting substantial external source, create a **file-by-file audit** containing: immutable upstream commit, path and blob hash; rightsholders and exact file-level license text; included/generated dependencies and their licenses; host/R3000A ABI and backend fit; modifications; source/binary distribution and notice obligations; test evidence; reviewer, decision date and `APPROVED`/`PENDING`/`RESTRICTED`. Unknown or unclear cases remain PENDING and **cannot be incorporated**. An upstream repository's overall badge alone is not file-level clearance.
+
+For MIT-licensed copied/modified files or portions, retain the upstream copyright and permission notice in the source or an applicable third-party notice distributed with the software. Do not silently relicense them as PSXRecompStudio-owned code. GPL-, LGPL-, MPL- and license-exception-bearing source require individual integration/distribution analysis. A source that is publicly readable but lacks a reuse license is not a copy permission. A non-commercial reference is not imported into the MIT project.
+
+If only *observable behavior* is studied and independently implemented, record the reference and evidence; do not claim third-party code is incorporated without proof. Conversely, do not classify a line-by-line translation as independent work merely because its programming language differs.
+
+The commercial Sony BIOS and game disc/asset contents are forbidden in tracked files, release bundles and CI. Cross-check new implementation behavior with repository-owned synthetic fixtures and actual Runtime execution, not the apparent completeness of upstream code. This research record is **not** a legal warranty.
+
+## PCSX-Redux Nugget OpenBIOS — licensed reuse candidate
+
+- Repo: https://github.com/pcsx-redux/nugget
+- Reference snapshot: `c950e18a168944ec2d4e6d3c408fc224317483a7` (reviewed 2026-10-09).
+- License observations: repository `LICENSE` contains MIT and the candidate files below each have an explicit MIT license header plus PCSX-Redux authors' copyright. **First-party observations only; all transitive dependencies and actual integration requirements remain unapproved.**
+- CAUTION: the **separate** `grumpycoders/pcsx-redux` emulator repository uses GPL-2.0. Its code cannot be treated as Nugget MIT source.
+- Origin: OpenBIOS README says its implementation was developed using analysis/reverse engineering of commercial PS1 BIOS. Its MIT grant applies to its own code, and does not imply permission to distribute protected Sony ROM bytes or assets.
+
+| File (relative to Nugget root) | Observed blob SHA | Relevant services | Current decision |
+| --- | --- | --- | --- |
+| `openbios/card/backupunit.c` | `5c5a739186a3848c603e7221a5ec9c478e744e36` | A0:55/A0:70 `initBackupUnit`; `buInit`, card directory state, error delivery | REFERENCE_ONLY; direct/ported use PENDING |
+| `openbios/sio0/driver.c` | `b846e440f98f89f55cd8eecd93fa815e424c4099` | Pad/Card IRQ, VBlank, `firstStageCardAction`, `mcReadSector` | REFERENCE_ONLY; direct/ported use PENDING |
+| `openbios/sio0/card.c` | `70f664e6af75553031cfd00bd2297dcc4a54a197` | `mcWaitForStatus`, `mcReadHandler` | REFERENCE_ONLY; direct/ported use PENDING |
+| `openbios/kernel/events.c` | `9c693c4db5f18c67c99bca091d7fa515b04e233e` | `OpenEvent`, `DeliverEvent`, `UndeliverEvent`, callback mode | REFERENCE_ONLY; C# implementation already exists |
+| `openbios/cdrom/statemachine.c` | `c6ee3bdf657a1e0fe2eeff7b4e1e299085d40f91` | BIOS-driven CD response/state handling | REFERENCE_ONLY; don't replace PSXRecompStudio's CD hardware model |
+
+**Usage to date:** existing BIOS/Card/Pad/Event C# and Rust implementations cite OpenBIOS for behavior, but this audit has not established that licensed source text was directly incorporated. Do not add third-party copyright to an unrelated independent C# file without evidence. If future work copies/ports code, a human must approve the pinned files/dependencies, record altered code paths and preserve the exact MIT license/copyright in an appropriate NOTICE before merge. Current #712 first blocker remains unresolved by documentation alone. Links: [#730](https://github.com/mao2009/PSXRecompStudio/issues/730), [#712](https://github.com/mao2009/PSXRecompStudio/issues/712), [#661](https://github.com/mao2009/PSXRecompStudio/issues/661).
+
+## PSn00bSDK — alternative reference, different obligations
+
+- Source: https://github.com/Lameguy64/PSn00bSDK — snapshot `5d9aa2d3dfc7d6e51c2eb942ab4cdbae5571a40a` (2026-10-09).
+- The root `LICENSE.md` documents **MPL-2.0** for core SDK, separate copyleft obligations for `mkpsxiso` and other tools. The inspected `libpsn00b/psxcd/cdread.c` file identifies itself as MPL.
+- Relevant: CD command retry/cooldown, post-Pause waiting, independently testable edge cases. **REFERENCE_ONLY / no code imported**. Direct inclusion would require a new file/dependency and distribution-format license audit, not an assumed MIT grant.
+
 ## mstan/psxrecomp
 
 Repository: https://github.com/mstan/psxrecomp
