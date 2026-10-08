@@ -2126,3 +2126,47 @@ Tests: `BiosBlockingCallWaitTests` (synthetic test-only B0:F0 wait on a VBlank-c
 a timer IRQ during the wait, single return, timeout, a wait spanning segments, repeated-run determinism, generated host,
 unrelated calls, nested and unsupported fail-closed, reset on `Load` and on a fallback entry, the masked-interrupt timeout
 and the software-interrupt stop compared across both execution forms).
+
+## Amendment (2026-10-08): StartPAD/StartCARD set the auto-acks; priority 2 runs PadCardIrq (#661 S1, S2)
+
+Measured gate (disposable probe, A0:70 held `Pending`): the first VBlank during `_bu_init` reaches priority 2 with
+PadCardIrq enqueued and IRQ0 pending and enabled (`I_STAT=0x0001`, `I_MASK=0x000D`), and the guard of the B0:15 / B0:4B
+amendments stopped the run. This amendment supersedes those amendments' "auto-ack := 1 not modelled" and "the guard stops
+the chain" bullets.
+
+- **S1 — auto-acks at enqueue. CONFIRMED (OpenBIOS `sio0/driver.c` `startPad`/`startCard`) / INFERRED for retail.** Both
+  call `setSIO0AutoAck(1)` and `setTimerAutoAck(3, 0)` unconditionally; B0:5B is `setSIO0AutoAck` itself. So B0:15 (through
+  StartPad) and B0:4B write `BiosPadCardAutoAck` := configured, 1 and `BiosRootCounterClearPolicy` `t = 3` := 0. An earlier
+  `B0:5B(0)` is overwritten; a later B0:5B wins. psx-spx says only that StartPAD "initializes some flags"; its patches page
+  describes games that patch the Pad/Card handler's IRQ0 acknowledge out "even if auto-ack is enabled", which is consistent
+  with, but does not prove, the OpenBIOS overwrite. Measured on Persona (probe trace of `0x128`): `{1, 0}` from its
+  `B0:5B(0)` before B0:15, `{1, 1}` at the first `_bu_init` poll after StartCARD2, so the guest makes no `B0:5B(0)` in between
+  and the value at the first VBlank is 1 (it was 0 before this change). Not modelled for B0:15: StartPad's `I_STAT` acknowledge and `I_MASK |= IRQ0` (B0:15 has
+  no device access; StartCARD2 sets the mask).
+- **Shared pad-started flag.** OpenBIOS `s_padStarted` is set to 1 by InitPad (inside B0:15) and to `pad_enable` by
+  InitCARD2 (psx-spx: the same "pad_enable_flag"), last writer wins. It is the existing raw word at `BiosCardState + 4`
+  (`TryGetPadStarted`); B0:15 now writes 1 there without marking InitCARD2 as run. No new variable.
+- **S2 — the element. CONFIRMED (OpenBIOS `sio0Verifier`/`sio0Handler`) / INFERRED for retail.**
+  `BiosPadCardIrqHandler.Run` replaces the guard in `DefaultChain`. Not enqueued, or IRQ0 not pending and enabled: no claim,
+  nothing changes. Claimed: (1) pad stage — when the pad-started flag and `button_dest` are non-zero, `[button_dest] :=
+  FFFFFFFFh` (psx-spx B(16h): FFFFh per disconnected pad; OpenBIOS `readPadHighLevel` keeps its `0xFFFFFFFF` preset when no
+  pad answers; this Runtime connects no pad to SIO0, INFERRED, and touches no SIO0 register); (2) IRQ0 auto-ack — 1
+  acknowledges only I_STAT bit 0 through `IInterruptController` (existing `Handle`), 0 leaves it pending; (3) card stage when
+  StartCARD2 started the card — EVENT_CARD (`F0000011h`) specs 0004h/8000h/0100h/0200h/2000h are undelivered
+  (`BiosEventControlBlocks.Undeliver`: ready mode-2000h matches back to enabled, as OpenBIOS `undeliverEvent`); with no
+  request in progress the stage ends there; (4) `Completed`, never ReturnFromException, so priority 3 and the completion
+  step follow. With auto-ack 1, DefInt then sees no IRQ0 and delivers no `F0000001h` event, and the B0:19 hook runs with
+  IRQ0 already acknowledged (OpenBIOS behaves the same).
+- **Fail closed (before any write), `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` with a `priority 2 PadCardIrq` detail.** An unreadable
+  pad, card or auto-ack variable; an auto-ack that is not configured (unreachable through the services) or not 0/1
+  (OpenBIOS treats non-zero as on; retail undocumented); IRQ7 pending and enabled (the priority-1 card handler and the card
+  request state machine are not modelled, #712); an unwritable `button_dest`; an unusable EvCB table during the card stage.
+- **S3 boundary (#712).** Port flip, request start, the per-VBlank timeout, `EVENT_CARD 0100h` delivery and the priority-1
+  card handler are not modelled. No service creates a card request (A0:70/A0:55 are unregistered), so the idle stage is the
+  only reachable one; S3 lands with the request producer.
+- **Both execution forms.** The interpreter and the generated host already reach `DefaultChain` through the shared
+  `BiosExceptionHandler.Handle`; no engine code changed.
+
+Tests: `BiosPadCardIrqElementTests` (dispatch, claim, pad stage, auto-ack 0/1/undocumented/unconfigured, card-stage
+undeliver, IRQ7, ownership, P1/P2/P3 order, `Undeliver`), `PadCardIrqBackendParityTests` (both engines, same guest program),
+and the updated `BiosPadStateTests`, `BiosCardStateTests`, `BiosStartCard2Tests` (order variants of B0:5B / B0:15 / B0:4B).

@@ -4,7 +4,8 @@ namespace PSXRecomp.Core.Runtime;
 
 /// <summary>
 /// The kernel's Event Control Block (EvCB) table and the event functions the Runtime has measured a guest to need:
-/// B0:08 <c>OpenEvent</c>, B0:0C <c>EnableEvent</c> and the matching step of B0:07 <c>DeliverEvent</c> (#687).
+/// B0:08 <c>OpenEvent</c>, B0:0C <c>EnableEvent</c> and the matching step of B0:07 <c>DeliverEvent</c> (#687), plus the
+/// <c>UnDeliverEvent</c> step the kernel's <c>PadCardIrq</c> card stage performs (#661; B0:20 itself is not a registered service).
 /// The table is the only event state; it lives in guest RAM, so every engine and every rebuilt
 /// <see cref="BiosHleRuntime"/> sees the same one.
 /// </summary>
@@ -228,6 +229,48 @@ public static class BiosEventControlBlocks
         foreach (var statusAddress in ready)
         {
             if (!writer.TryWrite(statusAddress, BitConverter.GetBytes(StatusReady)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Whether the EvCB table is absent or fully readable for a subsequent Undeliver pass.</summary>
+    /// <remarks>This does not guarantee that subsequent writes will succeed; there is no transaction boundary.</remarks>
+    internal static bool CanReadUndeliverTable(IGuestMemoryReader reader) => Locate(reader).State != TableState.Invalid;
+
+    /// <summary>
+    /// B0:20 <c>UnDeliverEvent(class, spec)</c> as the kernel's own card driver calls it (OpenBIOS <c>undeliverEvent</c>; psx-spx
+    /// event-functions): every ready (4000h) EvCB matching class and spec with mode 2000h goes back to enabled-busy (2000h).
+    /// No table: nothing can match, true. False when the table is unusable. Not atomic once writing starts (as <see cref="Deliver"/>).
+    /// </summary>
+    public static bool Undeliver(IGuestMemoryReader reader, IGuestMemoryWriter writer, uint eventClass, uint spec)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(writer);
+
+        var table = Locate(reader);
+        if (table.State != TableState.Present)
+        {
+            return table.State == TableState.Absent;
+        }
+
+        var record = new byte[EventControlBlockSize];
+        for (var slot = 0; slot < table.Slots; slot++)
+        {
+            var address = SlotAddress(table, slot);
+            if (!reader.TryRead(address, record))
+            {
+                return false;
+            }
+
+            if (BitConverter.ToUInt32(record, StatusOffset) == StatusReady &&
+                BitConverter.ToUInt32(record, ClassOffset) == eventClass &&
+                BitConverter.ToUInt32(record, SpecOffset) == spec &&
+                BitConverter.ToUInt32(record, ModeOffset) == ModeReady &&
+                !writer.TryWrite(address + StatusOffset, BitConverter.GetBytes(StatusEnabled)))
             {
                 return false;
             }

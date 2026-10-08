@@ -258,10 +258,58 @@ public sealed class BiosStartCard2Tests : IDisposable
         Pad().Should().Be((true, ButtonDest), "button_dest is B0:15's and survives StartCARD2");
     }
 
+    // ---- SIO0 auto-ack (B0:5B state) vs. StartPAD / StartCARD order — #661 S1 ------------------------
+
+    private uint? AutoAckArgument()
+    {
+        BiosPadCardAutoAck.TryGetSetting(Reader, out var setting, out var argument).Should().BeTrue();
+        return setting == BiosPadCardAutoAckSetting.NotConfigured ? null : argument;
+    }
+
+    private void ChangeClearPad(uint value) =>
+        Call(Runtime(), BiosCallFamily.B0, BiosHleRuntime.ChangeClearPadFunction, value).Status.Should().Be(BiosServiceStatus.Supported);
+
+    [Fact]
+    public void The_Persona_Order_B0_5B_Zero_Then_B0_15_Then_InitCARD2_Then_StartCARD2_Ends_With_Auto_Ack_One()
+    {
+        ChangeClearPad(0);
+        AutoAckArgument().Should().Be(0u);
+        PadInitAndStart();
+        AutoAckArgument().Should().Be(1u, "B0:15's StartPad overwrites the earlier B0:5B(0)");
+        ChangeClearPad(0);
+        InitCard2(1);
+        AutoAckArgument().Should().Be(0u, "InitCARD2 does not touch the auto-ack");
+
+        StartCard2(new FakeDevices());
+
+        AutoAckArgument().Should().Be(1u, "StartCARD2 overwrites it again");
+    }
+
+    [Fact]
+    public void A_ChangeClearPad_Zero_After_StartCARD2_Wins()
+    {
+        InitCard2(1);
+        StartCard2(new FakeDevices());
+
+        ChangeClearPad(0);
+
+        AutoAckArgument().Should().Be(0u);
+    }
+
+    [Fact]
+    public void A_Failed_StartCARD2_Leaves_The_Auto_Ack_Alone()
+    {
+        ChangeClearPad(0);
+
+        StartCard2(new FakeDevices()).Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE", "InitCARD2 was not called");
+
+        AutoAckArgument().Should().Be(0u);
+    }
+
     // ---- no speculative side effects ------------------------------------------------------------------
 
     [Fact]
-    public void It_Touches_Only_The_Pad_And_Card_Variables_And_Leaves_AutoAck_RootCounter_And_Irq_State_Alone()
+    public void It_Touches_Only_The_Pad_Card_And_Sio0_Auto_Ack_Variables_And_Leaves_I_Stat_Alone()
     {
         Call(Runtime(), BiosCallFamily.B0, BiosHleRuntime.ChangeClearPadFunction, 0u);
         Call(Runtime(), BiosCallFamily.C0, BiosHleRuntime.ChangeClearRCntFunction, 3u, 0u);
@@ -280,35 +328,33 @@ public sealed class BiosStartCard2Tests : IDisposable
         changed.Should().NotBeEmpty();
         changed.Should().OnlyContain(a =>
             (a >= BiosPadState.VariableAddress && a < BiosPadState.VariableAddress + 8) ||
-            (a >= BiosCardState.VariableAddress && a < BiosCardState.VariableAddress + 8));
-        BiosPadCardAutoAck.TryGetSetting(Reader, out var setting).Should().BeTrue();
-        setting.Should().Be(BiosPadCardAutoAckSetting.Zero, "the auto-ack forcing is #661's");
+            (a >= BiosCardState.VariableAddress && a < BiosCardState.VariableAddress + 8) ||
+            (a >= BiosPadCardAutoAck.VariableAddress && a < BiosPadCardAutoAck.VariableAddress + 8));
+        BiosPadCardAutoAck.TryGetSetting(Reader, out var setting, out var argument).Should().BeTrue();
+        (setting, argument).Should().Be((BiosPadCardAutoAckSetting.NonZero, 1u), "startCard calls setSIO0AutoAck(1) over the earlier B0:5B(0)");
         BiosRootCounterClearPolicy.TryGetFlag(Reader, 3, out var flag).Should().BeTrue();
         flag.Should().Be(0u);
         _interrupts.Status.Should().Be(status);
         _interrupts.Mask.Should().Be(mask);
     }
 
-    // ---- the priority-2 guard -------------------------------------------------------------------------
+    // ---- the priority-2 element (#661) ----------------------------------------------------------------
 
     private BiosExceptionHandlerOutcome Handle() =>
         BiosExceptionHandler.Handle(
             Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(0x80025CBC, 0x400, 0x404, 0, 0));
 
     [Fact]
-    public void StartCARD2_Alone_Enqueues_PadCardIrq_So_The_Guard_Stops_A_Claimed_VBlank_Exception()
+    public void StartCARD2_Alone_Enqueues_PadCardIrq_Which_Claims_A_VBlank_And_Acknowledges_It()
     {
         InitCard2(1);
         StartCard2(new FakeDevices());
         _interrupts.SetMask(VblankBit);
         _interrupts.Raise(DeviceScheduler.VblankIrq);
 
-        var outcome = Handle();
+        Handle().Handled.Should().BeTrue();
 
-        outcome.Handled.Should().BeFalse();
-        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain("PadCardIrq").And.Contain("#661");
-        (_interrupts.Status & VblankBit).Should().Be(VblankBit, "nothing is acknowledged");
+        (_interrupts.Status & VblankBit).Should().Be(0u, "StartCARD2 set the SIO0 auto-ack to 1");
     }
 
     [Fact]
@@ -464,7 +510,7 @@ public sealed class BiosStartCard2Tests : IDisposable
     }
 
     [Fact]
-    public void After_StartCARD2_The_Next_VBlank_Reaches_The_Priority_2_Guard_Instead_Of_Being_Acknowledged_At_Priority_1()
+    public void After_StartCARD2_The_Next_VBlank_Reaches_Priority_2_Instead_Of_Being_Acknowledged_At_Priority_1()
     {
         PadInitAndStart();
         ChangeClearRCnt(3, 1);
@@ -473,12 +519,11 @@ public sealed class BiosStartCard2Tests : IDisposable
         _interrupts.SetMask(VblankBit);
         _interrupts.Raise(DeviceScheduler.VblankIrq);
 
-        var outcome = Handle();
+        Handle().Handled.Should().BeTrue();
 
-        outcome.Handled.Should().BeFalse("with the old flag 1 priority 1 would acknowledge IRQ0 and return from the exception");
-        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain("PadCardIrq").And.Contain("#661");
-        (_interrupts.Status & VblankBit).Should().Be(VblankBit, "IRQ0 stays pending");
+        _ram.Read32(ButtonDest).Should().Be(BiosPadCardIrqHandler.DisconnectedPadButtons,
+            "priority 2 ran its pad stage; with the old flag 1 priority 1 would have returned from the exception first");
+        (_interrupts.Status & VblankBit).Should().Be(0u);
     }
 
     [Fact]
