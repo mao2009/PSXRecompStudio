@@ -325,7 +325,7 @@ public class Sio0CpuEndToEndTests : IDisposable
     }
 
     [Fact]
-    public void SelectedTransaction_SignalsSio0InterruptPending_UntilClearedThroughPSXCoreWrapper()
+    public void SelectedTransaction_OnEmptyPort_NeverSignalsSio0InterruptPending_ThroughPSXCoreWrapper()
     {
         _core.GetSio0InterruptPending().Should().BeFalse();
 
@@ -337,10 +337,9 @@ public class Sio0CpuEndToEndTests : IDisposable
         Run(
             Ori(T1, Zero, 0x0001),
             Sb(T1, T0, (ushort)DataOffset));
-        _core.GetSio0InterruptPending().Should().BeTrue("a transaction byte was transferred while selected");
-
-        _core.ClearSio0Interrupt();
-        _core.GetSio0InterruptPending().Should().BeFalse();
+        _core.GetSio0InterruptPending().Should().BeFalse("an empty port never drives /ACK, so a transferred byte raises no IRQ7 (Issue #716)");
+        Run(Lbu(T2, T0, (ushort)DataOffset));
+        _core.GetGpr(T2).Should().Be(0xFFu, "the RX byte is still delivered");
     }
 
     [Fact]
@@ -353,14 +352,14 @@ public class Sio0CpuEndToEndTests : IDisposable
     }
 
     [Fact]
-    public void RepeatedTransactionAfterCtrlReset_SignalsIrqAgain_ThroughCpuLoadsAndStores()
+    public void RepeatedTransactionAfterCtrlReset_StillSignalsNoIrq_ThroughCpuLoadsAndStores()
     {
         Run(
             Ori(T1, Zero, CtrlSelect),
             Sh(T1, T0, (ushort)ControlOffset),
             Ori(T1, Zero, 0x0001),
             Sb(T1, T0, (ushort)DataOffset));
-        _core.GetSio0InterruptPending().Should().BeTrue();
+        _core.GetSio0InterruptPending().Should().BeFalse();
         _core.ClearSio0Interrupt();
 
         Run(
@@ -375,11 +374,11 @@ public class Sio0CpuEndToEndTests : IDisposable
             Sb(T1, T0, (ushort)DataOffset),
             Lbu(T2, T0, (ushort)DataOffset));
         _core.GetGpr(T2).Should().Be(0xFFu);
-        _core.GetSio0InterruptPending().Should().BeTrue("the second transaction must signal its own byte-received IRQ");
+        _core.GetSio0InterruptPending().Should().BeFalse("an empty port never ACKs, on any transaction");
     }
 
     [Fact]
-    public void Deselecting_ThenReselecting_SignalsAFreshIrqForTheNewTransaction()
+    public void Deselecting_ThenReselecting_StillSignalsNoIrqForTheNewTransaction()
     {
         Run(
             Ori(T1, Zero, CtrlSelect),
@@ -400,7 +399,7 @@ public class Sio0CpuEndToEndTests : IDisposable
             Sb(T1, T0, (ushort)DataOffset),
             Lbu(T2, T0, (ushort)DataOffset));
         _core.GetGpr(T2).Should().Be(0xFFu);
-        _core.GetSio0InterruptPending().Should().BeTrue("the reselected transaction signals its own IRQ");
+        _core.GetSio0InterruptPending().Should().BeFalse("an empty port never ACKs, on any transaction");
     }
 
     // Issue #543 review finding: the command-recognized/unrecognized
@@ -431,7 +430,7 @@ public class Sio0CpuEndToEndTests : IDisposable
             Lbu(T2, T0, (ushort)DataOffset));
         _core.GetSio0CommandStatus().Should().Be(Sio0CommandStatusRecognized);
         _core.GetGpr(T2).Should().Be(0xFFu, "the disconnected response is unchanged by recognition");
-        _core.GetSio0InterruptPending().Should().BeTrue("the transaction still completed and signaled IRQ7");
+        _core.GetSio0InterruptPending().Should().BeFalse("the transaction completed without an /ACK, so no IRQ7");
     }
 
     [Fact]
@@ -452,6 +451,6 @@ public class Sio0CpuEndToEndTests : IDisposable
         // The classification must not change any previously verified
         // behavior: response, RX-ready, or IRQ7.
         _core.GetGpr(T2).Should().Be(0xFFu, "the transaction still completed deterministically, not hung");
-        _core.GetSio0InterruptPending().Should().BeTrue("IRQ7 still latches for an unrecognized command, same as a recognized one");
+        _core.GetSio0InterruptPending().Should().BeFalse("no IRQ7 for an unrecognized command either: nothing ACKs");
     }
 }

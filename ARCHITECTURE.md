@@ -150,7 +150,7 @@ Status reflects the current repository state (implementation, tests, and CI), no
 | Timers | Partially implemented (Rust register/tick/IRQ model reached from production scheduling; cycle-exact timing and GPU-derived dotclock/HBlank synchronization are not implemented) |
 | GPU | Partially implemented (managed GP0/GP1/GPUSTAT + VRAM, flat/Gouraud triangle/rectangle rasterization, deterministic frame snapshot, VBlank IRQ0 scheduling; production title-execution MMIO, DMA2 and GPU IRQ1 remain open) |
 | SPU | Partially implemented (Rust-owned 0x1F801C00-0x1F801DFF register/MMIO store reached by production CPU accesses; ADPCM/ADSR/mixing/reverb/sound RAM/audio output/IRQ9 are not implemented) |
-| SIO0 | Partially implemented (Rust-owned register model + deterministic disconnected-pad transaction path + IRQ7; real host controller and memory-card serial protocol are not implemented) |
+| SIO0 | Partially implemented (Rust-owned register model + deterministic empty-port transaction path (0xFF, no /ACK, no IRQ7; #716) + the IRQ7 latch seam; real host controller and memory-card serial protocol are not implemented) |
 | CD-ROM | Planned (interface/contract only; register/command/DMA3/IRQ2 implementation remains open) |
 | MDEC | Planned (interface contract only) |
 | GTE | Planned (interface contract only) |

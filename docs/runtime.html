@@ -50,7 +50,7 @@
         <li>R3000A execution with delay-slot, exception, COP0, and interrupt behavior under deterministic tests.</li>
         <li>Rust-backed guest memory/MMIO, interrupt controller, timers, and DMA register/timing state reached by the production execution path.</li>
         <li>BIOS-less execution through a partial BIOS HLE registry with explicit unsupported-call diagnostics.</li>
-        <li>Rust-owned SIO0 register state, a deterministic disconnected-pad transaction path, and IRQ7 delivery.</li>
+        <li>Rust-owned SIO0 register state, a deterministic empty-port transaction path (0xFF, no /ACK, no IRQ7), and the IRQ7 latch seam for a future device model.</li>
         <li>Rust-owned SPU register/MMIO storage reachable from production CPU memory accesses.</li>
         <li>A managed GPU register/VRAM model with minimal triangle/rectangle rasterization and deterministic frame snapshots.</li>
       </ul>

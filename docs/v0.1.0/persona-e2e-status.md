@@ -47,7 +47,7 @@ The v0.1.0 milestone targets this path for Persona (女神異聞録ペルソナ 
 | BIOS HLE (subset) | ⚠ Partial | `BiosHleRuntime` — 14 registered identities; current inventory is maintained in `docs/runtime/bios-hle-evidence.md`, and the measured Persona path now passes A0:13, B0:19, B0:5B, C0:0A, A0:72 and A0:3F plus SYS(02h) and B0:17 |
 | GPU | ⚠ Partial | GP0/GP1/GPUSTAT + VRAM/MMIO (#440), minimal rasterization + deterministic `FrameSnapshot` (#441/#500), VBlank IRQ0 scheduling (#442/#493), production interpreter 32-bit guest MMIO reachability (#572), GPU command IRQ1 delivery (#574), and production `FrameSnapshot` headless evidence (#575); DMA2 remains |
 | SPU | ⚠ Partial | Rust-owned register/MMIO model at 0x1F801C00-0x1F801DFF (#445/#551); no ADPCM/ADSR/mixing/reverb/sound-RAM/audio-output model |
-| SIO0 | ⚠ Partial | Production-reachable register model + deterministic disconnected-pad transaction path + IRQ7 (#443 via #548/#549); no real host controller or memory-card wire protocol |
+| SIO0 | ⚠ Partial | Production-reachable register model + deterministic empty-port transaction path (0xFF, no /ACK so no IRQ7, #716; the IRQ7 latch is the seam for a real device) (#443 via #548/#549); no real host controller or memory-card wire protocol |
 | CD-ROM | ⚠ Partial | Register/FIFO substrate, minimum command protocol, DMA3 and IRQ2 are implemented and production-interpreter reachable (#585/#586/#587); sector bytes are test-supplied only — no real disc source, streaming, seek timing or CD audio (#14) |
 | GTE | ⚠ Partial | COP2 data/control register bank (#581 / PR #592), RTPS (#582 / PR #590), NCLIP (#583 / PR #591), and AVSZ3/AVSZ4 (#584 / PR #589) are implemented; native COP2 dispatch/integration remains #447 |
 | TITLE_SCREEN | ❌ Not reached | — |
