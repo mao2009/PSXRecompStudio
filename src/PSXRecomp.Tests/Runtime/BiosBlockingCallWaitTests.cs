@@ -304,10 +304,8 @@ public sealed class BiosBlockingCallWaitTests
 
     // ---- generated host ------------------------------------------------------------------------------
 
-    [Fact]
-    public void GeneratedHost_WaitsAcrossVblanks_AndReturnsOnce_LikeTheInterpreter()
+    private static Observed RunGeneratedHost(uint[] words)
     {
-        var words = Program(target: 2);
         var log = new ChainLog();
         SyntheticRuntime? runtime = null;
         using var dir = new TempDirectory();
@@ -321,10 +319,39 @@ public sealed class BiosBlockingCallWaitTests
             exceptionChain: log.Chain());
 
         var result = new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget: 100_000));
+        return new Observed(result, runtime!.WaitInvocations, log);
+    }
 
-        ShouldHaveReturnedOnce(new Observed(result, runtime!.WaitInvocations, log), 2);
+    [Fact]
+    public void GeneratedHost_WaitsAcrossVblanks_AndReturnsOnce_LikeTheInterpreter()
+    {
+        var words = Program(target: 2);
+
+        var host = RunGeneratedHost(words);
+
+        ShouldHaveReturnedOnce(host, 2);
+        host.WaitInvocations.Should().Be(RunInterpreter(words).WaitInvocations, "both paths poll on the same device time");
+    }
+
+    [Fact]
+    public void InterruptsMaskedDuringTheWait_TimesOutIdentically_OnBothForms()
+    {
+        // Without SYS(02h) SR.IEc stays 0: VBlank is raised in I_STAT but never taken, so the condition cannot change.
+        var words = Program(target: 1);
+        words[0] = MipsEncoding.Nop;
+        words[1] = MipsEncoding.Nop;
+
         var interpreter = RunInterpreter(words);
-        runtime.WaitInvocations.Should().Be(interpreter.WaitInvocations, "both paths poll on the same device time");
+        var host = RunGeneratedHost(words);
+
+        foreach (var run in new[] { interpreter, host })
+        {
+            run.Result.DiagnosticCode.Should().Be(BiosBlockingCallWait.TimeoutDiagnosticCode, Describe(run.Result));
+            run.Result.FinalSnapshot!.PC.Should().Be(B0Vector);
+            G(run.Result, R3000aRegister.S3).Should().Be(0u, "the call never returned");
+            run.Chain.Epcs.Should().BeEmpty("no interrupt was taken");
+            run.WaitInvocations.Should().Be((int)BiosBlockingCallWait.MaxPolls + 1);
+        }
     }
 
     // ---- software interrupt during a wait: both forms agree (PR #724 review) -------------------------
