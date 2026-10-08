@@ -625,10 +625,11 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     `[0x148]=1`, `[0x14C]=1`, `[0x128]=1`, EvCB table at `0xE400`. CONFIRMED against OpenBIOS only (psx-spx documents the
     signature, no body); retail INFERRED: no arguments, returns 1; resets SIO0, then dequeues and enqueues the one
     `PadCardIrq` element shared with StartPAD2/B0:15 (repeating it leaves one copy), `I_MASK |= IRQ0`, forces SIO0 auto-ack = 1
-    and the VBlank timer auto-ack = 0, sets the card started. No I_STAT, IRQ7 or event effect. Fix: `BiosCardState` keeps the
+    and the VBlank timer auto-ack (root-counter clear policy t=3) = 0, sets the card started. No I_STAT, IRQ7 or event effect. Fix: `BiosCardState` keeps the
     started bit next to "ran" and `pad_enable` (`0x148`); the enqueue is `BiosPadState`'s existing enqueued flag (one shared
-    element, `button_dest` kept); I_MASK goes through `IGuestDeviceAccess`. Not modelled: the SIO0 reset writes, and the two
-    auto-ack forcings (read only by the PadCardIrq handler, #661; B0:15's StartPAD auto-ack was left there too). Before
+    element, `button_dest` kept); I_MASK goes through `IGuestDeviceAccess`. Not modelled: the SIO0 reset writes, and the SIO0
+    auto-ack forcing (read only by the PadCardIrq handler, #661; B0:15's StartPAD auto-ack was left there too). The VBlank
+    policy := 0 is modelled because `BiosTimerVblankIrqHandler` already consumes it. Before
     InitCARD2 it fails closed (psx-spx order; retail behaviour UNKNOWN). With the same two roots: B0:4B passes and the run
     stops with `BIOS_HLE_UNSUPPORTED_CALL` `A0:70` (exit 1, `state=5`; #712). No priority-2 exception was reached (the run
     stops at the next call, before any VBlank exception can reach the enqueued element), so #661 is not required yet; no

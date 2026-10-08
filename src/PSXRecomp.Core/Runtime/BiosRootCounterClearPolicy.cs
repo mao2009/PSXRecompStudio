@@ -68,6 +68,14 @@ public static class BiosRootCounterClearPolicy
         return BiosServiceResult.Supported(identity, BitConverter.ToUInt32(old));
     }
 
+    /// <summary>Sets the flag as <c>setTimerAutoAck(source, flag)</c> does when StartCARD2 forces it (see <see cref="BiosCardState"/>); false when out of range or not writable.</summary>
+    internal static bool TrySetFlag(IGuestMemoryWriter writer, uint source, uint flag)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        return source <= MaxSource && writer.TryWrite(VariableAddress + source * sizeof(uint), BitConverter.GetBytes(flag));
+    }
+
     /// <summary>Reads the current flag for <paramref name="source"/> (0..3); false when unreadable or out of range.</summary>
     public static bool TryGetFlag(IGuestMemoryReader reader, uint source, out uint flag)
     {

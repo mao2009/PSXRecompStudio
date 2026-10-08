@@ -24,8 +24,9 @@ namespace PSXRecomp.Core.Runtime;
 /// element B0:15 / StartPAD2 enqueue, so repeating it leaves one copy), sets <c>I_MASK |= IRQ0</c>, forces the SIO0 auto-ack
 /// (B0:5B <c>ChangeClearPAD</c> state) to 1 and the VBlank timer auto-ack (C0:0A <c>ChangeClearRCnt(3, flag)</c> state) to 0, and sets
 /// <c>s_cardStarted = 1</c>. It does not touch I_STAT, <c>I_MASK</c> bit 7 (IRQ7), any event, or <c>s_padStarted</c>.
-/// The two auto-ack forcings are read only by the <c>PadCardIrq</c> handler and the VBlank timer handler's return path; they are not
-/// modelled here and stay with the handler (#661), exactly as B0:15's StartPAD auto-ack = 1 does (ADR-014 #703 amendment): the handler is never run.
+/// The VBlank timer auto-ack = 0 is modelled (below): <see cref="BiosTimerVblankIrqHandler"/> already reads it at priority 1. The SIO0
+/// auto-ack = 1 is not: only the <c>PadCardIrq</c> handler reads it (it is never run here), so it stays with #661, exactly as B0:15's
+/// StartPAD auto-ack = 1 does (ADR-014 #703 amendment).
 /// Without a prior InitCARD2 the shared element has a NULL handler and the card state is uninitialised (the retail behaviour is
 /// UNKNOWN, OpenBIOS would crash), and psx-spx states the order InitCARD2, StartCARD2, <c>_bu_init</c>; the Runtime fails closed.
 /// </para>
@@ -33,17 +34,20 @@ namespace PSXRecomp.Core.Runtime;
 /// Modelled: "ran", "started" and the raw <c>pad_enable</c> in one guest-RAM kernel variable (like <see cref="BiosPadState"/>, because
 /// some engines rebuild <see cref="BiosHleRuntime"/> per segment); the address is this Runtime's own choice in the reserved slot
 /// psx-spx leaves unused at <c>00000148h</c>. StartCARD2's enqueue is <see cref="BiosPadState"/>'s existing enqueued flag (one shared
-/// element, so B0:15 and StartCARD2 are the same fact), and the I_MASK bit goes through <see cref="IGuestDeviceAccess"/>. Not modelled,
-/// deliberately: the auto-ack forcings (<see cref="BiosPadCardAutoAck"/> and <see cref="BiosRootCounterClearPolicy"/> are unchanged), the SIO0 reset writes (<c>ctrl</c>/<c>mode</c>/<c>baud</c> — the sequence ends with <c>ctrl = 0</c> and nothing in the Runtime reads
-/// deliberately: the SIO0 reset writes (<c>ctrl</c>/<c>mode</c>/<c>baud</c> — the sequence ends with <c>ctrl = 0</c> and nothing in the Runtime reads
+/// element, so B0:15 and StartCARD2 are the same fact), the I_MASK bit goes through <see cref="IGuestDeviceAccess"/>, and the VBlank timer
+/// auto-ack is written into <see cref="BiosRootCounterClearPolicy"/> (<c>t = 3</c> := 0; the other sources are untouched, no new state).
+/// Not modelled, deliberately: the SIO0 auto-ack forcing (<see cref="BiosPadCardAutoAck"/> is unchanged), the SIO0 reset writes
+/// (<c>ctrl</c>/<c>mode</c>/<c>baud</c> — the sequence ends with <c>ctrl = 0</c> and nothing in the Runtime reads
 /// them until a SIO0 transfer is modelled; the retail sequence is UNKNOWN), the hidden handler structures, the exception-handler
 /// fast-track patch and the k0/k1 clobber. The enqueued element is never run here: while it is enqueued the exception chain fails
 /// closed when it would claim an exception (<see cref="BiosExceptionHandler.DefaultChain"/>), until #661 models the element.
 /// </para>
 /// <para>
-/// Write-failure contract: the pre-checks (state readable, InitCARD2 ran, I_MASK readable) run before any write; the writes are then
-/// separate (I_MASK, enqueue, started). <see cref="IGuestMemoryWriter"/> has no transaction, so a failure
-/// partway leaves the earlier writes in place and the call reports <c>BIOS_HLE_UNSUPPORTED_STATE</c> (the run stops).
+/// Write-failure contract: every read and prerequisite (state readable, InitCARD2 ran, I_MASK and the VBlank flag readable) is checked
+/// before any write. The writes then run in this order: VBlank clear policy := 0, I_MASK |= IRQ0, enqueue <c>PadCardIrq</c>, card
+/// started — the state the exception path already consumes first, the "started" fact last. <see cref="IGuestMemoryWriter"/> has no
+/// transaction and no rollback is attempted, so a failure partway leaves the earlier writes in place and the call reports
+/// <c>BIOS_HLE_UNSUPPORTED_STATE</c> (the run stops).
 /// </para>
 /// </remarks>
 [Domain]
@@ -61,6 +65,7 @@ public static class BiosCardState
     private const uint RanBit = 1;
     private const uint StartedBit = 2;
     private const uint VblankIrqBit = 1;
+    private const uint VblankSource = 3; // C0:0A t=3 is the VBlank slot
 
     /// <summary>B0:4A handler.</summary>
     internal static BiosServiceResult InitCard2(BiosCallIdentity identity, IGuestMemoryReader reader, IGuestMemoryWriter writer)
@@ -106,10 +111,11 @@ public static class BiosCardState
 
         if (!TryReadFlags(reader, out var flags, out var padEnable) ||
             !BiosPadState.TryGetState(reader, out _, out _) ||
+            !BiosRootCounterClearPolicy.TryGetFlag(reader, VblankSource, out _) ||
             !devices.TryRead32(InterruptMaskAddress, out var mask))
         {
             return BiosServiceResult.UnsupportedState(
-                identity, $"{identity.StableKey} StartCARD2: the card state, the pad state or I_MASK is not readable.");
+                identity, $"{identity.StableKey} StartCARD2: the card state, the pad state, the VBlank clear policy or I_MASK is not readable.");
         }
 
         if ((flags & RanBit) == 0)
@@ -121,6 +127,7 @@ public static class BiosCardState
         }
 
         var written =
+            BiosRootCounterClearPolicy.TrySetFlag(writer, VblankSource, 0) &&
             devices.TryWrite32(InterruptMaskAddress, mask | VblankIrqBit) &&
             BiosPadState.TryEnqueue(reader, writer) &&
             TryWrite(writer, flags | StartedBit, padEnable);

@@ -2061,11 +2061,16 @@ Issue #710: Persona calls `StartCARD2()` right after `InitCARD2(1)`; the result 
   fact; `button_dest` is kept). "Card started" is bit 1 of the `BiosCardState` flags word (`0x148`, bit 0 "InitCARD2 ran");
   InitCARD2 leaves it alone. I_MASK is written through `IGuestDeviceAccess`. The priority-2 guard is unchanged and now also
   fires for a card-only start (tested).
-- **Not modelled.** The SIO0 reset writes (nothing reads them until a SIO0 transfer exists) and the two auto-ack forcings, which
-  only the PadCardIrq handler and the VBlank timer return path read; they stay with #661 like B0:15's StartPAD auto-ack.
+- **VBlank/root-counter clear policy := 0 (modelled now).** `BiosTimerVblankIrqHandler` already reads
+  `BiosRootCounterClearPolicy` at priority 1; a stale `ChangeClearRCnt(3, 1)` would make it acknowledge IRQ0 and return before
+  the enqueued element is reached, so StartCARD2 writes `t = 3` := 0 into the existing state (other sources untouched, no new state).
+- **PadCard/SIO0 auto-ack := 1 (not modelled; stays with #661).** Only the PadCardIrq handler reads it, like B0:15's StartPAD
+  auto-ack. `BiosPadCardAutoAck` is unchanged.
+- **Not modelled.** The SIO0 reset writes (nothing reads them until a SIO0 transfer exists).
 - **Fail closed.** Before InitCARD2 (psx-spx order; retail UNKNOWN, OpenBIOS would call a NULL handler), without attached
-  devices, or with an unreadable/unwritable state variable or I_MASK: `BIOS_HLE_UNSUPPORTED_STATE`. The pre-checks run before any
-  write; the writes (I_MASK, enqueue, started) are not transactional, so a failure partway leaves the earlier ones.
+  devices, or with an unreadable/unwritable state variable or I_MASK: `BIOS_HLE_UNSUPPORTED_STATE`. The pre-checks (including
+  the VBlank flag being readable) run before any write; the writes run in the order VBlank policy, I_MASK, enqueue, started and are
+  not transactional (no rollback), so a failure partway leaves the earlier ones.
 - **#661.** Required only when an exception reaches the enqueued element; the guard stops the chain there.
 
 Tests: `BiosStartCard2Tests`.

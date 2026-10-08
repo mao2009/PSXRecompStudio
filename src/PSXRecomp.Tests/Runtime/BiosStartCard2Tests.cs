@@ -353,4 +353,144 @@ public sealed class BiosStartCard2Tests : IDisposable
         Started().Should().BeFalse();
         Pad().Should().Be((false, 0u));
     }
+
+    // ---- VBlank root-counter clear policy (t = 3 := 0) ------------------------------------------------
+
+    private void ChangeClearRCnt(uint t, uint flag) =>
+        Call(Runtime(), BiosCallFamily.C0, BiosHleRuntime.ChangeClearRCntFunction, t, flag).Status.Should().Be(BiosServiceStatus.Supported);
+
+    private uint Flag(uint t)
+    {
+        BiosRootCounterClearPolicy.TryGetFlag(Reader, t, out var flag).Should().BeTrue();
+        return flag;
+    }
+
+    [Fact]
+    public void StartCARD2_Forces_The_VBlank_Policy_To_Zero_And_Keeps_The_Other_Sources()
+    {
+        ChangeClearRCnt(0, 1);
+        ChangeClearRCnt(1, 1);
+        ChangeClearRCnt(2, 0);
+        ChangeClearRCnt(3, 1);
+        InitCard2(1);
+
+        StartCard2(new FakeDevices()).ReturnValue.Should().Be(1u);
+
+        (Flag(0), Flag(1), Flag(2), Flag(3)).Should().Be((1u, 1u, 0u, 0u));
+    }
+
+    [Fact]
+    public void StartCARD2_Succeeds_When_The_VBlank_Policy_Is_Already_Zero()
+    {
+        ChangeClearRCnt(3, 0);
+        InitCard2(1);
+
+        StartCard2(new FakeDevices()).Status.Should().Be(BiosServiceStatus.Supported);
+
+        Flag(3).Should().Be(0u);
+    }
+
+    private sealed class RangeFaultReader(IGuestMemoryReader inner) : IGuestMemoryReader
+    {
+        public bool TryReadByte(uint address, out byte value)
+        {
+            value = 0;
+            return !InRange(address) && inner.TryReadByte(address, out value);
+        }
+
+        public bool TryRead(uint address, Span<byte> buffer)
+        {
+            for (var i = 0u; i < buffer.Length; i++)
+            {
+                if (InRange(address + i))
+                {
+                    return false;
+                }
+            }
+
+            return inner.TryRead(address, buffer);
+        }
+
+        private static bool InRange(uint a) => a >= BiosRootCounterClearPolicy.VariableAddress && a < BiosRootCounterClearPolicy.VariableAddress + 16;
+    }
+
+    private sealed class RangeFaultWriter(IGuestMemoryWriter inner) : IGuestMemoryWriter
+    {
+        public bool TryWriteByte(uint address, byte value) => !InRange(address) && inner.TryWriteByte(address, value);
+
+        public bool TryWrite(uint address, ReadOnlySpan<byte> data)
+        {
+            for (var i = 0u; i < data.Length; i++)
+            {
+                if (InRange(address + i))
+                {
+                    return false;
+                }
+            }
+
+            return inner.TryWrite(address, data);
+        }
+
+        private static bool InRange(uint a) => a >= BiosRootCounterClearPolicy.VariableAddress && a < BiosRootCounterClearPolicy.VariableAddress + 16;
+    }
+
+    [Fact]
+    public void An_Unreadable_Root_Counter_State_Fails_Closed_Before_Any_Write()
+    {
+        InitCard2(1);
+        var devices = new FakeDevices { Mask = 0x8 };
+        var runtime = Runtime(devices, reader: new RangeFaultReader(Reader));
+
+        Call(runtime, BiosCallFamily.B0, BiosHleRuntime.StartCard2Function).Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+
+        devices.Writes.Should().Be(0);
+        devices.Mask.Should().Be(0x8u);
+        Started().Should().BeFalse();
+        Pad().Should().Be((false, 0u));
+    }
+
+    [Fact]
+    public void An_Unwritable_Root_Counter_State_Fails_Closed_Before_I_Mask_Enqueue_And_Started()
+    {
+        InitCard2(1);
+        var devices = new FakeDevices { Mask = 0x8 };
+        var runtime = Runtime(devices, writer: new RangeFaultWriter(Writer));
+
+        Call(runtime, BiosCallFamily.B0, BiosHleRuntime.StartCard2Function).Diagnostic!.Code.Should().Be("BIOS_HLE_UNSUPPORTED_STATE");
+
+        devices.Writes.Should().Be(0, "the VBlank policy is the first write");
+        Started().Should().BeFalse();
+        Pad().Should().Be((false, 0u));
+    }
+
+    [Fact]
+    public void After_StartCARD2_The_Next_VBlank_Reaches_The_Priority_2_Guard_Instead_Of_Being_Acknowledged_At_Priority_1()
+    {
+        PadInitAndStart();
+        ChangeClearRCnt(3, 1);
+        InitCard2(1);
+        StartCard2(new FakeDevices());
+        _interrupts.SetMask(VblankBit);
+        _interrupts.Raise(DeviceScheduler.VblankIrq);
+
+        var outcome = Handle();
+
+        outcome.Handled.Should().BeFalse("with the old flag 1 priority 1 would acknowledge IRQ0 and return from the exception");
+        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
+        outcome.DiagnosticMessage.Should().Contain("PadCardIrq").And.Contain("#661");
+        (_interrupts.Status & VblankBit).Should().Be(VblankBit, "IRQ0 stays pending");
+    }
+
+    [Fact]
+    public void Without_StartCARD2_The_Old_VBlank_Flag_One_Acknowledges_And_Returns_At_Priority_1()
+    {
+        PadInitAndStart();
+        ChangeClearRCnt(3, 1);
+        InitCard2(1);
+        _interrupts.SetMask(VblankBit);
+        _interrupts.Raise(DeviceScheduler.VblankIrq);
+
+        Handle().Handled.Should().BeTrue();
+        (_interrupts.Status & VblankBit).Should().Be(0u);
+    }
 }
