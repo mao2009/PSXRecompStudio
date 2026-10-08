@@ -50,7 +50,7 @@
         <li>R3000A実行、Delay Slot、例外、COP0、割り込みの決定論的テスト。</li>
         <li>Rust-backedのguest memory/MMIO、Interrupt Controller、Timer、DMA state。</li>
         <li>部分的なBIOS HLEによるBIOS-less実行。</li>
-        <li>Rust-owned SIO0 register、disconnected-pad応答、IRQ7。</li>
+        <li>Rust-owned SIO0 register、empty-port応答(0xFF、/ACKなしのためIRQ7なし)、将来のデバイスモデル用IRQ7ラッチseam。</li>
         <li>Rust-owned SPU register/MMIO storage。</li>
         <li>managed GPU register/VRAM、最小triangle/rectangle rasterization、決定論的FrameSnapshot。</li>
       </ul>

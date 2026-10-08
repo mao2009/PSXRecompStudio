@@ -151,6 +151,8 @@ public sealed class DeviceScheduler
 
         // SIO0: no clock of its own (Issue #543 is event-driven off DATA
         // writes, not cycle count), so this is a bare poll/clear, not a Tick.
+        // Since Issue #716 an empty port never sets the latch, so this stage cannot fire
+        // until a device model (#715/#717) drives it; its positive test returns then.
         if (_core.GetSio0InterruptPending())
         {
             _core.ClearSio0Interrupt();

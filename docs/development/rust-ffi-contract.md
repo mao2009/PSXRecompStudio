@@ -372,8 +372,9 @@ CodeRabbit finding on PR #548; minimal controller serial protocol: Issue
 field owned directly by `PsxMemory` (see its module documentation), because —
 unlike DMA/Timer/Interrupt — nothing else in native code needs to *drive*
 SIO0 state (no `PSXCore`-owned pointer, no `AttachControllers` change). It
-does now raise an interrupt (IRQ7, "byte received"), but through a poll/clear
-pair at the `PsxMemory` handle boundary — `psx_memory_get_sio0_interrupt_pending`/
+exposes an interrupt latch (IRQ7, a device's `/ACK`; an empty port drives none,
+so since #716 the latch is never set today and is the seam for a future device
+model), through a poll/clear pair at the `PsxMemory` handle boundary — `psx_memory_get_sio0_interrupt_pending`/
 `psx_memory_clear_sio0_interrupt`, wrapped by `PSXMemory::GetSio0InterruptPending`/
 `ClearSio0Interrupt` in `psx_memory.h` — the same shape
 `psx_dma_get_interrupt_pending`/`psx_timer_get_interrupt_pending` already use,
@@ -410,8 +411,9 @@ sound-RAM transfer behavior, or IRQ9 is part of this slice.
 `PSXRecomp.Core.Runtime.DeviceScheduler.Advance` polls
 `GetSio0InterruptPending`/clears/raises `IRQ7`, in the same fixed stage order
 as Timer/DMA, after ticking DMA and before VBlank; unlike Timer/DMA this
-stage needs no `Tick` call first, since SIO0 has no clock of its own — it is
-purely event-driven off `SIO_DATA` writes.
+stage needs no `Tick` call first, since SIO0 has no clock of its own. With
+only the empty-port path (#716) the latch is never set, so this stage
+currently delivers nothing; it is kept for a future device model.
 
 Every read/write export takes the handle and (for the HW-register window) up
 to three raw, independently-nullable controller-state pointers, so — unlike

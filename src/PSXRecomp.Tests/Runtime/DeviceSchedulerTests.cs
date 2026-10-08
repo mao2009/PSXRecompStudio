@@ -258,20 +258,15 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void Sio0ByteReceived_RaisesIrq7OnTheNextAdvance()
+    public void Sio0EmptyPortByte_DoesNotRaiseIrq7()
     {
-        // Issue #543: SIO0 has no clock of its own, so a 1-cycle Advance is
-        // enough for the scheduler to notice a byte the guest already
-        // transferred (unlike Timer/DMA, which need cycles to elapse).
+        // Issue #716: an empty port never drives /ACK, so a transferred byte
+        // latches no IRQ7 and the scheduler has nothing to deliver.
         _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
         _core.WriteMemory8(Sio0Data, 0x01);
 
-        _scheduler.Advance(1);
-        _interrupts.Status.Should().Be(Sio0Bit);
-
-        _interrupts.Acknowledge(~Sio0Bit);
         _scheduler.Advance(100);
-        _interrupts.Status.Should().Be(0u, "the latch was already delivered and cleared; nothing re-raises it");
+        _interrupts.Status.Should().Be(0u);
     }
 
     [Fact]
@@ -370,7 +365,7 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenCdRomThenSio0ThenGpuThenVblank()
+    public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenCdRomThenGpuThenVblank()
     {
         var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
         EnableAllCdRomInterrupts(cdRom);
@@ -380,8 +375,8 @@ public sealed class DeviceSchedulerTests : IDisposable
         var scheduler = new DeviceScheduler(_core, recorder, _gpu, cdRom);
         ArmTimer2(target: 100, ModeIrqOnTarget);
         ArmOtc(words: 8, irqEnabled: true);
-        _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
-        _core.WriteMemory8(Sio0Data, 0x01);
+        // Issue #716: no SIO0 source here. Every SIO0 port is empty and never ACKs, so the
+        // SIO0 stage (between CD-ROM and GPU) cannot be exercised until a device model exists.
         _gpu.WriteGP0(0x1F000000);
 
         scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
@@ -390,7 +385,6 @@ public sealed class DeviceSchedulerTests : IDisposable
             DeviceScheduler.Timer0Irq + 2,
             DeviceScheduler.DmaIrq,
             DeviceScheduler.CdRomIrq,
-            DeviceScheduler.Sio0Irq,
             DeviceScheduler.GpuIrq,
             DeviceScheduler.VblankIrq);
     }
