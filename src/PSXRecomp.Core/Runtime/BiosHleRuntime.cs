@@ -51,6 +51,9 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
     /// <summary>B0:15 OutdatedPadInitAndStart(type, button_dest, unused, unused) — see <see cref="BiosPadState"/>.</summary>
     public const byte OutdatedPadInitAndStartFunction = 0x15;
 
+    /// <summary>B0:4A InitCARD2(pad_enable) — see <see cref="BiosCardState"/>.</summary>
+    public const byte InitCard2Function = 0x4A;
+
     /// <summary>A0:49 GPU_cw(cmd): waits for the GPU, then writes one word to GP0 (see <see cref="BiosGpuCommandService"/>).</summary>
     public const byte GpuCommandWordFunction = 0x49;
 
@@ -151,6 +154,7 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
             [(BiosCallFamily.B0, ReturnFromExceptionFunction)] = (0, InvokeReturnFromException),
             [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
             [(BiosCallFamily.B0, OutdatedPadInitAndStartFunction)] = (4, identity => BiosPadState.OutdatedPadInitAndStart(identity, _guestMemoryWriter)),
+            [(BiosCallFamily.B0, InitCard2Function)] = (1, identity => BiosCardState.InitCard2(identity, _guestMemoryReader, _guestMemoryWriter)),
             [(BiosCallFamily.B0, OpenEventFunction)] = (4, InvokeOpenEvent),
             [(BiosCallFamily.B0, EnableEventFunction)] = (1, InvokeEnableEvent),
             [(BiosCallFamily.C0, ChangeClearRCntFunction)] = (2, InvokeChangeClearRCnt),
