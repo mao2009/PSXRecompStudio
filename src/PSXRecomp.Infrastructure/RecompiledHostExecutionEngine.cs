@@ -510,6 +510,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private IBiosRuntime? _biosRuntime;
         private PsxDeviceGraph? _devices;
         private DeviceScheduler? _scheduler;
+
+        /// <summary>The outstanding blocking BIOS call's poll bound (Issue #717); lives as long as this launch's devices.</summary>
+        private readonly BiosBlockingCallWait _blockingCallWait = new();
         private ArtifactDeviceRam? _deviceRam;
         private readonly Action<PsxDeviceGraph>? _configureDevices;
         private readonly BiosExceptionChain? _exceptionChain;
@@ -703,12 +706,35 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
-            var outcome = BiosVectorDispatch.Dispatch(_biosRuntime, family, gpr);
+            var outcome = BiosVectorDispatch.Dispatch(_biosRuntime, family, gpr, _blockingCallWait);
             if (!outcome.ContinueExecution)
             {
                 DiagnosticCode = outcome.DiagnosticCode;
                 DiagnosticMessage = outcome.DiagnosticMessage;
                 Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                return;
+            }
+
+            // Issue #717: a blocking call that has not completed. No instruction retires, so the artifact reports no
+            // time: the host advances the devices by one poll, hands the artifact the controller line, and resumes it
+            // at the same vector. The artifact's own INT boundary then takes a pending enabled IRQ there (EPC = the
+            // vector), and the handler's return re-enters this call.
+            if (outcome.IsPending)
+            {
+                if (AdvanceDevices(BiosBlockingCallWait.PollCycles) is { } failure)
+                {
+                    DiagnosticCode = failure.Code;
+                    DiagnosticMessage = failure.Message;
+                    Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+                    return;
+                }
+
+                Send(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices!.InterruptControllerAdapter.HasPendingInterrupts ? 1 : 0)}"));
+                Send(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {pc} 0 0"));
                 return;
             }
 
@@ -953,35 +979,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
-            try
+            if (AdvanceDevices(cycles) is { } failure)
             {
-                _deviceRam.BeginServing();
-                for (var remaining = cycles; remaining != 0;)
-                {
-                    var chunk = (uint)Math.Min(remaining, MaxAdvanceCycles);
-                    _scheduler.Advance(chunk);
-                    remaining -= chunk;
-                }
-            }
-            catch (ProtocolFaultException)
-            {
-                throw;
-            }
-            catch (ArtifactDeviceRam.UnroutableException exception)
-            {
-                Trace.WriteLine($"Device RAM access refused: {exception}");
-                RefuseRetired("ARTIFACT_DEVICE_RAM_UNROUTABLE", exception.Message);
+                RefuseRetired(failure.Code, failure.Message);
                 return;
-            }
-            catch (Exception exception)
-            {
-                Trace.WriteLine($"DeviceScheduler advance failed: {exception}");
-                RefuseRetired("ARTIFACT_SCHEDULER_FAILED", $"The Runtime device scheduler failed advancing {cycles} cycles.");
-                return;
-            }
-            finally
-            {
-                _deviceRam.EndServing();
             }
 
             // The Interrupt Controller's aggregate line (I_STAT & I_MASK != 0) after the advance, read from the
@@ -1002,6 +1003,45 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             Send(interruptLine
                 ? RecompiledArtifactCodeGen.ProtocolRetiredAckInterruptReply
                 : RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
+        }
+
+        /// <summary>
+        /// Advances the existing <see cref="DeviceScheduler"/> by <paramref name="cycles"/> in chunks that fit its 32-bit
+        /// argument, serving device-originated RAM requests against artifact_ram meanwhile. Null on success, else the
+        /// classified failure. Shared by guest-time reports and a pending blocking call's poll (Issue #717).
+        /// </summary>
+        private (string Code, string Message)? AdvanceDevices(ulong cycles)
+        {
+            try
+            {
+                _deviceRam!.BeginServing();
+                for (var remaining = cycles; remaining != 0;)
+                {
+                    var chunk = (uint)Math.Min(remaining, MaxAdvanceCycles);
+                    _scheduler!.Advance(chunk);
+                    remaining -= chunk;
+                }
+            }
+            catch (ProtocolFaultException)
+            {
+                throw;
+            }
+            catch (ArtifactDeviceRam.UnroutableException exception)
+            {
+                Trace.WriteLine($"Device RAM access refused: {exception}");
+                return ("ARTIFACT_DEVICE_RAM_UNROUTABLE", exception.Message);
+            }
+            catch (Exception exception)
+            {
+                Trace.WriteLine($"DeviceScheduler advance failed: {exception}");
+                return ("ARTIFACT_SCHEDULER_FAILED", $"The Runtime device scheduler failed advancing {cycles} cycles.");
+            }
+            finally
+            {
+                _deviceRam!.EndServing();
+            }
+
+            return null;
         }
 
         private static bool TryScale(ulong count, uint factor, out ulong product)
