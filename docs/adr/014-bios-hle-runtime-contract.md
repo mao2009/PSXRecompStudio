@@ -2032,3 +2032,21 @@ rollback is attempted.
   events stay READY, later ones stay ENABLED, and `Deliver` returns false (the exception chain stops).
 
 Tests: `BiosEventControlBlocksTests` (fault-injecting writer).
+
+## Amendment (2026-10-08): B0:4A InitCARD2 records the card init and `pad_enable`; it enqueues nothing
+
+Issue #708: Persona's next call after `EnableEvent` is `InitCARD2(pad_enable = 1)`; its result is not read.
+
+- **CONFIRMED (psx-spx; OpenBIOS `initCard`).** One argument. `pad_enable` sets/clears the flag InitPAD2 sets ("selects if the
+  Pads are kept handled together with Memory Cards"); any non-zero value acts as 1. The call prepares the SIO0/card handler
+  structures but enqueues neither (that is StartCARD2/StartPAD2), touches no SIO0 register, I_STAT/I_MASK, auto-ack or event.
+  OpenBIOS returns the previous "initialized" flag: 0 first, 1 afterwards.
+- **INFERRED / UNKNOWN.** The retail return value is assumed equal (psx-spx documents none). Not modelled: the hidden handler
+  structures and card flags, the exception-handler fast-track patch, the `k0`/`k1` clobber.
+- **Model.** `BiosCardState` keeps "ran" and the raw `pad_enable` in a guest-RAM variable at `0x148` (Runtime's own choice in the
+  slot psx-spx leaves unused). `BiosPadState` (`0x140`), `BiosPadCardAutoAck` (`0x128`) and the EvCB table are untouched, so
+  the priority-2 guard still keys on B0:15's enqueue only. An unreadable or unwritable variable is `BIOS_HLE_UNSUPPORTED_STATE`.
+- **#661.** Not required by this call; StartCARD2 (B0:4B, #710) is the enqueue.
+
+Tests: `BiosCardStateTests`.
+

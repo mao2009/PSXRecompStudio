@@ -62,7 +62,7 @@ be conflated.
 
 **Stage:** Runtime execution (generated host, kernel exception path)
 
-**Classification:** `BIOS_HLE_UNSUPPORTED_CALL` `B0:4A` (InitCARD2) after `B0:08` OpenEvent and `B0:0C` EnableEvent (exit 1, `state=5`; item 34; tracked by #708 under the gate #351).
+**Classification:** `BIOS_HLE_UNSUPPORTED_CALL` `B0:4B` (StartCARD2) after `B0:4A` InitCARD2 (exit 1, `state=5`; item 35; tracked by #710 under the gate #351).
 
 **Description:**
 
@@ -85,8 +85,8 @@ path, B0:17 ReturnFromException, and the CD-ROM IRQ2 path through DefInt and the
 The `CdlDemute` / `CD_init` retry blocker (item 29: `CdlDemute` (0Ch) answered with INT5,
 libcd `DiskError` / `CdInit: Init failed`) is now historical. With item 30 (#699) `CD_init`
 completes and execution continues into `ResetGraph`; item 31 (#701) registers `A0:49` (GPU_cw) and item 32 (#703) registers
-`B0:15` (OutdatedPadInitAndStart) and item 33 (#705) implements `SYS(01h)` (EnterCriticalSection). Item 34 (#687) implements `B0:08` (OpenEvent) and `B0:0C` (EnableEvent); the current
-measured stop is `BIOS_HLE_UNSUPPORTED_CALL` `B0:4A` (InitCARD2), tracked by #708. The earlier `OUTER_BUDGET_EXHAUSTED` stop at
+`B0:15` (OutdatedPadInitAndStart) and item 33 (#705) implements `SYS(01h)` (EnterCriticalSection). Item 34 (#687) implements `B0:08` (OpenEvent) and `B0:0C` (EnableEvent); item 35 (#708) implements `B0:4A` (InitCARD2); the current
+measured stop is `BIOS_HLE_UNSUPPORTED_CALL` `B0:4B` (StartCARD2), tracked by #710. The earlier `OUTER_BUDGET_EXHAUSTED` stop at
 `0x80025CCC` in the `CD_sync` VSync loop (items 26-27) is now historical, as is the
 `UNRESOLVED_TRANSFER_IN_IMAGE` stop at `0x80025BC8`, which is reproduced only with
 `--no-mixed-fallback`; the measurement-only extra root is no longer required. Likewise,
@@ -604,8 +604,22 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     callbacks: not reached. No Pad IRQ/SIO0 access (#661 not required), no sector read, no DMA, no GPU frame activity
     (`no-frame-activity`).
 
+35. **#708: B0:4A InitCARD2 implemented as a state-only service; the stop moves to B0:4B.**
+    Reproduced on `main` `8fdcd37`: `BIOS_HLE_UNSUPPORTED_CALL` `B0:4A` (exit 1, `state=5`, guest PC `0xB0`). Measured: one
+    call, caller `ra = 0x80011320`, `InitCARD2(pad_enable = 1)` (`a1 = 0x20` is a leftover, not an argument); `$v0` is not read
+    afterwards. The guest then calls `B0:4B` (`0x800412bc`) and a further stub at `0x800416b0`. At the call: EvCB table
+    `[0x120]=0xE400`, `[0x124]=0x1C0`; `[0x140]=1` (B0:15 enqueued `PadCardIrq`), `[0x144]=0x800563F0`; `[0x128]=1`.
+    CONFIRMED (psx-spx; PCSX-Redux OpenBIOS `initCard` agrees): one argument; `pad_enable` sets/clears the same flag as
+    InitPAD2 (whether the pad is polled together with the cards); the call prepares the SIO0/card handler structures but does
+    not enqueue them, touches no SIO0 register, I_STAT/I_MASK, auto-ack or event; OpenBIOS returns 0 on the first call and 1
+    afterwards. INFERRED: the same return in the retail BIOS. Fix: `BiosCardState` keeps "ran" and the raw `pad_enable` in a
+    guest-RAM variable at `0x148` (psx-spx leaves it unused); the existing B0:15 state, auto-ack and EvCB table are untouched.
+    With the same two roots: B0:4A passes and the run stops with `BIOS_HLE_UNSUPPORTED_CALL` `B0:4B` (exit 1, `state=5`; #710).
+    StartPAD/StopCARD not reached; no Pad IRQ/SIO0 access, so #661 is not required yet (B0:4B is the call that enqueues
+    `PadCardIrq`); no sector read, no DMA, no GPU frame activity (`no-frame-activity`).
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
-C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, item 33 resolves `SYS(01h)`, item 34 resolves `B0:08` OpenEvent and `B0:0C` EnableEvent (#687), and the current first blocker is `B0:4A` InitCARD2 (#708). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
+C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, item 33 resolves `SYS(01h)`, item 34 resolves `B0:08` OpenEvent and `B0:0C` EnableEvent (#687), item 35 resolves `B0:4A` InitCARD2 (#708), and the current first blocker is `B0:4B` StartCARD2 (#710). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
 unranked**. The generic sub-blocker ordering below remains background context,
 not a priority order; the next implementation target is the first boundary
@@ -672,7 +686,7 @@ path actually reaches them:
 1. **BIOS HLE coverage (#279).** The current Persona path has exercised the
    startup services through A0:49 `GPU_cw` and B0:15, and unsupported calls
    still fail explicitly with `BIOS_HLE_UNSUPPORTED_CALL`. The current first
-   blocker is the unsupported `B0:08` OpenEvent (#687); add further services
+   blocker is the unsupported `B0:4B` StartCARD2 (#710); add further services
    only when a measured execution path requires them.
 
 2. **Production GPU/frame integration (#440 / #351).** Production interpreter
