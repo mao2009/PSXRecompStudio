@@ -47,6 +47,16 @@ public sealed class BiosBlockingCallWait
     private (BiosCallFamily Family, byte Function, uint Ra)? _call;
     private uint _polls;
 
+    /// <summary>
+    /// Forgets the outstanding call. Called wherever an execution form re-seeds its CPU (a load, a fresh dispatch): the
+    /// guest state that was the continuation is gone, so its bound must not carry over to a new call.
+    /// </summary>
+    internal void Reset()
+    {
+        _call = null;
+        _polls = 0;
+    }
+
     /// <summary>Counts one poll of a pending call; null to keep waiting, else the diagnostic the run stops with.</summary>
     internal (string Code, string Message)? Poll(BiosCallIdentity identity, uint ra)
     {

@@ -1,3 +1,4 @@
+using PSXRecomp.Core;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -139,17 +140,17 @@ public sealed class BiosBlockingCallWaitTests
 
     private sealed record Observed(TitleExecutionResult Result, int WaitInvocations, ChainLog Chain);
 
-    private static Observed RunInterpreter(uint[] program, bool countVblanks = true, uint segment = 200_000)
+    private static Observed RunInterpreter(uint[] program, bool countVblanks = true, uint segment = 200_000, uint outer = 1)
     {
         var log = new ChainLog();
-        SyntheticRuntime? runtime = null;
+        var runtimes = new List<SyntheticRuntime>(); // one per segment
         using var engine = new InterpreterTitleExecutionEngine(
-            program, Entry, (reader, _) => runtime = new SyntheticRuntime(reader), log.Chain(countVblanks));
+            program, Entry, (reader, _) => { var r = new SyntheticRuntime(reader); runtimes.Add(r); return r; }, log.Chain(countVblanks));
         var result = new ExecutionOrchestrator().Execute(
             engine,
             new ExitHandoff(),
-            new TitleExecutionRequest(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: segment));
-        return new Observed(result, runtime!.WaitInvocations, log);
+            new TitleExecutionRequest(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: outer, segmentBudget: segment));
+        return new Observed(result, runtimes.Sum(r => r.WaitInvocations), log);
     }
 
     private static uint G(TitleExecutionResult result, R3000aRegister r) => result.FinalSnapshot!.Gpr[(int)r];
@@ -211,6 +212,17 @@ public sealed class BiosBlockingCallWaitTests
     }
 
     [Fact]
+    public void Wait_SpanningManySegments_KeepsOneBound()
+    {
+        // Each segment ends mid-wait and the orchestrator resumes it: the bound must count across segments, so a
+        // never-completing call still times out after exactly MaxPolls + 1 polls rather than running forever.
+        var run = RunInterpreter(Program(target: 1), countVblanks: false, segment: 5_000, outer: 100);
+
+        run.Result.DiagnosticCode.Should().Be(BiosBlockingCallWait.TimeoutDiagnosticCode, Describe(run.Result));
+        run.WaitInvocations.Should().Be((int)BiosBlockingCallWait.MaxPolls + 1);
+    }
+
+    [Fact]
     public void RepeatedRuns_AreIdentical()
     {
         var first = RunInterpreter(Program(target: 3, timer2Target: 0xF000));
@@ -222,6 +234,71 @@ public sealed class BiosBlockingCallWaitTests
         second.WaitInvocations.Should().Be(first.WaitInvocations);
         second.Chain.Epcs.Should().Equal(first.Chain.Epcs);
         second.Chain.Timer2.Should().Be(first.Chain.Timer2);
+    }
+
+    // ---- stale waits (PR #724 review) ---------------------------------------------------------------
+
+    private static TitleExecutionRequest Start(uint entry, uint segment) =>
+        new(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: segment);
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Load_ForgetsAWaitThePreviousRunLeftPending(bool sameCallSite)
+    {
+        // Two copies of a wait that never completes within the bound, so the reloaded run times out either way: from
+        // the same call site it must not inherit the old poll count, from the other one it must not look nested.
+        var copy = Program(target: (ushort)(BiosBlockingCallWait.MaxWaitVblanks + 100));
+        uint[] words = [.. copy, .. copy];
+        var runtimes = new List<SyntheticRuntime>();
+        using var engine = new InterpreterTitleExecutionEngine(
+            words, Entry, (reader, _) => { var r = new SyntheticRuntime(reader); runtimes.Add(r); return r; }, new ChainLog().Chain());
+        var orchestrator = new ExecutionOrchestrator();
+
+        var first = orchestrator.Execute(engine, new ExitHandoff(), Start(Entry, segment: 1_000));
+        first.FinalSnapshot!.PC.Should().Be(B0Vector, "the first run's budget ran out while its call was pending");
+        runtimes.Clear();
+
+        var second = orchestrator.Execute(
+            engine, new ExitHandoff(), Start(sameCallSite ? Entry : Entry + (uint)copy.Length * 4u, segment: 200_000));
+
+        second.DiagnosticCode.Should().Be(BiosBlockingCallWait.TimeoutDiagnosticCode, Describe(second));
+        runtimes.Sum(r => r.WaitInvocations).Should().Be((int)BiosBlockingCallWait.MaxPolls + 1, "the reloaded run's bound starts from zero");
+    }
+
+    private static (PsxDeviceGraph Graph, InterpreterTitleExecutionEngine Engine, List<SyntheticRuntime> Runtimes) Attached()
+    {
+        var graph = new PsxDeviceGraph();
+        var scheduler = new DeviceScheduler(graph.Core, graph.InterruptControllerAdapter, graph.GpuAdapter, graph.CdRomDevice, graph.CdRomDmaTransfer);
+        var runtimes = new List<SyntheticRuntime>();
+        var engine = InterpreterTitleExecutionEngine.Attach(
+            [MipsEncoding.Nop], Entry, graph, scheduler, (reader, _) => { var r = new SyntheticRuntime(reader); runtimes.Add(r); return r; });
+        return (graph, engine, runtimes);
+    }
+
+    /// <summary>A fallback entry sitting at the B0 vector in a call to the never-completing Wait (counter 0, target 1).</summary>
+    private static FallbackCpuState AtTheVector(uint ra, uint sr = 0, uint cause = 0) =>
+        new(Registers(SyntheticRuntime.WaitFunction, ra), 0, 0, B0Vector, sr, cause, 0);
+
+    private static readonly IReadOnlySet<uint> NoReturn = new HashSet<uint> { Entry };
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void FallbackSegment_ForgetsAWaitTheLastSegmentLeftPending(bool sameCallSite)
+    {
+        var (graph, engine, runtimes) = Attached();
+        using var _ = graph;
+        using var __ = engine;
+
+        engine.RunFallbackSegment(AtTheVector(Entry), NoReturn, BiosBlockingCallWait.MaxPolls).Status
+            .Should().Be(FallbackSegmentStatus.BudgetExhausted, "the bound is not reached yet");
+        runtimes.Clear();
+
+        var again = engine.RunFallbackSegment(AtTheVector(sameCallSite ? Entry : Entry + 8), NoReturn, 10);
+
+        again.Status.Should().Be(FallbackSegmentStatus.BudgetExhausted, again.DiagnosticCode);
+        runtimes.Sum(r => r.WaitInvocations).Should().Be(10);
     }
 
     // ---- generated host ------------------------------------------------------------------------------

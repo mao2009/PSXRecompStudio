@@ -71,8 +71,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     // permission: EPC/CAUSE/SR stay owned by the native CPU.
     private bool _inInterruptHandler;
 
-    // Issue #717: the outstanding blocking BIOS call's poll bound. Kept across segments like the handler state
-    // above, so a wait that spans a segment boundary keeps one bound.
+    // Issue #717: the outstanding blocking BIOS call's poll bound. Kept across a resumed segment, so a wait that
+    // spans a segment boundary keeps one bound; reset wherever the CPU is re-seeded (Load, a fresh dispatch, a
+    // fallback entry), because the guest state that was its continuation is gone then.
     private readonly BiosBlockingCallWait _blockingCallWait = new();
 
     // The PC of the interrupted instruction (cop0 EPC) captured when the first —
@@ -267,6 +268,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
+        _blockingCallWait.Reset();
         _resumable = false;
         _loaded = true;
     }
@@ -293,6 +295,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             _core.Hi = segmentRequest.Hi;
             _core.Lo = segmentRequest.Lo;
             _core.Pc = segmentRequest.Pc;
+            _blockingCallWait.Reset();
         }
 
         return RunLoop(segmentRequest.Budget, returnPcs: null, out _, out _);
@@ -339,6 +342,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
+        _blockingCallWait.Reset();
         _resumable = false;
 
         var result = RunLoop(instructionBudget, returnPcs, out var returned, out var retired);
