@@ -8,9 +8,10 @@ This guide is for **human contributors**. AI development agents use [AGENTS.md](
 
 1. Read the Issue completely and confirm that it is still open.
 2. Check whether an implementation PR already exists or whether the requested behavior is already present on current `main`.
-3. Identify the owning subsystem and the relevant architecture or contract documentation.
-4. Keep the change inside the Issue's stated scope and non-goals.
-5. Prefer a focused branch and PR for one independently reviewable change.
+3. Before creating new code, check appropriate existing OSS implementations. Prefer unchanged licensed reuse, then licensed adaptation, then behavior/reference tests; implement anew only when reuse is unsuitable. Require source-file-level provenance, dependency and license approval before incorporating third-party code (see [References and reuse policy](docs/REFERENCES.md)).
+4. Identify the owning subsystem and the relevant architecture or contract documentation.
+5. Keep the change inside the Issue's stated scope and non-goals.
+6. Prefer a focused branch and PR for one independently reviewable change.
 
 If an Issue does not clearly state its scope, affected paths, acceptance criteria, or required validation, ask for clarification or improve the Issue before starting implementation.
 
