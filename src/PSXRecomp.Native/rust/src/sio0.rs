@@ -69,8 +69,8 @@ const CONTROL_SELECT_BIT: u16 = 0x0002;
 const COMMAND_READ_PAD: u8 = 0x42;
 
 /// The byte a disconnected port's data line reads back for every
-/// transaction byte: real SIO0 hardware leaves the line pulled high when no
-/// device's `/ACK` drives it, so an empty port reads `0xFF` regardless of
+/// transaction byte: real SIO0 hardware leaves the DAT line pulled high when
+/// no device drives it, so an empty port reads `0xFF` regardless of
 /// position or command (psx-spx "Controller/Memory Card protocol" —
 /// no-controller-connected behavior).
 const DISCONNECTED_RESPONSE_BYTE: u8 = 0xFF;
@@ -144,7 +144,9 @@ pub struct Sio0State {
     /// (`transfer_byte_index == 1`). See [`CommandClassification`].
     last_command: CommandClassification,
     /// Unacknowledged "byte received" (IRQ7) latch (Issue #543), mirroring
-    /// `TimerChannel::irq_flag`'s edge-latch pattern.
+    /// `TimerChannel::irq_flag`'s edge-latch pattern. Since Issue #716 the
+    /// empty-port path never sets it (no /ACK); it is the seam a future
+    /// device model sets.
     irq_pending: bool,
 }
 
@@ -288,14 +290,11 @@ fn handle_data_write(state: &mut Sio0State, byte: u8) {
     // of always enqueueing DISCONNECTED_RESPONSE_BYTE.
     state.enqueue_received_byte(DISCONNECTED_RESPONSE_BYTE);
 
-    // ponytail: this simplified model signals "byte received" (IRQ7) for
-    // every transaction byte, synchronously, rather than modeling the real
-    // `/ACK` pulse a physical device would drive (which, from an empty
-    // port, would mean IRQ7 never fires at all). That keeps "transfer
-    // complete" deterministic and testable without cycle-exact ACK timing
-    // (explicitly out of scope). Upgrade path: gate this on a modeled
-    // device's real ACK if/when a real controller protocol is added.
-    state.irq_pending = true;
+    // Issue #716: IRQ7 is the device's /ACK pulse. Every port this component
+    // models is empty, and an empty port never drives /ACK, so no "byte
+    // received" interrupt is latched (psx-spx; OpenBIOS readPad/mcHandler
+    // detect the absent device by an IRQ7 timeout). The RX byte above is still
+    // delivered. `irq_pending` stays as the seam a real device model sets.
 }
 
 /// SIO_CTRL write: the reset bit (unchanged from Issue #542) wins over
@@ -521,23 +520,21 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_exchange_every_byte_reads_0xff_and_signals_irq_once_selected() {
+    fn disconnected_exchange_every_byte_reads_0xff_and_never_signals_irq_once_selected() {
         let mut s = Sio0State::power_on();
         write_register(&mut s, CTRL, SELECT);
         assert!(!is_interrupt_pending(&s), "selecting alone must not signal a byte-received IRQ");
 
         write_register(&mut s, DATA, 0x01); // address byte
-        assert!(is_interrupt_pending(&s));
+        assert!(!is_interrupt_pending(&s), "an empty port never drives /ACK (Issue #716)");
         assert_eq!(read_register(&mut s, STAT) & STATUS_RX_NOT_EMPTY, STATUS_RX_NOT_EMPTY);
-        clear_interrupt_pending(&mut s);
-        assert!(!is_interrupt_pending(&s));
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
         assert_eq!(read_register(&mut s, STAT), IDLE_STATUS, "RX-ready clears once the byte is read");
 
         write_register(&mut s, DATA, COMMAND_READ_PAD as u32); // command byte
         assert_eq!(last_command_classification(&s), CommandClassification::RecognizedReadPad);
         assert_eq!(command_status_code(&s), 1);
-        assert!(is_interrupt_pending(&s));
+        assert!(!is_interrupt_pending(&s));
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
     }
 
@@ -562,9 +559,16 @@ mod tests {
         // responds, known command or not.
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
         assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
-        // Deterministic completion: the transaction did not hang, and IRQ7
-        // still latched exactly as it does for a recognized command.
-        assert!(is_interrupt_pending(&s));
+        // Deterministic completion: the transaction did not hang, and (as for
+        // a recognized command) no IRQ7 is latched: nothing ACKs.
+        assert!(!is_interrupt_pending(&s));
+        // A memory-card select byte (0x81) is byte 0 (the address byte) of a
+        // fresh transaction: never classified, 0xFF back, no IRQ7.
+        write_register(&mut s, CTRL, DESELECT);
+        write_register(&mut s, CTRL, SELECT);
+        write_register(&mut s, DATA, 0x81);
+        assert_eq!(read_register(&mut s, DATA), DISCONNECTED_RESPONSE_BYTE as u32);
+        assert!(!is_interrupt_pending(&s));
     }
 
     #[test]

@@ -54,7 +54,7 @@ The old common `IHardwareComponent` abstraction was removed because it had no pr
 | Interrupt Controller | IInterruptController | 0x1F801070-0x1F801074 | Central |
 | DMA Controller | IDmaController | 0x1F801080-0x1F8010FF | IRQ3 |
 | Timer 0-2 | ITimer | 0x1F801100-0x1F801128 | IRQ4-6 |
-| Controller/MemCard | native/Rust `crate::sio0` (register model, Issue #542; minimal disconnected-pad protocol, Issue #543) | 0x1F801040-0x1F80105E | IRQ7 (byte received; driven for the disconnected-slot protocol only) |
+| Controller/MemCard | native/Rust `crate::sio0` (register model, Issue #542; minimal disconnected-pad protocol, Issue #543) | 0x1F801040-0x1F80105E | IRQ7 (byte received = a device's /ACK; the empty-port protocol drives none, Issue #716) |
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
 | MDEC | IMdec | 0x1F801820-0x1F801824 | None |
@@ -70,19 +70,20 @@ idle value for reserved addresses in the window.
 
 On top of that register file, Issue #543 adds a minimal controller serial
 protocol: while a port is selected (`SIO_CTRL.1`), every transaction byte
-written to SIO_DATA gets a deterministic disconnected-slot response
-(`0xFF` — no device's `/ACK` ever drives the line low, matching real SIO0
-hardware with nothing connected) queued into the RX FIFO, and signals IRQ7
-("byte received"). This is not real hardware ACK timing (out of scope): the
-model treats each transfer as instantaneous and always signals completion,
-so IRQ7 fires for every transaction byte while selected, not only when a
-real device would pull `/ACK` low. There is still no controller/memory-card
+written to SIO_DATA gets a deterministic empty-port response (`0xFF` — the
+DAT line floats high because no device drives it, matching real SIO0
+hardware with nothing connected) queued into the RX FIFO. Since Issue #716
+that response carries no `/ACK` and therefore raises **no IRQ7**: IRQ7 is
+the device's `/ACK` pulse, and an empty port never ACKs (the guest detects
+the absent device by an IRQ7 timeout). The model has no timing, so there is
+no real hardware ACK timing either. There is still no controller/memory-card
 *transaction* protocol (DualShock/analog, memory-card read/write, multitap)
 and no real host controller input reaches this component — both remain
-tracked as a child of #443. `PSXRecomp.Core.Runtime.DeviceScheduler.Advance`
-delivers IRQ7 the same way it delivers Timer/DMA interrupts: it polls
-`PSXCoreWrapper.GetSio0InterruptPending`, clears it, and raises IRQ7 on the
-interrupt controller.
+tracked as a child of #443. The `irq_pending` latch and
+`PSXRecomp.Core.Runtime.DeviceScheduler.Advance`'s poll/clear/raise stage
+(`PSXCoreWrapper.GetSio0InterruptPending` → IRQ7 on the interrupt controller)
+stay as the seam for a future device model; with only the empty-port path
+the latch is never set, so the scheduler delivers nothing.
 
 SIO0 was originally a pure managed model (`Sio0Device`/`Sio0State`/
 `Sio0MmioAdapter`, the GPU precedent, ADR-022), reachable only through the
@@ -92,8 +93,9 @@ managed `MemoryBus` test/BIOS-HLE seam — not from a real guest CPU
 native `PSXMemory`) without ever going through `MemoryBus`. A CodeRabbit
 review on PR #548 caught this gap; the fix moved the register semantics into
 native Rust. At Issue #542 this component had no controller protocol or IRQ7
-in scope. Issue #543 adds the minimal disconnected-pad protocol and delivers
-IRQ7 through a poll/clear pair on the `PsxMemory` handle, so SIO0 still needs
+in scope. Issue #543 adds the minimal disconnected-pad protocol and a
+poll/clear pair for IRQ7 on the `PsxMemory` handle (no IRQ7 is raised for an
+empty port since #716), so SIO0 still needs
 no `PSXCore`-owned state or `AttachControllers`-style pointer — see the
 FFI contract doc and the Issue #543 paragraph above. `MemoryBus`'s
 SIO0 case now calls `PSXCoreWrapper.ReadMemory32`/`WriteMemory32` (the same

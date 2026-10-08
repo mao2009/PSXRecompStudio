@@ -81,8 +81,7 @@ public sealed class BiosPadCardIrqHandlerTests : IDisposable
     {
         _interrupts.SetMask(VblankBit | Sio0Bit | Timer0Bit);
         ChangeClearPad(1);
-        _core.WriteMemory16(Sio0Control, Sio0CtrlSelect);
-        _core.WriteMemory8(Sio0Data, 0x01);
+        _interrupts.Raise(DeviceScheduler.Sio0Irq); // an empty port no longer latches IRQ7 itself (Issue #716)
         _interrupts.Raise(DeviceScheduler.Timer0Irq);
         RaiseVblank();
         _interrupts.Status.Should().Be(VblankBit | Sio0Bit | Timer0Bit);
