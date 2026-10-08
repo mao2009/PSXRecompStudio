@@ -635,6 +635,37 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
     stops at the next call, before any VBlank exception can reach the enqueued element), so #661 is not required yet; no
     StartPAD/StopCARD call, no SIO0 access, no sector read, no DMA, no GPU frame activity (`no-frame-activity`).
 
+37. **#712: A0:70 `_bu_init` investigated; it is NOT an init-only service, so the stop is kept (no handler registered).**
+    Reproduced on `main` `8c52ba6` with only the two roots: `BIOS_HLE_UNSUPPORTED_CALL` `A0:70` (exit 1, `state=5`, guest PC
+    `0xA0`, one call). Call site (generated host, static): `jal` at `0x80011328` (`$ra = 0x80011330`, stub `t2=0xA0, t1=0x70`),
+    directly after `B0:4B`; no argument is set (arity 0); `$v0` is not read (`0x80011330` onward loads `$a0=0x801F0000`,
+    `$a1=0x8000`, and `0x8001133C` overwrites `$v0`); the next guest BIOS call is `A0:28` (`bzero(0x801F0000, 0x8000)`),
+    which has no HLE either. A0:55 is not reached (not called by this path). Not dumped at the stop (the run halts on the
+    first call): the EvCB table, `BiosCardState`/`BiosPadState`/auto-ack/clear policy, I_STAT/I_MASK and SIO0; they are those
+    left by items 34-36.
+    - **CONFIRMED (PCSX-Redux OpenBIOS, `openbios/kernel/handlers.c`):** A0:55 and A0:70 are the same function
+      `initBackupUnit` (psx-spx lists them as one entry, "A(55h) or A(70h) - _bu_init()"). Persona called A0:70.
+    - **CONFIRMED (OpenBIOS `card/backupunit.c`):** `initBackupUnit` returns 0, clears the operation state, disables auto-format
+      (psx-spx: "_bu_init initializes auto format as disabled") and runs `buInit(0x00)` and `buInit(0x10)`. Each `buInit`
+      issues `mcAllowNewCard`, then `mcReadSector(port, 0)` and `mcWaitForStatus()` (a busy-wait on `g_mcOverallSuccess` /
+      `g_mcErrors`, which only the SIO0 PadCardIrq card read handler and its `EVENT_CARD` / `EVENT_BU` deliveries
+      set), then up to 15 + 20 further sector reads, and fills the guest-visible directory and broken-sector buffers (or
+      zeroes them on failure). So `_bu_init` does start real SIO0 memory-card transfers and consumes the priority-2
+      PadCardIrq handler's result.
+    - **INFERRED:** the retail BIOS does the same (psx-spx only states the order InitCARD2, StartCARD2, `_bu_init`).
+    - **UNKNOWN:** the retail behaviour with no card inserted (timeouts, which `EVENT_CARD` / `EVENT_BU` spec is delivered,
+      the resulting directory buffers), where/when `bu00:`/`bu10:` is registered in the retail device table, and whether the
+      return value differs from OpenBIOS's 0. No `CardSpecificIrq` boundary was measured (the run never reaches a VBlank).
+    - **Decision:** nothing is registered. The only parts that could be modelled without card I/O (return 0, auto-format
+      off) are not the observable contract; registering them would let the guest proceed on an invented "card state".
+      Passing `_bu_init` honestly needs (a) the SIO0 card transfer model, (b) PadCardIrq execution (#661) and (c) a decision on
+      the inserted-card policy (empty slot vs. image) for the Studio. The existing EvCB table, `BiosCardState` and
+      `BiosPadState` need no change for the event/state part; no new guest-RAM state is justified before (a)-(c).
+    - **#661:** required for any real pass of A0:70 by source, but not *measured* (no exception has reached priority 2;
+      the run stops at this call before a VBlank): UNKNOWN by measurement, not promoted by this change.
+    - Persona: no event created or enabled after the stop, no CardSpecificIrq, no priority-2 delivery, no SIO0/IRQ7, no card
+      command, no disc data read, no DMA, no GPU frame activity (`no-frame-activity`). Next blocker: unchanged (`A0:70`).
+
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
 C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, item 33 resolves `SYS(01h)`, item 34 resolves `B0:08` OpenEvent and `B0:0C` EnableEvent (#687), item 35 resolves `B0:4A` InitCARD2 (#708), item 36 resolves `B0:4B` StartCARD2 (#710), and the current first blocker is `A0:70` `_bu_init` (#712). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after
 #670 A0:3F printf, item 16), classified in item 17 as a wait for interrupts the generated host could not deliver (#676); **GPU DMA2 / remaining GPU integration (#440) and real CD-ROM data (#14) remain unreached and
