@@ -6,6 +6,7 @@ using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.MemoryCard;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
 
@@ -61,6 +62,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly Action<PsxDeviceGraph>? _configureDevices;
+    private readonly MemoryCardSlotConfiguration? _memoryCardSlots;
     private readonly BiosExceptionChain? _exceptionChain;
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly MixedFallbackOptions? _mixedFallback;
@@ -114,6 +116,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// Opt-in mixed execution (Issue #693): when set, an unresolved in-image indirect transfer is handed to the interpreter
     /// and control returns to the artifact at a clean compiled block entry. Null (the default) keeps the pre-existing stop.
     /// </param>
+    /// <param name="memoryCardSlots">Which card is in each slot (Issue #715); null is <see cref="MemoryCardSlotConfiguration.Empty"/>.</param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -127,7 +130,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
         Action<PsxDeviceGraph>? configureDevices = null,
         BiosExceptionChain? exceptionChain = null,
-        MixedFallbackOptions? mixedFallback = null)
+        MixedFallbackOptions? mixedFallback = null,
+        MemoryCardSlotConfiguration? memoryCardSlots = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -141,6 +145,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         _biosRuntimeFactory = biosRuntimeFactory;
         _configureDevices = configureDevices;
+        _memoryCardSlots = memoryCardSlots;
         if (mixedFallback is { IsValid: false })
         {
             throw new ArgumentException("Mixed fallback needs positive instruction and transition budgets.", nameof(mixedFallback));
@@ -230,7 +235,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // retained from Load and re-applied to this rewrite.
         WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
 
-        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress);
+        using var bridge = _biosRuntimeFactory is null ? null : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots);
         var arguments = new List<string>(3) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -512,6 +517,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private DeviceScheduler? _scheduler;
         private ArtifactDeviceRam? _deviceRam;
         private readonly Action<PsxDeviceGraph>? _configureDevices;
+        private readonly MemoryCardSlotConfiguration? _memoryCardSlots;
         private readonly BiosExceptionChain? _exceptionChain;
         private readonly MixedFallbackOptions? _mixedFallback;
         private readonly IReadOnlyList<uint> _imageWords;
@@ -558,8 +564,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             BiosExceptionChain? exceptionChain,
             MixedFallbackOptions? mixedFallback,
             IReadOnlyList<uint> imageWords,
-            uint imageLoadAddress)
+            uint imageLoadAddress,
+            MemoryCardSlotConfiguration? memoryCardSlots)
         {
+            _memoryCardSlots = memoryCardSlots;
             _mixedFallback = mixedFallback;
             _imageWords = imageWords;
             _imageLoadAddress = imageLoadAddress;
@@ -585,7 +593,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 // native RAM is never used for it, and a device that moves data into RAM
                 // (CD-ROM DMA3) does so through _deviceRam, i.e. into artifact_ram (Issue #679).
                 _deviceRam = new ArtifactDeviceRam(ReadPhysicalByte, WritePhysicalByte);
-                _devices = new PsxDeviceGraph(_deviceRam);
+                _devices = new PsxDeviceGraph(_deviceRam, _memoryCardSlots);
                 _configureDevices?.Invoke(_devices);
                 // The same wiring the interpreter engine builds (InterpreterTitleExecutionEngine.Load):
                 // device time, order and interrupt delivery to the controller are the existing

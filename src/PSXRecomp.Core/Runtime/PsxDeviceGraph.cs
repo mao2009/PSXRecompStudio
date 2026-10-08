@@ -1,5 +1,6 @@
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Dma;
+using PSXRecomp.Core.MemoryCard;
 using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Core.Runtime.Gpu;
 
@@ -40,8 +41,11 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     /// sector into guest RAM) goes. Null routes it to <see cref="Bus"/>, i.e. this graph's native core RAM,
     /// which is the guest RAM of the interpreter. A backend whose guest RAM lives elsewhere (the generated-host
     /// artifact, Issue #679) passes its own seam, so a device never writes a second, private RAM.</param>
-    public PsxDeviceGraph(IMemoryBus? deviceRam = null)
+    /// <param name="memoryCardSlots">Which card is in each slot for this graph's whole life (Issue #715); null is
+    /// <see cref="MemoryCardSlotConfiguration.Empty"/>, the production default.</param>
+    public PsxDeviceGraph(IMemoryBus? deviceRam = null, MemoryCardSlotConfiguration? memoryCardSlots = null)
     {
+        MemoryCardSlots = memoryCardSlots ?? MemoryCardSlotConfiguration.Empty;
         Core = new PSXCoreWrapper();
         Bus = new MemoryBus(Core);
         DmaAdapter = new DmaMmioAdapter(Core);
@@ -83,6 +87,28 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     }
 
     public PSXCoreWrapper Core { get; }
+
+    /// <summary>
+    /// The memory-card slots as the host configured them (Issue #715): immutable for the graph's life, read-only to
+    /// every consumer. Host configuration, not guest-visible state.
+    /// </summary>
+    public MemoryCardSlotConfiguration MemoryCardSlots { get; }
+
+    /// <summary>
+    /// Whether a card is inserted at SIO0 port <paramref name="port"/> (0 = slot 1, 1 = slot 2): the read-only query the
+    /// SIO0 bridge asks before answering a card-select byte. An empty slot is the no-ACK case.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="port"/> is not 0 or 1.</exception>
+    public bool HasMemoryCard(int port) => MemoryCardSlots.HasCard(port switch
+    {
+        0 => MemoryCardSlot.Slot1,
+        1 => MemoryCardSlot.Slot2,
+        _ => throw new ArgumentOutOfRangeException(nameof(port), port, "SIO0 has memory-card ports 0 and 1 only."),
+    });
+
+    /// <summary>Diagnostic rendering of the slot state, e.g. <c>slot0=Empty slot1=Empty</c>. Card paths are not disclosed.</summary>
+    public string MemoryCardSlotSummary =>
+        $"slot0={(HasMemoryCard(0) ? "Inserted" : "Empty")} slot1={(HasMemoryCard(1) ? "Inserted" : "Empty")}";
     public MemoryBus Bus { get; }
     public DmaMmioAdapter DmaAdapter { get; }
     public TimerMmioAdapter TimerAdapter { get; }

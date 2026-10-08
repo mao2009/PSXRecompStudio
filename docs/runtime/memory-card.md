@@ -114,6 +114,34 @@ Card-management strategies are configuration, not separate mechanisms:
   application created and a card living in another emulator's directory are the
   same kind of value; nothing distinguishes them.
 
+### BIOS-less Runtime slot policy (Issue #715)
+
+The Runtime takes the configuration once, at `PsxDeviceGraph` construction, and
+exposes it read-only as `MemoryCardSlots`. Both execution backends accept the
+same optional immutable `memoryCardSlots` argument and hand it to the graph they
+build: `InterpreterTitleExecutionEngine` and `RecompiledHostExecutionEngine`
+(which rebuilds its graph per segment from the engine's configuration), so the
+backends cannot disagree on card presence for one title. It is host
+configuration, never guest-visible state, and cannot change for the graph's
+life. The production default is `MemoryCardSlotConfiguration.Empty`: both slots
+empty, in CI too. No production caller supplies a configuration yet, and no CLI
+option exists: with only the empty state there is nothing to choose.
+
+`HasMemoryCard(port)` takes the SIO0 port number (CTRL.13) and maps it to
+`MemoryCardSlot` (port 0 = slot 1, 1 = slot 2); an out-of-range port throws. It
+is the query the SIO0 side **will** ask; nothing asks it yet. After PR #718
+(Issue #716), a follow-up adds an additive `extern "C"` setter that pushes slot
+presence into `sio0.rs`, keyed on CTRL.13 (`ABI_VERSION` unchanged;
+`test_psx_abi_contract.cpp` and `NativeInterop` are updated then).
+
+`MemoryCardSlotSummary` renders `slot0=Empty slot1=Empty` without disclosing
+card paths. **Diagnostics status:** only this API exists. No existing run
+report, diagnostic bundle or trace carries device-graph state (the graph lives
+in the artifact host process and the bundle is built from the launch result), so
+emitting the summary is deferred to the follow-up that introduces the first
+configuration source (the CLI option, with Issues #661/#712) rather than adding
+a new reporting channel now.
+
 ## Write safety
 
 Saving a card is a four-step sequence in `FileMemoryCardStorage`:
