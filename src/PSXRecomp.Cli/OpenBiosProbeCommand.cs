@@ -64,6 +64,11 @@ internal static class OpenBiosProbeCommand
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(bytes));
             using var engine = backend.CreateEngine();
+            var monitor = new OpenBiosBootMonitor();
+            if (engine is InterpreterTitleExecutionEngine observed)
+            {
+                observed.FetchObserver = monitor.OnFetch;
+            }
             var request = new TitleExecutionRequest(
                 backend.EntryPc,
                 new uint[TitleExecutionRequest.GprCount],
@@ -71,6 +76,14 @@ internal static class OpenBiosProbeCommand
                 Array.Empty<RecompilerInitialMemoryItem>(),
                 segments, segmentBudget);
             var result = new ExecutionOrchestrator().Execute(engine, handoff: null, request);
+            var stop = (engine as InterpreterTitleExecutionEngine) is { } interp
+                ? BuildStop(interp, result.FinalSnapshot)
+                : null;
+            var report = (engine as InterpreterTitleExecutionEngine) is { } reader
+                ? monitor.Evaluate(reader.ReadGuestWord)
+                : null;
+            // The kernel reaching its shell is the strongest claim this command makes; a title has not started.
+            var kernelBooted = report?.KernelBooted ?? false;
             // No reliable OpenBIOS boot-completion contract is implemented yet. A
             // clean budget exhaustion is evidence of execution, never boot PASS.
             if (json)
@@ -81,20 +94,31 @@ internal static class OpenBiosProbeCommand
                     backend = backend.Id,
                     sha256 = hash,
                     bootVerified = false,
+                    kernelBooted,
+                    milestones = report,
+                    titleStarted = false,
                     executionState = result.State.ToString(),
                     guestPc = result.FinalSnapshot?.PC,
                     diagnosticCode = result.DiagnosticCode,
-                    segmentsRetired = result.SegmentsRetired
+                    segmentsRetired = result.SegmentsRetired,
+                    stop
                 }));
             }
             else
             {
                 output.WriteLine($"OpenBIOS execution probe (sha256:{hash}, backend={backend.Id})");
                 output.WriteLine($"State: {result.State}; PC: 0x{result.FinalSnapshot?.PC ?? 0u:X8}; code: {result.DiagnosticCode ?? "none"}");
-                output.WriteLine("Boot verification: NOT IMPLEMENTED (execution alone is not a PASS).");
+                if (stop is not null)
+                {
+                    output.WriteLine($"Stop: {JsonSerializer.Serialize(stop)}");
+                }
+                output.WriteLine($"Kernel boot milestones: {JsonSerializer.Serialize(report)} => kernelBooted={kernelBooted}");
+                output.WriteLine("Title boot: NOT VERIFIED (kernel boot is not a game boot).");
             }
 
-            return 2; // Until real boot-completion evidence is checked, fail closed.
+            // Exit 0 means only that the kernel booted to its shell (see OpenBiosBootMonitor); a title has not
+            // started, so bootVerified stays false. Anything less fails closed.
+            return kernelBooted ? 0 : 2;
         }
         catch (Exception ex) when (
             ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException
@@ -103,5 +127,20 @@ internal static class OpenBiosProbeCommand
             error.WriteLine($"openbios-probe: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    private static object BuildStop(InterpreterTitleExecutionEngine engine, RecompilerStateSnapshot? snapshot)
+    {
+        var cop0 = engine.Cop0Diagnostics;
+        var trace = engine.RecentTrace;
+        static string Hex(uint v) => $"0x{v:X8}";
+        return new
+        {
+            pc = Hex(snapshot?.PC ?? 0),
+            sr = Hex(cop0.Sr), cause = Hex(cop0.Cause), epc = Hex(cop0.Epc), badVAddr = Hex(cop0.BadVAddr),
+            gpr = snapshot?.Gpr.Select(Hex).ToArray(),
+            lastFetches = trace.Fetches.TakeLast(16).Select(e => $"{Hex(e.Pc)}:{Hex(e.Word)}").ToArray(),
+            lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{Hex(t.From.Word)}->{Hex(t.To)}").ToArray()
+        };
     }
 }

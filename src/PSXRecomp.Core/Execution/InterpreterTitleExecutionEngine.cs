@@ -64,6 +64,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly CdRomDevice _cdRomDevice;
     private readonly CdRomDmaTransfer _cdRomDmaTransfer;
     private DeviceScheduler? _scheduler;
+    private readonly ExecutionTraceRing _trace = new(ExecutionTraceRing.DefaultCapacity);
     private bool _loaded;
     private bool _disposed;
 
@@ -247,6 +248,19 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <inheritdoc />
     public string Name => EngineName;
+
+    /// <summary>The most recent fetched (pc, word) pairs and non-sequential control transfers, oldest first (diagnostic only).</summary>
+    public ExecutionTraceSnapshot RecentTrace => _trace.Snapshot();
+
+    /// <summary>Called with the PC of every instruction about to be fetched (diagnostic observation only).</summary>
+    public Action<uint>? FetchObserver { get; set; }
+
+    /// <summary>Reads an aligned guest RAM/ROM word without side effects; 0 outside RAM and ROM.</summary>
+    public uint ReadGuestWord(uint address) => FetchWordForTrace(address);
+
+    /// <summary>COP0 SR/CAUSE/EPC/BadVAddr as the CPU holds them now (diagnostic only).</summary>
+    public (uint Sr, uint Cause, uint Epc, uint BadVAddr) Cop0Diagnostics =>
+        (_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause), _core.GetCop0(Cop0Epc), _core.GetCop0(8));
 
     /// <inheritdoc />
     public void Load(TitleExecutionRequest request)
@@ -507,6 +521,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // (Issue #377) a faulting segment left the program bounds on the next
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
+            _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
+            FetchObserver?.Invoke(_core.Pc);
             if (_core.Step() != 0)
             {
                 termination = RecompilerIrTerminationReason.Exception;
@@ -706,6 +722,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _disposed = true;
         GC.SuppressFinalize(this);
     }
+
+    private uint FetchWordForTrace(uint pc) =>
+        Ps1AddressTranslation.TryTranslate(pc, out var physical) && (physical < 0x00800000u || physical is >= 0x1FC00000u and < 0x1FC80000u)
+            ? _core.ReadMemory32(physical)
+            : 0u;
 
     private uint[] ReadGpr()
     {
