@@ -110,6 +110,7 @@ public sealed class CdRomDevice : ICdRom
     public const uint SingleSpeedSectorCycles = CpuClockHz / 75;
 
     private const byte StatMotorOn = 0x02;
+    private const byte StatShellOpen = 0x10;
     private const byte StatRead = 0x20;
     private const byte StatSeek = 0x40;
     private const byte ModeDoubleSpeed = 0x80;
@@ -133,6 +134,7 @@ public sealed class CdRomDevice : ICdRom
     private ulong _lastAcknowledge;
     private ulong _nextSectorDue;
     private bool _motorOn;
+    private bool _shellOpen;
     private int _position;
     private byte[]? _lastSectorHeader;
     private byte[]? _announcedSector;
@@ -160,6 +162,7 @@ public sealed class CdRomDevice : ICdRom
         _discIdentity = discIdentity;
         _disc = disc;
         _motorOn = discIdentity.IsPresent;
+        _shellOpen = disc is not null;
     }
 
     /// <summary>Currently selected register index (0-3).</summary>
@@ -379,6 +382,7 @@ public sealed class CdRomDevice : ICdRom
         IsMuted = false;
         Mode = 0;
         _motorOn = _discIdentity.IsPresent;
+        _shellOpen = _disc is not null;
         _position = 0;
         _lastSectorHeader = null;
         _announcedSector = null;
@@ -393,6 +397,7 @@ public sealed class CdRomDevice : ICdRom
             byte status = 0;
             if (_motorOn) status |= StatMotorOn;
             if (IsReading) status |= StatRead;
+            if (_shellOpen) status |= StatShellOpen;
             return status;
         }
     }
@@ -401,6 +406,7 @@ public sealed class CdRomDevice : ICdRom
     {
         if (!RequireParameterCount(parameters, 0)) return;
         QueueResponse(IntAcknowledge, CommandStatus);
+        _shellOpen = false; // psx-spx stat bit 4: set once the shell was opened, cleared by the GetStat that reports it
     }
 
     /// <summary>

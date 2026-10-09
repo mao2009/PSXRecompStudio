@@ -18,9 +18,12 @@ public sealed class SyntheticIsoImageBuilder
 {
     private const int SectorSize = Iso9660Reader.SectorSize;
     private const int VolumeDescriptorSector = 16;
+    private const int TerminatorSector = 17;
     private const int RootDirectorySector = 18;
+    private const int PathTableSector = 19;
     private const int FirstFileSector = 20;
     private const int RootDirectoryRecordOffset = 156;
+    private const int PathTableSize = 10; // 8-byte header + 1-byte name + 1 pad byte
 
     private readonly List<(string Name, byte[] Content)> _files = [];
     private string _volumeIdentifier = "PSXRECOMP_TEST";
@@ -104,6 +107,21 @@ public sealed class SyntheticIsoImageBuilder
         Encoding.ASCII.GetBytes(volumeId).CopyTo(image, offset + 40);
 
         BitConverter.GetBytes(volumeSpaceSize).CopyTo(image, offset + 80);
+
+        // OpenBIOS's own CD driver resolves files through the L path table (size @132, LBA @140), not the PVD's
+        // root record alone, and expects the descriptor set to end with a terminator.
+        BitConverter.GetBytes((uint)PathTableSize).CopyTo(image, offset + 132);
+        BitConverter.GetBytes((uint)PathTableSector).CopyTo(image, offset + 140);
+        var terminator = TerminatorSector * SectorSize;
+        image[terminator] = 255;
+        Encoding.ASCII.GetBytes("CD001").CopyTo(image, terminator + 1);
+        image[terminator + 6] = 1;
+
+        // L path table: one entry, the root directory (name length 1, LBA, parent 1, name 0x00).
+        var table = PathTableSector * SectorSize;
+        image[table] = 1;
+        BitConverter.GetBytes((uint)RootDirectorySector).CopyTo(image, table + 2);
+        image[table + 6] = 1;
 
         WriteDirectoryRecord(image, offset + RootDirectoryRecordOffset,
             RootDirectorySector, SectorSize, flags: 0x02, name: "\0");

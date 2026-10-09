@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.DiscImage;
@@ -27,7 +27,15 @@ public sealed class CdRomDiscDriveTests
             .AddFile("TEST.EXE;1", SyntheticPsxExeBuilder.BuildValid())
             .Build()));
 
-    private static CdRomDevice Drive() => new(CdRomDiscIdentity.LicensedMode2(), SyntheticDisc());
+    private static CdRomDevice FreshDrive() => new(CdRomDiscIdentity.LicensedMode2(), SyntheticDisc());
+
+    /// <summary>A drive whose power-on ShellOpen flag the guest's first GetStat has already consumed.</summary>
+    private static CdRomDevice Drive()
+    {
+        var cd = FreshDrive();
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        return cd;
+    }
 
     private static byte Bcd(int value) => (byte)((value / 10 << 4) | (value % 10));
 
@@ -69,6 +77,26 @@ public sealed class CdRomDiscDriveTests
 
         cd.SetInterruptFlag(0x07);
         return bytes.ToArray();
+    }
+
+    [Fact]
+    public void GetStat_ReportsShellOpenOnce_AfterPowerOnWithADisc()
+    {
+        // OpenBIOS's dev_cd_open reads the path table only when GetStat reports stat bit 4 (psx-spx "ShellOpen").
+        var cd = FreshDrive();
+
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        Command(cd, 0x01).Should().Equal(3, 0x02);
+    }
+
+    [Fact]
+    public void GetStat_NeverReportsShellOpen_WithoutADisc()
+    {
+        var cd = new CdRomDevice();
+        cd.WriteCommand(0x01);
+
+        RunUntilInterrupt(cd);
+        (cd.ReadRegister(1) & 0x10).Should().Be(0);
     }
 
     [Fact]
