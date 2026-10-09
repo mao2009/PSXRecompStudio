@@ -204,6 +204,21 @@ fallback until the budget, which ends the run as
 `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`; that is the probe's end, not a failure
 of the boot.
 
+Baseline with the accounting above (same command plus `--symbols`, before any
+RAM AOT work): native 13,802,380 (all ROM); fallback 478,090,664 retired
+(fetched +115); 712,411 transitions, 712,394 of them at the A0/B0/C0 vectors
+(B0 alone 712,330; `B0Handler` 5.7M fetches), all `not-in-any-aot-image`
+except 6 `known-not-yet-aot` ROM entries (`flushCache`). Fallback fetches:
+user RAM 63% (the executable's `b .` spin, 300M — `--stop-at` removes it),
+shell 35% (one 163M-instruction segment from `0x80030C44`), kernel RAM 1.9%.
+Time: run 1024 s, of which transfer (copy-sync) 863 s, fallback 88 s,
+native+host 72 s; gcc 6.2 s for 5.5 MB of C (2.2 MB binary). Differential:
+the shell entry matches in full; at `0x80010000` CPU and RAM match but the
+three timer counters differ (interpreter `0xBB56`, host `0xBF4D`), and the
+host's native + fallback count to that point exceeds the interpreter's
+fetches by 1,880, so `differentialPass` is false: device time diverges
+(the earlier comparison did not read device state).
+
 The existing `psxrecomp run` pipeline still uses its legacy HLE path until the
 OpenBIOS firmware can actually load a game via the same guest memory and handle
 all required hardware and generated-host transitions. **Do not change the default
