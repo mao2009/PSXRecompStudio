@@ -3,6 +3,7 @@ using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.MemoryCard;
 using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Core.Runtime.Gpu;
+using PSXRecomp.Core.Runtime.Gte;
 
 namespace PSXRecomp.Core.Runtime;
 
@@ -83,6 +84,12 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
             address => (byte)CdRomAdapter.ReadRegister(address),
             (address, value) => CdRomAdapter.WriteRegister(address, value));
 
+        // The GTE (COP2) is CPU-coprocessor state, but like the GPU its semantics are
+        // managed-only (Issue #447): the native CPU forwards every COP2 transfer and
+        // command here after its SR.CU2 check, so this bank is the one GTE state of the
+        // graph for the interpreter and for anything relayed to this graph.
+        Core.AttachGte(Gte);
+
         // SIO0 register model (Issue #542): native/Rust-owned inside
         // PSXMemory (see MemoryBus.ReadMmio/WriteMmio's Sio0 case and
         // crate::sio0's module documentation), so no adapter is attached
@@ -90,6 +97,9 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     }
 
     public PSXCoreWrapper Core { get; }
+
+    /// <summary>The GTE register state the native CPU executes COP2 against (Issue #447).</summary>
+    public GteRegisterBank Gte { get; } = new();
 
     /// <summary>
     /// The memory-card slots as the host configured them (Issue #715): immutable for the graph's life, read-only to

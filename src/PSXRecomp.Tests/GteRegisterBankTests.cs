@@ -193,12 +193,4 @@ public class GteRegisterBankTests
         ((Action)(() => gte.ReadControlRegister(register))).Should().Throw<ArgumentOutOfRangeException>();
         ((Action)(() => gte.WriteControlRegister(register, 0))).Should().Throw<ArgumentOutOfRangeException>();
     }
-
-    [Fact]
-    public void ExecuteCommand_IsExplicitlyUnsupported()
-    {
-        var gte = new GteRegisterBank();
-        ((Action)(() => gte.ExecuteCommand(0x01, false, false))).Should().Throw<NotSupportedException>();
-        gte.HasPendingData.Should().BeFalse();
-    }
 }

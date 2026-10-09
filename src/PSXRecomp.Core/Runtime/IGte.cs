@@ -18,12 +18,12 @@ namespace PSXRecomp.Core.Runtime;
 ///
 /// Commands are issued via COP2 instructions (e.g. RTPS, NCLIP, AVSZ3).
 ///
-/// UNWIRED (Issue #377): <see cref="Gte.GteRegisterBank"/> implements the
-/// register bank (Issue #581) but nothing consumes it yet. The native interpreter does not execute COP2 at all — it
-/// raises Coprocessor Unusable (CAUSE.Excode=0x0B, CAUSE.CE=2) for COP2, LWC2
-/// and SWC2, so a GTE-bearing program faults loudly instead of being silently
-/// treated as a NOP by the differential reference oracle. Implementing the GTE
-/// itself is a separate, larger effort.
+/// Issue #447: <see cref="Gte.GteRegisterBank"/> is the one GTE register state.
+/// <see cref="PsxDeviceGraph"/> attaches it to the native CPU, which forwards
+/// MFC2/CFC2/MTC2/CTC2, LWC2/SWC2 and COP2 commands to it after its own SR.CU2
+/// check; every execution backend reaches this same instance. A command it does
+/// not implement fails closed (<see cref="ExecuteCommand"/> returns false and the
+/// CPU stops), never a NOP.
 /// </summary>
 [Domain]
 public interface IGte
@@ -34,12 +34,11 @@ public interface IGte
     void WriteControlRegister(int register, uint value);
 
     /// <summary>
-    /// Execute a GTE command.
+    /// Executes a GTE command: the COP2 instruction's low 25 bits (opcode in bits
+    /// 0-5, lm bit 10, sf bit 19, MVMVA selectors in bits 13-18).
     /// </summary>
-    /// <param name="command">Command code from COP2 instruction.</param>
-    /// <param name="sf">Shift fraction (false = no shift, true = shift 12 bits).</param>
-    /// <param name="lm">Saturate IR0 to 0x0000-0x7FFF when true.</param>
-    void ExecuteCommand(uint command, bool sf, bool lm);
+    /// <returns>False, with no register changed, when the command is not implemented.</returns>
+    bool ExecuteCommand(uint command);
 
     bool HasPendingData { get; }
     void Reset();

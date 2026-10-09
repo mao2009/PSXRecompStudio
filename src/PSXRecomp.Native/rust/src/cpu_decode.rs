@@ -12,8 +12,9 @@
 //! The classification is the one the C++ switch had on `main`, not a MIPS
 //! reference: REGIMM matches the full 5-bit `rt` (only 0x00/0x01/0x10/0x11),
 //! COP0 recognises MFC0 (`rs == 0`), MTC0 (`rs == 4`) and RFE (`rs == 0x10 &&
-//! funct == 0x10`) and nothing else, COP1/2/3 and LWC1-3/SWC1-3 are CpU, and
-//! every other encoding (including LWC0/SWC0) is RI.
+//! funct == 0x10`) and nothing else, COP1/3 and LWC1/3, SWC1/3 are CpU, COP2
+//! is sub-decoded into the GTE transfers/commands and LWC2/SWC2 (Issue #447),
+//! and every other encoding (including LWC0/SWC0) is RI.
 //!
 //! The symbol is internal to `PSXRecomp.Native` (declared in
 //! `src/psx_cpu_decode.h`, called only from `psx_cpu_decode.cpp`), not
@@ -101,6 +102,16 @@ pub enum DecodeOp {
     Mfc0 = 60,
     Mtc0 = 61,
     Rfe = 62,
+    // COP2/GTE (opcode 0x12, Issue #447). The caller checks SR.CU2 and raises
+    // CpU (CE = 2) when it is clear, exactly as for `CopUnusable`.
+    Mfc2 = 63,
+    Cfc2 = 64,
+    Mtc2 = 65,
+    Ctc2 = 66,
+    /// GTE command (bit 25 set); the command is the low 25 bits of the word.
+    Cop2Command = 67,
+    Lwc2 = 68,
+    Swc2 = 69,
 }
 
 /// A classified instruction word and its operand fields.
@@ -202,9 +213,22 @@ pub const fn decode(instruction: u32) -> DecodedInstruction {
             0x10 if funct == 0x10 => DecodeOp::Rfe,
             _ => DecodeOp::Reserved,
         },
-        // COP1-3 and LWC1-3/SWC1-3 are unusable. LWC0/SWC0 (0x30/0x38) are
+        // COP2 (GTE, Issue #447): MFC2/CFC2/MTC2/CTC2 by rs, a command when
+        // bit 25 is set. Any other COP2 form (BC2x, rs 1/3/5/7-15) has no GTE
+        // meaning and stays CpU, so it fails closed.
+        0x12 => match rs {
+            0x00 => DecodeOp::Mfc2,
+            0x02 => DecodeOp::Cfc2,
+            0x04 => DecodeOp::Mtc2,
+            0x06 => DecodeOp::Ctc2,
+            0x10..=0x1F => DecodeOp::Cop2Command,
+            _ => DecodeOp::CopUnusable,
+        },
+        0x32 => DecodeOp::Lwc2,
+        0x3A => DecodeOp::Swc2,
+        // COP1/COP3 and LWC1/3, SWC1/3 are unusable. LWC0/SWC0 (0x30/0x38) are
         // deliberately absent: COP0 has no load/store forms, so they are RI.
-        0x11..=0x13 | 0x31..=0x33 | 0x39..=0x3B => DecodeOp::CopUnusable,
+        0x11 | 0x13 | 0x31 | 0x33 | 0x39 | 0x3B => DecodeOp::CopUnusable,
         0x20 => DecodeOp::Lb,
         0x21 => DecodeOp::Lh,
         0x22 => DecodeOp::Lwl,
@@ -277,7 +301,7 @@ mod tests {
         (0x26, Lwr), (0x28, Sb), (0x29, Sh), (0x2A, Swl), (0x2B, Sw), (0x2E, Swr),
     ];
 
-    const COP_UNUSABLE: [u32; 9] = [0x11, 0x12, 0x13, 0x31, 0x32, 0x33, 0x39, 0x3A, 0x3B];
+    const COP_UNUSABLE: [u32; 6] = [0x11, 0x13, 0x31, 0x33, 0x39, 0x3B];
 
     #[test]
     fn special_functs_classify_and_every_other_funct_is_reserved() {
@@ -311,8 +335,12 @@ mod tests {
                 *o
             } else if COP_UNUSABLE.contains(&opcode) {
                 CopUnusable
-            } else if opcode <= 0x01 || opcode == 0x10 {
-                continue; // SPECIAL/REGIMM/COP0 are sub-decoded; covered elsewhere.
+            } else if opcode <= 0x01 || opcode == 0x10 || opcode == 0x12 {
+                continue; // SPECIAL/REGIMM/COP0/COP2 are sub-decoded; covered elsewhere.
+            } else if opcode == 0x32 {
+                Lwc2
+            } else if opcode == 0x3A {
+                Swc2
             } else {
                 Reserved
             };
@@ -338,6 +366,29 @@ mod tests {
         assert_eq!(psx_cpu_decode(0x4A18_0001).cop, 2); // GTE RTPS
         assert_eq!(psx_cpu_decode(0xC801_0000).cop, 2); // LWC2
         assert_eq!(psx_cpu_decode(0xE801_0000).cop, 2); // SWC2
+    }
+
+    #[test]
+    fn cop2_forms() {
+        for rs in 0..32u32 {
+            let expected = match rs {
+                0x00 => Mfc2,
+                0x02 => Cfc2,
+                0x04 => Mtc2,
+                0x06 => Ctc2,
+                0x10..=0x1F => Cop2Command,
+                _ => CopUnusable,
+            };
+            let d = psx_cpu_decode(primary(0x12) | (rs << 21) | 0xFFFF);
+            assert_eq!((d.op, d.cop), (expected, 2), "rs {rs:#x}");
+        }
+        // CTC2 $t0, $29 (ZSF3), the first COP2 word Persona executes.
+        let d = psx_cpu_decode(0x48C8_E800);
+        assert_eq!((d.op, d.rt, d.rd), (Ctc2, 8, 29));
+        assert_eq!(op(0x4A18_0001), Cop2Command); // RTPS
+        let d = psx_cpu_decode(0xC801_0004); // LWC2 $1, 4($0)
+        assert_eq!((d.op, d.rs, d.rt, d.imm, d.cop), (Lwc2, 0, 1, 4, 2));
+        assert_eq!(op(0xE801_0000), Swc2);
     }
 
     #[test]

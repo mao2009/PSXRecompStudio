@@ -47,3 +47,4 @@ void run_psx_cpu_unaligned_rust_tests();
 void run_psx_cpu_cop0_rust_tests();
 void run_psx_cpu_exception_rust_tests();
 void run_psx_cpu_pipeline_rust_tests();
+void run_psx_cpu_cop2_tests();
