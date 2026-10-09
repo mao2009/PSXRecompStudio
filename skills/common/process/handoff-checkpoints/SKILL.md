@@ -20,14 +20,18 @@ and review skills. Respect their ownership and existing gates.
 
 ## Mandatory workflow
 
-1. **On start:** read the driving Issue, related PRs, and the latest checkpoint;
-   compare their claims with actual git/worktree state. Post a concise start
-   checkpoint identifying the objective, base/head branch and SHA, environment,
-   available evidence, and planned next step. Do not assume a past claim is
-   verified in the current environment.
-2. **After each meaningful finding or completed milestone:** post a checkpoint
-   to the driving Issue for cross-cutting investigation/progress, or to the PR
-   for implementation/review evidence. Link between them when applicable.
+1. **On start:** read the driving Issue (if one exists), related PRs, and the
+   latest checkpoint; compare their claims with actual git/worktree state.
+   For an Issue-backed or PR-backed task, post a concise start checkpoint
+   identifying the objective, base/head branch and SHA, environment, available
+   evidence, and planned next step. When an explicit request has no Issue or PR,
+   do not invent an Issue or post in an unrelated thread: keep the checkpoint
+   in the work report until a suitable PR or Issue exists, then publish the
+   relevant handoff there. Do not assume a past claim is verified locally.
+2. **After each meaningful finding or completed milestone:** when an Issue or PR
+   exists, post a checkpoint to the driving Issue for cross-cutting
+   investigation/progress, or to the PR for implementation/review evidence.
+   Otherwise, accumulate the evidence in the work report for later publication. Link between them when applicable.
    Record reproducible commands, input revisions/hashes, observed results,
    decisions, and concrete next actions. Clearly distinguish observed facts,
    inferences, and proposals.
@@ -38,9 +42,11 @@ and review skills. Respect their ownership and existing gates.
    unobserved result. For parallel workers, the coordinator owns the
    consolidated checkpoint and identifies each worker's branch/status.
 4. **Before stopping, blocking, context exhaustion, or handoff:** publish a
-   final HANDOFF CHECKPOINT with current SHA, pushed/unpushed state, tests,
-   blockers, artifact locations, and an executable next step. If the stop is
-   abrupt and posting is impossible, the next agent must reconstruct state
+   final HANDOFF CHECKPOINT to the relevant Issue or PR, if one exists, with
+   current SHA, pushed/unpushed state, tests, blockers, artifact locations,
+   and an executable next step. Otherwise include it in the work report and
+   publish it when a suitable tracked work item becomes available. If the stop
+   is abrupt and posting is impossible, the next agent must reconstruct state
    and explicitly mark missing evidence.
 5. **On resumption:** read the latest handoff before rerunning anything.
    Reuse verifiable evidence and repeat only necessary checks. Never erase
@@ -80,8 +86,12 @@ Use the following fields, omitting only genuinely inapplicable fields:
   checkpoint. An unpushed local change is **not** portable; explicitly
   identify it as such.
 - If GitHub posting fails, preserve the intended checkpoint in the final
-  report or a safe local artifact, state that remote persistence failed,
-  and retry when available. Never report a failed post as completed.
+  report and, when safe, in a repository-relative Markdown artifact or WIP
+  commit following git-workflow rules. State explicitly that remote persistence
+  failed and provide the exact unpushed branch/commit or local location.
+  A local artifact alone is **not** a cross-environment handoff: the next agent
+  needs access to that artifact or a later successful push/post. Retry remote
+  publication when available. Never report a failed post as completed.
 - Prefer actionable changes in understanding over noisy commentary.
 - Completion reporting remains governed by the reporting skill; a handoff
   checkpoint does not imply successful tests, review, or merge readiness.
