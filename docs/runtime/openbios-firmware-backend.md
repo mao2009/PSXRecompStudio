@@ -48,6 +48,34 @@ This command:
   completion criterion and title handoff are implemented. Running instructions
   for 1,000,000 steps is **not** evidence of a fully booted game.
 
+### Disc in the drive (`--disc`)
+
+`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 600 --disc <image.chd|image.bin> --json`
+
+The firmware reads the disc only through the existing `CdRomDevice` / DMA3 /
+IRQ2 / `DeviceScheduler` graph; no BIOS function is implemented or answered on
+its behalf. A disc is an `ICdSectorSource` (TOC plus raw 2352-byte sectors by
+LBA; an absent sector is reported, never zero-filled): `ChdCdSectorSource`
+over the existing `ChdReader`, or `RawCdSectorSource` over a single-track
+`.bin`. With a disc the controller is hardware-timed: responses arrive after the
+acknowledge/second-response delays (psx-spx timing table, DuckStation's
+acknowledge delay), only after the previous interrupt was acknowledged, and
+ReadN/ReadS stream one INT1 per sector at 75/150 sectors/s; a sector enters the
+data FIFO on the request register's BFRD write. Without a disc the legacy
+BIOS-less model is unchanged. GPUSTAT bits 13/31 alternate per VBlank field,
+which the shell's `waitVSync` polls.
+
+Observed with the pinned build and a synthetic Mode 2 disc (ISO 9660,
+`SYSTEM.CNF`, a 6-instruction PS-X EXE; no commercial data): the shell accepts
+the disc, schedules its boot, returns; the kernel runs `initCDRom`, opens
+`cdrom:SYSTEM.CNF;1`, loads `\TEST.EXE;1` through CD reads and DMA3, and
+`gameMainThunk` → `exec` enters the executable's entry `0x80010000` (about 192M
+instructions), which then writes its marker to RAM. Known gaps: the CHD adapter
+reports a single data track (CHT2 metadata not parsed); seek time is a fixed
+constant; no XA/CD-DA audio; the native DMA model's DICR bit layout differs
+from psx-spx (enables/flags swapped), so the kernel's DMA3 IRQ bookkeeping does
+not see its flag.
+
 The existing `psxrecomp run` pipeline still uses its legacy HLE path until the
 OpenBIOS firmware can actually load a game via the same guest memory and handle
 all required hardware and generated-host transitions. **Do not change the default

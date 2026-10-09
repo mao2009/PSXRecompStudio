@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Runtime.CdRom;
 
 namespace PSXRecomp.Core.Execution;
 
@@ -61,8 +62,10 @@ public interface IBiosBootBackend
 /// Runs on the existing native CPU/device graph; the present slice executes
 /// firmware and kernel code, but does NOT yet launch a game or claim a boot PASS.
 /// </summary>
+/// <param name="image">The firmware ROM.</param>
+/// <param name="disc">The disc in the CD-ROM drive, read by the firmware through the controller (Issue #732); null is an empty drive model.</param>
 [Domain]
-public sealed class OpenBiosBootBackend(OpenBiosFirmware image) : IBiosBootBackend
+public sealed class OpenBiosBootBackend(OpenBiosFirmware image, ICdSectorSource? disc = null) : IBiosBootBackend
 {
     private readonly OpenBiosFirmware _image = image ?? throw new ArgumentNullException(nameof(image));
 
@@ -74,5 +77,6 @@ public sealed class OpenBiosBootBackend(OpenBiosFirmware image) : IBiosBootBacke
             _image.Words,
             OpenBiosFirmware.ResetVector,
             biosRuntimeFactory: null, // The real OpenBIOS must own the kernel, vectors and events.
-            allowRuntimeRamExecution: true);
+            allowRuntimeRamExecution: true,
+            disc: disc);
 }
