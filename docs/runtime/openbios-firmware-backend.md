@@ -132,6 +132,54 @@ fallback until the budget, which ends the run as
 `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`; that is the probe's end, not a failure
 of the boot.
 
+### Ahead-of-time RAM-placed code (`--load-images`, ADR-026)
+
+PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. Code the firmware
+places in RAM is compiled before the run from explicit images listed in a manifest
+(`LoadImageManifest`; one directive per line, hex numbers, paths relative to the manifest):
+
+```text
+image kernel-data 0x00000500 rom 0xBFC1DF6C 0x45A0 kernel.roots  # ELF LOAD 0x500 <- ROM 0xBFC1DF6C (.data, RWE)
+image vector-80   0x80000080 rom 0xBFC06DE8 0x10 vector80.roots # exceptionVector (0x80000084)
+image vector-a0   0x000000A0 rom 0xBFC06DF8 0x10                # A0Vector; likewise B0Vector/C0Vector
+image shell       0x80030000 rom 0xBFC0A1F4 0x13D78 shell.roots  # _binary_shell_bin_start
+exe   test-exe    test.exe exe.roots                             # or: boot-exe <name> (SYSTEM.CNF on --disc)
+interpret 0x80000080   # observation points stay interpreted: exception vector, exceptionHandler
+interpret 0x000026A4   # (0x26A4, KernelRunningFromRam), shell entry 0x80030000, EXE entry 0x80010000
+```
+
+Addresses come from the pinned build's `openbios.elf` (program headers, `exceptionVector`/`A0Vector`/
+`B0Vector`/`C0Vector`, `_binary_shell_bin_start`/`_size`) and `shell/shell.elf`. Roots are the ELF `T`/`t`
+symbols inside each image plus the aligned words of read-only data that point into the image's code
+(switch tables: `.rodata`/`.data` of the shell, the kernel `.data` and the ROM `.rodata` for the
+kernel). A root that is not really an entry is harmless: its block holds the correct code for those
+bytes and runs only if control reaches it with those bytes in RAM. Each image is compiled at its
+destination (`BuildLoadedImage`), the builds are linked into one `LoadedCodeTable`, and the artifact
+runs a version only while RAM holds exactly its words (page generations, ADR-026); anything else is
+the counted fallback. The report lists every image (`loadedImages`), `loadedCodeVersions`,
+`precompileMilliseconds`, `atBoundary` (native instructions and seconds when each differential
+boundary was reached) and, per fallback target, its `cause` (`observation-point`, `version-mismatch`,
+`aot-coverage-gap:loaded-image|rom`, `unknown-code`).
+
+Measured (pinned build, synthetic disc, `--segment-budget 1000000 --segments 300 --differential`):
+
+| | baseline (ROM only) | AOT images |
+|---|---|---|
+| native / fallback before `0x80010000` | 13.8M / 178.1M (7.2 %) | 191,927,114 / 5,197 (99.997 %) |
+| native / fallback, whole run | 13.8M / 478.1M (2.8 %) | 476,966,271 / 5,198 |
+| artifact ↔ interpreter transitions | 712,411 | 368 |
+| copy-sync time | 808 s | 0.29 s |
+| loaded-code versions / pre-compile (gcc) | — / — | 7,211 / 68 s |
+
+Both runs match the interpreter at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
+SHA-256) with the same milestones (111 INT, 9 SYSCALL). The remaining fallback is the four observation
+points (each exception: `0x80000080` and `0x26A4`), a kernel coverage gap after the observation point
+(`0x26E4`, 120 entries) and a ROM coverage gap (`0xBFC05734`, 6 entries). With only symbol roots the shell's
+`MOD_UpdateEffect` switch target `0x80032BD8` was a coverage gap entered ~1.46M times (each transition
+~1 ms of copy-sync); the code-pointer roots close it. The whole run is no faster yet: the executable's
+final `b .` loop now runs natively until the dispatch budget, and every native MMIO access and every
+1024 retired instructions is one protocol round trip to the host's devices.
+
 The existing `psxrecomp run` pipeline still uses its legacy HLE path until the
 OpenBIOS firmware can actually load a game via the same guest memory and handle
 all required hardware and generated-host transitions. **Do not change the default
@@ -156,9 +204,10 @@ The IR pipeline lowers COP0 (MFC0/MTC0/RFE), SYSCALL/BREAK as firmware traps and
 `SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. Measured on the
 pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector alone; with the
 257 ELF function symbols as explicit roots 9,228 are native. Code that exists only at run time
-(kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) has no
-generated block and can only run through the mixed-execution interpreter fallback, which is
-reported as fallback. The interpreter remains the only verified way to run OpenBIOS end to end;
+(kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) is
+compiled ahead of time from explicit images with `--load-images` (see above, ADR-026) and selected by
+content at run time; without it, or where RAM holds no pre-generated version, it runs in the
+mixed-execution interpreter fallback, which is reported as fallback. The interpreter remains the only verified way to run OpenBIOS end to end;
 generated-host execution of OpenBIOS is **not** verified (see the status line).
 
 **Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc

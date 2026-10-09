@@ -24,7 +24,7 @@ internal static class OpenBiosProbeCommand
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
         const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
-                             "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--json]";
+                             "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--load-images <manifest>] [--json]";
         if (args.Count == 0 || args.Count > 20 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
             error.WriteLine(usage);
@@ -33,7 +33,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false;
-        string? discPath = null, rootsPath = null, engineKind = "interpreter";
+        string? discPath = null, rootsPath = null, loadImagesPath = null, engineKind = "interpreter";
         uint? capturePc = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Count; i++)
@@ -58,7 +58,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine")
+            if (option is "--disc" or "--roots" or "--engine" or "--load-images")
             {
                 if (++i >= args.Count)
                 {
@@ -68,6 +68,7 @@ internal static class OpenBiosProbeCommand
 
                 if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
+                else if (option == "--load-images") loadImagesPath = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -90,9 +91,9 @@ internal static class OpenBiosProbeCommand
         }
 
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
-            || (differential && engineKind != "generated-host"))
+            || ((differential || loadImagesPath is not null) && engineKind != "generated-host"))
         {
-            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential requires --engine generated-host");
+            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential and --load-images require --engine generated-host");
             error.WriteLine(usage);
             return 1;
         }
@@ -111,7 +112,7 @@ internal static class OpenBiosProbeCommand
             var firmware = OpenBiosFirmware.FromBytes(bytes);
             using var disc = discPath is null ? null : OpenDisc(discPath);
             return engineKind == "generated-host"
-                ? RunGeneratedHost(firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, json, output)
+                ? RunGeneratedHost(firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, json, output, loadImagesPath)
                 : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, json, output);
         }
         catch (Exception ex) when (
@@ -209,29 +210,54 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     private static int RunGeneratedHost(
         OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, IReadOnlyList<uint> roots, uint codeBytes,
-        uint segments, uint segmentBudget, bool differential, bool json, TextWriter output)
+        uint segments, uint segmentBudget, bool differential, bool json, TextWriter output, string? loadImagesPath)
     {
+        var precompile = System.Diagnostics.Stopwatch.StartNew();
         var codeWords = codeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(codeBytes / 4, (uint)firmware.Words.Count)).ToArray();
         var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, codeWords, OpenBiosFirmware.ResetVector, roots);
 
+        // Issue #732: code the firmware places in RAM (kernel .data, vector stubs, shell, an executable) is compiled ahead
+        // of time from the explicit images of a --load-images manifest, at each image's destination address.
+        var manifest = loadImagesPath is null ? LoadImageManifest.None : LoadImageManifest.Read(loadImagesPath, firmware, disc);
+        var loadedImages = manifest.Images
+            .Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, manifest.Interpreted)))
+            .ToArray();
+        var loadedCode = new LoadedCodeTable(loadedImages.Select(static i => i.Build));
+
         Dictionary<uint, GuestState>? reference = null;
+        var referenceSeconds = new Dictionary<uint, double>();
         if (differential)
         {
             reference = [];
             var backend = new OpenBiosBootBackend(firmware, disc);
             using var interpreter = (InterpreterTitleExecutionEngine)backend.CreateEngine();
             ulong fetches = 0;
+            var referenceClock = System.Diagnostics.Stopwatch.StartNew();
             interpreter.FetchObserver = pc =>
             {
                 fetches++;
                 if (pc is OpenBiosBootMonitor.ShellLoadAddress or ExecutableBoundary && !reference.ContainsKey(pc))
                 {
                     reference[pc] = GuestState.Capture(interpreter, pc, fetches);
+                    referenceSeconds[pc] = referenceClock.Elapsed.TotalSeconds;
                 }
             };
             new ExecutionOrchestrator().Execute(interpreter, handoff: null, new TitleExecutionRequest(
                 backend.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], segments, segmentBudget));
         }
+
+        // Why a fallback target had no native code: a deliberate observation point, RAM-placed code whose bytes matched no
+        // pre-generated version (stale, overwritten or different code), a PC inside a known image that the AOT build did
+        // not cover (coverage gap), or code from no known image at all (unknown: cannot be compiled ahead of time).
+        string FallbackCause(uint pc) =>
+            manifest.Interpreted.Contains(pc) ? "observation-point"
+            : loadedCode.Contains(pc) ? "version-mismatch"
+            : manifest.Images.Any(i => pc >= i.LoadAddress && pc < i.LoadAddress + (uint)i.Words.Length * 4) ? "aot-coverage-gap:loaded-image"
+            : pc >= OpenBiosFirmware.ResetVector && pc < OpenBiosFirmware.ResetVector + (uint)codeWords.Count() * 4 ? "aot-coverage-gap:rom"
+            : "unknown-code";
+        var nativeAtBoundary = new Dictionary<uint, object>();
+        var runClock = new System.Diagnostics.Stopwatch();
+        RecompiledHostExecutionEngine? hostEngine = null;
 
         var directory = Path.Combine(Path.GetTempPath(), "psxrecomp-openbios-host-" + Guid.NewGuid().ToString("N"));
         var boundaries = new Dictionary<uint, GuestState>();
@@ -253,7 +279,8 @@ internal static class OpenBiosProbeCommand
                 mixedFallback: new MixedFallbackOptions(budget, uint.MaxValue),
                 guestFirmware: true,
                 runTimeout: TimeSpan.FromMinutes(30),
-                disc: disc)
+                disc: disc,
+                loadedCode: loadedCode)
             {
                 FallbackFetchObserver = (interpreter, pc) =>
                 {
@@ -263,9 +290,13 @@ internal static class OpenBiosProbeCommand
                     if (pc is OpenBiosBootMonitor.ShellLoadAddress or ExecutableBoundary && !boundaries.ContainsKey(pc))
                     {
                         boundaries[pc] = GuestState.Capture(interpreter, pc, fallbackFetches);
+                        nativeAtBoundary[pc] = new { nativeInstructions = hostEngine?.NativeRetiredInstructions, seconds = runClock.Elapsed.TotalSeconds, mmioRoundTrips = hostEngine?.HostRoundTrips?.MmioAccesses, timeReportRoundTrips = hostEngine?.HostRoundTrips?.TimeReports };
                     }
                 },
             };
+            hostEngine = engine;
+            precompile.Stop();
+            runClock.Start();
 
             // The artifact's first dispatch unit is the reset-vector block (it is always the build's entry); fallback
             // fetches are the only other fetches this engine can observe, so fetch indices below count only those.
@@ -301,6 +332,17 @@ internal static class OpenBiosProbeCommand
                     roots = roots.Count,
                     staticFallbackTargets = image.FallbackTargets.Count,
                 },
+                loadedImages = loadedImages.Select(static i => new
+                {
+                    name = i.Name,
+                    blocks = i.Build.Blocks.Count,
+                    nativeInstructions = i.Build.NativeInstructionCount,
+                    skippedEntries = i.Build.SkippedEntries.Select(Hex).ToArray(),
+                }).ToArray(),
+                loadedCodeVersions = loadedCode.Blocks.Count,
+                interpretedEntries = manifest.Interpreted.Order().Select(Hex).ToArray(),
+                precompileMilliseconds = precompile.Elapsed.TotalMilliseconds,
+                atBoundary = nativeAtBoundary.OrderBy(static b => b.Key).ToDictionary(static b => $"0x{b.Key:X8}", static b => b.Value),
                 execution = new
                 {
                     nativeInstructions = engine.NativeRetiredInstructions,
@@ -310,14 +352,18 @@ internal static class OpenBiosProbeCommand
                     pagesToInterpreter = evidence?.PagesToInterpreter,
                     pagesToArtifact = evidence?.PagesToArtifact,
                     distinctFallbackTargets = evidence?.Targets.Count,
-                    topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(12)
-                        .Select(static t => $"0x{t.Target:X8}:entries={t.Entries}:instructions={t.Instructions}").ToArray(),
+                    topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(16)
+                        .Select(t => $"0x{t.Target:X8}:entries={t.Entries}:instructions={t.Instructions}:cause={FallbackCause(t.Target)}").ToArray(),
                     timings = engine.FallbackTimings,
+                    mmioRoundTrips = engine.HostRoundTrips?.MmioAccesses,
+                    timeReportRoundTrips = engine.HostRoundTrips?.TimeReports,
+                    runSeconds = runClock.Elapsed.TotalSeconds,
                 },
                 boundaries = boundaries.OrderBy(static b => b.Key).ToDictionary(static b => $"0x{b.Key:X8}", static b => b.Value.Describe()),
                 differential = reference?.OrderBy(static b => b.Key).ToDictionary(
                     static b => $"0x{b.Key:X8}",
                     b => boundaries.TryGetValue(b.Key, out var host) ? GuestState.Compare(b.Value, host) : (object)"not reached by the generated host"),
+                referenceSecondsAtBoundary = referenceSeconds.OrderBy(static b => b.Key).ToDictionary(static b => $"0x{b.Key:X8}", static b => b.Value),
                 referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Select(static k => $"0x{k:X8}").ToArray(),
             };
             output.WriteLine(JsonSerializer.Serialize(document, json ? null : new JsonSerializerOptions { WriteIndented = true }));

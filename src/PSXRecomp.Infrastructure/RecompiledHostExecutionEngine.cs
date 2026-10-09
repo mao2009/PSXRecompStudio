@@ -62,6 +62,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public ulong? NativeRetiredInstructions => _bridge?.NativeRetiredInstructions;
 
+    /// <summary>
+    /// Synchronous host round trips the last run's native code made (Issue #732, measurement only): guest MMIO accesses
+    /// relayed to the device graph and guest-time reports. Null without the protocol.
+    /// </summary>
+    public (ulong MmioAccesses, ulong TimeReports)? HostRoundTrips =>
+        _bridge is null ? null : (_bridge.MmioAccesses, _bridge.TimeReports);
+
     private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
@@ -598,6 +605,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// <summary>The sum of every accepted guest-time report: instructions retired by compiled blocks (Issue #732).</summary>
         public ulong NativeRetiredInstructions { get; private set; }
 
+        public ulong MmioAccesses { get; private set; }
+
+        public ulong TimeReports { get; private set; }
+
         /// <summary>Why the host refused the artifact's guest-time report, or null when it did not (Issue #679).</summary>
         public string? RetiredFailureCode { get; private set; }
         public string? RetiredFailureMessage { get; private set; }
@@ -1026,6 +1037,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// </summary>
         private void HandleMmio(string fields, bool isWrite)
         {
+            MmioAccesses++;
             var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             uint value = 0;
             if (_devices is null
@@ -1079,6 +1091,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// </summary>
         private void HandleRetired(string fields)
         {
+            TimeReports++;
             if (_scheduler is null
                 || _deviceRam is null
                 || !ulong.TryParse(fields, NumberStyles.None, CultureInfo.InvariantCulture, out var retired)
