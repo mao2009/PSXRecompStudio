@@ -62,6 +62,16 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void GuestCycleCounter_IsIndependentOfAdvanceChunking()
+    {
+        _scheduler.Advance(0);
+        _scheduler.ElapsedCycles.Should().Be(0);
+        _scheduler.Advance(100);
+        _scheduler.Advance(200);
+        _scheduler.ElapsedCycles.Should().Be(300);
+    }
+
+    [Fact]
     public void Timer2Target_RaisesIrq6ExactlyAtTheTargetCycle()
     {
         ArmTimer2(target: 100, ModeIrqOnTarget);

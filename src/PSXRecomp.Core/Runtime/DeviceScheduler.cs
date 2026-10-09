@@ -95,9 +95,13 @@ public sealed class DeviceScheduler
         _cdRomDma = cdRomDma;
     }
 
+    /// <summary>Total guest cycles accepted by this scheduler, independent of report chunking.</summary>
+    public ulong ElapsedCycles { get; private set; }
+
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
     public void Advance(uint cycles)
     {
+        ElapsedCycles = checked(ElapsedCycles + cycles);
         if (cycles == 0)
         {
             return;

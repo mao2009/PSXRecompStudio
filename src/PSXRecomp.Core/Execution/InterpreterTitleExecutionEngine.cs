@@ -282,6 +282,22 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public (uint Sr, uint Cause, uint Epc, uint BadVAddr) Cop0Diagnostics =>
         (_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause), _core.GetCop0(Cop0Epc), _core.GetCop0(8));
 
+    /// <summary>HI/LO as the CPU holds them now (diagnostic only, Issue #732).</summary>
+    public (uint Hi, uint Lo) HiLoDiagnostics => (_core.Hi, _core.Lo);
+
+    /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
+    public PsxDeviceGraph DiagnosticDevices => _devices;
+
+    /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
+    public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
+
+    /// <summary>
+    /// Diagnostic stop (Issue #732): once set — typically by a <see cref="FetchObserver"/> — the step loop ends before
+    /// executing the instruction just fetched, exactly as if its budget had run out, and every later segment ends at its
+    /// first fetch. A probe's way to end a run at a chosen PC; never set by execution itself.
+    /// </summary>
+    public bool StopRequested { get; set; }
+
     /// <inheritdoc />
     public void Load(TitleExecutionRequest request)
     {
@@ -557,6 +573,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // handoff — a GTE/CpU fault could be classified Completed.
             _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
             FetchObserver?.Invoke(_core.Pc);
+            if (StopRequested)
+            {
+                break;
+            }
+
             if (_core.Step() != 0)
             {
                 termination = RecompilerIrTerminationReason.Exception;

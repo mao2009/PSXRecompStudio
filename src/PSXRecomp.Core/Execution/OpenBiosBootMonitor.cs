@@ -49,7 +49,8 @@ public sealed class OpenBiosBootMonitor
     /// <summary>Where OpenBIOS (like the retail BIOS) copies its shell and calls it.</summary>
     public const uint ShellLoadAddress = 0x80030000u;
 
-    private const uint ShellImageEnd = 0x800450C0u; // shell.bin load + bss in the pinned build; see docs
+    /// <summary>The end of the shell image (shell.bin load + bss in the pinned build; see docs).</summary>
+    public const uint ShellImageEnd = 0x800450C0u;
     private uint? _title;
     private const uint ExceptionVector = 0x80000080u;
     private const uint KernelRamStart = 0x00000500u, KernelRamEnd = 0x00010000u;
