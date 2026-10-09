@@ -230,6 +230,7 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error)
     {
+        var wall = Stopwatch.StartNew();
         var clock = Stopwatch.StartNew();
         var firmware = probe.Firmware;
         var codeWords = probe.CodeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(probe.CodeBytes / 4, (uint)firmware.Words.Count)).ToArray();
@@ -285,12 +286,13 @@ internal static class OpenBiosProbeCommand
         var budget = (uint)Math.Min((ulong)probe.Segments * probe.SegmentBudget, uint.MaxValue);
         try
         {
+            var measuredBuild = new MeasuredBuild(new GeneratedHostBuildService());
             clock.Restart();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
                 OpenBiosFirmware.ResetVector,
-                new GeneratedHostBuildService(),
+                measuredBuild,
                 directory,
                 biosRuntimeFactory: null,
                 // One fallback segment may run as long as the whole probe: the shell and a loaded executable legitimately
@@ -385,12 +387,16 @@ internal static class OpenBiosProbeCommand
                 {
                     buildMs = Math.Round(buildMs, 1),
                     compileMs = Math.Round(compileMs, 1),
+                    codegenMs = Math.Round(compileMs - measuredBuild.Milliseconds, 1),
+                    gccMs = Math.Round(measuredBuild.Milliseconds, 1),
                     referenceMs = Math.Round(referenceMs, 1),
                     runMs = Math.Round(runMs, 1),
                     fallbackMs = costs is null ? (double?)null : Math.Round(costs.FallbackMilliseconds, 1),
                     transferMs = costs is null ? (double?)null : Math.Round(costs.TransferMilliseconds, 1),
                     nativeAndHostMs = Math.Round(runMs - (costs?.FallbackMilliseconds ?? 0) - (costs?.TransferMilliseconds ?? 0), 1),
+                    totalMs = Math.Round(wall.Elapsed.TotalMilliseconds, 1),
                 },
+                aot = new { generatedCBytes = measuredBuild.SourceBytes, artifactBytes = measuredBuild.ArtifactBytes },
                 boundaries = boundaries.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value.Describe()),
                 differential = reference?.OrderBy(static b => b.Key).ToDictionary(
                     static b => Hex(b.Key),
@@ -404,16 +410,17 @@ internal static class OpenBiosProbeCommand
                     interpreter = referenceMilestones,
                 },
             };
-            var text = JsonSerializer.Serialize(document, json ? null : new JsonSerializerOptions { WriteIndented = true });
+            var node = JsonSerializer.SerializeToNode(document)!.AsObject();
+            node["consistency"] = Consistency(node);
             if (!json)
             {
-                foreach (var line in Summarize(JsonNode.Parse(text)!))
+                foreach (var line in Summarize(node))
                 {
                     output.WriteLine(line);
                 }
             }
 
-            output.WriteLine(text);
+            output.WriteLine(node.ToJsonString(json ? null : new JsonSerializerOptions { WriteIndented = true }));
             return kernelBooted ? 0 : 2;
         }
         finally
@@ -428,6 +435,47 @@ internal static class OpenBiosProbeCommand
         ShellEnteredAtFetch = null,
         FirstUnexpectedException = report.FirstUnexpectedException is { } e ? e with { AtFetch = 0 } : null,
     };
+
+    /// <summary>
+    /// Result consistency of a differential run: it passes only when at least one boundary was compared, every boundary
+    /// the interpreter reached was reached by the host with identical state, and both runs reached the same milestones.
+    /// Null without <c>--differential</c>.
+    /// </summary>
+    internal static JsonNode Consistency(JsonObject document)
+    {
+        if (document["differential"] is not JsonObject differential)
+        {
+            return new JsonObject { ["differentialPass"] = null };
+        }
+
+        var matched = differential.Select(static b => b.Value is JsonObject o && o["match"]!.GetValue<bool>()).ToArray();
+        var milestones = document["milestoneComparison"]?["match"]?.GetValue<bool>() ?? false;
+        return new JsonObject
+        {
+            ["differentialPass"] = matched.Length != 0 && matched.All(static m => m) && milestones,
+            ["boundariesCompared"] = matched.Length,
+            ["boundariesMatched"] = matched.Count(static m => m),
+            ["milestonesMatch"] = milestones,
+        };
+    }
+
+    /// <summary>Times the artifact's gcc build and records the generated C and binary sizes (Issue #732 measurement).</summary>
+    private sealed class MeasuredBuild(IGeneratedHostBuildService inner) : IGeneratedHostBuildService
+    {
+        public double Milliseconds { get; private set; }
+        public long SourceBytes { get; private set; }
+        public long? ArtifactBytes { get; private set; }
+
+        public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
+        {
+            var clock = Stopwatch.StartNew();
+            var result = inner.Build(request);
+            Milliseconds = clock.Elapsed.TotalMilliseconds;
+            SourceBytes = System.Text.Encoding.UTF8.GetByteCount(request.Source);
+            ArtifactBytes = result.Artifact is { } artifact ? new FileInfo(artifact.BinaryPath).Length : null;
+            return result;
+        }
+    }
 
     /// <summary>The compact human summary printed ahead of the indented document without <c>--json</c>.</summary>
     internal static IEnumerable<string> Summarize(JsonNode document)
@@ -444,6 +492,11 @@ internal static class OpenBiosProbeCommand
         foreach (var r in transitions["byReason"]!.AsArray())
         {
             yield return $"  reason {r!["reason"]}: {r["transitions"]} transitions ({Percent(r["transitionShare"])}), {r["retiredInstructions"]} retired ({Percent(r["retiredShare"])})";
+        }
+
+        foreach (var c in transitions["byAotClass"]!.AsArray())
+        {
+            yield return $"  aot-class {c!["aotClass"]}: {c["transitions"]} transitions ({Percent(c["transitionShare"])}), {c["retiredInstructions"]} retired ({Percent(c["retiredShare"])})";
         }
 
         foreach (var e in a["hotEntries"]!.AsArray().Take(5))
@@ -467,8 +520,10 @@ internal static class OpenBiosProbeCommand
         }
 
         var t = document["timings"]!;
-        yield return $"Timings ms: build {t["buildMs"]}, compile {t["compileMs"]}, reference {t["referenceMs"]}, run {t["runMs"]} " +
-                     $"(fallback {t["fallbackMs"]}, transfer {t["transferMs"]}, native+host {t["nativeAndHostMs"]})";
+        yield return $"Timings ms: analysis {t["buildMs"]}, codegen {t["codegenMs"]}, gcc {t["gccMs"]}, reference {t["referenceMs"]}, run {t["runMs"]} " +
+                     $"(fallback {t["fallbackMs"]}, transfer {t["transferMs"]}, native+host {t["nativeAndHostMs"]}), total {t["totalMs"]}";
+        yield return $"AOT code: {document["aot"]?["generatedCBytes"]} bytes of C, {document["aot"]?["artifactBytes"]} bytes of artifact; " +
+                     $"differentialPass={document["consistency"]?["differentialPass"]?.ToString() ?? "n/a"}";
     }
 
     private static string Percent(JsonNode? share) => share is null ? "-" : $"{share.GetValue<double>() * 100:F1}%";
