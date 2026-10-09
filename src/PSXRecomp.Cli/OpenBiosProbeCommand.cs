@@ -247,6 +247,7 @@ internal static class OpenBiosProbeCommand
 
         Dictionary<uint, ProbeGuestState>? reference = null;
         OpenBiosBootReport? referenceMilestones = null;
+        ProbeGuestState? referenceInterrupt = null, hostInterrupt = null;
         var referenceStopped = false;
         double referenceMs = 0;
         if (probe.Differential)
@@ -261,6 +262,8 @@ internal static class OpenBiosProbeCommand
             {
                 fetches++;
                 referenceMonitor.OnFetch(pc);
+                if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && referenceInterrupt is null)
+                    referenceInterrupt = ProbeGuestState.Capture(interpreter, pc, fetches);
                 if (boundaryPcs.Contains(pc) && !reference.ContainsKey(pc))
                 {
                     reference[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
@@ -321,6 +324,8 @@ internal static class OpenBiosProbeCommand
                     current = interpreter;
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
+                    if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
+                        hostInterrupt = ProbeGuestState.Capture(interpreter, pc, accounting.FallbackFetches);
                     var fetches = accounting.FallbackFetches;
                     if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
@@ -429,6 +434,9 @@ internal static class OpenBiosProbeCommand
                         ? ProbeGuestState.Compare(b.Value, host)
                         : (object)"not reached by the generated host (a PC inside a compiled block is not observable)"),
                 referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Order().Select(Hex).ToArray(),
+                firstInterrupt = new { interpreter = referenceInterrupt?.Describe(), host = hostInterrupt?.Describe() },
+                firstInterruptDifferential = referenceInterrupt is null ? null : hostInterrupt is null
+                    ? (object)"not reached by generated host" : ProbeGuestState.Compare(referenceInterrupt, hostInterrupt),
                 milestoneComparison = referenceMilestones is null ? null : new
                 {
                     match = WithoutFetchIndices(referenceMilestones) == WithoutFetchIndices(report),
@@ -467,13 +475,16 @@ internal static class OpenBiosProbeCommand
         var missing = required.Where(pc => !differential.ContainsKey(Hex(pc))).Select(Hex).ToArray();
         var milestones = document["milestoneComparison"]?["match"]?.GetValue<bool>() ?? false;
         var hostOnly = document["referenceBoundariesMissing"]?.AsArray().Count ?? 0;
+        var interrupt = document["firstInterruptDifferential"];
+        var interruptMatches = interrupt is null || interrupt is JsonObject irq && irq["match"]?.GetValue<bool>() == true;
         return new JsonObject
         {
-            ["differentialPass"] = differential.Count != 0 && matched == differential.Count && missing.Length == 0 && hostOnly == 0 && milestones,
+            ["differentialPass"] = differential.Count != 0 && matched == differential.Count && missing.Length == 0 && hostOnly == 0 && milestones && interruptMatches,
             ["boundariesCompared"] = differential.Count,
             ["boundariesMatched"] = matched,
             ["requiredBoundariesMissing"] = JsonSerializer.SerializeToNode(missing),
             ["milestonesMatch"] = milestones,
+            ["firstInterruptMatches"] = interruptMatches,
         };
     }
 

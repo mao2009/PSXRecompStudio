@@ -149,6 +149,23 @@ public sealed class OpenBiosProbeDifferentialTests
     }
 
     [Fact]
+    public void FirstInterruptMismatch_FailsEvenWhenEntryBoundariesMatch()
+    {
+        var doc = new JsonObject
+        {
+            ["differential"] = new JsonObject
+            {
+                ["0x80030000"] = new JsonObject { ["match"] = true },
+                ["0x80010000"] = new JsonObject { ["match"] = true },
+            },
+            ["milestoneComparison"] = new JsonObject { ["match"] = true },
+            ["firstInterruptDifferential"] = new JsonObject { ["match"] = false },
+        };
+        var verdict = OpenBiosProbeCommand.Consistency(doc, new HashSet<uint> { 0x80030000, 0x80010000 }, null);
+        Assert.False(verdict["differentialPass"]!.GetValue<bool>());
+    }
+
+    [Fact]
     public void ScratchpadAndGuestClockDifferencesFailParity()
     {
         var baseline = RunToBoundary().State;
