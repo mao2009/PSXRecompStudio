@@ -246,7 +246,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // artifact relays to (Issue #678). The BIOS runtime seam travels through
         // its bus, so guest RAM/mirror/device semantics all come from one routing
         // point while the interpreter drives the same native core.
-        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots, disc: disc);
+        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots, disc: disc, guestFirmware: allowRuntimeRamExecution);
         _ownsDevices = sharedDevices is null;
         if (sharedScheduler is not null)
         {

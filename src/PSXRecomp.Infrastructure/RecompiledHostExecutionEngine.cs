@@ -659,7 +659,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 // native RAM is never used for it, and a device that moves data into RAM
                 // (CD-ROM DMA3) does so through _deviceRam, i.e. into artifact_ram (Issue #679).
                 _deviceRam = new ArtifactDeviceRam(ReadPhysicalByte, WritePhysicalByte);
-                _devices = new PsxDeviceGraph(_deviceRam, _memoryCardSlots, _disc);
+                _devices = new PsxDeviceGraph(_deviceRam, _memoryCardSlots, _disc, _guestFirmware);
                 _configureDevices?.Invoke(_devices);
                 // The same wiring the interpreter engine builds (InterpreterTitleExecutionEngine.Load):
                 // device time, order and interrupt delivery to the controller are the existing
