@@ -319,15 +319,16 @@ its result directly.
 |---|---|---|
 | `psx_dma_reset` | `PSXDmaState(void)` | Power-on state: all 7 channels zero, DPCR `0x07654321`, DICR zero. |
 | `psx_dma_read_register` | `uint32_t(PSXDmaState, uint32_t address)` | Per-channel MADR/BCR/CHCR at base + `channel * 0x10` + 0/4/8; DPCR as stored; DICR with derived bit 31; else 0. |
-| `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced (a CHCR write also resets that channel's `remaining`); DPCR replaced; DICR flags (bits 0–6) write-1-to-clear and force-IRQ/master-enable/enables (bits 15/23/24–30) replaced; other addresses ignored. |
+| `psx_dma_write_register` | `PSXDmaState(PSXDmaState, uint32_t address, uint32_t value)` | Per-channel MADR/BCR/CHCR replaced (a CHCR write also resets that channel's `remaining`); DPCR replaced; DICR flags (bits 24–30) write-1-to-clear and bits 0–5/force-IRQ/enables/master-enable (bits 0–5/15/16–22/23) replaced; other addresses ignored. |
 | `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
-| `psx_dma_tick` | `PSXDmaState(PSXDmaState, uint32_t cycles)` | Each started channel (CHCR bit 24, its DPCR enable bit `3 + 4*ch`, and bit 28 for sync mode 0) counts down one cycle per word (sync 0: BCR[15:0]; sync 1: BCR[15:0] × BCR[31:16]; zero field = 0x10000; sync 2/3: one word). On completion CHCR bits 24/28 clear and DICR flag `ch` is set when DICR enable `24 + ch` is set. Excess cycles are discarded. |
+| `psx_dma_tick` | `PSXDmaState(PSXDmaState, uint32_t cycles)` | Each started channel (CHCR bit 24, its DPCR enable bit `3 + 4*ch`, and bit 28 for sync mode 0) counts down one cycle per word (sync 0: BCR[15:0]; sync 1: BCR[15:0] × BCR[31:16]; zero field = 0x10000; sync 2/3: one word). On completion CHCR bits 24/28 clear and DICR flag `24 + ch` is set when DICR enable `16 + ch` is set. Excess cycles are discarded. |
 | `psx_dma_tick_excluding_channel` | `PSXDmaState(PSXDmaState, uint32_t cycles, uint32_t excluded_channel)` | As `psx_dma_tick`, except `excluded_channel`'s CHCR, `remaining`, and DICR flag never change, whatever its started state (#587). |
 | `psx_dma_complete_channel` | `PSXDmaState(PSXDmaState, uint32_t channel)` | If `channel` is started, completes it now as `psx_dma_tick` would (CHCR bits 24/28 clear, `remaining` zeroed, DICR flag when enabled). No other channel changes; an unstarted or out-of-range channel is a no-op (#587). |
 
-The DICR bit layout (flags 0–6, enables 24–30) is the one migrated from the C++
-controller; psx-spx places enables at 16–22 and flags at 24–30. Reconciling it
-is a separate change, since it alters guest-visible register semantics.
+The DICR bit layout is psx-spx's (Issue #732): bits 0–5 read/write, bit 15 force
+IRQ, enables 16–22, master enable 23, flags 24–30, status 31. The C++ controller
+it was migrated from had flags at 0–6 and enables at 24–30, so a guest driver's
+`DICR |= 0x880000` (OpenBIOS, libcd) enabled nothing and never saw its flag.
 
 #587 also added `PSXCore_SetCdRomMmioCallbacks(PSXCore*, void* context,
 PSXCdRomMmioRead8 read8, PSXCdRomMmioWrite8 write8)` with the callback types

@@ -12,8 +12,8 @@ public sealed class CdRomDmaTransferTests : IDisposable
     private const uint StartBusy = 1u << 24;
     private const uint StartTrigger = 1u << 28;
     private const uint DmaMasterEnable = 1u << 23;
-    private const uint Dma3InterruptEnable = 1u << (24 + CdRomDmaTransfer.Channel);
-    private const uint Dma3InterruptFlag = 1u << CdRomDmaTransfer.Channel;
+    private const uint Dma3InterruptEnable = 1u << (16 + CdRomDmaTransfer.Channel);
+    private const uint Dma3InterruptFlag = 1u << (24 + CdRomDmaTransfer.Channel);
     private const uint DmaInterruptStatus = 1u << 31;
     private const uint Dma3DpcrEnable = 1u << (3 + 4 * CdRomDmaTransfer.Channel);
 
@@ -81,8 +81,8 @@ public sealed class CdRomDmaTransferTests : IDisposable
         // must not age, complete, or raise its own DICR flag/IRQ3 either.
         const int unrelatedChannel = 6;
         const uint unrelatedDpcrEnable = 1u << (3 + 4 * unrelatedChannel);
-        const uint unrelatedDicrEnable = 1u << (24 + unrelatedChannel);
-        const uint unrelatedDicrFlag = 1u << unrelatedChannel;
+        const uint unrelatedDicrEnable = 1u << (16 + unrelatedChannel);
+        const uint unrelatedDicrFlag = 1u << (24 + unrelatedChannel);
 
         var payload = new byte[] { 1, 2, 3, 4 };
         PrepareDataReady(payload);
