@@ -14,12 +14,17 @@
   No BIOS, commercial executable, ROM or disc image is read or written. The output goes to
   a temporary directory by default and is never committed.
 
+.PARAMETER OpenBiosCompatible
+  Pad the EXE text to 2048 bytes (required by the firmware CD driver) and append a stable loop.
+  Omitting this switch preserves the historical hash for differential baseline comparisons.
+
 .PARAMETER WorkDir
   Output directory (default: a temp directory). Nothing is written into the repository.
 #>
 [CmdletBinding()]
 param(
-    [string]$WorkDir = (Join-Path ([IO.Path]::GetTempPath()) 'psxrecomp-synthetic-disc')
+    [string]$WorkDir = (Join-Path ([IO.Path]::GetTempPath()) 'psxrecomp-synthetic-disc'),
+    [switch]$OpenBiosCompatible
 )
 $ErrorActionPreference = 'Stop'
 
@@ -35,6 +40,8 @@ $BootPath = 'cdrom:\PSXRECOMP.EXE;1'
 $ExeIsoName = 'PSXRECOMP.EXE;1'
 $ExpectedSha256 = '4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27'
 
+if ($OpenBiosCompatible) { $ExpectedSha256 = 'bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03' }
+
 # --- 1. the boot PS-X EXE: the checked BiosPutCharMarker fixture, built from first principles ----
 function Imm([int]$op, [int]$rt, [int]$imm) { [uint32](($op -shl 26) -bor ($rt -shl 16) -bor $imm) }
 $words = @(
@@ -44,9 +51,16 @@ $words = @(
     [uint32]0,                                           # nop  (delay slot)
     (Imm 0x0D 17 0x7777)                                 # ori  $s1,$zero,0x7777 (marker)
 )
-$exe = New-Object byte[] (0x800 + 4 * $words.Count)
+if ($OpenBiosCompatible) {
+    # OpenBIOS dev_cd_read rejects a transfer whose size is not a multiple of 2048.
+    # A stable loop follows the marker so execution never falls through the payload.
+    $words += [uint32]0x1000FFFF, [uint32]0
+}
+$textSize = 4 * $words.Count
+if ($OpenBiosCompatible) { $textSize = [int]([Math]::Ceiling($textSize / 2048) * 2048) }
+$exe = New-Object byte[] (0x800 + $textSize)
 [Text.Encoding]::ASCII.GetBytes('PS-X EXE').CopyTo($exe, 0)
-foreach ($field in @(@(0x10, 0x80010000L), @(0x18, 0x80010000L), @(0x1C, (4 * $words.Count)), @(0x30, 0x801FFF00L))) {
+foreach ($field in @(@(0x10, 0x80010000L), @(0x18, 0x80010000L), @(0x1C, $textSize), @(0x30, 0x801FFF00L))) {
     [BitConverter]::GetBytes([uint32]$field[1]).CopyTo($exe, [int]$field[0])
 }
 for ($i = 0; $i -lt $words.Count; $i++) { [BitConverter]::GetBytes([uint32]$words[$i]).CopyTo($exe, 0x800 + 4 * $i) }
@@ -124,7 +138,7 @@ for ($lba = 0; $lba -lt $cursor; $lba++) {
 
 # --- 4. write and verify the checked contract ---
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
-$path = Join-Path $WorkDir 'synthetic-disc.bin'
+$path = Join-Path $WorkDir $(if ($OpenBiosCompatible) { 'synthetic-disc-openbios.bin' } else { 'synthetic-disc.bin' })
 [IO.File]::WriteAllBytes($path, $disc)
 $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 Write-Host "Generated $path ($($disc.Length) bytes, SHA-256 $sha)"
