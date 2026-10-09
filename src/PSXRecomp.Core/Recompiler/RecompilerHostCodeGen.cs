@@ -784,21 +784,14 @@ public static class RecompilerHostCodeGen
         // units. Known generated blocks and host-claimed transfers both spend one
         // unit. The guard therefore runs before either callback can mutate guest
         // state; budget == 0 executes nothing.
+        // Issue #732: one switch on the PC (a jump table or a binary search even at -O0), not a chain of comparisons
+        // whose cost per dispatch grows with the block count — a firmware ROM has thousands of blocks.
+        sb.AppendLine(IndentUnit + IndentUnit + $"switch ({StateParam}->{PcField}) {{");
         for (var i = 0; i < program.Blocks.Count; i++)
         {
             var functionName = $"recompiler_block_0x{program.Blocks[i].EntryPc:X8}";
-            var cond = i == 0
-                ? $"{StateParam}->{PcField} == {FormatImmediate(program.Blocks[i].EntryPc)}"
-                : $"else if ({StateParam}->{PcField} == {FormatImmediate(program.Blocks[i].EntryPc)})";
             var bodyLine = $"{StateParam}->{TerminationField} = {functionName}({StateParam});";
-            if (i == 0)
-            {
-                sb.AppendLine(IndentUnit + IndentUnit + $"if ({cond}) {{");
-            }
-            else
-            {
-                sb.AppendLine(IndentUnit + IndentUnit + cond + " {");
-            }
+            sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(program.Blocks[i].EntryPc)}: {{");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
             EmitBudgetExceededReturn(sb, 4);
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
@@ -812,6 +805,7 @@ public static class RecompilerHostCodeGen
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"retired = {program.Blocks[i].RetiredInstructionCount}u;");
             sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + bodyLine);
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "break;");
             sb.AppendLine(IndentUnit + IndentUnit + "}");
         }
 
@@ -819,7 +813,7 @@ public static class RecompilerHostCodeGen
         // normal fall-off / unsupported-entry distinction can be resolved without
         // spending budget. A real host callback may mutate state and therefore must
         // not be invoked once the strict dispatch budget is exhausted.
-        sb.AppendLine(IndentUnit + IndentUnit + "else {");
+        sb.AppendLine(IndentUnit + IndentUnit + "default: {");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if ({StateParam}->{HostTransferField} == 0) {{");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
@@ -841,6 +835,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
+        sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "break;");
+        sb.AppendLine(IndentUnit + IndentUnit + "}");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
         // Issue #732: in firmware mode a SYSCALL/BREAK exit enters the guest's own exception vector, exactly as
