@@ -88,6 +88,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public Action<InterpreterTitleExecutionEngine, uint>? FallbackFetchObserver { get; set; }
 
+    /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
+    public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
+
     private IReadOnlyList<RecompilerInitialMemoryItem> _initialMemory =
         Array.Empty<RecompilerInitialMemoryItem>();
 
@@ -274,7 +277,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver);
         var arguments = new List<string>(4) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -556,6 +559,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly IReadOnlySet<uint> _blockEntryPcs;
         private readonly bool _guestFirmware;
         private readonly Action<InterpreterTitleExecutionEngine, uint>? _fallbackFetchObserver;
+        private readonly Action<MixedFallbackTransition>? _fallbackTransitionObserver;
         private readonly ICdSectorSource? _disc;
 
         private TextReader? _fromArtifact;
@@ -622,8 +626,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             MemoryCardSlotConfiguration? memoryCardSlots,
             bool guestFirmware,
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
-            ICdSectorSource? disc)
+            ICdSectorSource? disc,
+            Action<MixedFallbackTransition>? fallbackTransitionObserver)
         {
+            _fallbackTransitionObserver = fallbackTransitionObserver;
             _disc = disc;
             _guestFirmware = guestFirmware;
             _fallbackFetchObserver = fallbackFetchObserver;
@@ -668,7 +674,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver);
                 }
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.

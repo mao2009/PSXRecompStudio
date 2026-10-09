@@ -118,6 +118,20 @@ public sealed record MixedFallbackEvidence(
     ulong PagesToArtifact,
     IReadOnlyList<MixedFallbackTarget> Targets);
 
+/// <summary>
+/// One artifact-to-interpreter handoff as it ended (Issue #732): what a measurement layer needs to classify why it
+/// happened and what it cost. Observation only; reported once per transition, after its segment ran.
+/// </summary>
+/// <param name="EntryPc">The PC the artifact had no block for.</param>
+/// <param name="Indirect">The transfer came from JR/JALR (its target was not known when the image was built).</param>
+/// <param name="Status">How the segment ended.</param>
+/// <param name="ExitPc">The PC the segment ended at: the compiled block entry it returned to, or where it stopped.</param>
+/// <param name="RetiredInstructions">Guest instructions the interpreter retired in the segment.</param>
+/// <param name="DiagnosticCode">The stop's code; null when the segment returned.</param>
+[Domain]
+public sealed record MixedFallbackTransition(
+    uint EntryPc, bool Indirect, FallbackSegmentStatus Status, uint ExitPc, ulong RetiredInstructions, string? DiagnosticCode);
+
 /// <summary>Wall-clock costs of one run's mixed execution. Measurement only: never part of a deterministic document.</summary>
 /// <param name="TransferMilliseconds">Time spent in the RAM/CPU copy-sync protocol (both directions, including pipe I/O).</param>
 /// <param name="FallbackMilliseconds">Time spent executing interpreter segments.</param>
