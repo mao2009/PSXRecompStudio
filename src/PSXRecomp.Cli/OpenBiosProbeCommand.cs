@@ -140,7 +140,7 @@ internal static class OpenBiosProbeCommand
                 {
                     captured = new
                     {
-                        pc = $"0x{pc:X8}",
+                        pc = $"0x{pc:X8}", word = $"0x{observed.ReadGuestWord(pc):X8}",
                         gpr = Enumerable.Range(0, 32).Select(r => $"0x{observed.ReadGuestGpr(r):X8}").ToArray(),
                         lastTransfers = observed.RecentTrace.Transfers.TakeLast(8).Select(t => $"0x{t.From.Pc:X8}->0x{t.To:X8}").ToArray()
                     };
