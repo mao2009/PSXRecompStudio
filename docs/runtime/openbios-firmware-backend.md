@@ -98,6 +98,40 @@ constant; no XA/CD-DA audio; the native DMA model's DICR bit layout differs
 from psx-spx (enables/flags swapped), so the kernel's DMA3 IRQ bookkeeping does
 not see its flag.
 
+### Generated host (`--engine generated-host`)
+
+`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--json]`
+
+The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =
+37160 bytes for the pinned build) is built by
+`ReachableProgramBuilder.BuildFirmwareImage` from the reset vector plus the
+explicit `--roots` (one hex PC per line; for example the ELF's `T`/`t` symbols
+in the ROM code range, extracted with `nm` — the CLI does not parse ELF),
+compiled with `gcc` and run by `RecompiledHostExecutionEngine` in firmware mode
+(see [host codegen](../development/recompiler-host-codegen.md)). Kernel code
+copied to RAM, the `0x80`/A0/B0/C0 vectors, the shell and the loaded executable
+have no block and run in the mixed-execution interpreter over the same device
+graph; the report separates `nativeInstructions` from `fallbackInstructions`.
+Milestones come from the fallback interpreter's fetches (native blocks are not
+observed per instruction; the reset vector is the build's first dispatch unit).
+`--differential` first runs the interpreter backend and compares both at the
+first fetch of `0x80030000` (shell) and `0x80010000` (the executable entry):
+GPRs, SR/CAUSE/EPC/BadVAddr and all 2 MiB of RAM (SHA-256, first mismatching
+address, mismatching pages).
+
+Observed with the pinned build and the synthetic disc: the generated host boots
+the kernel, enters the shell and reaches `0x80010000` with the interpreter's
+milestones (111 INT and 9 SYSCALL vector entries). 9228 of 9290 code words are
+native; about 13.8M instructions retire natively and 178M in the fallback
+before the executable entry, over 712k artifact/interpreter transitions (mostly
+the shell's B0 calls). The page-granular RAM copy-sync costs about 0.9 ms per
+transition and dominates the ~15 minute run. `--differential` reports an
+exact match at both boundaries: identical GPRs, SR/CAUSE/EPC/BadVAddr and RAM
+SHA-256 (no differing range). The executable's final `b .` loop runs in the
+fallback until the budget, which ends the run as
+`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`; that is the probe's end, not a failure
+of the boot.
+
 The existing `psxrecomp run` pipeline still uses its legacy HLE path until the
 OpenBIOS firmware can actually load a game via the same guest memory and handle
 all required hardware and generated-host transitions. **Do not change the default

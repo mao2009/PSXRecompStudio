@@ -108,6 +108,27 @@ copies at run time, a KSEG0 ROM alias, any indirect target not given as a root â
 reaches `host_transfer` and, with mixed execution, the interpreter fallback
 (Issue #693), which counts it as fallback, never as native.
 
+Running a firmware (`RecompiledHostExecutionEngine(..., guestFirmware: true)`):
+
+- An image whose load address translates into the BIOS ROM window
+  (physical `0x1FC00000`, 512 KiB) is loaded into the artifact's own
+  read-only `artifact_rom`. Loads through KUSEG/KSEG0/KSEG1 are served there,
+  stores are dropped (mask ROM; the native interpreter's memory still accepts
+  them â€” a known divergence that OpenBIOS never exercises). Without a ROM image
+  the window is relayed and refused exactly as before (Issue #678).
+- No BIOS HLE Runtime may be attached; the Runtime's BIOS vector and kernel
+  exception-handler routes are skipped. Every PC without a block (direct or
+  indirect, in or out of the image) goes to the fallback interpreter, which is
+  attached with the ROM written into its core and permits RAM/ROM execution.
+  It returns at any block entry with a clean pipeline, also from inside a guest
+  exception handler (a firmware SYSCALL handler returns to `EPC + 4`).
+- `NativeRetiredInstructions` (the sum of `RHOST_RETIRED` reports) and
+  `MixedFallbackEvidence.FallbackInstructions` are the native/fallback split.
+
+`recompiler_dispatch` selects the block with one `switch (state->pc)`; a
+default case is the unknown-PC boundary. A chain of comparisons cost time
+proportional to the block count per dispatch (7449 blocks for OpenBIOS).
+
 ### Dispatch function
 
 ```c
@@ -115,7 +136,7 @@ int32_t recompiler_dispatch(RecompilerState* state, uint32_t budget);
 ```
 
 A budgeted sequential dispatcher. It selects the block function whose entry PC
-matches `state->pc`, executes it, stops on a non-Success termination, and
+matches `state->pc` (a `switch`), executes it, stops on a non-Success termination, and
 refuses to retire more than `budget` instructions (reporting
 `RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED`). When a PC matches no generated
 block, the dispatcher first calls the optional `state->host_transfer` hook. If

@@ -325,6 +325,22 @@ static int artifact_ram_offset(uint32_t address, uint32_t width, uint32_t* offse
     return 1;
 }
 
+/* BIOS ROM window (Issue #732): physical 0x1FC00000, 512 KiB, reached through KUSEG/KSEG0/KSEG1 like RAM. A firmware
+   image loaded there is artifact-local and read-only: loads are served here, stores are dropped (the ROM is not
+   writable), and neither crosses the host protocol. Without a ROM image the window is not served here: an access is
+   relayed and refused like any address the Runtime does not model (Issue #678), never answered with 0. */
+#define PSX_ROM_BASE 0x1FC00000u
+#define PSX_ROM_SIZE (512u * 1024u)
+static uint8_t artifact_rom[PSX_ROM_SIZE];
+static int artifact_rom_loaded = 0;
+
+static int artifact_rom_offset(uint32_t address, uint32_t width, uint32_t* offset) {
+    uint32_t pa = artifact_translate(address);
+    if (!artifact_rom_loaded || pa < PSX_ROM_BASE || pa - PSX_ROM_BASE > PSX_ROM_SIZE - width) return 0;
+    *offset = pa - PSX_ROM_BASE;
+    return 1;
+}
+
 /* Guest memory split (Issue #678): RAM is artifact-local and never crosses the
    host protocol; everything else is a device access the parent's Runtime owns.
    The artifact_ram_* accessors are RAM-only and return 0 / drop outside it, which
@@ -436,6 +452,7 @@ uint8_t recompiler_read_mem8(void* core, uint32_t address) {
     uint32_t pa;
     if (artifact_ram_offset(address, 1u, &pa)) return artifact_ram[pa];
     if (artifact_in_ram_window(address)) return 0;
+    if (artifact_rom_offset(address, 1u, &pa)) return artifact_rom[pa];
     return (uint8_t)artifact_mmio_access(""@MMIO_READ@"", 1u, address, 0, 0u);
 }
 
@@ -446,6 +463,7 @@ uint16_t recompiler_read_mem16(void* core, uint32_t address) {
         return (uint16_t)(artifact_ram[pa] | ((uint16_t)artifact_ram[pa + 1] << 8));
     }
     if (artifact_in_ram_window(address)) return 0;
+    if (artifact_rom_offset(address, 2u, &pa)) return (uint16_t)(artifact_rom[pa] | ((uint16_t)artifact_rom[pa + 1] << 8));
     return (uint16_t)artifact_mmio_access(""@MMIO_READ@"", 2u, address, 0, 0u);
 }
 
@@ -459,6 +477,12 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
             | ((uint32_t)artifact_ram[pa + 3] << 24));
     }
     if (artifact_in_ram_window(address)) return 0;
+    if (artifact_rom_offset(address, 4u, &pa)) {
+        return (uint32_t)(artifact_rom[pa]
+            | ((uint32_t)artifact_rom[pa + 1] << 8)
+            | ((uint32_t)artifact_rom[pa + 2] << 16)
+            | ((uint32_t)artifact_rom[pa + 3] << 24));
+    }
     return artifact_mmio_access(""@MMIO_READ@"", 4u, address, 0, 0u);
 }
 
@@ -466,7 +490,7 @@ void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;
     uint32_t pa;
     if (artifact_ram_offset(address, 1u, &pa)) { artifact_ram[pa] = value; return; }
-    if (artifact_in_ram_window(address)) return;
+    if (artifact_in_ram_window(address) || artifact_rom_offset(address, 1u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 1u, address, 1, (uint32_t)value);
 }
 
@@ -478,7 +502,7 @@ void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
         artifact_ram[pa + 1] = (uint8_t)(value >> 8);
         return;
     }
-    if (artifact_in_ram_window(address)) return;
+    if (artifact_in_ram_window(address) || artifact_rom_offset(address, 2u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 2u, address, 1, (uint32_t)value);
 }
 
@@ -492,7 +516,7 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
         artifact_ram[pa + 3] = (uint8_t)(value >> 24);
         return;
     }
-    if (artifact_in_ram_window(address)) return;
+    if (artifact_in_ram_window(address) || artifact_rom_offset(address, 4u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 4u, address, 1, value);
 }
 
@@ -785,9 +809,15 @@ int main(int argc, char** argv) {
     unsigned long image_len = u;
     /* The whole image must sit inside the mapped low-8-MiB window (bytes past it
        are unmapped and cannot be represented); within it, bytes alias into the
-       2 MiB RAM exactly as PSXMemory does, including across the 2 MiB seam. */
-    if (image_len == 0ul || image_pa >= PSX_RAM_MIRROR_END
-        || (unsigned long long)image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa)) return 95; /* InvalidImage */
+       2 MiB RAM exactly as PSXMemory does, including across the 2 MiB seam.
+       Or (Issue #732) it is a firmware image wholly inside the BIOS ROM window. */
+    int image_in_rom = image_pa >= PSX_ROM_BASE && image_pa - PSX_ROM_BASE < PSX_ROM_SIZE;
+    if (image_len == 0ul
+        || (image_in_rom && (unsigned long long)image_len > (unsigned long long)(PSX_ROM_SIZE - (image_pa - PSX_ROM_BASE))))
+        return 95; /* InvalidImage */
+    artifact_rom_loaded = image_in_rom;
+    if (!image_in_rom && (image_pa >= PSX_RAM_MIRROR_END
+        || (unsigned long long)image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa))) return 95; /* InvalidImage */
 
     state.gpr[0] = 0;
     state.core = (void*)0;
@@ -804,7 +834,8 @@ int main(int argc, char** argv) {
     for (image_i = 0; image_i < image_len; image_i++) {
         int image_byte = fgetc(image);
         if (image_byte == EOF) { fclose(image); return 95; } /* InvalidImage: truncated */
-        artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
+        if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + (uint32_t)image_i] = (uint8_t)image_byte;
+        else artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
     }
     int image_extra = fgetc(image);
     fclose(image);
