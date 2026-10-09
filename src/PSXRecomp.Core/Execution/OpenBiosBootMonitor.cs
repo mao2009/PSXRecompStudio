@@ -15,8 +15,15 @@ public sealed record OpenBiosBootReport(
     bool ShellEntered,
     ulong? ShellEnteredAtFetch,
     ulong InterruptEntries,
-    ulong SyscallEntries)
+    ulong SyscallEntries,
+    uint? TitleEntryPc = null)
 {
+    /// <summary>
+    /// The firmware transferred control to user RAM outside the shell image after the shell was entered: a
+    /// loaded executable is running. A title loaded over the shell's own range is not detected (reported false).
+    /// </summary>
+    public bool TitleStarted => TitleEntryPc is not null;
+
     /// <summary>
     /// Kernel boot: the ROM reset vector ran, the kernel code expanded to low RAM and ran, the 0x80/A0/B0/C0
     /// vectors were installed by that code, a guest exception was delivered to the 0x80 vector, and the
@@ -37,6 +44,8 @@ public sealed class OpenBiosBootMonitor
     /// <summary>Where OpenBIOS (like the retail BIOS) copies its shell and calls it.</summary>
     public const uint ShellLoadAddress = 0x80030000u;
 
+    private const uint ShellImageEnd = 0x800450C0u; // shell.bin load + bss in the pinned build; see docs
+    private uint? _title;
     private const uint ExceptionVector = 0x80000080u;
     private const uint KernelRamStart = 0x00000500u, KernelRamEnd = 0x00010000u;
     private static readonly uint[] VectorAddresses = [0x80u, 0xA0u, 0xB0u, 0xC0u];
@@ -65,6 +74,10 @@ public sealed class OpenBiosBootMonitor
                 }
             }
         }
+        else if (_shell && _title is null && pc is >= 0x80010000u and < ShellLoadAddress || _shell && _title is null && pc >= ShellImageEnd && pc < 0x80200000u)
+        {
+            _title = pc;
+        }
         else if (pc == ShellLoadAddress && !_shell) { _shell = true; _shellAt = _fetches; }
         else if (!_ram && (pc & 0x1FFFFFFFu) is >= KernelRamStart and < KernelRamEnd) _ram = true;
     }
@@ -73,7 +86,7 @@ public sealed class OpenBiosBootMonitor
     public OpenBiosBootReport Evaluate(Func<uint, uint> readWord)
     {
         ArgumentNullException.ThrowIfNull(readWord);
-        return new OpenBiosBootReport(_reset, _ram, VectorsInstalled(readWord), _exception, _shell, _shell ? _shellAt : null, _interrupts, _syscalls);
+        return new OpenBiosBootReport(_reset, _ram, VectorsInstalled(readWord), _exception, _shell, _shell ? _shellAt : null, _interrupts, _syscalls, _title);
     }
 
     // Each vector slot holds a short stub that ends in a register jump (SPECIAL JR) within its four words.
