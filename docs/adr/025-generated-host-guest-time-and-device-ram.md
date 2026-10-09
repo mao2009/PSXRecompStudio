@@ -97,6 +97,102 @@ This supersedes "no second RAM and no copy/sync" **for the duration of one fallb
 
 **Evidence.** Counts only, deterministic: transitions, returns, instructions retired by the interpreter, pages copied each way, and per target `(entries, instructions, last return PC)`. Timings are measurement-only and never enter a canonical document.
 
+## Amendment (Issue #744): exact asynchronous deadlines and retirement boundaries
+
+This amendment supersedes the original synchronization batching-equivalence claim,
+its permitted late device delivery, fused-MMIO timing allowance, and the #680
+statement that every dispatch boundary has a current IRQ line. It retains the
+existing modeled guest clock (one CPU cycle per retired instruction), scheduler,
+CPU exception rules, device RAM ownership, and AOT-only policy. It does not claim
+physical PS1 cycle accuracy.
+
+### Deadline ownership and delivery
+
+`DeviceScheduler.NextEventCycles` is a positive conservative distance from its
+current clock to the earliest possible timed effect. Devices own the calculation:
+Rust timer/DMA queries inspect their existing state without register-read side
+effects; the CD-ROM query includes sectors, response due times and acknowledge
+spacing; the scheduler adds VBlank and delivery of pending DMA, CD-ROM, SIO or GPU
+edges. A ready CD-ROM DMA burst requires the following scheduler advance because
+DMA precedes CD-ROM in the existing stage order. A deadline may precede an effect,
+but must never follow it. Unknown CD-ROM implementations conservatively return
+one cycle. No duplicate register or event model is introduced.
+
+The host sends `T <positive instruction credit>` before the retired-report line
+ack and before a host-transfer decision, including initialization and fallback
+return. Initialization also sends the existing `L` IRQ level, including a line
+already pending before the first retirement. The artifact stores the corresponding absolute retired-instruction
+deadline. It reports as soon as that deadline is reached, before another guest
+instruction executes. The old 1024 limit remains an additional bounded reporting
+cap; reducing it is neither the fix nor a correctness prerequisite. MMIO accesses
+flush preceding retirements and flush their own retirement, so additions,
+rescheduling, cancellation and read side effects refresh the next deadline.
+
+The host rejects a report exceeding its issued credit before advancing devices
+(`ARTIFACT_EVENT_DEADLINE_EXCEEDED`). `AdvanceExact` also splits host-driven
+blocking-call waits at deadlines; the interpreter uses the same method for those
+waits. Ordinary interpreter retirement already advances one cycle. The legacy
+`Advance` API retains its explicit single-batch semantics for direct device tests.
+
+A native batch is allowed only while no device deadline occurs inside it. The existing
+scheduler stage order is preserved at every effect-producing retirement. IRQ
+source assertion at a scheduler advance and CPU acceptance at the following
+eligible fetch boundary are distinct events.
+
+### Fused instructions and exception acceptance
+
+Lowering records IR operation offsets for interior retirements. A branch retires
+before its delay-slot operations, so MMIO in the slot observes the branch's elapsed
+time. Every successful instruction is charged once, including interior
+retirements; a faulting instruction is not charged. This also preserves preceding
+retirements when a later fused instruction traps.
+
+Hardware INT remains gated by IEc and IM2. It cannot be accepted between a branch
+and its delay slot. A pending load is different: the native CPU permits INT before
+the observer, commits the pending load in `FlushPipeline`, then records EPC at the
+observer PC with BD clear. A fused load records that commit explicitly and applies
+it only for an accepted INT; the observer and any fused branch/slot do not execute.
+The exception itself retires no instruction. Ordinary observer cancellation and
+load-delay semantics remain unchanged when INT is not accepted.
+
+The host-owned scheduler remains the single clock during interpreter fallback.
+Before handoff, native retirements are synchronized; after a clean interpreter
+return, the host refreshes credit relative to the artifact's native retired total.
+Fallback instructions are never charged again by the artifact.
+
+### Protocol, cost, and failure behavior
+
+`T` is an extension to existing reply phases; it does not add a request or a
+round trip. Its payload is bounded and positive; malformed credits fail the
+existing protocol rather than silently clamping a deadline. Updated host and
+artifact must be paired for the exact-time contract: production passes
+`--exact-device-time`, requiring a fresh credit in each reply phase; missing
+credits fail closed. Legacy scripted peers retain
+the earlier reporting behavior; they cannot establish strict parity. An older
+artifact rejects the new command, failing closed. Existing RAM requests and IRQ
+line acknowledgements retain their meanings.
+
+Artifact checks are local integer comparisons per retirement. IPC occurs at
+existing device observations and actual conservative deadlines, without
+mandatory instruction-by-instruction transport. The strict dispatch budget still
+prevents execution/exception acceptance after exhaustion. Scheduler/protocol
+failures retain existing diagnostics and terminate instead of accepting stale time.
+
+### Alternatives
+
+- Smaller periodic reporting alone: rejected; it leaves phase-dependent timing
+  errors and increases IPC without defining a correct acceptance point.
+- Host credit alone at dispatch-unit boundaries: rejected; a two/three-instruction
+  fused unit could overshoot a deadline and its MMIO would still see stale time.
+- Splitting all generated blocks or falling back at every deadline: rejected as
+  unnecessary here; explicit interior retirement points retain native execution
+  and the existing delay semantics without repeated RAM copy handoffs.
+- Fixed timer offsets or OpenBIOS PCs: rejected; they cannot represent rescheduled
+  events, interrupt masking, or common-runtime semantics.
+
+Regression evidence and reproducible OpenBIOS measurements are recorded in #744
+and its stacked PR. These operational measurements are not architecture constants.
+
 ## Related
 
 - ADR-014, ADR-016, #442 (`DeviceScheduler`), #587 (CD-ROM DMA3), #678, #680

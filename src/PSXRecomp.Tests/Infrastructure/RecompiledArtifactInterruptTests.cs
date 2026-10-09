@@ -221,6 +221,138 @@ public sealed class RecompiledArtifactInterruptTests
 
     // ---- the kernel exception handler (Issue #662) -------------------------------------------
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(100)]
+    [InlineData(101)]
+    [InlineData(1024)]
+    [InlineData(1025)]
+    public void TimerIrqInsideReportInterval_RetiresOnlyTheInterpretersDelaySlots(ushort target)
+    {
+        var words = TimerIrqProgram(enableCpu: true, unmask: true);
+        words[5] = Ori(T1, Zero, target);
+        words[^1] = MipsEncoding.I(0x09, 10, 10, 1); // ADDIU t2,t2,1 in the spin's delay slot
+        using var dir = new TempDirectory();
+        ulong? retired = null;
+        var result = Run(words, dir, withRuntime: true, segmentBudget: 100_000,
+            observe: engine => retired = engine.NativeRetiredInstructions);
+        result.FinalSnapshot.Should().NotBeNull();
+        result.FinalSnapshot!.PC.Should().Be(VectorBev0);
+        using var core = new PSXCoreWrapper();
+        var spin = Entry + 36u;
+        core.WriteMemory32(spin & 0x1FFFFFFFu, words[^2]);
+        core.WriteMemory32((spin + 4) & 0x1FFFFFFFu, words[^1]);
+        core.Pc = spin;
+        core.SetCop0(12, SrIec | SrIm2);
+        core.WriteInterruptControllerRegister(InterruptMask, Timer2Irq);
+        core.WriteTimerRegister(Timer2Target, target);
+        core.WriteTimerRegister(Timer2Mode, 0x10);
+        using var interrupts = new PSXRecomp.Core.Dma.InterruptControllerMmioAdapter(core);
+        var scheduler = new DeviceScheduler(core, interrupts);
+        scheduler.Advance(1); // retirement of the arming SW
+        for (var i = 0; i < target + 2; i++)
+        {
+            core.Step().Should().Be(0);
+            if (core.ExceptionRaised) break;
+            scheduler.Advance(1);
+        }
+        core.ExceptionRaised.Should().BeTrue();
+        retired.Should().Be(8 + scheduler.ElapsedCycles, "the arming sequence and native spin must have exactly the reference retirement count");
+        result.FinalSnapshot.Gpr[10].Should().Be(core.GetGpr(10),
+            "both CPUs accept IRQ at the same fetch boundary after any owed branch delay slot");
+        result.DiagnosticMessage.Should().Contain($"EPC=0x{core.GetCop0(14):X8}");
+    }
+
+    [Fact]
+    public void IrqAfterFusedLoad_CommitsPendingLoadBeforeObserverAndKeepsEpcAtObserver()
+    {
+        var words = Program(ExitCriticalSection(),
+            [Lui(T0, 0x8000), Ori(T0, T0, 0x1000), Mem(R3000aOpcode.Lw, T1, T0, 0),
+             MipsEncoding.I(0x09, (byte)T1, (byte)T1, 1), Ori(R3000aRegister.T2, Zero, 99)]);
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+        ulong retired = 0;
+        var run = RunScripted(dir, _ => "V 0", count =>
+        {
+            retired += count;
+            return retired >= 5 ? "I" : "A";
+        }, syscallSr: Frame(SrIec | SrIm2), eventCredit: 1, requireExactTime: true);
+        run.Snapshot!["pc"].Should().Be(VectorBev0);
+        run.Snapshot["cop0.epc"].Should().Be(Entry + 20u);
+        run.Snapshot["cop0.cause"].Should().Be(CauseIp2);
+        G(run, T1).Should().Be(words[0], "exception entry flushes the pending load even though the observer would cancel it");
+        G(run, R3000aRegister.T2).Should().Be(0);
+        retired.Should().Be(5);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1u)]
+    public void ExactTimeProtocol_MissingInitialOrReportCredit_FailsClosed(uint? initialCredit)
+    {
+        using var dir = new TempDirectory();
+        Run(Program([Nop, Nop]), dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 0", eventCredit: initialCredit,
+            requireExactTime: true, sendCreditOnReports: false);
+        run.ExitCode.Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
+        run.HasSnapshot.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("T 0\nA")]
+    [InlineData("T 4294967296\nA")]
+    [InlineData("T malformed\nA")]
+    public void ExactTimeProtocol_MalformedCredit_FailsClosed(string reply)
+    {
+        using var dir = new TempDirectory();
+        Run(Program([Nop, Nop]), dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 0", _ => reply, eventCredit: 1,
+            requireExactTime: true, sendCreditOnReports: false);
+        run.ExitCode.Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
+        run.HasSnapshot.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PendingTimerIrq_MaskChangeAcceptsAtTheNextInstructionUnlessAcknowledged(bool acknowledge)
+    {
+        var before = Program(ExitCriticalSection(), [Lui(T0, 0x1F80), Ori(T1, Zero, 2),
+            Mem(R3000aOpcode.Sw, T1, T0, 0x1128), Ori(T1, Zero, 0x10),
+            Mem(R3000aOpcode.Sw, T1, T0, 0x1124), Nop, Nop]);
+        var words = Program(before[..^1],
+            acknowledge ? [Mem(R3000aOpcode.Sw, Zero, T0, 0x1070)] : [Nop],
+            [Ori(T1, Zero, 1 << 6), Mem(R3000aOpcode.Sw, T1, T0, 0x1074),
+             Ori(R3000aRegister.T2, Zero, 0x77)]);
+        using var dir = new TempDirectory();
+        var run = Run(words, dir, withRuntime: true);
+        run.FinalSnapshot.Should().NotBeNull();
+        run.FinalSnapshot!.Gpr[10].Should().Be(acknowledge ? 0x77u : 0u);
+        if (!acknowledge)
+        {
+            run.FinalSnapshot.PC.Should().Be(VectorBev0);
+            run.DiagnosticMessage.Should().Contain($"EPC=0x{Entry + (uint)(words.Length - 2) * 4:X8}");
+        }
+    }
+
+    [Fact]
+    public void AlreadyPendingIrq_IsTransportedAtInitializationBeforeCpuEnablesIt()
+    {
+        var words = Program([Ori(T1, Zero, 0x401), 0x40896000u, Ori(R3000aRegister.T2, Zero, 0x77)]);
+        using var dir = new TempDirectory();
+        var run = Run(words, dir, withRuntime: true, configureDevices: devices =>
+        {
+            devices.Core.WriteInterruptControllerRegister(InterruptMask, Timer2Irq);
+            devices.Core.RaiseInterrupt(DeviceScheduler.Timer0Irq + 2);
+        });
+        run.FinalSnapshot.Should().NotBeNull();
+        run.FinalSnapshot!.PC.Should().Be(VectorBev0);
+        run.FinalSnapshot.Gpr[10].Should().Be(0);
+        run.DiagnosticMessage.Should().Contain($"EPC=0x{Entry + 8:X8}");
+    }
+
     private const ushort Marker = 0x77;
     private const R3000aRegister T5 = R3000aRegister.T5;
     private const R3000aRegister S2 = R3000aRegister.S2;
@@ -291,6 +423,8 @@ public sealed class RecompiledArtifactInterruptTests
                 "    if (b[0] == 'N') break;\n" +
                 "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
                 "    else if (b[0] == 'W' && scanf(\"%lu %lu\", &a, &v) == 2) { printf(\"RHOST_OK\\n\"); fflush(stdout); }\n" +
+                "    else if (b[0] == 'T' && scanf(\"%lu\", &v) == 1) {}\n" +
+                "    else if (b[0] == 'L' && scanf(\"%lu\", &v) == 1) {}\n" +
                 "    else return 1;\n" +
                 "  }\n" +
                 $"  printf(\"{RecompiledArtifactCodeGen.ProtocolTransferPrefix}{VectorBev0}{gprs}\\n\"); fflush(stdout);\n" +
@@ -302,7 +436,14 @@ public sealed class RecompiledArtifactInterruptTests
                 "    else return 1;\n" +
                 "  }\n" +
                 $"  printf(\"{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}0 0 0 0 0 {intEntry}\\n\"); fflush(stdout);\n" +
-                "  while (getchar() != EOF) {}\n" +
+                "  for (;;) {\n" +
+                "    if (scanf(\"%63s\", b) != 1) return 0;\n" +
+                "    if (b[0] == 'D') return 0;\n" +
+                "    if (b[0] == 'T' && scanf(\"%lu\", &v) == 1) {}\n" +
+                "    else if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
+                "    else if (b[0] == 'W' && scanf(\"%lu %lu\", &a, &v) == 2) { printf(\"RHOST_OK\\n\"); fflush(stdout); }\n" +
+                "    else return 0;\n" +
+                "  }\n" +
                 "  return 0;\n" +
                 "}\n";
             return new GeneratedHostBuildService().Build(request with { Source = source });

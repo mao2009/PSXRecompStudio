@@ -152,10 +152,12 @@ a mismatch returns exit 2. `--stop-at 0x80030000` deliberately measures a shorte
 Shell gate; otherwise the EXE boundary is required. Kernel boot and EXE parity
 are separate claims. The first hardware IRQ snapshot is reported independently
 because endpoint CPU/RAM can converge after an earlier timing divergence.
-[ADR-025](../adr/025-generated-host-guest-time-and-device-ram.md) permits asynchronous
-IRQ delivery at the next guest-time report (up to 1024 instructions later).
-This bounded model does not establish exact device-time parity; the precise
-timing gate is tracked in [#744](https://github.com/mao2009/PSXRecompStudio/issues/744).
+[ADR-025](../adr/025-generated-host-guest-time-and-device-ram.md), amended by
+[#744](https://github.com/mao2009/PSXRecompStudio/issues/744), now requires device-owned
+conservative deadlines and per-instruction retirement points inside fused units.
+Deadline credits travel in existing host replies; branch delay slots defer CPU
+acceptance while device delivery remains exact. Timer MODE comparisons use a
+read-only peek, so capturing a boundary does not clear status flags.
 The probe allows a bounded three minutes per compiler
 step; ordinary builds retain their 30-second default.
 
@@ -253,18 +255,25 @@ pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector
 (kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) is
 compiled ahead of time from explicit images with `--load-images` (see above, ADR-026) and selected by
 content at run time; without it, or where RAM holds no pre-generated version, it runs in the
-mixed-execution interpreter fallback, which is reported as fallback. The corrected synthetic EXE has been loaded and its marker executed on both engines. The generated host's Shell
-boundary matches CPU/device/RAM/scratchpad/guest-cycle state. Full executable parity fails: at the first hardware
-IRQ, the host is 604 cycles later and EPC/r3 differ; at the EXE entry and marker, CPU/RAM/scratch converge but cycles
-remain 46,894 later and timers differ. These measurements use the corrected fixture and the pinned ROM; they do
-not reproduce the historical timer numbers. A diagnostic-only report interval of 64 reduced the first IRQ delay
-to 25 cycles and the entry delta to 4,667, but still failed parity and increased time-report traffic. The production
-threshold remains 1024; no timer correction is applied. See #744 for the precise timing gate and durable evidence in #732.
+mixed-execution interpreter fallback, which is reported as fallback. The corrected
+synthetic EXE has been loaded and its marker executed on both engines. The #744
+implementation verifies strict equality at Shell, first SYSCALL, first hardware
+IRQ, EXE entry and marker: CPU/COP0/RAM/scratchpad/device registers/timers and
+modeled guest cycles match. The first IRQ is accepted at cycle 169936497,
+EPC 0x15BC; EXE entry is cycle 195062240 and marker is cycle 195062475 on both
+engines. This remains a synthetic fixture gate, not commercial-game verification
+or physical PS1 timing accuracy.
+
+Historical #745 measurements showed first IRQ +604 and EXE +46894 cycles. Merely
+reducing its report interval left residual mismatches. #744 fixes the common
+Runtime deadline and fused-retirement semantics; the reporting cap remains 1024,
+with no timer offsets. Durable evidence and resource measurements are in #744
+and its stacked Draft PR.
 For multi-image dispatch, generated switches are partitioned by 4 KiB PC pages: Clang 18 at `-O0` otherwise emits
 thousands of linear comparisons for the sparse cross-image switch. This partition preserves full-PC lookup,
 version selection, unknown-PC fallback and instruction accounting; ROM-only generation retains its existing shape.
 
 **Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc
 through its own CD driver (corrected synthetic fixture; earlier Persona results are historical). Not done: GTE (#447) so Persona cannot get
-past its first COP2 instruction; exact generated-host device-time/IRQ parity; OpenBIOS as the default `run`
+past its first COP2 instruction; real-game generated-host parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**

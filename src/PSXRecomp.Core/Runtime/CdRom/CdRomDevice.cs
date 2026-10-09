@@ -276,6 +276,20 @@ public sealed class CdRomDevice : ICdRom
         return (byte)status;
     }
 
+    /// <summary>Read-only deadline in the drive's own clock, including interrupt acknowledge spacing.</summary>
+    public ulong NextEventCycles
+    {
+        get
+        {
+            if (_disc is null) return ulong.MaxValue;
+            var due = IsReading ? _nextSectorDue : ulong.MaxValue;
+            if (_interruptFlag == 0)
+                foreach (var response in _pendingResponses)
+                    due = Math.Min(due, Math.Max(response.Due, _lastAcknowledge + MinimumInterruptDelayCycles));
+            return due == ulong.MaxValue ? due : due <= _now ? 1 : due - _now;
+        }
+    }
+
     /// <summary>
     /// Advances the drive by <paramref name="cycles"/> CPU cycles: the next sector of an active read and any response
     /// that has become due. Without a disc nothing is timed and this does nothing.

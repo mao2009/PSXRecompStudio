@@ -72,6 +72,64 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void DeadlineTracksTimerReschedulingCancellationAndReadOnlyQueries()
+    {
+        ArmTimer2(target: 100, ModeIrqOnTarget);
+        _scheduler.NextEventCycles.Should().Be(100);
+        _scheduler.Advance(40);
+        _scheduler.NextEventCycles.Should().Be(60);
+        _core.WriteTimerRegister(Timer2Target, 50);
+        _scheduler.NextEventCycles.Should().Be(10);
+        _core.WriteTimerRegister(Timer2Mode, 1); // Timer2 stopped
+        _scheduler.NextEventCycles.Should().BeGreaterThan(10);
+        _core.WriteTimerRegister(Timer2Mode, ModeIrqOnTarget | 0x200);
+        _scheduler.Advance(7);
+        _scheduler.NextEventCycles.Should().Be(393);
+        _scheduler.Advance(393);
+        _interrupts.Status.Should().Be(Timer2Bit);
+        var before = _scheduler.ElapsedCycles;
+        _ = _scheduler.NextEventCycles;
+        _scheduler.ElapsedCycles.Should().Be(before);
+        (_core.PeekTimerRegister(Timer2Mode) & 0x800).Should().Be(0x800);
+        (_core.PeekTimerRegister(Timer2Mode) & 0x800).Should().Be(0x800);
+        (_core.ReadTimerRegister(Timer2Mode) & 0x800).Should().Be(0x800,
+            "deadline queries must not clear MODE's reached-target flag");
+    }
+
+    [Fact]
+    public void ExactAdvanceAcrossMultipleDeadlines_MatchesSingleInstructionAdvances()
+    {
+        ArmTimer2(target: 5, ModeIrqOnTarget | ModeResetOnTarget | ModeIrqRepeat);
+        _scheduler.AdvanceExact(19);
+        var count = _core.ReadTimerRegister(0x1F801120u);
+        var mode = _core.PeekTimerRegister(Timer2Mode);
+        var status = _interrupts.Status;
+        _core.ResetTimers();
+        _interrupts.Acknowledge(0);
+        ArmTimer2(target: 5, ModeIrqOnTarget | ModeResetOnTarget | ModeIrqRepeat);
+        for (var i = 0; i < 19; i++) _scheduler.Advance(1);
+        _core.ReadTimerRegister(0x1F801120u).Should().Be(count);
+        _core.PeekTimerRegister(Timer2Mode).Should().Be(mode);
+        _interrupts.Status.Should().Be(status);
+    }
+
+    [Fact]
+    public void ExactAdvance_DeliversEarlierEventsFirstAndSimultaneousTimersInStageOrder()
+    {
+        var recorder = new RecordingInterrupts(_interrupts);
+        var scheduler = new DeviceScheduler(_core, recorder);
+        _core.WriteTimerRegister(0x1F801108u, 5);
+        _core.WriteTimerRegister(0x1F801104u, ModeIrqOnTarget);
+        _core.WriteTimerRegister(0x1F801118u, 3);
+        _core.WriteTimerRegister(0x1F801114u, ModeIrqOnTarget);
+        ArmTimer2(5, ModeIrqOnTarget);
+        scheduler.AdvanceExact(3);
+        recorder.Raised.Should().Equal(DeviceScheduler.Timer0Irq + 1);
+        scheduler.AdvanceExact(2);
+        recorder.Raised.Should().Equal(DeviceScheduler.Timer0Irq + 1, DeviceScheduler.Timer0Irq, DeviceScheduler.Timer0Irq + 2);
+    }
+
+    [Fact]
     public void Timer2Target_RaisesIrq6ExactlyAtTheTargetCycle()
     {
         ArmTimer2(target: 100, ModeIrqOnTarget);

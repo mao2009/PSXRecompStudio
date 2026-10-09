@@ -5,6 +5,32 @@ namespace PSXRecomp.Tests.Recompiler;
 [Test]
 public class RecompilerContractTests
 {
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    public void FusedBlock_RejectsRetirementOffsetsOutsideOperations(int offset)
+    {
+        var construct = () => new RecompilerIrBlock(0x1000,
+            [new RecompilerIrOperation(RecompilerIrOperationKind.Nop)],
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x1008),
+            retiredInstructionCount: 2, instructionBoundaries: [offset]);
+        construct.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void FusedBlock_RejectsMissingRetirementBoundariesAndMissingLoadCommit()
+    {
+        var construct = () => new RecompilerIrBlock(0x1000,
+            [new RecompilerIrOperation(RecompilerIrOperationKind.Nop)],
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x1008), retiredInstructionCount: 2);
+        construct.Should().Throw<ArgumentException>();
+        var load = () => new RecompilerIrBlock(0x1000,
+            [new RecompilerIrOperation(RecompilerIrOperationKind.Nop)],
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x1008),
+            retiredInstructionCount: 2, instructionBoundaries: [0], hasLoadDelay: true);
+        load.Should().Throw<ArgumentException>();
+    }
+
     [Fact]
     public void ValidGprBlock_ValidatesAndSerializesDeterministically()
     {

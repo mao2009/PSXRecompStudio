@@ -528,7 +528,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                         break;
                     }
 
-                    _scheduler!.Advance(BiosBlockingCallWait.PollCycles);
+                    _scheduler!.AdvanceExact(BiosBlockingCallWait.PollCycles);
                     if (!CpuTakesInterruptNow())
                     {
                         continue;

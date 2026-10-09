@@ -74,7 +74,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         Action<PsxDeviceGraph>? configureDevices = null,
         uint segmentBudget = 256,
         BiosExceptionChain? exceptionChain = null,
-        IEnumerable<uint>? additionalRoots = null)
+        IEnumerable<uint>? additionalRoots = null,
+        Action<RecompiledHostExecutionEngine>? observe = null)
     {
         var program = ReachableProgramBuilder.Build(Entry, words, Entry, additionalRoots ?? []);
         using var engine = new RecompiledHostExecutionEngine(
@@ -86,7 +87,9 @@ public sealed class RecompiledArtifactMmioBridgeTests
             withRuntime ? (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer) : null,
             configureDevices,
             exceptionChain);
-        return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget));
+        var result = new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget));
+        observe?.Invoke(engine);
+        return result;
     }
 
     // ---- scripted parent ---------------------------------------------------
@@ -105,7 +108,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
     /// answers each MMIO request line; null closes the child's stdin instead.
     /// </summary>
     internal static ScriptedRun RunScripted(
-        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null)
+        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null, uint? eventCredit = null, bool requireExactTime = false, bool sendCreditOnReports = true)
     {
 #pragma warning disable AARC003 // Test-only: drives the artifact's own wire protocol.
         var binary = File.Exists(dir.Combine("recompiled-artifact.exe"))
@@ -121,6 +124,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         psi.ArgumentList.Add(dir.Combine("artifact-input.txt"));
         psi.ArgumentList.Add(dir.Combine("artifact-image.bin"));
         psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+        if (requireExactTime) psi.ArgumentList.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
 
         using var process = Process.Start(psi)!;
         process.StandardInput.AutoFlush = true;
@@ -137,6 +141,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
             if (line == RecompiledArtifactCodeGen.ProtocolInitLine
                 || line.StartsWith(RecompiledArtifactCodeGen.ProtocolTransferPrefix, StringComparison.Ordinal))
             {
+                if (eventCredit is { } initialCredit)
+                    process.StandardInput.WriteLine($"T {initialCredit}");
                 // The handshake and the program's unresolved end: this parent claims no pc.
                 process.StandardInput.WriteLine(RecompiledArtifactCodeGen.ProtocolDeclineReply);
             }
@@ -148,6 +154,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
                 var faultPc = uint.Parse(parts[0], CultureInfo.InvariantCulture);
                 var sr = syscallSr ?? (uint.Parse(parts[2], CultureInfo.InvariantCulture) | 0x404u);
                 process.StandardInput.WriteLine($"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {sr}");
+                if (eventCredit is { } syscallCredit) process.StandardInput.WriteLine($"T {syscallCredit}");
                 process.StandardInput.WriteLine($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}0 {faultPc + 4} 0 0");
             }
             else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
@@ -161,6 +168,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
                 }
                 else
                 {
+                    if (sendCreditOnReports && eventCredit is { } credit) process.StandardInput.WriteLine($"T {credit}");
                     process.StandardInput.WriteLine(retiredAnswer);
                 }
             }

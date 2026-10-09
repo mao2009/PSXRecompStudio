@@ -157,7 +157,7 @@ public static class MipsToIrLowerer
         var builder = new BlockBuilder();
         var failure = TryEmitControlTransfer(builder, control, entryPc, delaySlot, pendingLoad: null, out var exit);
         return failure ?? MipsToIrLoweringResult.Success(
-            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2));
+            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries));
     }
 
     /// <summary>
@@ -201,7 +201,7 @@ public static class MipsToIrLowerer
                     builder, instruction, entryPc, delaySlot, pendingLoad: null, out var exit,
                     allowDelaySlotLoad: unobservedDelaySlotLoads?.Contains(entryPc) == true);
                 blocks.Add(failure is null
-                    ? new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2)
+                    ? new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries)
                     : throw Unsupported(failure, instruction, entryPc));
                 i += 2;
                 continue;
@@ -290,6 +290,7 @@ public static class MipsToIrLowerer
         // commit is dropped rather than reordered.
         TryGetLoadDelayTarget(load, out var target);
         var writesTarget = TryGetDestinationRegister(observer, out var destination) && destination == target;
+        builder.RetireInstruction();
         var pendingLoad = writesTarget ? (PendingLoadCommit?)null : new PendingLoadCommit(target, loadedValue);
 
         if (observer.DelaySlot != R3000aDelaySlotKind.None)
@@ -303,7 +304,7 @@ public static class MipsToIrLowerer
             }
 
             consumed = 3;
-            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3);
+            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3, instructionBoundaries: builder.InstructionBoundaries, hasLoadDelay: true, interruptLoadCommit: new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, register: target, inputValueA: loadedValue));
         }
 
         // LWL/LWR to the load's own target merge into the still-pending value
@@ -324,7 +325,7 @@ public static class MipsToIrLowerer
         var exit = new RecompilerIrExit(
             RecompilerIrTerminationReason.Success,
             unchecked(loadPc + (2 * InstructionSize)));
-        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2);
+        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries, hasLoadDelay: true, interruptLoadCommit: new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, register: target, inputValueA: loadedValue));
     }
 
     /// <summary>
@@ -834,6 +835,7 @@ public static class MipsToIrLowerer
         // lands here — before the delay-slot instruction, which therefore reads
         // the loaded value while the transfer read the pre-load one.
         pendingLoad?.Emit(builder);
+        builder.RetireInstruction();
 
         // A BREAK/SYSCALL delay slot raises the exception at its own retirement, before
         // the pending transfer applies. It reads no registers, so nothing else is
@@ -1506,6 +1508,8 @@ public static class MipsToIrLowerer
     {
         private readonly List<RecompilerIrOperation> _operations = [];
         private int _nextValueId;
+        public List<int> InstructionBoundaries { get; } = [];
+        public void RetireInstruction() => InstructionBoundaries.Add(_operations.Count);
 
         public IReadOnlyList<RecompilerIrOperation> Operations => _operations;
 
