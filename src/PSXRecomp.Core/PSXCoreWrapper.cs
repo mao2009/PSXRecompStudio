@@ -44,9 +44,26 @@ public sealed class PSXCoreWrapper : IDisposable
     private static readonly CdRomMmioRead8Callback CdRomRead8Thunk = ReadCdRomMmio8;
     private static readonly CdRomMmioWrite8Callback CdRomWrite8Thunk = WriteCdRomMmio8;
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate uint GteReadCallback(IntPtr context, uint register);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void GteWriteCallback(IntPtr context, uint register, uint value);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int GteCommandCallback(IntPtr context, uint command);
+
+    private static readonly GteReadCallback GteReadThunk = ReadGte;
+    private static readonly GteWriteCallback GteWriteThunk = WriteGte;
+    private static readonly GteCommandCallback GteCommandThunk = ExecuteGteCommand;
+
+    /// <summary>Native step status: a GTE command the attached GTE does not implement (<c>PSX_STEP_GTE_COMMAND_UNSUPPORTED</c>, Issue #447).</summary>
+    public const int StepGteCommandUnsupported = -2;
+
     private IntPtr _handle;
     private GCHandle _gpuMmioContext;
     private GCHandle _cdRomMmioContext;
+    private GCHandle _gteContext;
     private bool _disposed;
 
     /// <summary>Number of general-purpose registers (R0-R31) exposed by <see cref="GetGpr"/>/<see cref="SetGpr"/>.</summary>
@@ -292,6 +309,26 @@ public sealed class PSXCoreWrapper : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         DetachCdRomMmioCore();
+    }
+
+    /// <summary>
+    /// Attaches the GTE this core's CPU executes COP2 against (Issue #447): the CPU checks SR.CU2 and
+    /// forwards each transfer or command to <paramref name="gte"/>, the single owner of the GTE state.
+    /// Data registers are 0-31, control registers 32-63 on the native side. Rooted until
+    /// <see cref="Dispose"/>; without a GTE every COP2-family instruction raises CpU.
+    /// </summary>
+    internal void AttachGte(Runtime.IGte gte)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(gte);
+        DetachGteCore();
+        _gteContext = GCHandle.Alloc(gte);
+        NativeInterop.PSXCore_SetGteCallbacks(
+            _handle,
+            GCHandle.ToIntPtr(_gteContext),
+            Marshal.GetFunctionPointerForDelegate(GteReadThunk),
+            Marshal.GetFunctionPointerForDelegate(GteWriteThunk),
+            Marshal.GetFunctionPointerForDelegate(GteCommandThunk));
     }
 
     /// <summary>Reads a DMA controller register at the given absolute address.</summary>
@@ -628,6 +665,7 @@ public sealed class PSXCoreWrapper : IDisposable
             {
                 DetachGpuMmioCore();
                 DetachCdRomMmioCore();
+                DetachGteCore();
                 NativeInterop.PSXCore_Destroy(_handle);
                 _handle = IntPtr.Zero;
             }
@@ -663,6 +701,38 @@ public sealed class PSXCoreWrapper : IDisposable
             _cdRomMmioContext.Free();
         }
     }
+
+    private void DetachGteCore()
+    {
+        if (_handle != IntPtr.Zero)
+        {
+            NativeInterop.PSXCore_SetGteCallbacks(_handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        if (_gteContext.IsAllocated)
+        {
+            _gteContext.Free();
+        }
+    }
+
+    private static Runtime.IGte Gte(IntPtr context) => (Runtime.IGte)GCHandle.FromIntPtr(context).Target!;
+
+    private static uint ReadGte(IntPtr context, uint register) =>
+        register < 32 ? Gte(context).ReadDataRegister((int)register) : Gte(context).ReadControlRegister((int)register - 32);
+
+    private static void WriteGte(IntPtr context, uint register, uint value)
+    {
+        if (register < 32)
+        {
+            Gte(context).WriteDataRegister((int)register, value);
+        }
+        else
+        {
+            Gte(context).WriteControlRegister((int)register - 32, value);
+        }
+    }
+
+    private static int ExecuteGteCommand(IntPtr context, uint command) => Gte(context).ExecuteCommand(command) ? 0 : 1;
 
     private static uint ReadGpuMmio32(IntPtr context, uint address)
     {

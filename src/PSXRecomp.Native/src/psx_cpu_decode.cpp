@@ -82,9 +82,16 @@ void PSXCpu::ExecuteInstruction(uint32_t instruction, PSXMemory& memory) {
         case PSXDecodeOp::Mfc0: ExecMfc0(rt, rd); break;
         case PSXDecodeOp::Mtc0: ExecMtc0(rt, rd); break;
         case PSXDecodeOp::Rfe: ExecRfe(); break;
-        // COP1/2/3 and LWC1-3/SWC1-3 are unusable (docs/cpu/cop0.md, CAUSE.CE
-        // = coprocessor number). GTE command execution stays unimplemented
-        // (Issue #377) -- this only makes it fault loudly.
+        // COP2 / GTE (Issue #447): each handler checks SR.CU2 first.
+        case PSXDecodeOp::Mfc2: ExecMfc2(rt, rd); break;
+        case PSXDecodeOp::Cfc2: ExecCfc2(rt, rd); break;
+        case PSXDecodeOp::Mtc2: ExecMtc2(rt, rd); break;
+        case PSXDecodeOp::Ctc2: ExecCtc2(rt, rd); break;
+        case PSXDecodeOp::Cop2Command: ExecCop2Command(instruction); break;
+        case PSXDecodeOp::Lwc2: ExecLwc2(rt, rs, simm, memory); break;
+        case PSXDecodeOp::Swc2: ExecSwc2(rt, rs, simm, memory); break;
+        // COP1/3, LWC1/3, SWC1/3 and the COP2 forms with no GTE meaning are
+        // unusable (docs/cpu/cop0.md, CAUSE.CE = coprocessor number).
         case PSXDecodeOp::CopUnusable: RaiseException(0x0B, d.cop); break; // CpU
         // Reserved encodings, including unrecognised COP0 forms (COP0 is
         // usable, so CFC0/CTC0/TLB ops are RI, not CpU) and LWC0/SWC0. Any

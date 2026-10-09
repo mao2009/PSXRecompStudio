@@ -2038,6 +2038,7 @@ int main() {
     run_psx_cpu_cop0_rust_tests();
     run_psx_cpu_exception_rust_tests();
     run_psx_cpu_pipeline_rust_tests();
+    run_psx_cpu_cop2_tests();
     test_run_multiple();
     test_run_early_exit();
     test_e2e_minimal_program();

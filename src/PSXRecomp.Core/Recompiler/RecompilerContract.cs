@@ -150,6 +150,46 @@ public enum RecompilerIrOperationKind : byte
     /// PC restore is the guest's own JR (ADR-005).
     /// </summary>
     ReturnFromException,
+
+    /// <summary>
+    /// MFC2/CFC2/SWC2 (Issue #447): produces GTE register <c>Register</c> (0-31) of the bank
+    /// <c>Immediate</c> selects (<see cref="RecompilerCop2.DataBank"/> or
+    /// <see cref="RecompilerCop2.ControlBank"/>), with the GTE's own read semantics. Like
+    /// every COP2 operation it first requires SR.CU2 (<see cref="RecompilerCop2.Usable"/>):
+    /// with it clear the block stops with an <see cref="RecompilerIrTerminationReason.Exception"/>.
+    /// The GTE state is the runtime's single GTE (the managed <c>GteRegisterBank</c>), never a copy.
+    /// </summary>
+    ReadCop2,
+
+    /// <summary>MTC2/CTC2/LWC2: writes input A to GTE register <c>Register</c> of bank <c>Immediate</c>; SR.CU2 as <see cref="ReadCop2"/>.</summary>
+    WriteCop2,
+
+    /// <summary>
+    /// A GTE command: <c>Immediate</c> is the instruction's low 25 bits. SR.CU2 as
+    /// <see cref="ReadCop2"/>; a command the GTE does not implement stops the block with an
+    /// <see cref="RecompilerIrTerminationReason.Exception"/> (fail closed, never a no-op).
+    /// </summary>
+    Cop2Command,
+}
+
+/// <summary>COP2 (GTE) constants every backend shares (Issue #447), mirroring <c>psx_cpu_cop2.cpp</c>.</summary>
+[Domain]
+public static class RecompilerCop2
+{
+    /// <summary><see cref="RecompilerIrOperationKind.ReadCop2"/>/<see cref="RecompilerIrOperationKind.WriteCop2"/> <c>Immediate</c>: the data registers.</summary>
+    public const uint DataBank = 0;
+
+    /// <summary><see cref="RecompilerIrOperationKind.ReadCop2"/>/<see cref="RecompilerIrOperationKind.WriteCop2"/> <c>Immediate</c>: the control registers.</summary>
+    public const uint ControlBank = 1;
+
+    /// <summary>SR.CU2 (bit 30): COP2 is usable.</summary>
+    public const uint StatusCop2Usable = 0x40000000u;
+
+    /// <summary>The 25 command bits of a COP2 command word.</summary>
+    public const uint CommandMask = 0x01FFFFFFu;
+
+    /// <summary>Whether COP2 is usable under <paramref name="sr"/>.</summary>
+    public static bool Usable(uint sr) => (sr & StatusCop2Usable) != 0;
 }
 
 /// <summary>
@@ -853,6 +893,16 @@ public static class RecompilerIrValidator
                 break;
             case RecompilerIrOperationKind.ReturnFromException:
                 Require(!hasResult && !hasA && !hasB && operation.ShiftAmount == 0 && operation.Register == 0, diagnostics, blockIndex, operationIndex);
+                break;
+            case RecompilerIrOperationKind.ReadCop2:
+                Require(hasResult && !hasA && !hasB && operation.ShiftAmount == 0 && operation.Immediate <= RecompilerCop2.ControlBank, diagnostics, blockIndex, operationIndex);
+                break;
+            case RecompilerIrOperationKind.WriteCop2:
+                Require(!hasResult && hasA && !hasB && operation.ShiftAmount == 0 && operation.Immediate <= RecompilerCop2.ControlBank, diagnostics, blockIndex, operationIndex);
+                break;
+            case RecompilerIrOperationKind.Cop2Command:
+                Require(!hasResult && !hasA && !hasB && operation.ShiftAmount == 0 && operation.Register == 0
+                    && (operation.Immediate & ~RecompilerCop2.CommandMask) == 0, diagnostics, blockIndex, operationIndex);
                 break;
             default:
                 Require(hasResult && hasA && hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);

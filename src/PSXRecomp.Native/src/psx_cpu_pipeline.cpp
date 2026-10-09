@@ -173,6 +173,13 @@ int PSXCpu::Step(PSXMemory& memory) {
         ExecuteInstruction(instruction, memory);
     }
 
+    // An unimplemented GTE command (Issue #447) fails closed: nothing retires,
+    // the PC stays on the command and the caller sees a distinct status.
+    if (gte_command_unsupported_) {
+        gte_command_unsupported_ = false;
+        return kPsxStepGteCommandUnsupported;
+    }
+
     if (exception_raised_) {
         // An exception occurred: pc_ was forced to the exception vector by
         // RaiseException, bypassing the normal delay-slot/branch PC update

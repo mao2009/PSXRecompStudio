@@ -1,3 +1,4 @@
+using System.Globalization;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
@@ -563,8 +564,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 break;
             }
 
-            if (_core.Step() != 0)
+            var stepStatus = _core.Step();
+            if (stepStatus != 0)
             {
+                // Issue #447: an unimplemented GTE command fails closed and names itself.
+                if (stepStatus == PSXCoreWrapper.StepGteCommandUnsupported &&
+                    _devices.Gte.LastUnsupportedCommand is uint command)
+                {
+                    diagnosticCode = "GTE_COMMAND_UNSUPPORTED";
+                    diagnosticMessage = string.Create(CultureInfo.InvariantCulture,
+                        $"GTE command 0x{command & 0x3F:X2} (word 0x{command:X7}) at PC 0x{_core.Pc:X8} is not implemented.");
+                }
+
                 termination = RecompilerIrTerminationReason.Exception;
                 break;
             }
@@ -736,6 +747,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </remarks>
     /// <returns>The current production frame, or <c>null</c> when no meaningful
     /// frame activity has occurred since the most recent <see cref="Load"/>.</returns>
+    /// <summary>The GTE (COP2) state the CPU executes against (Issue #447), for run evidence.</summary>
+    public Runtime.Gte.GteRegisterBank Gte => _devices.Gte;
+
     public FrameSnapshot? CaptureFrameEvidence()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

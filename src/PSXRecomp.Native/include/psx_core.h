@@ -115,6 +115,33 @@ PSX_API void PSXCore_SetCdRomMmioCallbacks(
     PSXCdRomMmioRead8 read8,
     PSXCdRomMmioWrite8 write8);
 
+/**
+ * Managed GTE (COP2) bridge signatures (Issue #447). `reg` is 0-31 for the GTE
+ * data registers and 32-63 for the control registers. The command callback gets
+ * the COP2 command (instruction bits 0-24) and returns 0 when it executed it, or
+ * non-zero when the command is not implemented and no GTE state changed.
+ */
+typedef uint32_t (*PSXGteRead)(void* context, uint32_t reg);
+typedef void (*PSXGteWrite)(void* context, uint32_t reg, uint32_t value);
+typedef int32_t (*PSXGteCommand)(void* context, uint32_t command);
+
+/** PSXCore_Step()/PSXCore_Run() status: the instruction is a GTE command the attached GTE does not implement. Nothing retired; the PC stays on it (Issue #447). */
+#define PSX_STEP_GTE_COMMAND_UNSUPPORTED (-2)
+
+/**
+ * Attaches or detaches the GTE the native CPU uses for MFC2/CFC2/MTC2/CTC2,
+ * LWC2/SWC2 and COP2 commands (Issue #447). The GTE state stays managed; the
+ * CPU only forwards the transfer or command after its own SR.CU2 check. With no
+ * GTE attached every COP2-family instruction raises Coprocessor Unusable (CE=2).
+ * Ownership/lifetime and concurrency rules mirror PSXCore_SetGpuMmioCallbacks.
+ */
+PSX_API void PSXCore_SetGteCallbacks(
+    PSXCore* core,
+    void* context,
+    PSXGteRead read,
+    PSXGteWrite write,
+    PSXGteCommand command);
+
 /** Reads a DMA controller register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address);
 /** Writes a DMA controller register at the given absolute address. */
@@ -193,7 +220,8 @@ PSX_API uint32_t PSXCore_GetSio0LastCommandByte(PSXCore* core);
 
 /**
  * Executes a single instruction, honoring branch/load-delay slot semantics.
- * Returns zero when the step was taken, or a negative status when `core` is NULL.
+ * Returns zero when the step was taken, a negative status when `core` is NULL, or
+ * PSX_STEP_GTE_COMMAND_UNSUPPORTED when the instruction is a GTE command the attached GTE does not implement.
  *
  * A guest exception is NOT reported here: an architectural exception (INT,
  * SYSCALL, RI/CpU/AdEL/AdES) is a normal, continuable hardware event, and the

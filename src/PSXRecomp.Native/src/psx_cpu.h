@@ -10,6 +10,20 @@ static constexpr uint32_t PSX_HW_REG_SIZE = 8 * 1024;
 
 class PSXMemory;
 
+// GTE (COP2) bridge (Issue #447). The GTE register file and command arithmetic
+// have exactly one owner, the managed GteRegisterBank; the CPU owns only the
+// COP2 instruction semantics (SR.CU2, LWC2/SWC2 addressing and faults, the
+// MFC2/CFC2 load delay). `reg` is 0-31 for data and 32-63 for control
+// registers. The command callback returns 0 when it executed the command and
+// non-zero when the command is not implemented (no GTE state changed).
+using PSXGteReadCallback = uint32_t (*)(void* context, uint32_t reg);
+using PSXGteWriteCallback = void (*)(void* context, uint32_t reg, uint32_t value);
+using PSXGteCommandCallback = int32_t (*)(void* context, uint32_t command);
+
+// Step() status for a GTE command the attached GTE does not implement
+// (Issue #447): fail closed, nothing retired, the PC stays on the command.
+static constexpr int kPsxStepGteCommandUnsupported = -2; // = PSX_STEP_GTE_COMMAND_UNSUPPORTED (psx_core.h)
+
 class PSXCpu {
 public:
     PSXCpu();
@@ -109,6 +123,15 @@ public:
     // passes a stack-allocated recorder around a single Step() call.
     void SetGprWriteTrace(GprWriteTrace* trace) { gpr_write_trace_ = trace; }
 
+    // Attaches (or, with null callbacks, detaches) the GTE. Without a GTE every
+    // COP2/LWC2/SWC2 raises CpU (CE = 2), as before Issue #447.
+    void AttachGte(void* context, PSXGteReadCallback read, PSXGteWriteCallback write, PSXGteCommandCallback command) {
+        gte_context_ = context;
+        gte_read_ = read;
+        gte_write_ = write;
+        gte_command_ = command;
+    }
+
 private:
     uint32_t gpr_[PSX_GPR_COUNT];
     uint32_t pc_;          // Address of the instruction currently being executed (ADR-005: pc)
@@ -158,6 +181,12 @@ private:
     // production; attached by the Golden Trace harness around a single step).
     GprWriteTrace* gpr_write_trace_ = nullptr;
     void RecordGprWrite(int index, uint32_t before, uint32_t value);
+
+    void* gte_context_ = nullptr;
+    PSXGteReadCallback gte_read_ = nullptr;
+    PSXGteWriteCallback gte_write_ = nullptr;
+    PSXGteCommandCallback gte_command_ = nullptr;
+    bool gte_command_unsupported_ = false; // set by ExecCop2Command for this step
 
     // Instruction decode helpers. FetchInstruction returns false when the PC is
     // misaligned or unmapped; it has already raised AdEL in that case and no
@@ -251,6 +280,17 @@ private:
     void ExecMfc0(uint32_t rt, uint32_t rd);
     void ExecMtc0(uint32_t rt, uint32_t rd);
     void ExecRfe();
+
+    // Coprocessor 2 (GTE, Issue #447), src/psx_cpu_cop2.cpp. Cop2Usable raises
+    // CpU (CE = 2) and returns false when SR.CU2 is clear or no GTE is attached.
+    bool Cop2Usable();
+    void ExecMfc2(uint32_t rt, uint32_t rd);
+    void ExecCfc2(uint32_t rt, uint32_t rd);
+    void ExecMtc2(uint32_t rt, uint32_t rd);
+    void ExecCtc2(uint32_t rt, uint32_t rd);
+    void ExecCop2Command(uint32_t command);
+    void ExecLwc2(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
+    void ExecSwc2(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     // Raises an exception (docs/cpu/exceptions.md). `ce` is the coprocessor
     // number written to CAUSE.CE (bits 28-29); it is only meaningful for CpU
     // (0x0B) and is cleared to 0 for every other exception.

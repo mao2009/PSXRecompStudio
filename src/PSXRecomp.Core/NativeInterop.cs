@@ -132,6 +132,18 @@ internal static partial class NativeInterop
         IntPtr read8,
         IntPtr write8);
 
+    /// <summary>
+    /// Attaches the managed GTE (COP2) the native CPU forwards MFC2/CFC2/MTC2/CTC2, LWC2/SWC2 and
+    /// commands to (Issue #447). Passing zero callback pointers detaches it.
+    /// </summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_SetGteCallbacks(
+        IntPtr core,
+        IntPtr context,
+        IntPtr read,
+        IntPtr write,
+        IntPtr command);
+
     /// <summary>Reads a timer (0-2) register at the given absolute address.</summary>
     [LibraryImport(LibName)]
     internal static partial uint PSXCore_ReadTimerRegister(IntPtr core, uint address);

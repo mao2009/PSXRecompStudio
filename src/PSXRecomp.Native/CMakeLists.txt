@@ -109,6 +109,7 @@ set(PSX_CPU_SOURCES
     src/psx_cpu_memory_access.cpp
     src/psx_cpu_unaligned.cpp
     src/psx_cpu_cop0.cpp
+    src/psx_cpu_cop2.cpp
     src/psx_cpu_exception.cpp
     src/psx_cpu_pipeline.cpp
 )
@@ -185,6 +186,7 @@ add_executable(psx_native_tests
     tests/test_psx_cpu_cop0_rust.cpp
     tests/test_psx_cpu_exception_rust.cpp
     tests/test_psx_cpu_pipeline_rust.cpp
+    tests/test_psx_cpu_cop2.cpp
 )
 target_include_directories(psx_native_tests PRIVATE src include)
 target_link_libraries(psx_native_tests PRIVATE PSXRecomp.Native)

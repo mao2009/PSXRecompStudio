@@ -106,8 +106,11 @@ internal static class RecompilerIrEvaluator
         IReadOnlyList<uint> initialGpr,
         RecompilerGuestMemory memory,
         uint blockBudget,
-        uint[]? cop0 = null)
+        uint[]? cop0 = null,
+        PSXRecomp.Core.Runtime.Gte.GteRegisterBank? gte = null)
     {
+        // COP2 runs against the same managed GTE implementation the interpreter uses (Issue #447).
+        gte ??= new PSXRecomp.Core.Runtime.Gte.GteRegisterBank();
         // COP0 registers by number (PSXCpu::cop0_), threaded like hiLo (Issue #732).
         cop0 ??= new uint[32];
         var gpr = initialGpr.ToArray();
@@ -138,7 +141,7 @@ internal static class RecompilerIrEvaluator
             var values = new Dictionary<int, uint>();
             foreach (var operation in block.Operations)
             {
-                if (!Execute(operation, gpr, hiLo, cop0, values, memory))
+                if (!Execute(operation, gpr, hiLo, cop0, values, memory, gte))
                 {
                     return new RecompilerIrEvaluationResult(
                         gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1, hiLo[0], hiLo[1], Cop0: cop0);
@@ -189,8 +192,15 @@ internal static class RecompilerIrEvaluator
         uint[] hiLo,
         uint[] cop0,
         Dictionary<int, uint> values,
-        RecompilerGuestMemory memory)
+        RecompilerGuestMemory memory,
+        PSXRecomp.Core.Runtime.Gte.GteRegisterBank gte)
     {
+        if (operation.Kind is RecompilerIrOperationKind.ReadCop2 or RecompilerIrOperationKind.WriteCop2 or RecompilerIrOperationKind.Cop2Command
+            && !RecompilerCop2.Usable(cop0[RecompilerCop0.Status]))
+        {
+            return false;
+        }
+
         if (operation.Kind is RecompilerIrOperationKind.Store8 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32
             && RecompilerCop0.StoreIsCacheIsolated(cop0[RecompilerCop0.Status], values[operation.InputValueA]))
         {
@@ -210,6 +220,19 @@ internal static class RecompilerIrEvaluator
             case RecompilerIrOperationKind.ReturnFromException:
                 cop0[RecompilerCop0.Status] = RecompilerCop0.ReturnFromException(cop0[RecompilerCop0.Status]);
                 return true;
+            case RecompilerIrOperationKind.ReadCop2:
+                values[operation.ResultValueId] = operation.Immediate == RecompilerCop2.ControlBank
+                    ? gte.ReadControlRegister(operation.Register)
+                    : gte.ReadDataRegister(operation.Register);
+                return true;
+            case RecompilerIrOperationKind.WriteCop2:
+                if (operation.Immediate == RecompilerCop2.ControlBank)
+                    gte.WriteControlRegister(operation.Register, values[operation.InputValueA]);
+                else
+                    gte.WriteDataRegister(operation.Register, values[operation.InputValueA]);
+                return true;
+            case RecompilerIrOperationKind.Cop2Command:
+                return gte.ExecuteCommand(operation.Immediate);
             case RecompilerIrOperationKind.Nop:
                 return true;
             case RecompilerIrOperationKind.Constant:

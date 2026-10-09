@@ -209,6 +209,7 @@ public class NativeAbiContractTests
         "PSXGpuMmioWrite32" => typeof(IntPtr),
         "PSXCdRomMmioRead8" => typeof(IntPtr),
         "PSXCdRomMmioWrite8" => typeof(IntPtr),
+        "PSXGteRead" or "PSXGteWrite" or "PSXGteCommand" => typeof(IntPtr),
         "uint8_t" => typeof(byte),
         "uint8_t*" => typeof(IntPtr),
         "uint16_t" => typeof(ushort),
