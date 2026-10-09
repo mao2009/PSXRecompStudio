@@ -137,8 +137,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
         BiosExceptionChain? exceptionChain = null,
         MemoryCardSlotConfiguration? memoryCardSlots = null,
-        bool allowRuntimeRamExecution = false)
-        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots, allowRuntimeRamExecution)
+        bool allowRuntimeRamExecution = false,
+        ICdSectorSource? disc = null)
+        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots, allowRuntimeRamExecution, disc)
     {
     }
 
@@ -179,7 +180,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         PsxDeviceGraph? sharedDevices,
         DeviceScheduler? sharedScheduler,
         MemoryCardSlotConfiguration? memoryCardSlots = null,
-        bool allowRuntimeRamExecution = false)
+        bool allowRuntimeRamExecution = false,
+        ICdSectorSource? disc = null)
     {
         ArgumentNullException.ThrowIfNull(instructions);
         if (instructions.Count == 0)
@@ -228,7 +230,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // artifact relays to (Issue #678). The BIOS runtime seam travels through
         // its bus, so guest RAM/mirror/device semantics all come from one routing
         // point while the interpreter drives the same native core.
-        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots);
+        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots, disc: disc);
         _ownsDevices = sharedDevices is null;
         if (sharedScheduler is not null)
         {

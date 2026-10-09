@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Core.Runtime.CdRom;
 
 namespace PSXRecomp.Infrastructure.Cli;
 
@@ -15,8 +17,8 @@ internal static class OpenBiosProbeCommand
 {
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
-        const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--json]";
-        if (args.Count == 0 || args.Count > 6 || args[0].StartsWith("--", StringComparison.Ordinal))
+        const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--json]";
+        if (args.Count == 0 || args.Count > 8 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
             error.WriteLine(usage);
             return 1;
@@ -24,6 +26,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10;
         bool json = false;
+        string? discPath = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Count; i++)
         {
@@ -35,6 +38,18 @@ internal static class OpenBiosProbeCommand
             }
 
             if (option == "--json") { json = true; continue; }
+            if (option == "--disc")
+            {
+                if (++i >= args.Count)
+                {
+                    error.WriteLine("openbios-probe: --disc requires an image path");
+                    return 1;
+                }
+
+                discPath = args[i];
+                continue;
+            }
+
             if (option != "--segment-budget" && option != "--segments")
             {
                 error.WriteLine($"openbios-probe: unknown option {option}");
@@ -62,7 +77,8 @@ internal static class OpenBiosProbeCommand
             }
             var bytes = File.ReadAllBytes(args[0]);
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(bytes));
+            using var disc = discPath is null ? null : OpenDisc(discPath);
+            var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(bytes), disc?.Source);
             using var engine = backend.CreateEngine();
             var observed = engine as InterpreterTitleExecutionEngine;
             var monitor = new OpenBiosBootMonitor(observed is null ? null : () => observed.Cop0Diagnostics.Cause);
@@ -122,12 +138,41 @@ internal static class OpenBiosProbeCommand
             return kernelBooted ? 0 : 2;
         }
         catch (Exception ex) when (
-            ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException
+            ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
                 or FileNotFoundException or DirectoryNotFoundException or DllNotFoundException)
         {
             error.WriteLine($"openbios-probe: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>A CHD image (by its "MComprHD" magic) or a raw single-track image of 2352-byte sectors.</summary>
+    private static OpenedDisc OpenDisc(string path)
+    {
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            var magic = new byte[8];
+            if (stream.Read(magic) == magic.Length && System.Text.Encoding.ASCII.GetString(magic) == "MComprHD")
+            {
+                stream.Position = 0;
+                return new OpenedDisc(new ChdCdSectorSource(ChdReader.Open(stream)), stream);
+            }
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+
+        stream.Dispose();
+        // ponytail: a raw image is read whole into memory; stream it when full-size .bin dumps are probed.
+        return new OpenedDisc(new RawCdSectorSource(File.ReadAllBytes(path)), null);
+    }
+
+    private sealed record OpenedDisc(ICdSectorSource Source, Stream? Stream) : IDisposable
+    {
+        public void Dispose() => Stream?.Dispose();
     }
 
     private static object BuildStop(InterpreterTitleExecutionEngine engine, RecompilerStateSnapshot? snapshot)

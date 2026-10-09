@@ -138,9 +138,11 @@ public sealed class DeviceScheduler
         }
         _dmaIrqLine = dmaLine;
 
-        // CD-ROM: response packets are event-driven rather than cycle-driven.
-        // Use the packet generation, not only a level edge, so an INT3 ack that
-        // immediately exposes a queued INT1/INT2 still produces a distinct IRQ2.
+        // CD-ROM: the drive's clock (a disc's sector stream and response delays,
+        // Issue #732) advances first. Use the packet generation, not only a level
+        // edge, so an INT3 ack that exposes a queued INT1/INT2 still produces a
+        // distinct IRQ2.
+        _cdRom?.Advance(cycles);
         if (_cdRom is not null &&
             _cdRom.HasInterrupt &&
             _cdRom.InterruptGeneration != _lastCdRomInterruptGeneration)
@@ -177,6 +179,7 @@ public sealed class DeviceScheduler
         var phase = (ulong)_cyclesSinceVblank + cycles;
         if (phase >= VblankIntervalCycles)
         {
+            _gpu?.OnVblank();
             _interrupts.Raise(VblankIrq);
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);
