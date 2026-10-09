@@ -44,9 +44,31 @@ This command:
 - allows the OpenBIOS kernel to run dynamically written low RAM, not just ROM;
 - does **not** construct `BiosHleRuntime`, synthesize A0/B0/C0 service
   results or install proprietary BIOS data;
-- always reports `bootVerified:false` / exit code 2 until a real boot
-  completion criterion and title handoff are implemented. Running instructions
-  for 1,000,000 steps is **not** evidence of a fully booted game.
+- reports observable milestones (`OpenBiosBootMonitor`): reset vector fetched, kernel
+  running from low RAM, 0x80/A0/B0/C0 stubs installed, a guest exception (SYSCALL / IRQ
+  counted separately) delivered to 0x80, shell entered at 0x80030000. Exit 0 and
+  `kernelBooted:true` only when all hold; `bootVerified:true` additionally needs
+  `titleStarted` (control left the shell for user RAM outside the shell image). Running a
+  fixed number of instructions is never evidence. `--capture-at <pc>` snapshots registers
+  and recent transfers when a PC is first fetched; a stop prints PC, word, COP0, GPRs,
+  recent fetches/transfers, and the first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
+
+Measured with the pinned build (`openbios.bin` sha256
+`96889cfc16e3637e58e3b709a8de4f47725a4c9f2cafde57e0c24dc075f5cfb7`, GCC 16.2.0; a clean
+rebuild reproduced the hash): without a disc the kernel reaches the shell after 709,142
+fetches (1 SYSCALL, 0 IRQ) and the shell idles waiting for a disc.
+
+First stops found and fixed on the way (each at the shared owner, no faked BIOS result):
+- PC 0xFFFFFFD0 (A0 vector word zeroed): the native CPU lacked `SR.IsC`, so `flushCache`
+  stores of zero landed in RAM over the freshly installed vectors.
+- shell `waitVSync` / disc sequence: see the disc section below.
+
+Persona (user-provided CHD, not in the repo), real OpenBIOS: kernel boots, the shell accepts
+the disc, the firmware loads the executable through its own CD code and enters it at
+0x80011930 (`titleStarted:true`, 566 IRQ and 31 SYSCALL entries delivered). First stop:
+CpU (ExcCode 11, CE=2 = COP2/GTE) at EPC 0x800861DC; OpenBIOS reports it as an unresolved
+exception (A0:40) and halts. The native CPU raises CpU for every COP2 instruction by
+design; GTE execution is Issue #447. No title screen was reached.
 
 ### Disc in the drive (`--disc`)
 
@@ -94,4 +116,18 @@ executable full-ROM integration base, not another one-at-a-time HLE function.
 5. Only after real Persona E2E evidence (#351) promote OpenBIOS to the default
    game-running backend. Keep the backend interface for a future HLE replacement.
 
-**Status: initial executable slice; entire firmware port is not complete.**
+### Native recompilation status
+
+The IR pipeline lowers COP0 (MFC0/MTC0/RFE), SYSCALL/BREAK as firmware traps and honours
+`SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. Measured on the
+pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector alone; with the
+257 ELF function symbols as explicit roots 9,228 are native. Code that exists only at run time
+(kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) has no
+generated block and can only run through the mixed-execution interpreter fallback, which is
+reported as fallback. The interpreter remains the only verified way to run OpenBIOS end to end;
+generated-host execution of OpenBIOS is **not** verified (see the status line).
+
+**Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc
+through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so Persona cannot get
+past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
+backend; redistribution approval (#730).**
