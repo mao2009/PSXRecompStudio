@@ -23,6 +23,7 @@ skills/
 │   │   │   └── references/ #  Normative detail for the batch protocol
 │   │   ├── commit-message/ #   Commit Message authoring skill (#94)
 │   │   ├── doc-sync/
+│   │   ├── handoff-checkpoints/ # Durable cross-environment agent handoff
 │   │   ├── merge/       #   Safe PR Merge Skill (#146)
 │   │   ├── reporting/   #   Completion-reporting process skill (#88)
 │   │   └── self-review/
@@ -71,6 +72,7 @@ gates.
 | Skill | Responsibility | Introduced by |
 |---|---|---|
 | `common/process/adr` | ADR authoring / maintenance: the "is an ADR needed" decision, SSOT / matrix / existing-ADR preflight, sequential numbering, standard Context / Decision / Consequences structure, traceability to Issues / PRs / code / tests, consistency checks, the review-feedback loop, and agent rules | #84 |
+| `common/process/handoff-checkpoints` | GitHub Issue/PR progress checkpoints and reproducible cross-session handoff | Direct request |
 | `common/process/doc-sync` | Documentation synchronization gate: impact mapping, minimal updates, recorded no-op decisions | #89 |
 | `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
 | `common/process/batch` | Agent-agnostic batch orchestration protocol (Markdown-only): task inventory, dependency analysis and DAG, execution waves, parallel-safety rules, worker abstraction and isolation, result validation, semantic conflict detection, failure/retry/recovery, review and approval gates, serial integration delegated to the Merge Skill, cleanup and reporting | #145, #155, #242 |
