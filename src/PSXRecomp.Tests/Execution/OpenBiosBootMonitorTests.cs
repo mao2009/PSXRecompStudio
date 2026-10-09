@@ -28,7 +28,7 @@ public sealed class OpenBiosBootMonitorTests
     {
         var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(rom));
         using var engine = (InterpreterTitleExecutionEngine)backend.CreateEngine();
-        var monitor = new OpenBiosBootMonitor();
+        var monitor = new OpenBiosBootMonitor(() => engine.Cop0Diagnostics.Cause);
         engine.FetchObserver = monitor.OnFetch;
         var result = new ExecutionOrchestrator().Execute(engine, null,
             new TitleExecutionRequest(backend.EntryPc, new uint[32], 0, 0,
@@ -63,6 +63,8 @@ public sealed class OpenBiosBootMonitorTests
         Assert.True(report.ExceptionVectorExecuted);
         Assert.True(report.ShellEntered);
         Assert.True(report.KernelBooted);
+        Assert.Equal(1ul, report.SyscallEntries);
+        Assert.Equal(0ul, report.InterruptEntries);
     }
 
     [Fact]

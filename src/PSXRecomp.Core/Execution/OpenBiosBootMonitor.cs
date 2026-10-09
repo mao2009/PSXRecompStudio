@@ -13,7 +13,9 @@ public sealed record OpenBiosBootReport(
     bool VectorsInstalled,
     bool ExceptionVectorExecuted,
     bool ShellEntered,
-    ulong? ShellEnteredAtFetch)
+    ulong? ShellEnteredAtFetch,
+    ulong InterruptEntries,
+    ulong SyscallEntries)
 {
     /// <summary>
     /// Kernel boot: the ROM reset vector ran, the kernel code expanded to low RAM and ran, the 0x80/A0/B0/C0
@@ -39,15 +41,30 @@ public sealed class OpenBiosBootMonitor
     private const uint KernelRamStart = 0x00000500u, KernelRamEnd = 0x00010000u;
     private static readonly uint[] VectorAddresses = [0x80u, 0xA0u, 0xB0u, 0xC0u];
 
+    private readonly Func<uint>? _readCause;
     private bool _reset, _ram, _exception, _shell;
-    private ulong _fetches, _shellAt;
+    private ulong _fetches, _shellAt, _interrupts, _syscalls;
+
+    /// <param name="readCause">Reads COP0 CAUSE, to classify exceptions delivered to the 0x80 vector; optional.</param>
+    public OpenBiosBootMonitor(Func<uint>? readCause = null) => _readCause = readCause;
 
     /// <summary>Records one instruction fetch. Cheap: runs on every interpreter step.</summary>
     public void OnFetch(uint pc)
     {
         _fetches++;
         if (pc == OpenBiosFirmware.ResetVector) _reset = true;
-        else if (pc == ExceptionVector) _exception = true;
+        else if (pc == ExceptionVector)
+        {
+            _exception = true;
+            if (_readCause is not null)
+            {
+                switch ((_readCause() >> 2) & 0x1Fu)
+                {
+                    case 0: _interrupts++; break;
+                    case 8: _syscalls++; break;
+                }
+            }
+        }
         else if (pc == ShellLoadAddress && !_shell) { _shell = true; _shellAt = _fetches; }
         else if (!_ram && (pc & 0x1FFFFFFFu) is >= KernelRamStart and < KernelRamEnd) _ram = true;
     }
@@ -56,7 +73,7 @@ public sealed class OpenBiosBootMonitor
     public OpenBiosBootReport Evaluate(Func<uint, uint> readWord)
     {
         ArgumentNullException.ThrowIfNull(readWord);
-        return new OpenBiosBootReport(_reset, _ram, VectorsInstalled(readWord), _exception, _shell, _shell ? _shellAt : null);
+        return new OpenBiosBootReport(_reset, _ram, VectorsInstalled(readWord), _exception, _shell, _shell ? _shellAt : null, _interrupts, _syscalls);
     }
 
     // Each vector slot holds a short stub that ends in a register jump (SPECIAL JR) within its four words.

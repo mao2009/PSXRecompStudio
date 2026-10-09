@@ -64,8 +64,9 @@ internal static class OpenBiosProbeCommand
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(bytes));
             using var engine = backend.CreateEngine();
-            var monitor = new OpenBiosBootMonitor();
-            if (engine is InterpreterTitleExecutionEngine observed)
+            var observed = engine as InterpreterTitleExecutionEngine;
+            var monitor = new OpenBiosBootMonitor(observed is null ? null : () => observed.Cop0Diagnostics.Cause);
+            if (observed is not null)
             {
                 observed.FetchObserver = monitor.OnFetch;
             }
