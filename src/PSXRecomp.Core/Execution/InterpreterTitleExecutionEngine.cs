@@ -157,6 +157,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <param name="sharedScheduler">The host-owned scheduler advanced one cycle per retired fallback instruction.</param>
     /// <param name="biosRuntimeFactory">Builds the Runtime over the graph core's RAM (state lives in guest RAM).</param>
     /// <param name="exceptionChain">The kernel exception handler's chain; null is the default chain.</param>
+    /// <param name="guestFirmware">The image is a guest firmware (Issue #732): it is written into the shared core once
+    /// here — the RAM copy-sync never carries the ROM window — and the fallback may run code anywhere in RAM or ROM and
+    /// deliver every exception to the guest vector, as the firmware backend's own interpreter does.</param>
     /// <exception cref="ArgumentNullException">An argument other than the optional ones is null.</exception>
     public static InterpreterTitleExecutionEngine Attach(
         IReadOnlyList<uint> instructions,
@@ -164,12 +167,24 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         PsxDeviceGraph sharedDevices,
         DeviceScheduler sharedScheduler,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
-        BiosExceptionChain? exceptionChain = null)
+        BiosExceptionChain? exceptionChain = null,
+        bool guestFirmware = false)
     {
         ArgumentNullException.ThrowIfNull(sharedDevices);
         ArgumentNullException.ThrowIfNull(sharedScheduler);
-        return new InterpreterTitleExecutionEngine(
-            instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices, sharedScheduler);
+        var engine = new InterpreterTitleExecutionEngine(
+            instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices, sharedScheduler,
+            allowRuntimeRamExecution: guestFirmware);
+        if (guestFirmware)
+        {
+            var physical = TranslateAddress(loadAddress);
+            for (var i = 0; i < instructions.Count; i++)
+            {
+                sharedDevices.Core.WriteMemory32(physical + unchecked((uint)i * 4u), instructions[i]);
+            }
+        }
+
+        return engine;
     }
 
     private InterpreterTitleExecutionEngine(
@@ -448,7 +463,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // report no pending branch delay slot and no uncommitted load: the artifact only ever starts a block at a
             // fused-unit boundary, where neither exists. The CPU's own state decides; nothing is inferred from the
             // previous instruction.
-            if (returnPcs is not null && step > 0 && !_inInterruptHandler
+            // A guest firmware (Issue #732) owns its handlers in its own image and permits every PC, so being inside one
+            // is no reason to keep interpreting; its SYSCALL handler returns to EPC + 4, never to the EPC tracked below.
+            if (returnPcs is not null && step > 0 && (!_inInterruptHandler || _allowRuntimeRamExecution)
                 && returnPcs.Contains(_core.Pc) && _core.IsPipelineClean)
             {
                 returned = true;

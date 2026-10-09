@@ -67,11 +67,14 @@ internal sealed class ArtifactFallbackSession : IDisposable
         PsxDeviceGraph devices,
         DeviceScheduler scheduler,
         ArtifactDeviceRam deviceRam,
-        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory,
         BiosExceptionChain? exceptionChain,
         Action<string> send,
-        Func<string> readReply)
+        Func<string> readReply,
+        bool guestFirmware = false,
+        Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null)
     {
+        _guestFirmware = guestFirmware;
         _options = options;
         _imageWords = imageWords;
         _imageLoadAddress = imageLoadAddress;
@@ -81,8 +84,15 @@ internal sealed class ArtifactFallbackSession : IDisposable
         _send = send;
         _readReply = readReply;
         _interpreter = InterpreterTitleExecutionEngine.Attach(
-            imageWords, imageLoadAddress, devices, scheduler, biosRuntimeFactory, exceptionChain);
+            imageWords, imageLoadAddress, devices, scheduler, biosRuntimeFactory, exceptionChain, guestFirmware);
+        if (fetchObserver is not null)
+        {
+            var interpreter = _interpreter;
+            _interpreter.FetchObserver = pc => fetchObserver(interpreter, pc);
+        }
     }
+
+    private readonly bool _guestFirmware;
 
     /// <summary>What <see cref="Handle"/> decided about one offered transfer.</summary>
     public enum Decision
@@ -127,8 +137,11 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
         // Static eligibility: an aligned PC inside the PS-X EXE text image. The image is the only executable region a
         // fallback ever runs; RAM-generated code, out-of-image PCs and every vector stay with the existing fail-closed path.
+        // A guest firmware (Issue #732) is the exception: it runs code it wrote to RAM, its own vectors and a loaded
+        // executable by design, reached directly as well as indirectly, so any aligned PC without a block is eligible.
         var imageEnd = (ulong)_imageLoadAddress + (ulong)_imageWords.Count * 4UL;
-        if ((pc & 3u) != 0 || pc < _imageLoadAddress || pc >= imageEnd || _blockEntryPcs.Contains(pc))
+        var inImage = pc >= _imageLoadAddress && pc < imageEnd;
+        if ((pc & 3u) != 0 || (!inImage && !_guestFirmware) || _blockEntryPcs.Contains(pc))
         {
             return Decision.Ineligible;
         }
@@ -138,7 +151,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
         {
             _send($"{RecompiledArtifactCodeGen.ProtocolFallbackQueryCommand} {RecompiledArtifactCodeGen.ProtocolFallbackVersion}");
             var header = ReadHeader();
-            if (header is null || !header.Value.Indirect)
+            if (header is null || (!header.Value.Indirect && !_guestFirmware))
             {
                 // A refusal, or a transfer that did not come from JR/JALR: not a runtime-discovered target.
                 return Decision.Ineligible;
