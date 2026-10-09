@@ -63,6 +63,7 @@ public sealed class DeviceScheduler
     private readonly IGpu? _gpu;
     private readonly ICdRom? _cdRom;
     private readonly CdRomDmaTransfer? _cdRomDma;
+    private readonly GpuDmaTransfer? _gpuDma;
     private uint _cyclesSinceVblank;
     private bool _dmaIrqLine;
     private bool _gpuIrqLine;
@@ -81,18 +82,22 @@ public sealed class DeviceScheduler
     /// #587): the generic per-cycle DMA model below never advances or
     /// completes channel 3 itself, so a real CD-ROM burst is never faked by
     /// the deterministic duration model.</param>
+    /// <param name="gpuDma">Optional GPU DMA2/OTC DMA6 bridge (Issue #732). When present, a started channel 2 or 6
+    /// transfer moves its data and completes before the generic model would time it.</param>
     public DeviceScheduler(
         PSXCoreWrapper core,
         IInterruptController interrupts,
         IGpu? gpu = null,
         ICdRom? cdRom = null,
-        CdRomDmaTransfer? cdRomDma = null)
+        CdRomDmaTransfer? cdRomDma = null,
+        GpuDmaTransfer? gpuDma = null)
     {
         _core = core ?? throw new ArgumentNullException(nameof(core));
         _interrupts = interrupts ?? throw new ArgumentNullException(nameof(interrupts));
         _gpu = gpu;
         _cdRom = cdRom;
         _cdRomDma = cdRomDma;
+        _gpuDma = gpuDma;
     }
 
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
@@ -121,7 +126,8 @@ public sealed class DeviceScheduler
         // configured it exclusively owns channel 3's completion (Issue #587):
         // it is serviced first and the deterministic per-word model skips
         // channel 3. Without a bridge, every channel (including 3) keeps the
-        // generic model.
+        // generic model. The GPU bridge, when configured, likewise moves and completes channels 2 and 6 first.
+        _gpuDma?.TryTransfer();
         if (_cdRomDma is not null)
         {
             _cdRomDma.TryTransfer();

@@ -430,8 +430,8 @@ run. Responsibilities are split so no device behavior is duplicated:
   continues; other exceptions (SYSCALL, BREAK, faults, software interrupts)
   still end the segment as `CPU_EXCEPTION`. See `docs/cpu/exceptions.md`.
 - **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
-  raised as IRQ4-6) → DMA (CD-ROM DMA3 service when configured, then the
-  generic tick; IRQ3 on a rising edge of DICR bit 31) → CD-ROM (IRQ2 per newly
+  raised as IRQ4-6) → DMA (GPU DMA2/OTC DMA6 and CD-ROM DMA3 service when
+  configured, then the generic tick; IRQ3 on a rising edge of DICR bit 31) → CD-ROM (IRQ2 per newly
   activated enabled response packet) → SIO0 (IRQ7) → GPU command IRQ (IRQ1 on
   the rising edge of GP0(1Fh)'s source) → VBlank
   (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
@@ -441,9 +441,12 @@ run. Responsibilities are split so no device behavior is duplicated:
   28 for sync mode 0) completes after one cycle per word (sync 0: BCR[15:0];
   sync 1: size × count; linked list: one word, since its length lives in guest
   RAM). Completion clears CHCR bits 24/28 and sets the channel's DICR flag when
-  enabled. The tick itself transfers no data; CD-ROM DMA3 moves its data and
-  completes only channel 3 (#587). Other device-backed transfers (GPU DMA2,
-  OTC clearing, SPU, MDEC) remain device work.
+  enabled (DICR: psx-spx layout, enables 16-22, flags 24-30). The tick itself
+  transfers no data; CD-ROM DMA3 moves its data and completes only channel 3
+  (#587). `GpuDmaTransfer` (#732) moves a started DMA2 block (RAM↔GP0/GPUREAD)
+  or linked list (RAM→GP0) and the OTC DMA6 chain at once, then completes the
+  channel; the interpreter engine configures it, the generated-host engine does
+  not yet. SPU and MDEC (DMA0/1/4) transfers remain device work.
 
 Not modelled: cycle-exact timing, HBlank, and Timer 0/1 blank sync lines.
 The generated-host engine (`HostTitleExecutionEngine`, test-only) carries

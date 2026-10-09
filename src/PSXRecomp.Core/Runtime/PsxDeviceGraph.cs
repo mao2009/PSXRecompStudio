@@ -65,6 +65,7 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
         CdRomDevice = new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), disc);
         CdRomAdapter = new CdRomMmioAdapter(CdRomDevice);
         CdRomDmaTransfer = new CdRomDmaTransfer(CdRomDevice, DmaAdapter, deviceRam ?? Bus);
+        GpuDmaTransfer = new GpuDmaTransfer(GpuDevice, DmaAdapter, deviceRam ?? Bus);
         Bus.AttachDmaAdapter(DmaAdapter);
         Bus.AttachTimerAdapter(TimerAdapter);
         Bus.AttachInterruptControllerAdapter(InterruptControllerAdapter);
@@ -131,6 +132,7 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     public CdRomDevice CdRomDevice { get; }
     public CdRomMmioAdapter CdRomAdapter { get; }
     public CdRomDmaTransfer CdRomDmaTransfer { get; }
+    public GpuDmaTransfer GpuDmaTransfer { get; }
 
     /// <summary>
     /// Whether the Runtime defines the behaviour of a guest access at <paramref name="physicalAddress"/>

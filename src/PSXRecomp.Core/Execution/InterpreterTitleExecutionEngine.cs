@@ -312,7 +312,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(
-            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer);
+            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer, _devices.GpuDmaTransfer);
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
