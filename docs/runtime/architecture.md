@@ -57,7 +57,7 @@ The old common `IHardwareComponent` abstraction was removed because it had no pr
 | Controller/MemCard | native/Rust `crate::sio0` (register model, Issue #542; minimal disconnected-pad protocol, Issue #543) | 0x1F801040-0x1F80105E | IRQ7 (byte received = a device's /ACK; the empty-port protocol drives none, Issue #716) |
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
-| MDEC | IMdec | 0x1F801820-0x1F801824 | None |
+| MDEC | IMdec (`MdecDevice`, Issue #732; DMA0/1 via `MdecDmaTransfer`) | 0x1F801820-0x1F801824 | None |
 | SPU | native/Rust `crate::spu` register store (Issue #445; `ISpu` remains the higher-level contract) | 0x1F801C00-0x1F801DFF | IRQ9 (not yet driven) |
 | GTE | IGte (COP2) | Coprocessor | None |
 | Cache Control | IMemoryBus | 0xFFFE0130 | None |
@@ -445,8 +445,11 @@ run. Responsibilities are split so no device behavior is duplicated:
   transfers no data; CD-ROM DMA3 moves its data and completes only channel 3
   (#587). `GpuDmaTransfer` (#732) moves a started DMA2 block (RAM↔GP0/GPUREAD)
   or linked list (RAM→GP0) and the OTC DMA6 chain at once, then completes the
-  channel; the interpreter engine configures it, the generated-host engine does
-  not yet. SPU and MDEC (DMA0/1/4) transfers remain device work.
+  channel; `MdecDmaTransfer` does the same for MDEC DMA0 (in) and DMA1 (out,
+  completed only once the decoder holds the whole burst). The generic tick skips
+  every bridged channel (`PSXCore_TickDmaExcludingChannels`). The interpreter
+  engine configures all three bridges, the generated-host engine only the CD-ROM
+  one. SPU DMA4 remains device work.
 
 Not modelled: cycle-exact timing, HBlank, and Timer 0/1 blank sync lines.
 The generated-host engine (`HostTitleExecutionEngine`, test-only) carries

@@ -323,6 +323,7 @@ its result directly.
 | `psx_dma_get_interrupt_pending` | `uint32_t(PSXDmaState)` | 1 when `master_enable && (flags & enables) != 0` or `force_irq`, i.e. the DICR bit-31 condition; else 0. |
 | `psx_dma_tick` | `PSXDmaState(PSXDmaState, uint32_t cycles)` | Each started channel (CHCR bit 24, its DPCR enable bit `3 + 4*ch`, and bit 28 for sync mode 0) counts down one cycle per word (sync 0: BCR[15:0]; sync 1: BCR[15:0] × BCR[31:16]; zero field = 0x10000; sync 2/3: one word). On completion CHCR bits 24/28 clear and DICR flag `24 + ch` is set when DICR enable `16 + ch` is set. Excess cycles are discarded. |
 | `psx_dma_tick_excluding_channel` | `PSXDmaState(PSXDmaState, uint32_t cycles, uint32_t excluded_channel)` | As `psx_dma_tick`, except `excluded_channel`'s CHCR, `remaining`, and DICR flag never change, whatever its started state (#587). |
+| `psx_dma_tick_excluding_channels` | `PSXDmaState(PSXDmaState, uint32_t cycles, uint32_t excluded_mask)` | As `psx_dma_tick_excluding_channel` for every channel whose bit is set in `excluded_mask` (#732: each managed device DMA bridge owns its channels). |
 | `psx_dma_complete_channel` | `PSXDmaState(PSXDmaState, uint32_t channel)` | If `channel` is started, completes it now as `psx_dma_tick` would (CHCR bits 24/28 clear, `remaining` zeroed, DICR flag when enabled). No other channel changes; an unstarted or out-of-range channel is a no-op (#587). |
 
 The DICR bit layout is psx-spx's (Issue #732): bits 0–5 read/write, bit 15 force

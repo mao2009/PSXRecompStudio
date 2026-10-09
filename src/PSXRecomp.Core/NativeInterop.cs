@@ -116,6 +116,10 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial void PSXCore_TickDmaExcludingChannel(IntPtr core, uint cycles, uint excludedChannel);
 
+    /// <summary>Like <see cref="PSXCore_TickDma"/>, except every channel set in <paramref name="excludedMask"/> is skipped (Issue #732).</summary>
+    [LibraryImport(LibName)]
+    internal static partial void PSXCore_TickDmaExcludingChannels(IntPtr core, uint cycles, uint excludedMask);
+
     /// <summary>Immediately completes <paramref name="channel"/>'s in-flight transfer, independent of elapsed cycles (Issue #587).</summary>
     [LibraryImport(LibName)]
     internal static partial void PSXCore_CompleteDmaChannel(IntPtr core, uint channel);

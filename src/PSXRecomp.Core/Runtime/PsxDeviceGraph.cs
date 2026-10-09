@@ -4,6 +4,7 @@ using PSXRecomp.Core.MemoryCard;
 using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Core.Runtime.Gpu;
 using PSXRecomp.Core.Runtime.Gte;
+using PSXRecomp.Core.Runtime.Mdec;
 
 namespace PSXRecomp.Core.Runtime;
 
@@ -66,6 +67,7 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
         CdRomAdapter = new CdRomMmioAdapter(CdRomDevice);
         CdRomDmaTransfer = new CdRomDmaTransfer(CdRomDevice, DmaAdapter, deviceRam ?? Bus);
         GpuDmaTransfer = new GpuDmaTransfer(GpuDevice, DmaAdapter, deviceRam ?? Bus);
+        MdecDmaTransfer = new MdecDmaTransfer(Mdec, DmaAdapter, deviceRam ?? Bus);
         Bus.AttachDmaAdapter(DmaAdapter);
         Bus.AttachTimerAdapter(TimerAdapter);
         Bus.AttachInterruptControllerAdapter(InterruptControllerAdapter);
@@ -76,7 +78,14 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
         // MemoryBus object itself. Route only the GPU's 32-bit register window back
         // to the same managed adapter; the native side owns no GPU semantics
         // (Issue #572).
-        Core.AttachGpuMmio(GpuAdapter.ReadRegister, GpuAdapter.WriteRegister);
+        // The same 32-bit window also carries the MDEC ports at 0x1F801820/24 (Issue #732).
+        Core.AttachGpuMmio(
+            address => address >= MdecBase ? Mdec.ReadRegister(address - MdecBase) : GpuAdapter.ReadRegister(address),
+            (address, value) =>
+            {
+                if (address >= MdecBase) Mdec.WriteRegister(address - MdecBase, value);
+                else GpuAdapter.WriteRegister(address, value);
+            });
 
         // Same bridge as the GPU above, but for the CD-ROM controller's 8-bit
         // port window: the native side owns no CD-ROM semantics either
@@ -133,6 +142,12 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     public CdRomMmioAdapter CdRomAdapter { get; }
     public CdRomDmaTransfer CdRomDmaTransfer { get; }
     public GpuDmaTransfer GpuDmaTransfer { get; }
+
+    /// <summary>The motion decoder (Issue #732); its ports share the GPU's 32-bit MMIO bridge.</summary>
+    public MdecDevice Mdec { get; } = new();
+    public MdecDmaTransfer MdecDmaTransfer { get; }
+
+    private const uint MdecBase = 0x1F801820;
 
     /// <summary>
     /// Whether the Runtime defines the behaviour of a guest access at <paramref name="physicalAddress"/>

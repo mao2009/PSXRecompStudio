@@ -78,6 +78,25 @@ DMA3/CD-ROM interrupt state machine (state word 0x800A77E0, DMA3 CHCR 0x11000000
 23,489 IRQs are delivered, 0 GTE commands have executed, and the displayed frame (probe `frame`)
 is 320x240 with no non-zero pixel. No title screen was reached.
 
+That wait and the stops after it were Runtime hardware gaps (Issue #732), traced through the
+guest's CD-ROM/DMA/GPU/MDEC register traffic:
+
+1. The loop is the movie player's stream ring (SetLoc 26:05:31, SetMode C0h, ReadS). Every 8th
+   sector is XA audio (submode 64h); with SetMode bit 6 the drive must route it to the SPU,
+   but the model raised INT1 for it, so the stream library parsed ADPCM as a video sector
+   header and its ring stalled after 9 sectors. Fixed in `CdRomDevice` (no audio decoder).
+2. Next, DrawSync at 0x80084B58 waited on GPUSTAT bit 26: each decoded frame is uploaded with
+   GP0(A0h) + DMA2 block mode, and the DMA model moved no data. Fixed by `GpuDmaTransfer`.
+3. Next, DecDCTinSync at 0x80081BC8 polled MDEC status 0x1F801824, a flat register with no
+   device behind it. Fixed by `MdecDevice` + `MdecDmaTransfer`.
+4. The DICR layout was also corrected to psx-spx (the title enables channels 1/3/4 with
+   DICR 009A0000h and now sees its MDEC-out flag and IRQ3).
+
+After these the intro movie plays: VRAM holds the decoded 24-bit ATLUS logo frame and the probe
+frame reports 29,609 non-zero pixels (the probe's frame evidence reads VRAM as 15-bit, so a
+24-bit display looks striped there). The run at 600 x 1M instructions is mid-movie, waiting on
+the stream at 0x800812E8 as designed between frames; no title screen yet.
+
 ### Disc in the drive (`--disc`)
 
 `psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 600 --disc <image.chd|image.bin> --json`
@@ -102,9 +121,7 @@ the disc, schedules its boot, returns; the kernel runs `initCDRom`, opens
 `gameMainThunk` → `exec` enters the executable's entry `0x80010000` (about 192M
 instructions), which then writes its marker to RAM. Known gaps: the CHD adapter
 reports a single data track (CHT2 metadata not parsed); seek time is a fixed
-constant; no XA/CD-DA audio; the native DMA model's DICR bit layout differs
-from psx-spx (enables/flags swapped), so the kernel's DMA3 IRQ bookkeeping does
-not see its flag.
+constant; no XA/CD-DA audio (XA sectors are routed away from the CPU and dropped).
 
 ### Generated host (`--engine generated-host`)
 
@@ -171,6 +188,7 @@ generated-host execution of OpenBIOS is **not** verified (see the status line).
 
 **Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc
 through its own CD driver (synthetic disc and Persona); COP2/GTE executes (#447: transfers,
-LWC2/SWC2, RTPS/NCLIP/AVSZ3/AVSZ4). Not done: Persona's CD streaming wait (above); further GTE
+LWC2/SWC2, RTPS/NCLIP/AVSZ3/AVSZ4). Persona's intro movie decodes and displays (CD XA routing, GPU DMA2, MDEC, #732). Not done: a
+Persona title screen; further GTE
 commands, added when a run reaches them; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**

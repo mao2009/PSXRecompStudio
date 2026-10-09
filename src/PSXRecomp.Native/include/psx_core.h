@@ -163,6 +163,12 @@ PSX_API void     PSXCore_TickDma(PSXCore* core, uint32_t cycles);
  */
 PSX_API void     PSXCore_TickDmaExcludingChannel(PSXCore* core, uint32_t cycles, uint32_t excluded_channel);
 /**
+ * Like PSXCore_TickDmaExcludingChannel, for every channel whose bit is set in
+ * `excluded_mask` (bit n = channel n; Issue #732): each managed device bridge
+ * (CD-ROM DMA3, GPU DMA2/OTC DMA6, MDEC DMA0/1) owns its channels' completion.
+ */
+PSX_API void     PSXCore_TickDmaExcludingChannels(PSXCore* core, uint32_t cycles, uint32_t excluded_mask);
+/**
  * Immediately completes `channel`'s in-flight transfer, independent of
  * elapsed cycles (Issue #587): clears its CHCR bits 24/28 and sets its DICR
  * flag when that channel's DICR enable is set. No other channel's CHCR,

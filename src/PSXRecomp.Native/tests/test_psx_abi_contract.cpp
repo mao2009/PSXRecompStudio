@@ -52,6 +52,7 @@ constexpr const char* RequiredSymbols[] = {
     "PSXCore_GetDmaInterruptPending",
     "PSXCore_TickDma",
     "PSXCore_TickDmaExcludingChannel",
+    "PSXCore_TickDmaExcludingChannels",
     "PSXCore_CompleteDmaChannel",
     "PSXCore_SetCdRomMmioCallbacks",
     "PSXCore_SetGteCallbacks",

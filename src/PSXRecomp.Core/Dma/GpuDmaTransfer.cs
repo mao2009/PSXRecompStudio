@@ -57,9 +57,9 @@ public sealed class GpuDmaTransfer
         uint moved = 0;
         switch ((chcr >> SyncShift) & 3)
         {
-            case 1:
+            case var sync and (0 or 1):
                 var step = (chcr & AddressDecrement) != 0 ? unchecked((uint)-4) : 4u;
-                var words = Field(bcr & 0xFFFF) * Field(bcr >> 16);
+                var words = sync == 0 ? Field(bcr & 0xFFFF) : Field(bcr & 0xFFFF) * Field(bcr >> 16);
                 for (; moved < words; moved++, madr += step)
                 {
                     if ((chcr & DirectionFromRam) != 0)
@@ -72,7 +72,11 @@ public sealed class GpuDmaTransfer
                     }
                 }
 
-                _dma.WriteRegister(Ps1MemoryMap.GetChannelBcr(GpuChannel), bcr & 0xFFFF);
+                if (sync == 1)
+                {
+                    _dma.WriteRegister(Ps1MemoryMap.GetChannelBcr(GpuChannel), bcr & 0xFFFF);
+                }
+
                 break;
             case 2 when (chcr & DirectionFromRam) != 0:
                 for (var node = 0; node < MaxLinkedListNodes && (madr & LinkedListEnd) == 0; node++)
@@ -88,7 +92,7 @@ public sealed class GpuDmaTransfer
 
                 break;
             default:
-                // Manual mode or a GPU-to-RAM list: not used by the GPU; left to the generic duration model.
+                // A GPU-to-RAM linked list (or sync 3) does not exist on the hardware: the channel stays busy.
                 return 0;
         }
 

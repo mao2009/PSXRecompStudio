@@ -299,6 +299,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _gpuDevice.Reset();
         _gpuDevice.ResetFrameEvidence();
         _cdRomDevice.Reset();
+        _devices.Mdec.Reset();
         foreach (var item in request.InitialMemory)
         {
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
@@ -312,7 +313,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(
-            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer, _devices.GpuDmaTransfer);
+            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer, _devices.GpuDmaTransfer, _devices.MdecDmaTransfer);
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;

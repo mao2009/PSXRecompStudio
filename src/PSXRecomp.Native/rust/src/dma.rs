@@ -281,12 +281,22 @@ pub extern "C" fn psx_dma_get_interrupt_pending(state: DmaState) -> u32 {
 /// this generic per-cycle model must not also age or complete it. Infallible.
 #[no_mangle]
 pub extern "C" fn psx_dma_tick_excluding_channel(state: DmaState, cycles: u32, excluded_channel: u32) -> DmaState {
+    psx_dma_tick_excluding_channels(state, cycles, 1u32.checked_shl(excluded_channel).unwrap_or(0))
+}
+
+/// Like [`psx_dma_tick_excluding_channel`], for every channel whose bit is set
+/// in `excluded_mask` (bit `n` = channel `n`; Issue #732: the managed CD-ROM,
+/// GPU/OTC and MDEC bridges each own their channels' completion, and a
+/// channel waiting for device data must not be completed by this model).
+/// Infallible.
+#[no_mangle]
+pub extern "C" fn psx_dma_tick_excluding_channels(state: DmaState, cycles: u32, excluded_mask: u32) -> DmaState {
     let mut s = state;
     if cycles == 0 {
         return s;
     }
     for (ch, (channel, remaining)) in s.channels.iter_mut().zip(s.remaining.iter_mut()).enumerate() {
-        if ch as u32 == excluded_channel {
+        if excluded_mask & (1u32 << ch) != 0 {
             continue;
         }
         if !channel_started(s.dpcr, ch as u32, channel.chcr) {
@@ -686,6 +696,18 @@ mod tests {
         s = psx_dma_write_register(s, PSX_DMA_DICR, (dicr & 0x00FF_FFFF) | 0x8800_0000);
         assert_eq!(psx_dma_read_register(s, PSX_DMA_DICR), 0x0088_0000);
         assert_eq!(psx_dma_get_interrupt_pending(s), 0);
+    }
+
+    #[test]
+    fn tick_excluding_channels_skips_every_masked_channel() {
+        let mut s = armed_channel(1, 4, true);
+        s = psx_dma_write_register(s, PSX_DMA_DPCR, s.dpcr | (1 << (3 + 4 * 6)));
+        s = psx_dma_write_register(s, chan_addr(6, 4), 4);
+        s = psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2);
+        let t = psx_dma_tick_excluding_channels(s, 100, (1 << 1) | (1 << 3));
+        assert_eq!(t.channels[1], s.channels[1], "masked channel 1 untouched");
+        assert_eq!(t.channels[6].chcr & CHCR_START_BUSY, 0, "unmasked channel 6 completes");
+        assert_eq!(psx_dma_tick_excluding_channel(s, 100, 1), t);
     }
 
     const DMA3_FLAG: u32 = 1 << 27;
