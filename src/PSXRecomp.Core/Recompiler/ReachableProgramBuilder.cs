@@ -190,7 +190,7 @@ public static class ReachableProgramBuilder
     /// </summary>
     private static bool FallsThrough(in R3000aInstruction instruction) =>
         instruction.ControlFlow == R3000aControlFlowKind.Sequential
-        || instruction.Opcode is R3000aOpcode.Mfc0 or R3000aOpcode.Mtc0 or R3000aOpcode.Rfe;
+        || instruction.Opcode is R3000aOpcode.Mfc0 or R3000aOpcode.Mtc0 or R3000aOpcode.Rfe or R3000aOpcode.Cop2Command;
 
     /// <summary>
     /// The control transfers whose delay slot holds a load (or MFC0) whose load-delay shadow provably falls on

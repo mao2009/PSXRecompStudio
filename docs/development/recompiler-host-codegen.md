@@ -101,6 +101,22 @@ MFC0/MTC0 read and write SR/CAUSE/EPC through the existing `cop0_sr`/`cop0_cause
 (`recompiler_cop0_slot`, `recompiler_cop0_write`); every store is guarded by
 `recompiler_store_isolated` (SR.IsC). All constants come from `RecompilerCop0`.
 
+### COP2 / GTE (Issue #447)
+
+MFC2/CFC2 lower to `ReadCop2` (load-delayed like MFC0), MTC2/CTC2 to `WriteCop2`,
+a command to `Cop2Command` (`Immediate` = the 25 command bits), LWC2 to
+`Load32` + `WriteCop2` and SWC2 to `ReadCop2` + `Store32`. `Immediate` of
+`ReadCop2`/`WriteCop2` selects the data or control bank (`RecompilerCop2`).
+Generated code holds no GTE state: a program that uses COP2 declares
+`recompiler_gte_read/write/command(core, ...)` (reg 0-31 data, 32-63 control),
+which the host provides; the production artifact relays each call to its parent
+(`RHOST_GTE R|W|C`), which applies it to the device graph's `GteRegisterBank` —
+the same instance the fallback interpreter executes against. Every COP2
+operation first checks SR.CU2 and, with it clear, stops the block with an
+`Exception` termination (fail closed; the interpreter delivers CpU to the guest
+vector instead). A command the GTE does not implement stops the block the same
+way; the artifact's parent refuses it with `GTE_COMMAND_UNSUPPORTED`.
+
 A firmware ROM is built with `ReachableProgramBuilder.BuildFirmwareImage(loadAddress,
 words, entry, roots)`, which reports `NativeInstructionCount` and the static
 `FallbackTargets` outside the image. Code without a block — RAM code the firmware

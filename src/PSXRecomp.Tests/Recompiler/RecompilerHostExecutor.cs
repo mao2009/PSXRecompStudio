@@ -276,14 +276,17 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
             // With a Runtime configured, the generated program's unresolved
             // control transfers are relayed to this process so the very same
             // IBiosRuntime the interpreter uses decides what they mean.
-            var bios = _biosRuntimeFactory is null
+            // A program that uses COP2 relays every GTE access to this process's GteRegisterBank (Issue #447),
+            // the same implementation the interpreter executes against, so the C side holds no GTE copy.
+            var usesGte = generatedSource.Contains("recompiler_gte_", StringComparison.Ordinal);
+            var bios = _biosRuntimeFactory is null && !usesGte
                 ? null
                 : new HostTransferSession(_biosRuntimeFactory, blockEntryPcs);
 
             // The input path is quoted so a temp directory containing a space
             // cannot split it into two arguments — which would both break the
             // file open and, with the protocol switch appended, misplace it.
-            var runArguments = bios is null
+            var runArguments = _biosRuntimeFactory is null
                 ? $"\"{inputPath}\""
                 : $"\"{inputPath}\" {HostTransferArgument}";
 
@@ -525,11 +528,14 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         private const string InitLine = "RHOST_INIT";
         private const string TransferPrefix = "RHOST_TRANSFER ";
         private const string DataPrefix = "RHOST_DATA ";
+        private const string GtePrefix = "RHOST_GTE ";
+
+        private readonly PSXRecomp.Core.Runtime.Gte.GteRegisterBank _gte = new();
 
         /// <summary>The <c>pc</c> field plus the 32 general-purpose registers.</summary>
         private const int TransferFieldCount = 33;
 
-        private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> _biosRuntimeFactory;
+        private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
         private readonly IReadOnlySet<uint> _blockEntryPcs;
 
         private TextReader? _fromHost;
@@ -557,7 +563,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         /// <param name="blockEntryPcs">The generated program's block entry PCs, used to reject
         /// patched targets the generated host has no block for.</param>
         public HostTransferSession(
-            Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
+            Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory,
             IReadOnlySet<uint> blockEntryPcs)
         {
             _biosRuntimeFactory = biosRuntimeFactory;
@@ -574,7 +580,13 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         public bool TryHandle(string line)
         {
             var trimmed = line.TrimEnd();
-            if (trimmed == InitLine)
+            if (trimmed.StartsWith(GtePrefix, StringComparison.Ordinal))
+            {
+                HandleGte(trimmed[GtePrefix.Length..]);
+                return true;
+            }
+
+            if (trimmed == InitLine && _biosRuntimeFactory is not null)
             {
                 _biosRuntime = _biosRuntimeFactory(
                     new GuestMemoryReader(ReadPhysicalByte),
@@ -668,6 +680,28 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
                 CultureInfo.InvariantCulture,
                 $"D {(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
                 $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"));
+        }
+
+        /// <summary><c>R reg</c> / <c>W reg value</c> / <c>C command</c> (reg 0-31 data, 32-63 control); every request is answered with one number.</summary>
+        private void HandleGte(string fields)
+        {
+            var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var a = ParseUInt(parts[1]);
+            uint reply = parts[0] switch
+            {
+                "R" => a < 32 ? _gte.ReadDataRegister((int)a) : _gte.ReadControlRegister((int)a - 32),
+                "W" => Write(a, ParseUInt(parts[2])),
+                "C" => _gte.ExecuteCommand(a) ? 0u : 1u,
+                _ => throw new InvalidOperationException($"Unknown GTE request '{fields}'."),
+            };
+            Send(reply.ToString(CultureInfo.InvariantCulture));
+
+            uint Write(uint register, uint value)
+            {
+                if (register < 32) _gte.WriteDataRegister((int)register, value);
+                else _gte.WriteControlRegister((int)register - 32, value);
+                return 0;
+            }
         }
 
         private void Stop(string? diagnosticCode, string? diagnosticMessage)
@@ -768,6 +802,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
     // bytes. Out-of-range reads return 0; out-of-range writes are dropped.
     private const string DriverSource = @"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PSX_TEST_RAM_SIZE (2u * 1024u * 1024u)
@@ -859,6 +894,20 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
     (void)core;
     return test_read(test_translate(address), 4);
 }
+
+/* GTE (COP2, Issue #447): relayed to the test process's GteRegisterBank, one numeric reply per request. */
+static uint32_t test_gte_request(const char* op, uint32_t a, uint32_t b, int has_b) {
+    unsigned long v;
+    if (has_b) printf(""RHOST_GTE %s %lu %lu\n"", op, (unsigned long)a, (unsigned long)b);
+    else printf(""RHOST_GTE %s %lu\n"", op, (unsigned long)a);
+    fflush(stdout);
+    if (scanf(""%lu"", &v) != 1) exit(96);
+    return (uint32_t)v;
+}
+
+uint32_t recompiler_gte_read(void* core, uint32_t reg) { (void)core; return test_gte_request(""R"", reg, 0u, 0); }
+void recompiler_gte_write(void* core, uint32_t reg, uint32_t value) { (void)core; (void)test_gte_request(""W"", reg, value, 1); }
+int32_t recompiler_gte_command(void* core, uint32_t command) { (void)core; return (int32_t)test_gte_request(""C"", command, 0u, 0); }
 
 void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;

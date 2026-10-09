@@ -676,6 +676,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return true;
             }
 
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolGtePrefix, StringComparison.Ordinal))
+            {
+                HandleGte(trimmed[RecompiledArtifactCodeGen.ProtocolGtePrefix.Length..]);
+                return true;
+            }
+
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioReadPrefix, StringComparison.Ordinal))
             {
                 HandleMmio(trimmed[RecompiledArtifactCodeGen.ProtocolMmioReadPrefix.Length..], isWrite: false);
@@ -1048,6 +1054,47 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
+        }
+
+        /// <summary>
+        /// A GTE access from generated code (Issue #447), applied to this graph's GTE — the one the fallback
+        /// interpreter executes against. An unimplemented command is refused and named.
+        /// </summary>
+        private void HandleGte(string fields)
+        {
+            var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (_devices is null || parts.Length < 2
+                || !uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var a)
+                || (parts[0] is "R" or "W" && a >= 64))
+            {
+                throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+            }
+
+            var gte = _devices.Gte;
+            uint result = 0;
+            switch (parts[0])
+            {
+                case "R":
+                    result = a < 32 ? gte.ReadDataRegister((int)a) : gte.ReadControlRegister((int)a - 32);
+                    break;
+                case "W" when parts.Length == 3 && uint.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var value):
+                    if (a < 32) gte.WriteDataRegister((int)a, value);
+                    else gte.WriteControlRegister((int)a - 32, value);
+                    break;
+                case "C":
+                    if (!gte.ExecuteCommand(a))
+                    {
+                        Refuse("GTE_COMMAND_UNSUPPORTED", string.Create(CultureInfo.InvariantCulture,
+                            $"GTE command 0x{a & 0x3F:X2} (word 0x{a:X7}) is not implemented."));
+                        return;
+                    }
+
+                    break;
+                default:
+                    throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+            }
+
+            Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
         }
 
         /// <summary>
