@@ -179,6 +179,7 @@ public sealed class DeviceScheduler
         var phase = (ulong)_cyclesSinceVblank + cycles;
         if (phase >= VblankIntervalCycles)
         {
+            _gpu?.OnVblank();
             _interrupts.Raise(VblankIrq);
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);

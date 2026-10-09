@@ -225,7 +225,11 @@ public sealed class GpuDevice : IGpu, IDisposable
         st |= ((uint)_s.DmaDirection) << 29;                        // DMA direction
 
         // Bit14 (screen flip) is v1-only and always 0 on the modeled v2 GPU.
-        // Bit31 (drawing even/odd lines) requires a scanline/timing model (Issue #442); reads 0.
+        // Bit31 (drawing even/odd lines): in 480-line interlaced mode it follows the field, opposite to bit13
+        // (psx-spx; the OpenBIOS shell waits for the (1,0)/(0,1) pairs). ponytail: no scanline model, so the
+        // per-scanline toggle of 240-line mode and the 0 during VBlank are not modelled; 240-line mode reads 0.
+        if (_interlace && ((_s.DisplayMode >> 2) & 1) != 0 && !_s.InterlaceField)
+            st |= 1u << 31;
         return st;
     }
 
@@ -273,6 +277,9 @@ public sealed class GpuDevice : IGpu, IDisposable
     public void AcknowledgeVblank()
     {
     }
+
+    /// <summary>The scheduler's VBlank starts the next field: the interlace field (GPUSTAT bit 13) alternates.</summary>
+    public void OnVblank() => _state.InterlaceField = !_state.InterlaceField;
 
     /// <summary>Releases the pinned VRAM buffer. The device must not be used afterwards.</summary>
     public void Dispose()
