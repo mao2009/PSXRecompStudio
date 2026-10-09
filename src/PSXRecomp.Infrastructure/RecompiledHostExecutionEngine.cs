@@ -58,8 +58,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// <summary>
     /// Guest instructions the last run's compiled blocks retired, as the artifact reported them over the host protocol
     /// (Issue #732); null without the protocol. Never includes fallback instructions (<see cref="FallbackEvidence"/>).
+    /// Live while the run is in progress (for example from <see cref="FallbackFetchObserver"/>).
     /// </summary>
-    public ulong? NativeRetiredInstructions { get; private set; }
+    public ulong? NativeRetiredInstructions => _bridge?.NativeRetiredInstructions;
+
+    private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
     public const string ExceptionVectorUnhandledDiagnosticCode = "ARTIFACT_EXCEPTION_VECTOR_UNHANDLED";
@@ -81,6 +84,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly bool _guestFirmware;
     private readonly ICdSectorSource? _disc;
     private readonly int _runTimeoutMs;
+    private readonly LoadedCodeTable _loadedCode;
 
     /// <summary>
     /// Called with the mixed-execution interpreter and the PC of every instruction it is about to fetch (diagnostic
@@ -143,6 +147,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </param>
     /// <param name="runTimeout">The bound on one artifact run; null is 30 seconds.</param>
     /// <param name="disc">The disc in the Runtime CD-ROM drive (Issue #732); null is the legacy drive model.</param>
+    /// <param name="loadedCode">
+    /// The pre-generated (ahead-of-time) versions of code the guest places in RAM (Issue #732), built with
+    /// <see cref="ReachableProgramBuilder.BuildLoadedImage"/> and linked into one table. A version runs only while guest
+    /// RAM holds exactly the words it was compiled from — checked by the artifact before entering it and by the fallback
+    /// interpreter before returning to it — and otherwise its PC runs in the <paramref name="mixedFallback"/>
+    /// interpreter. Null: no RAM-placed code.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -160,7 +171,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         MemoryCardSlotConfiguration? memoryCardSlots = null,
         bool guestFirmware = false,
         TimeSpan? runTimeout = null,
-        ICdSectorSource? disc = null)
+        ICdSectorSource? disc = null,
+        LoadedCodeTable? loadedCode = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -196,7 +208,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         _imageLoadAddress = imageLoadAddress;
         _imageWords = imageWords;
 
-        var dispatch = RecompilerHostCodeGen.Generate(program);
+        _loadedCode = loadedCode ?? LoadedCodeTable.Empty;
+        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -274,7 +287,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, _loadedCode);
+        _bridge = bridge;
         var arguments = new List<string>(4) { _inputPath, _imagePath };
         if (bridge is not null)
         {
@@ -291,7 +305,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // Mixed-execution evidence is captured before any early return below: a handoff that happened is reported
         // even when the run then ends on a protocol fault, a timeout, or an MMIO or guest-time failure (Issue #693).
         FallbackEvidence = bridge?.FallbackEvidence;
-        NativeRetiredInstructions = bridge?.NativeRetiredInstructions;
         FallbackTimings = bridge?.FallbackTimings;
 
         if (hostProtocolFaulted)
@@ -557,6 +570,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly bool _guestFirmware;
         private readonly Action<InterpreterTitleExecutionEngine, uint>? _fallbackFetchObserver;
         private readonly ICdSectorSource? _disc;
+        private readonly LoadedCodeTable _loadedCode;
 
         private TextReader? _fromArtifact;
         private TextWriter? _toArtifact;
@@ -622,9 +636,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             MemoryCardSlotConfiguration? memoryCardSlots,
             bool guestFirmware,
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
-            ICdSectorSource? disc)
+            ICdSectorSource? disc,
+            LoadedCodeTable loadedCode)
         {
             _disc = disc;
+            _loadedCode = loadedCode;
             _guestFirmware = guestFirmware;
             _fallbackFetchObserver = fallbackFetchObserver;
             _memoryCardSlots = memoryCardSlots;
@@ -668,7 +684,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _loadedCode);
                 }
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
