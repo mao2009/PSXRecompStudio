@@ -72,8 +72,10 @@ internal sealed class ArtifactFallbackSession : IDisposable
         Action<string> send,
         Func<string> readReply,
         bool guestFirmware = false,
-        Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null)
+        Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null,
+        Action<MixedFallbackTransition>? transitionObserver = null)
     {
+        _transitionObserver = transitionObserver;
         _guestFirmware = guestFirmware;
         _options = options;
         _imageWords = imageWords;
@@ -93,6 +95,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
     }
 
     private readonly bool _guestFirmware;
+    private readonly Action<MixedFallbackTransition>? _transitionObserver;
 
     /// <summary>What <see cref="Handle"/> decided about one offered transfer.</summary>
     public enum Decision
@@ -194,6 +197,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 previous.Entries + 1,
                 previous.Instructions + outcome.RetiredInstructions,
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
+            _transitionObserver?.Invoke(new MixedFallbackTransition(
+                pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
 
             if (outcome.Status != FallbackSegmentStatus.Returned)
             {

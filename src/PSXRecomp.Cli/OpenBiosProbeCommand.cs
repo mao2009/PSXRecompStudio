@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
@@ -24,8 +26,9 @@ internal static class OpenBiosProbeCommand
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
         const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
-                             "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--json]";
-        if (args.Count == 0 || args.Count > 20 || args[0].StartsWith("--", StringComparison.Ordinal))
+                             "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
+                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--json]";
+        if (args.Count == 0 || args.Count > 64 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
             error.WriteLine(usage);
             return 1;
@@ -33,13 +36,14 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false;
-        string? discPath = null, rootsPath = null, engineKind = "interpreter";
-        uint? capturePc = null;
+        string? discPath = null, rootsPath = null, symbolsPath = null, engineKind = "interpreter";
+        uint? capturePc = null, stopAt = null;
+        var compareAt = new SortedSet<uint>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Count; i++)
         {
             var option = args[i];
-            if (!seen.Add(option))
+            if (option != "--compare-at" && !seen.Add(option))
             {
                 error.WriteLine($"openbios-probe: duplicate option {option}");
                 return 1;
@@ -47,18 +51,21 @@ internal static class OpenBiosProbeCommand
 
             if (option == "--json") { json = true; continue; }
             if (option == "--differential") { differential = true; continue; }
-            if (option == "--capture-at")
+            if (option is "--capture-at" or "--compare-at" or "--stop-at")
             {
-                if (++i >= args.Count || !uint.TryParse(args[i].Replace("0x", ""), NumberStyles.HexNumber, null, out var cap))
+                if (++i >= args.Count || !uint.TryParse(args[i].Replace("0x", ""), NumberStyles.HexNumber, null, out var pc))
                 {
-                    error.WriteLine("openbios-probe: --capture-at requires a hexadecimal PC");
+                    error.WriteLine($"openbios-probe: {option} requires a hexadecimal PC");
                     return 1;
                 }
-                capturePc = cap;
+
+                if (option == "--capture-at") capturePc = pc;
+                else if (option == "--stop-at") stopAt = pc;
+                else compareAt.Add(pc);
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols")
             {
                 if (++i >= args.Count)
                 {
@@ -68,6 +75,7 @@ internal static class OpenBiosProbeCommand
 
                 if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
+                else if (option == "--symbols") symbolsPath = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -90,9 +98,11 @@ internal static class OpenBiosProbeCommand
         }
 
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
-            || (differential && engineKind != "generated-host"))
+            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null))
+            || (compareAt.Count != 0 && !differential))
         {
-            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential requires --engine generated-host");
+            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential, --stop-at and --symbols require --engine generated-host; " +
+                            "--compare-at requires --differential");
             error.WriteLine(usage);
             return 1;
         }
@@ -110,8 +120,10 @@ internal static class OpenBiosProbeCommand
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var firmware = OpenBiosFirmware.FromBytes(bytes);
             using var disc = discPath is null ? null : OpenDisc(discPath);
+            var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
             return engineKind == "generated-host"
-                ? RunGeneratedHost(firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, json, output)
+                ? RunGeneratedHost(new GeneratedHostProbe(
+                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols), json, output, error)
                 : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, json, output);
         }
         catch (Exception ex) when (
@@ -200,52 +212,87 @@ internal static class OpenBiosProbeCommand
         return kernelBooted ? 0 : 2;
     }
 
-    /// <summary>
-    /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <paramref name="codeBytes"/> bytes,
-    /// or all of it) is compiled from the reset vector plus the explicit <paramref name="roots"/>; everything that has no
-    /// block — kernel code copied to RAM, vectors, the shell, a loaded executable — runs in the mixed-execution
-    /// interpreter fallback over the same devices, and is reported as fallback. With <paramref name="differential"/> the
-    /// interpreter backend runs the same ROM and disc first and both are compared at the shell and executable boundaries.
-    /// </summary>
-    private static int RunGeneratedHost(
-        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, IReadOnlyList<uint> roots, uint codeBytes,
-        uint segments, uint segmentBudget, bool differential, bool json, TextWriter output)
-    {
-        var codeWords = codeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(codeBytes / 4, (uint)firmware.Words.Count)).ToArray();
-        var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, codeWords, OpenBiosFirmware.ResetVector, roots);
+    /// <summary>Progress is reported on stderr every 2^25 observed fetches.</summary>
+    private const ulong ProgressMask = (1UL << 25) - 1;
 
-        Dictionary<uint, GuestState>? reference = null;
-        if (differential)
+    private sealed record GeneratedHostProbe(
+        OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
+        uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols);
+
+    /// <summary>
+    /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
+    /// it) is compiled from the reset vector plus the explicit roots; everything that has no block — kernel code copied
+    /// to RAM, vectors, the shell, a loaded executable — runs in the mixed-execution interpreter fallback over the same
+    /// devices, is reported as fallback and is classified by <see cref="OpenBiosProbeAccounting"/>. With
+    /// <c>Differential</c> the interpreter backend runs the same ROM and disc first and both are compared
+    /// (<see cref="ProbeGuestState"/>) at the shell and executable entries plus every <c>CompareAt</c> PC. <c>StopAt</c>
+    /// ends each run before it executes that PC the first time (the host sees only fallback PCs).
+    /// </summary>
+    private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error)
+    {
+        var wall = Stopwatch.StartNew();
+        var clock = Stopwatch.StartNew();
+        var firmware = probe.Firmware;
+        var codeWords = probe.CodeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(probe.CodeBytes / 4, (uint)firmware.Words.Count)).ToArray();
+        var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, codeWords, OpenBiosFirmware.ResetVector, probe.Roots);
+        var buildMs = clock.Elapsed.TotalMilliseconds;
+        var boundaryPcs = new HashSet<uint>(probe.CompareAt) { OpenBiosBootMonitor.ShellLoadAddress, ExecutableBoundary };
+
+        Dictionary<uint, ProbeGuestState>? reference = null;
+        OpenBiosBootReport? referenceMilestones = null;
+        var referenceStopped = false;
+        double referenceMs = 0;
+        if (probe.Differential)
         {
+            clock.Restart();
             reference = [];
-            var backend = new OpenBiosBootBackend(firmware, disc);
+            var backend = new OpenBiosBootBackend(firmware, probe.Disc);
             using var interpreter = (InterpreterTitleExecutionEngine)backend.CreateEngine();
+            var referenceMonitor = new OpenBiosBootMonitor(() => (interpreter.Cop0Diagnostics.Cause, interpreter.Cop0Diagnostics.Epc, interpreter.Cop0Diagnostics.BadVAddr));
             ulong fetches = 0;
             interpreter.FetchObserver = pc =>
             {
                 fetches++;
-                if (pc is OpenBiosBootMonitor.ShellLoadAddress or ExecutableBoundary && !reference.ContainsKey(pc))
+                referenceMonitor.OnFetch(pc);
+                if (boundaryPcs.Contains(pc) && !reference.ContainsKey(pc))
                 {
-                    reference[pc] = GuestState.Capture(interpreter, pc, fetches);
+                    reference[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
+                }
+
+                if (pc == probe.StopAt)
+                {
+                    interpreter.StopRequested = referenceStopped = true;
+                }
+
+                if ((fetches & ProgressMask) == 0)
+                {
+                    error.WriteLine($"openbios-probe: reference interpreter: {fetches} fetches, {clock.Elapsed.TotalSeconds:F0} s");
                 }
             };
             new ExecutionOrchestrator().Execute(interpreter, handoff: null, new TitleExecutionRequest(
-                backend.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], segments, segmentBudget));
+                backend.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], probe.Segments, probe.SegmentBudget));
+            referenceMilestones = referenceMonitor.Evaluate(interpreter.ReadGuestWord);
+            referenceMs = clock.Elapsed.TotalMilliseconds;
         }
 
         var directory = Path.Combine(Path.GetTempPath(), "psxrecomp-openbios-host-" + Guid.NewGuid().ToString("N"));
-        var boundaries = new Dictionary<uint, GuestState>();
+        var boundaries = new Dictionary<uint, ProbeGuestState>();
         InterpreterTitleExecutionEngine? current = null;
         var monitor = new OpenBiosBootMonitor(() => (current!.Cop0Diagnostics.Cause, current.Cop0Diagnostics.Epc, current.Cop0Diagnostics.BadVAddr));
-        ulong fallbackFetches = 0;
-        var budget = (uint)Math.Min((ulong)segments * segmentBudget, uint.MaxValue);
+        var accounting = new OpenBiosProbeAccounting();
+        Func<(uint, uint)> readCop0 = () => (current!.Cop0Diagnostics.Cause, current.Cop0Diagnostics.Epc);
+        Func<uint, uint> readWord = address => current!.ReadGuestWord(address);
+        var hostStopped = false;
+        var budget = (uint)Math.Min((ulong)probe.Segments * probe.SegmentBudget, uint.MaxValue);
         try
         {
+            var measuredBuild = new MeasuredBuild(new GeneratedHostBuildService());
+            clock.Restart();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
                 OpenBiosFirmware.ResetVector,
-                new GeneratedHostBuildService(),
+                measuredBuild,
                 directory,
                 biosRuntimeFactory: null,
                 // One fallback segment may run as long as the whole probe: the shell and a loaded executable legitimately
@@ -253,37 +300,53 @@ internal static class OpenBiosProbeCommand
                 mixedFallback: new MixedFallbackOptions(budget, uint.MaxValue),
                 guestFirmware: true,
                 runTimeout: TimeSpan.FromMinutes(30),
-                disc: disc)
+                disc: probe.Disc)
             {
                 FallbackFetchObserver = (interpreter, pc) =>
                 {
                     current = interpreter;
-                    fallbackFetches++;
                     monitor.OnFetch(pc);
-                    if (pc is OpenBiosBootMonitor.ShellLoadAddress or ExecutableBoundary && !boundaries.ContainsKey(pc))
+                    accounting.OnFetch(pc, readCop0, readWord);
+                    var fetches = accounting.FallbackFetches;
+                    if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
-                        boundaries[pc] = GuestState.Capture(interpreter, pc, fallbackFetches);
+                        boundaries[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
+                    }
+
+                    if (pc == probe.StopAt)
+                    {
+                        interpreter.StopRequested = hostStopped = true;
+                    }
+
+                    if ((fetches & ProgressMask) == 0)
+                    {
+                        error.WriteLine($"openbios-probe: generated host: {fetches} fallback fetches, {clock.Elapsed.TotalSeconds:F0} s");
                     }
                 },
+                FallbackTransitionObserver = accounting.OnTransition,
             };
+            var compileMs = clock.Elapsed.TotalMilliseconds;
 
             // The artifact's first dispatch unit is the reset-vector block (it is always the build's entry); fallback
             // fetches are the only other fetches this engine can observe, so fetch indices below count only those.
             monitor.OnFetch(OpenBiosFirmware.ResetVector);
+            clock.Restart();
             var result = new ExecutionOrchestrator().Execute(engine, handoff: null, new TitleExecutionRequest(
                 OpenBiosFirmware.ResetVector, new uint[TitleExecutionRequest.GprCount], 0, 0, [], 1, budget));
+            var runMs = clock.Elapsed.TotalMilliseconds;
 
             var lastRam = boundaries.Values.OrderBy(static b => b.AtFetch).LastOrDefault()?.Ram;
-            var report = monitor.Evaluate(address => lastRam is null || (address & 0x1FFFFFFFu) > RamBytes - 4
+            var report = monitor.Evaluate(address => lastRam is null || (address & 0x1FFFFFFFu) > ProbeGuestState.RamBytes - 4
                 ? 0u
                 : BitConverter.ToUInt32(lastRam, (int)(address & 0x1FFFFFFFu)));
             var kernelBooted = report.KernelBooted;
             var evidence = engine.FallbackEvidence;
+            var costs = engine.FallbackTimings;
             var document = new
             {
                 kind = "openbios-probe",
                 engine = "generated-host",
-                sha256 = hash,
+                sha256 = probe.Hash,
                 bootVerified = kernelBooted && report.TitleStarted,
                 kernelBooted,
                 milestones = report,
@@ -293,13 +356,17 @@ internal static class OpenBiosProbeCommand
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
                 diagnosticCode = result.DiagnosticCode,
                 diagnosticMessage = result.DiagnosticMessage,
+                stopAt = probe.StopAt is { } stop
+                    ? new { pc = Hex(stop), reachedByInterpreter = probe.Differential ? referenceStopped : (bool?)null, reachedByHost = hostStopped }
+                    : null,
                 build = new
                 {
                     imageInstructions = image.ImageInstructionCount,
                     nativeInstructions = image.NativeInstructionCount,
                     blocks = image.Program.Blocks.Count,
-                    roots = roots.Count,
+                    roots = probe.Roots.Count,
                     staticFallbackTargets = image.FallbackTargets.Count,
+                    symbols = probe.Symbols?.Count,
                 },
                 execution = new
                 {
@@ -312,15 +379,48 @@ internal static class OpenBiosProbeCommand
                     distinctFallbackTargets = evidence?.Targets.Count,
                     topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(12)
                         .Select(static t => $"0x{t.Target:X8}:entries={t.Entries}:instructions={t.Instructions}").ToArray(),
-                    timings = engine.FallbackTimings,
+                    timings = costs,
                 },
-                boundaries = boundaries.OrderBy(static b => b.Key).ToDictionary(static b => $"0x{b.Key:X8}", static b => b.Value.Describe()),
+                accounting = accounting.Report(
+                    engine.NativeRetiredInstructions, evidence?.FallbackInstructions, image.Program.Blocks.Select(static b => b.EntryPc), probe.Symbols),
+                timings = new
+                {
+                    buildMs = Math.Round(buildMs, 1),
+                    compileMs = Math.Round(compileMs, 1),
+                    codegenMs = Math.Round(compileMs - measuredBuild.Milliseconds, 1),
+                    gccMs = Math.Round(measuredBuild.Milliseconds, 1),
+                    referenceMs = Math.Round(referenceMs, 1),
+                    runMs = Math.Round(runMs, 1),
+                    fallbackMs = costs is null ? (double?)null : Math.Round(costs.FallbackMilliseconds, 1),
+                    transferMs = costs is null ? (double?)null : Math.Round(costs.TransferMilliseconds, 1),
+                    nativeAndHostMs = Math.Round(runMs - (costs?.FallbackMilliseconds ?? 0) - (costs?.TransferMilliseconds ?? 0), 1),
+                    totalMs = Math.Round(wall.Elapsed.TotalMilliseconds, 1),
+                },
+                aot = new { generatedCBytes = measuredBuild.SourceBytes, artifactBytes = measuredBuild.ArtifactBytes },
+                boundaries = boundaries.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value.Describe()),
                 differential = reference?.OrderBy(static b => b.Key).ToDictionary(
-                    static b => $"0x{b.Key:X8}",
-                    b => boundaries.TryGetValue(b.Key, out var host) ? GuestState.Compare(b.Value, host) : (object)"not reached by the generated host"),
-                referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Select(static k => $"0x{k:X8}").ToArray(),
+                    static b => Hex(b.Key),
+                    b => boundaries.TryGetValue(b.Key, out var host)
+                        ? ProbeGuestState.Compare(b.Value, host)
+                        : (object)"not reached by the generated host (a PC inside a compiled block is not observable)"),
+                referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Order().Select(Hex).ToArray(),
+                milestoneComparison = referenceMilestones is null ? null : new
+                {
+                    match = WithoutFetchIndices(referenceMilestones) == WithoutFetchIndices(report),
+                    interpreter = referenceMilestones,
+                },
             };
-            output.WriteLine(JsonSerializer.Serialize(document, json ? null : new JsonSerializerOptions { WriteIndented = true }));
+            var node = JsonSerializer.SerializeToNode(document)!.AsObject();
+            node["consistency"] = Consistency(node);
+            if (!json)
+            {
+                foreach (var line in Summarize(node))
+                {
+                    output.WriteLine(line);
+                }
+            }
+
+            output.WriteLine(node.ToJsonString(json ? null : new JsonSerializerOptions { WriteIndented = true }));
             return kernelBooted ? 0 : 2;
         }
         finally
@@ -328,6 +428,105 @@ internal static class OpenBiosProbeCommand
             try { Directory.Delete(directory, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }
+
+    /// <summary>Fetch indices count different things in the two runs (all fetches vs fallback fetches only); the milestones themselves must agree.</summary>
+    private static OpenBiosBootReport WithoutFetchIndices(OpenBiosBootReport report) => report with
+    {
+        ShellEnteredAtFetch = null,
+        FirstUnexpectedException = report.FirstUnexpectedException is { } e ? e with { AtFetch = 0 } : null,
+    };
+
+    /// <summary>
+    /// Result consistency of a differential run: it passes only when at least one boundary was compared, every boundary
+    /// the interpreter reached was reached by the host with identical state, and both runs reached the same milestones.
+    /// Null without <c>--differential</c>.
+    /// </summary>
+    internal static JsonNode Consistency(JsonObject document)
+    {
+        if (document["differential"] is not JsonObject differential)
+        {
+            return new JsonObject { ["differentialPass"] = null };
+        }
+
+        var matched = differential.Select(static b => b.Value is JsonObject o && o["match"]!.GetValue<bool>()).ToArray();
+        var milestones = document["milestoneComparison"]?["match"]?.GetValue<bool>() ?? false;
+        return new JsonObject
+        {
+            ["differentialPass"] = matched.Length != 0 && matched.All(static m => m) && milestones,
+            ["boundariesCompared"] = matched.Length,
+            ["boundariesMatched"] = matched.Count(static m => m),
+            ["milestonesMatch"] = milestones,
+        };
+    }
+
+    /// <summary>Times the artifact's gcc build and records the generated C and binary sizes (Issue #732 measurement).</summary>
+    private sealed class MeasuredBuild(IGeneratedHostBuildService inner) : IGeneratedHostBuildService
+    {
+        public double Milliseconds { get; private set; }
+        public long SourceBytes { get; private set; }
+        public long? ArtifactBytes { get; private set; }
+
+        public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
+        {
+            var clock = Stopwatch.StartNew();
+            var result = inner.Build(request);
+            Milliseconds = clock.Elapsed.TotalMilliseconds;
+            SourceBytes = System.Text.Encoding.UTF8.GetByteCount(request.Source);
+            ArtifactBytes = result.Artifact is { } artifact ? new FileInfo(artifact.BinaryPath).Length : null;
+            return result;
+        }
+    }
+
+    /// <summary>The compact human summary printed ahead of the indented document without <c>--json</c>.</summary>
+    internal static IEnumerable<string> Summarize(JsonNode document)
+    {
+        var a = document["accounting"]!;
+        var native = a["native"]!;
+        var fallback = a["fallback"]!;
+        var transitions = a["transitions"]!;
+        yield return $"OpenBIOS generated-host probe: {document["executionState"]} ({document["diagnosticCode"]}); kernelBooted={document["kernelBooted"]}, titleStarted={document["titleStarted"]}";
+        yield return $"Instructions: native {native["instructions"]} ({native["region"]?.ToString() ?? "unattributed"}); fallback {fallback["retiredInstructions"]} retired, " +
+                     $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
+        yield return "Regions (fallback fetches / transitions): " + string.Join(", ", a["regions"]!.AsArray()
+            .Select(r => $"{r!["region"]} {Percent(r["fallbackFetchShare"])}/{Percent(r["transitionShare"])}"));
+        foreach (var r in transitions["byReason"]!.AsArray())
+        {
+            yield return $"  reason {r!["reason"]}: {r["transitions"]} transitions ({Percent(r["transitionShare"])}), {r["retiredInstructions"]} retired ({Percent(r["retiredShare"])})";
+        }
+
+        foreach (var c in transitions["byAotClass"]!.AsArray())
+        {
+            yield return $"  aot-class {c!["aotClass"]}: {c["transitions"]} transitions ({Percent(c["transitionShare"])}), {c["retiredInstructions"]} retired ({Percent(c["retiredShare"])})";
+        }
+
+        foreach (var e in a["hotEntries"]!.AsArray().Take(5))
+        {
+            yield return $"  entry {e!["pc"]} {e["symbol"]} [{e["reason"]}]: {e["transitions"]} transitions, {e["retiredInstructions"]} retired";
+        }
+
+        foreach (var p in a["hotPcs"]!.AsArray().Take(5))
+        {
+            yield return $"  pc {p!["pc"]} {p["symbol"]}: {p["fetches"]} fetches ({Percent(p["share"])})";
+        }
+
+        if (document["differential"] is JsonObject differential)
+        {
+            foreach (var (pc, value) in differential)
+            {
+                yield return $"Differential {pc}: " + (value is JsonObject o
+                    ? o["match"]!.GetValue<bool>() ? "match" : "MISMATCH, first " + o["firstMismatch"]!.ToJsonString()
+                    : value?.ToString());
+            }
+        }
+
+        var t = document["timings"]!;
+        yield return $"Timings ms: analysis {t["buildMs"]}, codegen {t["codegenMs"]}, gcc {t["gccMs"]}, reference {t["referenceMs"]}, run {t["runMs"]} " +
+                     $"(fallback {t["fallbackMs"]}, transfer {t["transferMs"]}, native+host {t["nativeAndHostMs"]}), total {t["totalMs"]}";
+        yield return $"AOT code: {document["aot"]?["generatedCBytes"]} bytes of C, {document["aot"]?["artifactBytes"]} bytes of artifact; " +
+                     $"differentialPass={document["consistency"]?["differentialPass"]?.ToString() ?? "n/a"}";
+    }
+
+    private static string Percent(JsonNode? share) => share is null ? "-" : $"{share.GetValue<double>() * 100:F1}%";
 
     /// <summary>One hexadecimal block-entry PC per line (blank lines ignored); an explicit input, never guessed.</summary>
     private static IReadOnlyList<uint> ReadRoots(string path) =>
@@ -337,63 +536,6 @@ internal static class OpenBiosProbeCommand
             .Select(static line => uint.Parse(line.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? line[2..] : line, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
             .Distinct()
             .ToArray();
-
-    /// <summary>The guest state when an engine was about to fetch a boundary PC: CPU registers, COP0 and all of RAM.</summary>
-    private sealed record GuestState(uint Pc, uint[] Gpr, uint Sr, uint Cause, uint Epc, uint BadVAddr, byte[] Ram, ulong AtFetch)
-    {
-        public static GuestState Capture(InterpreterTitleExecutionEngine engine, uint pc, ulong atFetch)
-        {
-            var ram = new byte[RamBytes];
-            for (uint address = 0; address < RamBytes; address += 4)
-            {
-                BitConverter.TryWriteBytes(ram.AsSpan((int)address, 4), engine.ReadGuestWord(address));
-            }
-
-            var cop0 = engine.Cop0Diagnostics;
-            return new GuestState(pc, Enumerable.Range(0, 32).Select(engine.ReadGuestGpr).ToArray(), cop0.Sr, cop0.Cause, cop0.Epc, cop0.BadVAddr, ram, atFetch);
-        }
-
-        public object Describe() => new
-        {
-            atFetch = AtFetch,
-            sr = Hex(Sr), cause = Hex(Cause), epc = Hex(Epc),
-            ramSha256 = Convert.ToHexString(SHA256.HashData(Ram)).ToLowerInvariant(),
-        };
-
-        public static object Compare(GuestState interpreter, GuestState host)
-        {
-            var gpr = Enumerable.Range(0, 32).Where(r => interpreter.Gpr[r] != host.Gpr[r])
-                .Select(r => $"r{r}: 0x{interpreter.Gpr[r]:X8} vs 0x{host.Gpr[r]:X8}").ToArray();
-            var cop0 = new List<string>();
-            if (interpreter.Sr != host.Sr) cop0.Add($"SR: {Hex(interpreter.Sr)} vs {Hex(host.Sr)}");
-            if (interpreter.Cause != host.Cause) cop0.Add($"CAUSE: {Hex(interpreter.Cause)} vs {Hex(host.Cause)}");
-            if (interpreter.Epc != host.Epc) cop0.Add($"EPC: {Hex(interpreter.Epc)} vs {Hex(host.Epc)}");
-            if (interpreter.BadVAddr != host.BadVAddr) cop0.Add($"BadVAddr: {Hex(interpreter.BadVAddr)} vs {Hex(host.BadVAddr)}");
-
-            int? firstMismatch = null;
-            var bytes = 0;
-            var pages = new SortedSet<int>();
-            for (var i = 0; i < RamBytes; i++)
-            {
-                if (interpreter.Ram[i] == host.Ram[i]) continue;
-                firstMismatch ??= i;
-                bytes++;
-                pages.Add(i >> 12);
-            }
-
-            return new
-            {
-                match = gpr.Length == 0 && cop0.Count == 0 && bytes == 0,
-                interpreterRamSha256 = Convert.ToHexString(SHA256.HashData(interpreter.Ram)).ToLowerInvariant(),
-                hostRamSha256 = Convert.ToHexString(SHA256.HashData(host.Ram)).ToLowerInvariant(),
-                gprMismatches = gpr,
-                cop0Mismatches = cop0,
-                ramFirstMismatch = firstMismatch is { } f ? $"0x{f:X8}: 0x{interpreter.Ram[f]:X2} vs 0x{host.Ram[f]:X2}" : null,
-                ramMismatchBytes = bytes,
-                ramMismatchPages = pages.Select(static p => $"0x{p << 12:X6}").ToArray(),
-            };
-        }
-    }
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
