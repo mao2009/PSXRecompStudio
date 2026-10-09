@@ -83,7 +83,8 @@ internal sealed record RecompilerIrEvaluationResult(
     uint BlocksRetired,
     uint Hi = 0,
     uint Lo = 0,
-    RecompilerExceptionState? Exception = null);
+    RecompilerExceptionState? Exception = null,
+    IReadOnlyList<uint>? Cop0 = null);
 
 /// <summary>
 /// A reference evaluator for the IR, used only by the lowering tests as an
@@ -104,8 +105,11 @@ internal static class RecompilerIrEvaluator
         uint entryPc,
         IReadOnlyList<uint> initialGpr,
         RecompilerGuestMemory memory,
-        uint blockBudget)
+        uint blockBudget,
+        uint[]? cop0 = null)
     {
+        // COP0 registers by number (PSXCpu::cop0_), threaded like hiLo (Issue #732).
+        cop0 ??= new uint[32];
         var gpr = initialGpr.ToArray();
         gpr[0] = 0;
         // [0] = HI, [1] = LO — architectural state distinct from the 32 GPRs
@@ -122,22 +126,22 @@ internal static class RecompilerIrEvaluator
             {
                 // Control left the lowered program; the run completed.
                 return new RecompilerIrEvaluationResult(
-                    gpr, pc, RecompilerIrTerminationReason.Success, retired, hiLo[0], hiLo[1]);
+                    gpr, pc, RecompilerIrTerminationReason.Success, retired, hiLo[0], hiLo[1], Cop0: cop0);
             }
 
             if (retired >= blockBudget)
             {
                 return new RecompilerIrEvaluationResult(
-                    gpr, pc, RecompilerIrTerminationReason.ExecutionBudgetExceeded, retired, hiLo[0], hiLo[1]);
+                    gpr, pc, RecompilerIrTerminationReason.ExecutionBudgetExceeded, retired, hiLo[0], hiLo[1], Cop0: cop0);
             }
 
             var values = new Dictionary<int, uint>();
             foreach (var operation in block.Operations)
             {
-                if (!Execute(operation, gpr, hiLo, values, memory))
+                if (!Execute(operation, gpr, hiLo, cop0, values, memory))
                 {
                     return new RecompilerIrEvaluationResult(
-                        gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1, hiLo[0], hiLo[1]);
+                        gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1, hiLo[0], hiLo[1], Cop0: cop0);
                 }
             }
 
@@ -147,7 +151,7 @@ internal static class RecompilerIrEvaluator
             if (exit.Reason != RecompilerIrTerminationReason.Success)
             {
                 return new RecompilerIrEvaluationResult(
-                    gpr, pc, exit.Reason, retired, hiLo[0], hiLo[1], exit.Exception);
+                    gpr, pc, exit.Reason, retired, hiLo[0], hiLo[1], exit.Exception, cop0);
             }
 
             pc = NextPc(exit, values);
@@ -183,11 +187,29 @@ internal static class RecompilerIrEvaluator
         RecompilerIrOperation operation,
         uint[] gpr,
         uint[] hiLo,
+        uint[] cop0,
         Dictionary<int, uint> values,
         RecompilerGuestMemory memory)
     {
+        if (operation.Kind is RecompilerIrOperationKind.Store8 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32
+            && RecompilerCop0.StoreIsCacheIsolated(cop0[RecompilerCop0.Status], values[operation.InputValueA]))
+        {
+            return true;
+        }
+
         switch (operation.Kind)
         {
+            case RecompilerIrOperationKind.ReadCop0:
+                values[operation.ResultValueId] = cop0[operation.Register];
+                return true;
+            case RecompilerIrOperationKind.WriteCop0:
+                cop0[operation.Register] = operation.Register == RecompilerCop0.Cause
+                    ? RecompilerCop0.WriteCause(cop0[RecompilerCop0.Cause], values[operation.InputValueA])
+                    : values[operation.InputValueA];
+                return true;
+            case RecompilerIrOperationKind.ReturnFromException:
+                cop0[RecompilerCop0.Status] = RecompilerCop0.ReturnFromException(cop0[RecompilerCop0.Status]);
+                return true;
             case RecompilerIrOperationKind.Nop:
                 return true;
             case RecompilerIrOperationKind.Constant:

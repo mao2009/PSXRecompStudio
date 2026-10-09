@@ -47,6 +47,12 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Command-line flag that opts the artifact into the host-transfer protocol.</summary>
     public const string HostTransferFlag = "--host-transfer";
 
+    /// <summary>
+    /// Command-line flag (any position after the image) that runs the artifact in firmware mode (Issue #732): a
+    /// guest SYSCALL/BREAK enters the guest's own exception vector instead of the HLE <c>RHOST_SYSCALL</c> offer.
+    /// </summary>
+    public const string GuestExceptionsFlag = "--guest-exceptions";
+
     /// <summary>The child's handshake line, sent once before the first guest instruction runs.</summary>
     public const string ProtocolInitLine = "RHOST_INIT";
 
@@ -242,7 +248,8 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal),
             null,
             null);
     }
@@ -743,10 +750,8 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     /* Provenance only lasts while control is still at the vector the entry set. */
     if (state->pc != 0x80000080u && state->pc != 0xBFC00180u) artifact_int_entry = 0;
     if (state->irq_line == 0u || (sr & 0x1u) == 0u || (sr & 0x400u) == 0u) return;
-    state->cop0_epc = state->pc;
-    state->cop0_cause = (state->cop0_cause & ~(0x7Cu | 0x30000000u | 0x80000000u)) | 0x400u;
-    state->cop0_sr = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);
-    state->pc = (sr & 0x400000u) != 0u ? 0xBFC00180u : 0x80000080u;
+    /* The same entry a guest SYSCALL/BREAK takes in firmware mode (Issue #732); IP2 is kept, not replaced. */
+    state->pc = recompiler_exception_entry(state, 0u, state->pc, 0u);
     artifact_int_entry = 1;
 }
 
@@ -804,6 +809,11 @@ int main(int argc, char** argv) {
     int image_extra = fgetc(image);
     fclose(image);
     if (image_extra != EOF) return 95; /* InvalidImage: oversized */
+
+    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
+    for (i = 3; i < argc; i++) {
+        if (strcmp(argv[i], ""@GUEST_EXCEPTIONS@"") == 0) state.guest_exceptions = 1u;
+    }
 
     /* Opt-in only: a stray extra argument never enables the protocol, so a run
        with no parent listening can never block on the handshake. */

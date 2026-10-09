@@ -44,6 +44,12 @@ public static class RecompilerHostCodeGen
     private const string IndirectTargetField = "indirect_target";
     private const string RetiredTotalField = "retired_total";
     private const string RetiredReportedField = "retired_reported";
+    private const string Cop0OtherField = "cop0_other";
+    private const string GuestExceptionsField = "guest_exceptions";
+    private const string Cop0SlotHelper = "recompiler_cop0_slot";
+    private const string Cop0WriteHelper = "recompiler_cop0_write";
+    private const string StoreIsolatedHelper = "recompiler_store_isolated";
+    private const string ExceptionEntryHelper = "recompiler_exception_entry";
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
@@ -175,6 +181,9 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.MultiplyUnsigned => true,
         RecompilerIrOperationKind.DivideSigned => true,
         RecompilerIrOperationKind.DivideUnsigned => true,
+        RecompilerIrOperationKind.ReadCop0 => true,
+        RecompilerIrOperationKind.WriteCop0 => true,
+        RecompilerIrOperationKind.ReturnFromException => true,
         _ => false,
     };
 
@@ -296,7 +305,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint32_t exception_in_delay_slot;");
         sb.AppendLine("  /* COP0 SR (Issue #663), and since Issue #680 CAUSE and EPC. SR is written by a host-completed");
         sb.AppendLine("     SYSCALL (host_syscall) and by a hardware INT entry (host_interrupt); CAUSE/EPC only by the");
-        sb.AppendLine("     INT entry. No lowered instruction reads them. irq_line mirrors CAUSE.IP2: the aggregate");
+        sb.AppendLine("     INT entry; since Issue #732 also by guest MFC0/MTC0/RFE. irq_line mirrors CAUSE.IP2: the aggregate");
         sb.AppendLine("     interrupt-controller line as the host last reported it. */");
         sb.AppendLine("  uint32_t " + Cop0SrField + ";");
         sb.AppendLine("  uint32_t " + Cop0CauseField + ";");
@@ -319,9 +328,55 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint64_t " + RetiredReportedField + ";");
         sb.AppendLine("  " + HostRetiredFnType + " " + HostRetiredField + ";");
         sb.AppendLine("  " + HostInterruptFnType + " " + HostInterruptField + ";");
+        sb.AppendLine("  /* Issue #732: the COP0 registers other than SR/CAUSE/EPC (which live in the fields above), indexed");
+        sb.AppendLine("     by register number, as MFC0/MTC0 read and write them (PSXCpu::cop0_). Slots 12-14 are unused. */");
+        sb.AppendLine("  uint32_t " + Cop0OtherField + "[32];");
+        sb.AppendLine("  /* Issue #732: non-zero in firmware mode. A SYSCALL/BREAK exit is then delivered to the guest's own");
+        sb.AppendLine("     exception vector (EPC, CAUSE Excode/BD, SR KU/IE push, BEV vector) instead of being offered to");
+        sb.AppendLine("     host_syscall or stopping the run. Zero (every zero-initialised state) keeps the HLE behavior. */");
+        sb.AppendLine("  uint32_t " + GuestExceptionsField + ";");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
+        EmitCop0Helpers(sb);
     }
+
+    /// <summary>
+    /// The COP0 helpers every block and the driver share (Issue #732), emitted from <see cref="RecompilerCop0"/>
+    /// so the C cannot drift from it. <c>static inline</c>: a program that uses none of them compiles without an
+    /// unused-function warning.
+    /// </summary>
+    private static void EmitCop0Helpers(StringBuilder sb)
+    {
+        sb.AppendLine("static inline uint32_t* " + Cop0SlotHelper + "(" + StateStruct + "* s, uint32_t r) {");
+        sb.AppendLine($"  if (r == {RecompilerCop0.Status}u) return &s->{Cop0SrField};");
+        sb.AppendLine($"  if (r == {RecompilerCop0.Cause}u) return &s->{Cop0CauseField};");
+        sb.AppendLine($"  if (r == {RecompilerCop0.Epc}u) return &s->{Cop0EpcField};");
+        sb.AppendLine($"  return &s->{Cop0OtherField}[r & 31u];");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("/* MTC0 (PSXCpu::ExecMtc0): CAUSE keeps all but its software IP bits; any other register takes the value. */");
+        sb.AppendLine("static inline void " + Cop0WriteHelper + "(" + StateStruct + "* s, uint32_t r, uint32_t v) {");
+        sb.AppendLine($"  if (r == {RecompilerCop0.Cause}u) {{ s->{Cop0CauseField} = (s->{Cop0CauseField} & ~{FormatHex(RecompilerCop0.CauseWritableMask)}) | (v & {FormatHex(RecompilerCop0.CauseWritableMask)}); return; }}");
+        sb.AppendLine($"  *{Cop0SlotHelper}(s, r) = v;");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("/* SR.IsC (PSXCpu::StoreIsCacheIsolated): a store below KSEG1 is dropped while the data cache is isolated. */");
+        sb.AppendLine("static inline int " + StoreIsolatedHelper + "(const " + StateStruct + "* s, uint32_t a) {");
+        sb.AppendLine($"  return (s->{Cop0SrField} & {FormatHex(RecompilerCop0.StatusIsolateCache)}) != 0u && a < {FormatHex(RecompilerCop0.CacheIsolationEnd)};");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("/* Exception entry (psx_cpu_exception_resolve): EPC, CAUSE Excode/CE/BD, SR KU/IE push; returns the BEV vector. */");
+        sb.AppendLine("static inline uint32_t " + ExceptionEntryHelper + "(" + StateStruct + "* s, uint32_t excode, uint32_t epc, uint32_t bd) {");
+        sb.AppendLine($"  uint32_t sr = s->{Cop0SrField};");
+        sb.AppendLine($"  s->{Cop0EpcField} = epc;");
+        sb.AppendLine($"  s->{Cop0CauseField} = (s->{Cop0CauseField} & ~{FormatHex(RecompilerCop0.CauseEntryMask)}) | ((excode & 31u) << 2) | (bd ? {FormatHex(RecompilerCop0.CauseBranchDelay)} : 0u);");
+        sb.AppendLine($"  s->{Cop0SrField} = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);");
+        sb.AppendLine($"  return (sr & {FormatHex(RecompilerCop0.StatusBootExceptionVectors)}) != 0u ? {FormatHex(RecompilerCop0.RomExceptionVector)} : {FormatHex(RecompilerCop0.RamExceptionVector)};");
+        sb.AppendLine("}");
+        sb.AppendLine();
+    }
+
+    private static string FormatHex(uint value) => $"0x{value:X8}u";
 
     private static void EmitSra32Helper(StringBuilder sb)
     {
@@ -547,14 +602,27 @@ public static class RecompilerHostCodeGen
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
                 return $"{result} = recompiler_read_mem32({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)});";
 
+            // Every store carries the SR.IsC guard (RecompilerCop0.StoreIsCacheIsolated, Issue #732) on its own
+            // line, so the access itself still reads as the bare helper call.
             case RecompilerIrOperationKind.Store8:
-                return $"recompiler_write_mem8({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, (uint8_t){ResolveValue(op.InputValueB, valueNames)});";
+                return StoreGuard(op, valueNames) + $"recompiler_write_mem8({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, (uint8_t){ResolveValue(op.InputValueB, valueNames)});";
 
             case RecompilerIrOperationKind.Store16:
-                return $"recompiler_write_mem16({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, (uint16_t){ResolveValue(op.InputValueB, valueNames)});";
+                return StoreGuard(op, valueNames) + $"recompiler_write_mem16({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, (uint16_t){ResolveValue(op.InputValueB, valueNames)});";
 
             case RecompilerIrOperationKind.Store32:
-                return $"recompiler_write_mem32({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+                return StoreGuard(op, valueNames) + $"recompiler_write_mem32({StateParam}->{CoreField}, {ResolveValue(op.InputValueA, valueNames)}, {ResolveValue(op.InputValueB, valueNames)});";
+
+            case RecompilerIrOperationKind.ReadCop0:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return $"{result} = *{Cop0SlotHelper}({StateParam}, {op.Register}u);";
+
+            case RecompilerIrOperationKind.WriteCop0:
+                return $"{Cop0WriteHelper}({StateParam}, {op.Register}u, {ResolveValue(op.InputValueA, valueNames)});";
+
+            case RecompilerIrOperationKind.ReturnFromException:
+                return $"{StateParam}->{Cop0SrField} = ({StateParam}->{Cop0SrField} & ~0xFu) | (({StateParam}->{Cop0SrField} >> 2) & 0xFu);";
 
             case RecompilerIrOperationKind.ReadHi:
                 if (result == null) return null;
@@ -602,6 +670,9 @@ public static class RecompilerHostCodeGen
         valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
         return $"{result} = ({type}){ResolveValue(op.InputValueA, valueNames)} {opSymbol} {ResolveValue(op.InputValueB, valueNames)};";
     }
+
+    private static string StoreGuard(RecompilerIrOperation op, Dictionary<int, string> valueNames) =>
+        $"if (!{StoreIsolatedHelper}({StateParam}, {ResolveValue(op.InputValueA, valueNames)}))\n{IndentUnit}{IndentUnit}";
 
     private static string ResolveValue(int valueId, Dictionary<int, string> valueNames)
     {
@@ -771,6 +842,21 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
+
+        // Issue #732: in firmware mode a SYSCALL/BREAK exit enters the guest's own exception vector, exactly as
+        // the interpreter's RaiseException does, and execution continues there (typically the kernel handler at
+        // 0x80000080). The trapping instruction retires nothing. Emitted only for a program with a trap exit.
+        if (program.Blocks.Any(static block => block.Exit.Exception is { IsRaised: true }))
+        {
+            sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} == RECOMPILER_REASON_EXCEPTION && " +
+                $"{StateParam}->{ExceptionRaisedField} != 0u && {StateParam}->{GuestExceptionsField} != 0u) {{");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{NextPcField} = {ExceptionEntryHelper}({StateParam}, " +
+                $"{StateParam}->{ExceptionCodeField}, {StateParam}->{ExceptionFaultPcField}, {StateParam}->{ExceptionInDelaySlotField});");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{ExceptionRaisedField} = 0u; " +
+                $"{StateParam}->{ExceptionCodeField} = 0u; {StateParam}->{ExceptionFaultPcField} = 0u; {StateParam}->{ExceptionInDelaySlotField} = 0u;");
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; retired = 0;");
+            sb.AppendLine(IndentUnit + IndentUnit + "}");
+        }
 
         // Issue #663: a SYSCALL exception exit (Excode 8, not in a delay slot) is offered
         // to the host's syscall hook. A host that completes it resumes the guest; the
