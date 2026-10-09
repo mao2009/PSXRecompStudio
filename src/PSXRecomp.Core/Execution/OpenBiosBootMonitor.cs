@@ -16,7 +16,8 @@ public sealed record OpenBiosBootReport(
     ulong? ShellEnteredAtFetch,
     ulong InterruptEntries,
     ulong SyscallEntries,
-    uint? TitleEntryPc = null)
+    uint? TitleEntryPc = null,
+    OpenBiosUnexpectedException? FirstUnexpectedException = null)
 {
     /// <summary>
     /// The firmware transferred control to user RAM outside the shell image after the shell was entered: a
@@ -34,6 +35,10 @@ public sealed record OpenBiosBootReport(
         ResetVectorFetched && KernelRunningFromRam && VectorsInstalled && ExceptionVectorExecuted && ShellEntered;
 }
 
+/// <summary>The first guest exception delivered to the vector that is neither an interrupt nor a SYSCALL.</summary>
+[Domain]
+public sealed record OpenBiosUnexpectedException(uint ExcCode, uint Epc, uint BadVAddr, uint Cause, ulong AtFetch);
+
 /// <summary>
 /// Watches the fetched PCs of a firmware run and, on demand, the vector words in guest RAM, to decide
 /// <see cref="OpenBiosBootReport.KernelBooted"/>. Pure observation: it never changes execution.
@@ -50,12 +55,13 @@ public sealed class OpenBiosBootMonitor
     private const uint KernelRamStart = 0x00000500u, KernelRamEnd = 0x00010000u;
     private static readonly uint[] VectorAddresses = [0x80u, 0xA0u, 0xB0u, 0xC0u];
 
-    private readonly Func<uint>? _readCause;
+    private readonly Func<(uint Cause, uint Epc, uint BadVAddr)>? _readCop0;
+    private OpenBiosUnexpectedException? _unexpected;
     private bool _reset, _ram, _exception, _shell;
     private ulong _fetches, _shellAt, _interrupts, _syscalls;
 
-    /// <param name="readCause">Reads COP0 CAUSE, to classify exceptions delivered to the 0x80 vector; optional.</param>
-    public OpenBiosBootMonitor(Func<uint>? readCause = null) => _readCause = readCause;
+    /// <param name="readCop0">Reads COP0 CAUSE/EPC/BadVAddr, to classify exceptions delivered to the 0x80 vector; optional.</param>
+    public OpenBiosBootMonitor(Func<(uint Cause, uint Epc, uint BadVAddr)>? readCop0 = null) => _readCop0 = readCop0;
 
     /// <summary>Records one instruction fetch. Cheap: runs on every interpreter step.</summary>
     public void OnFetch(uint pc)
@@ -65,12 +71,14 @@ public sealed class OpenBiosBootMonitor
         else if (pc == ExceptionVector)
         {
             _exception = true;
-            if (_readCause is not null)
+            if (_readCop0 is not null)
             {
-                switch ((_readCause() >> 2) & 0x1Fu)
+                var (cause, epc, bad) = _readCop0();
+                switch ((cause >> 2) & 0x1Fu)
                 {
                     case 0: _interrupts++; break;
                     case 8: _syscalls++; break;
+                    default: _unexpected ??= new OpenBiosUnexpectedException((cause >> 2) & 0x1Fu, epc, bad, cause, _fetches); break;
                 }
             }
         }
@@ -86,7 +94,7 @@ public sealed class OpenBiosBootMonitor
     public OpenBiosBootReport Evaluate(Func<uint, uint> readWord)
     {
         ArgumentNullException.ThrowIfNull(readWord);
-        return new OpenBiosBootReport(_reset, _ram, VectorsInstalled(readWord), _exception, _shell, _shell ? _shellAt : null, _interrupts, _syscalls, _title);
+        return new OpenBiosBootReport(_reset, _ram, VectorsInstalled(readWord), _exception, _shell, _shell ? _shellAt : null, _interrupts, _syscalls, _title, _unexpected);
     }
 
     // Each vector slot holds a short stub that ends in a register jump (SPECIAL JR) within its four words.

@@ -17,8 +17,8 @@ internal static class OpenBiosProbeCommand
 {
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
-        const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--json]";
-        if (args.Count == 0 || args.Count > 8 || args[0].StartsWith("--", StringComparison.Ordinal))
+        const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--json]";
+        if (args.Count == 0 || args.Count > 12 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
             error.WriteLine(usage);
             return 1;
@@ -27,6 +27,7 @@ internal static class OpenBiosProbeCommand
         uint segmentBudget = 100_000, segments = 10;
         bool json = false;
         string? discPath = null;
+        uint? capturePc = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Count; i++)
         {
@@ -38,6 +39,17 @@ internal static class OpenBiosProbeCommand
             }
 
             if (option == "--json") { json = true; continue; }
+            if (option == "--capture-at")
+            {
+                if (++i >= args.Count || !uint.TryParse(args[i].Replace("0x", ""), System.Globalization.NumberStyles.HexNumber, null, out var cap))
+                {
+                    error.WriteLine("openbios-probe: --capture-at requires a hexadecimal PC");
+                    return 1;
+                }
+                capturePc = cap;
+                continue;
+            }
+
             if (option == "--disc")
             {
                 if (++i >= args.Count)
@@ -80,11 +92,24 @@ internal static class OpenBiosProbeCommand
             using var disc = discPath is null ? null : OpenDisc(discPath);
             var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(bytes), disc?.Source);
             using var engine = backend.CreateEngine();
+            object? captured = null;
             var observed = engine as InterpreterTitleExecutionEngine;
-            var monitor = new OpenBiosBootMonitor(observed is null ? null : () => observed.Cop0Diagnostics.Cause);
+            var monitor = new OpenBiosBootMonitor(observed is null ? null : () => (observed.Cop0Diagnostics.Cause, observed.Cop0Diagnostics.Epc, observed.Cop0Diagnostics.BadVAddr));
             if (observed is not null)
             {
-                observed.FetchObserver = monitor.OnFetch;
+                observed.FetchObserver = pc =>
+                {
+                    monitor.OnFetch(pc);
+                    if (pc == capturePc && captured is null)
+                    {
+                        captured = new
+                        {
+                            pc = $"0x{pc:X8}",
+                            gpr = Enumerable.Range(0, 32).Select(r => $"0x{observed.ReadGuestGpr(r):X8}").ToArray(),
+                            lastTransfers = observed.RecentTrace.Transfers.TakeLast(8).Select(t => $"0x{t.From.Pc:X8}->0x{t.To:X8}").ToArray()
+                        };
+                    }
+                };
             }
             var request = new TitleExecutionRequest(
                 backend.EntryPc,
@@ -118,7 +143,8 @@ internal static class OpenBiosProbeCommand
                     guestPc = result.FinalSnapshot?.PC,
                     diagnosticCode = result.DiagnosticCode,
                     segmentsRetired = result.SegmentsRetired,
-                    stop
+                    stop,
+                    captured
                 }));
             }
             else

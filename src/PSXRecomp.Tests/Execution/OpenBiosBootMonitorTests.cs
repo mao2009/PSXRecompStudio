@@ -28,7 +28,7 @@ public sealed class OpenBiosBootMonitorTests
     {
         var backend = new OpenBiosBootBackend(OpenBiosFirmware.FromBytes(rom));
         using var engine = (InterpreterTitleExecutionEngine)backend.CreateEngine();
-        var monitor = new OpenBiosBootMonitor(() => engine.Cop0Diagnostics.Cause);
+        var monitor = new OpenBiosBootMonitor(() => (engine.Cop0Diagnostics.Cause, engine.Cop0Diagnostics.Epc, engine.Cop0Diagnostics.BadVAddr));
         engine.FetchObserver = monitor.OnFetch;
         var result = new ExecutionOrchestrator().Execute(engine, null,
             new TitleExecutionRequest(backend.EntryPc, new uint[32], 0, 0,

@@ -257,6 +257,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Called with the PC of every instruction about to be fetched (diagnostic observation only).</summary>
     public Action<uint>? FetchObserver { get; set; }
 
+    /// <summary>The current value of a general register (diagnostic observation only).</summary>
+    public uint ReadGuestGpr(int index) => _core.GetGpr(index);
+
     /// <summary>Reads an aligned guest RAM/ROM word without side effects; 0 outside RAM and ROM.</summary>
     public uint ReadGuestWord(uint address) => FetchWordForTrace(address);
 
