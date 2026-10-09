@@ -85,7 +85,31 @@ the block before its transfer exit is applied. Wrapping `ADDU`, `SUBU`, and
   and faults with `faultPc = <owning branch PC>`, `inDelaySlot = true` — the
   hardware EPC/CAUSE.BD values. The block ends with no flow and no `next_pc`.
 
-`SYSCALL` remains deferred (see the Deferred table).
+`SYSCALL` (Issue #628) lowers exactly like `BREAK` with Excode 8.
+
+### COP0, ADD and the SR.IsC store guard (Issue #732)
+
+| MIPS Opcode | IR Mapping | Notes |
+|---|---|---|
+| ADD rd,rs,rt | `ReadGpr`×2 → `AddSigned` → `WriteGpr` | Same trap as ADDI |
+| MTC0 rt,rd | `ReadGpr(rt)` → `WriteCop0(rd)` | CAUSE keeps all but IP[1:0] (`RecompilerCop0.CauseWritableMask`); every other register takes the value (`PSXCpu::ExecMtc0`) |
+| MFC0 rt,rd | `ReadCop0(rd)` → `WriteGpr(rt)` | Load-delayed like a memory load (`PSXCpu::ExecMfc0` → `WriteRegDelayed`): an observing next instruction is fused exactly as in [Load delay](#load-delay) |
+| RFE | `ReturnFromException` | Pops the SR KU/IE stack (`psx_cpu_cop0_rfe`); the PC restore is the guest's own JR |
+
+COP0 register numbers and masks live once, in `RecompilerCop0`
+(`RecompilerContract.cs`), mirroring `psx_cpu_cop0.cpp` / `cpu_cop0.rs` /
+`cpu_exception.rs`; the IR evaluator and the generated C are built from it.
+Every `Store8/16/32` is dropped while SR.IsC (bit 16) is set and the address is
+below `0xA0000000` (`PSXCpu::StoreIsCacheIsolated`): the generated host guards
+each store with `recompiler_store_isolated`, so the effect model matches the
+interpreter. The decoder marks COP0 moves `Coprocessor`, but reachable-program
+discovery treats MFC0/MTC0/RFE as falling through.
+
+A load (or MFC0) in a branch delay slot is lowered — committed immediately —
+only when `ReachableProgramBuilder` proves every static successor (branch target
+and fall-through, or jump target) is in the image and does not read the loaded
+register (`MipsToIrLowerer.LoadShadowIsUnobserved`). Otherwise, and always behind
+JR/JALR, it still fails closed.
 
 ### Control flow
 
@@ -320,9 +344,9 @@ report it as such.
 |---|---|
 | `Return` flow | Register-held targets are carried by `RecompilerIrExit.TargetValueId` (Issue #635); a distinct return relation is not modelled. |
 | BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branch encodings (`0x06`-`0x07`, `0x01`) have no decoder entry yet; the signed comparison IR now exists (`CompareLessThanSigned`), so lowering them is a decoder + lowering extension. |
-| ADDI / SUB / ADD, SLLV / SRLV / SRAV, MULT / DIV / HI / LO | Not yet lowered; each returns `InvalidOperationShape`. |
-| COP0 / COP2, SYSCALL | Coprocessor and exception semantics. |
-| Chained load delay, and a load in a branch delay slot | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
+| SUB | Not yet lowered; returns `InvalidOperationShape`. |
+| COP2 / GTE, LWC2 / SWC2 | Coprocessor 2 semantics. |
+| Chained load delay, and a branch-delay-slot load whose shadow a successor may read | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
 | Pending load delay across a program boundary | `RecompilerStateSnapshot.LoadDelay` can carry it, but no IR operation queues one. |
 | Misalignment and address exceptions | Alignment and translation belong to the memory/runtime contract, not the IR. |
 | SSA, optimization, constant folding | Out of scope for lowering. |

@@ -85,6 +85,29 @@ Exits without an exception resolution (e.g. the runtime AddSigned overflow exit)
 leave the `exception_*` fields untouched — the dispatcher and runners must not
 read them unless `termination_reason == 6` and `exception_raised == 1`.
 
+### Firmware mode and COP0 (Issue #732)
+
+`state->guest_exceptions != 0` (the artifact's `--guest-exceptions` flag) runs a
+firmware such as OpenBIOS: the dispatcher delivers a SYSCALL/BREAK exit to the
+guest's own exception vector through `recompiler_exception_entry` — EPC, CAUSE
+Excode/BD (CE cleared), the SR KU/IE push, and `0xBFC00180`/`0x80000080` by
+SR.BEV — clears the `exception_*` fields and continues there; the trap retires
+nothing. The hardware INT entry of the artifact driver uses the same helper. With
+the flag clear (every zero-initialised state) the pre-existing HLE behavior
+(`host_syscall`, or an `Exception` stop) is unchanged.
+
+MFC0/MTC0 read and write SR/CAUSE/EPC through the existing `cop0_sr`/`cop0_cause`/
+`cop0_epc` fields and every other COP0 register through `cop0_other[32]`
+(`recompiler_cop0_slot`, `recompiler_cop0_write`); every store is guarded by
+`recompiler_store_isolated` (SR.IsC). All constants come from `RecompilerCop0`.
+
+A firmware ROM is built with `ReachableProgramBuilder.BuildFirmwareImage(loadAddress,
+words, entry, roots)`, which reports `NativeInstructionCount` and the static
+`FallbackTargets` outside the image. Code without a block — RAM code the firmware
+copies at run time, a KSEG0 ROM alias, any indirect target not given as a root —
+reaches `host_transfer` and, with mixed execution, the interpreter fallback
+(Issue #693), which counts it as fallback, never as native.
+
 ### Dispatch function
 
 ```c
