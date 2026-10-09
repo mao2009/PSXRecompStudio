@@ -49,7 +49,7 @@ checked by a `static_assert` and a Rust test):
 
 | Field | Bits | Notes |
 |---|---|---|
-| `op` | — | `PSXDecodeOp` / `DecodeOp`, `#[repr(u32)]`. `Reserved = 0`, `CopUnusable = 1`, then one value per `Exec*` handler (2-62). The values are ABI and are mirrored in the header. |
+| `op` | — | `PSXDecodeOp` / `DecodeOp`, `#[repr(u32)]`. `Reserved = 0`, `CopUnusable = 1`, then one value per `Exec*` handler (2-62, and the COP2/GTE forms 63-69 of Issue #447: MFC2/CFC2/MTC2/CTC2, command, LWC2, SWC2). The values are ABI and are mirrored in the header. |
 | `rs`, `rt`, `rd`, `shamt` | 21-25, 16-20, 11-15, 6-10 | |
 | `imm` | 0-15 | Zero-extended. The caller narrows it to the handler's `int16_t` or `uint16_t` parameter, which chooses sign or zero extension exactly as before. |
 | `target` | 0-25 | J/JAL. |

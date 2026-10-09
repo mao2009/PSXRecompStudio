@@ -67,8 +67,16 @@ Persona (user-provided CHD, not in the repo), real OpenBIOS: kernel boots, the s
 the disc, the firmware loads the executable through its own CD code and enters it at
 0x80011930 (`titleStarted:true`, 566 IRQ and 31 SYSCALL entries delivered). First stop:
 CpU (ExcCode 11, CE=2 = COP2/GTE) at EPC 0x800861DC; OpenBIOS reports it as an unresolved
-exception (A0:40) and halts. The native CPU raises CpU for every COP2 instruction by
-design; GTE execution is Issue #447. No title screen was reached.
+exception (A0:40) and halts. The native CPU raised CpU for every COP2 instruction by
+design. With COP2 execution (Issue #447) that word (`CTC2 $t0,$29`, the start of the title's
+GTE initialisation: ZSF3/ZSF4/H/DQA/DQB/OFX/OFY) and the rest of it execute; the run no longer
+faults (`FirstUnexpectedException` null). After 4000 x 1M instructions the GTE control registers
+hold exactly what that code wrote (ZSF3 0x155, ZSF4 0x100, H 1000, DQA -4194, DQB 0x01400000,
+OFX/OFY 0). The next stop is not GTE: the title spins in a bounded retry loop at
+0x800812E8 -> 0x8008A014 polling the status halfword of a CD sector-buffer slot that its
+DMA3/CD-ROM interrupt state machine (state word 0x800A77E0, DMA3 CHCR 0x11000000) never advances;
+23,489 IRQs are delivered, 0 GTE commands have executed, and the displayed frame (probe `frame`)
+is 320x240 with no non-zero pixel. No title screen was reached.
 
 ### Disc in the drive (`--disc`)
 
@@ -162,6 +170,7 @@ reported as fallback. The interpreter remains the only verified way to run OpenB
 generated-host execution of OpenBIOS is **not** verified (see the status line).
 
 **Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc
-through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so Persona cannot get
-past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
+through its own CD driver (synthetic disc and Persona); COP2/GTE executes (#447: transfers,
+LWC2/SWC2, RTPS/NCLIP/AVSZ3/AVSZ4). Not done: Persona's CD streaming wait (above); further GTE
+commands, added when a run reaches them; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**

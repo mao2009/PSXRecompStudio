@@ -188,9 +188,28 @@ FIFO, IRGB write expansion / ORGB read packing, LZCS→LZCR leading-sign count,
 and FLAG's hard-wired low bits plus computed bit 31. `Reset` zeroes every
 backing register; because LZCR is derived from the cleared LZCS value rather
 than stored independently, reading LZCR immediately after reset returns 32.
-`ExecuteCommand` throws `NotSupportedException` until command
-slices land, and the bank is not yet wired to CPU COP2 dispatch (the native
-interpreter still raises Coprocessor Unusable for COP2/LWC2/SWC2).
+### COP2 execution (Issue #447)
+
+**One GTE state.** `GteRegisterBank` is the only owner of the GTE registers and
+command arithmetic. The native CPU owns only the instruction semantics around
+it and reaches the bank through callbacks (`PSXCore_SetGteCallbacks`, the same
+bridge shape as the GPU/CD-ROM MMIO): `PsxDeviceGraph` attaches its `Gte` to its
+core, so the interpreter, the mixed-execution fallback and the generated-host
+artifact (which relays every COP2 access to its parent graph, `RHOST_GTE`) all
+reach that one instance. Moving the register file into the native core was
+rejected because the kernels would then exist twice (C#/C++).
+
+- SR.CU2 clear, or no GTE attached: every COP2/LWC2/SWC2 raises CpU (CE=2).
+- MFC2/CFC2 write the GPR through the load delay; MTC2/CTC2 read the GPR like
+  any instruction; LWC2/SWC2 address, fault (AdEL/AdES + BadVAddr) and honour
+  SR.IsC exactly like LW/SW.
+- Commands: RTPS, NCLIP, AVSZ3, AVSZ4 (sf/lm from the command word; results
+  to MAC/IR/OTZ, both screen FIFOs and FLAG). Any other command fails closed:
+  `ExecuteCommand` returns false without touching a register, the native step
+  returns `PSX_STEP_GTE_COMMAND_UNSUPPORTED` with nothing retired, and the
+  interpreter engine / generated host stop with `GTE_COMMAND_UNSUPPORTED`
+  naming the command. Further commands are added from specification only when
+  a real run reaches them.
 
 ## GPU Model
 
