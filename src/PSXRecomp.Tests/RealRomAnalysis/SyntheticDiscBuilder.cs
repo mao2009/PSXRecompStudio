@@ -1,5 +1,6 @@
 using System.Text;
 using PSXRecomp.Core.DiscImage;
+using PSXRecomp.Core.Runtime.CdRom;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 
@@ -218,4 +219,47 @@ public static class SyntheticPsxExeBuilder
         }
         return bytes;
     }
+}
+
+/// <summary>
+/// Builds a deterministic synthetic CD image from the in-memory ISO 9660 volume
+/// (<see cref="SyntheticIsoImageBuilder"/>) by wrapping every 2048-byte user-data sector in a
+/// raw 2352-byte Mode 2 Form 1 frame (sync, BCD MSF header, data subheader). The bytes are a
+/// pure function of the inputs, so the same disc is reproduced on every machine; the mirror in
+/// <c>scripts/demo/synthetic-disc.ps1</c> pins the same SHA-256. No commercial data.
+/// </summary>
+[Test]
+public static class SyntheticDiscBuilder
+{
+    /// <summary>On-disc BOOT value and the file name of the synthetic boot executable.</summary>
+    public const string BootPath = @"cdrom:\PSXRECOMP.EXE;1";
+    public const string ExeIsoName = "PSXRECOMP.EXE;1";
+
+    /// <summary>A bootable Mode 2 Form 1 disc whose SYSTEM.CNF runs <see cref="ExeIsoName"/>.</summary>
+    public static byte[] Bootable(byte[] exeBytes) => Mode2Form1(
+        new SyntheticIsoImageBuilder().AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
+
+    /// <summary>Wraps 2048-byte ISO sectors into raw 2352-byte Mode 2 Form 1 sectors.</summary>
+    public static byte[] Mode2Form1(byte[] iso)
+    {
+        ArgumentNullException.ThrowIfNull(iso);
+        var sectors = iso.Length / Iso9660Reader.SectorSize;
+        var image = new byte[sectors * ICdSectorSource.RawSectorSize];
+        for (var lba = 0; lba < sectors; lba++)
+        {
+            var sector = image.AsSpan(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
+            sector.Slice(1, 10).Fill(0xFF);
+            var absolute = lba + 150;
+            sector[12] = Bcd(absolute / 4500);
+            sector[13] = Bcd(absolute / 75 % 60);
+            sector[14] = Bcd(absolute % 75);
+            sector[15] = 2;
+            sector[18] = sector[22] = 0x08; // submode: data
+            iso.AsSpan(lba * Iso9660Reader.SectorSize, Iso9660Reader.SectorSize).CopyTo(sector[24..]);
+        }
+
+        return image;
+    }
+
+    private static byte Bcd(int value) => (byte)((value / 10 << 4) | (value % 10));
 }

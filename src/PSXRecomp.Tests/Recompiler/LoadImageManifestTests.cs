@@ -3,7 +3,6 @@ using FluentAssertions;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime.CdRom;
-using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
 
@@ -88,7 +87,7 @@ public sealed class LoadImageManifestTests
         using var dir = new TempDirectory();
 
         var manifest = LoadImageManifest.Read(
-            dir.WriteFile("images.txt", Text("boot-exe game\n")), Firmware(), new RawCdSectorSource(WrapInMode2Sectors(iso)));
+            dir.WriteFile("images.txt", Text("boot-exe game\n")), Firmware(), new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
 
         var image = manifest.Images.Should().ContainSingle().Subject;
         image.Name.Should().Be("game");
@@ -105,19 +104,5 @@ public sealed class LoadImageManifestTests
 
         var act = () => LoadImageManifest.Read(path, Firmware(), disc: null);
         act.Should().Throw<InvalidDataException>().WithMessage("*unknown directive*");
-    }
-
-    private static byte[] WrapInMode2Sectors(byte[] iso)
-    {
-        const int raw = ICdSectorSource.RawSectorSize;
-        const int payload = Iso9660Reader.SectorSize;
-        var frames = new byte[iso.Length / payload * raw];
-        for (var i = 0; i < iso.Length / payload; i++)
-        {
-            frames[i * raw + 15] = 2; // Mode 2 form 1: user data begins at offset 24.
-            Buffer.BlockCopy(iso, i * payload, frames, i * raw + 24, payload);
-        }
-
-        return frames;
     }
 }
