@@ -16,6 +16,7 @@ per-agent copy of it.
 3. [`docs/architecture/README.md`](docs/architecture/README.md) — Architecture
    SSOT.
 4. [`skills/README.md`](skills/README.md) — the skill index.
+5. [`skills/common/process/handoff-checkpoints/SKILL.md`](skills/common/process/handoff-checkpoints/SKILL.md) — mandatory durable Issue/PR progress checkpoints and cross-environment handoff.
 
 ## Task routing
 
@@ -32,6 +33,7 @@ Read the skill that matches the work **before** starting it.
 | Recording a design decision (ADR) | [`skills/common/process/adr/SKILL.md`](skills/common/process/adr/SKILL.md) |
 | Before opening a PR | [`skills/common/process/doc-sync/SKILL.md`](skills/common/process/doc-sync/SKILL.md), then [`skills/common/process/self-review/SKILL.md`](skills/common/process/self-review/SKILL.md) |
 | Writing or rewriting a commit message, including checking it for sensitive/session data | [`skills/common/process/commit-message/SKILL.md`](skills/common/process/commit-message/SKILL.md) |
+| Starting, continuing, pausing, or handing off agent work | [`skills/common/process/handoff-checkpoints/SKILL.md`](skills/common/process/handoff-checkpoints/SKILL.md) |
 | Writing the final report | [`skills/common/process/reporting/SKILL.md`](skills/common/process/reporting/SKILL.md) |
 
 Project-wide universal rules that apply to every task:
