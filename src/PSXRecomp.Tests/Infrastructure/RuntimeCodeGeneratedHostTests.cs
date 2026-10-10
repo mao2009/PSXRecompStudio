@@ -74,6 +74,91 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [Theory]
+    [InlineData(0x801FFFFCu, 1)]
+    [InlineData(0x801FFFF8u, 2)]
+    [InlineData(0x801FFFF4u, 3)]
+    [InlineData(0x803FFFFCu, 1)]
+    [InlineData(0xA01FFFFCu, 1)]
+    public void FallbackReturnsToCurrentLoadedUnitAtRamEnd(uint entry, int words)
+    {
+        const uint trampoline = 0x80001000u;
+        uint[] code = words switch
+        {
+            1 => [Nop],
+            2 => [Jr(Ra), Nop],
+            _ => [Addiu(S2, S2, 7), Jr(Ra), Nop],
+        };
+        uint[] bridge = [.. Li(T9, entry), Jr(T9), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, trampoline, bridge);
+        Install(reset, entry, code);
+        Install(reset, 0x80000000u, [Jr(Ra), Nop]);
+        Call(reset, trampoline);
+        reset.Emit(Ori(S1, Zero, 0x7777));
+        var rom = Rom(reset);
+        var reference = Reference(rom, 1_000);
+        var host = RunHost(rom, [(entry, code, [entry])], new HashSet<uint>(), 1_000);
+        host.Final.Gpr.Should().Equal(reference.Gpr);
+        host.Final.Gpr[(int)S1].Should().Be(0x7777u);
+        host.Transitions.Should().Contain(t => t.ExitPc == entry && t.Status == FallbackSegmentStatus.Returned);
+        host.Fetches.Should().NotContain(entry, "the current complete unit fits in RAM and must resume natively");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RamEndVersions_RejectOverrunAndMutationWithoutHidingCurrentShortVersion(bool mutate)
+    {
+        const uint entry = 0x801FFFFCu, trampoline = 0x80001000u;
+        uint first = Nop;
+        uint[] shortVersion = [first];
+        uint[] overrunVersion = [Beq(entry, entry + 8), Nop];
+        uint[] actual = [mutate ? Addiu(S2, S2, 1) : first];
+        uint[] bridge = [.. Li(T9, entry), Jr(T9), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, trampoline, bridge);
+        Install(reset, entry, actual);
+        Install(reset, 0x80000000u, [Jr(Ra), Nop]);
+        Call(reset, trampoline);
+        reset.Emit(Ori(S1, Zero, 0x7777));
+        var rom = Rom(reset);
+        var reference = Reference(rom, 1_000);
+        var host = RunHost(rom, [(entry, overrunVersion, [entry]), (entry, shortVersion, [entry])], new HashSet<uint>(), 1_000);
+        host.Final.Gpr.Should().Equal(reference.Gpr);
+        host.Loaded.VersionsAt(entry).Should().HaveCount(2);
+        if (mutate)
+        {
+            host.Fetches.Should().Contain(entry, "neither version matches the changed word");
+            host.Transitions.Should().NotContain(t => t.ExitPc == entry);
+        }
+        else
+        {
+            host.Fetches.Should().NotContain(entry);
+            host.Transitions.Should().Contain(t => t.ExitPc == entry && t.Status == FallbackSegmentStatus.Returned);
+        }
+    }
+
+    [Fact]
+    public void MatchingVersionThatCrossesRamEnd_RemainsInterpreted()
+    {
+        const uint entry = 0x801FFFFCu, trampoline = 0x80001000u;
+        uint[] overrun = [Beq(entry, entry + 8), Nop];
+        uint[] bridge = [.. Li(T9, entry), Jr(T9), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, trampoline, bridge);
+        Install(reset, entry, overrun);
+        Install(reset, 0x80000000u, [Nop, Jr(Ra), Nop]);
+        Call(reset, trampoline);
+        reset.Emit(Ori(S1, Zero, 0x7777));
+        var rom = Rom(reset);
+        var reference = Reference(rom, 1_000);
+        var host = RunHost(rom, [(entry, overrun, [entry])], new HashSet<uint>(), 1_000);
+        host.Final.Gpr.Should().Equal(reference.Gpr);
+        host.Fetches.Should().Contain(entry, "the matching delay word wraps RAM, beyond the artifact's contiguous unit span");
+        host.Transitions.Should().NotContain(t => t.ExitPc == entry);
+    }
+
+    [Theory]
     [InlineData(0x80001100u)] // same dispatch page
     [InlineData(0x80002000u)] // another dispatch page
     public void LoadedRamCode_RunsNatively_WithDirectAndIndirectJumps_AnExceptionReturn_AndARamToRomReturn(uint r2)

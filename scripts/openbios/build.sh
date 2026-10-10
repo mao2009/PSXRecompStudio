@@ -2,7 +2,7 @@
 # Build OpenBIOS locally from the exact audited Nugget revision, without vendoring or
 # downloading any ROM into PSXRecompStudio's tracked source.
 #
-# Two builders, both pinned:
+# Two documented builders: Docker is digest-pinned; native GCC version is enforced.
 #   docker  : upstream's build image, referenced by digest (not :latest).
 #   native  : a mipsel-none-elf GCC already on PATH (or in $OPENBIOS_TOOLCHAIN_BIN). The
 #             toolchain used for the recorded ROM hash is the prebuilt GCC 16.2.0 archive named below.
@@ -16,12 +16,9 @@ TOOLCHAIN_URL=https://static.grumpycoder.net/pixel/mips/g++-mipsel-none-elf-16.2
 TOOLCHAIN_SHA256=cf84960f5624829d44b866c5f194094c21c63b30f7cbb8cf3030f1abebd52b75
 
 usage() { echo "usage: $0 [--builder docker|native] <local-nugget-checkout> [local-output-dir]" >&2; exit 2; }
-builder=""
+builder="native"
 if [[ ${1:-} == --builder ]]; then builder="${2:-}"; shift 2 || usage; fi
 [[ $# -ge 1 && $# -le 2 ]] || usage
-if [[ -z "$builder" ]]; then
-  if command -v docker >/dev/null 2>&1; then builder=docker; else builder=native; fi
-fi
 
 src="$(cd "$1" && pwd -P)"
 repo="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -53,11 +50,16 @@ case "$builder" in
     toolchain_note="docker image $DOCKER_IMAGE"
     ;;
   native)
-    [[ -n "${OPENBIOS_TOOLCHAIN_BIN:-}" ]] && export PATH="$PATH:$OPENBIOS_TOOLCHAIN_BIN"
+    [[ -n "${OPENBIOS_TOOLCHAIN_BIN:-}" ]] && export PATH="$OPENBIOS_TOOLCHAIN_BIN:$PATH"
     command -v mipsel-none-elf-gcc >/dev/null || { echo "mipsel-none-elf-gcc not on PATH ($TOOLCHAIN_URL, sha256 $TOOLCHAIN_SHA256)" >&2; exit 2; }
+    gcc_version="$(mipsel-none-elf-gcc -dumpfullversion -dumpversion)"
+    if [[ "$gcc_version" != 16.2.0 ]]; then
+      echo "refusing native GCC $gcc_version (expected 16.2.0)" >&2
+      exit 2
+    fi
     make="make"; command -v make >/dev/null || make="mingw32-make"
-    ( cd "$src/openbios" && "$make" BUILD=Release -j"$(nproc 2>/dev/null || echo 4)" )
-    toolchain_note="$(mipsel-none-elf-gcc --version | head -1); expected archive $TOOLCHAIN_URL sha256 $TOOLCHAIN_SHA256"
+    ( cd "$src/openbios" && "$make" BUILD=Release -j"${OPENBIOS_BUILD_JOBS:-2}" )
+    toolchain_note="$(mipsel-none-elf-gcc --version | head -1); verified_version=$gcc_version; archive_identity=NOT_VERIFIED; reference_archive=$TOOLCHAIN_URL reference_sha256=$TOOLCHAIN_SHA256"
     ;;
   *) usage ;;
 esac

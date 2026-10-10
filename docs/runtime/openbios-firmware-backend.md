@@ -25,16 +25,23 @@ bash scripts/openbios/build.sh /your/nugget
 psxrecomp openbios-probe out/openbios/openbios.bin --json
 ```
 
-The helper validates the pinned, clean source checkout and offers a digest-pinned
-Docker builder or a supplied native toolchain. It verifies the 512 KiB output,
-copies the observed MIT LICENSE beside the local ROM, and records its SHA-256
-and builder details under git-ignored `out/`. Each builder requires independent
-ROM hash and end-to-end verification. The recorded ROM hash uses the
-SHA-pinned Windows GCC 16.2.0 archive listed in `scripts/openbios/build.sh`.
-On Linux that archive can run in a separate Wine prefix with Windows `make` and
-the toolchain's `bin` on its Windows PATH; local building does not approve
-redistribution. Keep ROM/ELF outputs outside tracked files and compare the ROM
-hash before reusing any prior result.
+The helper does not vendor code, checks the revision and tracked-worktree state,
+defaults to the recorded native GCC 16.2.0 toolchain (override its directory with
+`OPENBIOS_TOOLCHAIN_BIN`, which takes precedence over PATH). It rejects other
+reported GCC versions and defaults to two make jobs (`OPENBIOS_BUILD_JOBS` can
+override). An explicit `--builder docker` uses the optional digest-pinned image,
+verifies the 512 KiB output, copies the observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
+image/toolchain details under the git-ignored `out/` folder.
+`scripts/openbios/build.sh` pins the Docker digest and records the expected
+native reference toolchain archive hash. Version validation is not verification
+of an installed compiler or archive identity; each builder still requires independent ROM hash
+and end-to-end compatibility verification.
+Local building does not itself approve distribution.
+The recorded ROM hash uses the SHA-pinned Windows GCC 16.2.0 archive listed in
+`scripts/openbios/build.sh`. On Linux that archive can run in a separate Wine
+prefix with Windows `make` and the toolchain's `bin` on its Windows PATH. Keep
+ROM/ELF outputs outside tracked files and compare the ROM hash before reusing
+any prior result.
 
 ### Executable slice
 
