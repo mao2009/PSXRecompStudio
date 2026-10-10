@@ -26,7 +26,7 @@ public static class Program
 {
     private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--json]";
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
-    private const string UsageOpenBiosProbe = "usage: psxrecomp openbios-probe <locally-built-openbios.bin> [--segment-budget <n>] [--segments <n>] [--json]";
+    private const string UsageOpenBiosProbe = OpenBiosProbeCommand.Usage;
     private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--frame-evidence] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);

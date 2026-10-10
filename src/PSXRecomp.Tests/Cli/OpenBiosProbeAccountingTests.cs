@@ -189,4 +189,54 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal(1, OpenBiosProbeCommand.Run(["rom.bin", "--stop-at", "80030000"], TextWriter.Null, TextWriter.Null));
         Assert.Equal(1, OpenBiosProbeCommand.Run(["rom.bin", "--engine", "generated-host", "--roots", "r.txt", "--stop-at", "zz"], TextWriter.Null, TextWriter.Null));
     }
+    [Theory]
+    [InlineData("--code-bytes", "0")]
+    [InlineData("--code-bytes", "4")]
+    [InlineData("--roots", "roots.txt")]
+    public void InterpreterRejectsHostOnlyOptionsEvenExplicitZero(string option, string value)
+    {
+        var error = new StringWriter();
+        OpenBiosProbeCommand.Run(["missing-openbios.bin", option, value], TextWriter.Null, error).Should().Be(1);
+        error.ToString().Should().Contain("require --engine generated-host").And.NotContain("FileNotFoundException");
+    }
+
+    [Theory]
+    [InlineData("--engine", "generated-host", "--roots", "r.txt", "--capture-at", "0x80010000")]
+    [InlineData("--segments", "0")]
+    [InlineData("--segment-budget", "-1")]
+    [InlineData("--segments", "4294967296")]
+    [InlineData("--segments", "+1")]
+    [InlineData("--segments", "1", "--segments", "2")]
+    [InlineData("--capture-at", "0x0x80010000")]
+    [InlineData("--roots", "--json")]
+    [InlineData("--unknown")]
+    public void ProbeRejectsInvalidOptionsBeforeOpeningFirmware(params string[] options)
+    {
+        var error = new StringWriter();
+        OpenBiosProbeCommand.Run(["missing-openbios.bin", .. options], TextWriter.Null, error).Should().Be(1);
+        error.ToString().Should().NotContain("FileNotFoundException");
+    }
+
+    [Theory]
+    [InlineData("--capture-at", "0X80010000", "--segments", "1")]
+    [InlineData("--engine", "generated-host", "--roots", "r.txt", "--code-bytes", "0")]
+    [InlineData("--engine", "generated-host", "--roots", "r.txt", "--differential", "--compare-at", "80010000", "--compare-at", "80030000")]
+    public void ValidEngineOptionsReachFirmwareInputValidation(params string[] options)
+    {
+        var error = new StringWriter();
+        OpenBiosProbeCommand.Run(["missing-openbios.bin", .. options], TextWriter.Null, error).Should().Be(1);
+        error.ToString().Should().Contain("FileNotFoundException");
+    }
+
+    [Fact]
+    public void GlobalHelpIncludesTheSharedCompleteProbeUsage()
+    {
+        var output = new StringWriter();
+        Program.Execute(["--help"], output, TextWriter.Null);
+        output.ToString().Should().Contain(OpenBiosProbeCommand.Usage);
+        var error = new StringWriter();
+        OpenBiosProbeCommand.Run([], TextWriter.Null, error);
+        error.ToString().TrimEnd().Should().Be(OpenBiosProbeCommand.Usage);
+    }
+
 }
