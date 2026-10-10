@@ -148,7 +148,14 @@ The original `k14goth` is explicitly stated as Public Domain. However, the `/efo
 
 ## 7. Docker builder image (ghcr.io/grumpycoders/pcsx-redux-build)
 
-This image is used to build OpenBIOS in CI. Its contents and the licenses of packages within it cannot be verified without pulling and inspecting the image.
+The optional Docker builder is pinned to
+`ghcr.io/grumpycoders/pcsx-redux-build@sha256:d9ae6cbb23a5d0d98d8c3702cc6f512698ee1670bf8d59b236b2baabe99a66e4`.
+It has not been executed or inspected in the recorded native build, and no
+OpenBIOS ROM build in CI is established by this audit. The script defaults to
+the recorded native GCC 16.2.0 route; Docker requires explicit selection.
+Native compiler version validation does not verify identity of an arbitrary
+installed compiler or the reference toolchain archive. Docker output must be
+hashed and compared independently before claiming agreement.
 
 **Verdict: NEEDS-HUMAN-REVIEW (build tooling; does not affect binary content directly, but image provenance is unverified).**
 

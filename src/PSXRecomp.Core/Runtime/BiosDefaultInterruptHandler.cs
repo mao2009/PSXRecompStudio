@@ -32,9 +32,9 @@ namespace PSXRecomp.Core.Runtime;
 /// claim or acknowledge it first.
 /// </para>
 /// <para>
-/// Priority 2 (<c>PadCardIrq</c>) is skipped by the caller: psx-spx has InitPAD2 not enqueue it and StartPAD2
-/// enqueue it, and the Runtime registers none of StartPAD/StartCARD or the C0:02 enqueue, so nothing can be in
-/// that chain (#661 models it when they exist).
+/// Priority 2 (<c>PadCardIrq</c>, <see cref="BiosPadCardIrqHandler.Run"/>, #661) runs before this element once B0:15 or
+/// StartCARD2 enqueued it; with its auto-ack set it has already acknowledged IRQ0, so DefInt then sees no IRQ0 and
+/// delivers no VBlank event (as in OpenBIOS, where <c>sio0Handler</c> clears I_STAT before the walk reaches DefInt).
 /// </para>
 /// <para>
 /// Auto-ack: the per-IRQ flag is <c>C0:0D</c> state, which the Runtime does not model. Its default (disabled) is

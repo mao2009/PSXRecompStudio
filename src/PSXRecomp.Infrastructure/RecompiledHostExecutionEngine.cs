@@ -58,8 +58,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// <summary>
     /// Guest instructions the last run's compiled blocks retired, as the artifact reported them over the host protocol
     /// (Issue #732); null without the protocol. Never includes fallback instructions (<see cref="FallbackEvidence"/>).
+    /// Live while the run is in progress (for example from <see cref="FallbackFetchObserver"/>).
     /// </summary>
-    public ulong? NativeRetiredInstructions { get; private set; }
+    public ulong? NativeRetiredInstructions => _bridge?.NativeRetiredInstructions;
+
+    /// <summary>
+    /// Synchronous host round trips the last run's native code made (Issue #732, measurement only): guest MMIO accesses
+    /// relayed to the device graph and guest-time reports. Null without the protocol.
+    /// </summary>
+    public (ulong MmioAccesses, ulong TimeReports)? HostRoundTrips =>
+        _bridge is null ? null : (_bridge.MmioAccesses, _bridge.TimeReports);
+
+    private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
     public const string ExceptionVectorUnhandledDiagnosticCode = "ARTIFACT_EXCEPTION_VECTOR_UNHANDLED";
@@ -81,12 +91,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly bool _guestFirmware;
     private readonly ICdSectorSource? _disc;
     private readonly int _runTimeoutMs;
+    private readonly LoadedCodeTable _loadedCode;
 
     /// <summary>
     /// Called with the mixed-execution interpreter and the PC of every instruction it is about to fetch (diagnostic
     /// observation only, Issue #732). Native blocks are not observed: this sees exactly the fallback instructions.
     /// </summary>
     public Action<InterpreterTitleExecutionEngine, uint>? FallbackFetchObserver { get; set; }
+
+    /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
+    public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
 
     private IReadOnlyList<RecompilerInitialMemoryItem> _initialMemory =
         Array.Empty<RecompilerInitialMemoryItem>();
@@ -143,6 +157,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </param>
     /// <param name="runTimeout">The bound on one artifact run; null is 30 seconds.</param>
     /// <param name="disc">The disc in the Runtime CD-ROM drive (Issue #732); null is the legacy drive model.</param>
+    /// <param name="loadedCode">
+    /// The pre-generated (ahead-of-time) versions of code the guest places in RAM (Issue #732), built with
+    /// <see cref="ReachableProgramBuilder.BuildLoadedImage"/> and linked into one table. A version runs only while guest
+    /// RAM holds exactly the words it was compiled from — checked by the artifact before entering it and by the fallback
+    /// interpreter before returning to it — and otherwise its PC runs in the <paramref name="mixedFallback"/>
+    /// interpreter. Null: no RAM-placed code.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -160,7 +181,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         MemoryCardSlotConfiguration? memoryCardSlots = null,
         bool guestFirmware = false,
         TimeSpan? runTimeout = null,
-        ICdSectorSource? disc = null)
+        ICdSectorSource? disc = null,
+        LoadedCodeTable? loadedCode = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -196,7 +218,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         _imageLoadAddress = imageLoadAddress;
         _imageWords = imageWords;
 
-        var dispatch = RecompilerHostCodeGen.Generate(program);
+        _loadedCode = loadedCode ?? LoadedCodeTable.Empty;
+        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -274,11 +297,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
+        _bridge = bridge;
         var arguments = new List<string>(4) { _inputPath, _imagePath };
         if (bridge is not null)
         {
             arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+            arguments.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
         }
 
         if (_guestFirmware)
@@ -291,7 +316,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // Mixed-execution evidence is captured before any early return below: a handoff that happened is reported
         // even when the run then ends on a protocol fault, a timeout, or an MMIO or guest-time failure (Issue #693).
         FallbackEvidence = bridge?.FallbackEvidence;
-        NativeRetiredInstructions = bridge?.NativeRetiredInstructions;
         FallbackTimings = bridge?.FallbackTimings;
 
         if (hostProtocolFaulted)
@@ -556,13 +580,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly IReadOnlySet<uint> _blockEntryPcs;
         private readonly bool _guestFirmware;
         private readonly Action<InterpreterTitleExecutionEngine, uint>? _fallbackFetchObserver;
+        private readonly Action<MixedFallbackTransition>? _fallbackTransitionObserver;
         private readonly ICdSectorSource? _disc;
+        private readonly LoadedCodeTable _loadedCode;
 
         private TextReader? _fromArtifact;
         private TextWriter? _toArtifact;
         private IBiosRuntime? _biosRuntime;
         private PsxDeviceGraph? _devices;
         private DeviceScheduler? _scheduler;
+        private ulong _issuedCredit;
 
         /// <summary>The outstanding blocking BIOS call's poll bound (Issue #717); lives as long as this launch's devices.</summary>
         private readonly BiosBlockingCallWait _blockingCallWait = new();
@@ -583,6 +610,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         /// <summary>The sum of every accepted guest-time report: instructions retired by compiled blocks (Issue #732).</summary>
         public ulong NativeRetiredInstructions { get; private set; }
+
+        public ulong MmioAccesses { get; private set; }
+
+        public ulong TimeReports { get; private set; }
 
         /// <summary>Why the host refused the artifact's guest-time report, or null when it did not (Issue #679).</summary>
         public string? RetiredFailureCode { get; private set; }
@@ -622,9 +653,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             MemoryCardSlotConfiguration? memoryCardSlots,
             bool guestFirmware,
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
-            ICdSectorSource? disc)
+            ICdSectorSource? disc,
+            Action<MixedFallbackTransition>? fallbackTransitionObserver,
+            LoadedCodeTable loadedCode)
         {
+            _fallbackTransitionObserver = fallbackTransitionObserver;
             _disc = disc;
+            _loadedCode = loadedCode;
             _guestFirmware = guestFirmware;
             _fallbackFetchObserver = fallbackFetchObserver;
             _memoryCardSlots = memoryCardSlots;
@@ -668,8 +703,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode);
                 }
+                Send(string.Create(CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
                 Decline();
@@ -1016,6 +1053,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// </summary>
         private void HandleMmio(string fields, bool isWrite)
         {
+            MmioAccesses++;
             var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             uint value = 0;
             if (_devices is null
@@ -1110,6 +1148,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// </summary>
         private void HandleRetired(string fields)
         {
+            TimeReports++;
             if (_scheduler is null
                 || _deviceRam is null
                 || !ulong.TryParse(fields, NumberStyles.None, CultureInfo.InvariantCulture, out var retired)
@@ -1123,6 +1162,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             if (!TryScale(retired, InterpreterTitleExecutionEngine.CyclesPerInstruction, out var cycles))
             {
                 RefuseRetired("ARTIFACT_CYCLES_OVERFLOW", $"{retired} retired instructions overflow the 64-bit device-cycle count.");
+                return;
+            }
+
+            if (retired > _issuedCredit)
+            {
+                RefuseRetired("ARTIFACT_EVENT_DEADLINE_EXCEEDED", "The artifact retired instructions beyond its issued device-event deadline.");
                 return;
             }
 
@@ -1148,15 +1193,25 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
+            SendTimeCredit();
             Send(interruptLine
                 ? RecompiledArtifactCodeGen.ProtocolRetiredAckInterruptReply
                 : RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
         }
 
+        private void SendTimeCredit()
+        {
+            var cycles = Math.Min(_scheduler!.NextEventCycles, uint.MaxValue);
+            var instructions = cycles / InterpreterTitleExecutionEngine.CyclesPerInstruction;
+            if (instructions == 0) throw new ProtocolFaultException("The scheduler returned no executable retirement credit.");
+            _issuedCredit = instructions;
+            Send(string.Create(CultureInfo.InvariantCulture, $"T {instructions}"));
+        }
+
         /// <summary>
-        /// Advances the existing <see cref="DeviceScheduler"/> by <paramref name="cycles"/> in chunks that fit its 32-bit
-        /// argument, serving device-originated RAM requests against artifact_ram meanwhile. Null on success, else the
-        /// classified failure. Shared by guest-time reports and a pending blocking call's poll (Issue #717).
+        /// Advances the existing <see cref="DeviceScheduler"/> at event deadlines, serving device-originated RAM
+        /// requests against artifact_ram meanwhile. Null on success, else the classified failure. Shared by
+        /// guest-time reports and a pending blocking call's poll (Issue #717).
         /// </summary>
         private (string Code, string Message)? AdvanceDevices(ulong cycles)
         {
@@ -1166,7 +1221,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 for (var remaining = cycles; remaining != 0;)
                 {
                     var chunk = (uint)Math.Min(remaining, MaxAdvanceCycles);
-                    _scheduler!.Advance(chunk);
+                    _scheduler!.AdvanceExact(chunk);
                     remaining -= chunk;
                 }
             }
@@ -1250,8 +1305,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private string ReadReply() =>
             _fromArtifact?.ReadLine() ?? throw new ProtocolFaultException("The artifact closed its output mid-protocol.");
 
-        private void Send(string line) =>
+        private void Send(string line)
+        {
+            if (_scheduler is not null && (line == RecompiledArtifactCodeGen.ProtocolDeclineReply || line.StartsWith(RecompiledArtifactCodeGen.ProtocolDecisionPrefix, StringComparison.Ordinal)))
+                SendTimeCredit();
             (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
+        }
 
         private static uint ParseUInt(string value) => uint.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
 

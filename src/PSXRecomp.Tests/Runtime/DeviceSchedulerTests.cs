@@ -62,6 +62,74 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void GuestCycleCounter_IsIndependentOfAdvanceChunking()
+    {
+        _scheduler.Advance(0);
+        _scheduler.ElapsedCycles.Should().Be(0);
+        _scheduler.Advance(100);
+        _scheduler.Advance(200);
+        _scheduler.ElapsedCycles.Should().Be(300);
+    }
+
+    [Fact]
+    public void DeadlineTracksTimerReschedulingCancellationAndReadOnlyQueries()
+    {
+        ArmTimer2(target: 100, ModeIrqOnTarget);
+        _scheduler.NextEventCycles.Should().Be(100);
+        _scheduler.Advance(40);
+        _scheduler.NextEventCycles.Should().Be(60);
+        _core.WriteTimerRegister(Timer2Target, 50);
+        _scheduler.NextEventCycles.Should().Be(10);
+        _core.WriteTimerRegister(Timer2Mode, 1); // Timer2 stopped
+        _scheduler.NextEventCycles.Should().BeGreaterThan(10);
+        _core.WriteTimerRegister(Timer2Mode, ModeIrqOnTarget | 0x200);
+        _scheduler.Advance(7);
+        _scheduler.NextEventCycles.Should().Be(393);
+        _scheduler.Advance(393);
+        _interrupts.Status.Should().Be(Timer2Bit);
+        var before = _scheduler.ElapsedCycles;
+        _ = _scheduler.NextEventCycles;
+        _scheduler.ElapsedCycles.Should().Be(before);
+        (_core.PeekTimerRegister(Timer2Mode) & 0x800).Should().Be(0x800);
+        (_core.PeekTimerRegister(Timer2Mode) & 0x800).Should().Be(0x800);
+        (_core.ReadTimerRegister(Timer2Mode) & 0x800).Should().Be(0x800,
+            "deadline queries must not clear MODE's reached-target flag");
+    }
+
+    [Fact]
+    public void ExactAdvanceAcrossMultipleDeadlines_MatchesSingleInstructionAdvances()
+    {
+        ArmTimer2(target: 5, ModeIrqOnTarget | ModeResetOnTarget | ModeIrqRepeat);
+        _scheduler.AdvanceExact(19);
+        var count = _core.ReadTimerRegister(0x1F801120u);
+        var mode = _core.PeekTimerRegister(Timer2Mode);
+        var status = _interrupts.Status;
+        _core.ResetTimers();
+        _interrupts.Acknowledge(0);
+        ArmTimer2(target: 5, ModeIrqOnTarget | ModeResetOnTarget | ModeIrqRepeat);
+        for (var i = 0; i < 19; i++) _scheduler.Advance(1);
+        _core.ReadTimerRegister(0x1F801120u).Should().Be(count);
+        _core.PeekTimerRegister(Timer2Mode).Should().Be(mode);
+        _interrupts.Status.Should().Be(status);
+    }
+
+    [Fact]
+    public void ExactAdvance_DeliversEarlierEventsFirstAndSimultaneousTimersInStageOrder()
+    {
+        var recorder = new RecordingInterrupts(_interrupts);
+        var scheduler = new DeviceScheduler(_core, recorder);
+        _core.WriteTimerRegister(0x1F801108u, 5);
+        _core.WriteTimerRegister(0x1F801104u, ModeIrqOnTarget);
+        _core.WriteTimerRegister(0x1F801118u, 3);
+        _core.WriteTimerRegister(0x1F801114u, ModeIrqOnTarget);
+        ArmTimer2(5, ModeIrqOnTarget);
+        scheduler.AdvanceExact(3);
+        recorder.Raised.Should().Equal(DeviceScheduler.Timer0Irq + 1);
+        scheduler.AdvanceExact(2);
+        recorder.Raised.Should().Equal(DeviceScheduler.Timer0Irq + 1, DeviceScheduler.Timer0Irq, DeviceScheduler.Timer0Irq + 2);
+    }
+
+    [Fact]
     public void Timer2Target_RaisesIrq6ExactlyAtTheTargetCycle()
     {
         ArmTimer2(target: 100, ModeIrqOnTarget);
@@ -178,6 +246,21 @@ public sealed class DeviceSchedulerTests : IDisposable
         _interrupts.Status.Should().Be(0u);
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Vblank_ChunkedAdvancePreservesInterlaceFieldParity(int intervals)
+    {
+        _gpu.WriteGP1(0x08000027);
+        var field = _gpu.ReadGpustat() >> 13 & 1;
+        _scheduler.Advance((uint)intervals * DeviceScheduler.VblankIntervalCycles);
+
+        var expectedField = field ^ (uint)(intervals & 1);
+        (_gpu.ReadGpustat() >> 13 & 1).Should().Be(expectedField);
+        (_gpu.ReadGpustat() >> 31 & 1).Should().Be(expectedField ^ 1u);
+        _interrupts.Status.Should().Be(VblankBit);
+    }
+
     [Fact]
     public void Vblank_StartsTheGpusNextInterlaceField()
     {
@@ -281,6 +364,41 @@ public sealed class DeviceSchedulerTests : IDisposable
 
         _scheduler.Advance(100);
         _interrupts.Status.Should().Be(0u);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DeliveredSioControllerLatch_DoesNotForceOneCycleCreditsOrRepeatDelivery(bool unmasked)
+    {
+        var recorder = new RecordingInterrupts(_interrupts);
+        var scheduler = new DeviceScheduler(_core, recorder);
+        _core.GetSio0InterruptPending().Should().BeFalse();
+        _scheduler.NextEventCycles.Should().BeGreaterThan(1);
+        _core.WriteInterruptControllerRegister(0x1F801074u, unmasked ? Sio0Bit : 0);
+        _interrupts.Raise(DeviceScheduler.Sio0Irq); // controller latch AFTER source delivery
+        _interrupts.HasPendingInterrupts.Should().Be(unmasked);
+        ArmTimer2(5, ModeIrqOnTarget);
+        _core.WriteDmaRegister(Dpcr, 1u << 27);
+        _core.WriteDmaRegister(Ch6Bcr, 3);
+        _core.WriteDmaRegister(Ch6Chcr, ChcrStartTrigger);
+        scheduler.NextEventCycles.Should().Be(3, "held I_STAT.7 is not an undelivered SIO pulse");
+        scheduler.AdvanceExact(3);
+        scheduler.NextEventCycles.Should().Be(2);
+        scheduler.AdvanceExact(2);
+        recorder.Raised.Should().NotContain(DeviceScheduler.Sio0Irq);
+        (_interrupts.Status & Sio0Bit).Should().Be(Sio0Bit);
+        scheduler.NextEventCycles.Should().BeGreaterThan(1);
+        _core.WriteInterruptControllerRegister(0x1F801074u, Sio0Bit);
+        _interrupts.HasPendingInterrupts.Should().BeTrue();
+        _interrupts.Acknowledge(~Sio0Bit);
+        _interrupts.HasPendingInterrupts.Should().BeFalse();
+        scheduler.Advance(1);
+        (_interrupts.Status & Sio0Bit).Should().Be(0);
+        scheduler.NextEventCycles.Should().BeGreaterThan(1);
+        _interrupts.Raise(DeviceScheduler.Sio0Irq);
+        _interrupts.HasPendingInterrupts.Should().BeTrue();
+        scheduler.NextEventCycles.Should().BeGreaterThan(1);
     }
 
     [Fact]

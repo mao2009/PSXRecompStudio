@@ -139,7 +139,7 @@ internal static class RecompilerIrEvaluator
             }
 
             var values = new Dictionary<int, uint>();
-            foreach (var operation in block.Operations)
+            for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
             {
                 if (!Execute(operation, gpr, hiLo, cop0, values, memory, gte))
                 {

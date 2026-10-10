@@ -156,7 +156,7 @@ public sealed class BiosHleRuntime : IDeviceBiosRuntime
             [(BiosCallFamily.B0, HookEntryIntFunction)] = (1, InvokeHookEntryInt),
             [(BiosCallFamily.B0, ReturnFromExceptionFunction)] = (0, InvokeReturnFromException),
             [(BiosCallFamily.B0, ChangeClearPadFunction)] = (1, InvokeChangeClearPad),
-            [(BiosCallFamily.B0, OutdatedPadInitAndStartFunction)] = (4, identity => BiosPadState.OutdatedPadInitAndStart(identity, _guestMemoryWriter)),
+            [(BiosCallFamily.B0, OutdatedPadInitAndStartFunction)] = (4, identity => BiosPadState.OutdatedPadInitAndStart(identity, _guestMemoryReader, _guestMemoryWriter)),
             [(BiosCallFamily.B0, InitCard2Function)] = (1, identity => BiosCardState.InitCard2(identity, _guestMemoryReader, _guestMemoryWriter)),
             [(BiosCallFamily.B0, StartCard2Function)] = (0, identity => BiosCardState.StartCard2(identity, _guestMemoryReader, _guestMemoryWriter, _devices)),
             [(BiosCallFamily.B0, OpenEventFunction)] = (4, InvokeOpenEvent),

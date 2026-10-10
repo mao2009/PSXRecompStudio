@@ -110,6 +110,7 @@ public sealed class CdRomDevice : ICdRom
     public const uint SingleSpeedSectorCycles = CpuClockHz / 75;
 
     private const byte StatMotorOn = 0x02;
+    private const byte StatShellOpen = 0x10;
     private const byte StatRead = 0x20;
     private const byte StatSeek = 0x40;
     private const byte ModeDoubleSpeed = 0x80;
@@ -133,6 +134,7 @@ public sealed class CdRomDevice : ICdRom
     private ulong _lastAcknowledge;
     private ulong _nextSectorDue;
     private bool _motorOn;
+    private bool _shellOpen;
     private int _position;
     private byte[]? _lastSectorHeader;
     private byte[]? _announcedSector;
@@ -160,6 +162,7 @@ public sealed class CdRomDevice : ICdRom
         _discIdentity = discIdentity;
         _disc = disc;
         _motorOn = discIdentity.IsPresent;
+        _shellOpen = disc is not null;
     }
 
     /// <summary>Currently selected register index (0-3).</summary>
@@ -273,6 +276,20 @@ public sealed class CdRomDevice : ICdRom
         return (byte)status;
     }
 
+    /// <summary>Read-only deadline in the drive's own clock, including interrupt acknowledge spacing.</summary>
+    public ulong NextEventCycles
+    {
+        get
+        {
+            if (_disc is null) return ulong.MaxValue;
+            var due = IsReading ? _nextSectorDue : ulong.MaxValue;
+            if (_interruptFlag == 0)
+                foreach (var response in _pendingResponses)
+                    due = Math.Min(due, Math.Max(response.Due, _lastAcknowledge + MinimumInterruptDelayCycles));
+            return due == ulong.MaxValue ? due : due <= _now ? 1 : due - _now;
+        }
+    }
+
     /// <summary>
     /// Advances the drive by <paramref name="cycles"/> CPU cycles: the next sector of an active read and any response
     /// that has become due. Without a disc nothing is timed and this does nothing.
@@ -284,14 +301,26 @@ public sealed class CdRomDevice : ICdRom
             return;
         }
 
-        _now += cycles;
-        if (IsReading && _now >= _nextSectorDue)
+        var target = checked(_now + cycles);
+        for (;;)
         {
-            _nextSectorDue += SectorCycles;
-            ReadNextSector();
+            var sectorDue = IsReading ? Math.Max(_now, _nextSectorDue) : ulong.MaxValue;
+            var responseDue = _interruptFlag == 0 && _pendingResponses.Count != 0
+                ? Math.Max(_now, Math.Max(_lastAcknowledge + MinimumInterruptDelayCycles,
+                    _pendingResponses.Min(static response => response.Due)))
+                : ulong.MaxValue;
+            var next = Math.Min(sectorDue, responseDue);
+            if (next > target || next == ulong.MaxValue) break;
+            _now = next;
+            // Preserve single-cycle stage ordering when a sector and response coincide.
+            if (sectorDue == next)
+            {
+                _nextSectorDue += SectorCycles;
+                ReadNextSector();
+            }
+            DeliverDueResponse();
         }
-
-        DeliverDueResponse();
+        _now = target;
     }
 
     /// <summary>Execute one command. Its responses are queued (and, with a disc, timed) for interrupt delivery.</summary>
@@ -379,6 +408,7 @@ public sealed class CdRomDevice : ICdRom
         IsMuted = false;
         Mode = 0;
         _motorOn = _discIdentity.IsPresent;
+        _shellOpen = _disc is not null;
         _position = 0;
         _lastSectorHeader = null;
         _announcedSector = null;
@@ -393,6 +423,7 @@ public sealed class CdRomDevice : ICdRom
             byte status = 0;
             if (_motorOn) status |= StatMotorOn;
             if (IsReading) status |= StatRead;
+            if (_shellOpen) status |= StatShellOpen;
             return status;
         }
     }
@@ -401,6 +432,7 @@ public sealed class CdRomDevice : ICdRom
     {
         if (!RequireParameterCount(parameters, 0)) return;
         QueueResponse(IntAcknowledge, CommandStatus);
+        _shellOpen = false; // psx-spx stat bit 4: set once the shell was opened, cleared by the GetStat that reports it
     }
 
     /// <summary>

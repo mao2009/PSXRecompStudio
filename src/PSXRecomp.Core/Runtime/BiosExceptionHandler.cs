@@ -237,8 +237,9 @@ public static class BiosExceptionHandler
 
     /// <summary>
     /// The chain as the Runtime models it today: priority 1 is <see cref="BiosTimerVblankIrqHandler"/> (#658) and
-    /// ends the walk when a flag-1 element returns from the exception. Priority 2 (<c>PadCardIrq</c>) is skipped:
-    /// it is enqueued only by StartPAD2/StartCARD, which the Runtime does not model, so it is empty (#661). Priority 3
+    /// ends the walk when a flag-1 element returns from the exception. Priority 2 is <see cref="BiosPadCardIrqHandler.Run"/>
+    /// (#661): it runs only once B0:15 or StartCARD2 enqueued it, never returns from the exception, and may acknowledge IRQ0
+    /// (B0:5B auto-ack) before priority 3 sees it. Priority 3
     /// is <see cref="BiosDefaultInterruptHandler"/> (#690): it never acknowledges by default and never returns from
     /// the exception, so a chain that reaches it has run to the end and the completion step (the B0:19 hook, else the
     /// default Exit) follows; a pending enabled IRQ outside what DefInt models stops the run instead of pretending a
@@ -254,38 +255,13 @@ public static class BiosExceptionHandler
             return priority1;
         }
 
-        var priority2 = PadCardIrqIsEnqueuedAndWouldClaim(context);
-        if (priority2 is not null)
+        var priority2 = BiosPadCardIrqHandler.Run(context);
+        if (priority2.Status != BiosExceptionChainStatus.Completed)
         {
-            return priority2.Value;
+            return priority2;
         }
 
         return BiosDefaultInterruptHandler.Run(context);
-    }
-
-    /// <summary>
-    /// Priority 2: B0:15 (<see cref="BiosPadState"/>) enqueued <c>PadCardIrq</c>. Its element is not run here (#661), so
-    /// when it would claim the exception (IRQ0 pending and enabled, the claim test of <see cref="BiosPadCardIrqHandler"/>)
-    /// the chain stops rather than skip an element that exists. Null: not enqueued, or it would not claim.
-    /// </summary>
-    private static BiosExceptionChainResult? PadCardIrqIsEnqueuedAndWouldClaim(BiosExceptionChainContext context)
-    {
-        if (!BiosPadState.TryGetState(context.Reader, out var enqueued, out _))
-        {
-            return new BiosExceptionChainResult(
-                BiosExceptionChainStatus.Unsupported, "the pad state variable (B0:15) could not be read");
-        }
-
-        const uint vblankBit = 1u << DeviceScheduler.VblankIrq;
-        if (!enqueued || (context.Interrupts.Status & context.Interrupts.Mask & vblankBit) == 0)
-        {
-            return null;
-        }
-
-        return new BiosExceptionChainResult(
-            BiosExceptionChainStatus.Unsupported,
-            $"I_STAT=0x{context.Interrupts.Status:X4}, I_MASK=0x{context.Interrupts.Mask:X4}|priority 2 PadCardIrq was enqueued by B0:15 " +
-            "and would claim this exception, but running the element is not modelled (#661)");
     }
 
     private static string Describe(BiosExceptionContext c) =>

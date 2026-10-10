@@ -35,6 +35,7 @@ struct PSXTimerReadResult {
 };
 
 extern "C" {
+uint32_t psx_timer_next_event_cycles(PSXTimerState state);
 PSXTimerState psx_timer_reset(void);
 PSXTimerReadResult psx_timer_read_register(PSXTimerState state, uint32_t address);
 PSXTimerState psx_timer_write_register(PSXTimerState state, uint32_t address, uint32_t value);

@@ -176,25 +176,53 @@ public sealed class BiosCardStateTests : IDisposable
         enqueued.Should().BeFalse("the enqueue is StartCARD2/StartPAD2's, not InitCARD2's");
     }
 
-    // ---- the #661 guard is unchanged ------------------------------------------------------------------
+    // ---- the shared pad-started flag (OpenBIOS s_padStarted; #661) ------------------------------------
+
+    private uint PadStarted()
+    {
+        BiosCardState.TryGetPadStarted(Reader, out var padStarted).Should().BeTrue();
+        return padStarted;
+    }
+
+    [Fact]
+    public void The_Pad_Started_Flag_Is_Whichever_Of_B0_15_And_InitCARD2_Ran_Last()
+    {
+        PadStarted().Should().Be(0u);
+        InitCard2(0);
+        PadStarted().Should().Be(0u);
+        PadInitAndStart();
+        PadStarted().Should().Be(1u, "B0:15's InitPad sets s_padStarted = 1");
+        InitCard2(0);
+        PadStarted().Should().Be(0u, "InitCARD2 stores its pad_enable");
+    }
+
+    [Fact]
+    public void B0_15_Sets_The_Pad_Started_Flag_Without_Marking_InitCARD2_As_Run()
+    {
+        PadInitAndStart();
+
+        PadStarted().Should().Be(1u);
+        State().Should().Be((false, 0u));
+        BiosCardState.TryGetStarted(Reader, out var started).Should().BeTrue();
+        started.Should().BeFalse();
+    }
+
+    // ---- the exception chain (priority 2 runs since #661) ---------------------------------------------
 
     private BiosExceptionHandlerOutcome Handle() =>
         BiosExceptionHandler.Handle(
             Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(0x80025CBC, 0x400, 0x404, 0, 0));
 
     [Fact]
-    public void After_B0_15_And_InitCARD2_The_Priority_2_Chain_Still_Fails_Closed()
+    public void After_B0_15_And_InitCARD2_The_Priority_2_Element_Runs_And_The_Exception_Completes()
     {
         PadInitAndStart();
         InitCard2(1);
         _interrupts.SetMask(VblankBit);
         _interrupts.Raise(DeviceScheduler.VblankIrq);
 
-        var outcome = Handle();
-
-        outcome.Handled.Should().BeFalse();
-        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain("PadCardIrq").And.Contain("#661");
+        Handle().Handled.Should().BeTrue();
+        _ram.Read32(ButtonDest).Should().Be(BiosPadCardIrqHandler.DisconnectedPadButtons);
     }
 
     [Fact]

@@ -55,6 +55,24 @@ public sealed class CdRomDmaTransfer
         _memory = memory ?? throw new ArgumentNullException(nameof(memory));
     }
 
+    /// <summary>Whether the scheduler's next instruction can consume a complete already-buffered burst.</summary>
+    public bool CanTransfer
+    {
+        get
+        {
+            if (!_cdRom.DataReady) return false;
+            var chcr = _dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(Channel));
+            var bcr = _dma.ReadRegister(Ps1MemoryMap.GetChannelBcr(Channel));
+            var dpcr = _dma.ReadRegister(Ps1MemoryMap.Dpcr);
+            var words = bcr & 0xFFFFu;
+            if (words == 0) words = 0x10000u;
+            return (dpcr & ChannelDpcrEnable) != 0 &&
+                (chcr & (StartBusy | StartTrigger)) == (StartBusy | StartTrigger) &&
+                (chcr & (DirectionRamToDevice | AddressDecrement | SyncMask)) == 0 &&
+                _cdRom.DataReady && (ulong)_cdRom.DataBytesAvailable >= (ulong)words * sizeof(uint);
+        }
+    }
+
     /// <summary>
     /// Transfers one complete channel-3 burst when it is armed and the CD-ROM
     /// FIFO contains the whole requested payload. No partial transfer occurs.

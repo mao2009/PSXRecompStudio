@@ -94,10 +94,11 @@ documentation synchronization gate defined in
 from the matching `skills/project/<project>/profile.md`, and record its
 update/no-update decisions for the PR body.
 
-Then perform the mandatory pre-PR self review defined in
-`skills/common/process/self-review/SKILL.md`, loading project-specific inputs
-from the matching `skills/project/<project>/profile.md`. Do not open a PR until
-that skill's completion criteria are met.
+Independent code review belongs to ChatGPT, not to the implementing agent.
+Implementing agents must finish the relevant build/tests and concise handoff
+without self-review or review-only subagents. ChatGPT may use the independent
+review checklist in `skills/common/process/self-review/SKILL.md` to evaluate
+submitted changes and handle minor fixes. Do not skip verification.
 
 CodeRabbit is the preferred automated reviewer, not a single-provider mandatory
 gate. Provider state and the fallback path are defined by

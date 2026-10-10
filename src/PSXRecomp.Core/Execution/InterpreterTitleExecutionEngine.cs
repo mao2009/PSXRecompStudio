@@ -283,6 +283,22 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public (uint Sr, uint Cause, uint Epc, uint BadVAddr) Cop0Diagnostics =>
         (_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause), _core.GetCop0(Cop0Epc), _core.GetCop0(8));
 
+    /// <summary>HI/LO as the CPU holds them now (diagnostic only, Issue #732).</summary>
+    public (uint Hi, uint Lo) HiLoDiagnostics => (_core.Hi, _core.Lo);
+
+    /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
+    public PsxDeviceGraph DiagnosticDevices => _devices;
+
+    /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
+    public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
+
+    /// <summary>
+    /// Diagnostic stop (Issue #732): once set — typically by a <see cref="FetchObserver"/> — the step loop ends before
+    /// executing the instruction just fetched, exactly as if its budget had run out, and every later segment ends at its
+    /// first fetch. A probe's way to end a run at a chosen PC; never set by execution itself.
+    /// </summary>
+    public bool StopRequested { get; set; }
+
     /// <inheritdoc />
     public void Load(TitleExecutionRequest request)
     {
@@ -362,6 +378,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <exception cref="ArgumentException">The state is malformed or the budget is zero.</exception>
     public FallbackSegmentOutcome RunFallbackSegment(
         FallbackCpuState entry, IReadOnlySet<uint> returnPcs, uint instructionBudget)
+    {
+        ArgumentNullException.ThrowIfNull(returnPcs);
+        return RunFallbackSegment(entry, returnPcs.Contains, instructionBudget);
+    }
+
+    /// <summary>
+    /// <see cref="RunFallbackSegment(FallbackCpuState, IReadOnlySet{uint}, uint)"/> with the return points decided per
+    /// PC at the moment the interpreter is about to execute it (Issue #732: a block compiled from guest RAM is a return
+    /// point only while RAM still holds the code it was compiled from).
+    /// </summary>
+    public FallbackSegmentOutcome RunFallbackSegment(
+        FallbackCpuState entry, Func<uint, bool> returnPcs, uint instructionBudget)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(returnPcs);
@@ -444,7 +472,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// one step) that is a member of the set while the CPU is at an architecturally clean boundary.
     /// </summary>
     private RecompilerExecutionResult RunLoop(
-        uint budget, IReadOnlySet<uint>? returnPcs, out bool returned, out ulong retiredInstructions)
+        uint budget, Func<uint, bool>? returnPcs, out bool returned, out ulong retiredInstructions)
     {
         returned = false;
         retiredInstructions = 0;
@@ -467,7 +495,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // A guest firmware (Issue #732) owns its handlers in its own image and permits every PC, so being inside one
             // is no reason to keep interpreting; its SYSCALL handler returns to EPC + 4, never to the EPC tracked below.
             if (returnPcs is not null && step > 0 && (!_inInterruptHandler || _allowRuntimeRamExecution)
-                && returnPcs.Contains(_core.Pc) && _core.IsPipelineClean)
+                && returnPcs(_core.Pc) && _core.IsPipelineClean)
             {
                 returned = true;
                 break;
@@ -501,7 +529,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                         break;
                     }
 
-                    _scheduler!.Advance(BiosBlockingCallWait.PollCycles);
+                    _scheduler!.AdvanceExact(BiosBlockingCallWait.PollCycles);
                     if (!CpuTakesInterruptNow())
                     {
                         continue;
@@ -546,21 +574,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // handoff — a GTE/CpU fault could be classified Completed.
             _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
             FetchObserver?.Invoke(_core.Pc);
-            var stepStatus = _core.Step();
             if (stepStatus != 0)
-            {
-                // Issue #447: an unimplemented GTE command fails closed and names itself.
-                if (stepStatus == PSXCoreWrapper.StepGteCommandUnsupported &&
-                    _devices.Gte.LastUnsupportedCommand is uint command)
-                {
-                    diagnosticCode = "GTE_COMMAND_UNSUPPORTED";
-                    diagnosticMessage = string.Create(CultureInfo.InvariantCulture,
-                        $"GTE command 0x{command & 0x3F:X2} (word 0x{command:X7}) at PC 0x{_core.Pc:X8} is not implemented.");
-                }
-
-                termination = RecompilerIrTerminationReason.Exception;
-                break;
-            }
+            var stepStatus = _core.Step();
 
             if (_core.ExceptionRaised)
             {

@@ -23,7 +23,16 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
 {
     internal const string DefaultCompiler = "gcc";
     private static readonly string[] DefaultCompilerArgTokens = ["-std=c11", "-O0", "-Wall", "-Wextra"];
-    private const int ToolchainTimeoutMs = 30000;
+    private readonly int _toolchainTimeoutMs;
+
+    /// <summary>Creates a bounded compiler adapter; null retains the normal 30-second per-step limit.</summary>
+    public GeneratedHostBuildService(TimeSpan? toolchainTimeout = null)
+    {
+        var milliseconds = (toolchainTimeout ?? TimeSpan.FromSeconds(30)).TotalMilliseconds;
+        if (milliseconds < 1 || milliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(toolchainTimeout));
+        _toolchainTimeoutMs = (int)milliseconds;
+    }
     private const int ToolchainCleanupMs = 2000;
     private const int DiagnosticMessageMaxLength = 2000;
 
@@ -64,7 +73,7 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         compileArgs.Add("-o");
         compileArgs.Add(objectPath);
 
-        var compile = RunToolchain(compiler, compileArgs, ToolchainTimeoutMs);
+        var compile = RunToolchain(compiler, compileArgs, _toolchainTimeoutMs);
         if (compile.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(compile, GeneratedHostBuildStatus.CompileFailed, "COMPILE_FAILED", "Host compilation");
@@ -79,7 +88,7 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         }
 
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
-        var link = RunToolchain(compiler, [objectPath, "-o", binaryPath], ToolchainTimeoutMs);
+        var link = RunToolchain(compiler, [objectPath, "-o", binaryPath], _toolchainTimeoutMs);
         if (link.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");

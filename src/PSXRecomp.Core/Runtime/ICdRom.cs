@@ -40,4 +40,7 @@ public interface ICdRom
 
     /// <summary>Advances the drive by elapsed CPU cycles (sector stream, delayed responses).</summary>
     void Advance(uint cycles);
+
+    /// <summary>Positive cycles to the next timed effect; unknown devices conservatively request one cycle.</summary>
+    ulong NextEventCycles => 1;
 }

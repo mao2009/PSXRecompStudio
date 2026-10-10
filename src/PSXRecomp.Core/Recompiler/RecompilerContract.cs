@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json.Serialization;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
@@ -480,6 +481,12 @@ public sealed record RecompilerIrExit
     public RecompilerExceptionState? Exception { get; }
 }
 
+/// <summary>CPU provenance for an aligned memory primitive that may fault before taking effect.</summary>
+[Domain]
+public sealed record RecompilerMemoryFaultSite(
+    int OperationIndex, uint FaultPc, bool InDelaySlot, int RetiredPrefix,
+    int PendingLoadRegister = -1, int PendingLoadValueId = -1);
+
 [Domain]
 public sealed record RecompilerIrBlock
 {
@@ -487,7 +494,11 @@ public sealed record RecompilerIrBlock
         uint entryPc,
         IEnumerable<RecompilerIrOperation> operations,
         RecompilerIrExit exit,
-        int retiredInstructionCount = 1)
+        int retiredInstructionCount = 1,
+        IReadOnlyList<int>? instructionBoundaries = null,
+        bool hasLoadDelay = false,
+        RecompilerIrOperation? interruptLoadCommit = null,
+        IEnumerable<RecompilerMemoryFaultSite>? memoryFaultSites = null)
     {
         ArgumentNullException.ThrowIfNull(operations);
         ArgumentOutOfRangeException.ThrowIfLessThan(retiredInstructionCount, 1);
@@ -495,6 +506,20 @@ public sealed record RecompilerIrBlock
         EntryPc = entryPc;
         Operations = new ReadOnlyCollection<RecompilerIrOperation>(operations.ToArray());
         RetiredInstructionCount = retiredInstructionCount;
+        InstructionBoundaries = Array.AsReadOnly((instructionBoundaries ?? []).ToArray());
+        HasLoadDelay = hasLoadDelay;
+        InterruptLoadCommit = interruptLoadCommit;
+        if (InstructionBoundaries.Count != retiredInstructionCount - 1 ||
+            InstructionBoundaries.Where((offset, index) => offset < 0 || offset > Operations.Count ||
+                (index > 0 && offset <= InstructionBoundaries[index - 1])).Any())
+            throw new ArgumentException("Fused blocks need ordered interior retirement offsets.", nameof(instructionBoundaries));
+        if (hasLoadDelay != (interruptLoadCommit is not null) ||
+            (interruptLoadCommit is { } commit &&
+                (InstructionBoundaries.Count == 0 || commit.Kind != RecompilerIrOperationKind.WriteGpr ||
+                 commit.Register is 0 or > 31 || commit.InputValueA < 0 ||
+                 !Operations.Take(InstructionBoundaries[0]).Any(op => op.ResultValueId == commit.InputValueA))))
+            throw new ArgumentException("A fused load needs a valid prior value for its exception-entry commit.", nameof(interruptLoadCommit));
+        MemoryFaultSites = new ReadOnlyCollection<RecompilerMemoryFaultSite>((memoryFaultSites ?? []).ToArray());
     }
 
     public uint EntryPc { get; }
@@ -504,9 +529,27 @@ public sealed record RecompilerIrBlock
     /// straight-line instruction, two for a control transfer fused with its delay slot or a
     /// load fused with its load-delay observer, three for a load, the control transfer that
     /// observes it, and that transfer's delay slot. It is what a backend reports as elapsed
-    /// guest time; a block that exits with an exception retires nothing.
+    /// guest time; a faulting instruction retires nothing, while an already completed
+    /// fused prefix retains the time recorded at its interior boundaries.
     /// </summary>
     public int RetiredInstructionCount { get; }
+
+    /// <summary>IR operation offsets after each interior guest instruction retires.</summary>
+    public IReadOnlyList<int> InstructionBoundaries { get; }
+
+    /// <summary>A pending load can be interrupted before the fused observer.</summary>
+    public bool HasLoadDelay { get; }
+
+    /// <summary>Pending load committed by exception entry if INT precedes its observer.</summary>
+    public RecompilerIrOperation? InterruptLoadCommit { get; }
+    /// <summary>Ordered aligned-memory fault sites; raw or partial-word IR may omit this CPU provenance.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<RecompilerMemoryFaultSite> MemoryFaultSites { get; }
+
+    /// <summary>Optional additive serialized provenance; legacy blocks retain their existing schema.</summary>
+    [JsonPropertyName("memoryFaultSites")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<RecompilerMemoryFaultSite>? SerializedMemoryFaultSites => MemoryFaultSites.Count == 0 ? null : MemoryFaultSites;
     public IReadOnlyList<RecompilerIrOperation> Operations { get; }
     public RecompilerIrExit Exit { get; }
 }
@@ -614,10 +657,29 @@ public static class RecompilerIrValidator
             }
 
             previousPc = block.EntryPc;
+            if (block.MemoryFaultSites.Select(static site => site.OperationIndex).Distinct().Count() != block.MemoryFaultSites.Count
+                || !block.MemoryFaultSites.Select(static site => site.OperationIndex).SequenceEqual(block.MemoryFaultSites.Select(static site => site.OperationIndex).Order()))
+                Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Memory fault sites must be unique and ordered.", blockIndex);
+            foreach (var site in block.MemoryFaultSites)
+                if (site.OperationIndex < 0 || site.OperationIndex >= block.Operations.Count
+                    || site.RetiredPrefix < 0 || site.RetiredPrefix >= block.RetiredInstructionCount || (site.FaultPc & 3u) != 0
+                    || (site.InDelaySlot && site.RetiredPrefix == 0)
+                    || site.RetiredPrefix != block.InstructionBoundaries.Count(offset => offset <= site.OperationIndex)
+                    || site.FaultPc != unchecked(block.EntryPc + (uint)(site.RetiredPrefix - (site.InDelaySlot ? 1 : 0)) * 4))
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Invalid memory fault site location or retirement prefix.", blockIndex);
             var definedValueIds = new HashSet<int>();
             for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
             {
                 var operation = block.Operations[operationIndex];
+                foreach (var site in block.MemoryFaultSites.Where(site => site.OperationIndex == operationIndex))
+                {
+                    if (operation.Kind is not (RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Load32 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32)
+                        || site.PendingLoadRegister < -1 || site.PendingLoadRegister == 0 || site.PendingLoadRegister > 31
+                        || (site.PendingLoadRegister < 0) != (site.PendingLoadValueId < 0)
+                        || (site.PendingLoadRegister >= 0 && site.RetiredPrefix == 0))
+                        Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Invalid aligned memory fault or pending load shape.", blockIndex, operationIndex);
+                    if (site.PendingLoadValueId >= 0) ValidateInput(site.PendingLoadValueId, definedValueIds, diagnostics, blockIndex, operationIndex);
+                }
                 ValidateOperation(operation, diagnostics, blockIndex, operationIndex);
                 ValidateInput(operation.InputValueA, definedValueIds, diagnostics, blockIndex, operationIndex);
                 ValidateInput(operation.InputValueB, definedValueIds, diagnostics, blockIndex, operationIndex);

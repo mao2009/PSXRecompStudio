@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.DiscImage;
@@ -19,25 +19,7 @@ public sealed class CdRomDiscDriveTests
     private const string BootPath = @"cdrom:\TEST.EXE;1";
 
     /// <summary>Wraps 2048-byte ISO sectors into raw 2352-byte Mode 2 Form 1 sectors (sync, BCD header, data subheader).</summary>
-    internal static byte[] Mode2Form1Image(byte[] iso)
-    {
-        var sectors = iso.Length / Iso9660Reader.SectorSize;
-        var image = new byte[sectors * ICdSectorSource.RawSectorSize];
-        for (var lba = 0; lba < sectors; lba++)
-        {
-            var sector = image.AsSpan(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
-            sector.Slice(1, 10).Fill(0xFF);
-            var absolute = lba + 150;
-            sector[12] = Bcd(absolute / 4500);
-            sector[13] = Bcd(absolute / 75 % 60);
-            sector[14] = Bcd(absolute % 75);
-            sector[15] = 2;
-            sector[18] = sector[22] = 0x08; // submode: data
-            iso.AsSpan(lba * Iso9660Reader.SectorSize, Iso9660Reader.SectorSize).CopyTo(sector[24..]);
-        }
-
-        return image;
-    }
+    internal static byte[] Mode2Form1Image(byte[] iso) => SyntheticDiscBuilder.Mode2Form1(iso);
 
     internal static RawCdSectorSource SyntheticDisc() =>
         new(Mode2Form1Image(new SyntheticIsoImageBuilder()
@@ -45,7 +27,15 @@ public sealed class CdRomDiscDriveTests
             .AddFile("TEST.EXE;1", SyntheticPsxExeBuilder.BuildValid())
             .Build()));
 
-    private static CdRomDevice Drive() => new(CdRomDiscIdentity.LicensedMode2(), SyntheticDisc());
+    private static CdRomDevice FreshDrive() => new(CdRomDiscIdentity.LicensedMode2(), SyntheticDisc());
+
+    /// <summary>A drive whose power-on ShellOpen flag the guest's first GetStat has already consumed.</summary>
+    private static CdRomDevice Drive()
+    {
+        var cd = FreshDrive();
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        return cd;
+    }
 
     private static byte Bcd(int value) => (byte)((value / 10 << 4) | (value % 10));
 
@@ -90,6 +80,35 @@ public sealed class CdRomDiscDriveTests
     }
 
     [Fact]
+    public void Reset_RearmsPowerOnShellOpen_ForTheConfiguredDisc()
+    {
+        var cd = Drive();
+        cd.Reset();
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        Command(cd, 0x01).Should().Equal(3, 0x02);
+    }
+
+    [Fact]
+    public void GetStat_ReportsShellOpenOnce_AfterPowerOnWithADisc()
+    {
+        // OpenBIOS's dev_cd_open reads the path table only when GetStat reports stat bit 4 (psx-spx "ShellOpen").
+        var cd = FreshDrive();
+
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        Command(cd, 0x01).Should().Equal(3, 0x02);
+    }
+
+    [Fact]
+    public void GetStat_NeverReportsShellOpen_WithoutADisc()
+    {
+        var cd = new CdRomDevice();
+        cd.WriteCommand(0x01);
+
+        RunUntilInterrupt(cd);
+        (cd.ReadRegister(1) & 0x10).Should().Be(0);
+    }
+
+    [Fact]
     public void RawSource_ReportsAnAbsentSector_WithoutTouchingTheDestination()
     {
         var disc = SyntheticDisc();
@@ -131,6 +150,25 @@ public sealed class CdRomDiscDriveTests
 
         SystemCnfParser.Parse(iso.ReadFile("SYSTEM.CNF;1")).BootPath.Should().Contain("TEST.EXE");
         PsxExe.Load(iso.ReadFile("TEST.EXE;1"), "TEST.EXE").Header.EntryPoint.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart);
+    }
+
+    [Fact]
+    public void DeadlineTracksResponseSpacingAndResetWithoutDeliveringEarly()
+    {
+        var cd = Drive();
+        cd.NextEventCycles.Should().Be(ulong.MaxValue);
+        cd.WriteCommand(0x01);
+        cd.NextEventCycles.Should().Be(CdRomDevice.AcknowledgeDelayCycles);
+        cd.Advance(CdRomDevice.AcknowledgeDelayCycles - 1);
+        cd.NextEventCycles.Should().Be(1);
+        cd.HasInterrupt.Should().BeFalse();
+        cd.Advance(1);
+        cd.HasInterrupt.Should().BeTrue();
+        cd.SetInterruptFlag(7);
+        cd.WriteCommand(0x0A);
+        cd.NextEventCycles.Should().Be(CdRomDevice.AcknowledgeDelayCycles);
+        cd.Reset();
+        cd.NextEventCycles.Should().Be(ulong.MaxValue);
     }
 
     [Fact]
@@ -193,6 +231,71 @@ public sealed class CdRomDiscDriveTests
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntDataReady);
         cd.SetInterruptFlag(0x07);
         Command(cd, 0x10).Should().Equal(3, 0x00, 0x02, 0x17, 0x02, 0x00, 0x00, 0x08, 0x00); // GetLocL: header of LBA 17
+    }
+
+    [Theory]
+    [InlineData(2u)]
+    [InlineData(3u)]
+    public void AdvanceAcrossSeveralSectorDeadlines_MatchesSingleCycleClock(uint sectors)
+    {
+        static CdRomDevice Start()
+        {
+            var cd = Drive();
+            Command(cd, 0x02, 0, 2, 0x16);
+            cd.WriteCommand(0x06);
+            return cd;
+        }
+        var chunked = Start();
+        var stepped = Start();
+        var elapsed = CdRomDevice.AcknowledgeDelayCycles + CdRomDevice.SeekCycles + sectors * CdRomDevice.SingleSpeedSectorCycles;
+        chunked.Advance(elapsed);
+        for (uint i = 0; i < elapsed; i++) stepped.Advance(1);
+        chunked.GetInterruptFlag().Should().Be(stepped.GetInterruptFlag());
+        chunked.ResponseCount.Should().Be(stepped.ResponseCount);
+        chunked.ReadRegister(1).Should().Be(stepped.ReadRegister(1));
+        chunked.IsReading.Should().Be(stepped.IsReading);
+        chunked.Mode.Should().Be(stepped.Mode);
+        chunked.DataBytesAvailable.Should().Be(stepped.DataBytesAvailable);
+        chunked.DataReady.Should().Be(stepped.DataReady);
+        chunked.InterruptGeneration.Should().Be(stepped.InterruptGeneration, "an unacknowledged interrupt gates further deliveries");
+        static byte[] LastHeader(CdRomDevice cd)
+        {
+            cd.SetInterruptFlag(7);
+            Command(cd, 0x09).Should().Equal(3, 0x22);
+            TakeResponse(cd).Should().Equal(2, 2);
+            return Command(cd, 0x10);
+        }
+        var expected = LastHeader(stepped);
+        var actual = LastHeader(chunked);
+        actual.Should().Equal(expected, $"{sectors} sector deadlines must be processed, not just one; chunked={Convert.ToHexString(actual)}, stepped={Convert.ToHexString(expected)}");
+        actual[3].Should().Be(Bcd(16 + (int)sectors - 1));
+    }
+
+    [Fact]
+    public void BatchedRead_PreservesEqualDeadlineFifoAndAcknowledgementSpacing()
+    {
+        var cd = Drive();
+        var initialGeneration = cd.InterruptGeneration;
+        Command(cd, 0x02, 0, 2, 0x16);
+        cd.WriteCommand(0x06); // INT3 at the same time as GetParam, but inserted first.
+        cd.WriteCommand(0x0F);
+        cd.Advance(CdRomDevice.AcknowledgeDelayCycles + CdRomDevice.SeekCycles + 3 * CdRomDevice.SingleSpeedSectorCycles);
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ResponseCount.Should().Be(1);
+        cd.ReadRegister(1).Should().Be(0x22);
+        cd.DataBytesAvailable.Should().Be(0, "sector arrival alone must not load the guest FIFO");
+        cd.InterruptGeneration.Should().Be(initialGeneration + 2, "SetLoc then the first ReadN packet; held IRQ prevents duplicates");
+        cd.SetInterruptFlag(7);
+        cd.Advance(CdRomDevice.MinimumInterruptDelayCycles - 1);
+        cd.HasInterrupt.Should().BeFalse();
+        cd.Advance(1);
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ResponseCount.Should().Be(5, "the earlier same-deadline command packet precedes pending sector packets");
+        cd.InterruptGeneration.Should().Be(initialGeneration + 3);
+        cd.Reset();
+        cd.Advance(4 * CdRomDevice.SingleSpeedSectorCycles);
+        cd.HasInterrupt.Should().BeFalse("reset cancels all scheduled read and response events");
+        cd.IsReading.Should().BeFalse();
     }
 
     [Fact]
