@@ -108,6 +108,73 @@ public sealed class FirmwareGeneratedHostTests
         fetched.Should().NotContain(pc => pc >= RomBase, "ROM code with a block is native, never counted as fallback");
     }
 
+    [Theory]
+    [InlineData(false, 3, false)]
+    [InlineData(true, 3, false)]
+    [InlineData(false, 8, false)]
+    [InlineData(true, 8, false)]
+    [InlineData(false, 3, true)]
+    [InlineData(true, 3, true)]
+    public void Cop0OtherRegisters_AgreeAcrossNativeFallbackTransitions(bool writeInRam, byte cop0Register, bool delaySlot)
+    {
+        const uint value = 0x12345678;
+        var reset = new Block(RomBase);
+        uint[] routine = writeInRam
+            ? [.. Li(T0, value), Mtc0(T0, cop0Register), Jr(Ra), Nop]
+            : [Mfc0(S0, cop0Register), Nop, Jr(Ra), Nop];
+        if (delaySlot && writeInRam)
+            routine = [.. Li(T0, value), Jr(Ra), Mtc0(T0, cop0Register)];
+        if (delaySlot && !writeInRam)
+            routine = [Jr(Ra), Mfc0(S0, cop0Register)];
+        Install(reset, RamRoutine, routine);
+        if (!writeInRam)
+        {
+            reset.Emit(Li(T0, value));
+            if (delaySlot) reset.Emit(MipsEncoding.Branch(0x04, 0, 0, reset.Here, reset.Here + 8), Mtc0(T0, cop0Register));
+            else reset.Emit(Mtc0(T0, cop0Register));
+        }
+        reset.Emit(Li(T9, RamRoutine), [Jalr(T9), Nop]);
+        if (writeInRam) reset.Emit(Mfc0(S0, cop0Register), Nop);
+        reset.Emit(MipsEncoding.Branch(0x04, 0, 0, reset.Here, reset.Here), Nop);
+        var rom = new uint[0x800 / 4];
+        for (var i = 0; i < reset.Words.Count; i++) rom[i] = reset.Words[i];
+        using var dir = new TempDirectory();
+        using var engine = new RecompiledHostExecutionEngine(
+            ReachableProgramBuilder.BuildFirmwareImage(RomBase, Code(rom), RomBase, []).Program,
+            rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true);
+        var host = new ExecutionOrchestrator().Execute(engine, null, Request(500));
+        using var interpreter = new InterpreterTitleExecutionEngine(rom, RomBase, allowRuntimeRamExecution: true);
+        var reference = new ExecutionOrchestrator().Execute(interpreter, null, Request(500));
+
+        host.FinalSnapshot.Should().NotBeNull(host.DiagnosticMessage);
+        reference.FinalSnapshot!.Gpr[(int)S0].Should().Be(value);
+        host.FinalSnapshot!.Gpr[(int)S0].Should().Be(reference.FinalSnapshot.Gpr[(int)S0]);
+    }
+
+    [Fact]
+    public void FirmwareCop0_ResetPridMatchesTheNativeCoreInBothEngines()
+    {
+        var reset = new Block(RomBase);
+        Install(reset, RamRoutine, [Mfc0(S0, 15), Nop, Jr(Ra), Nop]);
+        reset.Emit(Mfc0(S1, 15), Nop);
+        reset.Emit(Li(T9, RamRoutine), [Jalr(T9), Nop]);
+        reset.Emit(MipsEncoding.Branch(0x04, 0, 0, reset.Here, reset.Here), Nop);
+        var rom = new uint[0x800 / 4];
+        for (var i = 0; i < reset.Words.Count; i++) rom[i] = reset.Words[i];
+        using var dir = new TempDirectory();
+        using var engine = new RecompiledHostExecutionEngine(
+            ReachableProgramBuilder.BuildFirmwareImage(RomBase, Code(rom), RomBase, []).Program,
+            rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true);
+        var host = new ExecutionOrchestrator().Execute(engine, null, Request(500));
+        using var interpreter = new InterpreterTitleExecutionEngine(rom, RomBase, allowRuntimeRamExecution: true);
+        var reference = new ExecutionOrchestrator().Execute(interpreter, null, Request(500));
+        foreach (var reg in new[] { S0, S1 })
+            host.FinalSnapshot!.Gpr[(int)reg].Should().Be(reference.FinalSnapshot!.Gpr[(int)reg]);
+        host.FinalSnapshot!.Gpr[(int)S0].Should().Be(host.FinalSnapshot.Gpr[(int)S1]);
+    }
+
     [Fact]
     public void GeneratedHost_DropsAStoreToTheRom()
     {
