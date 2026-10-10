@@ -23,6 +23,7 @@ skills/
 │   │   │   └── references/ #  Normative detail for the batch protocol
 │   │   ├── commit-message/ #   Commit Message authoring skill (#94)
 │   │   ├── doc-sync/
+│   │   ├── handoff-checkpoints/ # Durable cross-environment agent handoff
 │   │   ├── merge/       #   Safe PR Merge Skill (#146)
 │   │   ├── reporting/   #   Completion-reporting process skill (#88)
 │   │   └── self-review/
@@ -55,7 +56,7 @@ The skills under `common/` serve two deliberately distinct roles:
   the reusable work templates that standardize the agent's procedure and
   Definition of Done.
 - **Gate and execution skills** (`common/process/`) prescribe *what must hold
-  around that work*: the pre-PR self-review gate, the documentation
+  around that work*: the independent pre-PR review responsibility, the documentation
   synchronization gate, parallel issue orchestration (batch), and safe merge —
   and the completion-reporting process skill standardizes the final report an
   agent produces for the executed work.
@@ -71,8 +72,9 @@ gates.
 | Skill | Responsibility | Introduced by |
 |---|---|---|
 | `common/process/adr` | ADR authoring / maintenance: the "is an ADR needed" decision, SSOT / matrix / existing-ADR preflight, sequential numbering, standard Context / Decision / Consequences structure, traceability to Issues / PRs / code / tests, consistency checks, the review-feedback loop, and agent rules | #84 |
+| `common/process/handoff-checkpoints` | GitHub Issue/PR progress checkpoints and reproducible cross-session handoff | Direct request |
 | `common/process/doc-sync` | Documentation synchronization gate: impact mapping, minimal updates, recorded no-op decisions | #89 |
-| `common/process/self-review` | Mandatory pre-PR self-review gate + external-review feedback loop | #85 |
+| `common/process/self-review` | Legacy review checklist for independent reviewers; not an implementation-agent self-review requirement | #85 |
 | `common/process/batch` | Agent-agnostic batch orchestration protocol (Markdown-only): task inventory, dependency analysis and DAG, execution waves, parallel-safety rules, worker abstraction and isolation, result validation, semantic conflict detection, failure/retry/recovery, review and approval gates, serial integration delegated to the Merge Skill, cleanup and reporting | #145, #155, #242 |
 | `common/process/commit-message` | Commit Message authoring skill: Conventional Commits format, type/scope/subject policy, per-commit change granularity and atomicity, Issue-linkage trailers (`Refs`/`Fixes`/`Closes`), amend/rebase handling, generated-commit marking, and AI judgement rules for deriving the message from the actual diff | #94 |
 | `common/process/merge` | Safe PR Merge Skill with mandatory rebase → validation → SHA-bound approval → Squash and merge → post-merge verification flow; merge commit / rebase merge only on an explicit exception | #146, #265 |
