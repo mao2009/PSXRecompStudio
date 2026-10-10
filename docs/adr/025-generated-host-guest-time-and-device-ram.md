@@ -126,3 +126,42 @@ Transfer commands, fallback state version, SR/CAUSE/EPC ownership and guest IRQ
 acceptance are unchanged. Older peers remain valid for ordinary artifacts;
 firmware peers must understand this additive request or fail closed. There is
 no runtime compilation or full-register copy protocol.
+
+## Amendment (Issue #749): aligned memory faults and completed prefixes
+
+### Context
+
+Generated memory helpers previously assembled unaligned words as bytes. Guest
+firmware therefore missed AdEL/AdES, and correct explicit COP0 ownership alone
+could not reproduce BadVAddr or the handler boundary.
+
+### Decision
+
+Attach validated, optional memory-fault-site provenance to aligned CPU memory
+operations, retaining the existing primitive and exception contracts. Check
+alignment before any RAM/MMIO effect or IsC suppression, preserve virtual
+BadVAddr through the existing COP0 service, and use the existing EPC/BD/SR/vector
+helper. Commit an owed pending load on a fault even when a successful observer
+write would cancel it. Preserve already completed branch/link and load effects.
+
+Credit only the successful source-instruction prefix, not IR operations or the
+faulting instruction. `partial_retired` records credits already accounted in the
+current unit; both a fault and normal completion add only the uncredited
+remainder. Reset it for every dispatch iteration, including host transfers.
+Flush credited time through the existing service before publishing BadVAddr.
+Native and fallback continue to use the same host-owned scheduler and graph.
+No new request/reply tokens or protocol versions are required.
+
+### Consequences and alternatives
+
+LWL/LWR/SWL/SWR remain legal because their internal word accesses are already
+aligned and carry no aligned-source fault provenance. Generic raw IR remains
+compatible, and empty provenance does not alter legacy serialization. Malformed
+source locations or pending SSA commits fail validation before code generation.
+Synthetic fixture tests compare full CPU/COP0/RAM/device state and cycles at the
+guest vector, plus RFE return and native/fallback transitions. Full OpenBIOS
+parity remains a separate gate on the integrated stack.
+
+Rejected: patching byte helpers without a source location (cannot recover EPC,
+BD or owed loads), host-only re-execution after a side effect (too late), and a
+new CPU engine or exception protocol (duplicates existing ownership/contracts).
