@@ -76,7 +76,7 @@ jobs:
         run: ./scripts/ci/check-artifact-policy.ps1
 
   native:
-    name: Native Core Build and Test (Linux)
+    name: Native Core Build and Test
     needs: changes
     runs-on: ubuntu-24.04
     steps:
@@ -122,7 +122,7 @@ jobs:
           if-no-files-found: error
 
   dotnet:
-    name: .NET Build and Test (Linux)
+    name: .NET Build and Test
     needs: [changes, native]
     runs-on: ubuntu-24.04
     steps:
@@ -191,7 +191,7 @@ jobs:
           if-no-files-found: ignore
 
   gui-tests:
-    name: GUI Headless Tests (Linux)
+    name: GUI Headless Tests
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
