@@ -41,6 +41,33 @@ public sealed class LoadedImageBuildTests
     }
 
     [Fact]
+    public void MutableDelaySlotLoad_DoesNotUseAnImmutableSuccessorProof()
+    {
+        var words = new[] { MipsEncoding.Branch(0x04, 0, 0, Dest, Dest + 12),
+            MipsEncoding.I(0x23, T0, 4, 0), MipsEncoding.Nop, MipsEncoding.Nop,
+            MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop };
+        var build = ReachableProgramBuilder.BuildLoadedImage(Dest, words, [Dest], None);
+        build.Blocks.Should().NotContain(b => b.Block.EntryPc == Dest);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void InterpretPoint_IsNeverCoveredByANativeUnit(int kind)
+    {
+        uint[] words = kind switch
+        {
+            0 => [MipsEncoding.I(0x0D, T0, 0, 1), MipsEncoding.I(0x0D, T0, 0, 2), MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop],
+            1 => [MipsEncoding.I(0x23, T0, 4, 0), MipsEncoding.I(0x0D, 16, T0, 0), MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop],
+            _ => [MipsEncoding.Branch(0x04, 0, 0, Dest, Dest + 8), MipsEncoding.I(0x0D, T0, 0, 1), MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop],
+        };
+        var point = Dest + 4;
+        var build = ReachableProgramBuilder.BuildLoadedImage(Dest, words, [Dest], new HashSet<uint> { point });
+        build.Blocks.Should().NotContain(b => point >= b.Block.EntryPc && point < b.Block.EntryPc + b.Words.Count * 4u);
+    }
+
+    [Fact]
     public void AnUnsupportedRoot_AndAnExcludedEntry_KeepNoBlock()
     {
         var ori = MipsEncoding.I(0x0D, T0, 0, 2);

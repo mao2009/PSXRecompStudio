@@ -149,6 +149,9 @@ public static class RecompiledArtifactCodeGen
     /// </summary>
     public const int RetiredReportThreshold = 1024;
 
+    /// <summary>Firmware-only host-owned COP0 request: register, write flag and value; reply is V value or X.</summary>
+    public const string ProtocolCop0AccessPrefix = "RHOST_COP0_ACCESS ";
+
     /// <summary>
     /// The parent's request for the mixed-execution fallback state (Issue #693): <c>F version</c>. The child answers
     /// <c>RHOST_FALLBACK version indirect irq hi lo sr cause epc dirtyPages</c> (<see cref="ProtocolFallbackReplyPrefix"/>) or
@@ -249,6 +252,7 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
                 .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal),
             null,
             null);
@@ -462,6 +466,29 @@ static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t a
     if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);
     if (is_write) artifact_flush_after_unit = 1;
     return (uint32_t)v;
+}
+
+/* Firmware COP0 outside SR/CAUSE/EPC belongs to the shared native core, including reset values.
+   This additive service uses the ordinary request/reply phase; it never masquerades as MMIO. */
+static uint32_t artifact_cop0_access(RecompilerState* state, uint32_t reg, uint32_t is_write, uint32_t value) {
+    char reply[8];
+    char token[32];
+    uint32_t result = 0u;
+    unsigned i, digit;
+    (void)state;
+    artifact_report_retired();
+    printf(""@COP0_ACCESS@%u %u %lu\n"", (unsigned)reg, (unsigned)is_write, (unsigned long)value);
+    fflush(stdout);
+    if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
+    if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
+    if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%31s"", token) != 1 || strlen(token) > 10u) exit(@EXIT_MMIO_PROTOCOL@);
+    for (i = 0u; token[i] != '\0'; i++) {
+        if (token[i] < '0' || token[i] > '9') exit(@EXIT_MMIO_PROTOCOL@);
+        digit = (unsigned)(token[i] - '0');
+        if (result > (UINT32_MAX - digit) / 10u) exit(@EXIT_MMIO_PROTOCOL@);
+        result = result * 10u + digit;
+    }
+    return result;
 }
 
 /* The RAM mirror window that is not addressable (the seam past the 2 MiB
@@ -900,6 +927,7 @@ int main(int argc, char** argv) {
         state.host_interrupt = &artifact_interrupt_boundary;
         artifact_state = &state;
         artifact_mmio_bridge = 1;
+        if (state.guest_exceptions) state.host_cop0 = &artifact_cop0_access;
         printf(""RHOST_INIT\n"");
         fflush(stdout);
         /* The parent's Runtime seeds its own jump-table sentinels here (byte

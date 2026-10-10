@@ -26,7 +26,10 @@ psxrecomp openbios-probe out/openbios/openbios.bin --json
 ```
 
 The helper validates the pinned, clean source checkout and offers a digest-pinned
-Docker builder or a supplied native toolchain. The recorded ROM hash uses the
+Docker builder or a supplied native toolchain. It verifies the 512 KiB output,
+copies the observed MIT LICENSE beside the local ROM, and records its SHA-256
+and builder details under git-ignored `out/`. Each builder requires independent
+ROM hash and end-to-end verification. The recorded ROM hash uses the
 SHA-pinned Windows GCC 16.2.0 archive listed in `scripts/openbios/build.sh`.
 On Linux that archive can run in a separate Wine prefix with Windows `make` and
 the toolchain's `bin` on its Windows PATH; local building does not approve
@@ -380,3 +383,12 @@ version selection, unknown-PC fallback and instruction accounting; ROM-only gene
 through its own CD driver (corrected synthetic fixture; earlier Persona results are historical). Not done: GTE (#447) so Persona cannot get
 past its first COP2 instruction; exact generated-host device-time/IRQ parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
+
+### Remaining generated memory-fault coverage
+
+Generated firmware execution does not yet deliver native address-error traps for
+misaligned LH/LW/SH/SW accesses with matching BadVAddr and exception state. A
+synthetic ROM LW at `0x80001001` reaches its guest handler on the interpreter but
+is currently read as bytes by the artifact. Explicit COP0 access ownership is
+fixed separately; it does not establish memory-fault parity. Track this gate
+before claiming complete firmware exception compatibility.

@@ -100,3 +100,29 @@ This supersedes "no second RAM and no copy/sync" **for the duration of one fallb
 ## Related
 
 - ADR-014, ADR-016, #442 (`DeviceScheduler`), #587 (CD-ROM DMA3), #678, #680
+
+## Amendment (Issue #732): batched VBlank field parity
+
+Batching several VBlank intervals preserves the GPU interlace field by toggling
+for odd interval counts while retaining a single latched IRQ0 in the existing
+scheduler stage. Even interval counts leave the field unchanged.
+
+## Amendment (Issue #732): firmware COP0 registers across mixed execution
+
+SR, CAUSE and EPC keep their existing artifact fields and fallback state transfer.
+In firmware mode, all other COP0 registers belong to the shared native core:
+MFC0/MTC0 use an optional generated-state callback rather than independent
+artifact copies. This preserves native reset values (including PRID) and writes
+made by interpreter fallback. An absent callback retains the existing standalone
+codegen contract; ordinary HLE artifacts do not enable it.
+
+The additive request is `RHOST_COP0_ACCESS register write value`, where register
+is 0..31 except 12..14 and write is 0 or 1. The host validates all fields and
+serves the native core's existing GetCop0/SetCop0 ABI. The reply is `V value` or
+`X`; malformed replies, unknown tags and out-of-range unsigned values fail
+closed. The artifact flushes outstanding retired time before the access. The
+access itself retires no instruction and introduces no synthetic device address.
+Transfer commands, fallback state version, SR/CAUSE/EPC ownership and guest IRQ
+acceptance are unchanged. Older peers remain valid for ordinary artifacts;
+firmware peers must understand this additive request or fail closed. There is
+no runtime compilation or full-register copy protocol.

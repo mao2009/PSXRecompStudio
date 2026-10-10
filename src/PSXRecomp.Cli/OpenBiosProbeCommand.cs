@@ -299,10 +299,7 @@ internal static class OpenBiosProbeCommand
         ulong transitions = 0;
         RecompiledHostExecutionEngine? hostEngine = null;
         string FallbackCause(uint pc) => observedPcs.Contains(pc) ? "observation-point"
-            : loadedCode.Contains(pc) ? "version-mismatch"
-            : manifest.Images.Any(i => pc >= i.LoadAddress && (ulong)pc < (ulong)i.LoadAddress + (ulong)i.Words.Length * 4) ? "aot-coverage-gap:loaded-image"
-            : pc >= OpenBiosFirmware.ResetVector && (ulong)pc < (ulong)OpenBiosFirmware.ResetVector + (ulong)codeWords.Count() * 4 ? "aot-coverage-gap:rom"
-            : "unknown-code";
+            : ClassifyFallback(pc, manifest, loadedCode, codeWords.Count());
         var nativeAtBoundary = new Dictionary<uint, object>();
         var budget = (uint)Math.Min((ulong)probe.Segments * probe.SegmentBudget, uint.MaxValue);
         try
@@ -580,6 +577,27 @@ internal static class OpenBiosProbeCommand
     }
 
     private static string Percent(JsonNode? share) => share is null ? "-" : $"{share.GetValue<double>() * 100:F1}%";
+
+    /// <summary>Classifies code coverage using guest physical aliases while retaining the caller's original PC.</summary>
+    internal static string ClassifyFallback(uint pc, LoadImageManifest manifest, LoadedCodeTable loadedCode, int romWords)
+    {
+        static uint Physical(uint address)
+        {
+            if (address >= 0xC0000000u) return address;
+            var physical = address <= 0x7FFFFFFFu ? address : address & 0x1FFFFFFFu;
+            return physical < 0x00800000u ? physical & 0x001FFFFFu : physical;
+        }
+
+        var at = Physical(pc);
+        if (manifest.Interpreted.Any(point => Physical(point) == at)) return "observation-point";
+        if (loadedCode.Contains(pc)) return "version-mismatch";
+        if (manifest.Images.Any(image => at >= Physical(image.LoadAddress)
+            && (ulong)at < (ulong)Physical(image.LoadAddress) + (ulong)image.Words.Length * 4))
+            return "aot-coverage-gap:loaded-image";
+        var rom = Physical(OpenBiosFirmware.ResetVector);
+        return at >= rom && (ulong)at < (ulong)rom + (ulong)romWords * 4
+            ? "aot-coverage-gap:rom" : "unknown-code";
+    }
 
     /// <summary>One hexadecimal block-entry PC per line (blank lines ignored); an explicit input, never guessed.</summary>
     private static IReadOnlyList<uint> ReadRoots(string path) =>
