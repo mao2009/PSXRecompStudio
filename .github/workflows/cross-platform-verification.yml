@@ -1,0 +1,248 @@
+name: Cross-Platform Verification
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual cross-platform verification'
+        required: false
+        type: string
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.set-output.outputs.docs_only }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify documentation-only change
+        id: classify
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          base="$PR_BASE_SHA"
+          head="$PR_HEAD_SHA"
+
+          docs_only=false
+          if [[ -n "$base" && ! "$base" =~ ^0+$ ]]; then
+            mapfile -t changed_files < <(git diff --name-only "$base" "$head")
+            if (( ${#changed_files[@]} > 0 )); then
+              docs_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  docs/*|README*.md|CONTRIBUTING.md|.github/ISSUE_TEMPLATE/*.md)
+                    ;;
+                  *)
+                    docs_only=false
+                    break
+                    ;;
+                esac
+              done
+            fi
+          fi
+
+          printf 'docs_only=%s\n' "$docs_only" >> "$GITHUB_OUTPUT"
+          printf 'Documentation-only change: %s\n' "$docs_only"
+          printf 'Changed files:\n'
+          printf '  %s\n' "${changed_files[@]:-<unavailable>}"
+
+      - name: Set docs_only output
+        id: set-output
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "docs_only=${{ steps.classify.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  cross-platform:
+    name: Cross-Platform Build and Test (${{ matrix.name }})
+    needs: changes
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform'))
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            native_artifact: psxrecomp-native-windows-x64
+            native_path: build/native/Release/PSXRecomp.Native.dll
+            dotnet_runtime: win-x64
+          - os: macos-latest
+            name: macOS
+            native_artifact: psxrecomp-native-macos-arm64
+            native_path: build/native/libPSXRecomp.Native.dylib
+            dotnet_runtime: osx-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure Native
+        run: cmake -S src/PSXRecomp.Native -B build/native -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Native
+        run: cmake --build build/native --config Release --parallel
+
+      - name: Test Native
+        run: ctest --test-dir build/native --build-config Release --output-on-failure
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.native_artifact }}
+          path: ${{ matrix.native_path }}
+          if-no-files-found: error
+
+  cross-platform-dotnet:
+    name: .NET Build and Test (${{ matrix.name }})
+    needs: [cross-platform, changes]
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            native_artifact: psxrecomp-native-windows-x64
+            native_file: PSXRecomp.Native.dll
+          - os: macos-latest
+            name: macOS
+            native_artifact: psxrecomp-native-macos-arm64
+            native_file: libPSXRecomp.Native.dylib
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.slnx
+
+      - name: Build
+        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.native_artifact }}
+          path: native
+
+      - name: Install native library for .NET tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (!(Test-Path native/${{ matrix.native_file }})) { throw "native/${{ matrix.native_file }} artifact is missing" }
+          Copy-Item native/${{ matrix.native_file }} src/PSXRecomp.Tests/bin/Release/net10.0/PSXRecomp.Native.dll -Force
+          Get-Item src/PSXRecomp.Tests/bin/Release/net10.0/PSXRecomp.Native.dll
+
+      - name: Install native library for .NET tests
+        if: runner.os != 'Windows'
+        run: |
+          test -f native/${{ matrix.native_file }}
+          cp native/${{ matrix.native_file }} src/PSXRecomp.Tests/bin/Release/net10.0/
+          ls -l src/PSXRecomp.Tests/bin/Release/net10.0/${{ matrix.native_file }}
+
+      - name: Test
+        env:
+          RECOMPILER_ARTIFACT_ROOT: ${{ runner.temp }}/recompiler-differential-artifacts
+        run: |
+          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
+
+      - name: Upload differential harness failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recompiler-differential-artifacts-${{ matrix.name }}
+          path: ${{ runner.temp }}/recompiler-differential-artifacts
+          if-no-files-found: ignore
+
+  cross-platform-gate:
+    name: Cross-Platform Gate
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform')))
+    needs: [cross-platform, cross-platform-dotnet, changes]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate cross-platform results
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Cross-platform verification results:"
+          echo "  Native Windows: ${{ needs.cross-platform.result }}"
+          echo "  Native macOS: ${{ needs.cross-platform.result }}"
+          echo "  .NET Windows: ${{ needs.cross-platform-dotnet.result }}"
+          echo "  .NET macOS: ${{ needs.cross-platform-dotnet.result }}"
+          echo "  Docs-only: ${{ needs.changes.outputs.docs_only }}"
+          echo "  Event: ${{ github.event_name }}"
+          echo "  Has label: ${{ contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') }}"
+
+          # Determine if cross-platform verification was required
+          cross_platform_required=false
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            cross_platform_required=true
+          elif [[ "${{ github.event_name }}" == "pull_request" && "${{ contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') }}" == "true" ]]; then
+            cross_platform_required=true
+          fi
+
+          if [[ "$cross_platform_required" == "true" ]]; then
+            # For required cross-platform runs, all jobs must succeed
+            # failure, cancelled, skipped are all failures
+            failed=false
+            for result in "${{ needs.cross-platform.result }}" "${{ needs.cross-platform-dotnet.result }}"; do
+              if [[ "$result" != "success" ]]; then
+                failed=true
+                echo "Job failed/skipped/cancelled: $result"
+              fi
+            done
+
+            if [[ "$failed" == "true" ]]; then
+              echo "::error::Cross-platform verification failed. See job logs for details."
+              exit 1
+            fi
+
+            echo "All cross-platform checks passed."
+          else
+            # Cross-platform not required (unlabeled PR) - gate is skipped
+            echo "Cross-platform verification not required for this PR (no ci:cross-platform label)."
+          fi
