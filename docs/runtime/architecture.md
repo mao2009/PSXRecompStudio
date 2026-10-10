@@ -451,7 +451,11 @@ run. Responsibilities are split so no device behavior is duplicated:
   engine configures all three bridges, the generated-host engine only the CD-ROM
   one. SPU DMA4 remains device work.
 
-Not modelled: cycle-exact timing, HBlank, and Timer 0/1 blank sync lines.
+Timer 1's Hblank clock source (mode bits 8-9 = 1 or 3) counts once per
+2,153 CPU cycles (33.8688 MHz / 15.734 kHz), so a guest's stable-read loop on
+the counter settles (Issue #736). Not modelled: cycle-exact timing, the HBlank
+interrupt/sync lines for Timer 0/1, and Timer 0's dotclock (it counts every CPU
+cycle).
 The generated-host engine (`HostTitleExecutionEngine`, test-only) carries
 guest MMIO as a flat register window across processes and has no native device
 state to schedule, so it is not wired.

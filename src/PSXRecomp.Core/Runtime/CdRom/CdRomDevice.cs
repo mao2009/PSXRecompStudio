@@ -35,8 +35,9 @@ public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed,
 /// (psx-spx timing table, DuckStation's acknowledge delay), only once the previous interrupt was acknowledged, and
 /// ReadN/ReadS stream one INT1 per sector at 75/150 sectors per second. A sector's payload (2048 bytes, or 2340 with
 /// SetMode bit 5) enters the data FIFO when the guest writes the request register (index 0 port 3, BFRD bit 7), as on
-/// the hardware; DMA3 drains it.</item>
-/// <item>Without a source the legacy BIOS-less model is unchanged: responses are queued without delay, the next packet
+/// the hardware; DMA3 drains it. An empty drive under a guest firmware uses the same timing with no disc (Issue
+/// #736).</item>
+/// <item>Otherwise (no source, untimed) the legacy BIOS-less model is unchanged: responses are queued without delay, the next packet
 /// becomes visible only after the current response FIFO is drained and acknowledged, a read exposes one bounded INT1
 /// and its bytes come only from <see cref="LoadData"/>.</item>
 /// </list>
@@ -128,6 +129,7 @@ public sealed class CdRomDevice : ICdRom
 
     private readonly CdRomDiscIdentity _discIdentity;
     private readonly ICdSectorSource? _disc;
+    private readonly bool _timed;
     private int _index;
     private byte _interruptEnable = ResetInterruptEnable;
     private byte _interruptFlag;
@@ -158,14 +160,26 @@ public sealed class CdRomDevice : ICdRom
     /// <param name="disc">The disc's sectors and TOC; null keeps the legacy undelayed model with no sector source.</param>
     /// <exception cref="ArgumentException">A disc is supplied with an identity that says no disc is present.</exception>
     public CdRomDevice(CdRomDiscIdentity discIdentity, ICdSectorSource? disc)
+        : this(discIdentity, disc, timed: disc is not null)
     {
-        if (disc is not null && !discIdentity.IsPresent)
+    }
+
+    /// <param name="discIdentity">What GetID reports.</param>
+    /// <param name="disc">The disc's sectors and TOC, or null.</param>
+    /// <param name="timed">Use the timed model even without a disc (Issue #736): an empty drive under a guest
+    /// firmware answers after the hardware delays, because a firmware driver records the command it sent only after
+    /// writing the command register and a response raised at once would arrive before that record.</param>
+    /// <exception cref="ArgumentException">A disc is supplied with an identity that says no disc is present, or untimed.</exception>
+    public CdRomDevice(CdRomDiscIdentity discIdentity, ICdSectorSource? disc, bool timed)
+    {
+        if (disc is not null && (!discIdentity.IsPresent || !timed))
         {
-            throw new ArgumentException("A disc source needs an identity that reports a present disc.", nameof(discIdentity));
+            throw new ArgumentException("A disc source needs an identity that reports a present disc and the timed model.", nameof(discIdentity));
         }
 
         _discIdentity = discIdentity;
         _disc = disc;
+        _timed = timed;
         _motorOn = discIdentity.IsPresent;
         _shellOpen = disc is not null;
     }
@@ -297,11 +311,11 @@ public sealed class CdRomDevice : ICdRom
 
     /// <summary>
     /// Advances the drive by <paramref name="cycles"/> CPU cycles: the next sector of an active read and any response
-    /// that has become due. Without a disc nothing is timed and this does nothing.
+    /// that has become due. In the legacy untimed model this does nothing.
     /// </summary>
     public void Advance(uint cycles)
     {
-        if (_disc is null)
+        if (!_timed)
         {
             return;
         }
@@ -338,7 +352,7 @@ public sealed class CdRomDevice : ICdRom
         // Without a disc, a newly accepted command owns the command-response channel: this keeps the original
         // substrate's replacement behavior and avoids unbounded accumulation. With one, an acknowledged response is
         // never discarded; each command's own responses simply join the timed queue.
-        if (_disc is null)
+        if (!_timed)
         {
             ClearResponseSequence();
         }
@@ -821,7 +835,7 @@ public sealed class CdRomDevice : ICdRom
 
     private void Enqueue(PendingResponse response)
     {
-        if (_disc is null && _interruptFlag == 0 && _responses.Count == 0 && _pendingResponses.Count == 0)
+        if (!_timed && _interruptFlag == 0 && _responses.Count == 0 && _pendingResponses.Count == 0)
         {
             ActivateResponse(response);
             return;
@@ -849,7 +863,7 @@ public sealed class CdRomDevice : ICdRom
 
     private void OnAcknowledged(bool wasRaised)
     {
-        if (_disc is null)
+        if (!_timed)
         {
             TryPromotePendingResponse();
             return;
@@ -920,7 +934,7 @@ public sealed class CdRomDevice : ICdRom
     private byte PopResponse()
     {
         if (!_responses.TryDequeue(out var value)) return 0;
-        if (_disc is null)
+        if (!_timed)
         {
             TryPromotePendingResponse();
         }

@@ -246,7 +246,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // artifact relays to (Issue #678). The BIOS runtime seam travels through
         // its bus, so guest RAM/mirror/device semantics all come from one routing
         // point while the interpreter drives the same native core.
-        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots, disc: disc);
+        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots, disc: disc, guestFirmware: allowRuntimeRamExecution);
         _ownsDevices = sharedDevices is null;
         if (sharedScheduler is not null)
         {
@@ -574,13 +574,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
             _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
-            FetchObserver?.Invoke(_core.Pc);
-            if (StopRequested)
+            FetchObserver?.Invoke(_core.Pc);            if (StopRequested)
             {
                 break;
             }
 
-            if (_core.Step() != 0)
+            var stepStatus = _core.Step();
+            if (stepStatus != 0)
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 break;

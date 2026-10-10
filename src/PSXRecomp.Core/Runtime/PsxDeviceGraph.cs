@@ -47,8 +47,11 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     /// <see cref="MemoryCardSlotConfiguration.Empty"/>, the production default.</param>
     /// <param name="disc">The disc in the CD-ROM drive (Issue #732): the controller reads its sectors with hardware
     /// timing. Null keeps the legacy BIOS-less model (a licensed disc identity with no sector source).</param>
+    /// <param name="guestFirmware">A guest firmware owns the CD-ROM (Issue #736): with no <paramref name="disc"/> the
+    /// drive is empty (no-disc identity) and timed like a real one, never the BIOS-less zero-delay model.</param>
     public PsxDeviceGraph(
-        IMemoryBus? deviceRam = null, MemoryCardSlotConfiguration? memoryCardSlots = null, ICdSectorSource? disc = null)
+        IMemoryBus? deviceRam = null, MemoryCardSlotConfiguration? memoryCardSlots = null, ICdSectorSource? disc = null,
+        bool guestFirmware = false)
     {
         MemoryCardSlots = memoryCardSlots ?? MemoryCardSlotConfiguration.Empty;
         Core = new PSXCoreWrapper();
@@ -63,7 +66,9 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
         // content/format and swap UX remain out of scope (#587 non-goals).
         // LoadData still supplies sector bytes as a separate, format-independent
         // boundary (Issue #586/#587), same as every focused CD-ROM test.
-        CdRomDevice = new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), disc);
+        CdRomDevice = guestFirmware && disc is null
+            ? new CdRomDevice(CdRomDiscIdentity.NoDisc, null, timed: true)
+            : new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), disc);
         CdRomAdapter = new CdRomMmioAdapter(CdRomDevice);
         CdRomDmaTransfer = new CdRomDmaTransfer(CdRomDevice, DmaAdapter, deviceRam ?? Bus);
         GpuDmaTransfer = new GpuDmaTransfer(GpuDevice, DmaAdapter, deviceRam ?? Bus);

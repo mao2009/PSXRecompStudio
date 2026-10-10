@@ -123,17 +123,22 @@ fn decode_address(address: u32) -> Option<(usize, u32)> {
     Some((index, reg_offset))
 }
 
+/// CPU cycles per scanline: 33.8688 MHz over the 15.734 kHz NTSC Hblank rate
+/// (docs/runtime/architecture.md, Timing Model).
+const HBLANK_CYCLES: u32 = 2153;
+
 /// Clock source -> CPU cycles per counter increment (psx-spx).
 ///
-/// Dotclock/Hblank are GPU-generated signals (out of scope here, matching the
-/// migrated C++); they default to counting every CPU cycle as a deterministic
-/// approximation until a GPU clock source is wired in.
+/// Timer 1's Hblank source (1 or 3) counts once per scanline, so a guest that
+/// re-reads the counter until two reads agree (a stable-read loop) sees it
+/// settle (Issue #736). Timer 0's dotclock is a GPU-resolution-dependent signal
+/// that stays an approximation: it counts every CPU cycle.
 fn clock_divisor(channel: &TimerChannel, timer: usize) -> u32 {
     let src = (channel.mode & MODE_CLK_SRC_MASK) >> 8;
-    if timer == 2 && (src == 2 || src == 3) {
-        8
-    } else {
-        1
+    match (timer, src) {
+        (1, 1 | 3) => HBLANK_CYCLES,
+        (2, 2 | 3) => 8,
+        _ => 1,
     }
 }
 
@@ -550,6 +555,26 @@ mod tests {
         s2 = psx_timer_write_register(s2, tmr(2, 0x04), 0);
         s2 = psx_timer_tick(s2, 8);
         assert_eq!(read(s2, tmr(2, 0x00)).1, 8);
+    }
+
+    #[test]
+    fn timer1_hblank_source_counts_once_per_scanline() {
+        for mode in [0x100, 0x300] {
+            let mut s = psx_timer_reset();
+            s = psx_timer_write_register(s, tmr(1, 0x04), mode);
+            s = psx_timer_tick(s, HBLANK_CYCLES - 1);
+            assert_eq!(read(s, tmr(1, 0x00)).1, 0, "mode = {mode:#X}");
+            s = psx_timer_tick(s, 1);
+            assert_eq!(read(s, tmr(1, 0x00)).1, 1, "mode = {mode:#X}");
+        }
+
+        // System-clock sources (0, 2) and Timer 0's dotclock are unchanged.
+        for (t, mode) in [(1, 0x000), (1, 0x200), (0, 0x100)] {
+            let mut s = psx_timer_reset();
+            s = psx_timer_write_register(s, tmr(t, 0x04), mode);
+            s = psx_timer_tick(s, 5);
+            assert_eq!(read(s, tmr(t, 0x00)).1, 5, "timer {t} mode = {mode:#X}");
+        }
     }
 
     #[test]

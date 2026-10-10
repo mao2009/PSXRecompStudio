@@ -315,6 +315,28 @@ public class TimerMmioAdapterTests : IDisposable
         _adapter.HasInterrupt(TimerId.Timer0).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(0x0100u)]
+    [InlineData(0x0300u)]
+    public void Timer1_HblankSource_CountsOncePerScanline_SoAStableReadLoopSettles(uint mode)
+    {
+        // Issue #736: a guest re-reads COUNT until two reads agree. Counting the
+        // Hblank source every CPU cycle made two reads a few cycles apart never
+        // agree; one tick per 2,153-cycle scanline lets the loop settle.
+        _adapter.WriteRegister(ModeAddr(TimerId.Timer1), mode);
+        _adapter.Tick(2152);
+        var first = _adapter.ReadRegister(CountAddr(TimerId.Timer1));
+        _adapter.Tick(4);
+        _adapter.ReadRegister(CountAddr(TimerId.Timer1)).Should().Be(first + 1);
+        _adapter.Tick(4);
+        _adapter.ReadRegister(CountAddr(TimerId.Timer1)).Should().Be(first + 1, "two reads inside one scanline agree");
+
+        // The system-clock source still counts every CPU cycle.
+        _adapter.WriteRegister(ModeAddr(TimerId.Timer1), 0);
+        _adapter.Tick(4);
+        _adapter.ReadRegister(CountAddr(TimerId.Timer1)).Should().Be(4u);
+    }
+
     [Fact]
     public void Dispose_PreventsFurtherAccess()
     {
