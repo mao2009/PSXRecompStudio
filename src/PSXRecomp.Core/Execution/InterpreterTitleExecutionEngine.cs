@@ -574,8 +574,16 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // handoff — a GTE/CpU fault could be classified Completed.
             _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
             FetchObserver?.Invoke(_core.Pc);
-            if (stepStatus != 0)
-            var stepStatus = _core.Step();
+            if (StopRequested)
+            {
+                break;
+            }
+
+            if (_core.Step() != 0)
+            {
+                termination = RecompilerIrTerminationReason.Exception;
+                break;
+            }
 
             if (_core.ExceptionRaised)
             {
