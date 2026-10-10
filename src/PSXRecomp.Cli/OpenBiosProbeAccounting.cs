@@ -122,7 +122,7 @@ internal sealed class OpenBiosProbeAccounting
         _exits[exit] = _exits.GetValueOrDefault(exit) + 1;
     }
 
-    public object Report(ulong? nativeInstructions, ulong? fallbackRetired, IEnumerable<uint> blockEntryPcs, ProbeSymbols? symbols)
+    public object Report(ulong? nativeInstructions, ulong? fallbackRetired, IEnumerable<uint> blockEntryPcs, ProbeSymbols? symbols, Func<uint, string>? fallbackCause = null)
     {
         var blockRegions = blockEntryPcs.Select(RegionOf).Distinct().ToArray();
         var nativeRegion = blockRegions.Length == 1 ? blockRegions[0] : null;
@@ -157,7 +157,7 @@ internal sealed class OpenBiosProbeAccounting
                 total = transitions,
                 indirect = _entries.Values.Aggregate(0UL, static (sum, e) => sum + e.Indirect),
                 retiredInstructions = retired,
-                byReason = _entries.GroupBy(static e => ReasonOf(e.Key))
+                byReason = _entries.GroupBy(e => fallbackCause?.Invoke(e.Key) ?? ReasonOf(e.Key))
                     .Select(g => (Reason: g.Key, Transitions: g.Aggregate(0UL, static (s, e) => s + e.Value.Transitions),
                         Indirect: g.Aggregate(0UL, static (s, e) => s + e.Value.Indirect), Retired: g.Aggregate(0UL, static (s, e) => s + e.Value.Retired)))
                     .OrderByDescending(static g => g.Transitions).ThenBy(static g => g.Reason, StringComparer.Ordinal)
@@ -180,7 +180,7 @@ internal sealed class OpenBiosProbeAccounting
                 .Take(TopCount)
                 .Select(e => new
                 {
-                    pc = Hex(e.Key), region = RegionOf(e.Key), reason = ReasonOf(e.Key), symbol = symbols?.Lookup(e.Key),
+                    pc = Hex(e.Key), region = RegionOf(e.Key), reason = fallbackCause?.Invoke(e.Key) ?? ReasonOf(e.Key), symbol = symbols?.Lookup(e.Key),
                     transitions = e.Value.Transitions, indirect = e.Value.Indirect, retiredInstructions = e.Value.Retired,
                     transitionShare = Share(e.Value.Transitions, transitions), retiredShare = Share(e.Value.Retired, retired),
                 }).ToArray(),
