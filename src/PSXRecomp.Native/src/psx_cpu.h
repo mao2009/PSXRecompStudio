@@ -217,6 +217,10 @@ private:
     void ExecLw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecLwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
+    // COP0 SR.IsC (bit 16, isolate cache): a store through KUSEG/KSEG0 goes to the data cache,
+    // not memory. Firmware flushes the I-cache this way (stores of zero over low RAM), so the
+    // store must not reach RAM. KSEG1 is uncached and unaffected.
+    bool StoreIsCacheIsolated(uint32_t vaddr) const { return (cop0_[12] & 0x00010000u) != 0 && vaddr < 0xA0000000u; }
     void ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);
     void ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory);

@@ -269,13 +269,25 @@ panic, so every export is infallible (§5) and returns its result directly.
 | `psx_interrupt_clear` | `PSXInterruptState(PSXInterruptState, int32_t irq)` | Clears I_STAT bit `irq`; `irq` outside 0..10 ignored. |
 | `psx_interrupt_pending` | `uint32_t(PSXInterruptState)` | 1 when `I_STAT & I_MASK != 0`, else 0. |
 
+### Read-only event queries (#744)
+
+`psx_dma_next_event_cycles(PSXDmaState, uint32_t excluded_channel)` reuses
+started-channel and duration rules, reporting the next generic completion.
+`psx_timer_next_event_cycles(PSXTimerState)` reuses divisor and sync rules.
+C++ combines them in `PSXCore_GetNextDeviceEventCycles`; the managed scheduler
+combines that conservative result with existing CD-ROM/VBlank/pending edges.
+`PSXCore_PeekTimerRegister` reads a copied Rust timer state and discards the evolved
+copy, permitting MODE observation without consuming flags. Neither query allocates,
+changes native state, nor exposes a Rust-owned type above the C ABI.
+
 ### Timer controller (#486)
 
 `rust/src/timer.rs` implements the three Root Counter timers. Its exports are
 **internal** to `PSXRecomp.Native`: `src/psx_api.cpp` calls them (declared in
-`src/psx_timer.h`) to implement the unchanged `PSXCore_*Timer*` functions of
-`include/psx_core.h`, so neither `psx_core.h`, `NativeInterop.cs`, nor
-`ABI_VERSION` changed. The state (`PSXTimerState`, three `PSXTimerChannel`
+`src/psx_timer.h`). #486 preserved the existing public timer functions. #744
+adds compatible read-only deadline and diagnostic-peek C ABI functions through
+`psx_core.h` / `NativeInterop.cs`; existing symbols and state layout retain their
+meaning, so `ABI_VERSION` is unchanged. The state (`PSXTimerState`, three `PSXTimerChannel`
 values) is `#[repr(C)]`, POD, and passed/returned by value: no pointers, no
 allocation, no `unsafe`, and no operation that can panic, so every export is
 infallible (§5). A register read can have a side effect (reading MODE clears
@@ -288,6 +300,7 @@ than taking an out-parameter pointer.
 | `psx_timer_reset` | `PSXTimerState(void)` | Power-on state (all fields zero). |
 | `psx_timer_read_register` | `PSXTimerReadResult(PSXTimerState, uint32_t address)` | COUNT/MODE/TARGET, else 0; reading MODE clears its target/overflow flags. |
 | `psx_timer_write_register` | `PSXTimerState(PSXTimerState, uint32_t address, uint32_t value)` | COUNT/TARGET replaced; MODE masked, forces IRQ_REQUEST set, and resets the channel's counter/toggle/frac/sync-arm/irq state. |
+| `psx_timer_next_event_cycles` | `uint32_t(PSXTimerState)` | Positive conservative distance to target/overflow or pending latch delivery; no register-read side effects. `UINT32_MAX` means no timed effect. |
 | `psx_timer_tick` | `PSXTimerState(PSXTimerState, uint32_t cycles)` | Advances all three timers by `cycles`, applying clock divisor, sync gating, and target/overflow IRQ semantics. |
 | `psx_timer_set_sync_line` | `PSXTimerState(PSXTimerState, int32_t timer, int32_t active)` | Updates the Hblank/Vblank sync line and its edge side effects; `timer` outside 0–2 ignored. |
 | `psx_timer_get_interrupt_pending` | `uint32_t(PSXTimerState, int32_t timer)` | 1 when `timer`'s IRQ is latched, else 0; 0 for `timer` outside 0–2. |

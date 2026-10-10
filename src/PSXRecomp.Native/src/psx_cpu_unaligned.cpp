@@ -35,7 +35,7 @@ void PSXCpu::ExecLwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
 void PSXCpu::ExecSwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint32_t phys = TranslateAddress(psx_cpu_unaligned_base(addr));
-    if (!IsMapped(phys)) {
+    if (!IsMapped(phys) || StoreIsCacheIsolated(addr)) {
         return;
     }
     memory.Write32(phys, psx_cpu_unaligned_swl(addr, gpr_[rt], memory.Read32(phys)));
@@ -45,7 +45,7 @@ void PSXCpu::ExecSwl(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory
 void PSXCpu::ExecSwr(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory) {
     uint32_t addr = gpr_[rs] + SignExtend16(offset);
     uint32_t phys = TranslateAddress(psx_cpu_unaligned_base(addr));
-    if (!IsMapped(phys)) {
+    if (!IsMapped(phys) || StoreIsCacheIsolated(addr)) {
         return;
     }
     memory.Write32(phys, psx_cpu_unaligned_swr(addr, gpr_[rt], memory.Read32(phys)));

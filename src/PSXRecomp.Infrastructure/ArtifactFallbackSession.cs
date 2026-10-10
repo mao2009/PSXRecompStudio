@@ -67,11 +67,18 @@ internal sealed class ArtifactFallbackSession : IDisposable
         PsxDeviceGraph devices,
         DeviceScheduler scheduler,
         ArtifactDeviceRam deviceRam,
-        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime> biosRuntimeFactory,
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory,
         BiosExceptionChain? exceptionChain,
         Action<string> send,
-        Func<string> readReply)
+        Func<string> readReply,
+        bool guestFirmware = false,
+        Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null,
+        Action<MixedFallbackTransition>? transitionObserver = null,
+        LoadedCodeTable? loadedCode = null)
     {
+        _transitionObserver = transitionObserver;
+        _guestFirmware = guestFirmware;
+        _loadedCode = loadedCode ?? LoadedCodeTable.Empty;
         _options = options;
         _imageWords = imageWords;
         _imageLoadAddress = imageLoadAddress;
@@ -81,7 +88,49 @@ internal sealed class ArtifactFallbackSession : IDisposable
         _send = send;
         _readReply = readReply;
         _interpreter = InterpreterTitleExecutionEngine.Attach(
-            imageWords, imageLoadAddress, devices, scheduler, biosRuntimeFactory, exceptionChain);
+            imageWords, imageLoadAddress, devices, scheduler, biosRuntimeFactory, exceptionChain, guestFirmware);
+        if (fetchObserver is not null)
+        {
+            var interpreter = _interpreter;
+            _interpreter.FetchObserver = pc => fetchObserver(interpreter, pc);
+        }
+    }
+
+    private readonly bool _guestFirmware;
+    private readonly Action<MixedFallbackTransition>? _transitionObserver;
+
+    /// <summary>The pre-generated versions of RAM-placed code (Issue #732).</summary>
+    private readonly LoadedCodeTable _loadedCode;
+
+    /// <summary>
+    /// Whether the artifact may resume at <paramref name="pc"/>: it has a static block there, or a version of RAM-placed
+    /// code whose words the interpreter's RAM (equal to <c>artifact_ram</c> once written back) holds now. Stale or unknown
+    /// RAM code is no return point; the artifact makes the same check and would only offer the PC back.
+    /// </summary>
+    private bool IsReturnPoint(uint pc)
+    {
+        if (_blockEntryPcs.Contains(pc)) return true;
+        if (!_loadedCode.Contains(pc)) return false;
+        // The artifact's own translation (artifact_translate / artifact_ram_offset): KUSEG as is, KSEG0/1 masked, the
+        // low 8 MiB mirroring the 2 MiB RAM; a unit running off the end of RAM is not RAM code.
+        var physical = pc <= 0x7FFFFFFFu ? pc : pc & 0x1FFFFFFFu;
+        if (pc >= 0xC0000000u || physical >= 0x00800000u) return false;
+        physical &= PSXCoreWrapper.RamSize - 1;
+        foreach (var version in _loadedCode.VersionsAt(pc))
+        {
+            // Match the artifact's per-version byte span without overflowing the size calculation. A longer
+            // version must not hide a current shorter version at the same entry.
+            if (version.Words.Count == 0 || (ulong)version.Words.Count * 4ul > PSXCoreWrapper.RamSize - physical) continue;
+            var current = true;
+            for (var i = 0; i < version.Words.Count && current; i++)
+            {
+                current = _devices.Core.ReadMemory32(physical + (uint)i * 4u) == version.Words[i];
+            }
+
+            if (current) return true;
+        }
+
+        return false;
     }
 
     /// <summary>What <see cref="Handle"/> decided about one offered transfer.</summary>
@@ -127,8 +176,12 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
         // Static eligibility: an aligned PC inside the PS-X EXE text image. The image is the only executable region a
         // fallback ever runs; RAM-generated code, out-of-image PCs and every vector stay with the existing fail-closed path.
+        // A guest firmware (Issue #732) is the exception: it runs code it wrote to RAM, its own vectors and a loaded
+        // executable by design, reached directly as well as indirectly, so any aligned PC without a block is eligible.
         var imageEnd = (ulong)_imageLoadAddress + (ulong)_imageWords.Count * 4UL;
-        if ((pc & 3u) != 0 || pc < _imageLoadAddress || pc >= imageEnd || _blockEntryPcs.Contains(pc))
+        var inImage = pc >= _imageLoadAddress && pc < imageEnd;
+        // RAM-placed code is never in _blockEntryPcs: the artifact offers it only when no version matched (Issue #732).
+        if ((pc & 3u) != 0 || (!inImage && !_guestFirmware) || _blockEntryPcs.Contains(pc))
         {
             return Decision.Ineligible;
         }
@@ -138,7 +191,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
         {
             _send($"{RecompiledArtifactCodeGen.ProtocolFallbackQueryCommand} {RecompiledArtifactCodeGen.ProtocolFallbackVersion}");
             var header = ReadHeader();
-            if (header is null || !header.Value.Indirect)
+            if (header is null || (!header.Value.Indirect && !_guestFirmware))
             {
                 // A refusal, or a transfer that did not come from JR/JALR: not a runtime-discovered target.
                 return Decision.Ineligible;
@@ -166,7 +219,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
             _fallbackClock.Start();
             try
             {
-                outcome = _interpreter.RunFallbackSegment(entry, _blockEntryPcs, _options.SegmentInstructionBudget);
+                outcome = _interpreter.RunFallbackSegment(entry, IsReturnPoint, _options.SegmentInstructionBudget);
             }
             finally
             {
@@ -181,6 +234,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 previous.Entries + 1,
                 previous.Instructions + outcome.RetiredInstructions,
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
+            _transitionObserver?.Invoke(new MixedFallbackTransition(
+                pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
 
             if (outcome.Status != FallbackSegmentStatus.Returned)
             {

@@ -16,6 +16,15 @@ public sealed class GeneratedHostBuildServiceTests
 {
     private const string ValidSource = "int main(void) { return 0; }\n";
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(2147483648)]
+    public void InvalidTimeout_IsRejected(double milliseconds)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new GeneratedHostBuildService(TimeSpan.FromMilliseconds(milliseconds)));
+    }
+
     [Fact]
     public void Build_SyntheticFixture_ProducesNativeArtifact()
     {

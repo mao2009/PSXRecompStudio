@@ -19,12 +19,16 @@ namespace PSXRecomp.Core.Runtime;
 /// <para>
 /// Modelled: the enqueue (as a flag) and <c>button_dest</c>. <c>button_dest</c> is only memorized: nothing reads or
 /// writes it at call time (zero is valid and means "do not auto-read"), so no guest pointer is validated here.
+/// InitPad's <c>s_padStarted = 1</c> is written into the pad-started flag shared with InitCARD2 (<see cref="BiosCardState.TryGetPadStarted"/>).
+/// Of the "some flags" StartPad initializes, the two the Runtime consumes are set as OpenBIOS <c>startPad</c> does
+/// (CONFIRMED against OpenBIOS, INFERRED for the retail BIOS, #661): the SIO0 auto-ack (<see cref="BiosPadCardAutoAck"/>)
+/// := 1, overwriting an earlier B0:5B, and the VBlank timer auto-ack (<see cref="BiosRootCounterClearPolicy"/>,
+/// <c>t = 3</c>) := 0, the same two writes StartCARD2 makes (<see cref="BiosCardState"/>).
 /// Not modelled, deliberately: the hidden buf1/buf2 (their addresses are undocumented and the only reader,
-/// B0:16 <c>OutdatedPadGetButtons</c>, is unregistered, so the FFh/00h fills cannot be observed), the "some flags"
-/// StartPad initializes (including OpenBIOS's auto-ack = 1, left to #661 with the B0:5B setting, which stays
-/// untouched here), the stores of the unused parameters to the caller's stack (no <c>$sp</c> reaches a service), and
-/// the pad read itself. The handler is never run here: while it is enqueued the exception chain fails closed when it
-/// would claim an exception (<see cref="BiosExceptionHandler.DefaultChain"/>), until #661 models the element.
+/// B0:16 <c>OutdatedPadGetButtons</c>, is unregistered, so the FFh/00h fills cannot be observed), StartPad's
+/// <c>I_STAT</c> acknowledge and <c>I_MASK |= IRQ0</c> (B0:15 has no device access; StartCARD2 sets the mask), the
+/// stores of the unused parameters to the caller's stack (no <c>$sp</c> reaches a service), and the pad read itself
+/// (the enqueued element is run by <see cref="BiosExceptionHandler.DefaultChain"/>, see <see cref="BiosPadCardIrqHandler"/>).
 /// </para>
 /// <para>
 /// The state lives in a guest-RAM kernel variable, like <see cref="BiosPadCardAutoAck"/>, because some engines
@@ -48,10 +52,13 @@ public static class BiosPadState
     /// <summary>B0:15's return value on success (psx-spx: "Return value is 2").</summary>
     public const uint SuccessReturnValue = 2;
 
+    private const uint VblankSource = 3; // C0:0A t=3 is the VBlank slot
+
     /// <summary>B0:15 handler.</summary>
-    internal static BiosServiceResult OutdatedPadInitAndStart(BiosCallIdentity identity, IGuestMemoryWriter writer)
+    internal static BiosServiceResult OutdatedPadInitAndStart(BiosCallIdentity identity, IGuestMemoryReader reader, IGuestMemoryWriter writer)
     {
         ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(writer);
 
         if (identity.Arguments.Count != 4)
@@ -71,7 +78,14 @@ public static class BiosPadState
         BitConverter.TryWriteBytes(bytes.AsSpan(0, 4), 1u);
         BitConverter.TryWriteBytes(bytes.AsSpan(4, 4), identity.Arguments[1]);
 
-        return writer.TryWrite(VariableAddress, bytes)
+        // InitPad's s_padStarted := 1, StartPad's flags (OpenBIOS startPad: VBlank timer auto-ack := 0, SIO0 auto-ack := 1),
+        // then the enqueue.
+        var written =
+            BiosCardState.TrySetPadStarted(reader, writer) &&
+            BiosRootCounterClearPolicy.TrySetFlag(writer, VblankSource, 0) &&
+            BiosPadCardAutoAck.TryEnable(writer) &&
+            writer.TryWrite(VariableAddress, bytes);
+        return written
             ? BiosServiceResult.Supported(identity, SuccessReturnValue)
             : BiosServiceResult.UnsupportedState(
                 identity, $"{identity.StableKey} OutdatedPadInitAndStart: the pad state variable is not writable.");

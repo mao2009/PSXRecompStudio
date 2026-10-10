@@ -1,5 +1,6 @@
 using System.Text;
 using PSXRecomp.Core.DiscImage;
+using PSXRecomp.Core.Runtime.CdRom;
 
 namespace PSXRecomp.Tests.RealRomAnalysis;
 
@@ -17,9 +18,12 @@ public sealed class SyntheticIsoImageBuilder
 {
     private const int SectorSize = Iso9660Reader.SectorSize;
     private const int VolumeDescriptorSector = 16;
+    private const int TerminatorSector = 17;
     private const int RootDirectorySector = 18;
+    private const int PathTableSector = 19;
     private const int FirstFileSector = 20;
     private const int RootDirectoryRecordOffset = 156;
+    private const int PathTableSize = 10; // 8-byte header + 1-byte name + 1 pad byte
 
     private readonly List<(string Name, byte[] Content)> _files = [];
     private string _volumeIdentifier = "PSXRECOMP_TEST";
@@ -103,6 +107,21 @@ public sealed class SyntheticIsoImageBuilder
         Encoding.ASCII.GetBytes(volumeId).CopyTo(image, offset + 40);
 
         BitConverter.GetBytes(volumeSpaceSize).CopyTo(image, offset + 80);
+
+        // OpenBIOS's own CD driver resolves files through the L path table (size @132, LBA @140), not the PVD's
+        // root record alone, and expects the descriptor set to end with a terminator.
+        BitConverter.GetBytes((uint)PathTableSize).CopyTo(image, offset + 132);
+        BitConverter.GetBytes((uint)PathTableSector).CopyTo(image, offset + 140);
+        var terminator = TerminatorSector * SectorSize;
+        image[terminator] = 255;
+        Encoding.ASCII.GetBytes("CD001").CopyTo(image, terminator + 1);
+        image[terminator + 6] = 1;
+
+        // L path table: one entry, the root directory (name length 1, LBA, parent 1, name 0x00).
+        var table = PathTableSector * SectorSize;
+        image[table] = 1;
+        BitConverter.GetBytes((uint)RootDirectorySector).CopyTo(image, table + 2);
+        image[table + 6] = 1;
 
         WriteDirectoryRecord(image, offset + RootDirectoryRecordOffset,
             RootDirectorySector, SectorSize, flags: 0x02, name: "\0");
@@ -218,4 +237,59 @@ public static class SyntheticPsxExeBuilder
         }
         return bytes;
     }
+}
+
+/// <summary>
+/// Builds a deterministic synthetic CD image from the in-memory ISO 9660 volume
+/// (<see cref="SyntheticIsoImageBuilder"/>) by wrapping every 2048-byte user-data sector in a
+/// raw 2352-byte Mode 2 Form 1 frame (sync, BCD MSF header, data subheader). The bytes are a
+/// pure function of the inputs, so the same disc is reproduced on every machine; the mirror in
+/// <c>scripts/demo/synthetic-disc.ps1</c> pins the same SHA-256. No commercial data.
+/// </summary>
+[Test]
+public static class SyntheticDiscBuilder
+{
+    /// <summary>On-disc BOOT value and the file name of the synthetic boot executable.</summary>
+    public const string BootPath = @"cdrom:\PSXRECOMP.EXE;1";
+    public const string ExeIsoName = "PSXRECOMP.EXE;1";
+
+    /// <summary>A bootable Mode 2 Form 1 disc whose SYSTEM.CNF runs <see cref="ExeIsoName"/>.</summary>
+    public static byte[] Bootable(byte[] exeBytes) => Mode2Form1(
+        new SyntheticIsoImageBuilder().AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
+
+    /// <summary>Sector-aligns a synthetic EXE payload for OpenBIOS CD reads and ends it with a stable loop.</summary>
+    public static byte[] OpenBiosCompatibleExe(byte[] exeBytes)
+    {
+        var size = checked((int)BitConverter.ToUInt32(exeBytes, 0x1C));
+        var padded = checked((size + 8 + 2047) / 2048 * 2048);
+        var result = new byte[checked(0x800 + padded)];
+        exeBytes.AsSpan(0, 0x800 + size).CopyTo(result);
+        BitConverter.GetBytes((uint)padded).CopyTo(result, 0x1C);
+        BitConverter.GetBytes(0x1000FFFFu).CopyTo(result, 0x800 + size);
+        return result;
+    }
+
+    /// <summary>Wraps 2048-byte ISO sectors into raw 2352-byte Mode 2 Form 1 sectors.</summary>
+    public static byte[] Mode2Form1(byte[] iso)
+    {
+        ArgumentNullException.ThrowIfNull(iso);
+        var sectors = iso.Length / Iso9660Reader.SectorSize;
+        var image = new byte[sectors * ICdSectorSource.RawSectorSize];
+        for (var lba = 0; lba < sectors; lba++)
+        {
+            var sector = image.AsSpan(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
+            sector.Slice(1, 10).Fill(0xFF);
+            var absolute = lba + 150;
+            sector[12] = Bcd(absolute / 4500);
+            sector[13] = Bcd(absolute / 75 % 60);
+            sector[14] = Bcd(absolute % 75);
+            sector[15] = 2;
+            sector[18] = sector[22] = 0x08; // submode: data
+            iso.AsSpan(lba * Iso9660Reader.SectorSize, Iso9660Reader.SectorSize).CopyTo(sector[24..]);
+        }
+
+        return image;
+    }
+
+    private static byte Bcd(int value) => (byte)((value / 10 << 4) | (value % 10));
 }

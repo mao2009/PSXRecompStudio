@@ -24,9 +24,9 @@ namespace PSXRecomp.Core.Runtime;
 /// element B0:15 / StartPAD2 enqueue, so repeating it leaves one copy), sets <c>I_MASK |= IRQ0</c>, forces the SIO0 auto-ack
 /// (B0:5B <c>ChangeClearPAD</c> state) to 1 and the VBlank timer auto-ack (C0:0A <c>ChangeClearRCnt(3, flag)</c> state) to 0, and sets
 /// <c>s_cardStarted = 1</c>. It does not touch I_STAT, <c>I_MASK</c> bit 7 (IRQ7), any event, or <c>s_padStarted</c>.
-/// The VBlank timer auto-ack = 0 is modelled (below): <see cref="BiosTimerVblankIrqHandler"/> already reads it at priority 1. The SIO0
-/// auto-ack = 1 is not: only the <c>PadCardIrq</c> handler reads it (it is never run here), so it stays with #661, exactly as B0:15's
-/// StartPAD auto-ack = 1 does (ADR-014 #703 amendment).
+/// Both auto-acks are modelled: the VBlank timer auto-ack = 0 (read by <see cref="BiosTimerVblankIrqHandler"/> at priority 1) and
+/// the SIO0 auto-ack = 1 (<see cref="BiosPadCardAutoAck"/>, read by the <c>PadCardIrq</c> element, #661), overwriting an earlier B0:5B
+/// exactly as OpenBIOS <c>setSIO0AutoAck(1)</c> does; B0:15's StartPAD makes the same two writes.
 /// Without a prior InitCARD2 the shared element has a NULL handler and the card state is uninitialised (the retail behaviour is
 /// UNKNOWN, OpenBIOS would crash), and psx-spx states the order InitCARD2, StartCARD2, <c>_bu_init</c>; the Runtime fails closed.
 /// </para>
@@ -35,16 +35,17 @@ namespace PSXRecomp.Core.Runtime;
 /// some engines rebuild <see cref="BiosHleRuntime"/> per segment); the address is this Runtime's own choice in the reserved slot
 /// psx-spx leaves unused at <c>00000148h</c>. StartCARD2's enqueue is <see cref="BiosPadState"/>'s existing enqueued flag (one shared
 /// element, so B0:15 and StartCARD2 are the same fact), the I_MASK bit goes through <see cref="IGuestDeviceAccess"/>, and the VBlank timer
-/// auto-ack is written into <see cref="BiosRootCounterClearPolicy"/> (<c>t = 3</c> := 0; the other sources are untouched, no new state).
-/// Not modelled, deliberately: the SIO0 auto-ack forcing (<see cref="BiosPadCardAutoAck"/> is unchanged), the SIO0 reset writes
+/// auto-ack is written into <see cref="BiosRootCounterClearPolicy"/> (<c>t = 3</c> := 0; the other sources are untouched, no new state)
+/// and the SIO0 auto-ack into <see cref="BiosPadCardAutoAck"/>.
+/// Not modelled, deliberately: the SIO0 reset writes
 /// (<c>ctrl</c>/<c>mode</c>/<c>baud</c> — the sequence ends with <c>ctrl = 0</c> and nothing in the Runtime reads
 /// them until a SIO0 transfer is modelled; the retail sequence is UNKNOWN), the hidden handler structures, the exception-handler
-/// fast-track patch and the k0/k1 clobber. The enqueued element is never run here: while it is enqueued the exception chain fails
-/// closed when it would claim an exception (<see cref="BiosExceptionHandler.DefaultChain"/>), until #661 models the element.
+/// fast-track patch and the k0/k1 clobber. The enqueued element is run by the exception chain (<see cref="BiosPadCardIrqHandler.Run"/>,
+/// #661); its card stage reads the "started" bit.
 /// </para>
 /// <para>
 /// Write-failure contract: every read and prerequisite (state readable, InitCARD2 ran, I_MASK and the VBlank flag readable) is checked
-/// before any write. The writes then run in this order: VBlank clear policy := 0, I_MASK |= IRQ0, enqueue <c>PadCardIrq</c>, card
+/// before any write. The writes then run in this order: VBlank clear policy := 0, SIO0 auto-ack := 1, I_MASK |= IRQ0, enqueue <c>PadCardIrq</c>, card
 /// started — the state the exception path already consumes first, the "started" fact last. <see cref="IGuestMemoryWriter"/> has no
 /// transaction and no rollback is attempted, so a failure partway leaves the earlier writes in place and the call reports
 /// <c>BIOS_HLE_UNSUPPORTED_STATE</c> (the run stops).
@@ -53,7 +54,10 @@ namespace PSXRecomp.Core.Runtime;
 [Domain]
 public static class BiosCardState
 {
-    /// <summary>Guest address of the 8-byte variable: +0 flags (bit 0 InitCARD2 ran, bit 1 StartCARD2 started), +4 raw <c>pad_enable</c>.</summary>
+    /// <summary>
+    /// Guest address of the 8-byte variable: +0 flags (bit 0 InitCARD2 ran, bit 1 StartCARD2 started), +4 the shared pad-started flag
+    /// (InitCARD2's raw <c>pad_enable</c>, or 1 from B0:15's InitPad, whichever ran last; see <see cref="TryGetPadStarted"/>).
+    /// </summary>
     public const uint VariableAddress = 0x00000148;
 
     /// <summary>Physical address of I_MASK.</summary>
@@ -128,6 +132,7 @@ public static class BiosCardState
 
         var written =
             BiosRootCounterClearPolicy.TrySetFlag(writer, VblankSource, 0) &&
+            BiosPadCardAutoAck.TryEnable(writer) &&
             devices.TryWrite32(InterruptMaskAddress, mask | VblankIrqBit) &&
             BiosPadState.TryEnqueue(reader, writer) &&
             TryWrite(writer, flags | StartedBit, padEnable);
@@ -152,6 +157,18 @@ public static class BiosCardState
         padEnable = initialized ? raw : 0;
         return true;
     }
+
+    /// <summary>
+    /// The kernel's pad-started flag (OpenBIOS <c>s_padStarted</c>; psx-spx "pad_enable_flag"), the raw word at +4 whoever wrote it last:
+    /// B0:4A stores its <c>pad_enable</c>, B0:15's InitPad stores 1. Non-zero means the <c>PadCardIrq</c> element reads the pads.
+    /// False when the variable cannot be read.
+    /// </summary>
+    public static bool TryGetPadStarted(IGuestMemoryReader reader, out uint padStarted) =>
+        TryReadFlags(reader, out _, out padStarted);
+
+    /// <summary>B0:15's InitPad <c>s_padStarted = 1</c>: writes the flag at +4 and keeps the InitCARD2/StartCARD2 bits. False on a read/write failure.</summary>
+    internal static bool TrySetPadStarted(IGuestMemoryReader reader, IGuestMemoryWriter writer) =>
+        TryReadFlags(reader, out var flags, out _) && TryWrite(writer, flags, 1);
 
     /// <summary>Whether StartCARD2 started the card; false when the variable cannot be read.</summary>
     public static bool TryGetStarted(IGuestMemoryReader reader, out bool started)

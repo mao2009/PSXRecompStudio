@@ -221,7 +221,7 @@ public class CdRomDeviceTests
 
     [Theory]
     [InlineData(0x0D)]
-    [InlineData(0x0E)]
+    [InlineData(0x1D)] // 0Eh (SetMode) is modelled since Issue #732
     [InlineData(0x30)]
     public void CommandsThatAreNotModelled_StillFailClosedWithInt5(byte command)
     {
@@ -488,7 +488,7 @@ public class CdRomDeviceTests
     public void ResponseRead_IsIndexIndependent()
     {
         var cd = new CdRomDevice();
-        cd.WriteCommand(0x19);
+        cd.WriteCommand(0x1D); // unmodelled (19h, Test, is modelled since Issue #732)
         cd.WriteRegister(0, 3);
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorStat);
         cd.ReadRegister(1).Should().Be(CdRomDevice.ErrorInvalidCommand);

@@ -31,7 +31,7 @@ Read the skill that matches the work **before** starting it.
 | Reviewing | [`skills/common/task/review/SKILL.md`](skills/common/task/review/SKILL.md) |
 | Authoring or updating an Issue | [`skills/common/task/issue/SKILL.md`](skills/common/task/issue/SKILL.md) |
 | Recording a design decision (ADR) | [`skills/common/process/adr/SKILL.md`](skills/common/process/adr/SKILL.md) |
-| Before opening a PR | [`skills/common/process/doc-sync/SKILL.md`](skills/common/process/doc-sync/SKILL.md), then [`skills/common/process/self-review/SKILL.md`](skills/common/process/self-review/SKILL.md) |
+| Before opening a PR | [`skills/common/process/doc-sync/SKILL.md`](skills/common/process/doc-sync/SKILL.md); ChatGPT owns independent code review, while implementation agents retain focused verification |
 | Writing or rewriting a commit message, including checking it for sensitive/session data | [`skills/common/process/commit-message/SKILL.md`](skills/common/process/commit-message/SKILL.md) |
 | Starting, continuing, pausing, or handing off agent work | [`skills/common/process/handoff-checkpoints/SKILL.md`](skills/common/process/handoff-checkpoints/SKILL.md) |
 | Writing the final report | [`skills/common/process/reporting/SKILL.md`](skills/common/process/reporting/SKILL.md) |

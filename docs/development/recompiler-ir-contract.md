@@ -2,7 +2,7 @@
 
 Status: Stable
 Authority: SSOT
-Related Issues: #205, #206, #207, #208, #211, #411
+Related Issues: #205, #206, #207, #208, #211, #411, #749
 
 ## Scope
 
@@ -37,6 +37,31 @@ access, signedness, and the resolved memory image belong to the memory/runtime
 contract, not the IR or host backend. The ordered memory observations compared
 through `RecompilerStateSnapshot` describe guest-visible access, independent of
 these operations' lowering.
+
+### Aligned CPU memory faults (Issue #749)
+
+Lowered LH/LHU/LW/SH/SW carry optional `RecompilerMemoryFaultSite` provenance
+on their block: the ordered memory operation index, owning EPC and BD, completed
+instruction prefix, and any pending load SSA value owed on a fault. The memory
+primitive's alignment rule remains the memory/runtime contract; this metadata
+lets a backend report its failure through the existing CPU exception contract
+rather than guess a source PC from an IR operation index.
+
+The generated implementation checks the virtual effective address before the
+primitive can access RAM/MMIO or suppress an isolated-cache store. A failing
+check raises AdEL/AdES, updates virtual BadVAddr and commits the preceding load
+that `UpdateLoadDelay` would commit even when the faulting observer names the
+same destination. It executes no later operation or branch target. Successful
+prefix instructions are charged once; the faulting instruction is not retired.
+LWL/LWR/SWL/SWR use aligned internal primitives without fault-site provenance,
+so their original unaligned guest effective address remains legal. Raw IR with
+no CPU provenance keeps its existing primitive contract.
+
+Validation rejects duplicate/unordered or out-of-range sites, non-aligned
+primitive kinds, inconsistent source-PC/prefix/BD ownership and pending load
+values not defined before the site. Optional nonempty provenance serializes
+canonically; legacy blocks retain their prior JSON shape. The test IR evaluator
+and compiled/interpreter differential harness consume this same provenance.
 
 ### Memory effect classification (ADR-020, Issue #411)
 
@@ -89,7 +114,7 @@ to ordinary RAM access or ordinary direct control flow.
 | MMIO / device access | `Load*`/`Store*` with `MemoryEffect = Device` (or `Unknown`) | none; the access retires through the host memory hook. `UnsupportedMmio` → `RUNTIME_UNSUPPORTED_MMIO` is the reserved stop reason (already mapped by `DiagnosticAdapter`, with no producer yet; device semantics belong to the runtime) |
 | BIOS / runtime transfer | JR/JALR `Success` exit carrying the register-held target as `TargetValueId` (no flow, no static next PC, Issue #635); the dispatch loop finds no block at a vector address and the generated `host_transfer` hook / runtime dispatch resolves it by target address (`BiosJumpTables.TryResolveVectorFamily`, ADR-014) | none when the service is supported; a runtime stop (e.g. BIOS dispatch failure) is `UnresolvedIndirectFlow` with the runtime's own code |
 | Indirect / unresolved control flow | same `TargetValueId` exit; never a guessed `Jump`/`Call`; a target with a compiled block continues guest→guest; a host-unclaimed unknown PC stops the dispatcher | landing on a PC that has no block, no host claim and no handoff rule → `UNRESOLVED_TRANSFER` at title level |
-| Exception-producing operation | `AddSigned` (ADDI) traps before its destination write; BREAK lowers to an `Exception` exit carrying Excode/EPC/BD; ADD/SUB/SYSCALL/COP0 and other not-yet-modelled trapping opcodes fail lowering | `Exception` → `CPU_EXCEPTION` |
+| Exception-producing operation | `AddSigned` (ADD/ADDI) traps before its destination write; BREAK/SYSCALL lower to an `Exception` exit carrying Excode/EPC/BD, which a firmware-mode host delivers to the guest vector (Issue #732); SUB and other not-yet-modelled trapping opcodes fail lowering | `Exception` → `CPU_EXCEPTION` |
 | Unsupported operation / effect | `MipsToIrLoweringResult.Unsupported`; codegen `Success=false` (`IR_VALIDATION_FAILED`, `UNSUPPORTED_OPERATION_KIND`, `UNSUPPORTED_FLOW_KIND`); an undefined `MemoryEffect` fails validation | `UnsupportedInstruction` / `UnsupportedIr` / `UnsupportedMemory` → `RECOMP_UNSUPPORTED_*` |
 
 The differential harness compares the reference (interpreter) and recompiled

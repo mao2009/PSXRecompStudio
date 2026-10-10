@@ -140,6 +140,12 @@ internal static partial class NativeInterop
     [LibraryImport(LibName)]
     internal static partial void PSXCore_WriteTimerRegister(IntPtr core, uint address, uint value);
 
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_PeekTimerRegister(IntPtr core, uint address);
+
+    [LibraryImport(LibName)]
+    internal static partial uint PSXCore_GetNextDeviceEventCycles(IntPtr core, uint excludedDmaChannel);
+
     /// <summary>Advances all timer counters by <paramref name="cycles"/> CPU clock cycles, evaluating targets/overflow/sync per timer mode.</summary>
     [LibraryImport(LibName)]
     internal static partial void PSXCore_TickTimers(IntPtr core, uint cycles);

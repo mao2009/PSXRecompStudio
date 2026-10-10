@@ -157,7 +157,7 @@ public sealed class BiosPadStateTests : IDisposable
     // ---- no speculative IRQ --------------------------------------------------------------------------
 
     [Fact]
-    public void The_Call_Raises_And_Acknowledges_No_Irq_And_Leaves_The_ChangeClearPad_Setting_Alone()
+    public void The_Call_Raises_And_Acknowledges_No_Irq()
     {
         _interrupts.SetMask(VblankBit);
         _interrupts.Raise(DeviceScheduler.VblankIrq);
@@ -166,8 +166,60 @@ public sealed class BiosPadStateTests : IDisposable
         PadInitAndStart(0x20000001, ButtonDest, 0, 0);
 
         _interrupts.Status.Should().Be(status);
-        BiosPadCardAutoAck.TryGetSetting(Reader, out var setting).Should().BeTrue();
-        setting.Should().Be(BiosPadCardAutoAckSetting.NotConfigured, "auto-ack initialisation is left to #661");
+    }
+
+    // ---- StartPad's flags (OpenBIOS startPad: setSIO0AutoAck(1), setTimerAutoAck(3, 0)) — #661 S1 ----
+
+    private (BiosPadCardAutoAckSetting Setting, uint Argument) AutoAck()
+    {
+        BiosPadCardAutoAck.TryGetSetting(Reader, out var setting, out var argument).Should().BeTrue();
+        return (setting, argument);
+    }
+
+    private uint VblankFlag()
+    {
+        BiosRootCounterClearPolicy.TryGetFlag(Reader, 3, out var flag).Should().BeTrue();
+        return flag;
+    }
+
+    private void Call(BiosCallFamily family, byte function, params uint[] args) =>
+        Runtime().Invoke(new BiosCallIdentity(family, function, arguments: args)).Status.Should().Be(BiosServiceStatus.Supported);
+
+    [Fact]
+    public void An_Accepted_Type_Enables_The_Sio0_Auto_Ack_And_Clears_The_VBlank_Timer_Auto_Ack()
+    {
+        Call(BiosCallFamily.C0, BiosHleRuntime.ChangeClearRCntFunction, 3u, 1u);
+        Call(BiosCallFamily.C0, BiosHleRuntime.ChangeClearRCntFunction, 0u, 1u);
+
+        PadInitAndStart(0x20000001, ButtonDest, 0, 0);
+
+        AutoAck().Should().Be((BiosPadCardAutoAckSetting.NonZero, 1u));
+        VblankFlag().Should().Be(0u);
+        BiosRootCounterClearPolicy.TryGetFlag(Reader, 0, out var timer0).Should().BeTrue();
+        timer0.Should().Be(1u, "only t=3 is StartPad's");
+    }
+
+    [Fact]
+    public void An_Earlier_ChangeClearPad_Zero_Is_Overwritten_And_A_Later_One_Wins()
+    {
+        Call(BiosCallFamily.B0, BiosHleRuntime.ChangeClearPadFunction, 0u);
+        PadInitAndStart(0x20000001, ButtonDest, 0, 0);
+        AutoAck().Should().Be((BiosPadCardAutoAckSetting.NonZero, 1u), "startPad calls setSIO0AutoAck(1) unconditionally");
+
+        Call(BiosCallFamily.B0, BiosHleRuntime.ChangeClearPadFunction, 0u);
+        AutoAck().Should().Be((BiosPadCardAutoAckSetting.Zero, 0u));
+    }
+
+    [Fact]
+    public void A_Disliked_Type_Leaves_Both_Auto_Acks_Alone()
+    {
+        Call(BiosCallFamily.B0, BiosHleRuntime.ChangeClearPadFunction, 0u);
+        Call(BiosCallFamily.C0, BiosHleRuntime.ChangeClearRCntFunction, 3u, 1u);
+
+        PadInitAndStart(0x20000002, ButtonDest, 0, 0).ReturnValue.Should().Be(0u);
+
+        AutoAck().Should().Be((BiosPadCardAutoAckSetting.Zero, 0u));
+        VblankFlag().Should().Be(1u);
     }
 
     // ---- the exception chain (priority 2) -------------------------------------------------------------
@@ -177,7 +229,7 @@ public sealed class BiosPadStateTests : IDisposable
             Reader, Writer, _interrupts, new uint[32], new BiosExceptionContext(0x80025CBC, 0x400, 0x404, 0, 0));
 
     [Fact]
-    public void An_Enqueued_PadCardIrq_That_Would_Claim_The_Exception_Stops_The_Chain_Closed()
+    public void An_Enqueued_PadCardIrq_That_Claims_The_Exception_Runs_Stores_ButtonDest_And_Acknowledges_Irq0()
     {
         PadInitAndStart(0x20000001, ButtonDest, 0, 0);
         _interrupts.SetMask(VblankBit);
@@ -185,10 +237,9 @@ public sealed class BiosPadStateTests : IDisposable
 
         var outcome = Handle();
 
-        outcome.Handled.Should().BeFalse();
-        outcome.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode);
-        outcome.DiagnosticMessage.Should().Contain("PadCardIrq").And.Contain("#661");
-        (_interrupts.Status & VblankBit).Should().Be(VblankBit, "nothing is acknowledged");
+        outcome.Handled.Should().BeTrue();
+        _ram.Read32(ButtonDest).Should().Be(0xFFFFFFFFu, "no pad is connected: PAD_dr is FFFFh per pad");
+        (_interrupts.Status & VblankBit).Should().Be(0u, "StartPad left the auto-ack at 1");
     }
 
     [Fact]

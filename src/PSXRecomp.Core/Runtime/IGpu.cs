@@ -26,5 +26,8 @@ public interface IGpu
     (ushort Width, ushort Height) GetDisplayResolution();
     bool HasVblank { get; }
     void AcknowledgeVblank();
+
+    /// <summary>A vertical blank started: the next field begins (GPUSTAT bits 13/31 follow it, Issue #732).</summary>
+    void OnVblank();
     void Reset();
 }

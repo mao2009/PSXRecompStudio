@@ -50,6 +50,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly uint _loadAddress;
     private readonly uint _programEnd;
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
+    // Firmware boot needs to execute the kernel's dynamically installed low-RAM code and vectors.
+    // The legacy bounded game-image interpreter intentionally keeps this off by default.
+    private readonly bool _allowRuntimeRamExecution;
     private readonly BiosExceptionChain? _exceptionChain;
     private readonly PsxDeviceGraph _devices;
     private readonly bool _ownsDevices;
@@ -61,6 +64,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private readonly CdRomDevice _cdRomDevice;
     private readonly CdRomDmaTransfer _cdRomDmaTransfer;
     private DeviceScheduler? _scheduler;
+    private readonly ExecutionTraceRing _trace = new(ExecutionTraceRing.DefaultCapacity);
     private bool _loaded;
     private bool _disposed;
 
@@ -132,8 +136,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         uint loadAddress,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
         BiosExceptionChain? exceptionChain = null,
-        MemoryCardSlotConfiguration? memoryCardSlots = null)
-        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots)
+        MemoryCardSlotConfiguration? memoryCardSlots = null,
+        bool allowRuntimeRamExecution = false,
+        ICdSectorSource? disc = null)
+        : this(instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices: null, sharedScheduler: null, memoryCardSlots, allowRuntimeRamExecution, disc)
     {
     }
 
@@ -151,6 +157,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <param name="sharedScheduler">The host-owned scheduler advanced one cycle per retired fallback instruction.</param>
     /// <param name="biosRuntimeFactory">Builds the Runtime over the graph core's RAM (state lives in guest RAM).</param>
     /// <param name="exceptionChain">The kernel exception handler's chain; null is the default chain.</param>
+    /// <param name="guestFirmware">The image is a guest firmware (Issue #732): it is written into the shared core once
+    /// here — the RAM copy-sync never carries the ROM window — and the fallback may run code anywhere in RAM or ROM and
+    /// deliver every exception to the guest vector, as the firmware backend's own interpreter does.</param>
     /// <exception cref="ArgumentNullException">An argument other than the optional ones is null.</exception>
     public static InterpreterTitleExecutionEngine Attach(
         IReadOnlyList<uint> instructions,
@@ -158,12 +167,24 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         PsxDeviceGraph sharedDevices,
         DeviceScheduler sharedScheduler,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
-        BiosExceptionChain? exceptionChain = null)
+        BiosExceptionChain? exceptionChain = null,
+        bool guestFirmware = false)
     {
         ArgumentNullException.ThrowIfNull(sharedDevices);
         ArgumentNullException.ThrowIfNull(sharedScheduler);
-        return new InterpreterTitleExecutionEngine(
-            instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices, sharedScheduler);
+        var engine = new InterpreterTitleExecutionEngine(
+            instructions, loadAddress, biosRuntimeFactory, exceptionChain, sharedDevices, sharedScheduler,
+            allowRuntimeRamExecution: guestFirmware);
+        if (guestFirmware)
+        {
+            var physical = TranslateAddress(loadAddress);
+            for (var i = 0; i < instructions.Count; i++)
+            {
+                sharedDevices.Core.WriteMemory32(physical + unchecked((uint)i * 4u), instructions[i]);
+            }
+        }
+
+        return engine;
     }
 
     private InterpreterTitleExecutionEngine(
@@ -173,7 +194,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         BiosExceptionChain? exceptionChain,
         PsxDeviceGraph? sharedDevices,
         DeviceScheduler? sharedScheduler,
-        MemoryCardSlotConfiguration? memoryCardSlots = null)
+        MemoryCardSlotConfiguration? memoryCardSlots = null,
+        bool allowRuntimeRamExecution = false,
+        ICdSectorSource? disc = null)
     {
         ArgumentNullException.ThrowIfNull(instructions);
         if (instructions.Count == 0)
@@ -213,6 +236,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _loadAddress = loadAddress;
         _programEnd = programEnd;
         _biosRuntimeFactory = biosRuntimeFactory;
+        _allowRuntimeRamExecution = allowRuntimeRamExecution;
         _exceptionChain = exceptionChain;
 
         // The managed MMIO layer (DMA/timers/interrupt controller/GPU/CD-ROM) is
@@ -221,7 +245,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         // artifact relays to (Issue #678). The BIOS runtime seam travels through
         // its bus, so guest RAM/mirror/device semantics all come from one routing
         // point while the interpreter drives the same native core.
-        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots);
+        _devices = sharedDevices ?? new PsxDeviceGraph(memoryCardSlots: memoryCardSlots, disc: disc);
         _ownsDevices = sharedDevices is null;
         if (sharedScheduler is not null)
         {
@@ -241,6 +265,38 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <inheritdoc />
     public string Name => EngineName;
+
+    /// <summary>The most recent fetched (pc, word) pairs and non-sequential control transfers, oldest first (diagnostic only).</summary>
+    public ExecutionTraceSnapshot RecentTrace => _trace.Snapshot();
+
+    /// <summary>Called with the PC of every instruction about to be fetched (diagnostic observation only).</summary>
+    public Action<uint>? FetchObserver { get; set; }
+
+    /// <summary>The current value of a general register (diagnostic observation only).</summary>
+    public uint ReadGuestGpr(int index) => _core.GetGpr(index);
+
+    /// <summary>Reads an aligned guest RAM/ROM word without side effects; 0 outside RAM and ROM.</summary>
+    public uint ReadGuestWord(uint address) => FetchWordForTrace(address);
+
+    /// <summary>COP0 SR/CAUSE/EPC/BadVAddr as the CPU holds them now (diagnostic only).</summary>
+    public (uint Sr, uint Cause, uint Epc, uint BadVAddr) Cop0Diagnostics =>
+        (_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause), _core.GetCop0(Cop0Epc), _core.GetCop0(8));
+
+    /// <summary>HI/LO as the CPU holds them now (diagnostic only, Issue #732).</summary>
+    public (uint Hi, uint Lo) HiLoDiagnostics => (_core.Hi, _core.Lo);
+
+    /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
+    public PsxDeviceGraph DiagnosticDevices => _devices;
+
+    /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
+    public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
+
+    /// <summary>
+    /// Diagnostic stop (Issue #732): once set — typically by a <see cref="FetchObserver"/> — the step loop ends before
+    /// executing the instruction just fetched, exactly as if its budget had run out, and every later segment ends at its
+    /// first fetch. A probe's way to end a run at a chosen PC; never set by execution itself.
+    /// </summary>
+    public bool StopRequested { get; set; }
 
     /// <inheritdoc />
     public void Load(TitleExecutionRequest request)
@@ -321,6 +377,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <exception cref="ArgumentException">The state is malformed or the budget is zero.</exception>
     public FallbackSegmentOutcome RunFallbackSegment(
         FallbackCpuState entry, IReadOnlySet<uint> returnPcs, uint instructionBudget)
+    {
+        ArgumentNullException.ThrowIfNull(returnPcs);
+        return RunFallbackSegment(entry, returnPcs.Contains, instructionBudget);
+    }
+
+    /// <summary>
+    /// <see cref="RunFallbackSegment(FallbackCpuState, IReadOnlySet{uint}, uint)"/> with the return points decided per
+    /// PC at the moment the interpreter is about to execute it (Issue #732: a block compiled from guest RAM is a return
+    /// point only while RAM still holds the code it was compiled from).
+    /// </summary>
+    public FallbackSegmentOutcome RunFallbackSegment(
+        FallbackCpuState entry, Func<uint, bool> returnPcs, uint instructionBudget)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(returnPcs);
@@ -403,7 +471,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// one step) that is a member of the set while the CPU is at an architecturally clean boundary.
     /// </summary>
     private RecompilerExecutionResult RunLoop(
-        uint budget, IReadOnlySet<uint>? returnPcs, out bool returned, out ulong retiredInstructions)
+        uint budget, Func<uint, bool>? returnPcs, out bool returned, out ulong retiredInstructions)
     {
         returned = false;
         retiredInstructions = 0;
@@ -423,8 +491,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // report no pending branch delay slot and no uncommitted load: the artifact only ever starts a block at a
             // fused-unit boundary, where neither exists. The CPU's own state decides; nothing is inferred from the
             // previous instruction.
-            if (returnPcs is not null && step > 0 && !_inInterruptHandler
-                && returnPcs.Contains(_core.Pc) && _core.IsPipelineClean)
+            // A guest firmware (Issue #732) owns its handlers in its own image and permits every PC, so being inside one
+            // is no reason to keep interpreting; its SYSCALL handler returns to EPC + 4, never to the EPC tracked below.
+            if (returnPcs is not null && step > 0 && (!_inInterruptHandler || _allowRuntimeRamExecution)
+                && returnPcs(_core.Pc) && _core.IsPipelineClean)
             {
                 returned = true;
                 break;
@@ -458,7 +528,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                         break;
                     }
 
-                    _scheduler!.Advance(BiosBlockingCallWait.PollCycles);
+                    _scheduler!.AdvanceExact(BiosBlockingCallWait.PollCycles);
                     if (!CpuTakesInterruptNow())
                     {
                         continue;
@@ -501,6 +571,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // (Issue #377) a faulting segment left the program bounds on the next
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
+            _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
+            FetchObserver?.Invoke(_core.Pc);
+            if (StopRequested)
+            {
+                break;
+            }
+
             if (_core.Step() != 0)
             {
                 termination = RecompilerIrTerminationReason.Exception;
@@ -541,7 +618,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     continue;
                 }
 
-                if (!TookHardwareInterrupt())
+                // With a complete guest BIOS, *all* architectural exceptions (including
+                // SYSCALL, BREAK and address faults) must reach firmware-owned vectors.
+                // The legacy HLE slice still fails on non-IRQ exceptions exactly as before.
+                if (!TookHardwareInterrupt() && !_allowRuntimeRamExecution)
                 {
                     termination = RecompilerIrTerminationReason.Exception;
                     break;
@@ -698,6 +778,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         GC.SuppressFinalize(this);
     }
 
+    private uint FetchWordForTrace(uint pc) =>
+        Ps1AddressTranslation.TryTranslate(pc, out var physical) && (physical < 0x00800000u || physical is >= 0x1FC00000u and < 0x1FC80000u)
+            ? _core.ReadMemory32(physical)
+            : 0u;
+
     private uint[] ReadGpr()
     {
         var gpr = new uint[TitleExecutionRequest.GprCount];
@@ -732,7 +817,10 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     private void ApplyKernelOutcome(BiosExceptionHandlerOutcome kernel) => kernel.CpuState.ApplyTo(_core);
 
-    private bool PcWithinProgram(uint pc) => pc >= _loadAddress && pc < _programEnd;
+    private bool PcWithinProgram(uint pc) =>
+        (pc >= _loadAddress && pc < _programEnd) ||
+        (_allowRuntimeRamExecution && Ps1AddressTranslation.TryTranslate(pc, out var physical) &&
+         (physical < 0x00800000u || physical is >= 0x1FC00000u and < 0x1FC80000u));
 
     /// <summary>
     /// Whether the exception the last step raised is an INT the hardware

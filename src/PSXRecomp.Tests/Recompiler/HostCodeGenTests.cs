@@ -1192,6 +1192,76 @@ int main() {
         result.Source.Should().BeNull();
     }
 
+    // Issue #732: firmware mode. A SYSCALL/BREAK is delivered to the guest exception vector by the generated
+    // dispatch itself, with the interpreter's EPC / CAUSE (Excode, BD) / SR-stack / BEV-vector resolution.
+    [Theory]
+    [InlineData("syscall", 0x00000001u)]
+    [InlineData("break", 0x00000001u)]
+    [InlineData("syscall-in-delay-slot", 0x00000005u)]
+    [InlineData("syscall-bev", 0x00400001u)]
+    public void FirmwareMode_TrapEntersTheGuestVector_ExactlyLikeTheInterpreter(string shape, uint sr)
+    {
+        const uint Entry = 0x80000000u;
+        var words = shape switch
+        {
+            "break" => new[] { MipsEncoding.Break() },
+            "syscall-in-delay-slot" => new[] { MipsEncoding.Jump(0x80000040u), MipsEncoding.Syscall() },
+            _ => new[] { MipsEncoding.Syscall() },
+        };
+
+        // The oracle: the native interpreter takes the same exception.
+        using var core = new PSXRecomp.Core.PSXCoreWrapper();
+        core.Reset();
+        for (var i = 0; i < words.Length; i++) core.WriteMemory32((uint)(i * 4), words[i]);
+        core.SetCop0(RecompilerCop0.Status, sr);
+        core.Pc = Entry;
+        for (var i = 0; i < words.Length; i++) core.Step();
+        core.ExceptionRaised.Should().BeTrue();
+        var (pc, epc, cause, newSr) = (core.Pc, core.GetCop0(RecompilerCop0.Epc), core.GetCop0(RecompilerCop0.Cause), core.GetCop0(RecompilerCop0.Status));
+
+        var program = MipsToIrLowerer.LowerProgram(words
+            .Select((word, index) => (PSXRecomp.Core.Cpu.R3000aDecoder.Decode(word), Entry + (uint)(index * 4)))
+            .ToArray());
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var exit = CompileAndRun(result.Source!, $@"
+int main() {{
+    RecompilerState state = {{0}};
+    state.pc = {Entry}u;
+    state.cop0_sr = {sr}u;
+    state.guest_exceptions = 1u;
+    if (recompiler_dispatch(&state, 4u) != 0) return 10;
+    if (state.pc != {pc}u) return 11;
+    if (state.cop0_epc != {epc}u) return 12;
+    if (state.cop0_cause != {cause}u) return 13;
+    if (state.cop0_sr != {newSr}u) return 14;
+    if (state.exception_raised != 0u) return 15;
+    return 0;
+}}");
+        exit.Should().Be(0, $"the generated host must enter the vector like the interpreter (pc 0x{pc:X8}, epc 0x{epc:X8}, cause 0x{cause:X8}, sr 0x{newSr:X8})");
+    }
+
+    [Fact]
+    public void HleMode_TrapStillStopsTheRun_WithItsExceptionState()
+    {
+        var program = MipsToIrLowerer.LowerProgram(new[] { (PSXRecomp.Core.Cpu.R3000aDecoder.Decode(MipsEncoding.Syscall()), 0x80000000u) });
+        var result = RecompilerHostCodeGen.Generate(program);
+        result.Success.Should().BeTrue();
+
+        var exit = CompileAndRun(result.Source!, @"
+int main() {
+    RecompilerState state = {0};
+    state.pc = 0x80000000u;
+    state.cop0_sr = 1u;
+    if (recompiler_dispatch(&state, 4u) != RECOMPILER_REASON_EXCEPTION) return 10;
+    if (state.exception_raised != 1u || state.exception_code != 8u) return 11;
+    if (state.cop0_sr != 1u || state.cop0_epc != 0u) return 12;
+    return 0;
+}");
+        exit.Should().Be(0, "without firmware mode a trap keeps the pre-existing HLE stop");
+    }
+
     [Fact]
     public void RunHostProcess_TimesOut_When_Process_Exceeds_Budget()
     {

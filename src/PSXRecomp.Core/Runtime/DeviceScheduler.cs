@@ -15,9 +15,9 @@ namespace PSXRecomp.Core.Runtime;
 /// channel or a register.
 /// </para>
 /// <para>
-/// It keeps no clock of its own: elapsed cycles come from the caller on every
-/// <see cref="Advance"/>. The only state is the phase inside the current VBlank
-/// interval plus the DMA and GPU command-IRQ source levels used for edge detection.
+/// Elapsed cycles come from the caller on every <see cref="Advance"/> and are
+/// accumulated for diagnostics. Scheduling state consists of the VBlank phase
+/// and device interrupt source levels used for edge detection.
 /// </para>
 /// <para>
 /// Fixed order within one <see cref="Advance"/>, each stage raising its own
@@ -95,9 +95,43 @@ public sealed class DeviceScheduler
         _cdRomDma = cdRomDma;
     }
 
+    /// <summary>Total guest cycles accepted by this scheduler, independent of report chunking.</summary>
+    public ulong ElapsedCycles { get; private set; }
+
+    /// <summary>Conservative positive deadline owned by the same devices that Advance services.</summary>
+    public ulong NextEventCycles
+    {
+        get
+        {
+            if ((_cdRomDma?.CanTransfer ?? false) ||
+                (_core.GetDmaInterruptPending() && !_dmaIrqLine) || _core.GetSio0InterruptPending() ||
+                (_gpu is not null && _gpu.HasCommandInterrupt && !_gpuIrqLine) ||
+                (_cdRom is not null && _cdRom.HasInterrupt && _cdRom.InterruptGeneration != _lastCdRomInterruptGeneration))
+                return 1;
+            var next = Math.Min((ulong)(VblankIntervalCycles - _cyclesSinceVblank),
+                _core.GetNextDeviceEventCycles(_cdRomDma is null ? uint.MaxValue : CdRomDmaTransfer.Channel));
+            var deadline = Math.Min(next, _cdRom?.NextEventCycles ?? ulong.MaxValue);
+            if (deadline == 0) throw new InvalidOperationException("Device deadlines must be positive.");
+            return deadline;
+        }
+    }
+
+    /// <summary>Advances a bounded batch without passing a device deadline, preserving stage order at each one.</summary>
+    public void AdvanceExact(ulong cycles)
+    {
+        while (cycles != 0)
+        {
+            // One instruction is already the scheduler's minimum retirement quantum.
+            var chunk = cycles == 1 ? 1u : (uint)Math.Min(Math.Min(cycles, int.MaxValue), NextEventCycles);
+            Advance(chunk);
+            cycles -= chunk;
+        }
+    }
+
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
     public void Advance(uint cycles)
     {
+        ElapsedCycles = checked(ElapsedCycles + cycles);
         if (cycles == 0)
         {
             return;
@@ -138,9 +172,11 @@ public sealed class DeviceScheduler
         }
         _dmaIrqLine = dmaLine;
 
-        // CD-ROM: response packets are event-driven rather than cycle-driven.
-        // Use the packet generation, not only a level edge, so an INT3 ack that
-        // immediately exposes a queued INT1/INT2 still produces a distinct IRQ2.
+        // CD-ROM: the drive's clock (a disc's sector stream and response delays,
+        // Issue #732) advances first. Use the packet generation, not only a level
+        // edge, so an INT3 ack that exposes a queued INT1/INT2 still produces a
+        // distinct IRQ2.
+        _cdRom?.Advance(cycles);
         if (_cdRom is not null &&
             _cdRom.HasInterrupt &&
             _cdRom.InterruptGeneration != _lastCdRomInterruptGeneration)
@@ -177,6 +213,8 @@ public sealed class DeviceScheduler
         var phase = (ulong)_cyclesSinceVblank + cycles;
         if (phase >= VblankIntervalCycles)
         {
+            // Each VBlank toggles the field; an even number leaves it unchanged.
+            if (((phase / VblankIntervalCycles) & 1u) != 0) _gpu?.OnVblank();
             _interrupts.Raise(VblankIrq);
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);

@@ -665,6 +665,19 @@ coverage gap (#693); past it (measurement root), B0:17 ReturnFromException (#664
       the run stops at this call before a VBlank): UNKNOWN by measurement, not promoted by this change.
     - Persona: no event created or enabled after the stop, no CardSpecificIrq, no priority-2 delivery, no SIO0/IRQ7, no card
       command, no disc data read, no DMA, no GPU frame activity (`no-frame-activity`). Next blocker: unchanged (`A0:70`).
+38. **#661 S1/S2: StartPAD/StartCARD set the auto-acks; priority 2 runs the PadCardIrq element. The stop stays at A0:70.**
+    Gate measured with a disposable, unmerged probe that holds A0:70 `Pending` (#717 wait): the first VBlank during `_bu_init`
+    reached priority 2 with PadCardIrq enqueued and IRQ0 pending and enabled (`I_STAT=0x0001`, `I_MASK=0x000D`) and stopped at
+    the old guard. S1 (ADR-014 amendment, OpenBIOS `startPad`/`startCard`): B0:15 and B0:4B set the SIO0 auto-ack to 1 and
+    C0:0A `t=3` to 0; Persona's earlier `B0:5B(0)` is overwritten (probe: `[0x128]` `{1,0}` before B0:15, `{1,1}` at the first
+    `_bu_init` poll, so no `B0:5B(0)` follows StartCARD2). S2: the element stores `FFFFFFFFh` (no pad connected) at `button_dest`
+    `0x800563F0`, acknowledges IRQ0, undelivers the EVENT_CARD specs and returns `Completed`; priority 3 then sees no IRQ0, so
+    no `F0000001h` event is delivered and the B0:19 hook runs with IRQ0 already acknowledged (priority 1 still delivers
+    `F2000003h,2`). With the probe, every VBlank passes the chain (269 VBlanks on the generated host before its
+    `ARTIFACT_TIMEOUT` wall-clock bound; the interpreter frame-evidence run reaches `BIOS_HLE_WAIT_TIMEOUT` after 600 VBlanks,
+    the expected end since nothing completes the probe's call and the card request state machine is #712). Without the probe,
+    with the same two roots: `BIOS_HLE_UNSUPPORTED_CALL` `A0:70` (exit 1, `state=5`), output and mixed fallback (17/17/462)
+    unchanged. No SIO0 access, no IRQ7, no EVENT_CARD/EVENT_BU delivery, no sector read, `no-frame-activity`.
 
 The build stage now passes and the run reaches `RUNTIME_EXECUTION`. The kernel exception handler's priority chain (`BIOS_EXCEPTION_CHAIN_UNSUPPORTED`, item 21, #662) was the previous stop: CPU INT delivery (#680) and the
 C0:06 entry work; since #660 the VBlank IRQ0 element's modelled delivery step is a successful no-op (no EvCB table) and the chain continues, and the stop was IRQ0 still pending past priority 1 with no modelled element to claim it (item 23). Since #690 priority-3 DefInt completes that chain into the guest's B0:19 hook (item 24). With the established two entry roots the artifact boundary was `UNRESOLVED_TRANSFER_IN_IMAGE` at the guest's VBlank callback `0x80025BC8` (exit 2; a manual-root / callback coverage gap, #693, closed by the default in item 27). The mechanism first measured with the opt-in `--mixed-fallback` (item 25) crosses that callback and stopped at `B0:17` (#664). Since #664 (item 26) B0:17 ReturnFromException is registered and the run crosses it too: the VBlank callback runs (Vcount advances), RFE resumes at the saved EPC, and item 28 reaches `BIOS_EXCEPTION_CHAIN_UNSUPPORTED` for the pending CD-ROM IRQ2 (`I_STAT=0x0004`, #697); item 29 (#697) resolves that stop: DefInt delivers the IRQ2 event, the guest's IRQ2 callback runs and `CD_sync` completes for CdlNop and CdlInit. CdlDemute (`0x0C`) was then the blocker (libcd `DiskError` / `CdInit: Init failed`, #699); item 30 resolves `CdlDemute`, item 31 resolves `A0:49`, item 32 resolves `B0:15`, item 33 resolves `SYS(01h)`, item 34 resolves `B0:08` OpenEvent and `B0:0C` EnableEvent (#687), item 35 resolves `B0:4A` InitCARD2 (#708), item 36 resolves `B0:4B` StartCARD2 (#710), and the current first blocker is `A0:70` `_bu_init` (#712). Before it the stop was `OUTER_BUDGET_EXHAUSTED` at `0x800278A8` (after

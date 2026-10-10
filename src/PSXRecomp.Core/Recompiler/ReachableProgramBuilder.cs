@@ -48,7 +48,115 @@ public static class ReachableProgramBuilder
         uint loadAddress,
         IReadOnlyList<uint> instructionWords,
         uint entryPc,
+        IEnumerable<uint> additionalRoots) =>
+        BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets: null, out _);
+
+    /// <summary>
+    /// Builds a firmware ROM image (Issue #732) — for example the BIOS at <c>0xBFC00000</c> — with exactly the
+    /// discovery and lowering of <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/>, and
+    /// reports how much of the image is native.
+    /// <para>
+    /// Only code present in the image at analysis time is compiled. Code the firmware runs from anywhere else
+    /// — kernel code it copies to RAM (OpenBIOS <c>.data</c> at <c>0x500</c>), the A0/B0/C0 trampolines it
+    /// installs, a KSEG0 alias of the ROM (<c>0x9FC00000</c>), or any register-indirect target without a
+    /// block — has no generated block. At run time such a PC reaches the artifact's host transfer and, with
+    /// mixed execution enabled, the interpreter fallback (Issue #693), whose
+    /// <c>MixedFallbackEvidence</c> counts it as fallback instructions; it is never counted as native.
+    /// <see cref="FirmwareImageProgram.FallbackTargets"/> lists the statically known ones.
+    /// </para>
+    /// </summary>
+    /// <param name="loadAddress">Guest address of the first word (the ROM's KSEG1 base).</param>
+    /// <param name="instructionWords">The ROM bytes, as little-endian words, in guest order.</param>
+    /// <param name="entryPc">The reset vector.</param>
+    /// <param name="additionalRoots">Extra in-image entry PCs (for example exception vectors or known
+    /// function entries). An explicit input, never guessed.</param>
+    public static FirmwareImageProgram BuildFirmwareImage(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
         IEnumerable<uint> additionalRoots)
+    {
+        var outOfImage = new SortedSet<uint>();
+        var program = BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImage, out var native);
+        return new FirmwareImageProgram(program, instructionWords.Count, native, outOfImage.ToArray());
+    }
+
+    /// <summary>
+    /// Ahead-of-time build of a <em>loaded</em> code image (Issue #732): code that the guest itself places in RAM at run
+    /// time — kernel code a firmware copies from its ROM, vector stubs, a shell, a PS-X EXE — given here as explicit
+    /// input bytes at their <em>destination</em> address. Discovery and lowering are exactly
+    /// <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/>'s, from the explicit
+    /// <paramref name="roots"/> only, so branch, J/JAL and link targets are those of the destination; the same bytes
+    /// meant for two destinations are two separate builds. Nothing is ever compiled at run time.
+    /// <para>
+    /// Because the guest decides at run time what is really in RAM, every block carries the words it was compiled from
+    /// (<see cref="GuardedImageProgram.Guards"/>). The executing engine enters a block only while guest RAM holds exactly
+    /// those words and otherwise runs that PC in its counted interpreter fallback, so stale native code never runs. A
+    /// root whose code cannot be lowered (an unsupported instruction, an unformable fused unit) keeps no block.
+    /// </para>
+    /// </summary>
+    /// <param name="loadAddress">The guest address the image is loaded at (where it executes).</param>
+    /// <param name="words">The image, as little-endian words, in guest order.</param>
+    /// <param name="roots">Explicit entry PCs inside the image (for example symbols, an EXE entry point).</param>
+    /// <param name="excludedEntries">PCs that must never get a native block (observation points that stay interpreted).</param>
+    public static GuardedImageProgram BuildLoadedImage(
+        uint loadAddress, IReadOnlyList<uint> words, IEnumerable<uint> roots, IReadOnlySet<uint> excludedEntries)
+    {
+        ArgumentNullException.ThrowIfNull(words);
+        ArgumentNullException.ThrowIfNull(roots);
+        ArgumentNullException.ThrowIfNull(excludedEntries);
+
+        var imageEnd = (ulong)loadAddress + (ulong)words.Count * InstructionSize;
+        var rootList = roots.Concat(excludedEntries.Where(pc => (pc & 3u) == 0 && pc >= loadAddress && pc < imageEnd))
+            .Distinct().Order().ToList();
+        if (rootList.Count == 0)
+        {
+            return new GuardedImageProgram([], []);
+        }
+
+        var program = BuildCore(loadAddress, words, rootList[0], rootList, outOfImageTargets: null, out _, out var skipped);
+        var blocks = program.Blocks
+            .Where(block => !excludedEntries.Any(pc => pc >= block.EntryPc
+                && (ulong)pc < (ulong)block.EntryPc + (ulong)block.RetiredInstructionCount * InstructionSize))
+            .Select(block =>
+            {
+                var offset = (int)((block.EntryPc - loadAddress) / InstructionSize);
+                return new GuardedBlock(block, Enumerable.Range(offset, block.RetiredInstructionCount).Select(i => words[i]).ToArray());
+            })
+            .ToArray();
+        return new GuardedImageProgram(blocks, skipped.Order().ToArray());
+    }
+
+    private static RecompilerIrProgram BuildCore(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
+        IEnumerable<uint> additionalRoots,
+        SortedSet<uint>? outOfImageTargets,
+        out int nativeInstructionCount)
+        => BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets, out nativeInstructionCount, skippedLeaders: null);
+
+    private static RecompilerIrProgram BuildCore(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
+        IEnumerable<uint> additionalRoots,
+        SortedSet<uint>? outOfImageTargets,
+        out int nativeInstructionCount,
+        out HashSet<uint> skippedLeaders)
+    {
+        skippedLeaders = [];
+        return BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets, out nativeInstructionCount, skippedLeaders);
+    }
+
+    private static RecompilerIrProgram BuildCore(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
+        IEnumerable<uint> additionalRoots,
+        SortedSet<uint>? outOfImageTargets,
+        out int nativeInstructionCount,
+        HashSet<uint>? skippedLeaders)
     {
         ArgumentNullException.ThrowIfNull(instructionWords);
         ArgumentNullException.ThrowIfNull(additionalRoots);
@@ -115,17 +223,29 @@ public static class ReachableProgramBuilder
                 reachable,
                 delaySlots,
                 leaders,
-                pending);
+                pending,
+                outOfImageTargets);
         }
 
-        foreach (var leader in leaders)
+        foreach (var leader in leaders.ToArray())
         {
-            if (delaySlots.Contains(leader))
+            if (delaySlots.Contains(leader) && skippedLeaders is not null)
+            {
+                // A loaded image (BuildLoadedImage): a root that is also a delay slot keeps no block of its own.
+                leaders.Remove(leader);
+                skippedLeaders.Add(leader);
+            }
+            else if (delaySlots.Contains(leader))
             {
                 throw InvalidFlow($"PC 0x{leader:X8} is both a discovered block entry and a delay slot.");
             }
         }
 
+        // Immutable ROM may prove that the first successor ignores a pending load. RAM image guards
+        // cover the unit itself, not those mutable successor words, so that proof is unavailable.
+        var unobservedDelaySlotLoads = skippedLeaders is null
+            ? FindUnobservedDelaySlotLoads(image, decoded, delaySlots)
+            : new HashSet<uint>();
         var blocks = new List<RecompilerIrBlock>();
         foreach (var leader in leaders)
         {
@@ -134,12 +254,81 @@ public static class ReachableProgramBuilder
                 continue;
             }
 
-            var stream = BuildBlock(leader, image, decoded, reachable, leaders);
-            var program = MipsToIrLowerer.LowerProgram(stream);
-            blocks.AddRange(program.Blocks);
+            if (skippedLeaders is null)
+            {
+                var stream = BuildBlock(leader, image, decoded, reachable, leaders);
+                blocks.AddRange(MipsToIrLowerer.LowerProgram(stream, unobservedDelaySlotLoads).Blocks);
+                continue;
+            }
+
+            // Observed run-time code (BuildObservedCode): an unsupported leader keeps no block and stays interpreted.
+            try
+            {
+                var stream = BuildBlock(leader, image, decoded, reachable, leaders);
+                blocks.AddRange(MipsToIrLowerer.LowerProgram(stream, unobservedDelaySlotLoads).Blocks);
+            }
+            catch (InvalidOperationException)
+            {
+                skippedLeaders.Add(leader);
+            }
         }
 
+        nativeInstructionCount = reachable.Count;
         return new RecompilerIrProgram(blocks);
+    }
+
+    /// <summary>
+    /// COP0 moves and RFE are decoded with <see cref="R3000aControlFlowKind.Coprocessor"/>, but none of them
+    /// transfers control: discovery and block formation continue at <c>pc + 4</c> (Issue #732).
+    /// </summary>
+    private static bool FallsThrough(in R3000aInstruction instruction) =>
+        instruction.ControlFlow == R3000aControlFlowKind.Sequential
+        || instruction.Opcode is R3000aOpcode.Mfc0 or R3000aOpcode.Mtc0 or R3000aOpcode.Rfe;
+
+    /// <summary>
+    /// The control transfers whose delay slot holds a load (or MFC0) whose load-delay shadow provably falls on
+    /// no reader (Issue #732): every successor is statically known, inside the image, and does not read the
+    /// load's target (<see cref="MipsToIrLowerer.LoadShadowIsUnobserved"/>). A register-indirect transfer has
+    /// no static successor and is never in the set, so its delay-slot load still fails closed.
+    /// </summary>
+    private static HashSet<uint> FindUnobservedDelaySlotLoads(
+        InstructionImage image,
+        Dictionary<uint, R3000aInstruction> decoded,
+        HashSet<uint> delaySlots)
+    {
+        var proven = new HashSet<uint>();
+        foreach (var delayPc in delaySlots)
+        {
+            var controlPc = delayPc - InstructionSize;
+            if (!MipsToIrLowerer.TryGetLoadDelayTarget(decoded[delayPc], out var target))
+            {
+                continue;
+            }
+
+            var control = decoded[controlPc];
+            var successors = new List<uint>();
+            if (TryGetCheckedBranchTarget(control, controlPc, out var branchTarget))
+            {
+                successors.Add(branchTarget);
+                successors.Add(delayPc + InstructionSize);
+            }
+            else if (R3000aJumpSemantics.TryGetJumpTarget(control, controlPc, out var jumpTarget))
+            {
+                successors.Add(jumpTarget);
+            }
+            else
+            {
+                continue;
+            }
+
+            if (successors.TrueForAll(successor => image.Contains(successor)
+                    && MipsToIrLowerer.LoadShadowIsUnobserved(target, Decode(image, decoded, successor))))
+            {
+                proven.Add(controlPc);
+            }
+        }
+
+        return proven;
     }
 
     private static void DiscoverPath(
@@ -149,7 +338,8 @@ public static class ReachableProgramBuilder
         HashSet<uint> reachable,
         HashSet<uint> delaySlots,
         SortedSet<uint> leaders,
-        SortedSet<uint> pending)
+        SortedSet<uint> pending,
+        SortedSet<uint>? outOfImageTargets)
     {
         var pc = start;
         while (true)
@@ -175,12 +365,12 @@ public static class ReachableProgramBuilder
 
                 if (TryGetCheckedBranchTarget(instruction, pc, out var branchTarget))
                 {
-                    QueueStaticTarget(branchTarget, image, leaders, pending, pc, "branch target");
+                    QueueStaticTarget(branchTarget, image, leaders, pending, pc, "branch target", outOfImageTargets);
                     QueueContinuation(pc, image, leaders, pending);
                 }
                 else if (R3000aJumpSemantics.TryGetJumpTarget(instruction, pc, out var jumpTarget))
                 {
-                    QueueStaticTarget(jumpTarget, image, leaders, pending, pc, "jump target");
+                    QueueStaticTarget(jumpTarget, image, leaders, pending, pc, "jump target", outOfImageTargets);
                     if (instruction.LinkInfo.WritesLink)
                     {
                         QueueContinuation(pc, image, leaders, pending);
@@ -211,11 +401,11 @@ public static class ReachableProgramBuilder
                 // the host syscall hook's decision (#663), so an unhandled SYS still
                 // fails closed. A delay-slot SYSCALL is decoded by the branch case
                 // above and never reaches this point, so it gets no fall-through.
-                QueueStaticTarget(AddPc(pc, InstructionSize, "syscall successor"), image, leaders, pending, pc, "syscall successor");
+                QueueStaticTarget(AddPc(pc, InstructionSize, "syscall successor"), image, leaders, pending, pc, "syscall successor", outOfImageTargets);
                 return;
             }
 
-            if (instruction.ControlFlow != R3000aControlFlowKind.Sequential)
+            if (!FallsThrough(instruction))
             {
                 return;
             }
@@ -260,7 +450,7 @@ public static class ReachableProgramBuilder
                 break;
             }
 
-            if (instruction.ControlFlow != R3000aControlFlowKind.Sequential)
+            if (!FallsThrough(instruction))
             {
                 break;
             }
@@ -271,7 +461,7 @@ public static class ReachableProgramBuilder
                 break;
             }
 
-            if (instruction.LoadDelayInfo.ProducesLoadDelay && leaders.Contains(nextPc))
+            if (MipsToIrLowerer.TryGetLoadDelayTarget(instruction, out _) && leaders.Contains(nextPc))
             {
                 var next = Decode(image, decoded, nextPc);
                 if (MipsToIrLowerer.RequiresAdjacentLoadDelayPair(instruction, pc, next, nextPc))
@@ -321,7 +511,8 @@ public static class ReachableProgramBuilder
         SortedSet<uint> leaders,
         SortedSet<uint> pending,
         uint sourcePc,
-        string kind)
+        string kind,
+        SortedSet<uint>? outOfImageTargets = null)
     {
         if ((target & (InstructionSize - 1)) != 0)
         {
@@ -333,6 +524,7 @@ public static class ReachableProgramBuilder
         // discovery candidate, and it must have a complete word available.
         if (!image.ContainsAddress(target))
         {
+            outOfImageTargets?.Add(target);
             return;
         }
 
@@ -413,3 +605,19 @@ public static class ReachableProgramBuilder
         }
     }
 }
+
+/// <summary>
+/// A firmware ROM image built by <see cref="ReachableProgramBuilder.BuildFirmwareImage"/> (Issue #732).
+/// </summary>
+/// <param name="Program">The native program: one block per reachable in-image entry.</param>
+/// <param name="ImageInstructionCount">Words in the supplied image (code and data alike).</param>
+/// <param name="NativeInstructionCount">Distinct image PCs lowered into <paramref name="Program"/> (delay slots
+/// included). The rest of the image is unreached data or code only reachable through an indirect transfer.</param>
+/// <param name="FallbackTargets">Statically known transfer targets outside the image, ascending. They have no
+/// block, so at run time they execute through the interpreter fallback and are reported as fallback.</param>
+[Domain]
+public sealed record FirmwareImageProgram(
+    RecompilerIrProgram Program,
+    int ImageInstructionCount,
+    int NativeInstructionCount,
+    IReadOnlyList<uint> FallbackTargets);

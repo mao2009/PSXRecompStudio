@@ -297,6 +297,23 @@ pub extern "C" fn psx_timer_tick(state: TimerState, cycles: u32) -> TimerState {
     state
 }
 
+/// Earliest target/overflow or pending-latch delivery, without reading registers.
+/// A conservative deadline also covers status flags and counter resets with IRQ masked.
+#[no_mangle]
+pub extern "C" fn psx_timer_next_event_cycles(state: TimerState) -> u32 {
+    let mut next = u32::MAX;
+    for (timer, channel) in state.channels.iter().enumerate() {
+        if channel.irq_flag != 0 { return 1; }
+        if !sync_allows_count(channel, timer) { continue; }
+        let target = u32::from(channel.target.wrapping_sub(channel.counter));
+        let target = if target == 0 { 65536 } else { target };
+        let overflow = 65536 - u32::from(channel.counter);
+        let ticks = target.min(overflow);
+        next = next.min(ticks * clock_divisor(channel, timer) - channel.frac);
+    }
+    next
+}
+
 /// Returns `state` after setting `timer`'s Hblank/Vblank sync line to
 /// `active`, applying any edge side effect (sync modes 1/2 reset the counter
 /// on a rising edge; sync mode 3 arms free-run on the first rising edge). An
@@ -363,6 +380,45 @@ mod tests {
     fn read(state: TimerState, address: u32) -> (TimerState, u32) {
         let result = psx_timer_read_register(state, address);
         (result.state, result.value)
+    }
+
+    #[test]
+    fn deadline_is_read_only_and_tracks_divisor_phase_reschedule_and_stop() {
+        let mut s = psx_timer_reset();
+        s = psx_timer_write_register(s, tmr(2, 4), 0x210);
+        s = psx_timer_write_register(s, tmr(2, 8), 5);
+        assert_eq!(psx_timer_next_event_cycles(s), 40);
+        s = psx_timer_tick(s, 7);
+        assert_eq!(psx_timer_next_event_cycles(s), 33);
+        s = psx_timer_write_register(s, tmr(2, 8), 2);
+        assert_eq!(psx_timer_next_event_cycles(s), 9);
+        assert_eq!(psx_timer_get_interrupt_pending(psx_timer_tick(s, 8), 2), 0);
+        s = psx_timer_tick(s, 9);
+        assert_eq!(psx_timer_next_event_cycles(s), 1); // pending latch delivery
+        assert_ne!(s.channels[2].mode & MODE_TARGET_FLAG, 0);
+        let snapshot = s;
+        let _ = psx_timer_next_event_cycles(s);
+        assert_eq!(s, snapshot);
+        s = psx_timer_write_register(s, tmr(2, 4), 1);
+        assert_eq!(psx_timer_next_event_cycles(s), 65520); // other two free-running timers
+    }
+
+    #[test]
+    fn deadlines_cover_target_overflow_reset_and_toggle_with_masked_sources() {
+        for mode in [0, 0x10, 0x20, 0x58, 0xd8] {
+            for target in [0, 1, 5, 0xffff] {
+                let mut s = psx_timer_reset();
+                s = psx_timer_write_register(s, tmr(0, 4), mode);
+                s = psx_timer_write_register(s, tmr(0, 8), target);
+                s = psx_timer_write_register(s, tmr(0, 0), 0xfffc);
+                let deadline = psx_timer_next_event_cycles(s);
+                assert!((1..=4).contains(&deadline));
+                let before = psx_timer_tick(s, deadline - 1);
+                assert_eq!(before.channels[0].mode & (MODE_TARGET_FLAG | MODE_OVERFLOW_FLAG), 0);
+                let at = psx_timer_tick(before, 1);
+                assert_ne!(at.channels[0].mode & (MODE_TARGET_FLAG | MODE_OVERFLOW_FLAG), 0);
+            }
+        }
     }
 
     #[test]

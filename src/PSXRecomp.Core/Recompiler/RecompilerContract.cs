@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json.Serialization;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 
@@ -36,7 +37,10 @@ public enum RecompilerIrOperationKind : byte
 
     /// <summary>
     /// Writes the low 8 bits of the value in input B to the guest 32-bit address
-    /// in input A, and produces no result.
+    /// in input A, and produces no result. Every store (Store8/16/32) is dropped while
+    /// SR.IsC isolates the data cache and the address is below
+    /// <see cref="RecompilerCop0.CacheIsolationEnd"/> (<see cref="RecompilerCop0.StoreIsCacheIsolated"/>):
+    /// that guard is part of the store's effect, which every backend must apply.
     /// </summary>
     Store8,
 
@@ -124,6 +128,89 @@ public enum RecompilerIrOperationKind : byte
 
     /// <summary>DIVU: unsigned division of input A by input B, split the same way as <see cref="DivideSigned"/>, with the divide-by-zero special case <c>PSXCpu::ExecDivu</c> defines.</summary>
     DivideUnsigned,
+
+    /// <summary>
+    /// MFC0: produces the value of the COP0 register numbered by <c>Register</c>
+    /// (0-31, <c>PSXCpu::cop0_</c>). The read itself has no side effect; MFC0's load
+    /// delay is placed by the lowering exactly like a memory load's
+    /// (<see cref="RecompilerCop0"/>).
+    /// </summary>
+    ReadCop0,
+
+    /// <summary>
+    /// MTC0: writes input A to the COP0 register numbered by <c>Register</c>, with
+    /// <c>PSXCpu::ExecMtc0</c>'s semantics: CAUSE keeps every bit except the software
+    /// interrupt bits <see cref="RecompilerCop0.CauseWritableMask"/>; every other
+    /// register takes the whole value. Produces no result.
+    /// </summary>
+    WriteCop0,
+
+    /// <summary>
+    /// RFE: pops the SR KU/IE stack (<c>psx_cpu_cop0_rfe</c>:
+    /// <c>(sr &amp; ~0xF) | ((sr &gt;&gt; 2) &amp; 0xF)</c>). No operands, no result; the
+    /// PC restore is the guest's own JR (ADR-005).
+    /// </summary>
+    ReturnFromException,
+}
+
+/// <summary>
+/// COP0 register numbers and bit masks the IR and every backend share (Issue #732),
+/// mirroring <c>src/PSXRecomp.Native/src/psx_cpu_cop0.cpp</c> /
+/// <c>rust/src/cpu_cop0.rs</c> / <c>rust/src/cpu_exception.rs</c>. One C# source so
+/// the IR evaluator, the host code generator and the artifact driver cannot drift.
+/// </summary>
+[Domain]
+public static class RecompilerCop0
+{
+    /// <summary>BadVAddr (cop0r8).</summary>
+    public const byte BadVAddr = 8;
+
+    /// <summary>SR (cop0r12).</summary>
+    public const byte Status = 12;
+
+    /// <summary>CAUSE (cop0r13).</summary>
+    public const byte Cause = 13;
+
+    /// <summary>EPC (cop0r14).</summary>
+    public const byte Epc = 14;
+
+    /// <summary>CAUSE bits MTC0 may write: IP[1:0] (<c>CAUSE_SW_IP_MASK</c>).</summary>
+    public const uint CauseWritableMask = 0x300u;
+
+    /// <summary>
+    /// SR.IsC (bit 16). While set, a data store to an address below
+    /// <see cref="CacheIsolationEnd"/> is dropped (<c>PSXCpu::StoreIsCacheIsolated</c>).
+    /// </summary>
+    public const uint StatusIsolateCache = 0x00010000u;
+
+    /// <summary>First virtual address (KSEG1) a store reaches even while SR.IsC is set.</summary>
+    public const uint CacheIsolationEnd = 0xA0000000u;
+
+    /// <summary>SR.BEV (bit 22): selects the ROM exception vector.</summary>
+    public const uint StatusBootExceptionVectors = 0x00400000u;
+
+    /// <summary>CAUSE bits an exception entry replaces: Excode (6:2), CE (29:28) and BD (31).</summary>
+    public const uint CauseEntryMask = 0x7Cu | 0x30000000u | 0x80000000u;
+
+    /// <summary>CAUSE.BD (bit 31).</summary>
+    public const uint CauseBranchDelay = 0x80000000u;
+
+    /// <summary>General exception vector with SR.BEV = 0.</summary>
+    public const uint RamExceptionVector = 0x80000080u;
+
+    /// <summary>General exception vector with SR.BEV = 1.</summary>
+    public const uint RomExceptionVector = 0xBFC00180u;
+
+    /// <summary><c>psx_cpu_cop0_write_cause</c>.</summary>
+    public static uint WriteCause(uint cause, uint written) =>
+        (cause & ~CauseWritableMask) | (written & CauseWritableMask);
+
+    /// <summary><c>psx_cpu_cop0_rfe</c>.</summary>
+    public static uint ReturnFromException(uint sr) => (sr & ~0xFu) | ((sr >> 2) & 0xFu);
+
+    /// <summary>Whether a store to <paramref name="address"/> is dropped under <paramref name="sr"/>.</summary>
+    public static bool StoreIsCacheIsolated(uint sr, uint address) =>
+        (sr & StatusIsolateCache) != 0 && address < CacheIsolationEnd;
 }
 
 [Domain]
@@ -354,6 +441,12 @@ public sealed record RecompilerIrExit
     public RecompilerExceptionState? Exception { get; }
 }
 
+/// <summary>CPU provenance for an aligned memory primitive that may fault before taking effect.</summary>
+[Domain]
+public sealed record RecompilerMemoryFaultSite(
+    int OperationIndex, uint FaultPc, bool InDelaySlot, int RetiredPrefix,
+    int PendingLoadRegister = -1, int PendingLoadValueId = -1);
+
 [Domain]
 public sealed record RecompilerIrBlock
 {
@@ -361,7 +454,11 @@ public sealed record RecompilerIrBlock
         uint entryPc,
         IEnumerable<RecompilerIrOperation> operations,
         RecompilerIrExit exit,
-        int retiredInstructionCount = 1)
+        int retiredInstructionCount = 1,
+        IReadOnlyList<int>? instructionBoundaries = null,
+        bool hasLoadDelay = false,
+        RecompilerIrOperation? interruptLoadCommit = null,
+        IEnumerable<RecompilerMemoryFaultSite>? memoryFaultSites = null)
     {
         ArgumentNullException.ThrowIfNull(operations);
         ArgumentOutOfRangeException.ThrowIfLessThan(retiredInstructionCount, 1);
@@ -369,6 +466,20 @@ public sealed record RecompilerIrBlock
         EntryPc = entryPc;
         Operations = new ReadOnlyCollection<RecompilerIrOperation>(operations.ToArray());
         RetiredInstructionCount = retiredInstructionCount;
+        InstructionBoundaries = Array.AsReadOnly((instructionBoundaries ?? []).ToArray());
+        HasLoadDelay = hasLoadDelay;
+        InterruptLoadCommit = interruptLoadCommit;
+        if (InstructionBoundaries.Count != retiredInstructionCount - 1 ||
+            InstructionBoundaries.Where((offset, index) => offset < 0 || offset > Operations.Count ||
+                (index > 0 && offset <= InstructionBoundaries[index - 1])).Any())
+            throw new ArgumentException("Fused blocks need ordered interior retirement offsets.", nameof(instructionBoundaries));
+        if (hasLoadDelay != (interruptLoadCommit is not null) ||
+            (interruptLoadCommit is { } commit &&
+                (InstructionBoundaries.Count == 0 || commit.Kind != RecompilerIrOperationKind.WriteGpr ||
+                 commit.Register is 0 or > 31 || commit.InputValueA < 0 ||
+                 !Operations.Take(InstructionBoundaries[0]).Any(op => op.ResultValueId == commit.InputValueA))))
+            throw new ArgumentException("A fused load needs a valid prior value for its exception-entry commit.", nameof(interruptLoadCommit));
+        MemoryFaultSites = new ReadOnlyCollection<RecompilerMemoryFaultSite>((memoryFaultSites ?? []).ToArray());
     }
 
     public uint EntryPc { get; }
@@ -378,9 +489,27 @@ public sealed record RecompilerIrBlock
     /// straight-line instruction, two for a control transfer fused with its delay slot or a
     /// load fused with its load-delay observer, three for a load, the control transfer that
     /// observes it, and that transfer's delay slot. It is what a backend reports as elapsed
-    /// guest time; a block that exits with an exception retires nothing.
+    /// guest time; a faulting instruction retires nothing, while an already completed
+    /// fused prefix retains the time recorded at its interior boundaries.
     /// </summary>
     public int RetiredInstructionCount { get; }
+
+    /// <summary>IR operation offsets after each interior guest instruction retires.</summary>
+    public IReadOnlyList<int> InstructionBoundaries { get; }
+
+    /// <summary>A pending load can be interrupted before the fused observer.</summary>
+    public bool HasLoadDelay { get; }
+
+    /// <summary>Pending load committed by exception entry if INT precedes its observer.</summary>
+    public RecompilerIrOperation? InterruptLoadCommit { get; }
+    /// <summary>Ordered aligned-memory fault sites; raw or partial-word IR may omit this CPU provenance.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<RecompilerMemoryFaultSite> MemoryFaultSites { get; }
+
+    /// <summary>Optional additive serialized provenance; legacy blocks retain their existing schema.</summary>
+    [JsonPropertyName("memoryFaultSites")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<RecompilerMemoryFaultSite>? SerializedMemoryFaultSites => MemoryFaultSites.Count == 0 ? null : MemoryFaultSites;
     public IReadOnlyList<RecompilerIrOperation> Operations { get; }
     public RecompilerIrExit Exit { get; }
 }
@@ -488,10 +617,29 @@ public static class RecompilerIrValidator
             }
 
             previousPc = block.EntryPc;
+            if (block.MemoryFaultSites.Select(static site => site.OperationIndex).Distinct().Count() != block.MemoryFaultSites.Count
+                || !block.MemoryFaultSites.Select(static site => site.OperationIndex).SequenceEqual(block.MemoryFaultSites.Select(static site => site.OperationIndex).Order()))
+                Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Memory fault sites must be unique and ordered.", blockIndex);
+            foreach (var site in block.MemoryFaultSites)
+                if (site.OperationIndex < 0 || site.OperationIndex >= block.Operations.Count
+                    || site.RetiredPrefix < 0 || site.RetiredPrefix >= block.RetiredInstructionCount || (site.FaultPc & 3u) != 0
+                    || (site.InDelaySlot && site.RetiredPrefix == 0)
+                    || site.RetiredPrefix != block.InstructionBoundaries.Count(offset => offset <= site.OperationIndex)
+                    || site.FaultPc != unchecked(block.EntryPc + (uint)(site.RetiredPrefix - (site.InDelaySlot ? 1 : 0)) * 4))
+                    Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Invalid memory fault site location or retirement prefix.", blockIndex);
             var definedValueIds = new HashSet<int>();
             for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
             {
                 var operation = block.Operations[operationIndex];
+                foreach (var site in block.MemoryFaultSites.Where(site => site.OperationIndex == operationIndex))
+                {
+                    if (operation.Kind is not (RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Load32 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32)
+                        || site.PendingLoadRegister < -1 || site.PendingLoadRegister == 0 || site.PendingLoadRegister > 31
+                        || (site.PendingLoadRegister < 0) != (site.PendingLoadValueId < 0)
+                        || (site.PendingLoadRegister >= 0 && site.RetiredPrefix == 0))
+                        Add(diagnostics, RecompilerIrDiagnosticCode.InvalidOperationShape, "Invalid aligned memory fault or pending load shape.", blockIndex, operationIndex);
+                    if (site.PendingLoadValueId >= 0) ValidateInput(site.PendingLoadValueId, definedValueIds, diagnostics, blockIndex, operationIndex);
+                }
                 ValidateOperation(operation, diagnostics, blockIndex, operationIndex);
                 ValidateInput(operation.InputValueA, definedValueIds, diagnostics, blockIndex, operationIndex);
                 ValidateInput(operation.InputValueB, definedValueIds, diagnostics, blockIndex, operationIndex);
@@ -758,6 +906,15 @@ public static class RecompilerIrValidator
                 {
                     Add(diagnostics, RecompilerIrDiagnosticCode.InvalidRegister, "A multiply/divide operation must not carry a GPR number.", blockIndex, operationIndex);
                 }
+                break;
+            case RecompilerIrOperationKind.ReadCop0:
+                Require(hasResult && !hasA && !hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
+                break;
+            case RecompilerIrOperationKind.WriteCop0:
+                Require(!hasResult && hasA && !hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
+                break;
+            case RecompilerIrOperationKind.ReturnFromException:
+                Require(!hasResult && !hasA && !hasB && operation.ShiftAmount == 0 && operation.Register == 0, diagnostics, blockIndex, operationIndex);
                 break;
             default:
                 Require(hasResult && hasA && hasB && operation.ShiftAmount == 0, diagnostics, blockIndex, operationIndex);
