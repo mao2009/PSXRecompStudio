@@ -90,6 +90,10 @@ Dependencies:
 Constraints:
 ```
 
+## Project direction
+
+- [Project mission: authorized commercial re-release and preservation](project-mission.md) — strategic direction; not an implementation or compatibility claim.
+
 ## Current subsystem documentation
 
 - [Top-level Architecture SSOT](../ARCHITECTURE.md)
