@@ -99,7 +99,7 @@ the block before its transfer exit is applied. Wrapping `ADDU`, `SUBU`, and
 COP0 register numbers and masks live once, in `RecompilerCop0`
 (`RecompilerContract.cs`), mirroring `psx_cpu_cop0.cpp` / `cpu_cop0.rs` /
 `cpu_exception.rs`; the IR evaluator and the generated C are built from it.
-Every `Store8/16/32` is dropped while SR.IsC (bit 16) is set and the address is
+After an aligned SH/SW passes its address-error check, each `Store8/16/32` is dropped while SR.IsC (bit 16) is set and the address is
 below `0xA0000000` (`PSXCpu::StoreIsCacheIsolated`): the generated host guards
 each store with `recompiler_store_isolated`, so the effect model matches the
 interpreter. The decoder marks COP0 moves `Coprocessor`, but reachable-program
@@ -109,7 +109,10 @@ A load (or MFC0) in a branch delay slot is lowered — committed immediately —
 only when `ReachableProgramBuilder` proves every static successor (branch target
 and fall-through, or jump target) is in the image and does not read the loaded
 register (`MipsToIrLowerer.LoadShadowIsUnobserved`). Otherwise, and always behind
-JR/JALR, it still fails closed.
+JR/JALR, it still fails closed. `LoadShadowIsUnobserved` must prove the successor's sources; unknown or observing successors are never approximated. Firmware discovery
+omits unsupported units so counted interpreter fallback preserves their pipeline
+semantics. This proof concerns immutable image successors; it must not be reused
+for mutable code outside a unit's guarded instruction words.
 
 ### Control flow
 
@@ -168,9 +171,8 @@ Rejected, never approximated:
 - a delay-slot entry that is not at `pc + 4` (`LowerProgram` throws);
 - a control-transfer instruction **inside** a delay slot — UNPREDICTABLE on
   MIPS I (`InvalidFlow`);
-- a **load** inside a delay slot: its load-delay shadow lands on a successor
-  reached through the transfer, which this stage cannot check
-  (`InvalidMemoryAccess`);
+- a **load** inside a delay slot whose successor shadow cannot be proven
+  unobserved (`InvalidMemoryAccess`);
 - a delay-slot instruction outside the lowered subset (diagnostic propagated);
 - a resolved transfer target that is lowered but lands **inside** a fused block
   rather than on its entry — a branch into a delay slot or into a load-delay
@@ -249,9 +251,8 @@ Rejected, never approximated:
 - a **chained** load delay — the fused block's load-delay-slot instruction is
   itself a load whose own value is read by the instruction after the block. Its
   commit would have to land outside the fused block (`InvalidMemoryAccess`);
-- a **load in a branch delay slot** — its shadow lands on a successor reached
-  through the transfer, which this stage cannot check or represent
-  (`InvalidMemoryAccess`).
+- a **load in a branch delay slot** without the explicit static unobserved-shadow
+  proof described above (`InvalidMemoryAccess`).
 
 ### Load-delay state at termination
 
@@ -348,7 +349,7 @@ report it as such.
 | COP2 / GTE, LWC2 / SWC2 | Coprocessor 2 semantics. |
 | Chained load delay, and a branch-delay-slot load whose shadow a successor may read | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
 | Pending load delay across a program boundary | `RecompilerStateSnapshot.LoadDelay` can carry it, but no IR operation queues one. |
-| Misalignment and address exceptions | Alignment and translation belong to the memory/runtime contract, not the IR. |
+| Other address/translation exceptions | Aligned LH/LHU/LW AdEL and SH/SW AdES are modeled by optional fault-site provenance (#749); other translation faults remain outside this lowering contract. |
 | SSA, optimization, constant folding | Out of scope for lowering. |
 
 ## $zero Handling
@@ -367,8 +368,15 @@ diagnostic. No silent fallback, no generic exceptions.
 
 ## Host code generation boundary
 
-`RecompilerHostCodeGen` emits the Phase 3A GPR subset only. Because lowering can
-now produce memory operations and explicit flows — including `Call` — the
-generator **rejects** them (`UNSUPPORTED_OPERATION_KIND` / `UNSUPPORTED_FLOW_KIND`)
-instead of emitting a block that silently drops the access or the transfer.
-Extending the backend is a separate stage (#208).
+`RecompilerHostCodeGen` emits the supported GPR, memory, COP0 and control-flow
+subset, including register-held transfers and firmware exception entry.
+Unsupported operations or flows still fail closed rather than silently dropping
+their effects. See [host code generation](recompiler-host-codegen.md).
+
+Aligned LH/LHU/LW and SH/SW carry optional memory-fault-site metadata (#749).
+The backend checks virtual alignment before memory effects or IsC suppression,
+reports AdEL/AdES and BadVAddr, and preserves EPC/BD, pending-load commit and
+successfully retired fused prefixes. A delay-slot fault retains its branch's
+EPC/BD and link write while suppressing the target. Faulting instructions retire
+nothing. LWL/LWR/SWL/SWR retain their legal unaligned partial-word semantics;
+raw memory IR without CPU provenance keeps its primitive contract.
