@@ -26,11 +26,12 @@ psxrecomp openbios-probe out/openbios/openbios.bin --json
 ```
 
 The helper does not vendor code, checks the revision and tracked-worktree state,
-builds using upstream's Docker wrapper, verifies the 512 KiB output, copies the
-observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
-image digest under the git-ignored `out/` folder. Upstream's Docker wrapper
-uses an unpinned `:latest` image: source is pinned, **builder is not**; an
-independent toolchain pin and end-to-end compatibility proof are still required.
+builds with a digest-pinned Docker image or the documented native toolchain,
+verifies the 512 KiB output, copies the observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
+image/toolchain details under the git-ignored `out/` folder.
+`scripts/openbios/build.sh` pins the Docker digest and records the expected
+native toolchain archive hash; each builder still requires independent ROM hash
+and end-to-end compatibility verification.
 Local building does not itself approve distribution.
 
 ### Executable slice
@@ -252,3 +253,12 @@ generated-host execution of OpenBIOS is **not** verified (see the status line).
 through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so Persona cannot get
 past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
+
+### Remaining generated memory-fault coverage
+
+Generated firmware execution does not yet deliver native address-error traps for
+misaligned LH/LW/SH/SW accesses with matching BadVAddr and exception state. A
+synthetic ROM LW at `0x80001001` reaches its guest handler on the interpreter but
+is currently read as bytes by the artifact. Explicit COP0 access ownership is
+fixed separately; it does not establish memory-fault parity. Track this gate
+before claiming complete firmware exception compatibility.

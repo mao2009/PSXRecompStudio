@@ -126,4 +126,3 @@ Transfer commands, fallback state version, SR/CAUSE/EPC ownership and guest IRQ
 acceptance are unchanged. Older peers remain valid for ordinary artifacts;
 firmware peers must understand this additive request or fail closed. There is
 no runtime compilation or full-register copy protocol.
-
