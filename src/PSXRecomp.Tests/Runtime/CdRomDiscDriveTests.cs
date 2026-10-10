@@ -205,6 +205,71 @@ public sealed class CdRomDiscDriveTests
         Command(cd, 0x10).Should().Equal(3, 0x00, 0x02, 0x17, 0x02, 0x00, 0x00, 0x08, 0x00); // GetLocL: header of LBA 17
     }
 
+    [Theory]
+    [InlineData(2u)]
+    [InlineData(3u)]
+    public void AdvanceAcrossSeveralSectorDeadlines_MatchesSingleCycleClock(uint sectors)
+    {
+        static CdRomDevice Start()
+        {
+            var cd = Drive();
+            Command(cd, 0x02, 0, 2, 0x16);
+            cd.WriteCommand(0x06);
+            return cd;
+        }
+        var chunked = Start();
+        var stepped = Start();
+        var elapsed = CdRomDevice.AcknowledgeDelayCycles + CdRomDevice.SeekCycles + sectors * CdRomDevice.SingleSpeedSectorCycles;
+        chunked.Advance(elapsed);
+        for (uint i = 0; i < elapsed; i++) stepped.Advance(1);
+        chunked.GetInterruptFlag().Should().Be(stepped.GetInterruptFlag());
+        chunked.ResponseCount.Should().Be(stepped.ResponseCount);
+        chunked.ReadRegister(1).Should().Be(stepped.ReadRegister(1));
+        chunked.IsReading.Should().Be(stepped.IsReading);
+        chunked.Mode.Should().Be(stepped.Mode);
+        chunked.DataBytesAvailable.Should().Be(stepped.DataBytesAvailable);
+        chunked.DataReady.Should().Be(stepped.DataReady);
+        chunked.InterruptGeneration.Should().Be(stepped.InterruptGeneration, "an unacknowledged interrupt gates further deliveries");
+        static byte[] LastHeader(CdRomDevice cd)
+        {
+            cd.SetInterruptFlag(7);
+            Command(cd, 0x09).Should().Equal(3, 0x22);
+            TakeResponse(cd).Should().Equal(2, 2);
+            return Command(cd, 0x10);
+        }
+        var expected = LastHeader(stepped);
+        var actual = LastHeader(chunked);
+        actual.Should().Equal(expected, $"{sectors} sector deadlines must be processed, not just one; chunked={Convert.ToHexString(actual)}, stepped={Convert.ToHexString(expected)}");
+        actual[3].Should().Be(Bcd(16 + (int)sectors - 1));
+    }
+
+    [Fact]
+    public void BatchedRead_PreservesEqualDeadlineFifoAndAcknowledgementSpacing()
+    {
+        var cd = Drive();
+        var initialGeneration = cd.InterruptGeneration;
+        Command(cd, 0x02, 0, 2, 0x16);
+        cd.WriteCommand(0x06); // INT3 at the same time as GetParam, but inserted first.
+        cd.WriteCommand(0x0F);
+        cd.Advance(CdRomDevice.AcknowledgeDelayCycles + CdRomDevice.SeekCycles + 3 * CdRomDevice.SingleSpeedSectorCycles);
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ResponseCount.Should().Be(1);
+        cd.ReadRegister(1).Should().Be(0x22);
+        cd.DataBytesAvailable.Should().Be(0, "sector arrival alone must not load the guest FIFO");
+        cd.InterruptGeneration.Should().Be(initialGeneration + 2, "SetLoc then the first ReadN packet; held IRQ prevents duplicates");
+        cd.SetInterruptFlag(7);
+        cd.Advance(CdRomDevice.MinimumInterruptDelayCycles - 1);
+        cd.HasInterrupt.Should().BeFalse();
+        cd.Advance(1);
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
+        cd.ResponseCount.Should().Be(5, "the earlier same-deadline command packet precedes pending sector packets");
+        cd.InterruptGeneration.Should().Be(initialGeneration + 3);
+        cd.Reset();
+        cd.Advance(4 * CdRomDevice.SingleSpeedSectorCycles);
+        cd.HasInterrupt.Should().BeFalse("reset cancels all scheduled read and response events");
+        cd.IsReading.Should().BeFalse();
+    }
+
     [Fact]
     public void DoubleSpeedWholeSectorMode_HalvesThePeriod_AndDeliversTheSectorAfterItsSync()
     {

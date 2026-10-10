@@ -116,8 +116,21 @@ internal sealed class ArtifactFallbackSession : IDisposable
         var physical = pc <= 0x7FFFFFFFu ? pc : pc & 0x1FFFFFFFu;
         if (pc >= 0xC0000000u || physical >= 0x00800000u) return false;
         physical &= PSXCoreWrapper.RamSize - 1;
-        if (physical + 12u > PSXCoreWrapper.RamSize) return false;
-        return _loadedCode.Match(pc, address => _devices.Core.ReadMemory32(physical + (address - pc))) is not null;
+        foreach (var version in _loadedCode.VersionsAt(pc))
+        {
+            // Match the artifact's per-version byte span without overflowing the size calculation. A longer
+            // version must not hide a current shorter version at the same entry.
+            if (version.Words.Count == 0 || (ulong)version.Words.Count * 4ul > PSXCoreWrapper.RamSize - physical) continue;
+            var current = true;
+            for (var i = 0; i < version.Words.Count && current; i++)
+            {
+                current = _devices.Core.ReadMemory32(physical + (uint)i * 4u) == version.Words[i];
+            }
+
+            if (current) return true;
+        }
+
+        return false;
     }
 
     /// <summary>What <see cref="Handle"/> decided about one offered transfer.</summary>
