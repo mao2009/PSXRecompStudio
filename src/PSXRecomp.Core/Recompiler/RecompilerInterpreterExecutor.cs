@@ -154,12 +154,12 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
             {
                 termination = RecompilerIrTerminationReason.Exception;
                 // Exception details are populated only for the trap exceptions
-                // this lowering stage models (currently BREAK 0x09 and SYSCALL 0x08) — a
-                // deliberate scope bound: a GTE/CpU, AdEL/AdES or Overflow fault
+                // this lowering stage models (BREAK 0x09, SYSCALL 0x08 and aligned-memory AdEL/AdES 0x04/0x05) — a
+                // deliberate scope bound: a GTE/CpU or Overflow fault
                 // still carries default exception state so the existing
                 // fault-classification tests keep their single difference
                 // (Issue #481 design, approach c).
-                if (status == 0 && core.ExceptionRaised && (core.ExceptionCode == MipsToIrLowerer.BreakExcode || core.ExceptionCode == MipsToIrLowerer.SyscallExcode))
+                if (status == 0 && core.ExceptionRaised && (core.ExceptionCode == MipsToIrLowerer.BreakExcode || core.ExceptionCode == MipsToIrLowerer.SyscallExcode || core.ExceptionCode is 4 or 5))
                 {
                     exceptionState = new RecompilerExceptionState(
                         isRaised: true,

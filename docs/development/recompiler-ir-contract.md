@@ -2,7 +2,7 @@
 
 Status: Stable
 Authority: SSOT
-Related Issues: #205, #206, #207, #208, #211, #411
+Related Issues: #205, #206, #207, #208, #211, #411, #749
 
 ## Scope
 
@@ -37,6 +37,31 @@ access, signedness, and the resolved memory image belong to the memory/runtime
 contract, not the IR or host backend. The ordered memory observations compared
 through `RecompilerStateSnapshot` describe guest-visible access, independent of
 these operations' lowering.
+
+### Aligned CPU memory faults (Issue #749)
+
+Lowered LH/LHU/LW/SH/SW carry optional `RecompilerMemoryFaultSite` provenance
+on their block: the ordered memory operation index, owning EPC and BD, completed
+instruction prefix, and any pending load SSA value owed on a fault. The memory
+primitive's alignment rule remains the memory/runtime contract; this metadata
+lets a backend report its failure through the existing CPU exception contract
+rather than guess a source PC from an IR operation index.
+
+The generated implementation checks the virtual effective address before the
+primitive can access RAM/MMIO or suppress an isolated-cache store. A failing
+check raises AdEL/AdES, updates virtual BadVAddr and commits the preceding load
+that `UpdateLoadDelay` would commit even when the faulting observer names the
+same destination. It executes no later operation or branch target. Successful
+prefix instructions are charged once; the faulting instruction is not retired.
+LWL/LWR/SWL/SWR use aligned internal primitives without fault-site provenance,
+so their original unaligned guest effective address remains legal. Raw IR with
+no CPU provenance keeps its existing primitive contract.
+
+Validation rejects duplicate/unordered or out-of-range sites, non-aligned
+primitive kinds, inconsistent source-PC/prefix/BD ownership and pending load
+values not defined before the site. Optional nonempty provenance serializes
+canonically; legacy blocks retain their prior JSON shape. The test IR evaluator
+and compiled/interpreter differential harness consume this same provenance.
 
 ### Memory effect classification (ADR-020, Issue #411)
 

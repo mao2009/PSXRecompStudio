@@ -114,6 +114,32 @@ public sealed class RuntimeCodeGeneratedHostTests
         host.Evidence.FallbackInstructions.Should().Be(0ul);
     }
 
+    [Theory]
+    [InlineData(0x21)]
+    [InlineData(0x25)]
+    [InlineData(0x23)]
+    [InlineData(0x29)]
+    [InlineData(0x2B)]
+    public void LoadedAlignedMemoryFaults_EnterFallbackHandlerAndReturnToNativeCode(byte opcode)
+    {
+        const uint routine = 0x80001000u;
+        uint[] handler = [Mfc0(S1, 8), Nop, Mfc0(K0, 14), Nop, Addiu(K0, K0, 4), Jr(K0), RecompilerCop0Tests.Rfe];
+        uint[] code = [.. Li(T0, 0xA0002001), MipsEncoding.I(opcode, (byte)S0, (byte)T0, 0), Nop, Ori(S2, Zero, 0x7777), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, GeneralVector, handler);
+        Install(reset, routine, code);
+        reset.Emit(Mtc0(Zero, 12));
+        Call(reset, routine);
+        var rom = Rom(reset);
+        var reference = Reference(rom, 1_000);
+        var host = RunHost(rom, [(routine, code, [routine])], new HashSet<uint>(), 1_000);
+        host.Final.Gpr.Should().Equal(reference.Gpr);
+        host.Final.Gpr[(int)S1].Should().Be(0xA0002001u);
+        host.Final.Gpr[(int)S2].Should().Be(0x7777u);
+        host.Fetches.Should().Contain(GeneralVector).And.NotContain(routine);
+        host.Transitions.Should().Contain(t => t.EntryPc == GeneralVector && t.Status == FallbackSegmentStatus.Returned);
+    }
+
     [Fact]
     public void TwoPreGeneratedVersionsAtOneAddress_AreBothSelectedNatively_AndUnknownCodeThereFallsBack()
     {

@@ -29,6 +29,13 @@ words; identical versions are deduplicated. Static ROM block entries and loaded
 entries cannot collide. Different images may provide different versions at one
 RAM address, including overlays.
 
+Guarded blocks retain the lowering's aligned-memory fault provenance (Issue
+#749), including virtual fault address, EPC/BD ownership and retired prefixes.
+Firmware exception entry is emitted when either ROM or loaded blocks can fault;
+a loaded fault uses the same COP0 and pending-load contract as a ROM fault.
+Identity guards do not suppress address-error traps or reinterpret partial-word
+accesses.
+
 Before selecting a loaded block, generated dispatch validates all words of its
 fused instruction unit against guest RAM. Guest stores, host/device writes and
 fallback commits invalidate the affected 4 KiB page generations. An unchanged
@@ -75,7 +82,8 @@ The implementation is in `LoadedCodeTable`, `LoadImageManifest`,
 `ReachableProgramBuilder`, `RecompilerHostCodeGen`, `RecompiledArtifactCodeGen`
 and `ArtifactFallbackSession`. Tests cover manifest validation, duplicate and
 multiple versions, stale native/fallback writes, compiled RAM calls and
-exception returns, and fallback observer composition in
+exception returns, aligned-memory faults returning through a fallback handler
+to native RAM code, and fallback observer composition in
 `RuntimeCodeGeneratedHostTests`. The integration tip must independently verify
 OpenBIOS differential parity; intermediate AOT builds do not contain later
 exact IRQ timing fixes.

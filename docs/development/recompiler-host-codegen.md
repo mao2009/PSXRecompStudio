@@ -321,3 +321,19 @@ standalone generated code with no callback retains its local register storage.
 Outstanding retired time is flushed before access. See ADR-025 for validation,
 compatibility and ownership; this service does not change transfer or fallback
 protocol versions.
+
+### Generated aligned address traps (Issue #749)
+
+Aligned CPU memory primitives with fault-site provenance check alignment before
+RAM/MMIO access and before SR.IsC store suppression. Failed LH/LHU/LW raise AdEL;
+failed SH/SW raise AdES. Virtual BadVAddr uses the existing COP0 owner callback;
+EPC/BD, CAUSE, SR stack and vector selection use the existing exception entry
+helper. Firmware continues into its guest handler and RFE/JR; standalone code
+stops with the existing raised exception snapshot.
+
+A memory fault may complete a pending load from the preceding instruction,
+including an observer whose successful write would otherwise cancel it. Only
+the completed prefix is credited, using `partial_retired` so a downstream
+instruction-boundary reporter cannot double-charge it. This field resets at
+every dispatch iteration, including interpreter fallback transfers. No new host
+protocol, runtime compilation, MMIO route, or device-time correction is added.
