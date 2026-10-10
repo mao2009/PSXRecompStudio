@@ -40,7 +40,8 @@ public readonly record struct CdRomDiscIdentity(bool IsPresent, bool IsLicensed,
 /// becomes visible only after the current response FIFO is drained and acknowledged, a read exposes one bounded INT1
 /// and its bytes come only from <see cref="LoadData"/>.</item>
 /// </list>
-/// There is no audio model. <see cref="HasInterrupt"/> is only the device-side enabled-line state.
+/// There is no audio model: with SetMode bit 6 a real-time XA audio sector is routed away from the CPU and dropped.
+/// <see cref="HasInterrupt"/> is only the device-side enabled-line state.
 /// </summary>
 [Domain]
 public sealed class CdRomDevice : ICdRom
@@ -115,6 +116,10 @@ public sealed class CdRomDevice : ICdRom
     private const byte StatSeek = 0x40;
     private const byte ModeDoubleSpeed = 0x80;
     private const byte ModeWholeSector = 0x20;
+    private const byte ModeXaAdpcm = 0x40;
+
+    /// <summary>Mode 2 subheader submode bits 6 (real-time) and 2 (audio).</summary>
+    private const byte XaRealTimeAudio = 0x44;
 
     private readonly Queue<byte> _parameters = new(FifoCapacity);
     private readonly Queue<byte> _responses = new(FifoCapacity);
@@ -744,6 +749,14 @@ public sealed class CdRomDevice : ICdRom
 
         _lastSectorHeader = sector[12..20];
         _position++;
+
+        // SetMode bit 6 (XA-ADPCM): a Mode 2 real-time audio sector (subheader submode bits 6 and 2) goes to the
+        // SPU's XA input instead of the CPU, so it raises no INT1 and its bytes never reach the data FIFO (psx-spx
+        // "CDROM XA Audio", DuckStation ProcessDataSector). ponytail: no SPU XA decoder, so the audio is dropped.
+        if ((Mode & ModeXaAdpcm) != 0 && sector[15] == 2 && (sector[18] & XaRealTimeAudio) == XaRealTimeAudio)
+        {
+            return;
+        }
 
         // SetMode bit 5: the whole sector after the sync bytes (924h); otherwise the 800h user-data field, which
         // starts after the subheader on Mode 2 sectors.

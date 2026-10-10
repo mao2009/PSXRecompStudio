@@ -314,6 +314,37 @@ public sealed class CdRomDiscDriveTests
         RunUntilInterrupt(cd).Should().Be(CdRomDevice.SingleSpeedSectorCycles / 2);
     }
 
+    /// <summary>
+    /// Issue #732: with SetMode bit 6 (XA-ADPCM) a real-time audio sector goes to the SPU, not the CPU: no INT1 and no
+    /// data, so a streaming library (Persona's movie player) never parses ADPCM as a video sector. Without bit 6 the
+    /// same sector is ordinary data.
+    /// </summary>
+    [Theory]
+    [InlineData(0xC0, 2)]
+    [InlineData(0x80, 1)]
+    public void XaAdpcmMode_RoutesARealTimeAudioSectorAwayFromTheCpu(byte mode, int periodsToNextInt1)
+    {
+        var image = Mode2Form1Image(new SyntheticIsoImageBuilder()
+            .AddSystemCnf(BootPath)
+            .AddFile("TEST.EXE;1", SyntheticPsxExeBuilder.BuildValid())
+            .Build());
+        var audio = image.AsSpan(17 * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
+        audio[18] = audio[22] = 0x64; // submode: real-time | form 2 | audio
+        var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), new RawCdSectorSource(image));
+
+        Command(cd, 0x0E, mode);
+        Command(cd, 0x02, 0x00, 0x02, 0x16); // LBA 16
+        Command(cd, 0x1B);
+        // A newly inserted disc retains ShellOpen (bit 4) until GetStat consumes it.
+        // The real-time XA route must not silently clear that independent drive state.
+        TakeResponse(cd).Should().Equal(1, 0x32);
+
+        RunUntilInterrupt(cd).Should().Be((uint)(periodsToNextInt1 * CdRomDevice.SingleSpeedSectorCycles / 2));
+        cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntDataReady);
+        cd.SetInterruptFlag(0x07);
+        Command(cd, 0x10)[3].Should().Be((byte)(0x16 + periodsToNextInt1), "GetLocL: the delivered sector's header");
+    }
+
     [Fact]
     public void Pause_EndsTheStream_WithInt3ThenInt2_AndNoFurtherSector()
     {

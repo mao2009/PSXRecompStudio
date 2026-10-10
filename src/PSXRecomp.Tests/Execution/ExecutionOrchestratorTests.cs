@@ -409,7 +409,7 @@ public sealed class ExecutionOrchestratorTests
         const uint dmaDicr = 0x10F4;
         const uint iStat = 0x1070;
         const uint dma3StartMask = 0x11000000u; // CHCR: start/busy | start/trigger, sync 0, device->RAM, incrementing
-        const uint dma3DicrFlagAndStatus = (1u << 3) | (1u << 31);
+        const uint dma3DicrFlagAndStatus = (1u << 27) | (1u << 31);
 
         var words = new uint[]
         {
@@ -457,7 +457,7 @@ public sealed class ExecutionOrchestratorTests
             MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T6, rs: 0, immediate: 0x0765),
             MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T6, rs: (byte)R3000aRegister.T6, immediate: 0xC321),
             MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T6, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaDpcr),
-            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T7, rs: 0, immediate: 0x0880),
+            MipsEncoding.I(LuiOpcodeField, rt: (byte)R3000aRegister.T7, rs: 0, immediate: 0x0088),
             MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T7, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaDicr),
             MipsEncoding.I(OriOpcodeField, rt: (byte)R3000aRegister.T3, rs: 0, immediate: 0x100),
             MipsEncoding.Load(R3000aOpcode.Sw, rt: (byte)R3000aRegister.T3, baseRegister: (byte)R3000aRegister.T0, offset: (ushort)dmaMadr3),
@@ -564,7 +564,7 @@ public sealed class ExecutionOrchestratorTests
             // DPCR: reset priorities plus channel 3 and 4 enables; DICR: master
             // plus channel 3 and 4 IRQ enables.
             Lui(t1, 0x076D), MipsEncoding.I(OriOpcodeField, rt: t1, rs: t1, immediate: 0xC321), Hw(R3000aOpcode.Sw, t1, dpcr),
-            Lui(t1, 0x1880), Hw(R3000aOpcode.Sw, t1, dicr),
+            Lui(t1, 0x0098), Hw(R3000aOpcode.Sw, t1, dicr),
 
             // Unrelated channel 4: started, BCR 0 = 0x10000 words, so the
             // generic per-word model cannot finish it within this program.
@@ -613,7 +613,7 @@ public sealed class ExecutionOrchestratorTests
         (gpr[(int)R3000aRegister.S2] & cdRomBit).Should().Be(cdRomBit, "INT1 raises its own IRQ2 after the ack");
         (gpr[(int)R3000aRegister.S3] & 0x40u).Should().Be(0x40u, "DRQSTS stays set after the INT1 ack while data is unread");
         (gpr[(int)R3000aRegister.S4] & 0x11000000u).Should().Be(0u, "DMA3 completed");
-        (gpr[(int)R3000aRegister.S5] & 0x7Fu).Should().Be(1u << 3, "DMA3 completion flags channel 3 only");
+        (gpr[(int)R3000aRegister.S5] & 0x7F000000u).Should().Be(1u << 27, "DMA3 completion flags channel 3 only");
         (gpr[(int)R3000aRegister.S6] & (1u << 24)).Should().NotBe(0u, "unrelated channel 4 must still be busy");
         gpr[(int)R3000aRegister.S7].Should().Be(unrelatedMadr, "unrelated channel 4's MADR must not move");
         (gpr[(int)R3000aRegister.A0] & dmaBit).Should().Be(dmaBit, "DMA3 completion raises IRQ3");

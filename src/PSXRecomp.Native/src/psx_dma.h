@@ -40,5 +40,6 @@ PSXDmaState psx_dma_tick(PSXDmaState state, uint32_t cycles);
  * per-cycle model also aging or completing it (and vice versa).
  */
 PSXDmaState psx_dma_tick_excluding_channel(PSXDmaState state, uint32_t cycles, uint32_t excluded_channel);
+PSXDmaState psx_dma_tick_excluding_channels(PSXDmaState state, uint32_t cycles, uint32_t excluded_mask);
 PSXDmaState psx_dma_complete_channel(PSXDmaState state, uint32_t channel);
 }

@@ -366,6 +366,13 @@ public sealed class PSXCoreWrapper : IDisposable
         NativeInterop.PSXCore_TickDmaExcludingChannel(_handle, cycles, excludedChannel);
     }
 
+    /// <summary>Like <see cref="TickDma"/>, except every channel set in <paramref name="excludedMask"/> (bit n = channel n) is skipped (Issue #732).</summary>
+    public void TickDmaExcludingChannels(uint cycles, uint excludedMask)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeInterop.PSXCore_TickDmaExcludingChannels(_handle, cycles, excludedMask);
+    }
+
     /// <summary>Immediately completes <paramref name="channel"/>'s in-flight transfer, independent of elapsed cycles (Issue #587).</summary>
     public void CompleteDmaChannel(uint channel)
     {
