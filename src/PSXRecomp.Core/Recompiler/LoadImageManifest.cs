@@ -59,7 +59,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             switch (fields[0])
             {
                 case "image":
-                    images.Add(ParseRomImage(fields, firmware));
+                    images.Add(ParseRomImage(fields, firmware, baseDirectory));
                     break;
                 case "exe":
                     images.Add(ParseExeImage(fields, baseDirectory));
@@ -91,7 +91,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         return new LoadImageManifest(images, interpreted);
     }
 
-    private static LoadedImageSpec ParseRomImage(IReadOnlyList<string> fields, OpenBiosFirmware firmware)
+    private static LoadedImageSpec ParseRomImage(IReadOnlyList<string> fields, OpenBiosFirmware firmware, string? baseDirectory)
     {
         // image <name> <dest> rom <rom-addr> <size> [roots-file]
         if (fields.Count is < 6 or > 7 || fields[3] != "rom")
@@ -103,7 +103,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         var loadAddress = ParseUint(fields[2]);
         var romAddress = ParseUint(fields[4]);
         var size = ParseUint(fields[5]);
-        var roots = fields.Count == 7 ? ReadRoots(fields[6], null) : [loadAddress];
+        var roots = fields.Count == 7 ? ReadRoots(fields[6], baseDirectory) : [loadAddress];
 
         if ((size & 3u) != 0 || (loadAddress & 3u) != 0 || (romAddress & 3u) != 0)
         {
