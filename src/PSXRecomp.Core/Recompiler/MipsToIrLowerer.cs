@@ -93,7 +93,7 @@ public static class MipsToIrLowerer
                     exception: CreateTrapException(trapExcode, entryPc, inDelaySlot: false))));
         }
 
-        var builder = new BlockBuilder();
+        var builder = new BlockBuilder(entryPc);
         var failure = TryEmitInstruction(builder, instruction);
         if (failure is not null)
         {
@@ -103,7 +103,7 @@ public static class MipsToIrLowerer
         var exit = new RecompilerIrExit(
             RecompilerIrTerminationReason.Success,
             unchecked(entryPc + InstructionSize));
-        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
+        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit, memoryFaultSites: builder.FaultSites));
     }
 
     /// <summary>
@@ -154,10 +154,10 @@ public static class MipsToIrLowerer
                 $"Opcode '{control.Opcode}' does not own a branch delay slot; lower it with Lower instead.");
         }
 
-        var builder = new BlockBuilder();
+        var builder = new BlockBuilder(entryPc);
         var failure = TryEmitControlTransfer(builder, control, entryPc, delaySlot, pendingLoad: null, out var exit);
         return failure ?? MipsToIrLoweringResult.Success(
-            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries));
+            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries, memoryFaultSites: builder.FaultSites));
     }
 
     /// <summary>
@@ -196,12 +196,12 @@ public static class MipsToIrLowerer
             if (instruction.DelaySlot != R3000aDelaySlotKind.None)
             {
                 var delaySlot = RequireDelaySlot(instructions, i);
-                var builder = new BlockBuilder();
+                var builder = new BlockBuilder(entryPc);
                 var failure = TryEmitControlTransfer(
                     builder, instruction, entryPc, delaySlot, pendingLoad: null, out var exit,
                     allowDelaySlotLoad: unobservedDelaySlotLoads?.Contains(entryPc) == true);
                 blocks.Add(failure is null
-                    ? new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries)
+                    ? new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries, memoryFaultSites: builder.FaultSites)
                     : throw Unsupported(failure, instruction, entryPc));
                 i += 2;
                 continue;
@@ -278,7 +278,7 @@ public static class MipsToIrLowerer
         var (load, loadPc) = instructions[index];
         var (observer, observerPc) = instructions[index + 1];
 
-        var builder = new BlockBuilder();
+        var builder = new BlockBuilder(loadPc);
         var failure = TryEmitLoadValue(builder, load, mergeSource: null, out var loadedValue);
         if (failure is not null)
         {
@@ -292,6 +292,7 @@ public static class MipsToIrLowerer
         var writesTarget = TryGetDestinationRegister(observer, out var destination) && destination == target;
         builder.RetireInstruction();
         var pendingLoad = writesTarget ? (PendingLoadCommit?)null : new PendingLoadCommit(target, loadedValue);
+        builder.SetFaultContext(observerPc, false, 1, new PendingLoadCommit(target, loadedValue));
 
         if (observer.DelaySlot != R3000aDelaySlotKind.None)
         {
@@ -304,7 +305,7 @@ public static class MipsToIrLowerer
             }
 
             consumed = 3;
-            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3, instructionBoundaries: builder.InstructionBoundaries, hasLoadDelay: true, interruptLoadCommit: new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, register: target, inputValueA: loadedValue));
+            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3, instructionBoundaries: builder.InstructionBoundaries, hasLoadDelay: true, interruptLoadCommit: new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, register: target, inputValueA: loadedValue), memoryFaultSites: builder.FaultSites);
         }
 
         // LWL/LWR to the load's own target merge into the still-pending value
@@ -325,7 +326,7 @@ public static class MipsToIrLowerer
         var exit = new RecompilerIrExit(
             RecompilerIrTerminationReason.Success,
             unchecked(loadPc + (2 * InstructionSize)));
-        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries, hasLoadDelay: true, interruptLoadCommit: new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, register: target, inputValueA: loadedValue));
+        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2, instructionBoundaries: builder.InstructionBoundaries, hasLoadDelay: true, interruptLoadCommit: new RecompilerIrOperation(RecompilerIrOperationKind.WriteGpr, register: target, inputValueA: loadedValue), memoryFaultSites: builder.FaultSites);
     }
 
     /// <summary>
@@ -849,6 +850,7 @@ public static class MipsToIrLowerer
             return null;
         }
 
+        builder.SetFaultContext(controlPc, true, builder.RetiredPrefix + 1, null);
         var failure = TryEmitInstruction(builder, delaySlot);
         if (failure is null)
         {
@@ -1351,7 +1353,7 @@ public static class MipsToIrLowerer
         }
 
         var address = EmitEffectiveAddress(builder, memory);
-        var loaded = builder.Load(loadKind, address);
+        var loaded = builder.Load(loadKind, address, aligned: true);
 
         if (signExtendShift != 0)
         {
@@ -1465,7 +1467,7 @@ public static class MipsToIrLowerer
 
         var address = EmitEffectiveAddress(builder, memory);
         var value = builder.ReadGpr(instruction.Operand0.Register);
-        builder.Store(storeKind, address, value);
+        builder.Store(storeKind, address, value, aligned: true);
         return null;
     }
 
@@ -1504,8 +1506,25 @@ public static class MipsToIrLowerer
     /// One builder spans one IR block, so a fused control-transfer block numbers
     /// its delay-slot values after the transfer's own.
     /// </summary>
-    private sealed class BlockBuilder
+    private sealed class BlockBuilder(uint entryPc)
     {
+        private uint _faultPc = entryPc;
+        private bool _inDelaySlot;
+        private PendingLoadCommit? _faultLoad;
+        private readonly List<RecompilerMemoryFaultSite> _faultSites = [];
+        public IReadOnlyList<RecompilerMemoryFaultSite> FaultSites => _faultSites;
+        public int RetiredPrefix { get; private set; }
+        public void SetFaultContext(uint pc, bool delay, int retired, PendingLoadCommit? pending)
+        {
+            _faultPc = pc; _inDelaySlot = delay; RetiredPrefix = retired; _faultLoad = pending;
+        }
+        private void RecordFault(RecompilerIrOperationKind kind, bool aligned)
+        {
+            if (aligned && kind is RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Load32 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32)
+                _faultSites.Add(new RecompilerMemoryFaultSite(_operations.Count, _faultPc, _inDelaySlot, RetiredPrefix,
+                    (int?)_faultLoad?.Register ?? -1, _faultLoad?.ValueId ?? -1));
+        }
+
         private readonly List<RecompilerIrOperation> _operations = [];
         private int _nextValueId;
         public List<int> InstructionBoundaries { get; } = [];
@@ -1531,11 +1550,17 @@ public static class MipsToIrLowerer
             AddWithResult(id => new RecompilerIrOperation(
                 kind, resultValueId: id, inputValueA: inputValueA, shiftAmount: shiftAmount));
 
-        public int Load(RecompilerIrOperationKind kind, int address) =>
-            AddWithResult(id => new RecompilerIrOperation(kind, resultValueId: id, inputValueA: address));
+        public int Load(RecompilerIrOperationKind kind, int address, bool aligned = false)
+        {
+            RecordFault(kind, aligned);
+            return AddWithResult(id => new RecompilerIrOperation(kind, resultValueId: id, inputValueA: address));
+        }
 
-        public void Store(RecompilerIrOperationKind kind, int address, int value) =>
+        public void Store(RecompilerIrOperationKind kind, int address, int value, bool aligned = false)
+        {
+            RecordFault(kind, aligned);
             _operations.Add(new RecompilerIrOperation(kind, inputValueA: address, inputValueB: value));
+        }
 
         public int ReadHi() =>
             AddWithResult(id => new RecompilerIrOperation(RecompilerIrOperationKind.ReadHi, resultValueId: id));

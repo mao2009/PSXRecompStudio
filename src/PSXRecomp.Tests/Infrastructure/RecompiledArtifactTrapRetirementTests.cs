@@ -14,6 +14,49 @@ public sealed class RecompiledArtifactTrapRetirementTests
     private const uint Entry = 0x80001000u;
 
     [Theory]
+    [InlineData(0, 1u)]
+    [InlineData(1, 1u)]
+    [InlineData(2, 1u)]
+    [InlineData(0, 100u)]
+    [InlineData(1, 100u)]
+    [InlineData(2, 100u)]
+    public void AddressFault_ExactCreditsChargeEachSuccessfulPrefixOnce(int prefix, uint credit)
+    {
+        var words = Program(Li(R3000aRegister.T0, Entry), Li(R3000aRegister.T1, 1),
+            prefix == 0
+                ? [Mem(R3000aOpcode.Lh, R3000aRegister.S0, R3000aRegister.T1, 0)]
+                : prefix == 1
+                    ? [Mem(R3000aOpcode.Lw, R3000aRegister.T1, R3000aRegister.T0, 0), Mem(R3000aOpcode.Lh, R3000aRegister.T1, R3000aRegister.T1, 0)]
+                    : [Mem(R3000aOpcode.Lw, R3000aRegister.T1, R3000aRegister.T0, 0), MipsEncoding.Branch(0x04, 9, 9, Entry + 20, Entry + 28), Mem(R3000aOpcode.Sw, R3000aRegister.T1, R3000aRegister.T1, 1)]);
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry);
+        program.Blocks.SelectMany(static b => b.MemoryFaultSites).Should().Contain(site => site.RetiredPrefix == prefix);
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 0", eventCredit: credit, requireExactTime: true, guestExceptions: true);
+        run.HasSnapshot.Should().BeTrue();
+        run.Requests.Should().ContainSingle().Which.Should().StartWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix + "8 1 ");
+        using var core = new PSXCoreWrapper();
+        for (var i = 0; i < words.Length; i++) core.WriteMemory32((Entry & 0x1FFFFFFFu) + (uint)i * 4, words[i]);
+        core.Pc = Entry;
+        core.SetCop0(12, 0);
+        ulong retired = 0;
+        for (var i = 0; i < words.Length; i++)
+        {
+            core.Step().Should().Be(0);
+            if (core.ExceptionRaised) break;
+            retired++;
+        }
+        core.ExceptionRaised.Should().BeTrue();
+        run.Retired.Aggregate(0ul, static (sum, count) => sum + count).Should().Be(retired);
+        for (var i = 0; i < 32; i++) run.Gpr[$"gpr[{i}]"].Should().Be(core.GetGpr(i));
+        run.Snapshot!["pc"].Should().Be(core.Pc);
+        run.Snapshot["cop0.sr"].Should().Be(core.GetCop0(12));
+        run.Snapshot["cop0.cause"].Should().Be(core.GetCop0(13));
+        run.Snapshot["cop0.epc"].Should().Be(core.GetCop0(14));
+        run.Requests[0].Should().EndWith(core.GetCop0(8).ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Theory]
     [InlineData(false, false, false)] // host-serviced standalone syscall after a load
     [InlineData(true, false, false)] // guest-owned standalone syscall after a load
     [InlineData(true, false, true)] // guest-owned BREAK after a load

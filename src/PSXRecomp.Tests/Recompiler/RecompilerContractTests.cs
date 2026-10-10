@@ -32,6 +32,71 @@ public class RecompilerContractTests
     }
 
     [Fact]
+    public void MemoryFaultSites_SerializeDeterministicallyWithoutChangingLegacyBlocks()
+    {
+        var operations = new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 0x80001001),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0),
+        };
+        var site = new RecompilerMemoryFaultSite(1, 0x80000000, false, 0);
+        var program = new RecompilerIrProgram([new RecompilerIrBlock(0x80000000, operations,
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000004), memoryFaultSites: [site])]);
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeTrue();
+        var serialized = RecompilerIrSerializer.Serialize(program);
+        serialized.Should().Contain("\"memoryFaultSites\"").And.Contain("\"faultPc\": 2147483648");
+        serialized.Should().Be(RecompilerIrSerializer.Serialize(program));
+        RecompilerIrSerializer.Serialize(CreateProgram()).Should().NotContain("memoryFaultSites");
+    }
+
+    [Theory]
+    [InlineData(-1, 0, false, 0, -1, -1)]
+    [InlineData(2, 0, false, 0, -1, -1)]
+    [InlineData(0, 0, false, 0, -1, -1)]
+    [InlineData(1, 1, false, 0, -1, -1)]
+    [InlineData(1, 0, true, 0, -1, -1)]
+    [InlineData(1, 0, false, 1, -1, -1)]
+    [InlineData(1, 0, false, 0, 32, 0)]
+    [InlineData(1, 0, false, 0, 0, 0)]
+    [InlineData(1, 0, false, 0, 9, 0)]
+    [InlineData(1, 0, false, 0, 9, 1)]
+    [InlineData(1, 0, false, 0, 9, -1)]
+    public void InvalidMemoryFaultSites_FailClosed(int index, uint pc, bool delay, int prefix, int register, int value)
+    {
+        var operations = new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0),
+        };
+        var program = new RecompilerIrProgram([new RecompilerIrBlock(0, operations,
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4),
+            memoryFaultSites: [new RecompilerMemoryFaultSite(index, pc, delay, prefix, register, value)])]);
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeFalse();
+        RecompilerHostCodeGen.Generate(program).Success.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void MemoryFaultPrefix_MustMatchInteriorRetirementBoundary(int prefix)
+    {
+        var operations = new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0),
+        };
+        // A boundary at the fault operation runs before its guard. Both too little
+        // and too much prefix would break exact accounting (including unsigned subtraction).
+        var boundary = prefix == 0 ? 1 : 2;
+        var block = new RecompilerIrBlock(0, operations, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 8),
+            retiredInstructionCount: 2, instructionBoundaries: [boundary],
+            memoryFaultSites: [new RecompilerMemoryFaultSite(1, (uint)prefix * 4, false, prefix)]);
+        var program = new RecompilerIrProgram([block]);
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeFalse();
+        RecompilerHostCodeGen.Generate(program).Success.Should().BeFalse();
+    }
+
+    [Fact]
     public void ValidGprBlock_ValidatesAndSerializesDeterministically()
     {
         var first = CreateProgram();

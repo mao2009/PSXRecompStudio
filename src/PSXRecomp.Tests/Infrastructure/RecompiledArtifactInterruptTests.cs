@@ -265,12 +265,14 @@ public sealed class RecompiledArtifactInterruptTests
         result.DiagnosticMessage.Should().Contain($"EPC=0x{core.GetCop0(14):X8}");
     }
 
-    [Fact]
-    public void IrqAfterFusedLoad_CommitsPendingLoadBeforeObserverAndKeepsEpcAtObserver()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void IrqAfterFusedLoad_CommitsPendingLoadBeforeObserverAndKeepsEpcAtObserver(bool faultingObserver)
     {
         var words = Program(ExitCriticalSection(),
             [Lui(T0, 0x8000), Ori(T0, T0, 0x1000), Mem(R3000aOpcode.Lw, T1, T0, 0),
-             MipsEncoding.I(0x09, (byte)T1, (byte)T1, 1), Ori(R3000aRegister.T2, Zero, 99)]);
+             faultingObserver ? Mem(R3000aOpcode.Lh, T1, T1, 1) : MipsEncoding.I(0x09, (byte)T1, (byte)T1, 1), Ori(R3000aRegister.T2, Zero, 99)]);
         using var dir = new TempDirectory();
         Run(words, dir, withRuntime: false);
         ulong retired = 0;
@@ -285,6 +287,28 @@ public sealed class RecompiledArtifactInterruptTests
         G(run, T1).Should().Be(words[0], "exception entry flushes the pending load even though the observer would cancel it");
         G(run, R3000aRegister.T2).Should().Be(0);
         retired.Should().Be(5);
+        run.Requests.Should().BeEmpty("IRQ wins before the observer, so its address-fault COP0 write must not run");
+    }
+
+    [Fact]
+    public void IrqAfterBranch_DoesNotSuppressAddressFaultInItsOwedDelaySlot()
+    {
+        var words = Program(ExitCriticalSection(), Li(T0, 0x80002001),
+            [MipsEncoding.Branch(0x04, 0, 0, Entry + 16, Entry + 24), Mem(R3000aOpcode.Sw, T1, T0, 0)]);
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+        ulong retired = 0;
+        var run = RunScripted(dir, _ => "V 0", count =>
+        {
+            retired += count;
+            return retired >= 5 ? "I" : "A";
+        }, syscallSr: Frame(SrIec | SrIm2), eventCredit: 1, requireExactTime: true);
+        run.HasSnapshot.Should().BeTrue();
+        retired.Should().Be(5);
+        run.Requests.Should().BeEmpty("a fault performs no MMIO, and this standalone artifact owns its local COP0");
+        run.Snapshot!["exception.code"].Should().Be(5);
+        run.Snapshot["exception.faultPc"].Should().Be(Entry + 16);
+        run.Snapshot["cop0.sr"].Should().Be(SrIec | SrIm2, "no INT entry superseded the standalone delay-slot fault");
     }
 
     [Theory]

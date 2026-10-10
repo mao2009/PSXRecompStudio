@@ -506,9 +506,9 @@ public static class RecompilerHostCodeGen
 
         sb.AppendLine($"static int32_t {functionName}({StateStruct}* {StateParam}) {{");
 
-        var operationIndex = 0;
-        foreach (var op in block.Operations)
+        for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
         {
+            var op = block.Operations[operationIndex];
             if (block.InstructionBoundaries.Contains(operationIndex))
                 sb.AppendLine(IndentUnit + "if (state->host_retired != 0) { state->retired_total++; state->partial_retired++; state->host_retired(state); }");
             if (block.HasLoadDelay && operationIndex == block.InstructionBoundaries[0] && block.InterruptLoadCommit is { } commit)
@@ -518,7 +518,8 @@ public static class RecompilerHostCodeGen
                 sb.AppendLine(IndentUnit + IndentUnit + $"state->pc = {FormatImmediate(unchecked(block.EntryPc + 4))}; state->host_interrupt(state); state->next_pc = state->pc; state->unit_interrupted = 1u; return RECOMPILER_REASON_SUCCESS;");
                 sb.AppendLine(IndentUnit + "}");
             }
-            operationIndex++;
+            foreach (var site in block.MemoryFaultSites.Where(site => site.OperationIndex == operationIndex))
+                EmitMemoryFaultGuard(sb, op, site, valueNames);
             var stmt = EmitOperation(op, valueNames);
             if (stmt != null)
             {
@@ -531,6 +532,28 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + EmitExit(block.Exit));
         sb.AppendLine("}");
         sb.AppendLine();
+    }
+
+    private static void EmitMemoryFaultGuard(StringBuilder sb, RecompilerIrOperation op,
+        RecompilerMemoryFaultSite site, Dictionary<int, string> valueNames)
+    {
+        var mask = op.Kind is RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Store16 ? 1u : 3u;
+        var excode = op.Kind is RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32 ? 5u : 4u;
+        var address = ResolveValue(op.InputValueA, valueNames);
+        sb.AppendLine(IndentUnit + $"if (({address} & {mask}u) != 0u) {{");
+        if (site.PendingLoadRegister > 0)
+            sb.AppendLine(IndentUnit + IndentUnit + $"state->gpr[{site.PendingLoadRegister}] = {ResolveValue(site.PendingLoadValueId, valueNames)};");
+        // A fused prefix has retired even though this memory instruction has not. Downstream
+        // per-instruction accounting may already have credited it; charge only the remainder.
+        sb.AppendLine(IndentUnit + IndentUnit + $"state->retired_total += {site.RetiredPrefix}u - state->partial_retired;");
+        sb.AppendLine(IndentUnit + IndentUnit + $"state->partial_retired = {site.RetiredPrefix}u;");
+        sb.AppendLine(IndentUnit + IndentUnit + $"if (state->host_retired) state->host_retired(state);");
+        sb.AppendLine(IndentUnit + IndentUnit + $"{Cop0WriteHelper}(state, 8u, {address});");
+        sb.AppendLine(IndentUnit + IndentUnit + $"state->{ExceptionRaisedField} = 1u; state->{ExceptionCodeField} = {excode}u;");
+        sb.AppendLine(IndentUnit + IndentUnit + $"state->{ExceptionFaultPcField} = {FormatImmediate(site.FaultPc)}; state->{ExceptionInDelaySlotField} = {(site.InDelaySlot ? 1 : 0)}u;");
+        sb.AppendLine(IndentUnit + IndentUnit + "state->termination_reason = RECOMPILER_REASON_EXCEPTION;");
+        sb.AppendLine(IndentUnit + IndentUnit + "return (int32_t)RECOMPILER_REASON_EXCEPTION;");
+        sb.AppendLine(IndentUnit + "}");
     }
 
     private static string? EmitOperation(
@@ -955,7 +978,7 @@ public static class RecompilerHostCodeGen
         // Issue #732: in firmware mode a SYSCALL/BREAK exit enters the guest's own exception vector, exactly as
         // the interpreter's RaiseException does, and execution continues there (typically the kernel handler at
         // 0x80000080). The trapping instruction retires nothing. Emitted only for a program with a trap exit.
-        if (program.Blocks.Concat(loadedCode.Blocks.Select(static v => v.Block)).Any(static block => block.Exit.Exception is { IsRaised: true }))
+        if (program.Blocks.Concat(loadedCode.Blocks.Select(static v => v.Block)).Any(static block => block.Exit.Exception is { IsRaised: true } || block.MemoryFaultSites.Count != 0))
         {
             sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} == RECOMPILER_REASON_EXCEPTION && " +
                 $"{StateParam}->{ExceptionRaisedField} != 0u && {StateParam}->{GuestExceptionsField} != 0u) {{");
