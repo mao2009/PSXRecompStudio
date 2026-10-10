@@ -142,7 +142,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         while ((line = process.StandardOutput.ReadLine()) is not null)
         {
             var isRequest = line.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioReadPrefix, StringComparison.Ordinal)
-                || line.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioWritePrefix, StringComparison.Ordinal);
+                || line.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioWritePrefix, StringComparison.Ordinal)
+                || line.StartsWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix, StringComparison.Ordinal);
             if (line == RecompiledArtifactCodeGen.ProtocolInitLine
                 || line.StartsWith(RecompiledArtifactCodeGen.ProtocolTransferPrefix, StringComparison.Ordinal))
             {
@@ -324,6 +325,22 @@ public sealed class RecompiledArtifactMmioBridgeTests
 
         run.Requests.Should().Equal(Read(4, 0xFFFFFFFFu));
         G(run, R3000aRegister.S0).Should().Be(7u);
+    }
+
+    [Theory]
+    [InlineData("Vfoo 1")]
+    [InlineData("V +1")]
+    [InlineData("V -1")]
+    [InlineData("V 1foo")]
+    [InlineData("V 4294967296")]
+    [InlineData("D 0 0 0 0")]
+    public void FirmwareCop0_MalformedReplyFailsClosed(string answer)
+    {
+        using var dir = new TempDirectory();
+        Run(Program([MixedFallbackTestSupport.Mfc0(R3000aRegister.S0, 3), MipsEncoding.Nop]), dir, withRuntime: false);
+        var run = RunScripted(dir, _ => answer, guestExceptions: true);
+        run.ExitCode.Should().Be(RecompiledArtifactCodeGen.MmioProtocolExitCode);
+        run.HasSnapshot.Should().BeFalse();
     }
 
     // ---- reaching the existing device implementations --------------------------

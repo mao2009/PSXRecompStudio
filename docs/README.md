@@ -90,6 +90,10 @@ Dependencies:
 Constraints:
 ```
 
+## Project direction
+
+- [Project mission: authorized commercial re-release and preservation](project-mission.md) — strategic direction; not an implementation or compatibility claim.
+
 ## Current subsystem documentation
 
 - [Top-level Architecture SSOT](../ARCHITECTURE.md)
@@ -118,6 +122,7 @@ Constraints:
 - [Synthetic showcase demo](development/showcase-demo.md)
 - [References and Prior Art](REFERENCES.md)
 - [Architecture Decision Records](adr/)
+  - [ADR-026: AOT RAM-placed code](adr/026-aot-ram-placed-code.md)
 - CPU / R3000A
   - [R3000A Overview](cpu/r3000a.md)
   - [Registers](cpu/registers.md)

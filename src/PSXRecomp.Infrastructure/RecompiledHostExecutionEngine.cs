@@ -297,7 +297,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, _loadedCode, FallbackTransitionObserver);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
         _bridge = bridge;
         var arguments = new List<string>(4) { _inputPath, _imagePath };
         if (bridge is not null)
@@ -654,8 +654,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             bool guestFirmware,
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
             ICdSectorSource? disc,
-            LoadedCodeTable loadedCode,
-            Action<MixedFallbackTransition>? fallbackTransitionObserver)
+            Action<MixedFallbackTransition>? fallbackTransitionObserver,
+            LoadedCodeTable loadedCode)
         {
             _fallbackTransitionObserver = fallbackTransitionObserver;
             _disc = disc;
@@ -703,13 +703,27 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _loadedCode, _fallbackTransitionObserver);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode);
                 }
                 Send(string.Create(CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
                 Decline();
+                return true;
+            }
+
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix, StringComparison.Ordinal))
+            {
+                var fields = trimmed[RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (!_guestFirmware || _devices is null || fields.Length != 3
+                    || !int.TryParse(fields[0], NumberStyles.None, CultureInfo.InvariantCulture, out var reg)
+                    || reg is < 0 or > 31 or 12 or 13 or 14
+                    || !uint.TryParse(fields[1], NumberStyles.None, CultureInfo.InvariantCulture, out var write) || write > 1
+                    || !uint.TryParse(fields[2], NumberStyles.None, CultureInfo.InvariantCulture, out var value))
+                    throw new InvalidOperationException("Malformed firmware COP0 access.");
+                if (write != 0) _devices.Core.SetCop0(reg, value);
+                Send(FormattableString.Invariant($"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {_devices.Core.GetCop0(reg)}"));
                 return true;
             }
 

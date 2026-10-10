@@ -31,6 +31,7 @@ internal sealed class OpenBiosProbeAccounting
     private readonly Dictionary<uint, ulong> _fetches = [];
     private readonly Dictionary<uint, (ulong Transitions, ulong Indirect, ulong Retired)> _entries = [];
     private readonly SortedDictionary<string, ulong> _exits = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (ulong Transitions, ulong Retired)> _aotClasses = new(StringComparer.Ordinal);
     private readonly SortedDictionary<(uint ExcCode, uint Opcode), (uint Pc, uint Word, ulong AtFetch)> _unsupported = [];
 
     public ulong FallbackFetches { get; private set; }
@@ -86,10 +87,32 @@ internal sealed class OpenBiosProbeAccounting
         _unsupported.TryAdd((code, word >> 26), (at, word, FallbackFetches));
     }
 
+    /// <summary>
+    /// The code image a PC belongs to, by load range: the ROM, the kernel image the ROM copies to low RAM, the shell, and
+    /// the PS-X EXE (with its overlays: everything else the firmware loads into RAM). Anything else is unknown.
+    /// </summary>
+    public static string CodeImageOfRegion(string region) => region switch
+    {
+        Rom => "rom",
+        KernelRam => "kernel-ram-image",
+        Shell => "shell",
+        UserRam => "ps-x-exe",
+        _ => "unknown",
+    };
+
+    /// <summary>
+    /// The AOT class of a handoff when its producer did not say (<see cref="MixedFallbackTransition.AotClass"/>): ROM code
+    /// is a known image without a block. With no producer classification, other addresses use the conservative unknown-image class.
+    /// </summary>
+    public static string AotClassOf(MixedFallbackTransition transition) =>
+        transition.AotClass ?? (RegionOf(transition.EntryPc) == Rom ? MixedFallbackAotClass.KnownNotYetAot : MixedFallbackAotClass.NotInAnyImage);
+
     public void OnTransition(MixedFallbackTransition transition)
     {
         ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_entries, transition.EntryPc, out _);
         entry = (entry.Transitions + 1, entry.Indirect + (transition.Indirect ? 1UL : 0), entry.Retired + transition.RetiredInstructions);
+        ref var aot = ref CollectionsMarshal.GetValueRefOrAddDefault(_aotClasses, AotClassOf(transition), out _);
+        aot = (aot.Transitions + 1, aot.Retired + transition.RetiredInstructions);
         var exit = transition.Status switch
         {
             FallbackSegmentStatus.Returned => "returned-to-block",
@@ -107,6 +130,7 @@ internal sealed class OpenBiosProbeAccounting
         var retired = _entries.Values.Aggregate(0UL, static (sum, e) => sum + e.Retired);
         var fetchesByRegion = _fetches.GroupBy(static f => RegionOf(f.Key)).ToDictionary(static g => g.Key, static g => g.Aggregate(0UL, static (s, f) => s + f.Value));
         var entriesByRegion = _entries.GroupBy(static e => RegionOf(e.Key)).ToDictionary(static g => g.Key, static g => g.Aggregate(0UL, static (s, e) => s + e.Value.Transitions));
+        var retiredByRegion = _entries.GroupBy(static e => RegionOf(e.Key)).ToDictionary(static g => g.Key, static g => g.Aggregate(0UL, static (s, e) => s + e.Value.Retired));
 
         return new
         {
@@ -120,11 +144,13 @@ internal sealed class OpenBiosProbeAccounting
             regions = Regions.Select(region => new
             {
                 region,
+                codeImage = CodeImageOfRegion(region),
                 nativeInstructions = region == nativeRegion ? nativeInstructions : (nativeRegion is null ? null : 0UL),
                 fallbackFetches = fetchesByRegion.GetValueOrDefault(region),
                 fallbackFetchShare = Share(fetchesByRegion.GetValueOrDefault(region), FallbackFetches),
                 transitionsEntered = entriesByRegion.GetValueOrDefault(region),
                 transitionShare = Share(entriesByRegion.GetValueOrDefault(region), transitions),
+                retiredInSegmentsEntered = retiredByRegion.GetValueOrDefault(region),
             }).ToArray(),
             transitions = new
             {
@@ -139,6 +165,14 @@ internal sealed class OpenBiosProbeAccounting
                     {
                         reason = g.Reason, transitions = g.Transitions, indirect = g.Indirect, retiredInstructions = g.Retired,
                         transitionShare = Share(g.Transitions, transitions), retiredShare = Share(g.Retired, retired),
+                    }).ToArray(),
+                byAotClass = _aotClasses.OrderByDescending(static a => a.Value.Transitions).ThenBy(static a => a.Key, StringComparer.Ordinal)
+                    .Select(a => new
+                    {
+                        aotClass = a.Key,
+                        preDeterminable = a.Key != MixedFallbackAotClass.RuntimeGenerated,
+                        transitions = a.Value.Transitions, retiredInstructions = a.Value.Retired,
+                        transitionShare = Share(a.Value.Transitions, transitions), retiredShare = Share(a.Value.Retired, retired),
                     }).ToArray(),
                 byExit = _exits.Select(static e => new { exit = e.Key, transitions = e.Value }).ToArray(),
             },

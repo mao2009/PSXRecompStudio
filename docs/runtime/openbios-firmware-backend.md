@@ -26,7 +26,10 @@ psxrecomp openbios-probe out/openbios/openbios.bin --json
 ```
 
 The helper validates the pinned, clean source checkout and offers a digest-pinned
-Docker builder or a supplied native toolchain. The recorded ROM hash uses the
+Docker builder or a supplied native toolchain. It verifies the 512 KiB output,
+copies the observed MIT LICENSE beside the local ROM, and records its SHA-256
+and builder details under git-ignored `out/`. Each builder requires independent
+ROM hash and end-to-end verification. The recorded ROM hash uses the
 SHA-pinned Windows GCC 16.2.0 archive listed in `scripts/openbios/build.sh`.
 On Linux that archive can run in a separate Wine prefix with Windows `make` and
 the toolchain's `bin` on its Windows PATH; local building does not approve
@@ -127,6 +130,99 @@ psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-di
   --stop-at 0x80010014 --differential --json
 ```
 
+`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--json]`
+
+The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =
+37160 bytes for the pinned build) is built by
+`ReachableProgramBuilder.BuildFirmwareImage` from the reset vector plus the
+explicit `--roots` (one hex PC per line; for example the ELF's `T`/`t` symbols
+in the ROM code range, extracted with `nm` — the CLI does not parse ELF),
+compiled with `gcc` and run by `RecompiledHostExecutionEngine` in firmware mode
+(see [host codegen](../development/recompiler-host-codegen.md)). Without
+`--load-images`, RAM-placed code runs through interpreter fallback. With an
+explicit manifest, matching guarded versions run natively and unknown or
+changed code uses fallback over the same device graph; the report separates `nativeInstructions` from `fallbackInstructions`.
+Milestones come from the fallback interpreter's fetches (native blocks are not
+observed per instruction; the reset vector is the build's first dispatch unit).
+`--differential` first runs the interpreter backend and compares both at the
+first fetch of `0x80030000` (shell), `0x80010000` (the executable entry) and
+every `--compare-at` PC (repeatable). A host boundary is captured by the
+fallback interpreter, so a PC inside a compiled block is reported as not
+reached. `--stop-at <pc>` ends both runs before they first execute that PC
+(the host sees fallback PCs only; its run then ends as
+`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED` with `stopAt.reachedByHost:true`), so a
+check need not spin the executable's final loop; without it the full run is
+unchanged. `--symbols` takes `nm -n` output (the CLI never parses ELF).
+Without `--json` a compact summary precedes the indented document; progress
+goes to stderr every 2^25 fetches.
+
+#### Report schema (generated host)
+
+Besides the fields above (`execution` keeps the session's raw evidence):
+
+- `accounting` — what was observed, never an estimate:
+  - `native.instructions`: the sum of the artifact's guest-time (`R`) reports,
+    i.e. instructions compiled blocks retired. It carries no PC, so
+    `native.region` is set only when every compiled block lies in one region
+    (otherwise null and per-region native counts are null).
+  - `fallback.fetches`: PCs the fallback interpreter was about to execute;
+    `retiredInstructions` is the session's retired count. An instruction that
+    takes an exception (IRQ, SYSCALL, fault) is fetched, not retired:
+    `fetchesNotRetired` is the difference.
+  - `regions[]` (`rom` = physical 0x1FC00000–0x1FC7FFFF, `kernel-ram` = RAM
+    < 0x10000, `shell` = 0x30000–0x450C0, `user-ram` = other RAM incl.
+    mirrors, `other`): `nativeInstructions`, `fallbackFetches` and
+    `transitionsEntered` with their shares.
+  - `transitions`: artifact→interpreter handoffs. `byReason[]` classifies the
+    entry PC using the AOT-aware `observation-point`, `version-mismatch`,
+    `aot-coverage-gap:loaded-image|rom` and `unknown-code` reasons. The generic
+    accounting helper retains address-based reasons for older callers. Each
+    reason carries transitions, how many came
+    from JR/JALR (`indirect`), retired instructions and shares. `byAotClass[]`
+    (`MixedFallbackAotClass`, AOT-only project: no run-time codegen) says why
+    no AOT code ran: `known-not-yet-aot` (in a known image, no block),
+    `not-in-any-aot-image` (statically unknown to the build), `image-stale`
+    (content hash/generation differs), `region-overwritten` (another image
+    now occupies it), `runtime-generated` (class C: run-time generated or
+    unanalysable self-modifying, `preDeterminable:false`). The producer of a
+    handoff sets `MixedFallbackTransition.AotClass` when it knows (an AOT image
+    table); otherwise the probe derives it from the address: ROM →
+    `known-not-yet-aot`, anything else → `not-in-any-aot-image`. This
+    address heuristic is separate from the probe's image-aware `byReason` and
+    does not establish runtime code provenance. `byExit[]`: `returned-to-block`,
+    `budget-exhausted`, `stopped:<code>`. Each region names its `codeImage`
+    (`rom`, `kernel-ram-image`, `shell`, `ps-x-exe` — the executable and its
+    overlays, i.e. other RAM — or `unknown`) and the instructions retired in
+    segments entered there (`retiredInSegmentsEntered`).
+  - `hotEntries[]` (top 20 entry PCs by transitions), `hotPcs[]` (top 20
+    fallback PCs by fetches), `hotSymbols[]` (with `--symbols`: fetches per
+    `region:function`; a PC maps to the nearest text symbol at or below it in
+    the same region, by physical address).
+  - `unsupportedOpcodes[]`: the first RI (10) / CpU (11) exception per
+    (ExcCode, major opcode) seen at the vector: faulting PC (EPC, +4 in a
+    delay slot), word, fallback fetch index.
+- `timings` (wall clock, not deterministic): `buildMs` (image analysis),
+  `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
+  `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −
+  fallback − transfer (compiled blocks, MMIO/device relay, process start),
+  `totalMs` (the whole command). `aot`: `generatedCBytes` (UTF-8 bytes of the
+  generated C) and `artifactBytes` (the compiled binary).
+- `consistency.differentialPass`: additionally requires every explicitly
+  requested boundary and the first hardware IRQ comparison to match; true only when at least one boundary was
+  compared, every boundary the interpreter reached matched in the host, and
+  the milestones match; null without `--differential`.
+- `differential.<pc>`: `match`, `firstMismatch` (`kind` cpu/device/ram, `name`,
+  both values; CPU before devices before RAM), `cpuMismatches[]` (PC, r1–r31,
+  HI, LO, SR, CAUSE, EPC, BadVAddr), `deviceMismatches[]` (I_STAT, I_MASK, IRQ
+  line, DMA DPCR/DICR/MADR/BCR/CHCR and IRQ, timer counter/target/IRQ, SIO0
+  IRQ, GPUSTAT, VRAM SHA-256, CD-ROM index/status/IF/IE/FIFO counts/last
+  command/mode), `ramFirstMismatch` (address, 4 KiB page, 16 bytes either side
+  in both runs), `ramMismatchBytes`, `ramMismatchPages`, both RAM SHA-256.
+  Only side-effect-free reads are used (no timer mode, no FIFO pops).
+- `milestoneComparison`: whether both runs reached the same milestones
+  (fetch indices excluded: they count different fetches) and the
+  interpreter's report. `stopAt`: the PC and whether each run reached it.
+
 `prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
 built ELF pair. Manifest root paths are relative to the manifest. `boot-exe`
 reads the synthetic disc's declared executable before the run. Observation
@@ -179,7 +275,22 @@ Disc insertion/removal is not modelled; the sector source is fixed at device
 construction. Reset rearms ShellOpen and GetStat consumes it, covered by tests;
 this is model evidence rather than an actual-hardware validation.
 
-### Ahead-of-time RAM-placed code (`--load-images`, ADR-026)
+Baseline with the accounting above (same command plus `--symbols`, before any
+RAM AOT work): native 13,802,380 (all ROM); fallback 478,090,664 retired
+(fetched +115); 712,411 transitions, 712,394 of them at the A0/B0/C0 vectors
+(B0 alone 712,330; `B0Handler` 5.7M fetches), all `not-in-any-aot-image`
+except 6 `known-not-yet-aot` ROM entries (`flushCache`). Fallback fetches:
+user RAM 63% (the executable's `b .` spin, 300M — `--stop-at` removes it),
+shell 35% (one 163M-instruction segment from `0x80030C44`), kernel RAM 1.9%.
+Time: run 1024 s, of which transfer (copy-sync) 863 s, fallback 88 s,
+native+host 72 s; gcc 6.2 s for 5.5 MB of C (2.2 MB binary). Differential:
+the shell entry matches in full; at `0x80010000` CPU and RAM match but the
+three timer counters differ (interpreter `0xBB56`, host `0xBF4D`), and the
+host's native + fallback count to that point exceeds the interpreter's
+fetches by 1,880, so `differentialPass` is false: device time diverges
+(the earlier comparison did not read device state).
+
+### Ahead-of-time RAM-placed code (`--load-images`, [ADR-026](../adr/026-aot-ram-placed-code.md))
 
 PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. Code the firmware
 places in RAM is compiled before the run from explicit images listed in a manifest
@@ -221,6 +332,10 @@ Measured (pinned build, synthetic disc, `--segment-budget 1000000 --segments 300
 
 The historical report claimed both runs match the interpreter at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
 SHA-256) with the same milestones (111 INT, 9 SYSCALL). The remaining fallback is the four observation
+The historical AOT comparison matched CPU and RAM at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
+SHA-256); it did not establish strict device/time parity. These earlier measurements
+used a different comparison contract. Both runs had the same milestones
+(111 INT, 9 SYSCALL). The remaining fallback is the four observation
 points (each exception: `0x80000080` and `0x26A4`), a kernel coverage gap after the observation point
 (`0x26E4`, 120 entries) and a ROM coverage gap (`0xBFC05734`, 6 entries). With only symbol roots the shell's
 `MOD_UpdateEffect` switch target `0x80032BD8` was a coverage gap entered ~1.46M times (each transition
@@ -277,3 +392,12 @@ version selection, unknown-PC fallback and instruction accounting; ROM-only gene
 through its own CD driver (corrected synthetic fixture; earlier Persona results are historical). Not done: GTE (#447) so Persona cannot get
 past its first COP2 instruction; real-game generated-host parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
+
+### Remaining generated memory-fault coverage
+
+Generated firmware execution does not yet deliver native address-error traps for
+misaligned LH/LW/SH/SW accesses with matching BadVAddr and exception state. A
+synthetic ROM LW at `0x80001001` reaches its guest handler on the interpreter but
+is currently read as bytes by the artifact. Explicit COP0 access ownership is
+fixed separately; it does not establish memory-fault parity. Track this gate
+before claiming complete firmware exception compatibility.

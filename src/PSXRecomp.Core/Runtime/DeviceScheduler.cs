@@ -213,7 +213,8 @@ public sealed class DeviceScheduler
         var phase = (ulong)_cyclesSinceVblank + cycles;
         if (phase >= VblankIntervalCycles)
         {
-            _gpu?.OnVblank();
+            // Each VBlank toggles the field; an even number leaves it unchanged.
+            if (((phase / VblankIntervalCycles) & 1u) != 0) _gpu?.OnVblank();
             _interrupts.Raise(VblankIrq);
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);

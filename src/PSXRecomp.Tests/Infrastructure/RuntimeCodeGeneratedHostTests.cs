@@ -53,7 +53,7 @@ public sealed class RuntimeCodeGeneratedHostTests
         return new ExecutionOrchestrator().Execute(interpreter, handoff: null, Request(budget)).FinalSnapshot!;
     }
 
-    private sealed record HostRun(RecompilerStateSnapshot Final, MixedFallbackEvidence Evidence, LoadedCodeTable Loaded);
+    private sealed record HostRun(RecompilerStateSnapshot Final, MixedFallbackEvidence Evidence, LoadedCodeTable Loaded, IReadOnlyList<MixedFallbackTransition> Transitions, IReadOnlyList<uint> Fetches);
 
     private static HostRun RunHost(uint[] rom, IEnumerable<(uint Dest, uint[] Code, uint[] Roots)> images, IReadOnlySet<uint> interpreted, uint budget)
     {
@@ -63,10 +63,14 @@ public sealed class RuntimeCodeGeneratedHostTests
         using var engine = new RecompiledHostExecutionEngine(
             romCode, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
             mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+        var fetches = new List<uint>();
+        engine.FallbackFetchObserver = (_, pc) => fetches.Add(pc);
+        var transitions = new List<MixedFallbackTransition>();
+        engine.FallbackTransitionObserver = transitions.Add;
         var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(budget));
         result.FinalSnapshot.Should().NotBeNull(result.DiagnosticMessage);
         engine.NativeRetiredInstructions.Should().BeGreaterThan(0ul);
-        return new HostRun(result.FinalSnapshot!, engine.FallbackEvidence!, loaded);
+        return new HostRun(result.FinalSnapshot!, engine.FallbackEvidence!, loaded, transitions, fetches);
     }
 
     [Theory]
@@ -136,6 +140,56 @@ public sealed class RuntimeCodeGeneratedHostTests
         // Only the code that matches no pre-generated version ran in the fallback: one instruction.
         host.Evidence.FallbackInstructions.Should().Be(1ul);
         host.Evidence.Targets.Should().ContainSingle().Which.Target.Should().Be(slot);
+        host.Transitions.Should().ContainSingle();
+        host.Transitions[0].EntryPc.Should().Be(slot);
+        host.Transitions[0].RetiredInstructions.Should().Be(1ul);
+        host.Transitions[0].ExitPc.Should().Be(slot + 4);
+        host.Transitions[0].Status.Should().Be(FallbackSegmentStatus.Returned);
+    }
+
+    [Fact]
+    public void MutableBranchSuccessor_ObservesTheOriginalDelaySlotLoadValue()
+    {
+        const uint slot = 0x80001000, data = 0x80002000;
+        uint[] routine = [Beq(slot, slot + 12), Lw(T0, T1, 0), Nop, Nop, Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, slot, routine);
+        reset.Emit(Li(T1, data), Li(T5, 0x22), [Sw(T5, T1, 0)]);
+        reset.Emit(Li(A0, slot), Li(T5, Addu(S0, T0, Zero)), [Sw(T5, A0, 12)]);
+        reset.Emit(Ori(T0, Zero, 0x11));
+        Call(reset, slot);
+        var rom = Rom(reset);
+        var reference = Reference(rom, 3000);
+        var host = RunHost(rom, [(slot, routine, [slot])], new HashSet<uint>(), 3000);
+
+        reference.Gpr[(int)S0].Should().Be(0x11u);
+        host.Final.Gpr[(int)S0].Should().Be(reference.Gpr[(int)S0]);
+        host.Evidence.FallbackInstructions.Should().BeGreaterThan(0ul);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void ExplicitObservationPoint_IsFetchedByTheFallbackIncludingFusedUnits(int kind)
+    {
+        const uint slot = 0x80001000;
+        uint[] routine = kind switch
+        {
+            0 => [Ori(S1, Zero, 1), Ori(S2, Zero, 2), Jr(Ra), Nop],
+            1 => [Lw(T0, T1, 0), Addu(S1, T0, Zero), Jr(Ra), Nop],
+            _ => [Beq(slot, slot + 8), Ori(S1, Zero, 1), Jr(Ra), Nop],
+        };
+        var reset = new Block(RomBase);
+        Install(reset, slot, routine);
+        reset.Emit(Li(T1, 0x80002000), [Ori(T0, Zero, 0x11)]);
+        Call(reset, slot);
+        var rom = Rom(reset);
+        var host = RunHost(rom, [(slot, routine, [slot])], new HashSet<uint> { slot + 4 }, 3000);
+        var reference = Reference(rom, 3000);
+
+        host.Fetches.Should().Contain(slot + 4);
+        host.Final.Gpr[(int)S1].Should().Be(reference.Gpr[(int)S1]);
     }
 
     [Fact]

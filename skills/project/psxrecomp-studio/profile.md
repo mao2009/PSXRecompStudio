@@ -61,6 +61,9 @@ Current records:
 | 021 | Real-ROM Coverage Is Measured Per Instruction, Separately From Proof Selection | Accepted |
 | 022 | GPU runtime is a pure managed model with a psx-spx GPUSTAT layout | Accepted |
 | 023 | Rust Coexists Inside the Existing Native Shared Library | Accepted |
+| 024 | Reference-first Execution Window Alignment | Accepted |
+| 025 | Generated-host Guest Time and Device-originated RAM | Accepted |
+| 026 | AOT RAM-placed Code | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).

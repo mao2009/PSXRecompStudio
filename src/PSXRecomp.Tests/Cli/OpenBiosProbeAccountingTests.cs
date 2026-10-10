@@ -41,6 +41,29 @@ public sealed class OpenBiosProbeAccountingTests
     private static JsonNode Report(OpenBiosProbeAccounting accounting, ulong? native, ulong? retired, uint[] blocks, ProbeSymbols? symbols = null) =>
         JsonSerializer.SerializeToNode(accounting.Report(native, retired, blocks, symbols))!;
 
+    [Theory]
+    [InlineData(0x80001000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0xA0001000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0x00001000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0x80201000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0x9FC00000u, "aot-coverage-gap:rom")]
+    [InlineData(0x1FC00000u, "aot-coverage-gap:rom")]
+    [InlineData(0xBFC00000u, "aot-coverage-gap:rom")]
+    [InlineData(0xC0001000u, "unknown-code")]
+    public void FallbackCoverage_RecognizesAliasesWithoutChangingTheReportedPc(uint pc, string reason)
+    {
+        var manifest = new PSXRecomp.Core.Recompiler.LoadImageManifest(
+            [new PSXRecomp.Core.Recompiler.LoadedImageSpec("ram", 0x80001000, [0u, 0u], [])], new HashSet<uint>());
+        var cause = OpenBiosProbeCommand.ClassifyFallback(pc, manifest, PSXRecomp.Core.Recompiler.LoadedCodeTable.Empty, 8);
+        Assert.Equal(reason, cause);
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(pc, true, FallbackSegmentStatus.Returned, pc + 4, 1, null));
+        var report = JsonSerializer.SerializeToNode(accounting.Report(1, 1, [0xBFC00000], null, _ => cause))!;
+        Assert.Equal($"0x{pc:X8}", report["hotEntries"]![0]!["pc"]!.ToString());
+        Assert.Equal(reason, report["hotEntries"]![0]!["reason"]!.ToString());
+        Assert.Equal(reason, report["transitions"]!["byReason"]![0]!["reason"]!.ToString());
+    }
+
     [Fact]
     public void Counts_Fetches_Transitions_And_Exits_Without_Inflating_Native()
     {
@@ -86,6 +109,34 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal(2ul, report["hotPcs"]![0]!["fetches"]!.GetValue<ulong>());
         Assert.Null(report["hotSymbols"]);
     }
+
+    [Fact]
+    public void Classifies_Aot_Class_From_The_Address_Unless_The_Handoff_Names_It()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(0xBFC05734, true, FallbackSegmentStatus.Returned, 0xBFC01000, 4, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x000000B0, true, FallbackSegmentStatus.Returned, 0xBFC01000, 2, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x000000B0, true, FallbackSegmentStatus.Returned, 0xBFC01000, 2, null));
+        accounting.OnTransition(new MixedFallbackTransition(
+            0x80010000, true, FallbackSegmentStatus.Returned, 0xBFC01000, 8, null, MixedFallbackAotClass.RuntimeGenerated));
+
+        var classes = Report(accounting, 0, 16, [0xBFC00000])["transitions"]!["byAotClass"]!.AsArray();
+
+        Assert.Equal(
+            [MixedFallbackAotClass.NotInAnyImage, MixedFallbackAotClass.KnownNotYetAot, MixedFallbackAotClass.RuntimeGenerated],
+            classes.Select(c => c!["aotClass"]!.ToString()).ToArray());
+        Assert.Equal([true, true, false], classes.Select(c => c!["preDeterminable"]!.GetValue<bool>()).ToArray());
+        Assert.Equal(0.5, classes[2]!["retiredShare"]!.GetValue<double>());
+        Assert.Equal("ps-x-exe", OpenBiosProbeAccounting.CodeImageOfRegion(OpenBiosProbeAccounting.RegionOf(0x80010000)));
+    }
+
+    [Theory]
+    [InlineData("""{"differential":{"0x80030000":{"match":true}},"milestoneComparison":{"match":true}}""", true)]
+    [InlineData("""{"differential":{"0x80030000":{"match":true},"0x80010000":"not reached"},"milestoneComparison":{"match":true}}""", false)]
+    [InlineData("""{"differential":{"0x80030000":{"match":true}},"milestoneComparison":{"match":false}}""", false)]
+    [InlineData("""{"differential":{},"milestoneComparison":{"match":true}}""", false)]
+    public void Differential_Passes_Only_When_Every_Boundary_And_The_Milestones_Match(string document, bool pass) =>
+        Assert.Equal(pass, OpenBiosProbeCommand.Consistency(JsonNode.Parse(document)!.AsObject())["differentialPass"]!.GetValue<bool>());
 
     [Fact]
     public void Native_Instructions_Stay_Unattributed_When_Blocks_Span_Regions()
