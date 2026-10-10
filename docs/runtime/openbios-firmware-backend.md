@@ -37,6 +37,11 @@ native reference toolchain archive hash. Version validation is not verification
 of an installed compiler or archive identity; each builder still requires independent ROM hash
 and end-to-end compatibility verification.
 Local building does not itself approve distribution.
+The recorded ROM hash uses the SHA-pinned Windows GCC 16.2.0 archive listed in
+`scripts/openbios/build.sh`. On Linux that archive can run in a separate Wine
+prefix with Windows `make` and the toolchain's `bin` on its Windows PATH. Keep
+ROM/ELF outputs outside tracked files and compare the ROM hash before reusing
+any prior result.
 
 ### Executable slice
 
@@ -119,7 +124,20 @@ not modelled.
 
 ### Generated host (`--engine generated-host`)
 
-`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--json]`
+The probe compiles the ROM and explicit RAM images before execution, then runs
+`RecompiledHostExecutionEngine` over the common device graph. Unknown or changed
+code uses the counted interpreter fallback. No code is compiled during the run.
+
+```bash
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+pwsh scripts/demo/synthetic-disc.ps1 -WorkDir /local/fixtures -OpenBiosCompatible
+psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-disc-openbios.bin \
+  --engine generated-host --roots /local/aot/rom.roots --load-images /local/aot/images.txt \
+  --code-bytes 37160 --segment-budget 1000000 --segments 230 \
+  --stop-at 0x80010014 --differential --json
+```
+
+`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--json]`
 
 The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =
 37160 bytes for the pinned build) is built by
@@ -127,11 +145,10 @@ The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =
 explicit `--roots` (one hex PC per line; for example the ELF's `T`/`t` symbols
 in the ROM code range, extracted with `nm` — the CLI does not parse ELF),
 compiled with `gcc` and run by `RecompiledHostExecutionEngine` in firmware mode
-(see [host codegen](../development/recompiler-host-codegen.md)). Kernel code
-copied to RAM, the `0x80`/A0/B0/C0 vectors, the shell and the loaded executable
-run natively when the explicit `--load-images` manifest supplies a matching
-guarded version; otherwise they use interpreter fallback over the same device
-graph; the report separates `nativeInstructions` from `fallbackInstructions`.
+(see [host codegen](../development/recompiler-host-codegen.md)). Without
+`--load-images`, RAM-placed code runs through interpreter fallback. With an
+explicit manifest, matching guarded versions run natively and unknown or
+changed code uses fallback over the same device graph; the report separates `nativeInstructions` from `fallbackInstructions`.
 Milestones come from the fallback interpreter's fetches (native blocks are not
 observed per instruction; the reset vector is the build's first dispatch unit).
 `--differential` first runs the interpreter backend and compares both at the
@@ -164,9 +181,10 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     mirrors, `other`): `nativeInstructions`, `fallbackFetches` and
     `transitionsEntered` with their shares.
   - `transitions`: artifact→interpreter handoffs. `byReason[]` classifies the
-    entry PC (`exception-vector` 0x80, `kernel-call-vector` A0/B0/C0,
-    `rom-no-block`, `ram-no-code-image`, and `other-no-block` for generic
-    accounting callers; the probe also reports image-aware fallback causes) with transitions, how many came
+    entry PC using the AOT-aware `observation-point`, `version-mismatch`,
+    `aot-coverage-gap:loaded-image|rom` and `unknown-code` reasons. The generic
+    accounting helper retains address-based reasons for older callers. Each
+    reason carries transitions, how many came
     from JR/JALR (`indirect`), retired instructions and shares. `byAotClass[]`
     (`MixedFallbackAotClass`, AOT-only project: no run-time codegen) says why
     no AOT code ran: `known-not-yet-aot` (in a known image, no block),
@@ -176,8 +194,9 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     unanalysable self-modifying, `preDeterminable:false`). The producer of a
     handoff sets `MixedFallbackTransition.AotClass` when it knows (an AOT image
     table); otherwise the probe derives it from the address: ROM →
-    `known-not-yet-aot`, anything else → `not-in-any-aot-image` (a conservative address-derived
-    fallback, distinct from manifest-aware classification). `byExit[]`: `returned-to-block`,
+    `known-not-yet-aot`, anything else → `not-in-any-aot-image`. This
+    address heuristic is separate from the probe's image-aware `byReason` and
+    does not establish runtime code provenance. `byExit[]`: `returned-to-block`,
     `budget-exhausted`, `stopped:<code>`. Each region names its `codeImage`
     (`rom`, `kernel-ram-image`, `shell`, `ps-x-exe` — the executable and its
     overlays, i.e. other RAM — or `unknown`) and the instructions retired in
@@ -195,7 +214,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   fallback − transfer (compiled blocks, MMIO/device relay, process start),
   `totalMs` (the whole command). `aot`: `generatedCBytes` (UTF-8 bytes of the
   generated C) and `artifactBytes` (the compiled binary).
-- `consistency.differentialPass`: true only when at least one boundary was
+- `consistency.differentialPass`: additionally requires every explicitly
+  requested boundary and the first hardware IRQ comparison to match; true only when at least one boundary was
   compared, every boundary the interpreter reached matched in the host, and
   the milestones match; null without `--differential`.
 - `differential.<pc>`: `match`, `firstMismatch` (`kind` cpu/device/ram, `name`,
@@ -210,18 +230,55 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   (fetch indices excluded: they count different fetches) and the
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
-Observed with the pinned build and the synthetic disc: the generated host boots
-the kernel, enters the shell and reaches `0x80010000` with the interpreter's
-milestones (111 INT and 9 SYSCALL vector entries). 9228 of 9290 code words are
-native; about 13.8M instructions retire natively and 178M in the fallback
-before the executable entry, over 712k artifact/interpreter transitions (mostly
-the shell's B0 calls). The page-granular RAM copy-sync costs about 0.9 ms per
-transition and dominates the ~15 minute run. `--differential` reports an
-exact match at both boundaries: identical GPRs, SR/CAUSE/EPC/BadVAddr and RAM
-SHA-256 (no differing range). The executable's final `b .` loop runs in the
-fallback until the budget, which ends the run as
-`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`; that is the probe's end, not a failure
-of the boot.
+`prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
+built ELF pair. Manifest root paths are relative to the manifest. `boot-exe`
+reads the synthetic disc's declared executable before the run. Observation
+points must remain interpreted: the generated manifest includes `C0Handler`
+(kernel RAM execution), exception vector/handler, shell and EXE entries.
+
+`--compare-at <hex-pc>` adds comparison boundaries; `--stop-at <hex-pc>` stops
+both engines before that instruction. These PCs are excluded from RAM native
+blocks. ROM-only compiled interior PCs may be unobservable; a missing boundary
+fails the verdict. `--capture-at` is the legacy interpreter register capture.
+`--symbols <nm-output>` labels fallback accounting.
+
+Differential snapshots include PC, GPR, HI/LO, COP0 SR/CAUSE/EPC/BadVAddr,
+2 MiB RAM SHA-256 and mismatch context, scratchpad SHA-256, total scheduler
+cycles, IRQ controller, DMA channels, timers, SIO0, GPU status/VRAM and CD state.
+The reads avoid clear-on-read registers. Fetch indices differ (all reference
+fetches versus fallback-only host fetches); they are not clocks. Native retired
+instructions at each boundary, fallback retired instructions, transitions and
+protocol round trips are reported separately. `consistency.differentialPass`
+requires matching states, all required boundaries, the first hardware IRQ state
+when reached, and matching milestones;
+a mismatch returns exit 2. `--stop-at 0x80030000` deliberately measures a shorter
+Shell gate; otherwise the EXE boundary is required. Kernel boot and EXE parity
+are separate claims. The first hardware IRQ snapshot is reported independently
+because endpoint CPU/RAM can converge after an earlier timing divergence.
+[ADR-025](../adr/025-generated-host-guest-time-and-device-ram.md) permits asynchronous
+IRQ delivery at the next guest-time report (up to 1024 instructions later).
+This bounded model does not establish exact device-time parity; the precise
+timing gate is tracked in [#744](https://github.com/mao2009/PSXRecompStudio/issues/744).
+The probe allows a bounded three minutes per compiler
+step; ordinary builds retain their 30-second default.
+
+Historical CPU/RAM-only comparisons did not establish device-time parity. A
+Shell state match also does not prove a successful executable payload load.
+The original deterministic disc (`4f75a05f…ab27`) declares only 20 text bytes;
+pinned OpenBIOS `dev_cd_read` rejects reads not aligned to 2048 bytes and
+`loadExe` ignores that failure. It can jump to zero RAM at the entry. Preserve
+that fixture for baseline comparison, but use `-OpenBiosCompatible` for actual
+load verification: padded 2048-byte text and a terminal loop, SHA-256
+`bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03`.
+C# and PowerShell builders share both pins. Verify the first loaded instruction
+and the marker as well as PC/state parity.
+
+The minimal ISO retains the historical endian-field omissions (including the
+big-endian Path Table Size half) and lacks a complete ISO compliance proof
+([#743](https://github.com/mao2009/PSXRecompStudio/issues/743)).
+Disc insertion/removal is not modelled; the sector source is fixed at device
+construction. Reset rearms ShellOpen and GetStat consumes it, covered by tests;
+this is model evidence rather than an actual-hardware validation.
 
 Baseline with the accounting above (same command plus `--symbols`, before any
 RAM AOT work): native 13,802,380 (all ROM); fallback 478,090,664 retired
@@ -255,8 +312,7 @@ interpret 0x000026A4   # (0x26A4, KernelRunningFromRam), shell entry 0x80030000,
 ```
 
 Addresses come from the pinned build's `openbios.elf` (program headers, `exceptionVector`/`A0Vector`/
-`B0Vector`/`C0Vector`, `_binary_shell_bin_start`/`_size`) and `shell/shell.elf`. Roots are the ELF `T`/`t`
-symbols inside each image plus the aligned words of read-only data that point into the image's code
+`B0Vector`/`C0Vector`, `_binary_shell_bin_start`/`_size`) and `shell/shell.elf`. The portable helper selects ELF function symbols inside each image plus the aligned words of read-only data that point into the image's code
 (switch tables: `.rodata`/`.data` of the shell, the kernel `.data` and the ROM `.rodata` for the
 kernel). A root that is not really an entry is harmless: its block holds the correct code for those
 bytes and runs only if control reaches it with those bytes in RAM. Each image is compiled at its
@@ -266,6 +322,8 @@ the counted fallback. The report lists every image (`loadedImages`), `loadedCode
 `precompileMilliseconds`, `atBoundary` (native instructions and seconds when each differential
 boundary was reached) and, per fallback target, its `cause` (`observation-point`, `version-mismatch`,
 `aot-coverage-gap:loaded-image|rom`, `unknown-code`).
+
+Historical report (not current-PC verification; original fixture and CPU/RAM-only comparison):
 
 Measured (pinned build, synthetic disc, `--segment-budget 1000000 --segments 300 --differential`):
 
@@ -277,6 +335,8 @@ Measured (pinned build, synthetic disc, `--segment-budget 1000000 --segments 300
 | copy-sync time | 808 s | 0.29 s |
 | loaded-code versions / pre-compile (gcc) | — / — | 7,211 / 68 s |
 
+The historical report claimed both runs match the interpreter at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
+SHA-256) with the same milestones (111 INT, 9 SYSCALL). The remaining fallback is the four observation
 The historical AOT comparison matched CPU and RAM at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
 SHA-256); it did not establish strict device/time parity. These earlier measurements
 used a different comparison contract. Both runs had the same milestones
@@ -315,12 +375,20 @@ pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector
 (kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) is
 compiled ahead of time from explicit images with `--load-images` (see above, ADR-026) and selected by
 content at run time; without it, or where RAM holds no pre-generated version, it runs in the
-mixed-execution interpreter fallback, which is reported as fallback. The interpreter remains the only verified way to run OpenBIOS end to end;
-generated-host execution of OpenBIOS is **not** verified (see the status line).
+mixed-execution interpreter fallback, which is reported as fallback. The corrected synthetic EXE has been loaded and its marker executed on both engines. The generated host's Shell
+boundary matches CPU/device/RAM/scratchpad/guest-cycle state. Full executable parity fails: at the first hardware
+IRQ, the host is 604 cycles later and EPC/r3 differ; at the EXE entry and marker, CPU/RAM/scratch converge but cycles
+remain 46,894 later and timers differ. These measurements use the corrected fixture and the pinned ROM; they do
+not reproduce the historical timer numbers. A diagnostic-only report interval of 64 reduced the first IRQ delay
+to 25 cycles and the entry delta to 4,667, but still failed parity and increased time-report traffic. The production
+threshold remains 1024; no timer correction is applied. See #744 for the precise timing gate and durable evidence in #732.
+For multi-image dispatch, generated switches are partitioned by 4 KiB PC pages: Clang 18 at `-O0` otherwise emits
+thousands of linear comparisons for the sparse cross-image switch. This partition preserves full-PC lookup,
+version selection, unknown-PC fallback and instruction accounting; ROM-only generation retains its existing shape.
 
 **Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc
-through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so Persona cannot get
-past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
+through its own CD driver (corrected synthetic fixture; earlier Persona results are historical). Not done: GTE (#447) so Persona cannot get
+past its first COP2 instruction; exact generated-host device-time/IRQ parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
 
 ### CD-ROM event ordering

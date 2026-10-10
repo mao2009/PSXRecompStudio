@@ -80,6 +80,15 @@ public sealed class CdRomDiscDriveTests
     }
 
     [Fact]
+    public void Reset_RearmsPowerOnShellOpen_ForTheConfiguredDisc()
+    {
+        var cd = Drive();
+        cd.Reset();
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        Command(cd, 0x01).Should().Equal(3, 0x02);
+    }
+
+    [Fact]
     public void GetStat_ReportsShellOpenOnce_AfterPowerOnWithADisc()
     {
         // OpenBIOS's dev_cd_open reads the path table only when GetStat reports stat bit 4 (psx-spx "ShellOpen").

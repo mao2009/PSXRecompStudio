@@ -34,7 +34,12 @@ internal sealed record ProbeGuestState(
         var cpu = new List<(string, uint)> { ("pc", pc) };
         cpu.AddRange(Enumerable.Range(1, 31).Select(r => ($"r{r}", engine.ReadGuestGpr(r))));
         cpu.AddRange([("hi", hi), ("lo", lo), ("sr", cop0.Sr), ("cause", cop0.Cause), ("epc", cop0.Epc), ("badvaddr", cop0.BadVAddr)]);
-        return new ProbeGuestState(pc, atFetch, cpu, CaptureDevices(engine.DiagnosticDevices), ram);
+        var devices = CaptureDevices(engine.DiagnosticDevices);
+        devices.Insert(0, ("guest_cycles", engine.GuestCycles.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        var scratch = new byte[1024];
+        for (var i = 0; i < scratch.Length; i++) scratch[i] = engine.DiagnosticDevices.Core.ReadMemory8(0x1F800000u + (uint)i);
+        devices.Add(("scratchpad_sha256", Sha256(scratch)));
+        return new ProbeGuestState(pc, atFetch, cpu, devices, ram);
     }
 
     private static List<(string, string)> CaptureDevices(PsxDeviceGraph devices)
@@ -84,9 +89,16 @@ internal sealed record ProbeGuestState(
     /// <summary>The boundary as one engine saw it (hashes and counts only).</summary>
     public object Describe() => new
     {
+        pc = Hex(Pc),
         atFetch = AtFetch,
+        cpu = Cpu.ToDictionary(static c => c.Name, static c => Hex(c.Value)),
+        devices = Devices.ToDictionary(static d => d.Name, static d => d.Value),
+        instructionWord = (Pc & 0x1FFFFFFFu) <= RamBytes - 4
+            ? Hex(BitConverter.ToUInt32(Ram, (int)(Pc & 0x1FFFFFFFu))) : null,
         sr = Hex(Value("sr")), cause = Hex(Value("cause")), epc = Hex(Value("epc")),
         ramSha256 = Sha256(Ram),
+        guestCycles = Devices.First(static d => d.Name == "guest_cycles").Value,
+        scratchpadSha256 = Devices.First(static d => d.Name == "scratchpad_sha256").Value,
     };
 
     private uint Value(string name) => Cpu.First(c => c.Name == name).Value;

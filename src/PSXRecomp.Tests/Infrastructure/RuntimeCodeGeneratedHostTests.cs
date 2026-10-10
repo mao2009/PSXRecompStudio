@@ -158,10 +158,12 @@ public sealed class RuntimeCodeGeneratedHostTests
         host.Transitions.Should().NotContain(t => t.ExitPc == entry);
     }
 
-    [Fact]
-    public void LoadedRamCode_RunsNatively_WithDirectAndIndirectJumps_AnExceptionReturn_AndARamToRomReturn()
+    [Theory]
+    [InlineData(0x80001100u)] // same dispatch page
+    [InlineData(0x80002000u)] // another dispatch page
+    public void LoadedRamCode_RunsNatively_WithDirectAndIndirectJumps_AnExceptionReturn_AndARamToRomReturn(uint r2)
     {
-        const uint r1 = 0x80001000u, r2 = 0x80001100u;
+        const uint r1 = 0x80001000u;
         uint[] handler = [Mfc0(K0, 14), Nop, Addiu(S4, S4, 1), Addiu(K0, K0, 4), Jr(K0), RecompilerCop0Tests.Rfe];
         uint[] routine1 =
         [

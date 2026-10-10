@@ -239,16 +239,18 @@ internal static class OpenBiosProbeCommand
         var codeWords = probe.CodeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(probe.CodeBytes / 4, (uint)firmware.Words.Count)).ToArray();
         var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, codeWords, OpenBiosFirmware.ResetVector, probe.Roots);
         var manifest = probe.LoadImagesPath is null ? LoadImageManifest.None : LoadImageManifest.Read(probe.LoadImagesPath, firmware, probe.Disc);
-        var loadedImages = manifest.Images
-            .Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, manifest.Interpreted)))
-            .ToArray();
+        var observedPcs = new HashSet<uint>(manifest.Interpreted) { OpenBiosBootMonitor.ShellLoadAddress, ExecutableBoundary, 0x80000080, 0x000026A4 };
+        observedPcs.UnionWith(probe.CompareAt);
+        if (probe.StopAt is { } stopPc) observedPcs.Add(stopPc);
+        var loadedImages = manifest.Images.Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observedPcs))).ToArray();
         var loadedCode = new LoadedCodeTable(loadedImages.Select(static i => i.Build));
-        var referenceSeconds = new Dictionary<uint, double>();
         var buildMs = clock.Elapsed.TotalMilliseconds;
-        var boundaryPcs = new HashSet<uint>(probe.CompareAt) { OpenBiosBootMonitor.ShellLoadAddress, ExecutableBoundary };
+        var boundaryPcs = RequiredBoundaries(probe.CompareAt, probe.StopAt);
 
         Dictionary<uint, ProbeGuestState>? reference = null;
         OpenBiosBootReport? referenceMilestones = null;
+        ProbeGuestState? referenceInterrupt = null, hostInterrupt = null;
+        var referenceSeconds = new Dictionary<uint, double>();
         var referenceStopped = false;
         double referenceMs = 0;
         if (probe.Differential)
@@ -259,15 +261,16 @@ internal static class OpenBiosProbeCommand
             using var interpreter = (InterpreterTitleExecutionEngine)backend.CreateEngine();
             var referenceMonitor = new OpenBiosBootMonitor(() => (interpreter.Cop0Diagnostics.Cause, interpreter.Cop0Diagnostics.Epc, interpreter.Cop0Diagnostics.BadVAddr));
             ulong fetches = 0;
-            var referenceClock = System.Diagnostics.Stopwatch.StartNew();
             interpreter.FetchObserver = pc =>
             {
                 fetches++;
                 referenceMonitor.OnFetch(pc);
+                if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && referenceInterrupt is null)
+                    referenceInterrupt = ProbeGuestState.Capture(interpreter, pc, fetches);
                 if (boundaryPcs.Contains(pc) && !reference.ContainsKey(pc))
                 {
                     reference[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
-                    referenceSeconds[pc] = referenceClock.Elapsed.TotalSeconds;
+                    referenceSeconds[pc] = clock.Elapsed.TotalSeconds;
                 }
 
                 if (pc == probe.StopAt)
@@ -286,14 +289,6 @@ internal static class OpenBiosProbeCommand
             referenceMs = clock.Elapsed.TotalMilliseconds;
         }
 
-        // Why a fallback target had no native code: a deliberate observation point, RAM-placed code whose bytes matched no
-        // pre-generated version (stale, overwritten or different code), a PC inside a known image that the AOT build did
-        // not cover (coverage gap), or code from no known image at all (unknown: cannot be compiled ahead of time).
-        string FallbackCause(uint pc) => ClassifyFallback(pc, manifest, loadedCode, codeWords.Count());
-        var nativeAtBoundary = new Dictionary<uint, object>();
-        var runClock = new System.Diagnostics.Stopwatch();
-        RecompiledHostExecutionEngine? hostEngine = null;
-
         var directory = Path.Combine(Path.GetTempPath(), "psxrecomp-openbios-host-" + Guid.NewGuid().ToString("N"));
         var boundaries = new Dictionary<uint, ProbeGuestState>();
         InterpreterTitleExecutionEngine? current = null;
@@ -302,10 +297,15 @@ internal static class OpenBiosProbeCommand
         Func<(uint, uint)> readCop0 = () => (current!.Cop0Diagnostics.Cause, current.Cop0Diagnostics.Epc);
         Func<uint, uint> readWord = address => current!.ReadGuestWord(address);
         var hostStopped = false;
+        ulong transitions = 0;
+        RecompiledHostExecutionEngine? hostEngine = null;
+        string FallbackCause(uint pc) => observedPcs.Contains(pc) ? "observation-point"
+            : ClassifyFallback(pc, manifest, loadedCode, codeWords.Count());
+        var nativeAtBoundary = new Dictionary<uint, object>();
         var budget = (uint)Math.Min((ulong)probe.Segments * probe.SegmentBudget, uint.MaxValue);
         try
         {
-            var measuredBuild = new MeasuredBuild(new GeneratedHostBuildService());
+            var measuredBuild = new MeasuredBuild(new GeneratedHostBuildService(TimeSpan.FromMinutes(3)));
             clock.Restart();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
@@ -319,19 +319,21 @@ internal static class OpenBiosProbeCommand
                 mixedFallback: new MixedFallbackOptions(budget, uint.MaxValue),
                 guestFirmware: true,
                 runTimeout: TimeSpan.FromMinutes(30),
-                disc: probe.Disc,
-                loadedCode: loadedCode)
+                disc: probe.Disc, loadedCode: loadedCode)
             {
                 FallbackFetchObserver = (interpreter, pc) =>
                 {
                     current = interpreter;
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
+                    if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
+                        hostInterrupt = ProbeGuestState.Capture(interpreter, pc, accounting.FallbackFetches);
                     var fetches = accounting.FallbackFetches;
                     if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
                         boundaries[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
-                        nativeAtBoundary[pc] = new { nativeInstructions = hostEngine?.NativeRetiredInstructions, seconds = runClock.Elapsed.TotalSeconds, mmioRoundTrips = hostEngine?.HostRoundTrips?.MmioAccesses, timeReportRoundTrips = hostEngine?.HostRoundTrips?.TimeReports };
+                        nativeAtBoundary[pc] = new { nativeInstructions = hostEngine?.NativeRetiredInstructions, seconds = clock.Elapsed.TotalSeconds,
+                            mmioRoundTrips = hostEngine?.HostRoundTrips?.MmioAccesses, timeReportRoundTrips = hostEngine?.HostRoundTrips?.TimeReports };
                     }
 
                     if (pc == probe.StopAt)
@@ -344,10 +346,14 @@ internal static class OpenBiosProbeCommand
                         error.WriteLine($"openbios-probe: generated host: {fetches} fallback fetches, {clock.Elapsed.TotalSeconds:F0} s");
                     }
                 },
-                FallbackTransitionObserver = accounting.OnTransition,
+                FallbackTransitionObserver = transition =>
+                {
+                    accounting.OnTransition(transition);
+                    if (++transitions % 10000 == 0)
+                        error.WriteLine($"openbios-probe: {transitions} artifact/interpreter handoffs, {clock.Elapsed.TotalSeconds:F0} s");
+                },
             };
             hostEngine = engine;
-            runClock.Start();
             var compileMs = clock.Elapsed.TotalMilliseconds;
 
             // The artifact's first dispatch unit is the reset-vector block (it is always the build's entry); fallback
@@ -391,17 +397,11 @@ internal static class OpenBiosProbeCommand
                     staticFallbackTargets = image.FallbackTargets.Count,
                     symbols = probe.Symbols?.Count,
                 },
-                loadedImages = loadedImages.Select(static i => new
-                {
-                    name = i.Name,
-                    blocks = i.Build.Blocks.Count,
-                    nativeInstructions = i.Build.NativeInstructionCount,
-                    skippedEntries = i.Build.SkippedEntries.Select(Hex).ToArray(),
-                }).ToArray(),
+                loadedImages = loadedImages.Select(static i => new { name = i.Name, blocks = i.Build.Blocks.Count, nativeInstructions = i.Build.NativeInstructionCount, skippedEntries = i.Build.SkippedEntries.Select(Hex).ToArray() }).ToArray(),
                 loadedCodeVersions = loadedCode.Blocks.Count,
-                interpretedEntries = manifest.Interpreted.Order().Select(Hex).ToArray(),
+                interpretedEntries = observedPcs.Order().Select(Hex).ToArray(),
                 precompileMilliseconds = buildMs + compileMs,
-                atBoundary = nativeAtBoundary.OrderBy(static b => b.Key).ToDictionary(static b => $"0x{b.Key:X8}", static b => b.Value),
+                atBoundary = nativeAtBoundary.ToDictionary(static b => Hex(b.Key), static b => b.Value),
                 execution = new
                 {
                     nativeInstructions = engine.NativeRetiredInstructions,
@@ -411,12 +411,11 @@ internal static class OpenBiosProbeCommand
                     pagesToInterpreter = evidence?.PagesToInterpreter,
                     pagesToArtifact = evidence?.PagesToArtifact,
                     distinctFallbackTargets = evidence?.Targets.Count,
-                    topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(16)
+                    topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(12)
                         .Select(t => $"0x{t.Target:X8}:entries={t.Entries}:instructions={t.Instructions}:cause={FallbackCause(t.Target)}").ToArray(),
                     timings = costs,
                     mmioRoundTrips = engine.HostRoundTrips?.MmioAccesses,
                     timeReportRoundTrips = engine.HostRoundTrips?.TimeReports,
-                    runSeconds = runClock.Elapsed.TotalSeconds,
                 },
                 accounting = accounting.Report(
                     engine.NativeRetiredInstructions, evidence?.FallbackInstructions, image.Program.Blocks.Select(static b => b.EntryPc).Concat(loadedCode.Blocks.Select(static b => b.Block.EntryPc)), probe.Symbols, FallbackCause),
@@ -440,8 +439,11 @@ internal static class OpenBiosProbeCommand
                     b => boundaries.TryGetValue(b.Key, out var host)
                         ? ProbeGuestState.Compare(b.Value, host)
                         : (object)"not reached by the generated host (a PC inside a compiled block is not observable)"),
-                referenceSecondsAtBoundary = referenceSeconds.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value),
                 referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Order().Select(Hex).ToArray(),
+                referenceSecondsAtBoundary = referenceSeconds.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value),
+                firstInterrupt = new { interpreter = referenceInterrupt?.Describe(), host = hostInterrupt?.Describe() },
+                firstInterruptDifferential = referenceInterrupt is null ? null : hostInterrupt is null
+                    ? (object)"not reached by generated host" : ProbeGuestState.Compare(referenceInterrupt, hostInterrupt),
                 milestoneComparison = referenceMilestones is null ? null : new
                 {
                     match = WithoutFetchIndices(referenceMilestones) == WithoutFetchIndices(report),
@@ -449,22 +451,56 @@ internal static class OpenBiosProbeCommand
                 },
             };
             var node = JsonSerializer.SerializeToNode(document)!.AsObject();
-            node["consistency"] = Consistency(node);
+            node["consistency"] = Consistency(node, boundaryPcs, probe.StopAt);
+            var parityPassed = node["consistency"]?["differentialPass"]?.GetValue<bool>() ?? !probe.Differential;
+            var text = node.ToJsonString(json ? null : new JsonSerializerOptions { WriteIndented = true });
             if (!json)
             {
-                foreach (var line in Summarize(node))
+                foreach (var line in Summarize(JsonNode.Parse(text)!))
                 {
                     output.WriteLine(line);
                 }
             }
 
-            output.WriteLine(node.ToJsonString(json ? null : new JsonSerializerOptions { WriteIndented = true }));
-            return kernelBooted ? 0 : 2;
+            output.WriteLine(text);
+            return kernelBooted && parityPassed ? 0 : 2;
         }
         finally
         {
             try { Directory.Delete(directory, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+
+    /// <summary>Retains explicit comparisons while choosing defaults appropriate for the requested stop.</summary>
+    internal static HashSet<uint> RequiredBoundaries(IEnumerable<uint> compareAt, uint? stopAt)
+    {
+        var required = new HashSet<uint>(compareAt) { OpenBiosBootMonitor.ShellLoadAddress };
+        if (stopAt != OpenBiosBootMonitor.ShellLoadAddress) required.Add(ExecutableBoundary);
+        if (stopAt is { } stop) required.Add(stop);
+        return required;
+    }
+
+    /// <summary>A differential pass requires every requested boundary, matching device/CPU/RAM state and milestones.</summary>
+    internal static JsonNode Consistency(JsonObject document, IReadOnlySet<uint> expected, uint? stopAt)
+    {
+        if (document["differential"] is not JsonObject differential)
+            return new JsonObject { ["differentialPass"] = null };
+        var matched = differential.Count(static b => b.Value is JsonObject o && o["match"]?.GetValue<bool>() == true);
+        var required = expected.ToArray();
+        var missing = required.Where(pc => !differential.ContainsKey(Hex(pc))).Select(Hex).ToArray();
+        var milestones = document["milestoneComparison"]?["match"]?.GetValue<bool>() ?? false;
+        var hostOnly = document["referenceBoundariesMissing"]?.AsArray().Count ?? 0;
+        var interrupt = document["firstInterruptDifferential"];
+        var interruptMatches = interrupt is null || interrupt is JsonObject irq && irq["match"]?.GetValue<bool>() == true;
+        return new JsonObject
+        {
+            ["differentialPass"] = differential.Count != 0 && matched == differential.Count && missing.Length == 0 && hostOnly == 0 && milestones && interruptMatches,
+            ["boundariesCompared"] = differential.Count,
+            ["boundariesMatched"] = matched,
+            ["requiredBoundariesMissing"] = JsonSerializer.SerializeToNode(missing),
+            ["milestonesMatch"] = milestones,
+            ["firstInterruptMatches"] = interruptMatches,
+        };
     }
 
     /// <summary>Fetch indices count different things in the two runs (all fetches vs fallback fetches only); the milestones themselves must agree.</summary>
@@ -474,28 +510,13 @@ internal static class OpenBiosProbeCommand
         FirstUnexpectedException = report.FirstUnexpectedException is { } e ? e with { AtFetch = 0 } : null,
     };
 
-    /// <summary>
-    /// Result consistency of a differential run: it passes only when at least one boundary was compared, every boundary
-    /// the interpreter reached was reached by the host with identical state, and both runs reached the same milestones.
-    /// Null without <c>--differential</c>.
-    /// </summary>
-    internal static JsonNode Consistency(JsonObject document)
-    {
-        if (document["differential"] is not JsonObject differential)
-        {
-            return new JsonObject { ["differentialPass"] = null };
-        }
-
-        var matched = differential.Select(static b => b.Value is JsonObject o && o["match"]!.GetValue<bool>()).ToArray();
-        var milestones = document["milestoneComparison"]?["match"]?.GetValue<bool>() ?? false;
-        return new JsonObject
-        {
-            ["differentialPass"] = matched.Length != 0 && matched.All(static m => m) && milestones,
-            ["boundariesCompared"] = matched.Length,
-            ["boundariesMatched"] = matched.Count(static m => m),
-            ["milestonesMatch"] = milestones,
-        };
-    }
+    /// <summary>Compatibility helper for reports whose expected boundaries are their observed entries.</summary>
+    internal static JsonNode Consistency(JsonObject document) => Consistency(
+        document,
+        document["differential"] is JsonObject observed
+            ? observed.Select(static b => uint.Parse(b.Key[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)).ToHashSet()
+            : new HashSet<uint>(),
+        stopAt: null);
 
     /// <summary>Times the artifact's gcc build and records the generated C and binary sizes (Issue #732 measurement).</summary>
     private sealed class MeasuredBuild(IGeneratedHostBuildService inner) : IGeneratedHostBuildService

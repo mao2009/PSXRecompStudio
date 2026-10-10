@@ -30,6 +30,17 @@ public sealed class LoadImageManifestTests
     }
 
     [Fact]
+    public void RomImage_ResolvesRootsRelativeToTheManifestDirectory()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile("kernel.roots", Text("0x80001004\n"));
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("image kernel 0x80001000 rom 0xBFC00100 0x08 kernel.roots\n")),
+            Firmware(), disc: null);
+        manifest.Images.Single().Roots.Should().Equal(0x80001004u);
+    }
+
+    [Fact]
     public void RomImage_CopiesTheRomWordsToTheDestination_AndRootsAtTheDestination()
     {
         using var dir = new TempDirectory();

@@ -257,6 +257,18 @@ public static class SyntheticDiscBuilder
     public static byte[] Bootable(byte[] exeBytes) => Mode2Form1(
         new SyntheticIsoImageBuilder().AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
 
+    /// <summary>Sector-aligns a synthetic EXE payload for OpenBIOS CD reads and ends it with a stable loop.</summary>
+    public static byte[] OpenBiosCompatibleExe(byte[] exeBytes)
+    {
+        var size = checked((int)BitConverter.ToUInt32(exeBytes, 0x1C));
+        var padded = checked((size + 8 + 2047) / 2048 * 2048);
+        var result = new byte[checked(0x800 + padded)];
+        exeBytes.AsSpan(0, 0x800 + size).CopyTo(result);
+        BitConverter.GetBytes((uint)padded).CopyTo(result, 0x1C);
+        BitConverter.GetBytes(0x1000FFFFu).CopyTo(result, 0x800 + size);
+        return result;
+    }
+
     /// <summary>Wraps 2048-byte ISO sectors into raw 2352-byte Mode 2 Form 1 sectors.</summary>
     public static byte[] Mode2Form1(byte[] iso)
     {

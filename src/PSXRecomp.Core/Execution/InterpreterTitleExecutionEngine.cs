@@ -272,9 +272,6 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Called with the PC of every instruction about to be fetched (diagnostic observation only).</summary>
     public Action<uint>? FetchObserver { get; set; }
 
-    /// <summary>Guest cycles retired through the shared device scheduler.</summary>
-    public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
-
     /// <summary>The current value of a general register (diagnostic observation only).</summary>
     public uint ReadGuestGpr(int index) => _core.GetGpr(index);
 
@@ -290,6 +287,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
     public PsxDeviceGraph DiagnosticDevices => _devices;
+
+    /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
+    public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
 
     /// <summary>
     /// Diagnostic stop (Issue #732): once set — typically by a <see cref="FetchObserver"/> — the step loop ends before

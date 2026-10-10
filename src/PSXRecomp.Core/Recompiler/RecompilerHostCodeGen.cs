@@ -861,59 +861,76 @@ public static class RecompilerHostCodeGen
         // units. Known generated blocks and host-claimed transfers both spend one
         // unit. The guard therefore runs before either callback can mutate guest
         // state; budget == 0 executes nothing.
-        // Issue #732: one switch on the PC (a jump table or a binary search even at -O0), not a chain of comparisons
-        // whose cost per dispatch grows with the block count — a firmware ROM has thousands of blocks.
-        sb.AppendLine(IndentUnit + IndentUnit + $"switch ({StateParam}->{PcField}) {{");
-        for (var i = 0; i < program.Blocks.Count; i++)
+        // Clang -O0 lowers a sparse cross-image switch to thousands of linear comparisons.
+        // Bound each inner switch to a 4 KiB PC page; preserve full addresses and version guards.
+        var splitDispatch = loadedCode.Blocks.Count != 0;
+        var pages = splitDispatch
+            ? program.Blocks.Select(static b => b.EntryPc >> 12).Concat(loadedCode.Blocks.Select(static b => b.Block.EntryPc >> 12)).Distinct().Order().ToArray()
+            : new uint[] { 0 };
+        if (splitDispatch) sb.AppendLine(IndentUnit + IndentUnit + $"switch ({StateParam}->{PcField} >> 12) {{");
+        foreach (var page in pages)
         {
-            var functionName = $"recompiler_block_0x{program.Blocks[i].EntryPc:X8}";
-            var bodyLine = $"{StateParam}->{TerminationField} = {functionName}({StateParam});";
-            sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(program.Blocks[i].EntryPc)}: {{");
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
-            EmitBudgetExceededReturn(sb, 4);
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
-            // B1 checkpoint: under -DRECOMPILER_CHECKPOINTS the generated binary
-            // prints the guest PC of every retired block, so the harness can compare
-            // the recompiled block trace against the interpreter's instruction trace.
-            // Guaranteed emitted only when the matching block actually retires, so a
-            // normal no-block Success exit never prints a spurious trailing PC.
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"retired = {program.Blocks[i].RetiredInstructionCount}u;");
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + bodyLine);
-            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "break;");
-            sb.AppendLine(IndentUnit + IndentUnit + "}");
-        }
-
-        // Issue #732: RAM-placed code. Each pre-generated version of the code at this PC runs only while guest memory
-        // holds exactly the words it was compiled from; the first version that matches is selected. With none, the PC is
-        // treated exactly like one without a block (the host transfer). The identity check retires nothing.
-        foreach (var group in loadedCode.Blocks.GroupBy(static v => v.Block.EntryPc))
-        {
-            var indent = IndentUnit + IndentUnit + IndentUnit;
-            sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(group.Key)}: {{");
-            var version = 0;
-            foreach (var loaded in group)
+            if (splitDispatch) sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(page)}: {{");
+            sb.AppendLine(IndentUnit + IndentUnit + $"switch ({StateParam}->{PcField}) {{");
+            foreach (var block in program.Blocks.Where(b => !splitDispatch || (b.EntryPc >> 12) == page))
             {
-                sb.AppendLine(indent + $"static const uint32_t code{version}[] = {{ {string.Join(", ", loaded.Words.Select(FormatHex))} }};");
-                sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
-                sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
-                sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
-                EmitBudgetExceededReturn(sb, 5);
-                sb.AppendLine(indent + IndentUnit + "}");
-                sb.AppendLine(indent + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
-                sb.AppendLine(indent + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
-                sb.AppendLine(indent + IndentUnit + "#endif");
-                sb.AppendLine(indent + IndentUnit + $"retired = {loaded.Block.RetiredInstructionCount}u;");
-                sb.AppendLine(indent + IndentUnit + $"{StateParam}->{TerminationField} = recompiler_block_0x{group.Key:X8}_v{version}({StateParam});");
-                sb.AppendLine(indent + IndentUnit + "break;");
-                sb.AppendLine(indent + "}");
-                version++;
+                var functionName = $"recompiler_block_0x{block.EntryPc:X8}";
+                var bodyLine = $"{StateParam}->{TerminationField} = {functionName}({StateParam});";
+                sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(block.EntryPc)}: {{");
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
+                EmitBudgetExceededReturn(sb, 4);
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+                // B1 checkpoint: under -DRECOMPILER_CHECKPOINTS the generated binary
+                // prints the guest PC of every retired block, so the harness can compare
+                // the recompiled block trace against the interpreter's instruction trace.
+                // Guaranteed emitted only when the matching block actually retires, so a
+                // normal no-block Success exit never prints a spurious trailing PC.
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "#endif");
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"retired = {block.RetiredInstructionCount}u;");
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + bodyLine);
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "break;");
+                sb.AppendLine(IndentUnit + IndentUnit + "}");
             }
 
-            sb.AppendLine(indent + $"goto {UnknownPcLabel};");
-            sb.AppendLine(IndentUnit + IndentUnit + "}");
+            // Issue #732: RAM-placed code. Each pre-generated version of the code at this PC runs only while guest memory
+            // holds exactly the words it was compiled from; the first version that matches is selected. With none, the PC is
+            // treated exactly like one without a block (the host transfer). The identity check retires nothing.
+            foreach (var group in loadedCode.Blocks.Where(v => (v.Block.EntryPc >> 12) == page).GroupBy(static v => v.Block.EntryPc))
+            {
+                var indent = IndentUnit + IndentUnit + IndentUnit;
+                sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(group.Key)}: {{");
+                var version = 0;
+                foreach (var loaded in group)
+                {
+                    sb.AppendLine(indent + $"static const uint32_t code{version}[] = {{ {string.Join(", ", loaded.Words.Select(FormatHex))} }};");
+                    sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
+                    sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
+                    sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
+                    EmitBudgetExceededReturn(sb, 5);
+                    sb.AppendLine(indent + IndentUnit + "}");
+                    sb.AppendLine(indent + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
+                    sb.AppendLine(indent + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
+                    sb.AppendLine(indent + IndentUnit + "#endif");
+                    sb.AppendLine(indent + IndentUnit + $"retired = {loaded.Block.RetiredInstructionCount}u;");
+                    sb.AppendLine(indent + IndentUnit + $"{StateParam}->{TerminationField} = recompiler_block_0x{group.Key:X8}_v{version}({StateParam});");
+                    sb.AppendLine(indent + IndentUnit + "break;");
+                    sb.AppendLine(indent + "}");
+                    version++;
+                }
+
+                sb.AppendLine(indent + $"goto {UnknownPcLabel};");
+                sb.AppendLine(IndentUnit + IndentUnit + "}");
+            }
+
+            if (splitDispatch)
+            {
+                sb.AppendLine(IndentUnit + IndentUnit + $"default: goto {UnknownPcLabel};");
+                sb.AppendLine(IndentUnit + IndentUnit + "}");
+                sb.AppendLine(IndentUnit + IndentUnit + "break;");
+                sb.AppendLine(IndentUnit + IndentUnit + "}");
+            }
         }
 
         // The unknown-PC boundary. A null hook has no side effect, so the existing

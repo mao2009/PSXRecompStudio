@@ -50,6 +50,23 @@ public sealed class SyntheticDiscReproducibilityTests
     }
 
     [Fact]
+    public void OpenBiosDisc_DeclaresAFullSectorPayload_AndCarriesTheMarkerAndTerminalLoop()
+    {
+        var original = ExeBytes();
+        var exe = SyntheticDiscBuilder.OpenBiosCompatibleExe(original);
+        BitConverter.ToUInt32(exe, 0x1C).Should().Be(2048);
+        exe.Length.Should().Be(4096);
+        exe.AsSpan(0x800, original.Length - 0x800).ToArray().Should().Equal(original.AsSpan(0x800).ToArray());
+        BitConverter.ToUInt32(exe, original.Length).Should().Be(0x1000FFFF);
+        BitConverter.ToUInt32(exe, original.Length + 4).Should().Be(0);
+        var disc = SyntheticDiscBuilder.Bootable(exe);
+        Sha256Hex(disc).Should().Be("bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03");
+        var parsed = PsxExe.Load(Iso(new RawCdSectorSource(disc)).ReadFile(SyntheticDiscBuilder.ExeIsoName), "synthetic");
+        parsed.Header.TextSize.Should().Be(2048);
+        parsed.TextSegment.Should().Equal(exe.AsSpan(0x800).ToArray());
+    }
+
+    [Fact]
     public void TheSyntheticDisc_IsByteIdentical_OnEveryBuild()
     {
         Disc().Should().Equal(Disc(), "generation is a pure function of the inputs");

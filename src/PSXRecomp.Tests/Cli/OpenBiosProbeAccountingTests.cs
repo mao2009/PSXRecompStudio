@@ -148,6 +148,18 @@ public sealed class OpenBiosProbeAccountingTests
     }
 
     [Fact]
+    public void AotAwareReasons_OverrideLegacyRamClassification_InTotalsAndHotEntries()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(0x80010000, true, FallbackSegmentStatus.Returned, 0x80010004, 1, null));
+        var report = JsonSerializer.SerializeToNode(accounting.Report(10, 1, [0xBFC00000, 0x80010004], null,
+            static _ => "observation-point"))!;
+        Assert.Null(report["native"]!["region"]);
+        Assert.Equal("observation-point", report["transitions"]!["byReason"]![0]!["reason"]!.ToString());
+        Assert.Equal("observation-point", report["hotEntries"]![0]!["reason"]!.ToString());
+    }
+
+    [Fact]
     public void Records_The_First_Reserved_Or_Coprocessor_Fault_Of_Each_Opcode()
     {
         var accounting = new OpenBiosProbeAccounting();
