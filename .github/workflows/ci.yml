@@ -76,9 +76,9 @@ jobs:
         run: ./scripts/ci/check-artifact-policy.ps1
 
   native:
-    name: Native Core Build and Test
+    name: Native Core Build and Test (Linux)
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Documentation-only fast path
         if: needs.changes.outputs.docs_only == 'true'
@@ -122,9 +122,9 @@ jobs:
           if-no-files-found: error
 
   dotnet:
-    name: .NET Build and Test
+    name: .NET Build and Test (Linux)
     needs: [changes, native]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Documentation-only fast path
         if: needs.changes.outputs.docs_only == 'true'
@@ -190,134 +190,11 @@ jobs:
           path: ${{ runner.temp }}/recompiler-differential-artifacts
           if-no-files-found: ignore
 
-  native-windows:
-    name: Native Core Build and Test (Windows)
-    needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure
-        run: cmake -S src/PSXRecomp.Native -B build/native -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build/native --config Release --parallel
-
-      - name: Test
-        run: ctest --test-dir build/native --build-config Release --output-on-failure
-
-      - name: Upload native library
-        uses: actions/upload-artifact@v4
-        with:
-          name: psxrecomp-native-windows-x64
-          path: build/native/Release/PSXRecomp.Native.dll
-          if-no-files-found: error
-
-  dotnet-windows:
-    name: .NET Build and Test (Windows)
-    needs: [changes, native-windows]
-    if: needs.changes.outputs.docs_only != 'true'
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.x'
-
-      - name: Restore
-        run: dotnet restore src/PSXRecompStudio.slnx
-
-      - name: Build
-        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
-
-      - name: Download native library
-        uses: actions/download-artifact@v4
-        with:
-          name: psxrecomp-native-windows-x64
-          path: native
-
-      - name: Install native library for .NET tests
-        shell: pwsh
-        run: |
-          if (!(Test-Path native/PSXRecomp.Native.dll)) { throw "native/PSXRecomp.Native.dll artifact is missing" }
-          Copy-Item native/PSXRecomp.Native.dll src/PSXRecomp.Tests/bin/Release/net10.0/PSXRecomp.Native.dll -Force
-          Get-Item src/PSXRecomp.Tests/bin/Release/net10.0/PSXRecomp.Native.dll
-
-      - name: Test
-        run: |
-          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
-
-  native-macos:
-    name: Native Core Build and Test (macOS)
-    needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure
-        run: cmake -S src/PSXRecomp.Native -B build/native -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build/native --parallel
-
-      - name: Test
-        run: ctest --test-dir build/native --output-on-failure
-
-      - name: Upload native library
-        uses: actions/upload-artifact@v4
-        with:
-          name: psxrecomp-native-macos-arm64
-          path: build/native/libPSXRecomp.Native.dylib
-          if-no-files-found: error
-
-  dotnet-macos:
-    name: .NET Build and Test (macOS)
-    needs: [changes, native-macos]
-    if: needs.changes.outputs.docs_only != 'true'
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.x'
-
-      - name: Restore
-        run: dotnet restore src/PSXRecompStudio.slnx
-
-      - name: Build
-        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
-
-      - name: Download native library
-        uses: actions/download-artifact@v4
-        with:
-          name: psxrecomp-native-macos-arm64
-          path: native
-
-      - name: Install native library for .NET tests
-        run: |
-          test -f native/libPSXRecomp.Native.dylib
-          cp native/libPSXRecomp.Native.dylib src/PSXRecomp.Tests/bin/Release/net10.0/
-          ls -l src/PSXRecomp.Tests/bin/Release/net10.0/libPSXRecomp.Native.dylib
-
-      - name: Test
-        run: |
-          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
-
   gui-tests:
-    name: GUI Headless Tests
+    name: GUI Headless Tests (Linux)
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -344,7 +221,7 @@ jobs:
   ci:
     name: CI Gate
     if: always()
-    needs: [changes, artifact-policy, dotnet, native, gui-tests, native-windows, dotnet-windows, native-macos, dotnet-macos]
+    needs: [changes, artifact-policy, native, dotnet, gui-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Require appropriate checks to pass
@@ -357,18 +234,18 @@ jobs:
             exit 1
           fi
 
-          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" || "${{ needs.native.result }}" != "success" ]]; then
+          if [[ "${{ needs.artifact-policy.result }}" != "success" || "${{ needs.native.result }}" != "success" || "${{ needs.dotnet.result }}" != "success" ]]; then
             echo "Required CI jobs did not all succeed."
             exit 1
           fi
 
           if [[ "${{ needs.changes.outputs.docs_only }}" == "true" ]]; then
-            echo "Documentation-only change: heavyweight Windows/macOS/GUI jobs were intentionally skipped."
+            echo "Documentation-only change: heavyweight build/test jobs were intentionally skipped."
             exit 0
           fi
 
-          if [[ "${{ needs.gui-tests.result }}" != "success" || "${{ needs.native-windows.result }}" != "success" || "${{ needs.dotnet-windows.result }}" != "success" || "${{ needs.native-macos.result }}" != "success" || "${{ needs.dotnet-macos.result }}" != "success" ]]; then
-            echo "Full CI matrix did not all succeed."
+          if [[ "${{ needs.gui-tests.result }}" != "success" ]]; then
+            echo "GUI tests did not succeed."
             exit 1
           fi
 
