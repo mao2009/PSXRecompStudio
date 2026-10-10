@@ -400,6 +400,23 @@ static int artifact_int_entry = 0;
 static RecompilerState* artifact_state = (RecompilerState*)0;
 static int artifact_exact_time = 0;
 
+/* Credits are positive decimal tokens, not scanf's signed/partial conversions. */
+static unsigned long long artifact_read_time_credit(void) {
+    char token[32];
+    unsigned long long value = 0ull;
+    unsigned i;
+    if (scanf(""%31s"", token) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+    for (i = 0; token[i] != '\0'; i++) {
+        unsigned digit;
+        if (token[i] < '0' || token[i] > '9') exit(@EXIT_RETIRED_PROTOCOL@);
+        digit = (unsigned)(token[i] - '0');
+        if (value > (UINT32_MAX - digit) / 10ull) exit(@EXIT_RETIRED_PROTOCOL@);
+        value = value * 10ull + digit;
+    }
+    if (value == 0ull) exit(@EXIT_RETIRED_PROTOCOL@);
+    return value;
+}
+
 static void artifact_report_retired(void) {
     char cmd[8];
     unsigned long a, v;
@@ -423,7 +440,8 @@ static void artifact_report_retired(void) {
             printf(""RHOST_OK\n"");
             fflush(stdout);
         } else if (strcmp(cmd, ""T"") == 0) {
-            if (scanf(""%llu"", &credit) != 1 || credit == 0ull || credit > UINT32_MAX) exit(@EXIT_RETIRED_PROTOCOL@);
+            if (time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
+            credit = artifact_read_time_credit();
             if (UINT64_MAX - artifact_state->retired_reported < credit) exit(@EXIT_RETIRED_PROTOCOL@);
             artifact_state->event_deadline = artifact_state->retired_reported + credit;
             time_credit_seen = 1;
@@ -687,14 +705,15 @@ static int32_t artifact_host_serve(RecompilerState* state) {
     for (;;) {
         char cmd[8];
         unsigned long a, v, t, np, has_v0;
-        if (scanf(""%7s"", cmd) != 1) return 1;
-        if (cmd[0] == 'T') {
+        if (scanf(""%7s"", cmd) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+        if (strcmp(cmd, ""T"") == 0) {
             unsigned long long credit;
-            if (scanf(""%llu"", &credit) != 1 || credit == 0ull || credit > UINT32_MAX) exit(@EXIT_RETIRED_PROTOCOL@);
+            if (time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
+            credit = artifact_read_time_credit();
             if (UINT64_MAX - state->retired_total < credit) exit(@EXIT_RETIRED_PROTOCOL@);
             state->event_deadline = state->retired_total + credit;
             time_credit_seen = 1;
-        } else if (cmd[0] == 'F') {
+        } else if (strcmp(cmd, ""F"") == 0) {
             if (scanf(""%lu"", &v) != 1) exit(@EXIT_FALLBACK_PROTOCOL@);
             if (v != PSX_FALLBACK_VERSION) {
                 printf(""RHOST_FALLBACK_REFUSED version\n"");
@@ -705,16 +724,16 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                        (unsigned long)state->cop0_cause, (unsigned long)state->cop0_epc, (unsigned long)fallback_dirty_count());
             }
             fflush(stdout);
-        } else if (cmd[0] == 'Y') {
+        } else if (strcmp(cmd, ""Y"") == 0) {
             fallback_send_pages();
-        } else if (cmd[0] == 'B') {
+        } else if (strcmp(cmd, ""B"") == 0) {
             if (scanf(""%lu"", &a) != 1 || a >= PSX_PAGE_COUNT || fallback_stage_count >= PSX_PAGE_COUNT
                 || (fallback_stage_count != 0u && a <= fallback_stage_page[fallback_stage_count - 1u])
                 || !fallback_read_page(fallback_stage + fallback_stage_count * PSX_PAGE_SIZE)) exit(@EXIT_FALLBACK_PROTOCOL@);
             fallback_stage_page[fallback_stage_count] = (uint32_t)a;
             fallback_stage_hash = fallback_hash_page(fallback_stage_hash, (uint32_t)a, fallback_stage + fallback_stage_count * PSX_PAGE_SIZE);
             fallback_stage_count++;
-        } else if (cmd[0] == 'K') {
+        } else if (strcmp(cmd, ""K"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2) exit(@EXIT_FALLBACK_PROTOCOL@);
             if (a != (unsigned long)fallback_stage_count || v != (unsigned long)fallback_stage_hash) {
                 fallback_stage_count = 0u;
@@ -733,7 +752,7 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                 printf(""RHOST_OK\n"");
             }
             fflush(stdout);
-        } else if (cmd[0] == 'S') {
+        } else if (strcmp(cmd, ""S"") == 0) {
             unsigned long hi, lo, sr, cause, epc, irq;
             int g;
             if (scanf(""%lu %lu %lu %lu %lu %lu"", &hi, &lo, &sr, &cause, &epc, &irq) != 6 || irq > 1ul) exit(@EXIT_FALLBACK_PROTOCOL@);
@@ -747,45 +766,47 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                 if (scanf(""%lu"", &v) != 1) exit(@EXIT_FALLBACK_PROTOCOL@);
                 state->gpr[g] = (uint32_t)v;
             }
-        } else if (cmd[0] == 'R') {
+        } else if (strcmp(cmd, ""R"") == 0) {
             if (scanf(""%lu"", &a) != 1) return 1;
             printf(""RHOST_DATA %u\n"", (unsigned)artifact_ram_read8((uint32_t)a));
             fflush(stdout);
-        } else if (cmd[0] == 'W') {
+        } else if (strcmp(cmd, ""W"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2) return 1;
             artifact_ram_write8((uint32_t)a, (uint8_t)v);
             printf(""RHOST_OK\n"");
             fflush(stdout);
-        } else if (cmd[0] == 'C') {
+        } else if (strcmp(cmd, ""C"") == 0) {
             if (scanf(""%lu"", &v) != 1) return 1;
             state->cop0_sr = (uint32_t)v;
-        } else if (cmd[0] == 'E') {
+        } else if (strcmp(cmd, ""E"") == 0) {
             printf(""RHOST_COP0 %lu %lu %lu %lu %lu %d\n"", (unsigned long)state->cop0_epc, (unsigned long)state->cop0_cause,
                    (unsigned long)state->cop0_sr, (unsigned long)state->hi, (unsigned long)state->lo, artifact_int_entry);
             fflush(stdout);
-        } else if (cmd[0] == 'G') {
+        } else if (strcmp(cmd, ""G"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2 || a == 0ul || a > 31ul) return 1;
             state->gpr[a] = (uint32_t)v;
-        } else if (cmd[0] == 'H') {
+        } else if (strcmp(cmd, ""H"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2) return 1;
             state->hi = (uint32_t)a;
             state->lo = (uint32_t)v;
-        } else if (cmd[0] == 'L') {
+        } else if (strcmp(cmd, ""L"") == 0) {
             if (scanf(""%lu"", &v) != 1) return 1;
             state->irq_line = v != 0ul ? 1u : 0u;
             state->cop0_cause = (state->cop0_cause & ~0x400u) | (state->irq_line ? 0x400u : 0u);
-        } else if (cmd[0] == 'P') {
+        } else if (strcmp(cmd, ""P"") == 0) {
             state->cop0_sr = (state->cop0_sr & ~0xFu) | ((state->cop0_sr >> 2) & 0xFu);
-        } else if (cmd[0] == 'D') {
+        } else if (strcmp(cmd, ""D"") == 0) {
             if (artifact_exact_time && !time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;
             state->next_pc = (uint32_t)np;
             if (has_v0 != 0ul) state->gpr[PSX_REG_V0] = (uint32_t)v;
             return 0;
-        } else {
+        } else if (strcmp(cmd, ""N"") == 0) {
             if (artifact_exact_time && !time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
             return 1; /* 'N': the parent does not claim this pc. */
+        } else {
+            exit(@EXIT_RETIRED_PROTOCOL@);
         }
     }
 }

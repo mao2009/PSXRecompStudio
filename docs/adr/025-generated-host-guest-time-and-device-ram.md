@@ -180,6 +180,16 @@ the earlier reporting behavior; they cannot establish strict parity. An older
 artifact rejects the new command, failing closed. Existing RAM requests and IRQ
 line acknowledgements retain their meanings.
 
+Review follow-up (#746): every command token is matched in full. Transfer,
+initialization and SYSCALL reply phases recognize only `T/F/Y/B/K/S/R/W/C/E/G/H/L/P`
+and the explicit terminating `D` or `N`; unknown tokens fail with protocol exit 100,
+never implicit decline. Retirement replies recognize `R/W/T` and terminating
+`A/I/X`. Credit is a whole unsigned decimal token in `1..UINT32_MAX` (no sign,
+fraction, exponent or suffix) and at most one `T` is permitted in either phase.
+Exact mode requires that one credit before a decision/ack; valid legacy peers
+may omit it, retaining the earlier timing model. Malformed historical peers are
+not a compatibility promise. These checks add no protocol round trips.
+
 Artifact checks are local integer comparisons per retirement. IPC occurs at
 existing device observations and actual conservative deadlines, without
 mandatory instruction-by-instruction transport. The strict dispatch budget still
