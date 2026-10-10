@@ -272,6 +272,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Called with the PC of every instruction about to be fetched (diagnostic observation only).</summary>
     public Action<uint>? FetchObserver { get; set; }
 
+    /// <summary>Guest cycles retired through the shared device scheduler.</summary>
+    public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
+
     /// <summary>The current value of a general register (diagnostic observation only).</summary>
     public uint ReadGuestGpr(int index) => _core.GetGpr(index);
 
