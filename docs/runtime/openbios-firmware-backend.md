@@ -391,21 +391,6 @@ through its own CD driver (corrected synthetic fixture; earlier Persona results 
 past its first COP2 instruction; exact generated-host device-time/IRQ parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
 
-### CD-ROM event ordering
-
-When a guest-time advance crosses multiple pending CD-ROM response or sector
-deadlines, the device processes each event in chronological order rather than
-processing an entire type of event before the other. This preserves observable
-IRQ/response ordering even when host execution advances time in large chunks.
-
-### Differential evidence boundary
-
-The `openbios-probe` differential compares the interpreter and generated host
-at named guest observation boundaries. A single matching marker is insufficient:
-cycle counts and CPU/COP0, RAM, scratchpad and device snapshots must agree at
-each boundary. The exact asynchronous IRQ timing fix is supplied by the next
-stacked change; this branch alone must not be presented as full parity.
-
 ### Generated memory-fault coverage (Issue #749)
 
 Generated firmware now delivers aligned LH/LHU/LW AdEL and SH/SW AdES before
