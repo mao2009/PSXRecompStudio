@@ -110,9 +110,11 @@ If the Linux-first policy causes undetected regressions:
 Track these metrics to evaluate policy effectiveness:
 
 - **Queue time:** Linux CI queue time vs. previous full-matrix queue time
+- **Job duration:** Per-job and total execution time (Linux gate vs. full matrix)
 - **Failure detection rate:** Cross-platform scheduled failures vs. PR-time failures
 - **Merge latency:** Time from PR ready to merge (Linux gate only vs. full matrix)
 - **Release readiness:** Cross-platform verification pass rate at release time
+- **CI minutes:** Total consumption per PR (target: measurable reduction vs. baseline)
 
 ## Migration Notes (from full-matrix CI)
 
@@ -126,11 +128,12 @@ Track these metrics to evaluate policy effectiveness:
 - Cross-platform runs weekly + on-demand + at release
 - OS-specific changes explicitly request cross-platform via label
 - No required check ever stays in `Pending` state
+- **Job count reduction:** 7 → 4 required jobs (hypothesis: reduces queue contention and CI minutes; to be measured)
 
 ## Rationale
 
 1. **Velocity:** Linux runners are consistently available; Windows/macOS runners have intermittent delays
-2. **Cost:** Reduces CI minutes consumed by ~40-50% for routine changes
+2. **Cost:** Reduces CI minutes consumed (hypothesis: ~40-50% for routine changes; to be measured)
 3. **Reliability:** Eliminates flaky cross-platform runner delays from critical path
 4. **Safety:** Cross-platform coverage maintained via scheduled, manual, and release gates
 5. **Flexibility:** OS-specific changes can still request full verification

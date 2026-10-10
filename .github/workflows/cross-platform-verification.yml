@@ -11,23 +11,72 @@ on:
         type: string
   pull_request:
     branches: [main]
-    types: [labeled]
-    paths-ignore:
-      - 'docs/**'
-      - 'README*.md'
-      - 'CONTRIBUTING.md'
-      - '.github/ISSUE_TEMPLATE/**'
+    types: [labeled, synchronize]
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify documentation-only change
+        id: classify
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          base="$PR_BASE_SHA"
+          head="$PR_HEAD_SHA"
+
+          docs_only=false
+          if [[ -n "$base" && ! "$base" =~ ^0+$ ]]; then
+            mapfile -t changed_files < <(git diff --name-only "$base" "$head")
+            if (( ${#changed_files[@]} > 0 )); then
+              docs_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  docs/*|README*.md|CONTRIBUTING.md|.github/ISSUE_TEMPLATE/*.md)
+                    ;;
+                  *)
+                    docs_only=false
+                    break
+                    ;;
+                esac
+              done
+            fi
+          fi
+
+          printf 'docs_only=%s\n' "$docs_only" >> "$GITHUB_OUTPUT"
+          printf 'Documentation-only change: %s\n' "$docs_only"
+          printf 'Changed files:\n'
+          printf '  %s\n' "${changed_files[@]:-<unavailable>}"
+
+      - name: Set docs_only false for non-PR events
+        if: github.event_name != 'pull_request'
+        run: |
+          echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+
   cross-platform:
     name: Cross-Platform Build and Test (${{ matrix.name }})
+    needs: changes
     if: |
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform'))
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') && needs.changes.outputs.docs_only != 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,9 +97,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Ninja (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
 
       - name: Configure Native
         run: cmake -S src/PSXRecomp.Native -B build/native -DCMAKE_BUILD_TYPE=Release
@@ -70,11 +123,11 @@ jobs:
 
   cross-platform-dotnet:
     name: .NET Build and Test (${{ matrix.name }})
-    needs: cross-platform
+    needs: [cross-platform, changes]
     if: |
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform'))
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') && needs.changes.outputs.docs_only != 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -142,7 +195,7 @@ jobs:
   cross-platform-gate:
     name: Cross-Platform Gate
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform')))
-    needs: [cross-platform, cross-platform-dotnet]
+    needs: [cross-platform, cross-platform-dotnet, changes]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate cross-platform results
@@ -155,11 +208,12 @@ jobs:
           echo "  Native macOS: ${{ needs.cross-platform.result }}"
           echo "  .NET Windows: ${{ needs.cross-platform-dotnet.result }}"
           echo "  .NET macOS: ${{ needs.cross-platform-dotnet.result }}"
+          echo "  Docs-only: ${{ needs.changes.outputs.docs_only }}"
 
-          # Check if any job failed
+          # Check if any job failed (skipped is OK - e.g., docs-only changes)
           failed=false
           for result in "${{ needs.cross-platform.result }}" "${{ needs.cross-platform-dotnet.result }}"; do
-            if [[ "$result" != "success" ]]; then
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
               failed=true
             fi
           done
@@ -167,6 +221,11 @@ jobs:
           if [[ "$failed" == "true" ]]; then
             echo "::error::Cross-platform verification failed. See job logs for details."
             exit 1
+          fi
+
+          if [[ "${{ needs.changes.outputs.docs_only }}" == "true" ]]; then
+            echo "Documentation-only change: cross-platform verification skipped."
+            exit 0
           fi
 
           echo "All cross-platform checks passed."

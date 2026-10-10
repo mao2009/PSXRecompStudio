@@ -86,14 +86,39 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure Native
+        run: cmake -S src/PSXRecomp.Native -B build/native -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Native
+        run: cmake --build build/native --config Release --parallel
+
+      - name: Test Native
+        run: ctest --test-dir build/native --build-config Release --output-on-failure
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.x"
 
-      - name: Install Ninja (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.slnx
+
+      - name: Build .NET
+        run: dotnet build src/PSXRecompStudio.slnx --configuration Release --no-restore
+
+      - name: Test .NET
+        env:
+          RECOMPILER_ARTIFACT_ROOT: ${{ runner.temp }}/recompiler-differential-artifacts
+        run: |
+          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build --verbosity normal
 
       - name: Publish self-contained single-file CLI
         shell: pwsh
