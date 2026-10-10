@@ -323,6 +323,13 @@ through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so 
 past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
 
+### CD-ROM event ordering
+
+When a guest-time advance crosses multiple pending CD-ROM response or sector
+deadlines, the device processes each event in chronological order rather than
+processing an entire type of event before the other. This preserves observable
+IRQ/response ordering even when host execution advances time in large chunks.
+
 ### Generated memory-fault coverage (Issue #749)
 
 Generated firmware now delivers aligned LH/LHU/LW AdEL and SH/SW AdES before
