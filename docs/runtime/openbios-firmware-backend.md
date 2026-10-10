@@ -26,11 +26,12 @@ psxrecomp openbios-probe out/openbios/openbios.bin --json
 ```
 
 The helper does not vendor code, checks the revision and tracked-worktree state,
-builds using upstream's Docker wrapper, verifies the 512 KiB output, copies the
-observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
-image digest under the git-ignored `out/` folder. Upstream's Docker wrapper
-uses an unpinned `:latest` image: source is pinned, **builder is not**; an
-independent toolchain pin and end-to-end compatibility proof are still required.
+builds with a digest-pinned Docker image or the documented native toolchain,
+verifies the 512 KiB output, copies the observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
+image/toolchain details under the git-ignored `out/` folder.
+`scripts/openbios/build.sh` pins the Docker digest and records the expected
+native toolchain archive hash; each builder still requires independent ROM hash
+and end-to-end compatibility verification.
 Local building does not itself approve distribution.
 
 ### Executable slice
@@ -124,7 +125,8 @@ in the ROM code range, extracted with `nm` — the CLI does not parse ELF),
 compiled with `gcc` and run by `RecompiledHostExecutionEngine` in firmware mode
 (see [host codegen](../development/recompiler-host-codegen.md)). Kernel code
 copied to RAM, the `0x80`/A0/B0/C0 vectors, the shell and the loaded executable
-have no block and run in the mixed-execution interpreter over the same device
+run natively when the explicit `--load-images` manifest supplies a matching
+guarded version; otherwise they use interpreter fallback over the same device
 graph; the report separates `nativeInstructions` from `fallbackInstructions`.
 Milestones come from the fallback interpreter's fetches (native blocks are not
 observed per instruction; the reset vector is the build's first dispatch unit).
@@ -159,9 +161,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     `transitionsEntered` with their shares.
   - `transitions`: artifact→interpreter handoffs. `byReason[]` classifies the
     entry PC (`exception-vector` 0x80, `kernel-call-vector` A0/B0/C0,
-    `rom-no-block`, `ram-no-code-image` — no RAM code is compiled before the
-    run, so all RAM code is this; a future RAM compiler must add its own
-    invalidation reason — and `other-no-block`) with transitions, how many came
+    `rom-no-block`, `ram-no-code-image`, and `other-no-block` for generic
+    accounting callers; the probe also reports image-aware fallback causes) with transitions, how many came
     from JR/JALR (`indirect`), retired instructions and shares. `byAotClass[]`
     (`MixedFallbackAotClass`, AOT-only project: no run-time codegen) says why
     no AOT code ran: `known-not-yet-aot` (in a known image, no block),
@@ -171,8 +172,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     unanalysable self-modifying, `preDeterminable:false`). The producer of a
     handoff sets `MixedFallbackTransition.AotClass` when it knows (an AOT image
     table); otherwise the probe derives it from the address: ROM →
-    `known-not-yet-aot`, anything else → `not-in-any-aot-image` (today's build
-    compiles the ROM only). `byExit[]`: `returned-to-block`,
+    `known-not-yet-aot`, anything else → `not-in-any-aot-image` (a conservative address-derived
+    fallback, distinct from manifest-aware classification). `byExit[]`: `returned-to-block`,
     `budget-exhausted`, `stopped:<code>`. Each region names its `codeImage`
     (`rom`, `kernel-ram-image`, `shell`, `ps-x-exe` — the executable and its
     overlays, i.e. other RAM — or `unknown`) and the instructions retired in
@@ -317,3 +318,12 @@ generated-host execution of OpenBIOS is **not** verified (see the status line).
 through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so Persona cannot get
 past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
+
+### Remaining generated memory-fault coverage
+
+Generated firmware execution does not yet deliver native address-error traps for
+misaligned LH/LW/SH/SW accesses with matching BadVAddr and exception state. A
+synthetic ROM LW at `0x80001001` reaches its guest handler on the interpreter but
+is currently read as bytes by the artifact. Explicit COP0 access ownership is
+fixed separately; it does not establish memory-fault parity. Track this gate
+before claiming complete firmware exception compatibility.

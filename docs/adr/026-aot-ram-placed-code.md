@@ -17,7 +17,9 @@ this record documents its contract without introducing runtime compilation.
 Compile explicit images before execution at their guest destination addresses.
 `LoadImageManifest` accepts ROM slices, PS-X EXE files, the disc boot EXE and
 `interpret` observation entries. Roots are explicit build inputs; the EXE entry
-is included, and excluded observation entries remain interpreted. Missing roots
+is included, and excluded observation entries remain interpreted. In-image
+observation PCs become discovery leaders, and every fused unit containing one
+is omitted, including load observers and branch delay slots. Missing roots
 or unsupported reachable entries reduce AOT coverage rather than permit guessed
 code. Manifest image and roots paths resolve relative to the manifest directory.
 
@@ -32,7 +34,11 @@ fused instruction unit against guest RAM. Guest stores, host/device writes and
 fallback commits invalidate the affected 4 KiB page generations. An unchanged
 page generation permits reuse of a prior successful comparison; a changed
 generation requires another exact word comparison. Unknown or changed code
-must fall back, never execute a stale version. These guards validate identity;
+must fall back, never execute a stale version. The immutable-ROM optimization
+that proves a delay-slot load unobserved from successor instructions is disabled
+for mutable loaded images: successors lie outside the unit's guarded words and
+can change independently. Such units remain fallback until a stronger guarded
+contract is implemented. These guards validate identity;
 they do not generate new code or alter instruction semantics.
 
 During mixed fallback, the existing ADR-025 RAM/state copy-sync contract remains

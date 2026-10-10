@@ -41,6 +41,29 @@ public sealed class OpenBiosProbeAccountingTests
     private static JsonNode Report(OpenBiosProbeAccounting accounting, ulong? native, ulong? retired, uint[] blocks, ProbeSymbols? symbols = null) =>
         JsonSerializer.SerializeToNode(accounting.Report(native, retired, blocks, symbols))!;
 
+    [Theory]
+    [InlineData(0x80001000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0xA0001000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0x00001000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0x80201000u, "aot-coverage-gap:loaded-image")]
+    [InlineData(0x9FC00000u, "aot-coverage-gap:rom")]
+    [InlineData(0x1FC00000u, "aot-coverage-gap:rom")]
+    [InlineData(0xBFC00000u, "aot-coverage-gap:rom")]
+    [InlineData(0xC0001000u, "unknown-code")]
+    public void FallbackCoverage_RecognizesAliasesWithoutChangingTheReportedPc(uint pc, string reason)
+    {
+        var manifest = new PSXRecomp.Core.Recompiler.LoadImageManifest(
+            [new PSXRecomp.Core.Recompiler.LoadedImageSpec("ram", 0x80001000, [0u, 0u], [])], new HashSet<uint>());
+        var cause = OpenBiosProbeCommand.ClassifyFallback(pc, manifest, PSXRecomp.Core.Recompiler.LoadedCodeTable.Empty, 8);
+        Assert.Equal(reason, cause);
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(pc, true, FallbackSegmentStatus.Returned, pc + 4, 1, null));
+        var report = JsonSerializer.SerializeToNode(accounting.Report(1, 1, [0xBFC00000], null, _ => cause))!;
+        Assert.Equal($"0x{pc:X8}", report["hotEntries"]![0]!["pc"]!.ToString());
+        Assert.Equal(reason, report["hotEntries"]![0]!["reason"]!.ToString());
+        Assert.Equal(reason, report["transitions"]!["byReason"]![0]!["reason"]!.ToString());
+    }
+
     [Fact]
     public void Counts_Fetches_Transitions_And_Exits_Without_Inflating_Native()
     {
