@@ -88,6 +88,34 @@ public sealed class OpenBiosProbeAccountingTests
     }
 
     [Fact]
+    public void Classifies_Aot_Class_From_The_Address_Unless_The_Handoff_Names_It()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(0xBFC05734, true, FallbackSegmentStatus.Returned, 0xBFC01000, 4, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x000000B0, true, FallbackSegmentStatus.Returned, 0xBFC01000, 2, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x000000B0, true, FallbackSegmentStatus.Returned, 0xBFC01000, 2, null));
+        accounting.OnTransition(new MixedFallbackTransition(
+            0x80010000, true, FallbackSegmentStatus.Returned, 0xBFC01000, 8, null, MixedFallbackAotClass.RuntimeGenerated));
+
+        var classes = Report(accounting, 0, 16, [0xBFC00000])["transitions"]!["byAotClass"]!.AsArray();
+
+        Assert.Equal(
+            [MixedFallbackAotClass.NotInAnyImage, MixedFallbackAotClass.KnownNotYetAot, MixedFallbackAotClass.RuntimeGenerated],
+            classes.Select(c => c!["aotClass"]!.ToString()).ToArray());
+        Assert.Equal([true, true, false], classes.Select(c => c!["preDeterminable"]!.GetValue<bool>()).ToArray());
+        Assert.Equal(0.5, classes[2]!["retiredShare"]!.GetValue<double>());
+        Assert.Equal("ps-x-exe", OpenBiosProbeAccounting.CodeImageOfRegion(OpenBiosProbeAccounting.RegionOf(0x80010000)));
+    }
+
+    [Theory]
+    [InlineData("""{"differential":{"0x80030000":{"match":true}},"milestoneComparison":{"match":true}}""", true)]
+    [InlineData("""{"differential":{"0x80030000":{"match":true},"0x80010000":"not reached"},"milestoneComparison":{"match":true}}""", false)]
+    [InlineData("""{"differential":{"0x80030000":{"match":true}},"milestoneComparison":{"match":false}}""", false)]
+    [InlineData("""{"differential":{},"milestoneComparison":{"match":true}}""", false)]
+    public void Differential_Passes_Only_When_Every_Boundary_And_The_Milestones_Match(string document, bool pass) =>
+        Assert.Equal(pass, OpenBiosProbeCommand.Consistency(JsonNode.Parse(document)!.AsObject())["differentialPass"]!.GetValue<bool>());
+
+    [Fact]
     public void Native_Instructions_Stay_Unattributed_When_Blocks_Span_Regions()
     {
         var report = Report(new OpenBiosProbeAccounting(), native: 10, retired: 0, blocks: [0xBFC00000, 0x80010000]);

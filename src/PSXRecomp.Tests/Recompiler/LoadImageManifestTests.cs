@@ -58,6 +58,20 @@ public sealed class LoadImageManifestTests
     }
 
     [Fact]
+    public void RomImage_ResolvesItsRootsRelativeToTheManifestDirectory()
+    {
+        using var dir = new TempDirectory();
+        const string rootsName = "manifest-relative-rom.roots";
+        dir.WriteFile(rootsName, Text("0x80001004\n0x80001000\n"));
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text($"image blk 0x80001000 rom 0xBFC00100 0x08 {rootsName}\n")),
+            Firmware((0xBFC00100u, 0xDEADBEEFu), (0xBFC00104u, 0xCAFEBABEu)),
+            disc: null);
+
+        manifest.Images.Should().ContainSingle().Which.Roots.Should().Equal(0x80001000u, 0x80001004u);
+    }
+
+    [Fact]
     public void Comments_BlankLines_AndObservedInterpretedPoints_AreParsed()
     {
         using var dir = new TempDirectory();

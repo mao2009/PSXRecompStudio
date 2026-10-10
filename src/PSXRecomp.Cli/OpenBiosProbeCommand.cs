@@ -75,8 +75,8 @@ internal static class OpenBiosProbeCommand
 
                 if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
-                else if (option == "--load-images") loadImagesPath = args[i];
                 else if (option == "--symbols") symbolsPath = args[i];
+                else if (option == "--load-images") loadImagesPath = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -102,7 +102,7 @@ internal static class OpenBiosProbeCommand
             || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null))
             || (compareAt.Count != 0 && !differential))
         {
-            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential, --stop-at and --symbols require --engine generated-host; " +
+            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential, --stop-at, --symbols and --load-images require --engine generated-host; " +
                             "--compare-at requires --differential");
             error.WriteLine(usage);
             return 1;
@@ -222,8 +222,8 @@ internal static class OpenBiosProbeCommand
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
-    /// it) is compiled from the reset vector plus the explicit roots; everything that has no block — kernel code copied
-    /// to RAM, vectors, the shell, a loaded executable — runs in the mixed-execution interpreter fallback over the same
+    /// it) is compiled from the reset vector plus the explicit roots. A <c>LoadImagesPath</c> manifest adds guarded
+    /// AOT versions of RAM-placed code; everything with no current compiled block runs in interpreter fallback over the same
     /// devices, is reported as fallback and is classified by <see cref="OpenBiosProbeAccounting"/>. With
     /// <c>Differential</c> the interpreter backend runs the same ROM and disc first and both are compared
     /// (<see cref="ProbeGuestState"/>) at the shell and executable entries plus every <c>CompareAt</c> PC. <c>StopAt</c>
@@ -231,6 +231,7 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error)
     {
+        var wall = Stopwatch.StartNew();
         var clock = Stopwatch.StartNew();
         var firmware = probe.Firmware;
         var codeWords = probe.CodeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(probe.CodeBytes / 4, (uint)firmware.Words.Count)).ToArray();
@@ -248,6 +249,7 @@ internal static class OpenBiosProbeCommand
         Dictionary<uint, ProbeGuestState>? reference = null;
         OpenBiosBootReport? referenceMilestones = null;
         ProbeGuestState? referenceInterrupt = null, hostInterrupt = null;
+        var referenceSeconds = new Dictionary<uint, double>();
         var referenceStopped = false;
         double referenceMs = 0;
         if (probe.Differential)
@@ -267,6 +269,7 @@ internal static class OpenBiosProbeCommand
                 if (boundaryPcs.Contains(pc) && !reference.ContainsKey(pc))
                 {
                     reference[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
+                    referenceSeconds[pc] = clock.Elapsed.TotalSeconds;
                 }
 
                 if (pc == probe.StopAt)
@@ -304,12 +307,13 @@ internal static class OpenBiosProbeCommand
         var budget = (uint)Math.Min((ulong)probe.Segments * probe.SegmentBudget, uint.MaxValue);
         try
         {
+            var measuredBuild = new MeasuredBuild(new GeneratedHostBuildService(TimeSpan.FromMinutes(3)));
             clock.Restart();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
                 OpenBiosFirmware.ResetVector,
-                new GeneratedHostBuildService(TimeSpan.FromMinutes(3)),
+                measuredBuild,
                 directory,
                 biosRuntimeFactory: null,
                 // One fallback segment may run as long as the whole probe: the shell and a loaded executable legitimately
@@ -348,7 +352,7 @@ internal static class OpenBiosProbeCommand
                 {
                     accounting.OnTransition(transition);
                     if (++transitions % 10000 == 0)
-                        error.WriteLine($"openbios-probe: generated host: {transitions} transitions, {hostEngine?.NativeRetiredInstructions} native instructions, {clock.Elapsed.TotalSeconds:F0} s");
+                        error.WriteLine($"openbios-probe: {transitions} artifact/interpreter handoffs, {clock.Elapsed.TotalSeconds:F0} s");
                 },
             };
             hostEngine = engine;
@@ -421,12 +425,16 @@ internal static class OpenBiosProbeCommand
                 {
                     buildMs = Math.Round(buildMs, 1),
                     compileMs = Math.Round(compileMs, 1),
+                    codegenMs = Math.Round(compileMs - measuredBuild.Milliseconds, 1),
+                    gccMs = Math.Round(measuredBuild.Milliseconds, 1),
                     referenceMs = Math.Round(referenceMs, 1),
                     runMs = Math.Round(runMs, 1),
                     fallbackMs = costs is null ? (double?)null : Math.Round(costs.FallbackMilliseconds, 1),
                     transferMs = costs is null ? (double?)null : Math.Round(costs.TransferMilliseconds, 1),
                     nativeAndHostMs = Math.Round(runMs - (costs?.FallbackMilliseconds ?? 0) - (costs?.TransferMilliseconds ?? 0), 1),
+                    totalMs = Math.Round(wall.Elapsed.TotalMilliseconds, 1),
                 },
+                aot = new { generatedCBytes = measuredBuild.SourceBytes, artifactBytes = measuredBuild.ArtifactBytes },
                 boundaries = boundaries.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value.Describe()),
                 differential = reference?.OrderBy(static b => b.Key).ToDictionary(
                     static b => Hex(b.Key),
@@ -434,6 +442,7 @@ internal static class OpenBiosProbeCommand
                         ? ProbeGuestState.Compare(b.Value, host)
                         : (object)"not reached by the generated host (a PC inside a compiled block is not observable)"),
                 referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Order().Select(Hex).ToArray(),
+                referenceSecondsAtBoundary = referenceSeconds.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value),
                 firstInterrupt = new { interpreter = referenceInterrupt?.Describe(), host = hostInterrupt?.Describe() },
                 firstInterruptDifferential = referenceInterrupt is null ? null : hostInterrupt is null
                     ? (object)"not reached by generated host" : ProbeGuestState.Compare(referenceInterrupt, hostInterrupt),
@@ -495,6 +504,32 @@ internal static class OpenBiosProbeCommand
         FirstUnexpectedException = report.FirstUnexpectedException is { } e ? e with { AtFetch = 0 } : null,
     };
 
+    /// <summary>Compatibility helper for reports whose expected boundaries are their observed entries.</summary>
+    internal static JsonNode Consistency(JsonObject document) => Consistency(
+        document,
+        document["differential"] is JsonObject observed
+            ? observed.Select(static b => uint.Parse(b.Key[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)).ToHashSet()
+            : new HashSet<uint>(),
+        stopAt: null);
+
+    /// <summary>Times the artifact's gcc build and records the generated C and binary sizes (Issue #732 measurement).</summary>
+    private sealed class MeasuredBuild(IGeneratedHostBuildService inner) : IGeneratedHostBuildService
+    {
+        public double Milliseconds { get; private set; }
+        public long SourceBytes { get; private set; }
+        public long? ArtifactBytes { get; private set; }
+
+        public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
+        {
+            var clock = Stopwatch.StartNew();
+            var result = inner.Build(request);
+            Milliseconds = clock.Elapsed.TotalMilliseconds;
+            SourceBytes = System.Text.Encoding.UTF8.GetByteCount(request.Source);
+            ArtifactBytes = result.Artifact is { } artifact ? new FileInfo(artifact.BinaryPath).Length : null;
+            return result;
+        }
+    }
+
     /// <summary>The compact human summary printed ahead of the indented document without <c>--json</c>.</summary>
     internal static IEnumerable<string> Summarize(JsonNode document)
     {
@@ -510,6 +545,11 @@ internal static class OpenBiosProbeCommand
         foreach (var r in transitions["byReason"]!.AsArray())
         {
             yield return $"  reason {r!["reason"]}: {r["transitions"]} transitions ({Percent(r["transitionShare"])}), {r["retiredInstructions"]} retired ({Percent(r["retiredShare"])})";
+        }
+
+        foreach (var c in transitions["byAotClass"]!.AsArray())
+        {
+            yield return $"  aot-class {c!["aotClass"]}: {c["transitions"]} transitions ({Percent(c["transitionShare"])}), {c["retiredInstructions"]} retired ({Percent(c["retiredShare"])})";
         }
 
         foreach (var e in a["hotEntries"]!.AsArray().Take(5))
@@ -533,8 +573,10 @@ internal static class OpenBiosProbeCommand
         }
 
         var t = document["timings"]!;
-        yield return $"Timings ms: build {t["buildMs"]}, compile {t["compileMs"]}, reference {t["referenceMs"]}, run {t["runMs"]} " +
-                     $"(fallback {t["fallbackMs"]}, transfer {t["transferMs"]}, native+host {t["nativeAndHostMs"]})";
+        yield return $"Timings ms: analysis {t["buildMs"]}, codegen {t["codegenMs"]}, gcc {t["gccMs"]}, reference {t["referenceMs"]}, run {t["runMs"]} " +
+                     $"(fallback {t["fallbackMs"]}, transfer {t["transferMs"]}, native+host {t["nativeAndHostMs"]}), total {t["totalMs"]}";
+        yield return $"AOT code: {document["aot"]?["generatedCBytes"]} bytes of C, {document["aot"]?["artifactBytes"]} bytes of artifact; " +
+                     $"differentialPass={document["consistency"]?["differentialPass"]?.ToString() ?? "n/a"}";
     }
 
     private static string Percent(JsonNode? share) => share is null ? "-" : $"{share.GetValue<double>() * 100:F1}%";

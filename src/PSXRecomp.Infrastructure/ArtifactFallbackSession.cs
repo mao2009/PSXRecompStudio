@@ -73,8 +73,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
         Func<string> readReply,
         bool guestFirmware = false,
         Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null,
-        LoadedCodeTable? loadedCode = null,
-        Action<MixedFallbackTransition>? transitionObserver = null)
+        Action<MixedFallbackTransition>? transitionObserver = null,
+        LoadedCodeTable? loadedCode = null)
     {
         _transitionObserver = transitionObserver;
         _guestFirmware = guestFirmware;

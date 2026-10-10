@@ -297,7 +297,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, _loadedCode, FallbackTransitionObserver);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
         _bridge = bridge;
         var arguments = new List<string>(4) { _inputPath, _imagePath };
         if (bridge is not null)
@@ -652,8 +652,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             bool guestFirmware,
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
             ICdSectorSource? disc,
-            LoadedCodeTable loadedCode,
-            Action<MixedFallbackTransition>? fallbackTransitionObserver)
+            Action<MixedFallbackTransition>? fallbackTransitionObserver,
+            LoadedCodeTable loadedCode)
         {
             _fallbackTransitionObserver = fallbackTransitionObserver;
             _disc = disc;
@@ -701,7 +701,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _loadedCode, _fallbackTransitionObserver);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode);
                 }
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
