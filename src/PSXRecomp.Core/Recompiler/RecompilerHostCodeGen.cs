@@ -331,6 +331,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  /* Issue #732: the COP0 registers other than SR/CAUSE/EPC (which live in the fields above), indexed");
         sb.AppendLine("     by register number, as MFC0/MTC0 read and write them (PSXCpu::cop0_). Slots 12-14 are unused. */");
         sb.AppendLine("  uint32_t " + Cop0OtherField + "[32];");
+        sb.AppendLine("  uint32_t (*host_cop0)(struct " + StateStruct + "*, uint32_t, uint32_t, uint32_t);");
         sb.AppendLine("  /* Issue #732: non-zero in firmware mode. A SYSCALL/BREAK exit is then delivered to the guest's own");
         sb.AppendLine("     exception vector (EPC, CAUSE Excode/BD, SR KU/IE push, BEV vector) instead of being offered to");
         sb.AppendLine("     host_syscall or stopping the run. Zero (every zero-initialised state) keeps the HLE behavior. */");
@@ -351,12 +352,14 @@ public static class RecompilerHostCodeGen
         sb.AppendLine($"  if (r == {RecompilerCop0.Status}u) return &s->{Cop0SrField};");
         sb.AppendLine($"  if (r == {RecompilerCop0.Cause}u) return &s->{Cop0CauseField};");
         sb.AppendLine($"  if (r == {RecompilerCop0.Epc}u) return &s->{Cop0EpcField};");
+        sb.AppendLine($"  if (s->host_cop0) s->{Cop0OtherField}[r & 31u] = s->host_cop0(s, r, 0u, 0u);");
         sb.AppendLine($"  return &s->{Cop0OtherField}[r & 31u];");
         sb.AppendLine("}");
         sb.AppendLine();
         sb.AppendLine("/* MTC0 (PSXCpu::ExecMtc0): CAUSE keeps all but its software IP bits; any other register takes the value. */");
         sb.AppendLine("static inline void " + Cop0WriteHelper + "(" + StateStruct + "* s, uint32_t r, uint32_t v) {");
         sb.AppendLine($"  if (r == {RecompilerCop0.Cause}u) {{ s->{Cop0CauseField} = (s->{Cop0CauseField} & ~{FormatHex(RecompilerCop0.CauseWritableMask)}) | (v & {FormatHex(RecompilerCop0.CauseWritableMask)}); return; }}");
+        sb.AppendLine($"  if (r != {RecompilerCop0.Status}u && r != {RecompilerCop0.Epc}u && s->host_cop0) {{ s->host_cop0(s, r, 1u, v); s->{Cop0OtherField}[r & 31u] = v; return; }}");
         sb.AppendLine($"  *{Cop0SlotHelper}(s, r) = v;");
         sb.AppendLine("}");
         sb.AppendLine();

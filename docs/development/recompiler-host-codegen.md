@@ -291,3 +291,14 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
   register-held target as a static address.
 
 Generator never silently produces partial source for invalid IR.
+
+### Firmware COP0 service
+
+Firmware artifacts keep SR/CAUSE/EPC in their existing state fields. Other COP0
+registers use the optional `host_cop0` callback and the additive
+`RHOST_COP0_ACCESS register write value` service (reply `V value` or `X`). The
+shared native core owns these registers across native/fallback transitions;
+standalone generated code with no callback retains its local register storage.
+Outstanding retired time is flushed before access. See ADR-025 for validation,
+compatibility and ownership; this service does not change transfer or fallback
+protocol versions.
