@@ -253,7 +253,8 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal),
+                .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
+                .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal),
             null,
             null);
     }
@@ -930,7 +931,7 @@ int main(int argc, char** argv) {
     /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
     for (i = 3; i < argc; i++) {
         if (strcmp(argv[i], ""@GUEST_EXCEPTIONS@"") == 0) state.guest_exceptions = 1u;
-        if (strcmp(argv[i], ""--exact-device-time"") == 0) artifact_exact_time = 1;
+        if (strcmp(argv[i], ""@EXACT_DEVICE_TIME@"") == 0) artifact_exact_time = 1;
     }
 
     /* Opt-in only: a stray extra argument never enables the protocol, so a run

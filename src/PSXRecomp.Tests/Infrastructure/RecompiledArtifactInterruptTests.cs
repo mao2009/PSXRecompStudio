@@ -288,16 +288,18 @@ public sealed class RecompiledArtifactInterruptTests
     }
 
     [Theory]
-    [InlineData(null)]
-    [InlineData(1u)]
-    public void ExactTimeProtocol_MissingInitialOrReportCredit_FailsClosed(uint? initialCredit)
+    [InlineData(null, true)]
+    [InlineData(1u, true)]
+    [InlineData(null, false)]
+    [InlineData(1u, false)]
+    public void ExactTimeProtocol_MissingInitialOrReportCredit_FailsClosedOnlyWithFlag(uint? initialCredit, bool requireExactTime)
     {
         using var dir = new TempDirectory();
         Run(Program([Nop, Nop]), dir, withRuntime: false);
         var run = RunScripted(dir, _ => "V 0", eventCredit: initialCredit,
-            requireExactTime: true, sendCreditOnReports: false);
-        run.ExitCode.Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
-        run.HasSnapshot.Should().BeFalse();
+            requireExactTime: requireExactTime, sendCreditOnReports: false);
+        run.ExitCode.Should().Be(requireExactTime ? RecompiledArtifactCodeGen.RetiredProtocolExitCode : 0);
+        run.HasSnapshot.Should().Be(!requireExactTime);
     }
 
     [Theory]

@@ -34,6 +34,16 @@ public sealed class RecompiledArtifactCodeGenTests
     }
 
     [Fact]
+    public void Generate_ExactDeviceTimeFlag_IsEmittedFromSharedConstant()
+    {
+        var source = RecompiledArtifactCodeGen.Generate(GenerateDispatch()).Source!;
+
+        source.Should().Contain(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
+        source.Should().NotContain("@EXACT_DEVICE_TIME@");
+        source.Should().Contain($"if (strcmp(argv[i], \"{RecompiledArtifactCodeGen.ExactDeviceTimeFlag}\") == 0) artifact_exact_time = 1;");
+    }
+
+    [Fact]
     public void Generate_IsDeterministic_ForIdenticalInput()
     {
         var dispatch = GenerateDispatch();
