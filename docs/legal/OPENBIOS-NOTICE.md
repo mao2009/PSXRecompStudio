@@ -134,9 +134,16 @@ Converted to binary format by Wei Mingzhi <whistler_wmz@users.sf.net>.
 
 **Image:** `ghcr.io/grumpycoders/pcsx-redux-build`
 
-**Note:** This image is used to build `openbios.bin` in CI. Its internal package licenses cannot be verified without pulling and inspecting the image. This does not affect the license status of `openbios.bin`'s content directly (the image is not distributed as part of the binary), but its provenance is recorded here as unverified for completeness.
+**Note:** This optional image is not established as an OpenBIOS CI build dependency. Its internal package licenses cannot be verified without pulling and inspecting the image. This does not affect the license status of `openbios.bin`'s content directly (the image is not distributed as part of the binary), but its provenance is recorded here as unverified for completeness.
 
-**Action required (optional):** Document the image digest and inspect installed package licenses if the build toolchain itself must be fully audited.
+**Pinned optional image:** `ghcr.io/grumpycoders/pcsx-redux-build@sha256:d9ae6cbb23a5d0d98d8c3702cc6f512698ee1670bf8d59b236b2baabe99a66e4`.
+
+**Verification:** Docker output/package provenance remains unverified; this notice
+does not establish CI use or equivalence to the recorded native ROM. The build
+script defaults to native GCC 16.2.0 and validates its reported version, not
+arbitrary installed compiler/archive identity.
+
+**Action required (optional):** Inspect installed package licenses if the build toolchain itself must be fully audited; compare an actual Docker-built ROM hash separately.
 
 ---
 
