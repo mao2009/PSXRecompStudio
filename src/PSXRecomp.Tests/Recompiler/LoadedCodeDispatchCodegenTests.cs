@@ -49,6 +49,20 @@ public sealed class LoadedCodeDispatchCodegenTests
     }
 
     [Fact]
+    public void LoadedCop2Only_DeclaresTheGteHelpers()
+    {
+        // The static ROM has no COP2; the RAM image alone needs the link-time GTE bridge.
+        const uint mtc2T0ToLzcs = 0x4888F000u;
+        var image = ReachableProgramBuilder.BuildLoadedImage(Dest,
+            [mtc2T0ToLzcs, MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop], [Dest], None);
+        image.Blocks.SelectMany(static block => block.Block.Operations)
+            .Select(static op => op.Kind).Should().Contain(RecompilerIrOperationKind.WriteCop2);
+        var result = RecompilerHostCodeGen.Generate(RomProgram(), new LoadedCodeTable([image]));
+        result.Success.Should().BeTrue(result.DiagnosticMessage);
+        result.Source.Should().Contain("extern void     recompiler_gte_write(");
+    }
+
+    [Fact]
     public void LoadedCodeAtAStaticBlockEntry_IsRejected()
     {
         var clash = ReachableProgramBuilder.BuildLoadedImage(Rom, [MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop], [Rom], None);

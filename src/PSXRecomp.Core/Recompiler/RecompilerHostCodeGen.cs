@@ -214,6 +214,9 @@ public static class RecompilerHostCodeGen
         RecompilerIrOperationKind.ReadCop0 => true,
         RecompilerIrOperationKind.WriteCop0 => true,
         RecompilerIrOperationKind.ReturnFromException => true,
+        RecompilerIrOperationKind.ReadCop2 => true,
+        RecompilerIrOperationKind.WriteCop2 => true,
+        RecompilerIrOperationKind.Cop2Command => true,
         _ => false,
     };
 
@@ -248,6 +251,12 @@ public static class RecompilerHostCodeGen
             sb.AppendLine("   words[0..count). *seen is the host's memory generation at the last successful check (UINT64_MAX: never). */");
             sb.AppendLine($"extern int {CodeGuardHelper}(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen);");
             sb.AppendLine();
+        }
+        if (program.Blocks.Concat(loadedCode.Blocks.Select(version => version.Block))
+            .Any(block => block.Operations.Any(op => op.Kind is
+                RecompilerIrOperationKind.ReadCop2 or RecompilerIrOperationKind.WriteCop2 or RecompilerIrOperationKind.Cop2Command)))
+        {
+            EmitGteHelperDeclarations(sb);
         }
         EmitStateStruct(sb);
         EmitSra32Helper(sb);
@@ -298,6 +307,22 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("extern void     recompiler_write_mem8(void* core, uint32_t address, uint8_t value);");
         sb.AppendLine("extern void     recompiler_write_mem16(void* core, uint32_t address, uint16_t value);");
         sb.AppendLine("extern void     recompiler_write_mem32(void* core, uint32_t address, uint32_t value);");
+        sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Declares the GTE (COP2) helpers (Issue #447), only for a program that uses COP2. The GTE state is the
+    /// runtime's single GTE (the managed <c>GteRegisterBank</c>): the host provides these at link time and
+    /// reaches that one instance (the artifact relays to its parent), so generated code holds no GTE copy.
+    /// <c>reg</c> is 0-31 for data and 32-63 for control registers; the command helper returns non-zero when
+    /// the GTE does not implement the command.
+    /// </summary>
+    private static void EmitGteHelperDeclarations(StringBuilder sb)
+    {
+        sb.AppendLine("/* Runtime GTE (COP2) helpers — provided by the host at link time (Issue #447). */");
+        sb.AppendLine("extern uint32_t recompiler_gte_read(void* core, uint32_t reg);");
+        sb.AppendLine("extern void     recompiler_gte_write(void* core, uint32_t reg, uint32_t value);");
+        sb.AppendLine("extern int32_t  recompiler_gte_command(void* core, uint32_t command);");
         sb.AppendLine();
     }
 
@@ -711,6 +736,19 @@ public static class RecompilerHostCodeGen
             case RecompilerIrOperationKind.ReturnFromException:
                 return $"{StateParam}->{Cop0SrField} = ({StateParam}->{Cop0SrField} & ~0xFu) | (({StateParam}->{Cop0SrField} >> 2) & 0xFu);";
 
+            // COP2 (Issue #447): SR.CU2 clear stops the block like a trapping AddSigned (fail closed).
+            case RecompilerIrOperationKind.ReadCop2:
+                if (result == null) return null;
+                valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
+                return Cop2Guard() + $"{result} = recompiler_gte_read({StateParam}->{CoreField}, {op.Register + (op.Immediate * 32u)}u);";
+
+            case RecompilerIrOperationKind.WriteCop2:
+                return Cop2Guard() + $"recompiler_gte_write({StateParam}->{CoreField}, {op.Register + (op.Immediate * 32u)}u, {ResolveValue(op.InputValueA, valueNames)});";
+
+            case RecompilerIrOperationKind.Cop2Command:
+                return Cop2Guard() + $"if (recompiler_gte_command({StateParam}->{CoreField}, {FormatImmediate(op.Immediate)}) != 0) " +
+                       $"{{ {StateParam}->{TerminationField} = RECOMPILER_REASON_EXCEPTION; return (int32_t)RECOMPILER_REASON_EXCEPTION; }}";
+
             case RecompilerIrOperationKind.ReadHi:
                 if (result == null) return null;
                 valueNames[op.ResultValueId] = $"v{op.ResultValueId}";
@@ -818,6 +856,10 @@ public static class RecompilerHostCodeGen
 
         return termination;
     }
+
+    private static string Cop2Guard() =>
+        $"if (({StateParam}->{Cop0SrField} & {FormatImmediate(RecompilerCop2.StatusCop2Usable)}) == 0u) " +
+        $"{{ {StateParam}->{TerminationField} = RECOMPILER_REASON_EXCEPTION; return (int32_t)RECOMPILER_REASON_EXCEPTION; }} ";
 
     private static string EmitBranchExit(RecompilerIrFlow flow, RecompilerIrExit exit)
     {

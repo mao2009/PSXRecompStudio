@@ -1,3 +1,4 @@
+using System.Globalization;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Dma;
@@ -751,6 +752,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </remarks>
     /// <returns>The current production frame, or <c>null</c> when no meaningful
     /// frame activity has occurred since the most recent <see cref="Load"/>.</returns>
+    /// <summary>The GTE (COP2) state the CPU executes against (Issue #447), for run evidence.</summary>
+    public Runtime.Gte.GteRegisterBank Gte => _devices.Gte;
+
     public FrameSnapshot? CaptureFrameEvidence()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

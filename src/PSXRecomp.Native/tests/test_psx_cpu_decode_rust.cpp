@@ -130,9 +130,13 @@ static void test_rust_decode_classification_and_fields() {
         {0xB8000000u, PSXDecodeOp::Swr},      {0x9C000000u, PSXDecodeOp::Reserved},
         {0x40000000u, PSXDecodeOp::Mfc0},     {0x40800000u, PSXDecodeOp::Mtc0},
         {0x42000010u, PSXDecodeOp::Rfe},      {0x42000001u, PSXDecodeOp::Reserved},
-        {0x40410000u, PSXDecodeOp::Reserved}, {0x4A180001u, PSXDecodeOp::CopUnusable},
+        {0x40410000u, PSXDecodeOp::Reserved}, {0x4A180001u, PSXDecodeOp::Cop2Command},
         {0xC0000000u, PSXDecodeOp::Reserved}, {0xE0000000u, PSXDecodeOp::Reserved},
         {0xEC000000u, PSXDecodeOp::CopUnusable}, {0xFFFFFFFFu, PSXDecodeOp::Reserved},
+        {0x48C8E800u, PSXDecodeOp::Ctc2},     {0x48000000u, PSXDecodeOp::Mfc2},
+        {0x48400000u, PSXDecodeOp::Cfc2},     {0x48800000u, PSXDecodeOp::Mtc2},
+        {0x49000000u, PSXDecodeOp::CopUnusable}, // BC2F: no GTE meaning
+        {0xC8010000u, PSXDecodeOp::Lwc2},     {0xE8010000u, PSXDecodeOp::Swc2},
     };
     for (const Case& c : cases) {
         ASSERT_EQ(static_cast<uint32_t>(psx_cpu_decode(c.word).op), static_cast<uint32_t>(c.op));

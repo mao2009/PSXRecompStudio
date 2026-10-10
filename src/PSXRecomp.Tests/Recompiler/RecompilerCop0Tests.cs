@@ -157,7 +157,7 @@ public sealed class RecompilerCop0Tests
 
     internal const uint Rfe = 0x42000010u;
 
-    private static RecompilerIrProgram Lower(uint[] words)
+    internal static RecompilerIrProgram Lower(uint[] words)
     {
         var program = MipsToIrLowerer.LowerProgram(words
             .Select((word, index) => (R3000aDecoder.Decode(word), EntryPc + (uint)(index * 4)))
@@ -171,7 +171,7 @@ public sealed class RecompilerCop0Tests
     /// and on the IR evaluator, asserts all three agree on the GPRs and the data window, and returns the IR run.
     /// Every program ends on an instruction that settles a trailing load delay inside the program.
     /// </summary>
-    private static (IReadOnlyList<uint> Gpr, IReadOnlyList<uint>? Cop0, byte[] Memory) RunThreeWay(
+    internal static (IReadOnlyList<uint> Gpr, IReadOnlyList<uint>? Cop0, byte[] Memory) RunThreeWay(
         string name, uint[] words, uint windowBytes = 0)
     {
         var window = Enumerable.Range(0, (int)windowBytes).Select(i => DataBase + (uint)i).ToArray();

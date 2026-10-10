@@ -387,7 +387,8 @@ public static class MipsToIrLowerer
     /// </summary>
     internal static bool TryGetLoadDelayTarget(R3000aInstruction instruction, out byte target)
     {
-        if (instruction.Opcode == R3000aOpcode.Mfc0)
+        // MFC2/CFC2 write rt through the load delay too (psx_cpu_cop2.cpp, Issue #447).
+        if (instruction.Opcode == R3000aOpcode.Mfc0 || IsCop2Read(instruction))
         {
             target = Cop0Rt(instruction);
             return true;
@@ -407,7 +408,23 @@ public static class MipsToIrLowerer
     internal static bool LoadShadowIsUnobserved(byte target, R3000aInstruction successor) =>
         target == 0 || (TryGetSourceRegisters(successor, out var sources) && Array.IndexOf(sources, target) < 0);
 
+    /// <summary>The <c>rt</c> field of a COP0/COP2 move (bits 16-20).</summary>
     private static byte Cop0Rt(R3000aInstruction instruction) => (byte)((instruction.EncodedWord >> 16) & 0x1F);
+
+    /// <summary>MFC2/CFC2: a COP2 move into a GPR.</summary>
+    private static bool IsCop2Read(R3000aInstruction instruction) =>
+        instruction.Opcode == R3000aOpcode.Cop2Command &&
+        instruction.CopInfo.Operation is R3000aCopOperationKind.MoveFromCoprocessor or R3000aCopOperationKind.MoveControlFromCoprocessor;
+
+    /// <summary>MTC2/CTC2: a COP2 move from a GPR.</summary>
+    private static bool IsCop2Write(R3000aInstruction instruction) =>
+        instruction.Opcode == R3000aOpcode.Cop2Command &&
+        instruction.CopInfo.Operation is R3000aCopOperationKind.MoveToCoprocessor or R3000aCopOperationKind.MoveControlToCoprocessor;
+
+    private static uint Cop2Bank(R3000aInstruction instruction) =>
+        instruction.CopInfo.Operation is R3000aCopOperationKind.MoveControlFromCoprocessor or R3000aCopOperationKind.MoveControlToCoprocessor
+            ? RecompilerCop2.ControlBank
+            : RecompilerCop2.DataBank;
 
     /// <summary>
     /// Rejects a second load delay stacked on the one just fused. The observer of
@@ -886,6 +903,14 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Mtc0:
                 sources = new[] { Cop0Rt(instruction) };
                 return true;
+            case R3000aOpcode.Cop2Command:
+                // MTC2/CTC2 read rt; MFC2/CFC2 and a GTE command read no GPR.
+                sources = IsCop2Write(instruction) ? new[] { Cop0Rt(instruction) } : Array.Empty<byte>();
+                return true;
+            case R3000aOpcode.Lwc2:
+            case R3000aOpcode.Swc2:
+                sources = new[] { instruction.Operand1.BaseRegister };
+                return true;
             case R3000aOpcode.Sll:
             case R3000aOpcode.Srl:
             case R3000aOpcode.Sra:
@@ -1017,6 +1042,13 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Mfc0:
                 destination = Cop0Rt(instruction);
                 return true;
+            case R3000aOpcode.Cop2Command:
+                destination = IsCop2Read(instruction) ? Cop0Rt(instruction) : (byte)0;
+                return IsCop2Read(instruction);
+            case R3000aOpcode.Lwc2:
+            case R3000aOpcode.Swc2:
+                destination = 0;
+                return false;
             case R3000aOpcode.Add:
             case R3000aOpcode.Sll:
             case R3000aOpcode.Srl:
@@ -1200,6 +1232,24 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Rfe:
                 builder.ReturnFromException();
                 return null;
+            case R3000aOpcode.Cop2Command:
+                return EmitCop2(builder, instruction);
+            case R3000aOpcode.Lwc2:
+            {
+                // ponytail: the load runs before the SR.CU2 check of WriteCop2; the interpreter checks first.
+                // Only observable for an LWC2 with CU2 clear reading a side-effecting MMIO register.
+                if (instruction.Operand1.Kind != R3000aOperandKind.MemoryOffset) return UnsupportedMemoryOperand(instruction);
+                var loaded = builder.Load(RecompilerIrOperationKind.Load32, EmitEffectiveAddress(builder, instruction.Operand1));
+                builder.WriteCop2(instruction.Operand0.Register, RecompilerCop2.DataBank, loaded);
+                return null;
+            }
+            case R3000aOpcode.Swc2:
+            {
+                if (instruction.Operand1.Kind != R3000aOperandKind.MemoryOffset) return UnsupportedMemoryOperand(instruction);
+                var address = EmitEffectiveAddress(builder, instruction.Operand1);
+                builder.Store(RecompilerIrOperationKind.Store32, address, builder.ReadCop2(instruction.Operand0.Register, RecompilerCop2.DataBank));
+                return null;
+            }
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     instruction.Opcode,
@@ -1322,6 +1372,12 @@ public static class MipsToIrLowerer
         if (instruction.Opcode == R3000aOpcode.Mfc0)
         {
             value = builder.ReadCop0(instruction.CopInfo.CopRegisterNumber);
+            return null;
+        }
+
+        if (IsCop2Read(instruction))
+        {
+            value = builder.ReadCop2(instruction.CopInfo.CopRegisterNumber, Cop2Bank(instruction));
             return null;
         }
 
@@ -1456,6 +1512,37 @@ public static class MipsToIrLowerer
     private static int EmitNot(BlockBuilder builder, int value) =>
         builder.Binary(RecompilerIrOperationKind.Nor, value, value);
 
+    /// <summary>
+    /// COP2 moves and commands (Issue #447). An unobserved MFC2/CFC2 commits at once; an observed one is
+    /// fused like a load (<see cref="TryEmitLoadValue"/>).
+    /// </summary>
+    private static MipsToIrLoweringResult? EmitCop2(BlockBuilder builder, R3000aInstruction instruction)
+    {
+        var register = instruction.CopInfo.CopRegisterNumber;
+        if (IsCop2Read(instruction))
+        {
+            builder.WriteGpr(Cop0Rt(instruction), builder.ReadCop2(register, Cop2Bank(instruction)));
+            return null;
+        }
+
+        if (IsCop2Write(instruction))
+        {
+            builder.WriteCop2(register, Cop2Bank(instruction), builder.ReadGpr(Cop0Rt(instruction)));
+            return null;
+        }
+
+        if (instruction.CopInfo.Operation == R3000aCopOperationKind.ExecuteCommand)
+        {
+            builder.Cop2Command(instruction.CopInfo.Command);
+            return null;
+        }
+
+        return MipsToIrLoweringResult.Unsupported(
+            instruction.Opcode,
+            RecompilerIrDiagnosticCode.InvalidOperationShape,
+            $"COP2 form '{instruction.CopInfo.Operation}' has no GTE meaning and is not lowered.");
+    }
+
     private static MipsToIrLoweringResult? EmitStore(
         BlockBuilder builder, R3000aInstruction instruction, RecompilerIrOperationKind storeKind)
     {
@@ -1584,6 +1671,17 @@ public static class MipsToIrLowerer
 
         public void ReturnFromException() =>
             _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.ReturnFromException));
+
+        public int ReadCop2(byte register, uint bank) =>
+            AddWithResult(id => new RecompilerIrOperation(
+                RecompilerIrOperationKind.ReadCop2, resultValueId: id, register: register, immediate: bank));
+
+        public void WriteCop2(byte register, uint bank, int value) =>
+            _operations.Add(new RecompilerIrOperation(
+                RecompilerIrOperationKind.WriteCop2, inputValueA: value, register: register, immediate: bank));
+
+        public void Cop2Command(uint command) =>
+            _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.Cop2Command, immediate: command));
 
         /// <summary>
         /// MULT/MULTU/DIV/DIVU: a two-input operation with no SSA result — it

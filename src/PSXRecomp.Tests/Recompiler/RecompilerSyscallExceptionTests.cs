@@ -100,8 +100,9 @@ public sealed class RecompilerSyscallExceptionTests
     {
         var sub = R3000aDecoder.Decode(MipsEncoding.R(0x22, rd: 8, rs: 9, rt: 10, shamt: 0));
         MipsToIrLowerer.Lower(sub, EntryPc).IsSupported.Should().BeFalse();
-        var mtc2 = R3000aDecoder.Decode((0x12u << 26) | (4u << 21) | (8u << 16) | (12u << 11));
-        MipsToIrLowerer.Lower(mtc2, EntryPc).IsSupported.Should().BeFalse();
+        // MTC2 is lowered since Issue #447; COP3 has no coprocessor and stays unsupported.
+        var mtc3 = R3000aDecoder.Decode((0x13u << 26) | (4u << 21) | (8u << 16) | (12u << 11));
+        MipsToIrLowerer.Lower(mtc3, EntryPc).IsSupported.Should().BeFalse();
     }
 
     [Fact]

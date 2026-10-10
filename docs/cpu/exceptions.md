@@ -32,7 +32,7 @@ vector-selection machinery described below.
 | 0x08 Sys | SYSCALL |
 | 0x09 Bp | BREAK |
 | 0x0A RI | An undefined opcode, an undefined SPECIAL funct, an undefined REGIMM selector, or a COP0 form other than MFC0/MTC0/RFE (Issue #376) |
-| 0x0B CpU | Any COP1/COP2/COP3 access, including LWC1/2/3 and SWC1/2/3, since none of those coprocessors are implemented. CAUSE.CE carries the coprocessor number (Issue #376, Issue #377) |
+| 0x0B CpU | Any COP1/COP3 access, including LWC1/3 and SWC1/3; a COP2/LWC2/SWC2 access with SR.CU2 clear or no GTE attached, or a COP2 form with no GTE meaning (Issue #447). CAUSE.CE carries the coprocessor number (Issue #376, Issue #377) |
 | 0x0C Ov | Signed overflow in ADD/ADDI/SUB |
 
 Not modelled: MOD/TLBL/TLBS (0x01-0x03; the PSX has no TLB) and IBE/DBE

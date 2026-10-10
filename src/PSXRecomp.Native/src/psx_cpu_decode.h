@@ -31,6 +31,8 @@ enum class PSXDecodeOp : uint32_t {
     Lb = 48, Lh = 49, Lwl = 50, Lw = 51, Lbu = 52, Lhu = 53, Lwr = 54,
     Sb = 55, Sh = 56, Swl = 57, Sw = 58, Swr = 59,
     Mfc0 = 60, Mtc0 = 61, Rfe = 62,
+    // COP2/GTE (Issue #447); SR.CU2 is checked by the handler.
+    Mfc2 = 63, Cfc2 = 64, Mtc2 = 65, Ctc2 = 66, Cop2Command = 67, Lwc2 = 68, Swc2 = 69,
 };
 
 struct PSXDecodedInstruction {

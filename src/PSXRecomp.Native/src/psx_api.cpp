@@ -115,6 +115,23 @@ void PSXCore_SetCdRomMmioCallbacks(
     core->memory.AttachCdRomMmio(context, read8, write8);
 }
 
+static_assert(kPsxStepGteCommandUnsupported == PSX_STEP_GTE_COMMAND_UNSUPPORTED, "psx_cpu.h and psx_core.h disagree");
+
+void PSXCore_SetGteCallbacks(
+    PSXCore* core,
+    void* context,
+    PSXGteRead read,
+    PSXGteWrite write,
+    PSXGteCommand command) {
+    if (!core) return;
+    // All three or none: a partially attached GTE would fault on a null call.
+    if (read == nullptr || write == nullptr || command == nullptr) {
+        core->cpu.AttachGte(nullptr, nullptr, nullptr, nullptr);
+        return;
+    }
+    core->cpu.AttachGte(context, read, write, command);
+}
+
 uint32_t PSXCore_ReadDmaRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
     return psx_dma_read_register(core->dma, address);

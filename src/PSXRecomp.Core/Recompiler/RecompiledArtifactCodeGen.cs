@@ -121,6 +121,14 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Tag of the parent's MMIO success reply: <c>V value</c> (the value read; <c>0</c> for a write).</summary>
     public const string ProtocolMmioValueReply = "V";
 
+    /// <summary>
+    /// A GTE (COP2) access relayed to the parent's single GTE (Issue #447): <c>R reg</c>, <c>W reg value</c> or
+    /// <c>C command</c> (reg 0-31 data, 32-63 control), answered like an MMIO access with
+    /// <see cref="ProtocolMmioValueReply"/> or, for a command the GTE does not implement,
+    /// <see cref="ProtocolMmioRefusedReply"/> (the artifact stops; the parent names the command).
+    /// </summary>
+    public const string ProtocolGtePrefix = "RHOST_GTE ";
+
     /// <summary>Tag of the parent's MMIO refusal: <c>X</c>. The child stops with <see cref="MmioRefusedExitCode"/>.</summary>
     public const string ProtocolMmioRefusedReply = "X";
 
@@ -242,6 +250,7 @@ public static class RecompiledArtifactCodeGen
             generatedDispatch.Source + "\n" + DriverSource
                 .Replace("#define PSX_MAX_INIT 4096u", $"#define PSX_MAX_INIT {MaxInitEntries}u", StringComparison.Ordinal)
                 .Replace("@MMIO_READ@", ProtocolMmioReadPrefix, StringComparison.Ordinal)
+                .Replace("@GTE@", ProtocolGtePrefix, StringComparison.Ordinal)
                 .Replace("@MMIO_WRITE@", ProtocolMmioWritePrefix, StringComparison.Ordinal)
                 .Replace("@MMIO_VALUE@", ProtocolMmioValueReply, StringComparison.Ordinal)
                 .Replace("@MMIO_REFUSED@", ProtocolMmioRefusedReply, StringComparison.Ordinal)
@@ -563,6 +572,25 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
     }
     return artifact_mmio_access(""@MMIO_READ@"", 4u, address, 0, 0u);
 }
+
+/* GTE (COP2, Issue #447): the GTE state is the parent's one GteRegisterBank, the same one its fallback
+   interpreter executes against, so every access is relayed and nothing is cached here. */
+static uint32_t artifact_gte_request(const char* op, uint32_t a, uint32_t b, int has_b) {
+    char reply[8];
+    unsigned long v;
+    if (!artifact_mmio_bridge) exit(@EXIT_MMIO_UNAVAILABLE@);
+    if (has_b) printf(""@GTE@%s %lu %lu\n"", op, (unsigned long)a, (unsigned long)b);
+    else printf(""@GTE@%s %lu\n"", op, (unsigned long)a);
+    fflush(stdout);
+    if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
+    if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
+    if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);
+    return (uint32_t)v;
+}
+
+uint32_t recompiler_gte_read(void* core, uint32_t reg) { (void)core; return artifact_gte_request(""R"", reg, 0u, 0); }
+void recompiler_gte_write(void* core, uint32_t reg, uint32_t value) { (void)core; (void)artifact_gte_request(""W"", reg, value, 1); }
+int32_t recompiler_gte_command(void* core, uint32_t command) { (void)core; return (int32_t)artifact_gte_request(""C"", command, 0u, 0); }
 
 void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;

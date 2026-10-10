@@ -68,6 +68,11 @@ public sealed class RecompilerInterpreterExecutor : IRecompilerExecutor
         using var core = new PSXCoreWrapper();
         core.Reset();
 
+        // The oracle executes COP2 like the production interpreter (Issue #447): a fresh GTE, so a
+        // GTE-bearing fixture runs (with SR.CU2 set) instead of faulting. An unimplemented command
+        // stops the run (Step() != 0), which is reported as an Exception, never a clean Success.
+        core.AttachGte(new Runtime.Gte.GteRegisterBank());
+
         // Apply the initial guest memory first (byte writes, in fixture order).
         // PSXMemory addresses are physical, so virtual fixture addresses are
         // translated here just as the executed loads/stores translate them. The

@@ -195,7 +195,12 @@ internal static class OpenBiosProbeCommand
                 diagnosticCode = result.DiagnosticCode,
                 segmentsRetired = result.SegmentsRetired,
                 stop,
-                captured
+                captured,
+                // Issue #447: GTE work done and the displayed frame, as evidence beyond a PC.
+                gte = observed is null ? null : new { commandsExecuted = observed.Gte.CommandsExecuted, lastUnsupportedCommand = observed.Gte.LastUnsupportedCommand },
+                frame = observed?.CaptureFrameEvidence() is { } frame
+                    ? new { width = frame.Width, height = frame.Height, nonZeroPixels = frame.Pixels.Count(p => p != 0), sha256 = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant() }
+                    : null
             }));
         }
         else

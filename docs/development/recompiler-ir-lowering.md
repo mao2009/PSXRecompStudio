@@ -346,7 +346,6 @@ report it as such.
 | `Return` flow | Register-held targets are carried by `RecompilerIrExit.TargetValueId` (Issue #635); a distinct return relation is not modelled. |
 | BLEZ, BGTZ, BLTZ, BGEZ, BLTZAL, BGEZAL | Compare-with-zero branch encodings (`0x06`-`0x07`, `0x01`) have no decoder entry yet; the signed comparison IR now exists (`CompareLessThanSigned`), so lowering them is a decoder + lowering extension. |
 | SUB | Not yet lowered; returns `InvalidOperationShape`. |
-| COP2 / GTE, LWC2 / SWC2 | Coprocessor 2 semantics. |
 | Chained load delay, and a branch-delay-slot load whose shadow a successor may read | Their commit points fall outside the fused block; both fail fast with `InvalidMemoryAccess`. |
 | Pending load delay across a program boundary | `RecompilerStateSnapshot.LoadDelay` can carry it, but no IR operation queues one. |
 | Other address/translation exceptions | Aligned LH/LHU/LW AdEL and SH/SW AdES are modeled by optional fault-site provenance (#749); other translation faults remain outside this lowering contract. |

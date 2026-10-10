@@ -54,6 +54,7 @@ constexpr const char* RequiredSymbols[] = {
     "PSXCore_TickDmaExcludingChannel",
     "PSXCore_CompleteDmaChannel",
     "PSXCore_SetCdRomMmioCallbacks",
+    "PSXCore_SetGteCallbacks",
     "PSXCore_ReadTimerRegister",
     "PSXCore_WriteTimerRegister",
     "PSXCore_TickTimers",
