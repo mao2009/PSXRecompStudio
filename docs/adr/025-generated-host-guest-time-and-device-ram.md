@@ -292,3 +292,10 @@ generation. Hooks synchronize the successful prefix before alignment checks;
 the fault only reports an uncredited remainder. A pending-load IRQ accepted
 before its observer suppresses that observer's fault, while a branch-delay-slot
 fault keeps branch EPC/BD and defers IRQ acceptance until after the owed slot.
+
+### Integration verification criterion
+
+Do not infer exact device-time parity from native coverage percentages alone.
+The acceptance gate compares interpreter and generated-host guest-cycle counts
+and CPU/COP0, RAM, scratchpad and device snapshots at every defined OpenBIOS
+observation boundary, including the first hardware IRQ and EXE marker.
