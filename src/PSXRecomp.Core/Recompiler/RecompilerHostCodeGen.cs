@@ -252,7 +252,8 @@ public static class RecompilerHostCodeGen
             sb.AppendLine($"extern int {CodeGuardHelper}(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen);");
             sb.AppendLine();
         }
-        if (program.Blocks.Any(block => block.Operations.Any(op => op.Kind is
+        if (program.Blocks.Concat(loadedCode.Blocks.Select(version => version.Block))
+            .Any(block => block.Operations.Any(op => op.Kind is
                 RecompilerIrOperationKind.ReadCop2 or RecompilerIrOperationKind.WriteCop2 or RecompilerIrOperationKind.Cop2Command)))
         {
             EmitGteHelperDeclarations(sb);
