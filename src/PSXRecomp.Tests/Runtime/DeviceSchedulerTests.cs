@@ -497,6 +497,23 @@ public sealed class DeviceSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void VblankCount_IncrementsAtEachVBlankInterval()
+    {
+        _scheduler.VblankCount.Should().Be(0ul);
+
+        _scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        _scheduler.VblankCount.Should().Be(1ul);
+
+        _interrupts.Acknowledge(0);
+        _scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        _scheduler.VblankCount.Should().Be(2ul);
+
+        _interrupts.Acknowledge(0);
+        _scheduler.Advance(2 * DeviceScheduler.VblankIntervalCycles);
+        _scheduler.VblankCount.Should().Be(4ul);
+    }
+
+    [Fact]
     public void OneAdvance_RaisesLinesInStageOrder_TimerThenDmaThenCdRomThenGpuThenVblank()
     {
         var cdRom = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());

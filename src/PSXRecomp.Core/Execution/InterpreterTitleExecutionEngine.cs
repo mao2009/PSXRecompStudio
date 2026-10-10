@@ -292,6 +292,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
     public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
 
+    /// <summary>The device scheduler this engine uses for device time advancement (diagnostic only).</summary>
+    public DeviceScheduler? Scheduler => _scheduler;
+
     /// <summary>
     /// Diagnostic stop (Issue #732): once set — typically by a <see cref="FetchObserver"/> — the step loop ends before
     /// executing the instruction just fetched, exactly as if its budget had run out, and every later segment ends at its
