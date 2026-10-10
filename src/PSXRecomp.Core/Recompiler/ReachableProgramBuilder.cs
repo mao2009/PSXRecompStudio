@@ -106,7 +106,9 @@ public static class ReachableProgramBuilder
         ArgumentNullException.ThrowIfNull(roots);
         ArgumentNullException.ThrowIfNull(excludedEntries);
 
-        var rootList = roots.Where(root => !excludedEntries.Contains(root)).Distinct().Order().ToList();
+        var imageEnd = (ulong)loadAddress + (ulong)words.Count * InstructionSize;
+        var rootList = roots.Concat(excludedEntries.Where(pc => (pc & 3u) == 0 && pc >= loadAddress && pc < imageEnd))
+            .Distinct().Order().ToList();
         if (rootList.Count == 0)
         {
             return new GuardedImageProgram([], []);
@@ -114,7 +116,8 @@ public static class ReachableProgramBuilder
 
         var program = BuildCore(loadAddress, words, rootList[0], rootList, outOfImageTargets: null, out _, out var skipped);
         var blocks = program.Blocks
-            .Where(block => !excludedEntries.Contains(block.EntryPc))
+            .Where(block => !excludedEntries.Any(pc => pc >= block.EntryPc
+                && (ulong)pc < (ulong)block.EntryPc + (ulong)block.RetiredInstructionCount * InstructionSize))
             .Select(block =>
             {
                 var offset = (int)((block.EntryPc - loadAddress) / InstructionSize);
@@ -238,7 +241,11 @@ public static class ReachableProgramBuilder
             }
         }
 
-        var unobservedDelaySlotLoads = FindUnobservedDelaySlotLoads(image, decoded, delaySlots);
+        // Immutable ROM may prove that the first successor ignores a pending load. RAM image guards
+        // cover the unit itself, not those mutable successor words, so that proof is unavailable.
+        var unobservedDelaySlotLoads = skippedLeaders is null
+            ? FindUnobservedDelaySlotLoads(image, decoded, delaySlots)
+            : new HashSet<uint>();
         var blocks = new List<RecompilerIrBlock>();
         foreach (var leader in leaders)
         {
