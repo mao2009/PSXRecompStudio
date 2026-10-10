@@ -53,6 +53,9 @@ public static class RecompiledArtifactCodeGen
     /// </summary>
     public const string GuestExceptionsFlag = "--guest-exceptions";
 
+    /// <summary>Require deadline credits from the host in every synchronization reply.</summary>
+    public const string ExactDeviceTimeFlag = "--exact-device-time";
+
     /// <summary>The child's handshake line, sent once before the first guest instruction runs.</summary>
     public const string ProtocolInitLine = "RHOST_INIT";
 
@@ -143,7 +146,8 @@ public static class RecompiledArtifactCodeGen
     public const string ProtocolRetiredRefusedReply = "X";
 
     /// <summary>
-    /// Retired guest instructions the artifact accumulates, at a dispatch-unit boundary, before it reports them without
+    /// Additional cap on unreported retirements; exact device deadlines can require an earlier report.
+    /// Retired guest instructions the artifact accumulates before it reports them without
     /// being asked to by an MMIO access, a host transfer, a SYSCALL or the end of the run. It bounds how long a device
     /// event can go unobserved by a parent that has no other reason to hear from the child.
     /// </summary>
@@ -253,7 +257,8 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
-                .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal),
+                .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
+                .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal),
             null,
             null);
     }
@@ -391,21 +396,37 @@ static int artifact_mmio_bridge = 0;
    accepting a hardware INT and control leaving the vector it set pc to. */
 static int artifact_int_entry = 0;
 
-/* Guest time (Issue #679). The dispatch counts the guest instructions its completed
-   units retired; the parent turns them into device time. A report always precedes the
-   event that could observe device state (an MMIO access, a host transfer, a SYSCALL, the
-   end of the run), so the parent's devices are current at that point, and it is also
-   made once 1024 unreported instructions accumulate. Between two reports the guest does
-   nothing a device can see, so one batch is equivalent to the same instructions reported
-   one at a time. The parent's reply phase serves its device-originated RAM requests
-   (R/W, the same byte requests the BIOS HLE uses) against artifact_ram, then ends with
-   the tag that accepts or refuses the report. */
+/* Guest time (#679/#744): the host owns device deadlines and sends execution credit
+   in existing reply phases. Every interior/final instruction retirement checks that
+   deadline locally. Reports synchronize before MMIO, transfers and traps, at deadlines,
+   and at the additional 1024-instruction cap. No event is batched past its deadline.
+   R/W requests during a report reach the artifact's RAM, then T + A/I refresh credit
+   and IRQ level. Branch delay slots defer acceptance, not device delivery. */
 static RecompilerState* artifact_state = (RecompilerState*)0;
+static int artifact_exact_time = 0;
+
+/* Credits are positive decimal tokens, not scanf's signed/partial conversions. */
+static unsigned long long artifact_read_time_credit(void) {
+    char token[32];
+    unsigned long long value = 0ull;
+    unsigned i;
+    if (scanf(""%31s"", token) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+    for (i = 0; token[i] != '\0'; i++) {
+        unsigned digit;
+        if (token[i] < '0' || token[i] > '9') exit(@EXIT_RETIRED_PROTOCOL@);
+        digit = (unsigned)(token[i] - '0');
+        if (value > (UINT32_MAX - digit) / 10ull) exit(@EXIT_RETIRED_PROTOCOL@);
+        value = value * 10ull + digit;
+    }
+    if (value == 0ull) exit(@EXIT_RETIRED_PROTOCOL@);
+    return value;
+}
 
 static void artifact_report_retired(void) {
     char cmd[8];
     unsigned long a, v;
-    unsigned long long pending;
+    unsigned long long pending, credit;
+    int time_credit_seen = 0;
     if (!artifact_mmio_bridge || artifact_state == (RecompilerState*)0) return;
     pending = artifact_state->retired_total - artifact_state->retired_reported;
     if (pending == 0ull) return;
@@ -423,7 +444,14 @@ static void artifact_report_retired(void) {
             artifact_ram_write8((uint32_t)a, (uint8_t)v);
             printf(""RHOST_OK\n"");
             fflush(stdout);
+        } else if (strcmp(cmd, ""T"") == 0) {
+            if (time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
+            credit = artifact_read_time_credit();
+            if (UINT64_MAX - artifact_state->retired_reported < credit) exit(@EXIT_RETIRED_PROTOCOL@);
+            artifact_state->event_deadline = artifact_state->retired_reported + credit;
+            time_credit_seen = 1;
         } else if (strcmp(cmd, ""@RETIRED_ACK@"") == 0 || strcmp(cmd, ""@RETIRED_ACK_IRQ@"") == 0) {
+            if (artifact_exact_time && !time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
             /* The ack also carries the interrupt line: CAUSE.IP2 mirrors it (Issue #680). */
             artifact_state->irq_line = strcmp(cmd, ""@RETIRED_ACK_IRQ@"") == 0 ? 1u : 0u;
             artifact_state->cop0_cause = (artifact_state->cop0_cause & ~0x400u) | (artifact_state->irq_line ? 0x400u : 0u);
@@ -443,7 +471,7 @@ static void artifact_report_retired(void) {
 static int artifact_flush_after_unit = 0;
 
 static void artifact_after_unit(RecompilerState* state) {
-    if (artifact_flush_after_unit || state->retired_total - state->retired_reported >= @RETIRED_THRESHOLD@ull) {
+    if (artifact_flush_after_unit || state->retired_total >= state->event_deadline || state->retired_total - state->retired_reported >= @RETIRED_THRESHOLD@ull) {
         artifact_flush_after_unit = 0;
         artifact_report_retired();
     }
@@ -464,7 +492,7 @@ static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t a
     if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
     if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
     if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);
-    if (is_write) artifact_flush_after_unit = 1;
+    artifact_flush_after_unit = 1;
     return (uint32_t)v;
 }
 
@@ -599,6 +627,7 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
                      S <hi> <lo> <sr> <cause> <epc> <irq> <gpr1..gpr31>   (full CPU state write)
                      D <termination> <next pc> <has v0> <v0>   (decision)
                      V <value> | X                            (reply to an MMIO request)
+                     T <instruction credit>                   (fresh deadline, before A/I or D/N; Issue #744)
                      A | I | X                                (reply to RHOST_RETIRED; I = interrupt line asserted, Issue #680)
 
    R/W stay RAM-only byte requests: they carry the BIOS HLE's own RAM access and, since
@@ -700,11 +729,19 @@ static void fallback_send_pages(void) {
 }
 
 static int32_t artifact_host_serve(RecompilerState* state) {
+    int time_credit_seen = 0;
     for (;;) {
         char cmd[8];
         unsigned long a, v, t, np, has_v0;
-        if (scanf(""%7s"", cmd) != 1) return 1;
-        if (cmd[0] == 'F') {
+        if (scanf(""%7s"", cmd) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+        if (strcmp(cmd, ""T"") == 0) {
+            unsigned long long credit;
+            if (time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
+            credit = artifact_read_time_credit();
+            if (UINT64_MAX - state->retired_total < credit) exit(@EXIT_RETIRED_PROTOCOL@);
+            state->event_deadline = state->retired_total + credit;
+            time_credit_seen = 1;
+        } else if (strcmp(cmd, ""F"") == 0) {
             if (scanf(""%lu"", &v) != 1) exit(@EXIT_FALLBACK_PROTOCOL@);
             if (v != PSX_FALLBACK_VERSION) {
                 printf(""RHOST_FALLBACK_REFUSED version\n"");
@@ -715,16 +752,16 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                        (unsigned long)state->cop0_cause, (unsigned long)state->cop0_epc, (unsigned long)fallback_dirty_count());
             }
             fflush(stdout);
-        } else if (cmd[0] == 'Y') {
+        } else if (strcmp(cmd, ""Y"") == 0) {
             fallback_send_pages();
-        } else if (cmd[0] == 'B') {
+        } else if (strcmp(cmd, ""B"") == 0) {
             if (scanf(""%lu"", &a) != 1 || a >= PSX_PAGE_COUNT || fallback_stage_count >= PSX_PAGE_COUNT
                 || (fallback_stage_count != 0u && a <= fallback_stage_page[fallback_stage_count - 1u])
                 || !fallback_read_page(fallback_stage + fallback_stage_count * PSX_PAGE_SIZE)) exit(@EXIT_FALLBACK_PROTOCOL@);
             fallback_stage_page[fallback_stage_count] = (uint32_t)a;
             fallback_stage_hash = fallback_hash_page(fallback_stage_hash, (uint32_t)a, fallback_stage + fallback_stage_count * PSX_PAGE_SIZE);
             fallback_stage_count++;
-        } else if (cmd[0] == 'K') {
+        } else if (strcmp(cmd, ""K"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2) exit(@EXIT_FALLBACK_PROTOCOL@);
             if (a != (unsigned long)fallback_stage_count || v != (unsigned long)fallback_stage_hash) {
                 fallback_stage_count = 0u;
@@ -743,7 +780,7 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                 printf(""RHOST_OK\n"");
             }
             fflush(stdout);
-        } else if (cmd[0] == 'S') {
+        } else if (strcmp(cmd, ""S"") == 0) {
             unsigned long hi, lo, sr, cause, epc, irq;
             int g;
             if (scanf(""%lu %lu %lu %lu %lu %lu"", &hi, &lo, &sr, &cause, &epc, &irq) != 6 || irq > 1ul) exit(@EXIT_FALLBACK_PROTOCOL@);
@@ -757,43 +794,47 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                 if (scanf(""%lu"", &v) != 1) exit(@EXIT_FALLBACK_PROTOCOL@);
                 state->gpr[g] = (uint32_t)v;
             }
-        } else if (cmd[0] == 'R') {
+        } else if (strcmp(cmd, ""R"") == 0) {
             if (scanf(""%lu"", &a) != 1) return 1;
             printf(""RHOST_DATA %u\n"", (unsigned)artifact_ram_read8((uint32_t)a));
             fflush(stdout);
-        } else if (cmd[0] == 'W') {
+        } else if (strcmp(cmd, ""W"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2) return 1;
             artifact_ram_write8((uint32_t)a, (uint8_t)v);
             printf(""RHOST_OK\n"");
             fflush(stdout);
-        } else if (cmd[0] == 'C') {
+        } else if (strcmp(cmd, ""C"") == 0) {
             if (scanf(""%lu"", &v) != 1) return 1;
             state->cop0_sr = (uint32_t)v;
-        } else if (cmd[0] == 'E') {
+        } else if (strcmp(cmd, ""E"") == 0) {
             printf(""RHOST_COP0 %lu %lu %lu %lu %lu %d\n"", (unsigned long)state->cop0_epc, (unsigned long)state->cop0_cause,
                    (unsigned long)state->cop0_sr, (unsigned long)state->hi, (unsigned long)state->lo, artifact_int_entry);
             fflush(stdout);
-        } else if (cmd[0] == 'G') {
+        } else if (strcmp(cmd, ""G"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2 || a == 0ul || a > 31ul) return 1;
             state->gpr[a] = (uint32_t)v;
-        } else if (cmd[0] == 'H') {
+        } else if (strcmp(cmd, ""H"") == 0) {
             if (scanf(""%lu %lu"", &a, &v) != 2) return 1;
             state->hi = (uint32_t)a;
             state->lo = (uint32_t)v;
-        } else if (cmd[0] == 'L') {
+        } else if (strcmp(cmd, ""L"") == 0) {
             if (scanf(""%lu"", &v) != 1) return 1;
             state->irq_line = v != 0ul ? 1u : 0u;
             state->cop0_cause = (state->cop0_cause & ~0x400u) | (state->irq_line ? 0x400u : 0u);
-        } else if (cmd[0] == 'P') {
+        } else if (strcmp(cmd, ""P"") == 0) {
             state->cop0_sr = (state->cop0_sr & ~0xFu) | ((state->cop0_sr >> 2) & 0xFu);
-        } else if (cmd[0] == 'D') {
+        } else if (strcmp(cmd, ""D"") == 0) {
+            if (artifact_exact_time && !time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;
             state->next_pc = (uint32_t)np;
             if (has_v0 != 0ul) state->gpr[PSX_REG_V0] = (uint32_t)v;
             return 0;
-        } else {
+        } else if (strcmp(cmd, ""N"") == 0) {
+            if (artifact_exact_time && !time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
             return 1; /* 'N': the parent does not claim this pc. */
+        } else {
+            exit(@EXIT_RETIRED_PROTOCOL@);
         }
     }
 }
@@ -816,13 +857,14 @@ static int32_t artifact_host_transfer(RecompilerState* state) {
    entry (SR KU/IE push), the host says what the kernel handler leaves in SR (C), and
    the artifact does the return (RFE pop) and resumes after the SYSCALL. */
 static int32_t artifact_host_syscall(RecompilerState* state) {
-    uint32_t sr_entry = (state->cop0_sr & ~0x3Fu) | ((state->cop0_sr << 2) & 0x3Cu);
+    uint32_t sr_entry;
     artifact_report_retired();
     /* The exception entry is part of the state, not just of the offer: commit the
        pushed KU/IE now, as the interpreter's CPU does, so every path that does not
        return to the guest (unsupported SYS, host decline, fail-closed) snapshots the
        post-entry SR. A serviced call overwrites it with the parent's C <sr> first. */
-    state->cop0_sr = sr_entry;
+    (void)recompiler_exception_entry(state, 8u, state->exception_fault_pc, 0u);
+    sr_entry = state->cop0_sr;
     printf(""RHOST_SYSCALL %lu %lu %lu\n"", (unsigned long)state->exception_fault_pc,
            (unsigned long)state->gpr[4], (unsigned long)sr_entry);
     fflush(stdout);
@@ -916,6 +958,7 @@ int main(int argc, char** argv) {
     /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
     for (i = 3; i < argc; i++) {
         if (strcmp(argv[i], ""@GUEST_EXCEPTIONS@"") == 0) state.guest_exceptions = 1u;
+        if (strcmp(argv[i], ""@EXACT_DEVICE_TIME@"") == 0) artifact_exact_time = 1;
     }
 
     /* Opt-in only: a stray extra argument never enables the protocol, so a run
@@ -923,6 +966,7 @@ int main(int argc, char** argv) {
     if (argc >= 4 && strcmp(argv[3], ""--host-transfer"") == 0) {
         state.host_transfer = &artifact_host_transfer;
         state.host_syscall = &artifact_host_syscall;
+        state.event_deadline = UINT64_MAX;
         state.host_retired = &artifact_after_unit;
         state.host_interrupt = &artifact_interrupt_boundary;
         artifact_state = &state;

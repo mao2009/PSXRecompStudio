@@ -10,7 +10,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// <summary>
 /// Issue #732: the guest state when an engine was about to fetch a boundary PC — CPU (PC, GPRs, HI/LO, COP0), the
 /// interrupt and device state that is deterministic in guest time, and all 2 MiB of RAM — and the comparison of two
-/// such states. Every read is side-effect free (no timer mode, no data FIFO, no acknowledge). Captured from the
+/// such states. Every read is side-effect free (timer MODE is peeked, no data FIFO or acknowledge is consumed). Captured from the
 /// interpreter engine in both runs: the reference interpreter, and the generated host's fallback interpreter, whose
 /// core holds the artifact's RAM while a fallback segment runs.
 /// </summary>
@@ -66,10 +66,15 @@ internal sealed record ProbeGuestState(
         {
             var b = 0x1F801100u + (uint)timer * 0x10u;
             state.Add(($"timer{timer}_counter", Hex(core.ReadTimerRegister(b))));
+            state.Add(($"timer{timer}_mode", Hex(core.PeekTimerRegister(b + 4))));
             state.Add(($"timer{timer}_target", Hex(core.ReadTimerRegister(b + 8))));
             state.Add(($"timer{timer}_irq", core.GetTimerInterruptPending(timer).ToString()));
         }
 
+        state.Add(("sio0_stat", Hex(core.ReadMemory16(0x1F801044u))));
+        state.Add(("sio0_mode", Hex(core.ReadMemory16(0x1F801048u))));
+        state.Add(("sio0_ctrl", Hex(core.ReadMemory16(0x1F80104Au))));
+        state.Add(("sio0_baud", Hex(core.ReadMemory16(0x1F80104Eu))));
         state.Add(("sio0_irq", core.GetSio0InterruptPending().ToString()));
         var gpu = devices.GpuDevice;
         state.Add(("gpustat", Hex(gpu.ReadGpustat())));

@@ -303,6 +303,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         if (bridge is not null)
         {
             arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+            arguments.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
         }
 
         if (_guestFirmware)
@@ -588,6 +589,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private IBiosRuntime? _biosRuntime;
         private PsxDeviceGraph? _devices;
         private DeviceScheduler? _scheduler;
+        private ulong _issuedCredit;
 
         /// <summary>The outstanding blocking BIOS call's poll bound (Issue #717); lives as long as this launch's devices.</summary>
         private readonly BiosBlockingCallWait _blockingCallWait = new();
@@ -703,6 +705,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
                         _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode);
                 }
+                Send(string.Create(CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
                 // The Runtime's construction above already issued whatever R/W
                 // seeding it needed; this initial handshake itself claims no pc.
                 Decline();
@@ -1128,6 +1132,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
+            if (retired > _issuedCredit)
+            {
+                RefuseRetired("ARTIFACT_EVENT_DEADLINE_EXCEEDED", "The artifact retired instructions beyond its issued device-event deadline.");
+                return;
+            }
+
             NativeRetiredInstructions += retired;
             if (AdvanceDevices(cycles) is { } failure)
             {
@@ -1150,15 +1160,25 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
+            SendTimeCredit();
             Send(interruptLine
                 ? RecompiledArtifactCodeGen.ProtocolRetiredAckInterruptReply
                 : RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
         }
 
+        private void SendTimeCredit()
+        {
+            var cycles = Math.Min(_scheduler!.NextEventCycles, uint.MaxValue);
+            var instructions = cycles / InterpreterTitleExecutionEngine.CyclesPerInstruction;
+            if (instructions == 0) throw new ProtocolFaultException("The scheduler returned no executable retirement credit.");
+            _issuedCredit = instructions;
+            Send(string.Create(CultureInfo.InvariantCulture, $"T {instructions}"));
+        }
+
         /// <summary>
-        /// Advances the existing <see cref="DeviceScheduler"/> by <paramref name="cycles"/> in chunks that fit its 32-bit
-        /// argument, serving device-originated RAM requests against artifact_ram meanwhile. Null on success, else the
-        /// classified failure. Shared by guest-time reports and a pending blocking call's poll (Issue #717).
+        /// Advances the existing <see cref="DeviceScheduler"/> at event deadlines, serving device-originated RAM
+        /// requests against artifact_ram meanwhile. Null on success, else the classified failure. Shared by
+        /// guest-time reports and a pending blocking call's poll (Issue #717).
         /// </summary>
         private (string Code, string Message)? AdvanceDevices(ulong cycles)
         {
@@ -1168,7 +1188,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 for (var remaining = cycles; remaining != 0;)
                 {
                     var chunk = (uint)Math.Min(remaining, MaxAdvanceCycles);
-                    _scheduler!.Advance(chunk);
+                    _scheduler!.AdvanceExact(chunk);
                     remaining -= chunk;
                 }
             }
@@ -1252,8 +1272,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private string ReadReply() =>
             _fromArtifact?.ReadLine() ?? throw new ProtocolFaultException("The artifact closed its output mid-protocol.");
 
-        private void Send(string line) =>
+        private void Send(string line)
+        {
+            if (_scheduler is not null && (line == RecompiledArtifactCodeGen.ProtocolDeclineReply || line.StartsWith(RecompiledArtifactCodeGen.ProtocolDecisionPrefix, StringComparison.Ordinal)))
+                SendTimeCredit();
             (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
+        }
 
         private static uint ParseUInt(string value) => uint.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
 

@@ -369,8 +369,10 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  /* Guest-time accounting (Issue #679): the guest instructions the dispatch units that");
         sb.AppendLine("     completed have retired (RecompilerIrBlock.RetiredInstructionCount), and how many of");
         sb.AppendLine("     them the host has already been told about. A host-claimed transfer, a block that");
-        sb.AppendLine("     exits with an unserviced exception and a budget stop retire nothing. */");
+        sb.AppendLine("     faults or a budget stop retire no instruction of their own; an already completed");
+        sb.AppendLine("     prefix of a fused unit retains its retirement credit. */");
         sb.AppendLine("  uint64_t " + RetiredTotalField + ";");
+        sb.AppendLine("  uint64_t event_deadline; uint32_t partial_retired, unit_interrupted;");
         sb.AppendLine("  uint64_t " + RetiredReportedField + ";");
         sb.AppendLine("  " + HostRetiredFnType + " " + HostRetiredField + ";");
         sb.AppendLine("  " + HostInterruptFnType + " " + HostInterruptField + ";");
@@ -382,7 +384,6 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("     exception vector (EPC, CAUSE Excode/BD, SR KU/IE push, BEV vector) instead of being offered to");
         sb.AppendLine("     host_syscall or stopping the run. Zero (every zero-initialised state) keeps the HLE behavior. */");
         sb.AppendLine("  uint32_t " + GuestExceptionsField + ";");
-        sb.AppendLine("  uint32_t partial_retired;");
         sb.AppendLine("} " + StateStruct + ";");
         sb.AppendLine();
         EmitCop0Helpers(sb);
@@ -508,6 +509,15 @@ public static class RecompilerHostCodeGen
         for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
         {
             var op = block.Operations[operationIndex];
+            if (block.InstructionBoundaries.Contains(operationIndex))
+                sb.AppendLine(IndentUnit + "if (state->host_retired != 0) { state->retired_total++; state->partial_retired++; state->host_retired(state); }");
+            if (block.HasLoadDelay && operationIndex == block.InstructionBoundaries[0] && block.InterruptLoadCommit is { } commit)
+            {
+                sb.AppendLine(IndentUnit + "if (state->host_interrupt != 0 && state->irq_line && (state->cop0_sr & 0x401u) == 0x401u) {");
+                sb.AppendLine(IndentUnit + IndentUnit + EmitOperation(commit, valueNames));
+                sb.AppendLine(IndentUnit + IndentUnit + $"state->pc = {FormatImmediate(unchecked(block.EntryPc + 4))}; state->host_interrupt(state); state->next_pc = state->pc; state->unit_interrupted = 1u; return RECOMPILER_REASON_SUCCESS;");
+                sb.AppendLine(IndentUnit + "}");
+            }
             foreach (var site in block.MemoryFaultSites.Where(site => site.OperationIndex == operationIndex))
                 EmitMemoryFaultGuard(sb, op, site, valueNames);
             var stmt = EmitOperation(op, valueNames);
@@ -517,6 +527,8 @@ public static class RecompilerHostCodeGen
             }
         }
 
+        if (block.InstructionBoundaries.Contains(block.Operations.Count))
+            sb.AppendLine(IndentUnit + "if (state->host_retired != 0) { state->retired_total++; state->partial_retired++; state->host_retired(state); }");
         sb.AppendLine(IndentUnit + EmitExit(block.Exit));
         sb.AppendLine("}");
         sb.AppendLine();
@@ -849,7 +861,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
         sb.AppendLine(IndentUnit + "for (;;) {");
         sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
-        sb.AppendLine(IndentUnit + IndentUnit + "state->partial_retired = 0u;");
+        sb.AppendLine(IndentUnit + IndentUnit + "state->partial_retired = 0u; state->unit_interrupted = 0u;");
         // Issue #680: the interrupt boundary. Every iteration starts between dispatch units, and a unit
         // fuses a branch with its delay slot, so this is never inside a branch + delay-slot pair —
         // where the interpreter's CPU takes INT too (not while branch_pending_). Gated by the same
@@ -1002,11 +1014,11 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"return {StateParam}->{TerminationField};");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
-        // Advance only after a dispatch unit successfully retires. Its guest instructions
-        // are accounted here (Issue #679) and only here, so every path that does not reach
-        // this point — an exception exit the host did not service, a budget stop — charges
-        // no time, as the interpreter (no Advance after a faulting Step) does.
-        sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{RetiredTotalField} += retired - state->partial_retired;");
+        sb.AppendLine(IndentUnit + IndentUnit + "if (state->unit_interrupted) retired = state->partial_retired;");
+        // Charge only the remainder: interior retirements were already synchronized.
+        // A fault charges no instruction of its own; any preceding successful fused
+        // instructions keep their time. An interior load INT retires only the load.
+        sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{RetiredTotalField} += retired - {StateParam}->partial_retired;");
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostRetiredField} != 0) {{ {StateParam}->{HostRetiredField}({StateParam}); }}");
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{PcField} = {StateParam}->{NextPcField};");
         sb.AppendLine(IndentUnit + IndentUnit + "steps++;");

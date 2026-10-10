@@ -27,6 +27,7 @@ struct PSXDmaState {
 static_assert(sizeof(PSXDmaState) == 120, "PSXDmaState must match DmaState in dma.rs");
 
 extern "C" {
+uint32_t psx_dma_next_event_cycles(PSXDmaState state, uint32_t excluded_channel);
 PSXDmaState psx_dma_reset(void);
 uint32_t psx_dma_read_register(PSXDmaState state, uint32_t address);
 PSXDmaState psx_dma_write_register(PSXDmaState state, uint32_t address, uint32_t value);

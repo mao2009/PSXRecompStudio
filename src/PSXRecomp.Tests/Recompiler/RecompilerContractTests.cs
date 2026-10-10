@@ -5,6 +5,32 @@ namespace PSXRecomp.Tests.Recompiler;
 [Test]
 public class RecompilerContractTests
 {
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    public void FusedBlock_RejectsRetirementOffsetsOutsideOperations(int offset)
+    {
+        var construct = () => new RecompilerIrBlock(0x1000,
+            [new RecompilerIrOperation(RecompilerIrOperationKind.Nop)],
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x1008),
+            retiredInstructionCount: 2, instructionBoundaries: [offset]);
+        construct.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void FusedBlock_RejectsMissingRetirementBoundariesAndMissingLoadCommit()
+    {
+        var construct = () => new RecompilerIrBlock(0x1000,
+            [new RecompilerIrOperation(RecompilerIrOperationKind.Nop)],
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x1008), retiredInstructionCount: 2);
+        construct.Should().Throw<ArgumentException>();
+        var load = () => new RecompilerIrBlock(0x1000,
+            [new RecompilerIrOperation(RecompilerIrOperationKind.Nop)],
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x1008),
+            retiredInstructionCount: 2, instructionBoundaries: [0], hasLoadDelay: true);
+        load.Should().Throw<ArgumentException>();
+    }
+
     [Fact]
     public void MemoryFaultSites_SerializeDeterministicallyWithoutChangingLegacyBlocks()
     {
@@ -45,6 +71,27 @@ public class RecompilerContractTests
         var program = new RecompilerIrProgram([new RecompilerIrBlock(0, operations,
             new RecompilerIrExit(RecompilerIrTerminationReason.Success, 4),
             memoryFaultSites: [new RecompilerMemoryFaultSite(index, pc, delay, prefix, register, value)])]);
+        RecompilerIrValidator.Validate(program).IsValid.Should().BeFalse();
+        RecompilerHostCodeGen.Generate(program).Success.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void MemoryFaultPrefix_MustMatchInteriorRetirementBoundary(int prefix)
+    {
+        var operations = new[]
+        {
+            new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1),
+            new RecompilerIrOperation(RecompilerIrOperationKind.Load32, resultValueId: 1, inputValueA: 0),
+        };
+        // A boundary at the fault operation runs before its guard. Both too little
+        // and too much prefix would break exact accounting (including unsigned subtraction).
+        var boundary = prefix == 0 ? 1 : 2;
+        var block = new RecompilerIrBlock(0, operations, new RecompilerIrExit(RecompilerIrTerminationReason.Success, 8),
+            retiredInstructionCount: 2, instructionBoundaries: [boundary],
+            memoryFaultSites: [new RecompilerMemoryFaultSite(1, (uint)prefix * 4, false, prefix)]);
+        var program = new RecompilerIrProgram([block]);
         RecompilerIrValidator.Validate(program).IsValid.Should().BeFalse();
         RecompilerHostCodeGen.Generate(program).Success.Should().BeFalse();
     }

@@ -153,6 +153,25 @@ public sealed class CdRomDiscDriveTests
     }
 
     [Fact]
+    public void DeadlineTracksResponseSpacingAndResetWithoutDeliveringEarly()
+    {
+        var cd = Drive();
+        cd.NextEventCycles.Should().Be(ulong.MaxValue);
+        cd.WriteCommand(0x01);
+        cd.NextEventCycles.Should().Be(CdRomDevice.AcknowledgeDelayCycles);
+        cd.Advance(CdRomDevice.AcknowledgeDelayCycles - 1);
+        cd.NextEventCycles.Should().Be(1);
+        cd.HasInterrupt.Should().BeFalse();
+        cd.Advance(1);
+        cd.HasInterrupt.Should().BeTrue();
+        cd.SetInterruptFlag(7);
+        cd.WriteCommand(0x0A);
+        cd.NextEventCycles.Should().Be(CdRomDevice.AcknowledgeDelayCycles);
+        cd.Reset();
+        cd.NextEventCycles.Should().Be(ulong.MaxValue);
+    }
+
+    [Fact]
     public void FirstResponse_ArrivesOnlyAfterTheAcknowledgeDelay()
     {
         var cd = Drive();

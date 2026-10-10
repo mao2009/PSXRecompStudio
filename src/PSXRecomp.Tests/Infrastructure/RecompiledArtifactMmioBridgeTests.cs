@@ -74,7 +74,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         Action<PsxDeviceGraph>? configureDevices = null,
         uint segmentBudget = 256,
         BiosExceptionChain? exceptionChain = null,
-        IEnumerable<uint>? additionalRoots = null)
+        IEnumerable<uint>? additionalRoots = null,
+        Action<RecompiledHostExecutionEngine>? observe = null)
     {
         var program = ReachableProgramBuilder.Build(Entry, words, Entry, additionalRoots ?? []);
         using var engine = new RecompiledHostExecutionEngine(
@@ -86,7 +87,9 @@ public sealed class RecompiledArtifactMmioBridgeTests
             withRuntime ? (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer) : null,
             configureDevices,
             exceptionChain);
-        return new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget));
+        var result = new ExecutionOrchestrator().Execute(engine, new ExitHandoff(), Request(segmentBudget));
+        observe?.Invoke(engine);
+        return result;
     }
 
     // ---- scripted parent ---------------------------------------------------
@@ -97,7 +100,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         IReadOnlyDictionary<string, uint> Gpr,
         bool HasSnapshot,
         IReadOnlyList<ulong> Retired,
-        IReadOnlyDictionary<string, uint>? Snapshot = null);
+        IReadOnlyDictionary<string, uint>? Snapshot = null,
+        int SyscallOffers = 0);
 
     /// <summary>
     /// Re-launches the artifact an earlier <see cref="Run"/> built in <paramref name="dir"/>
@@ -105,7 +109,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
     /// answers each MMIO request line; null closes the child's stdin instead.
     /// </summary>
     internal static ScriptedRun RunScripted(
-        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null, bool guestExceptions = false)
+        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null, uint? eventCredit = null, bool requireExactTime = false, bool sendCreditOnReports = true,
+        Func<string, string>? transferReply = null, bool guestExceptions = false, bool closeAfterTransferReply = false)
     {
 #pragma warning disable AARC003 // Test-only: drives the artifact's own wire protocol.
         var binary = File.Exists(dir.Combine("recompiled-artifact.exe"))
@@ -121,6 +126,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         psi.ArgumentList.Add(dir.Combine("artifact-input.txt"));
         psi.ArgumentList.Add(dir.Combine("artifact-image.bin"));
         psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+        if (requireExactTime) psi.ArgumentList.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
         if (guestExceptions) psi.ArgumentList.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
 
         using var process = Process.Start(psi)!;
@@ -130,6 +136,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         var gpr = new Dictionary<string, uint>();
         var snapshot = new Dictionary<string, uint>();
         var hasSnapshot = false;
+        var inputClosed = false;
+        var syscallOffers = 0;
         string? line;
         while ((line = process.StandardOutput.ReadLine()) is not null)
         {
@@ -139,23 +147,33 @@ public sealed class RecompiledArtifactMmioBridgeTests
             if (line == RecompiledArtifactCodeGen.ProtocolInitLine
                 || line.StartsWith(RecompiledArtifactCodeGen.ProtocolTransferPrefix, StringComparison.Ordinal))
             {
+                if (eventCredit is { } initialCredit)
+                    process.StandardInput.WriteLine($"T {initialCredit}");
                 // The handshake and the program's unresolved end: this parent claims no pc.
-                process.StandardInput.WriteLine(RecompiledArtifactCodeGen.ProtocolDeclineReply);
+                process.StandardInput.WriteLine(transferReply?.Invoke(line) ?? RecompiledArtifactCodeGen.ProtocolDeclineReply);
+                if (closeAfterTransferReply)
+                {
+                    process.StandardInput.Close();
+                    inputClosed = true;
+                }
             }
             else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal))
             {
+                syscallOffers++;
                 // Issue #680 setup: a serviced SYSCALL, the way the Runtime answers SYS(02h) — SR as the exception
                 // entry pushed it with IEp/IM2 set (or a caller-chosen SR) — and a resume after the SYSCALL.
                 var parts = line[RecompiledArtifactCodeGen.ProtocolSyscallPrefix.Length..].Split(' ');
                 var faultPc = uint.Parse(parts[0], CultureInfo.InvariantCulture);
                 var sr = syscallSr ?? (uint.Parse(parts[2], CultureInfo.InvariantCulture) | 0x404u);
                 process.StandardInput.WriteLine($"{RecompiledArtifactCodeGen.ProtocolCop0SrCommand} {sr}");
+                if (eventCredit is { } syscallCredit) process.StandardInput.WriteLine($"T {syscallCredit}");
                 process.StandardInput.WriteLine($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}0 {faultPc + 4} 0 0");
             }
             else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
             {
                 // Issue #679 guest-time report: counted, and accepted (no device behind this parent).
                 retired.Add(ulong.Parse(line[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..], CultureInfo.InvariantCulture));
+                if (inputClosed) continue;
                 var retiredAnswer = retiredReply is null ? RecompiledArtifactCodeGen.ProtocolRetiredAckReply : retiredReply(retired[^1]);
                 if (retiredAnswer is null)
                 {
@@ -163,6 +181,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
                 }
                 else
                 {
+                    if (sendCreditOnReports && eventCredit is { } credit) process.StandardInput.WriteLine($"T {credit}");
                     process.StandardInput.WriteLine(retiredAnswer);
                 }
             }
@@ -198,7 +217,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         process.WaitForExit(10000).Should().BeTrue("the artifact must terminate");
         var exit = process.ExitCode;
 #pragma warning restore AARC003
-        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot);
+        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot, syscallOffers);
     }
 
     internal static string Read(int width, uint pa) =>
@@ -306,6 +325,24 @@ public sealed class RecompiledArtifactMmioBridgeTests
 
         run.Requests.Should().Equal(Read(4, 0xFFFFFFFFu));
         G(run, R3000aRegister.S0).Should().Be(7u);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FirmwareCop0_ExactTimeServicePreservesPrefixRetirement(bool delaySlot)
+    {
+        using var dir = new TempDirectory();
+        var words = delaySlot
+            ? Program([Ori(T0, Zero, 17), MipsEncoding.Branch(0x04, 0, 0, Entry + 4, Entry + 12), MixedFallbackTestSupport.Mtc0(T0, 3), MipsEncoding.Nop])
+            : Program([Ori(T0, Zero, 17), MixedFallbackTestSupport.Mfc0(R3000aRegister.S0, 3), MipsEncoding.Nop]);
+        Run(words, dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 17", eventCredit: 1, requireExactTime: true, guestExceptions: true);
+        run.ExitCode.Should().Be(0);
+        run.Requests.Should().ContainSingle();
+        run.Requests[0].Should().StartWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix);
+        run.Retired.Aggregate(0ul, static (sum, count) => sum + count).Should().Be((ulong)words.Length);
+        if (!delaySlot) G(run, R3000aRegister.S0).Should().Be(17u);
     }
 
     [Theory]
