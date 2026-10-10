@@ -284,14 +284,26 @@ public sealed class CdRomDevice : ICdRom
             return;
         }
 
-        _now += cycles;
-        if (IsReading && _now >= _nextSectorDue)
+        var target = checked(_now + cycles);
+        for (;;)
         {
-            _nextSectorDue += SectorCycles;
-            ReadNextSector();
+            var sectorDue = IsReading ? Math.Max(_now, _nextSectorDue) : ulong.MaxValue;
+            var responseDue = _interruptFlag == 0 && _pendingResponses.Count != 0
+                ? Math.Max(_now, Math.Max(_lastAcknowledge + MinimumInterruptDelayCycles,
+                    _pendingResponses.Min(static response => response.Due)))
+                : ulong.MaxValue;
+            var next = Math.Min(sectorDue, responseDue);
+            if (next > target || next == ulong.MaxValue) break;
+            _now = next;
+            // Preserve single-cycle stage ordering when a sector and response coincide.
+            if (sectorDue == next)
+            {
+                _nextSectorDue += SectorCycles;
+                ReadNextSector();
+            }
+            DeliverDueResponse();
         }
-
-        DeliverDueResponse();
+        _now = target;
     }
 
     /// <summary>Execute one command. Its responses are queued (and, with a disc, timed) for interrupt delivery.</summary>

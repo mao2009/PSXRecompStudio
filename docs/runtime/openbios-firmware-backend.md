@@ -26,11 +26,15 @@ psxrecomp openbios-probe out/openbios/openbios.bin --json
 ```
 
 The helper does not vendor code, checks the revision and tracked-worktree state,
-builds with a digest-pinned Docker image or the documented native toolchain,
+defaults to the recorded native GCC 16.2.0 toolchain (override its directory with
+`OPENBIOS_TOOLCHAIN_BIN`, which takes precedence over PATH). It rejects other
+reported GCC versions and defaults to two make jobs (`OPENBIOS_BUILD_JOBS` can
+override). An explicit `--builder docker` uses the optional digest-pinned image,
 verifies the 512 KiB output, copies the observed MIT LICENSE beside the local ROM, and records its SHA-256 and Docker
 image/toolchain details under the git-ignored `out/` folder.
 `scripts/openbios/build.sh` pins the Docker digest and records the expected
-native toolchain archive hash; each builder still requires independent ROM hash
+native reference toolchain archive hash. Version validation is not verification
+of an installed compiler or archive identity; each builder still requires independent ROM hash
 and end-to-end compatibility verification.
 Local building does not itself approve distribution.
 

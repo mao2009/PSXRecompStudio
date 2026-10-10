@@ -23,14 +23,15 @@ internal static class OpenBiosProbeCommand
 
     private const int RamBytes = 0x200000;
 
-    internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
-    {
-        const string usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
+    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--json]";
+
+    internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
+    {
         if (args.Count == 0 || args.Count > 64 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
-            error.WriteLine(usage);
+            error.WriteLine(Usage);
             return 1;
         }
 
@@ -53,7 +54,7 @@ internal static class OpenBiosProbeCommand
             if (option == "--differential") { differential = true; continue; }
             if (option is "--capture-at" or "--compare-at" or "--stop-at")
             {
-                if (++i >= args.Count || !uint.TryParse(args[i].Replace("0x", ""), NumberStyles.HexNumber, null, out var pc))
+                if (++i >= args.Count || !uint.TryParse(args[i].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? args[i][2..] : args[i], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var pc))
                 {
                     error.WriteLine($"openbios-probe: {option} requires a hexadecimal PC");
                     return 1;
@@ -67,7 +68,7 @@ internal static class OpenBiosProbeCommand
 
             if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images")
             {
-                if (++i >= args.Count)
+                if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
                     error.WriteLine($"openbios-probe: {option} requires a value");
                     return 1;
@@ -87,9 +88,9 @@ internal static class OpenBiosProbeCommand
                 return 1;
             }
 
-            if (++i >= args.Count || !uint.TryParse(args[i], out var number) || number == 0)
+            if (++i >= args.Count || !uint.TryParse(args[i], NumberStyles.None, CultureInfo.InvariantCulture, out var number) || (number == 0 && option != "--code-bytes"))
             {
-                error.WriteLine($"openbios-probe: {option} requires a positive integer");
+                error.WriteLine($"openbios-probe: {option} requires a positive integer (or zero for --code-bytes)");
                 return 1;
             }
 
@@ -99,12 +100,13 @@ internal static class OpenBiosProbeCommand
         }
 
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
-            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null))
+            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null || rootsPath is not null || seen.Contains("--code-bytes")))
+            || (engineKind == "generated-host" && capturePc is not null)
             || (compareAt.Count != 0 && !differential))
         {
-            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --differential, --stop-at, --symbols and --load-images require --engine generated-host; " +
+            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --roots, --code-bytes, --differential, --compare-at, --stop-at, --symbols and --load-images require --engine generated-host; --capture-at requires --engine interpreter; " +
                             "--compare-at requires --differential");
-            error.WriteLine(usage);
+            error.WriteLine(Usage);
             return 1;
         }
 
