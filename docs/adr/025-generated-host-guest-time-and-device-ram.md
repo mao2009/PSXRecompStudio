@@ -118,6 +118,11 @@ DMA precedes CD-ROM in the existing stage order. A deadline may precede an effec
 but must never follow it. Unknown CD-ROM implementations conservatively return
 one cycle. No duplicate register or event model is introduced.
 
+SIO pending is a delivery latch, consumed by `ClearSio0Interrupt` before raising
+IRQ7. The controller's subsequently held I_STAT bit is a different owner and
+does not require one-cycle credit. No second SIO edge tracker is needed; the
+current empty-port model never produces an /ACK pulse.
+
 The host sends `T <positive instruction credit>` before the retired-report line
 ack and before a host-transfer decision, including initialization and fallback
 return. Initialization also sends the existing `L` IRQ level, including a line

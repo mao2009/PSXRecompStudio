@@ -337,20 +337,36 @@ public sealed class RecompiledArtifactInterruptTests
         }
     }
 
-    [Fact]
-    public void AlreadyPendingIrq_IsTransportedAtInitializationBeforeCpuEnablesIt()
+    [Theory]
+    [InlineData(6)]
+    [InlineData(7)]
+    public void AlreadyPendingIrq_IsTransportedAtInitializationBeforeCpuEnablesIt(int irq)
     {
         var words = Program([Ori(T1, Zero, 0x401), 0x40896000u, Ori(R3000aRegister.T2, Zero, 0x77)]);
         using var dir = new TempDirectory();
+        ulong? retired = null;
         var run = Run(words, dir, withRuntime: true, configureDevices: devices =>
         {
-            devices.Core.WriteInterruptControllerRegister(InterruptMask, Timer2Irq);
-            devices.Core.RaiseInterrupt(DeviceScheduler.Timer0Irq + 2);
-        });
+            devices.Core.WriteInterruptControllerRegister(InterruptMask, 1u << irq);
+            devices.Core.RaiseInterrupt(irq);
+        }, observe: engine => retired = engine.NativeRetiredInstructions);
         run.FinalSnapshot.Should().NotBeNull();
         run.FinalSnapshot!.PC.Should().Be(VectorBev0);
         run.FinalSnapshot.Gpr[10].Should().Be(0);
         run.DiagnosticMessage.Should().Contain($"EPC=0x{Entry + 8:X8}");
+        using var core = new PSXCoreWrapper();
+        for (var i = 0; i < words.Length; i++) core.WriteMemory32((Entry & 0x1FFFFFFFu) + (uint)i * 4, words[i]);
+        core.Pc = Entry;
+        core.SetCop0(12, 0);
+        core.WriteInterruptControllerRegister(InterruptMask, 1u << irq);
+        core.RaiseInterrupt(irq);
+        core.Step().Should().Be(0);
+        core.Step().Should().Be(0);
+        core.Step().Should().Be(0);
+        core.ExceptionRaised.Should().BeTrue();
+        core.Pc.Should().Be(run.FinalSnapshot.PC);
+        core.GetCop0(14).Should().Be(Entry + 8);
+        retired.Should().Be(2, "a held controller source is accepted at the same native CPU fetch boundary");
     }
 
     private const ushort Marker = 0x77;

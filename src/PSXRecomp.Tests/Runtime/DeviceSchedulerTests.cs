@@ -351,6 +351,41 @@ public sealed class DeviceSchedulerTests : IDisposable
         _interrupts.Status.Should().Be(0u);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DeliveredSioControllerLatch_DoesNotForceOneCycleCreditsOrRepeatDelivery(bool unmasked)
+    {
+        var recorder = new RecordingInterrupts(_interrupts);
+        var scheduler = new DeviceScheduler(_core, recorder);
+        _core.GetSio0InterruptPending().Should().BeFalse();
+        _scheduler.NextEventCycles.Should().BeGreaterThan(1);
+        _core.WriteInterruptControllerRegister(0x1F801074u, unmasked ? Sio0Bit : 0);
+        _interrupts.Raise(DeviceScheduler.Sio0Irq); // controller latch AFTER source delivery
+        _interrupts.HasPendingInterrupts.Should().Be(unmasked);
+        ArmTimer2(5, ModeIrqOnTarget);
+        _core.WriteDmaRegister(Dpcr, 1u << 27);
+        _core.WriteDmaRegister(Ch6Bcr, 3);
+        _core.WriteDmaRegister(Ch6Chcr, ChcrStartTrigger);
+        scheduler.NextEventCycles.Should().Be(3, "held I_STAT.7 is not an undelivered SIO pulse");
+        scheduler.AdvanceExact(3);
+        scheduler.NextEventCycles.Should().Be(2);
+        scheduler.AdvanceExact(2);
+        recorder.Raised.Should().NotContain(DeviceScheduler.Sio0Irq);
+        (_interrupts.Status & Sio0Bit).Should().Be(Sio0Bit);
+        scheduler.NextEventCycles.Should().BeGreaterThan(1);
+        _core.WriteInterruptControllerRegister(0x1F801074u, Sio0Bit);
+        _interrupts.HasPendingInterrupts.Should().BeTrue();
+        _interrupts.Acknowledge(~Sio0Bit);
+        _interrupts.HasPendingInterrupts.Should().BeFalse();
+        scheduler.Advance(1);
+        (_interrupts.Status & Sio0Bit).Should().Be(0);
+        scheduler.NextEventCycles.Should().BeGreaterThan(1);
+        _interrupts.Raise(DeviceScheduler.Sio0Irq);
+        _interrupts.HasPendingInterrupts.Should().BeTrue();
+        scheduler.NextEventCycles.Should().BeGreaterThan(1);
+    }
+
     [Fact]
     public void GpuCommandIrq_RaisesIrq1OnEdge_AndKeepsGpuAndIStatAcksIndependent()
     {
