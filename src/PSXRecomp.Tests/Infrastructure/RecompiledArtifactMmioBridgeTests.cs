@@ -100,7 +100,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         IReadOnlyDictionary<string, uint> Gpr,
         bool HasSnapshot,
         IReadOnlyList<ulong> Retired,
-        IReadOnlyDictionary<string, uint>? Snapshot = null);
+        IReadOnlyDictionary<string, uint>? Snapshot = null,
+        int SyscallOffers = 0);
 
     /// <summary>
     /// Re-launches the artifact an earlier <see cref="Run"/> built in <paramref name="dir"/>
@@ -108,7 +109,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
     /// answers each MMIO request line; null closes the child's stdin instead.
     /// </summary>
     internal static ScriptedRun RunScripted(
-        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null, uint? eventCredit = null, bool requireExactTime = false, bool sendCreditOnReports = true)
+        TempDirectory dir, Func<string, string?> reply, Func<ulong, string?>? retiredReply = null, uint? syscallSr = null, uint? eventCredit = null, bool requireExactTime = false, bool sendCreditOnReports = true,
+        Func<string, string>? transferReply = null, bool guestExceptions = false, bool closeAfterTransferReply = false)
     {
 #pragma warning disable AARC003 // Test-only: drives the artifact's own wire protocol.
         var binary = File.Exists(dir.Combine("recompiled-artifact.exe"))
@@ -125,6 +127,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         psi.ArgumentList.Add(dir.Combine("artifact-image.bin"));
         psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostTransferFlag);
         if (requireExactTime) psi.ArgumentList.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
+        if (guestExceptions) psi.ArgumentList.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
 
         using var process = Process.Start(psi)!;
         process.StandardInput.AutoFlush = true;
@@ -133,6 +136,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         var gpr = new Dictionary<string, uint>();
         var snapshot = new Dictionary<string, uint>();
         var hasSnapshot = false;
+        var inputClosed = false;
+        var syscallOffers = 0;
         string? line;
         while ((line = process.StandardOutput.ReadLine()) is not null)
         {
@@ -144,10 +149,16 @@ public sealed class RecompiledArtifactMmioBridgeTests
                 if (eventCredit is { } initialCredit)
                     process.StandardInput.WriteLine($"T {initialCredit}");
                 // The handshake and the program's unresolved end: this parent claims no pc.
-                process.StandardInput.WriteLine(RecompiledArtifactCodeGen.ProtocolDeclineReply);
+                process.StandardInput.WriteLine(transferReply?.Invoke(line) ?? RecompiledArtifactCodeGen.ProtocolDeclineReply);
+                if (closeAfterTransferReply)
+                {
+                    process.StandardInput.Close();
+                    inputClosed = true;
+                }
             }
             else if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal))
             {
+                syscallOffers++;
                 // Issue #680 setup: a serviced SYSCALL, the way the Runtime answers SYS(02h) — SR as the exception
                 // entry pushed it with IEp/IM2 set (or a caller-chosen SR) — and a resume after the SYSCALL.
                 var parts = line[RecompiledArtifactCodeGen.ProtocolSyscallPrefix.Length..].Split(' ');
@@ -161,6 +172,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
             {
                 // Issue #679 guest-time report: counted, and accepted (no device behind this parent).
                 retired.Add(ulong.Parse(line[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..], CultureInfo.InvariantCulture));
+                if (inputClosed) continue;
                 var retiredAnswer = retiredReply is null ? RecompiledArtifactCodeGen.ProtocolRetiredAckReply : retiredReply(retired[^1]);
                 if (retiredAnswer is null)
                 {
@@ -204,7 +216,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         process.WaitForExit(10000).Should().BeTrue("the artifact must terminate");
         var exit = process.ExitCode;
 #pragma warning restore AARC003
-        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot);
+        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot, syscallOffers);
     }
 
     internal static string Read(int width, uint pa) =>

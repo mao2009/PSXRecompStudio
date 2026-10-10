@@ -163,8 +163,8 @@ public sealed class RecompiledArtifactInterruptTests
 
         run.HasSnapshot.Should().BeTrue();
         G(run, T1).Should().Be(5u, "the guest ran straight on");
-        run.Snapshot!["cop0.epc"].Should().Be(0u);
-        (run.Snapshot["cop0.cause"] & 0x7Cu).Should().Be(0u);
+        run.Snapshot!["cop0.epc"].Should().Be(Entry + 4u, "RFE preserves the serviced SYSCALL's EPC");
+        (run.Snapshot["cop0.cause"] & 0x7Cu).Should().Be(8u << 2, "no hardware INT replaces the SYSCALL exception code");
         run.Snapshot["pc"].Should().NotBe(VectorBev0);
     }
 
@@ -180,7 +180,7 @@ public sealed class RecompiledArtifactInterruptTests
         var run = RunScripted(dir, _ => "V 0", AlwaysAsserted, syscallSr: Frame(SrIec | SrIm2));
 
         run.Snapshot!["pc"].Should().Be(Entry + 8u, "stopped at the budget, before the INT boundary");
-        run.Snapshot["cop0.epc"].Should().Be(0u);
+        run.Snapshot["cop0.epc"].Should().Be(Entry + 4u, "the serviced SYSCALL remains the last exception");
         (run.Snapshot["cop0.sr"] & SrIec).Should().Be(SrIec, "SR still holds the serviced SYSCALL's value, no INT push");
     }
 

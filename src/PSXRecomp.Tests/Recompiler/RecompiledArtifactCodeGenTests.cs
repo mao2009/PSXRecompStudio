@@ -94,7 +94,7 @@ public sealed class RecompiledArtifactCodeGenTests
         hook.Success.Should().BeTrue("the driver must define the SYSCALL hook");
         var body = hook.Groups["body"].Value;
 
-        var commit = body.IndexOf("state->cop0_sr = sr_entry;", StringComparison.Ordinal);
+        var commit = body.IndexOf("recompiler_exception_entry(state, 8u, state->exception_fault_pc, 0u)", StringComparison.Ordinal);
         var offer = body.IndexOf(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal);
         var serve = body.IndexOf("artifact_host_serve(state)", StringComparison.Ordinal);
         var pop = body.IndexOf(

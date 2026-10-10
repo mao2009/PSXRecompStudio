@@ -155,6 +155,14 @@ it only for an accepted INT; the observer and any fused branch/slot do not execu
 The exception itself retires no instruction. Ordinary observer cancellation and
 load-delay semantics remain unchanged when INT is not accepted.
 
+The host-serviced SYSCALL route remains the interpreter's HLE convention: the
+serviced instruction costs one cycle. Current lowering never fuses a standalone
+SYSCALL/BREAK with a load because it reads no GPR. Fused traps are branch-delay
+exceptions and cannot enter HostSyscall (`BD != 0`). Guest-owned traps charge only
+the successful fused prefix. The HLE offer performs the same shared exception
+entry as guest delivery, recording CAUSE/EPC as well as pushing SR before service;
+RFE changes SR but does not erase CAUSE/EPC.
+
 The host-owned scheduler remains the single clock during interpreter fallback.
 Before handoff, native retirements are synchronized; after a clean interpreter
 return, the host refreshes credit relative to the artifact's native retired total.
