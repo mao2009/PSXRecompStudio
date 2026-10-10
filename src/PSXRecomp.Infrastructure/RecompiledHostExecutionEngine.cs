@@ -719,6 +719,20 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return true;
             }
 
+            if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix, StringComparison.Ordinal))
+            {
+                var fields = trimmed[RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (!_guestFirmware || _devices is null || fields.Length != 3
+                    || !int.TryParse(fields[0], NumberStyles.None, CultureInfo.InvariantCulture, out var reg)
+                    || reg is < 0 or > 31 or 12 or 13 or 14
+                    || !uint.TryParse(fields[1], NumberStyles.None, CultureInfo.InvariantCulture, out var write) || write > 1
+                    || !uint.TryParse(fields[2], NumberStyles.None, CultureInfo.InvariantCulture, out var value))
+                    throw new InvalidOperationException("Malformed firmware COP0 access.");
+                if (write != 0) _devices.Core.SetCop0(reg, value);
+                Send(FormattableString.Invariant($"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {_devices.Core.GetCop0(reg)}"));
+                return true;
+            }
+
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioReadPrefix, StringComparison.Ordinal))
             {
                 HandleMmio(trimmed[RecompiledArtifactCodeGen.ProtocolMmioReadPrefix.Length..], isWrite: false);
