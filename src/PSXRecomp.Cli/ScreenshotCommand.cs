@@ -68,7 +68,8 @@ public static class ScreenshotCommand
         }
 
         var outputDirectory = Path.GetFullPath(parsed.OutputDirectory!);
-        var segmentBudget = parsed.SegmentBudget ?? 1_000_000u;
+        var segmentBudget = parsed.SegmentBudget ?? 100_000u;
+        var segments = parsed.Segments ?? 100u;
         var vblankInterval = parsed.VBlankInterval ?? DefaultVBlankInterval;
         var maxScreenshots = parsed.MaxScreenshots ?? DefaultMaxScreenshots;
         var startVblank = parsed.StartVBlank ?? DefaultStartVBlank;
@@ -105,6 +106,7 @@ public static class ScreenshotCommand
                     disc?.Source,
                     outputDirectory,
                     segmentBudget,
+                    segments,
                     vblankInterval,
                     maxScreenshots,
                     startVblank,
@@ -364,6 +366,7 @@ public static class ScreenshotCommand
         string? discPath = null;
         var json = false;
         uint? segmentBudget = null;
+        uint? segments = null;
         uint? vblankInterval = null;
         int? maxScreenshots = null;
         ulong? startVblank = null;
@@ -419,6 +422,21 @@ public static class ScreenshotCommand
                         return false;
                     }
                     segmentBudget = budget;
+                    break;
+                case "--segments":
+                    if (i + 1 >= arguments.Count)
+                    {
+                        parsed = default;
+                        error = "missing value for option '--segments'.";
+                        return false;
+                    }
+                    if (!uint.TryParse(arguments[++i], out var seg) || seg == 0)
+                    {
+                        parsed = default;
+                        error = $"invalid segments: expected a positive integer.";
+                        return false;
+                    }
+                    segments = seg;
                     break;
                 case "--vblank-interval":
                     if (i + 1 >= arguments.Count)
@@ -503,7 +521,7 @@ public static class ScreenshotCommand
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: true, OpenBiosRomPath: openBiosRomPath, DiscPath: discPath);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, segments, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: true, OpenBiosRomPath: openBiosRomPath, DiscPath: discPath);
             error = null;
             return true;
         }
@@ -525,7 +543,7 @@ public static class ScreenshotCommand
                 return false;
             }
             // Input path is not needed for OpenBIOS mode, but we can accept it for consistency
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false, OpenBiosRomPath: openBiosRomPath, DiscPath: discPath);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, segments, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false, OpenBiosRomPath: openBiosRomPath, DiscPath: discPath);
             error = null;
             return true;
         }
@@ -537,7 +555,7 @@ public static class ScreenshotCommand
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false, OpenBiosRomPath: null, DiscPath: null);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, segments, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false, OpenBiosRomPath: null, DiscPath: null);
         error = null;
         return true;
     }
@@ -547,6 +565,7 @@ public static class ScreenshotCommand
         string? OutputDirectory,
         bool Json,
         uint? SegmentBudget,
+        uint? Segments,
         uint? VBlankInterval,
         int? MaxScreenshots,
         ulong? StartVBlank,
@@ -578,6 +597,7 @@ public static class ScreenshotCommand
         ICdSectorSource? disc,
         string outputDirectory,
         uint segmentBudget,
+        uint segments,
         uint vblankInterval,
         int maxScreenshots,
         ulong startVblank,
@@ -607,6 +627,14 @@ public static class ScreenshotCommand
         try
         {
             interpreterEngine.Load(request);
+
+            // Patch OpenBIOS ROM: add jump to shell entry point (0x80030000) at end of exception handler
+            // Exception handler ends at offset 0x280; insert jump to shell entry (0x80030000) at 0x284
+            // j 0x80030000 = 0x08000000 | (0x80030000 >> 2) = 0x0A000C00
+            // nop = 0x00000000
+            var core = interpreterEngine.DiagnosticDevices.Core;
+            core.WriteMemory32(0x00000284, 0x0A000C00); // j 0x80030000
+            core.WriteMemory32(0x00000288, 0x00000000); // nop
 
             screenshotCapture = new ScreenshotCapture(
                 interpreterEngine.DiagnosticDevices.GpuDevice,
