@@ -21,7 +21,7 @@ jobs:
     name: Classify changes
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.classify.outputs.docs_only }}
+      docs_only: ${{ steps.set-output.outputs.docs_only }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
@@ -65,10 +65,15 @@ jobs:
           printf 'Changed files:\n'
           printf '  %s\n' "${changed_files[@]:-<unavailable>}"
 
-      - name: Set docs_only false for non-PR events
-        if: github.event_name != 'pull_request'
+      - name: Set docs_only output
+        id: set-output
+        shell: bash
         run: |
-          echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "docs_only=${{ steps.classify.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
 
   cross-platform:
     name: Cross-Platform Build and Test (${{ matrix.name }})
@@ -76,7 +81,7 @@ jobs:
     if: |
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') && needs.changes.outputs.docs_only != 'true')
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform'))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -127,7 +132,7 @@ jobs:
     if: |
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') && needs.changes.outputs.docs_only != 'true')
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:cross-platform'))
     strategy:
       fail-fast: false
       matrix:
@@ -209,23 +214,35 @@ jobs:
           echo "  .NET Windows: ${{ needs.cross-platform-dotnet.result }}"
           echo "  .NET macOS: ${{ needs.cross-platform-dotnet.result }}"
           echo "  Docs-only: ${{ needs.changes.outputs.docs_only }}"
+          echo "  Event: ${{ github.event_name }}"
+          echo "  Has label: ${{ contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') }}"
 
-          # Check if any job failed (skipped is OK - e.g., docs-only changes)
-          failed=false
-          for result in "${{ needs.cross-platform.result }}" "${{ needs.cross-platform-dotnet.result }}"; do
-            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
-              failed=true
+          # Determine if cross-platform verification was required
+          cross_platform_required=false
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            cross_platform_required=true
+          elif [[ "${{ github.event_name }}" == "pull_request" && "${{ contains(github.event.pull_request.labels.*.name, 'ci:cross-platform') }}" == "true" ]]; then
+            cross_platform_required=true
+          fi
+
+          if [[ "$cross_platform_required" == "true" ]]; then
+            # For required cross-platform runs, all jobs must succeed
+            # failure, cancelled, skipped are all failures
+            failed=false
+            for result in "${{ needs.cross-platform.result }}" "${{ needs.cross-platform-dotnet.result }}"; do
+              if [[ "$result" != "success" ]]; then
+                failed=true
+                echo "Job failed/skipped/cancelled: $result"
+              fi
+            done
+
+            if [[ "$failed" == "true" ]]; then
+              echo "::error::Cross-platform verification failed. See job logs for details."
+              exit 1
             fi
-          done
 
-          if [[ "$failed" == "true" ]]; then
-            echo "::error::Cross-platform verification failed. See job logs for details."
-            exit 1
+            echo "All cross-platform checks passed."
+          else
+            # Cross-platform not required (unlabeled PR) - gate is skipped
+            echo "Cross-platform verification not required for this PR (no ci:cross-platform label)."
           fi
-
-          if [[ "${{ needs.changes.outputs.docs_only }}" == "true" ]]; then
-            echo "Documentation-only change: cross-platform verification skipped."
-            exit 0
-          fi
-
-          echo "All cross-platform checks passed."
