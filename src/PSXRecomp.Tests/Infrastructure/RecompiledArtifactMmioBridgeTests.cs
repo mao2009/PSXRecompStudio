@@ -328,6 +328,24 @@ public sealed class RecompiledArtifactMmioBridgeTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FirmwareCop0_ExactTimeServicePreservesPrefixRetirement(bool delaySlot)
+    {
+        using var dir = new TempDirectory();
+        var words = delaySlot
+            ? Program([Ori(T0, Zero, 17), MipsEncoding.Branch(0x04, 0, 0, Entry + 4, Entry + 12), MixedFallbackTestSupport.Mtc0(T0, 3), MipsEncoding.Nop])
+            : Program([Ori(T0, Zero, 17), MixedFallbackTestSupport.Mfc0(R3000aRegister.S0, 3), MipsEncoding.Nop]);
+        Run(words, dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 17", eventCredit: 1, requireExactTime: true, guestExceptions: true);
+        run.ExitCode.Should().Be(0);
+        run.Requests.Should().ContainSingle();
+        run.Requests[0].Should().StartWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix);
+        run.Retired.Aggregate(0ul, static (sum, count) => sum + count).Should().Be((ulong)words.Length);
+        if (!delaySlot) G(run, R3000aRegister.S0).Should().Be(17u);
+    }
+
+    [Theory]
     [InlineData("Vfoo 1")]
     [InlineData("V +1")]
     [InlineData("V -1")]
