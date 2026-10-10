@@ -195,6 +195,38 @@ public sealed class CdRomDiscDriveTests
         Command(cd, 0x10).Should().Equal(3, 0x00, 0x02, 0x17, 0x02, 0x00, 0x00, 0x08, 0x00); // GetLocL: header of LBA 17
     }
 
+    [Theory]
+    [InlineData(2u)]
+    [InlineData(3u)]
+    public void AdvanceAcrossSeveralSectorDeadlines_MatchesSingleCycleClock(uint sectors)
+    {
+        static CdRomDevice Start()
+        {
+            var cd = Drive();
+            Command(cd, 0x02, 0, 2, 0x16);
+            cd.WriteCommand(0x06);
+            return cd;
+        }
+        var chunked = Start();
+        var stepped = Start();
+        var elapsed = CdRomDevice.AcknowledgeDelayCycles + CdRomDevice.SeekCycles + sectors * CdRomDevice.SingleSpeedSectorCycles;
+        chunked.Advance(elapsed);
+        for (uint i = 0; i < elapsed; i++) stepped.Advance(1);
+        chunked.GetInterruptFlag().Should().Be(stepped.GetInterruptFlag());
+        chunked.InterruptGeneration.Should().Be(stepped.InterruptGeneration, "an unacknowledged interrupt gates further deliveries");
+        static byte[] LastHeader(CdRomDevice cd)
+        {
+            cd.SetInterruptFlag(7);
+            Command(cd, 0x09).Should().Equal(3, 0x22);
+            TakeResponse(cd).Should().Equal(2, 2);
+            return Command(cd, 0x10);
+        }
+        var expected = LastHeader(stepped);
+        var actual = LastHeader(chunked);
+        actual.Should().Equal(expected, $"{sectors} sector deadlines must be processed, not just one; chunked={Convert.ToHexString(actual)}, stepped={Convert.ToHexString(expected)}");
+        actual[3].Should().Be(Bcd(16 + (int)sectors - 1));
+    }
+
     [Fact]
     public void DoubleSpeedWholeSectorMode_HalvesThePeriod_AndDeliversTheSectorAfterItsSync()
     {
