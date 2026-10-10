@@ -48,18 +48,29 @@ const CHCR_START_BUSY: u32 = 1 << 24;
 /// CHCR bit 28: start/trigger (required to start sync mode 0).
 const CHCR_START_TRIGGER: u32 = 1 << 28;
 
-/// DICR bits 0-6: per-channel interrupt flags (write-1-to-clear).
-const DICR_FLAGS_MASK: u32 = 0x0000_007F;
+/// DICR layout per psx-spx "DMA Interrupt Register" (Issue #732): bits 0-5
+/// read/write with no function, bit 15 force IRQ, bits 16-22 per-channel
+/// interrupt enables, bit 23 master enable, bits 24-30 per-channel flags
+/// (write-1-to-clear), bit 31 aggregate IRQ status (read-only).
+///
+/// DICR bits 24-30: per-channel interrupt flags (write-1-to-clear).
+const DICR_FLAGS_MASK: u32 = 0x7F00_0000;
+/// DICR bit of channel 0's flag; channel `n` is this shifted left by `n`.
+const DICR_FLAG_SHIFT: u32 = 24;
+/// DICR bits 0-5: read/write, no function.
+const DICR_UNUSED_RW: u32 = 0x0000_003F;
 /// DICR bit 15: force IRQ.
 const DICR_FORCE_IRQ: u32 = 1 << 15;
+/// DICR bits 16-22: per-channel interrupt enables.
+const DICR_ENABLES_MASK: u32 = 0x007F_0000;
+/// DICR bit of channel 0's enable; channel `n` is this shifted left by `n`.
+const DICR_ENABLE_SHIFT: u32 = 16;
 /// DICR bit 23: master interrupt enable.
 const DICR_MASTER_EN: u32 = 1 << 23;
-/// DICR bits 24-30: per-channel interrupt enables.
-const DICR_ENABLES_MASK: u32 = 0x7F00_0000;
 /// DICR bit 31: aggregate IRQ status (read-only, computed on read).
 const DICR_IRQ_STATUS: u32 = 1 << 31;
 /// DICR bits a write replaces.
-const DICR_CONTROL_MASK: u32 = DICR_FORCE_IRQ | DICR_MASTER_EN | DICR_ENABLES_MASK;
+const DICR_CONTROL_MASK: u32 = DICR_UNUSED_RW | DICR_FORCE_IRQ | DICR_ENABLES_MASK | DICR_MASTER_EN;
 
 /// One channel's register block.
 ///
@@ -107,10 +118,20 @@ pub extern "C" fn psx_dma_reset() -> DmaState {
 
 /// Aggregate DMA IRQ line: master enable with any enabled flag, or force IRQ.
 fn irq_line(dicr: u32) -> bool {
-    let flags = dicr & DICR_FLAGS_MASK;
-    let enables = (dicr & DICR_ENABLES_MASK) >> 24;
+    let flags = (dicr & DICR_FLAGS_MASK) >> DICR_FLAG_SHIFT;
+    let enables = (dicr & DICR_ENABLES_MASK) >> DICR_ENABLE_SHIFT;
     let master = dicr & DICR_MASTER_EN != 0;
     (master && flags & enables != 0) || dicr & DICR_FORCE_IRQ != 0
+}
+
+/// `dicr` after channel `ch` completed: its flag (bit 24 + `ch`) sets when its
+/// enable (bit 16 + `ch`) is set.
+fn flag_completion(dicr: u32, ch: usize) -> u32 {
+    if dicr & (1u32 << (DICR_ENABLE_SHIFT as usize + ch)) != 0 {
+        dicr | (1u32 << (DICR_FLAG_SHIFT as usize + ch))
+    } else {
+        dicr
+    }
 }
 
 /// Splits `address` into (channel index, offset within the channel block).
@@ -148,8 +169,8 @@ pub extern "C" fn psx_dma_read_register(state: DmaState, address: u32) -> u32 {
 
 /// Returns `state` after writing `value` to the register at `address`.
 ///
-/// DPCR is replaced. DICR flags (bits 0-6) are write-1-to-clear and its
-/// force-IRQ, master-enable and per-channel-enable bits are replaced. A
+/// DPCR is replaced. DICR flags (bits 24-30) are write-1-to-clear and its
+/// bits 0-5, force-IRQ, master-enable and per-channel-enable bits are replaced. A
 /// channel's MADR/BCR/CHCR at offsets 0/4/8 is replaced. Any other address
 /// leaves the state unchanged. Infallible.
 #[no_mangle]
@@ -218,7 +239,7 @@ fn transfer_cycles(channel: &DmaChannelState) -> u32 {
 ///
 /// Every started channel counts down its modelled duration; on reaching zero
 /// it completes: CHCR start/busy (bit 24) and start/trigger (bit 28) clear,
-/// and its DICR flag (bit `ch`) is set when its DICR enable (bit 24 + `ch`) is
+/// and its DICR flag (bit 24 + `ch`) is set when its DICR enable (bit 16 + `ch`) is
 /// set. Cycles past completion are discarded and no data is transferred. A
 /// channel whose DPCR enable is cleared mid-transfer pauses. Infallible.
 #[no_mangle]
@@ -228,7 +249,6 @@ pub extern "C" fn psx_dma_tick(state: DmaState, cycles: u32) -> DmaState {
         return s;
     }
     for (ch, (channel, remaining)) in s.channels.iter_mut().zip(s.remaining.iter_mut()).enumerate() {
-        let bit = 1u32 << ch;
         if !channel_started(s.dpcr, ch as u32, channel.chcr) {
             continue;
         }
@@ -241,9 +261,7 @@ pub extern "C" fn psx_dma_tick(state: DmaState, cycles: u32) -> DmaState {
         }
         *remaining = 0;
         channel.chcr &= !(CHCR_START_BUSY | CHCR_START_TRIGGER);
-        if s.dicr & (bit << 24) != 0 {
-            s.dicr |= bit;
-        }
+        s.dicr = flag_completion(s.dicr, ch);
     }
     s
 }
@@ -263,15 +281,24 @@ pub extern "C" fn psx_dma_get_interrupt_pending(state: DmaState) -> u32 {
 /// this generic per-cycle model must not also age or complete it. Infallible.
 #[no_mangle]
 pub extern "C" fn psx_dma_tick_excluding_channel(state: DmaState, cycles: u32, excluded_channel: u32) -> DmaState {
+    psx_dma_tick_excluding_channels(state, cycles, 1u32.checked_shl(excluded_channel).unwrap_or(0))
+}
+
+/// Like [`psx_dma_tick_excluding_channel`], for every channel whose bit is set
+/// in `excluded_mask` (bit `n` = channel `n`; Issue #732: the managed CD-ROM,
+/// GPU/OTC and MDEC bridges each own their channels' completion, and a
+/// channel waiting for device data must not be completed by this model).
+/// Infallible.
+#[no_mangle]
+pub extern "C" fn psx_dma_tick_excluding_channels(state: DmaState, cycles: u32, excluded_mask: u32) -> DmaState {
     let mut s = state;
     if cycles == 0 {
         return s;
     }
     for (ch, (channel, remaining)) in s.channels.iter_mut().zip(s.remaining.iter_mut()).enumerate() {
-        if ch as u32 == excluded_channel {
+        if excluded_mask & (1u32 << ch) != 0 {
             continue;
         }
-        let bit = 1u32 << ch;
         if !channel_started(s.dpcr, ch as u32, channel.chcr) {
             continue;
         }
@@ -284,9 +311,7 @@ pub extern "C" fn psx_dma_tick_excluding_channel(state: DmaState, cycles: u32, e
         }
         *remaining = 0;
         channel.chcr &= !(CHCR_START_BUSY | CHCR_START_TRIGGER);
-        if s.dicr & (bit << 24) != 0 {
-            s.dicr |= bit;
-        }
+        s.dicr = flag_completion(s.dicr, ch);
     }
     s
 }
@@ -313,10 +338,7 @@ pub extern "C" fn psx_dma_complete_channel(state: DmaState, channel: u32) -> Dma
     if let Some(r) = s.remaining.get_mut(idx) {
         *r = 0;
     }
-    let bit = 1u32 << idx;
-    if s.dicr & (bit << 24) != 0 {
-        s.dicr |= bit;
-    }
+    s.dicr = flag_completion(s.dicr, idx);
     s
 }
 
@@ -339,6 +361,16 @@ mod tests {
 
     fn with_dicr(dicr: u32) -> DmaState {
         DmaState { dicr, ..psx_dma_reset() }
+    }
+
+    /// Per-channel DICR flag bits (24-30) for the channel mask `m`.
+    fn flags(m: u32) -> u32 {
+        m << 24
+    }
+
+    /// Per-channel DICR enable bits (16-22) for the channel mask `m`.
+    fn enables(m: u32) -> u32 {
+        m << 16
     }
 
     fn chan_addr(ch: u32, offset: u32) -> u32 {
@@ -420,21 +452,21 @@ mod tests {
 
     #[test]
     fn dicr_write_clears_flags_on_one_and_keeps_on_zero() {
-        let s = with_dicr(0x7F);
-        assert_eq!(psx_dma_write_register(s, PSX_DMA_DICR, 0x01).dicr, 0x7E);
-        assert_eq!(psx_dma_write_register(s, PSX_DMA_DICR, 0x00).dicr, 0x7F);
-        assert_eq!(psx_dma_write_register(s, PSX_DMA_DICR, 0x7F).dicr, 0);
+        let s = with_dicr(flags(0x7F));
+        assert_eq!(psx_dma_write_register(s, PSX_DMA_DICR, flags(0x01)).dicr, flags(0x7E));
+        assert_eq!(psx_dma_write_register(s, PSX_DMA_DICR, 0x00).dicr, flags(0x7F));
+        assert_eq!(psx_dma_write_register(s, PSX_DMA_DICR, flags(0x7F)).dicr, 0);
         // Writing 1 never sets a flag.
-        assert_eq!(psx_dma_write_register(with_dicr(0), PSX_DMA_DICR, 0x7F).dicr, 0);
+        assert_eq!(psx_dma_write_register(with_dicr(0), PSX_DMA_DICR, flags(0x7F)).dicr, 0);
     }
 
     #[test]
     fn dicr_write_replaces_control_bits_and_drops_others() {
-        let s = with_dicr(0x7F | DICR_CONTROL_MASK);
-        let w = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | (0x05 << 24));
-        assert_eq!(w.dicr, 0x7F | DICR_MASTER_EN | (0x05 << 24));
-        // Bits outside flags/control (7-14, 16-22, 31) are never stored.
-        let w = psx_dma_write_register(psx_dma_reset(), PSX_DMA_DICR, 0x807F_7F80);
+        let s = with_dicr(flags(0x7F) | DICR_CONTROL_MASK);
+        let w = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | enables(0x05) | 0x2A);
+        assert_eq!(w.dicr, flags(0x7F) | DICR_MASTER_EN | enables(0x05) | 0x2A);
+        // Bits 6-14 and 31 are never stored; writing flag bits only clears.
+        let w = psx_dma_write_register(psx_dma_reset(), PSX_DMA_DICR, 0xFF00_7FC0);
         assert_eq!(w.dicr, 0);
         let w = psx_dma_write_register(psx_dma_reset(), PSX_DMA_DICR, u32::MAX);
         assert_eq!(w.dicr, DICR_CONTROL_MASK);
@@ -443,19 +475,19 @@ mod tests {
     #[test]
     fn dicr_read_reports_stored_bits_plus_irq_status() {
         assert_eq!(psx_dma_read_register(with_dicr(DICR_MASTER_EN), PSX_DMA_DICR), DICR_MASTER_EN);
-        let active = 0x04 | (0x04 << 24) | DICR_MASTER_EN;
+        let active = flags(0x04) | enables(0x04) | DICR_MASTER_EN;
         assert_eq!(psx_dma_read_register(with_dicr(active), PSX_DMA_DICR), active | DICR_IRQ_STATUS);
     }
 
     #[test]
     fn irq_requires_master_enable_and_matching_flag() {
         let cases = [
-            (0x01 | (0x01 << 24) | DICR_MASTER_EN, 1),
-            (0x01 | (0x01 << 24), 0),             // master off
-            (0x01 | DICR_MASTER_EN, 0),           // channel not enabled
-            ((0x01 << 24) | DICR_MASTER_EN, 0),   // no flag
-            (0x02 | (0x01 << 24) | DICR_MASTER_EN, 0), // flag/enable mismatch
-            (0x40 | (0x40 << 24) | DICR_MASTER_EN, 1), // channel 6
+            (flags(0x01) | enables(0x01) | DICR_MASTER_EN, 1),
+            (flags(0x01) | enables(0x01), 0),             // master off
+            (flags(0x01) | DICR_MASTER_EN, 0),            // channel not enabled
+            (enables(0x01) | DICR_MASTER_EN, 0),          // no flag
+            (flags(0x02) | enables(0x01) | DICR_MASTER_EN, 0), // flag/enable mismatch
+            (flags(0x40) | enables(0x40) | DICR_MASTER_EN, 1), // channel 6
         ];
         for (dicr, pending) in cases {
             let s = with_dicr(dicr);
@@ -480,11 +512,11 @@ mod tests {
 
     #[test]
     fn acknowledging_the_flag_drops_the_line() {
-        let s = with_dicr(0x01 | (0x01 << 24) | DICR_MASTER_EN);
+        let s = with_dicr(flags(0x01) | enables(0x01) | DICR_MASTER_EN);
         assert_eq!(psx_dma_get_interrupt_pending(s), 1);
-        let s = psx_dma_write_register(s, PSX_DMA_DICR, 0x01 | (0x01 << 24) | DICR_MASTER_EN);
+        let s = psx_dma_write_register(s, PSX_DMA_DICR, flags(0x01) | enables(0x01) | DICR_MASTER_EN);
         assert_eq!(psx_dma_get_interrupt_pending(s), 0);
-        assert_eq!(s.dicr, (0x01 << 24) | DICR_MASTER_EN);
+        assert_eq!(s.dicr, enables(0x01) | DICR_MASTER_EN);
     }
 
     /// Channel 6 (OTC) armed for a manual (sync 0) transfer of `words` words,
@@ -493,7 +525,7 @@ mod tests {
         let mut s = psx_dma_reset();
         s = psx_dma_write_register(s, PSX_DMA_DPCR, PSX_DMA_DPCR_RESET | (1 << (3 + 4 * 6)));
         if irq {
-            s = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | (0x40 << 24));
+            s = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | enables(0x40));
         }
         s = psx_dma_write_register(s, chan_addr(6, 4), words);
         psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
@@ -518,7 +550,7 @@ mod tests {
         s = psx_dma_tick(s, 1);
         assert_eq!(s.channels[6].chcr & (CHCR_START_BUSY | CHCR_START_TRIGGER), 0);
         assert_eq!(s.channels[6].chcr & 0x2, 0x2, "other CHCR bits untouched");
-        assert_eq!(s.dicr & DICR_FLAGS_MASK, 0x40);
+        assert_eq!(s.dicr & DICR_FLAGS_MASK, flags(0x40));
         assert_eq!(psx_dma_get_interrupt_pending(s), 1);
         assert_eq!(s.remaining[6], 0);
         // A completed channel stays idle.
@@ -597,7 +629,7 @@ mod tests {
         let mut s = psx_dma_reset();
         s = psx_dma_write_register(s, PSX_DMA_DPCR, PSX_DMA_DPCR_RESET | (1 << (3 + 4 * ch)));
         if irq {
-            s = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | ((1 << ch) << 24));
+            s = psx_dma_write_register(s, PSX_DMA_DICR, DICR_MASTER_EN | enables(1 << ch));
         }
         s = psx_dma_write_register(s, chan_addr(ch, 4), words);
         psx_dma_write_register(s, chan_addr(ch, 8), CHCR_START_BUSY | CHCR_START_TRIGGER)
@@ -611,7 +643,7 @@ mod tests {
         let armed = {
             let mut s = armed_channel(3, 8, true);
             s = psx_dma_write_register(s, PSX_DMA_DPCR, s.dpcr | (1 << (3 + 4 * 6)));
-            s = psx_dma_write_register(s, PSX_DMA_DICR, s.dicr | (0x40 << 24));
+            s = psx_dma_write_register(s, PSX_DMA_DICR, s.dicr | enables(0x40));
             s = psx_dma_write_register(s, chan_addr(6, 4), 4);
             psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
         };
@@ -623,14 +655,14 @@ mod tests {
         assert_eq!(s.remaining[3], 0, "excluded channel's remaining duration must not be costed");
         assert_eq!(s.dicr & DMA3_FLAG, 0, "excluded channel's DICR flag must not be set");
         assert_eq!(s.channels[6].chcr & CHCR_START_BUSY, 0, "the non-excluded channel still completes normally");
-        assert_eq!(s.dicr & (0x40), 0x40, "the non-excluded channel's DICR flag still sets");
+        assert_eq!(s.dicr & flags(0x40), flags(0x40), "the non-excluded channel's DICR flag still sets");
     }
 
     #[test]
     fn tick_excluding_channel_still_advances_every_other_channel() {
         let s = psx_dma_tick_excluding_channel(armed_channel(6, 4, true), 4, 3);
         assert_eq!(s.channels[6].chcr & CHCR_START_BUSY, 0);
-        assert_eq!(s.dicr & DICR_FLAGS_MASK, 0x40);
+        assert_eq!(s.dicr & DICR_FLAGS_MASK, flags(0x40));
     }
 
     #[test]
@@ -638,7 +670,7 @@ mod tests {
         let armed = {
             let mut s = armed_channel(3, 8, true);
             s = psx_dma_write_register(s, PSX_DMA_DPCR, s.dpcr | (1 << (3 + 4 * 6)));
-            s = psx_dma_write_register(s, PSX_DMA_DICR, s.dicr | (0x40 << 24));
+            s = psx_dma_write_register(s, PSX_DMA_DICR, s.dicr | enables(0x40));
             s = psx_dma_write_register(s, chan_addr(6, 4), 4);
             psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
         };
@@ -652,7 +684,7 @@ mod tests {
         assert_eq!(s.remaining[3], 0);
         assert_eq!(s.channels[6], channel_6_before, "unrelated channel's CHCR must not change");
         assert_eq!(s.remaining[6], remaining_6_before, "unrelated channel's remaining duration must not change");
-        assert_eq!(s.dicr & 0x40, 0, "unrelated channel's DICR flag must not be set");
+        assert_eq!(s.dicr & flags(0x40), 0, "unrelated channel's DICR flag must not be set");
     }
 
     #[test]
@@ -671,5 +703,36 @@ mod tests {
         assert_eq!(psx_dma_complete_channel(s, u32::MAX), s);
     }
 
-    const DMA3_FLAG: u32 = 1 << 3;
+    /// Issue #732: the psx-spx layout as a guest driver uses it. OpenBIOS's
+    /// CD-ROM `setDMA` writes `(DICR & 0xFFFFFF) | 0x880000` (master enable +
+    /// channel 3 enable) and its `cdromDMAVerifier` acknowledges with
+    /// `(DICR & 0xFFFFFF) | 0x88000000` (channel 3 flag).
+    #[test]
+    fn guest_cdrom_driver_sequence_flags_and_acknowledges_channel_3() {
+        let mut s = psx_dma_write_register(psx_dma_reset(), PSX_DMA_DPCR, PSX_DMA_DPCR_RESET | 0x8000);
+        let dicr = psx_dma_read_register(s, PSX_DMA_DICR);
+        s = psx_dma_write_register(s, PSX_DMA_DICR, (dicr & 0x00FF_FFFF) | 0x0088_0000);
+        s = psx_dma_write_register(s, chan_addr(3, 8), 0x1100_0000);
+        s = psx_dma_complete_channel(s, 3);
+        let dicr = psx_dma_read_register(s, PSX_DMA_DICR);
+        assert_eq!(dicr, 0x8888_0000, "flag 27, master 23, enable 19 and status 31");
+        assert_eq!(psx_dma_get_interrupt_pending(s), 1);
+        s = psx_dma_write_register(s, PSX_DMA_DICR, (dicr & 0x00FF_FFFF) | 0x8800_0000);
+        assert_eq!(psx_dma_read_register(s, PSX_DMA_DICR), 0x0088_0000);
+        assert_eq!(psx_dma_get_interrupt_pending(s), 0);
+    }
+
+    #[test]
+    fn tick_excluding_channels_skips_every_masked_channel() {
+        let mut s = armed_channel(1, 4, true);
+        s = psx_dma_write_register(s, PSX_DMA_DPCR, s.dpcr | (1 << (3 + 4 * 6)));
+        s = psx_dma_write_register(s, chan_addr(6, 4), 4);
+        s = psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2);
+        let t = psx_dma_tick_excluding_channels(s, 100, (1 << 1) | (1 << 3));
+        assert_eq!(t.channels[1], s.channels[1], "masked channel 1 untouched");
+        assert_eq!(t.channels[6].chcr & CHCR_START_BUSY, 0, "unmasked channel 6 completes");
+        assert_eq!(psx_dma_tick_excluding_channel(s, 100, 1), t);
+    }
+
+    const DMA3_FLAG: u32 = 1 << 27;
 }

@@ -57,7 +57,7 @@ The old common `IHardwareComponent` abstraction was removed because it had no pr
 | Controller/MemCard | native/Rust `crate::sio0` (register model, Issue #542; minimal disconnected-pad protocol, Issue #543) | 0x1F801040-0x1F80105E | IRQ7 (byte received = a device's /ACK; the empty-port protocol drives none, Issue #716) |
 | CD-ROM | ICdRom | 0x1F801800-0x1F801803 | IRQ2 |
 | GPU | IGpu | 0x1F801810-0x1F801814 | IRQ0 (VBlank), IRQ1 (GPU cmd) |
-| MDEC | IMdec | 0x1F801820-0x1F801824 | None |
+| MDEC | IMdec (`MdecDevice`, Issue #732; DMA0/1 via `MdecDmaTransfer`) | 0x1F801820-0x1F801824 | None |
 | SPU | native/Rust `crate::spu` register store (Issue #445; `ISpu` remains the higher-level contract) | 0x1F801C00-0x1F801DFF | IRQ9 (not yet driven) |
 | GTE | IGte (COP2) | Coprocessor | None |
 | Cache Control | IMemoryBus | 0xFFFE0130 | None |
@@ -430,8 +430,8 @@ run. Responsibilities are split so no device behavior is duplicated:
   continues; other exceptions (SYSCALL, BREAK, faults, software interrupts)
   still end the segment as `CPU_EXCEPTION`. See `docs/cpu/exceptions.md`.
 - **Fixed order per `Advance`:** Timers (a latched timer IRQ is consumed and
-  raised as IRQ4-6) → DMA (CD-ROM DMA3 service when configured, then the
-  generic tick; IRQ3 on a rising edge of DICR bit 31) → CD-ROM (IRQ2 per newly
+  raised as IRQ4-6) → DMA (GPU DMA2/OTC DMA6 and CD-ROM DMA3 service when
+  configured, then the generic tick; IRQ3 on a rising edge of DICR bit 31) → CD-ROM (IRQ2 per newly
   activated enabled response packet) → SIO0 (IRQ7) → GPU command IRQ (IRQ1 on
   the rising edge of GP0(1Fh)'s source) → VBlank
   (IRQ0 every `VblankIntervalCycles` = 33,868,800 / 60 = 564,480 cycles).
@@ -441,9 +441,15 @@ run. Responsibilities are split so no device behavior is duplicated:
   28 for sync mode 0) completes after one cycle per word (sync 0: BCR[15:0];
   sync 1: size × count; linked list: one word, since its length lives in guest
   RAM). Completion clears CHCR bits 24/28 and sets the channel's DICR flag when
-  enabled. The tick itself transfers no data; CD-ROM DMA3 moves its data and
-  completes only channel 3 (#587). Other device-backed transfers (GPU DMA2,
-  OTC clearing, SPU, MDEC) remain device work.
+  enabled (DICR: psx-spx layout, enables 16-22, flags 24-30). The tick itself
+  transfers no data; CD-ROM DMA3 moves its data and completes only channel 3
+  (#587). `GpuDmaTransfer` (#732) moves a started DMA2 block (RAM↔GP0/GPUREAD)
+  or linked list (RAM→GP0) and the OTC DMA6 chain at once, then completes the
+  channel; `MdecDmaTransfer` does the same for MDEC DMA0 (in) and DMA1 (out,
+  completed only once the decoder holds the whole burst). The generic tick skips
+  every bridged channel (`PSXCore_TickDmaExcludingChannels`). The interpreter
+  engine configures all three bridges, the generated-host engine only the CD-ROM
+  one. SPU DMA4 remains device work.
 
 Timer 1's Hblank clock source (mode bits 8-9 = 1 or 3) counts once per
 2,153 CPU cycles (33.8688 MHz / 15.734 kHz), so a guest's stable-read loop on

@@ -26,7 +26,7 @@ public sealed class DeviceSchedulerTests : IDisposable
     private const uint Ch6Chcr = 0x1F8010E8u;
     private const uint Ch3Bcr = 0x1F8010B4u;
     private const uint Ch3Chcr = 0x1F8010B8u;
-    private const uint Dma3DicrFlag = 1u << 3;
+    private const uint Dma3DicrFlag = 1u << 27;
     private const uint ChcrStartTrigger = 0x11000000u;
     private const uint ChcrBusy = 1u << 24;
 
@@ -539,7 +539,7 @@ public sealed class DeviceSchedulerTests : IDisposable
         _core.WriteDmaRegister(Dpcr, 0x07654321u | (1u << 27));
         if (irqEnabled)
         {
-            _core.WriteDmaRegister(Dicr, (1u << 23) | (1u << 30));
+            _core.WriteDmaRegister(Dicr, (1u << 23) | (1u << 22));
         }
         _core.WriteDmaRegister(Ch6Bcr, words);
         _core.WriteDmaRegister(Ch6Chcr, ChcrStartTrigger | 0x2u);
@@ -548,7 +548,7 @@ public sealed class DeviceSchedulerTests : IDisposable
     private void ArmDma3(uint words)
     {
         _core.WriteDmaRegister(Dpcr, 0x07654321u | (1u << 15));
-        _core.WriteDmaRegister(Dicr, (1u << 23) | (1u << 27));
+        _core.WriteDmaRegister(Dicr, (1u << 23) | (1u << 19));
         _core.WriteDmaRegister(Ch3Bcr, words);
         _core.WriteDmaRegister(Ch3Chcr, ChcrStartTrigger);
     }

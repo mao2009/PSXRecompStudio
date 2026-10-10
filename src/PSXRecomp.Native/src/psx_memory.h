@@ -26,11 +26,13 @@ static constexpr uint32_t PSX_DMA_REGION_END = 0x1F8010F4u; // DICR
 static constexpr uint32_t PSX_TIMER_BASE = 0x1F801100u;
 static constexpr uint32_t PSX_TIMER_REGION_END = PSX_TIMER_BASE + 3u * 0x10u - 1u; // 0x1F80112F
 
-// GPU GP0/GPUREAD + GP1/GPUSTAT ports and their documented mirrors.
-// The GPU semantics remain managed; this range is only intercepted when a
-// production managed callback has been attached (Issue #572).
+// GPU GP0/GPUREAD + GP1/GPUSTAT ports and their documented mirrors, followed
+// by the MDEC command/data and control/status ports (Issue #732). Both devices'
+// semantics remain managed; the 32-bit callback is one window over both, is
+// only intercepted when a production managed callback has been attached
+// (Issue #572), and the managed side dispatches by address.
 static constexpr uint32_t PSX_GPU_MMIO_BASE = 0x1F801810u;
-static constexpr uint32_t PSX_GPU_MMIO_END = 0x1F801820u; // exclusive
+static constexpr uint32_t PSX_MDEC_MMIO_END = 0x1F801828u; // exclusive; MDEC starts at 0x1F801820
 
 // CD-ROM controller ports 0x1F801800-0x1F801803 (index/status, command/
 // response/data, and the two banked registers behind the index byte). CD-ROM
@@ -221,14 +223,14 @@ inline void PSXMemory::AttachCdRomMmio(
 }
 
 inline uint32_t PSXMemory::Read32(uint32_t address) {
-    if (address >= PSX_GPU_MMIO_BASE && address < PSX_GPU_MMIO_END && gpu_read32_) {
+    if (address >= PSX_GPU_MMIO_BASE && address < PSX_MDEC_MMIO_END && gpu_read32_) {
         return gpu_read32_(gpu_context_, address);
     }
     return psx_memory_read32(handle_, address, dma_, timers_, interrupts_);
 }
 
 inline void PSXMemory::Write32(uint32_t address, uint32_t value) {
-    if (address >= PSX_GPU_MMIO_BASE && address < PSX_GPU_MMIO_END && gpu_write32_) {
+    if (address >= PSX_GPU_MMIO_BASE && address < PSX_MDEC_MMIO_END && gpu_write32_) {
         gpu_write32_(gpu_context_, address, value);
         return;
     }

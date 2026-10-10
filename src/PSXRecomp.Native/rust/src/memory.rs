@@ -94,9 +94,9 @@ const PSX_TIMER_BASE: u32 = 0x1F80_1100;
 /// `PSX_TIMER_REGION_END` in `psx_memory.h`.
 const PSX_TIMER_REGION_END: u32 = PSX_TIMER_BASE + 3 * 0x10 - 1;
 
-/// DICR bits 0-6: per-channel write-1-to-clear interrupt flags. Mirrors the
-/// private constant of the same shape in [`crate::dma`].
-const DICR_FLAGS_MASK: u32 = 0x0000_007F;
+/// DICR bits 24-30: per-channel write-1-to-clear interrupt flags (psx-spx).
+/// Mirrors the private constant of the same shape in [`crate::dma`].
+const DICR_FLAGS_MASK: u32 = 0x7F00_0000;
 
 /// Where an address decoded to, with the byte offset into that region's
 /// backing buffer (already proven in range for the access width requested).
@@ -379,7 +379,7 @@ impl PsxMemory {
     /// region. A sub-word write to a controller register first reads the
     /// full 32-bit register back (a timer read can have side effects, so
     /// this reuses the same read path as [`Self::read16`]), masks DICR's
-    /// write-1-to-clear flag bits (0-6) out of that echoed value so an
+    /// write-1-to-clear flag bits (24-30) out of that echoed value so an
     /// untouched flag is not reinterpreted as "clear" by the merge below,
     /// merges in the target halfword, and writes the full word back
     /// (CodeRabbit PR #491; see the DICR regression tests).
@@ -1002,18 +1002,18 @@ mod tests {
     fn dicr_write8_preserves_pending_w1c_flags() {
         let mem = unsafe { create() };
         let mut dma = psx_dma_reset();
-        dma.dicr = 0x7F; // All 7 channel flags pending.
+        dma.dicr = 0x7F00_0000; // All 7 channel flags (bits 24-30) pending.
         unsafe {
             // Byte 2 (bits 16-23) carries master-enable (bit 23) but no flag bits.
             psx_memory_write8(mem, 0x1F80_10F6, 0x80, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
             let after = psx_dma_read_register(dma, 0x1F80_10F4);
-            assert_eq!(after & 0x7F, 0x7F, "flags must still be pending");
+            assert_eq!(after & 0x7F00_0000, 0x7F00_0000, "flags must still be pending");
             assert_eq!(after & (1 << 23), 1 << 23, "master enable must be applied");
 
             // An intentional W1C write through the same byte path still works.
-            psx_memory_write8(mem, 0x1F80_10F4, 0x01, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
+            psx_memory_write8(mem, 0x1F80_10F7, 0x01, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
             let after_clear = psx_dma_read_register(dma, 0x1F80_10F4);
-            assert_eq!(after_clear & 0x7F, 0x7E, "only flag 0 must clear");
+            assert_eq!(after_clear & 0x7F00_0000, 0x7E00_0000, "only flag 0 must clear");
 
             psx_memory_destroy(mem);
         }
@@ -1023,19 +1023,24 @@ mod tests {
     fn dicr_write16_preserves_pending_w1c_flags() {
         let mem = unsafe { create() };
         let mut dma = psx_dma_reset();
-        dma.dicr = 0x7F;
+        dma.dicr = 0x7F00_0000;
         unsafe {
-            // High halfword: master-enable (bit 23) + channel 0/2 enables (bits 24/26).
-            psx_memory_write16(mem, 0x1F80_10F6, 0x0580, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
+            // Low halfword: bits 0-5 (read/write) + force IRQ (bit 15) cleared; no flag bits.
+            psx_memory_write16(mem, 0x1F80_10F4, 0x0015, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
             let after = psx_dma_read_register(dma, 0x1F80_10F4);
-            assert_eq!(after & 0x7F, 0x7F, "flags must still be pending");
-            assert_eq!(after & (1 << 23), 1 << 23);
-            assert_eq!((after >> 24) & 0x7F, 0x05);
+            assert_eq!(after & 0x7F00_0000, 0x7F00_0000, "flags must still be pending");
+            assert_eq!(after & 0x3F, 0x15);
 
-            // An intentional W1C write through the low halfword still works.
-            psx_memory_write16(mem, 0x1F80_10F4, 0x0003, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
+            // Byte 2: master-enable (bit 23) + channel 0/2 enables (bits 16/18).
+            psx_memory_write8(mem, 0x1F80_10F6, 0x85, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
+            let after = psx_dma_read_register(dma, 0x1F80_10F4);
+            assert_eq!(after & 0x7F00_0000, 0x7F00_0000, "flags must still be pending");
+            assert_eq!((after >> 16) & 0xFF, 0x85);
+
+            // An intentional W1C write through the high halfword still works.
+            psx_memory_write16(mem, 0x1F80_10F6, 0x0385, &raw mut dma, std::ptr::null_mut(), std::ptr::null_mut());
             let after_clear = psx_dma_read_register(dma, 0x1F80_10F4);
-            assert_eq!(after_clear & 0x7F, 0x7C, "flags 0 and 1 must clear");
+            assert_eq!(after_clear & 0x7F00_0000, 0x7C00_0000, "flags 0 and 1 must clear");
 
             psx_memory_destroy(mem);
         }

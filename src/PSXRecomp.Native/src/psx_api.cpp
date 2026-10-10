@@ -157,6 +157,11 @@ void PSXCore_TickDmaExcludingChannel(PSXCore* core, uint32_t cycles, uint32_t ex
     core->dma = psx_dma_tick_excluding_channel(core->dma, cycles, excluded_channel);
 }
 
+void PSXCore_TickDmaExcludingChannels(PSXCore* core, uint32_t cycles, uint32_t excluded_mask) {
+    if (!core) return;
+    core->dma = psx_dma_tick_excluding_channels(core->dma, cycles, excluded_mask);
+}
+
 void PSXCore_CompleteDmaChannel(PSXCore* core, uint32_t channel) {
     if (!core) return;
     core->dma = psx_dma_complete_channel(core->dma, channel);

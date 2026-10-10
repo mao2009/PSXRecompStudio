@@ -315,6 +315,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _gpuDevice.Reset();
         _gpuDevice.ResetFrameEvidence();
         _cdRomDevice.Reset();
+        _devices.Mdec.Reset();
         foreach (var item in request.InitialMemory)
         {
             _core.WriteMemory8(TranslateAddress(item.Address), item.Value);
@@ -328,7 +329,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = new DeviceScheduler(
-            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer);
+            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer, _devices.GpuDmaTransfer, _devices.MdecDmaTransfer);
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
@@ -573,8 +574,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // iteration and reported Success, which the orchestrator hands to the
             // handoff — a GTE/CpU fault could be classified Completed.
             _trace.Record(_core.Pc, FetchWordForTrace(_core.Pc));
-            FetchObserver?.Invoke(_core.Pc);
-            if (StopRequested)
+            FetchObserver?.Invoke(_core.Pc);            if (StopRequested)
             {
                 break;
             }
@@ -582,15 +582,6 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             var stepStatus = _core.Step();
             if (stepStatus != 0)
             {
-                // Issue #447: an unimplemented GTE command fails closed and names itself.
-                if (stepStatus == PSXCoreWrapper.StepGteCommandUnsupported &&
-                    _devices.Gte.LastUnsupportedCommand is uint command)
-                {
-                    diagnosticCode = "GTE_COMMAND_UNSUPPORTED";
-                    diagnosticMessage = string.Create(CultureInfo.InvariantCulture,
-                        $"GTE command 0x{command & 0x3F:X2} (word 0x{command:X7}) at PC 0x{_core.Pc:X8} is not implemented.");
-                }
-
                 termination = RecompilerIrTerminationReason.Exception;
                 break;
             }

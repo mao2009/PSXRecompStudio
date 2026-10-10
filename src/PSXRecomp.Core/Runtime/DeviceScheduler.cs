@@ -63,6 +63,9 @@ public sealed class DeviceScheduler
     private readonly IGpu? _gpu;
     private readonly ICdRom? _cdRom;
     private readonly CdRomDmaTransfer? _cdRomDma;
+    private readonly GpuDmaTransfer? _gpuDma;
+    private readonly MdecDmaTransfer? _mdecDma;
+    private readonly uint _bridgedDmaChannels;
     private uint _cyclesSinceVblank;
     private bool _dmaIrqLine;
     private bool _gpuIrqLine;
@@ -81,18 +84,29 @@ public sealed class DeviceScheduler
     /// #587): the generic per-cycle DMA model below never advances or
     /// completes channel 3 itself, so a real CD-ROM burst is never faked by
     /// the deterministic duration model.</param>
+    /// <param name="gpuDma">Optional GPU DMA2/OTC DMA6 bridge (Issue #732). When present, a started channel 2 or 6
+    /// transfer moves its data and completes; the generic model never times channels 2 and 6.</param>
+    /// <param name="mdecDma">Optional MDEC DMA0/DMA1 bridge (Issue #732), owning channels 0 and 1 the same way.</param>
     public DeviceScheduler(
         PSXCoreWrapper core,
         IInterruptController interrupts,
         IGpu? gpu = null,
         ICdRom? cdRom = null,
-        CdRomDmaTransfer? cdRomDma = null)
+        CdRomDmaTransfer? cdRomDma = null,
+        GpuDmaTransfer? gpuDma = null,
+        MdecDmaTransfer? mdecDma = null)
     {
         _core = core ?? throw new ArgumentNullException(nameof(core));
         _interrupts = interrupts ?? throw new ArgumentNullException(nameof(interrupts));
         _gpu = gpu;
         _cdRom = cdRom;
         _cdRomDma = cdRomDma;
+        _gpuDma = gpuDma;
+        _mdecDma = mdecDma;
+        _bridgedDmaChannels =
+            (cdRomDma is null ? 0 : 1u << CdRomDmaTransfer.Channel) |
+            (gpuDma is null ? 0 : 1u << GpuDmaTransfer.GpuChannel | 1u << GpuDmaTransfer.OtcChannel) |
+            (mdecDma is null ? 0 : 1u << MdecDmaTransfer.InChannel | 1u << MdecDmaTransfer.OutChannel);
     }
 
     /// <summary>Total guest cycles accepted by this scheduler, independent of report chunking.</summary>
@@ -155,16 +169,12 @@ public sealed class DeviceScheduler
         // configured it exclusively owns channel 3's completion (Issue #587):
         // it is serviced first and the deterministic per-word model skips
         // channel 3. Without a bridge, every channel (including 3) keeps the
-        // generic model.
-        if (_cdRomDma is not null)
-        {
-            _cdRomDma.TryTransfer();
-            _core.TickDmaExcludingChannel(cycles, CdRomDmaTransfer.Channel);
-        }
-        else
-        {
-            _core.TickDma(cycles);
-        }
+        // generic model. The GPU (channels 2/6) and MDEC (channels 0/1)
+        // bridges own their channels the same way (Issue #732).
+        _gpuDma?.TryTransfer();
+        _mdecDma?.TryTransfer();
+        _cdRomDma?.TryTransfer();
+        _core.TickDmaExcludingChannels(cycles, _bridgedDmaChannels);
         var dmaLine = _core.GetDmaInterruptPending();
         if (dmaLine && !_dmaIrqLine)
         {

@@ -205,7 +205,7 @@ public class MemoryBusTests : IDisposable
     public void Dicr_ThroughMemoryBus()
     {
         uint masterEnable = 1u << 23;
-        uint ch0Enable = 1u << 24;
+        uint ch0Enable = 1u << 16;
         uint forceIrq = 1u << 15;
         uint writableBits = masterEnable | ch0Enable | forceIrq;
         _memoryBus.Write(Ps1MemoryMap.Dicr, writableBits);
