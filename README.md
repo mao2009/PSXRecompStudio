@@ -3,7 +3,7 @@
 [![CI](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/PSXRecompStudio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-PSXRecompStudio is a research-oriented PlayStation 1 (PS1 / PSX) static-recompilation and reverse-engineering environment.
+PSXRecompStudio is a research-oriented PlayStation 1 (PS1 / PSX) static-recompilation and reverse-engineering environment. Its long-term mission is to help authorized rights holders port and commercially re-release PS1 games on modern platforms, even where original source code or toolchains have been lost. Recompilation is intended as a maintainable porting foundation, not simply a replacement for emulation. See the [project mission](docs/project-mission.md).
 
 It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a deterministic recompilation pipeline, build runnable host artifacts, and compare bounded results against an interpreter. It is still research-stage software: complete commercial PS1 title recompilation is **not yet implemented**.
 
@@ -93,6 +93,10 @@ The repository keeps executable evidence close to the implementation:
 - [Persona E2E status](docs/v0.1.0/persona-e2e-status.md)
 
 Real-ROM tests require legally obtained user-supplied input and skip explicitly when no fixture is available.
+
+## Project direction
+
+The [project mission](docs/project-mission.md) explains the intended commercial re-release and preservation use case, the distinction from emulation, and the legal and technical limits. It is a long-term direction, not a present-day compatibility or commercial-readiness claim.
 
 ## Roadmap
 

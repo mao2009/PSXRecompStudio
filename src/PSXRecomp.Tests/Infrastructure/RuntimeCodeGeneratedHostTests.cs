@@ -53,7 +53,7 @@ public sealed class RuntimeCodeGeneratedHostTests
         return new ExecutionOrchestrator().Execute(interpreter, handoff: null, Request(budget)).FinalSnapshot!;
     }
 
-    private sealed record HostRun(RecompilerStateSnapshot Final, MixedFallbackEvidence Evidence, LoadedCodeTable Loaded);
+    private sealed record HostRun(RecompilerStateSnapshot Final, MixedFallbackEvidence Evidence, LoadedCodeTable Loaded, IReadOnlyList<MixedFallbackTransition> Transitions);
 
     private static HostRun RunHost(uint[] rom, IEnumerable<(uint Dest, uint[] Code, uint[] Roots)> images, IReadOnlySet<uint> interpreted, uint budget)
     {
@@ -63,10 +63,12 @@ public sealed class RuntimeCodeGeneratedHostTests
         using var engine = new RecompiledHostExecutionEngine(
             romCode, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
             mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+        var transitions = new List<MixedFallbackTransition>();
+        engine.FallbackTransitionObserver = transitions.Add;
         var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(budget));
         result.FinalSnapshot.Should().NotBeNull(result.DiagnosticMessage);
         engine.NativeRetiredInstructions.Should().BeGreaterThan(0ul);
-        return new HostRun(result.FinalSnapshot!, engine.FallbackEvidence!, loaded);
+        return new HostRun(result.FinalSnapshot!, engine.FallbackEvidence!, loaded, transitions);
     }
 
     [Fact]
@@ -134,6 +136,11 @@ public sealed class RuntimeCodeGeneratedHostTests
         // Only the code that matches no pre-generated version ran in the fallback: one instruction.
         host.Evidence.FallbackInstructions.Should().Be(1ul);
         host.Evidence.Targets.Should().ContainSingle().Which.Target.Should().Be(slot);
+        host.Transitions.Should().ContainSingle();
+        host.Transitions[0].EntryPc.Should().Be(slot);
+        host.Transitions[0].RetiredInstructions.Should().Be(1ul);
+        host.Transitions[0].ExitPc.Should().Be(slot + 4);
+        host.Transitions[0].Status.Should().Be(FallbackSegmentStatus.Returned);
     }
 
     [Fact]

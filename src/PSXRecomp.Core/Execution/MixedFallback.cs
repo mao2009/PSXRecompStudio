@@ -118,6 +118,46 @@ public sealed record MixedFallbackEvidence(
     ulong PagesToArtifact,
     IReadOnlyList<MixedFallbackTarget> Targets);
 
+/// <summary>
+/// One artifact-to-interpreter handoff as it ended (Issue #732): what a measurement layer needs to classify why it
+/// happened and what it cost. Observation only; reported once per transition, after its segment ran.
+/// </summary>
+/// <param name="EntryPc">The PC the artifact had no block for.</param>
+/// <param name="Indirect">The transfer came from JR/JALR (its target was not known when the image was built).</param>
+/// <param name="Status">How the segment ended.</param>
+/// <param name="ExitPc">The PC the segment ended at: the compiled block entry it returned to, or where it stopped.</param>
+/// <param name="RetiredInstructions">Guest instructions the interpreter retired in the segment.</param>
+/// <param name="DiagnosticCode">The stop's code; null when the segment returned.</param>
+/// <param name="AotClass">Why no AOT code ran here, one of <see cref="MixedFallbackAotClass"/>, when the code that made the
+/// handoff knows it (an AOT image table does); null lets the measurement layer derive it from the address alone.</param>
+[Domain]
+public sealed record MixedFallbackTransition(
+    uint EntryPc, bool Indirect, FallbackSegmentStatus Status, uint ExitPc, ulong RetiredInstructions, string? DiagnosticCode,
+    string? AotClass = null);
+
+/// <summary>
+/// Why a PC that reached the interpreter fallback had no AOT code (Issue #732): the taxonomy a fallback is measured by.
+/// Every class except <see cref="RuntimeGenerated"/> is code that could in principle be compiled ahead of time.
+/// </summary>
+[Domain]
+public static class MixedFallbackAotClass
+{
+    /// <summary>The PC lies in a statically known code image that has no block for it (yet).</summary>
+    public const string KnownNotYetAot = "known-not-yet-aot";
+
+    /// <summary>No AOT image covers the PC: statically unknown to this build.</summary>
+    public const string NotInAnyImage = "not-in-any-aot-image";
+
+    /// <summary>An AOT image covers the PC but its content hash or generation differs from guest memory.</summary>
+    public const string ImageStale = "image-stale";
+
+    /// <summary>The range was overwritten by another image than the one compiled for it.</summary>
+    public const string RegionOverwritten = "region-overwritten";
+
+    /// <summary>Class C: run-time generated or unanalysable self-modifying code; not pre-determinable.</summary>
+    public const string RuntimeGenerated = "runtime-generated";
+}
+
 /// <summary>Wall-clock costs of one run's mixed execution. Measurement only: never part of a deterministic document.</summary>
 /// <param name="TransferMilliseconds">Time spent in the RAM/CPU copy-sync protocol (both directions, including pipe I/O).</param>
 /// <param name="FallbackMilliseconds">Time spent executing interpreter segments.</param>

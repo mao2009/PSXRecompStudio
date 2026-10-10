@@ -73,8 +73,10 @@ internal sealed class ArtifactFallbackSession : IDisposable
         Func<string> readReply,
         bool guestFirmware = false,
         Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null,
+        Action<MixedFallbackTransition>? transitionObserver = null,
         LoadedCodeTable? loadedCode = null)
     {
+        _transitionObserver = transitionObserver;
         _guestFirmware = guestFirmware;
         _loadedCode = loadedCode ?? LoadedCodeTable.Empty;
         _options = options;
@@ -95,6 +97,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
     }
 
     private readonly bool _guestFirmware;
+    private readonly Action<MixedFallbackTransition>? _transitionObserver;
 
     /// <summary>The pre-generated versions of RAM-placed code (Issue #732).</summary>
     private readonly LoadedCodeTable _loadedCode;
@@ -218,6 +221,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 previous.Entries + 1,
                 previous.Instructions + outcome.RetiredInstructions,
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
+            _transitionObserver?.Invoke(new MixedFallbackTransition(
+                pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
 
             if (outcome.Status != FallbackSegmentStatus.Returned)
             {
