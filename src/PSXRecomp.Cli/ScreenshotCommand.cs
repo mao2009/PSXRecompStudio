@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
@@ -7,6 +8,7 @@ using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Core.Runtime.Gpu;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Execution;
@@ -19,11 +21,12 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// and captures PNG screenshots at specified VBlank intervals. This is a pure interpreter
 /// path (no recompiled artifact) designed for visual regression testing and evidence
 /// collection from real game execution.
+/// Supports both HLE BIOS (default) and OpenBIOS (real BIOS ROM) execution paths.
 /// </summary>
 [Infrastructure]
 public static class ScreenshotCommand
 {
-    internal const string Usage = "usage: psxrecomp screenshot <input.exe|input.chd> --output <dir> [--segment-budget <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]";
+    internal const string Usage = "usage: psxrecomp screenshot <input.exe|input.chd> --output <dir> [--openbios <rom.bin>] [--disc <image.chd|image.bin>] [--segment-budget <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]";
 
     /// <summary>Default VBlank interval between screenshots.</summary>
     public const uint DefaultVBlankInterval = 300;
@@ -52,7 +55,9 @@ public static class ScreenshotCommand
             standardOutput.WriteLine();
             standardOutput.WriteLine("options:");
             standardOutput.WriteLine("  --output <dir>             required: directory to save PNG screenshots");
-            standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 100000)");
+            standardOutput.WriteLine("  --openbios <rom.bin>       optional: OpenBIOS ROM file (512KB) for real BIOS execution");
+            standardOutput.WriteLine("  --disc <image.chd|image.bin>  required with --openbios: CD-ROM image for the game");
+            standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 1000000)");
             standardOutput.WriteLine("  --vblank-interval <n>      VBlank interval between captures (default: 300)");
             standardOutput.WriteLine("  --max-screenshots <n>      maximum screenshots to capture (default: 10)");
             standardOutput.WriteLine("  --start-vblank <n>         first VBlank to capture (default: 300)");
@@ -63,7 +68,7 @@ public static class ScreenshotCommand
         }
 
         var outputDirectory = Path.GetFullPath(parsed.OutputDirectory!);
-        var segmentBudget = parsed.SegmentBudget ?? 100_000u;
+        var segmentBudget = parsed.SegmentBudget ?? 1_000_000u;
         var vblankInterval = parsed.VBlankInterval ?? DefaultVBlankInterval;
         var maxScreenshots = parsed.MaxScreenshots ?? DefaultMaxScreenshots;
         var startVblank = parsed.StartVBlank ?? DefaultStartVBlank;
@@ -72,38 +77,75 @@ public static class ScreenshotCommand
         try
         {
             string? inputSha256 = null;
-            PsxExeTitleExecution input;
-            if (Path.GetExtension(parsed.Input).Equals(".chd", StringComparison.OrdinalIgnoreCase))
+            HeadlessRunResult result;
+
+            if (parsed.OpenBiosRomPath is not null)
             {
-                var resolved = CliInput.LoadWithIdentity(parsed.Input!, outerBudget: 64, segmentBudget);
-                input = resolved.Execution;
-                inputSha256 = resolved.Sha256;
+                // OpenBIOS execution path
+                if (parsed.DiscPath is null)
+                {
+                    standardError.WriteLine("psxrecomp screenshot: --disc is required when using --openbios");
+                    return RecompiledArtifactExitCode.Failure;
+                }
+
+                var openBiosBytes = File.ReadAllBytes(parsed.OpenBiosRomPath);
+                if (openBiosBytes.Length != OpenBiosFirmware.ImageSize)
+                {
+                    standardError.WriteLine($"psxrecomp screenshot: OpenBIOS ROM must be exactly {OpenBiosFirmware.ImageSize} bytes (got {openBiosBytes.Length})");
+                    return RecompiledArtifactExitCode.Failure;
+                }
+
+                var openBiosHash = Convert.ToHexString(SHA256.HashData(openBiosBytes)).ToLowerInvariant();
+                var firmware = OpenBiosFirmware.FromBytes(openBiosBytes);
+                var disc = OpenDisc(parsed.DiscPath);
+
+                result = RunScreenshotCaptureOpenBios(
+                    firmware,
+                    openBiosHash,
+                    disc?.Source,
+                    outputDirectory,
+                    segmentBudget,
+                    vblankInterval,
+                    maxScreenshots,
+                    startVblank,
+                    timeout,
+                    standardError);
             }
             else
             {
-                input = CliInput.Load(parsed.Input!, outerBudget: 64, segmentBudget);
-            }
+                // HLE BIOS execution path (existing)
+                PsxExeTitleExecution input;
+                if (Path.GetExtension(parsed.Input).Equals(".chd", StringComparison.OrdinalIgnoreCase))
+                {
+                    var resolved = CliInput.LoadWithIdentity(parsed.Input!, outerBudget: 64, segmentBudget);
+                    input = resolved.Execution;
+                    inputSha256 = resolved.Sha256;
+                }
+                else
+                {
+                    input = CliInput.Load(parsed.Input!, outerBudget: 64, segmentBudget);
+                }
 
-            var result = RunScreenshotCapture(
-                input,
-                outputDirectory,
-                segmentBudget,
-                vblankInterval,
-                maxScreenshots,
-                startVblank,
-                timeout,
-                standardError);
+                result = RunScreenshotCapture(
+                    input,
+                    outputDirectory,
+                    segmentBudget,
+                    vblankInterval,
+                    maxScreenshots,
+                    startVblank,
+                    timeout,
+                    standardError);
+            }
 
             if (parsed.Json)
             {
-                standardOutput.WriteLine(SerializeResult(inputSha256, result));
+                standardOutput.WriteLine(SerializeResult(inputSha256 ?? result.ExecutionResult.EngineName, result));
             }
             else
             {
                 WriteHumanResult(result, standardOutput);
             }
 
-            // Exit code: 0 = success (any classified outcome), 1 = tooling failure, 2 = runtime blocked
             return result.ExecutionResult.State == TitleExecutionState.RuntimeFailure
                 ? RecompiledArtifactExitCode.Failure
                 : RecompiledArtifactExitCode.Success;
@@ -318,6 +360,8 @@ public static class ScreenshotCommand
     {
         string? input = null;
         string? outputDirectory = null;
+        string? openBiosRomPath = null;
+        string? discPath = null;
         var json = false;
         uint? segmentBudget = null;
         uint? vblankInterval = null;
@@ -342,6 +386,24 @@ public static class ScreenshotCommand
                         return false;
                     }
                     outputDirectory = arguments[++i];
+                    break;
+                case "--openbios":
+                    if (i + 1 >= arguments.Count)
+                    {
+                        parsed = default;
+                        error = "missing value for option '--openbios'.";
+                        return false;
+                    }
+                    openBiosRomPath = arguments[++i];
+                    break;
+                case "--disc":
+                    if (i + 1 >= arguments.Count)
+                    {
+                        parsed = default;
+                        error = "missing value for option '--disc'.";
+                        return false;
+                    }
+                    discPath = arguments[++i];
                     break;
                 case "--segment-budget":
                     if (i + 1 >= arguments.Count)
@@ -441,7 +503,7 @@ public static class ScreenshotCommand
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: true);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: true, OpenBiosRomPath: openBiosRomPath, DiscPath: discPath);
             error = null;
             return true;
         }
@@ -453,6 +515,21 @@ public static class ScreenshotCommand
             return false;
         }
 
+        if (openBiosRomPath is not null)
+        {
+            // OpenBIOS mode: input is optional (firmware is the ROM), disc is required
+            if (discPath is null)
+            {
+                parsed = default;
+                error = "--disc is required when using --openbios";
+                return false;
+            }
+            // Input path is not needed for OpenBIOS mode, but we can accept it for consistency
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false, OpenBiosRomPath: openBiosRomPath, DiscPath: discPath);
+            error = null;
+            return true;
+        }
+
         if (input is null)
         {
             parsed = default;
@@ -460,7 +537,7 @@ public static class ScreenshotCommand
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, vblankInterval, maxScreenshots, startVblank, timeoutSeconds, Help: false, OpenBiosRomPath: null, DiscPath: null);
         error = null;
         return true;
     }
@@ -474,7 +551,9 @@ public static class ScreenshotCommand
         int? MaxScreenshots,
         ulong? StartVBlank,
         int? TimeoutSeconds,
-        bool Help);
+        bool Help,
+        string? OpenBiosRomPath = null,
+        string? DiscPath = null);
 
     private sealed class CollectedOutput : IRuntimeOutputSink
     {
@@ -490,6 +569,180 @@ public static class ScreenshotCommand
         {
             ArgumentNullException.ThrowIfNull(segmentState);
             return segmentState.PC == _programEnd ? TitleExecutionHandoffResult.Exit() : null;
+        }
+    }
+
+    private static HeadlessRunResult RunScreenshotCaptureOpenBios(
+        OpenBiosFirmware firmware,
+        string firmwareHash,
+        ICdSectorSource? disc,
+        string outputDirectory,
+        uint segmentBudget,
+        uint vblankInterval,
+        int maxScreenshots,
+        ulong startVblank,
+        TimeSpan timeout,
+        TextWriter standardError)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var savedFiles = new List<string>();
+
+        var backend = new OpenBiosBootBackend(firmware, disc);
+        using var engine = backend.CreateEngine();
+        var interpreterEngine = (InterpreterTitleExecutionEngine)engine;
+
+        var handoff = new OpenBiosHandoff();
+        var orchestrator = new ExecutionOrchestrator();
+
+        var request = new TitleExecutionRequest(
+            backend.EntryPc,
+            new uint[TitleExecutionRequest.GprCount],
+            0, 0,
+            [],
+            1000,
+            segmentBudget);
+
+        var screenshotCapture = new ScreenshotCapture(
+            interpreterEngine.DiagnosticDevices.GpuDevice,
+            interpreterEngine.Scheduler!,
+            outputDirectory,
+            vblankInterval,
+            maxScreenshots,
+            startVblank);
+
+        TitleExecutionResult? executionResult = null;
+        var stopReason = "Unknown";
+        var lastVblank = 0ul;
+
+        try
+        {
+            interpreterEngine.Load(request);
+
+            var outerBudget = 1000u;
+            var currentRequest = request;
+
+            while (true)
+            {
+                if (stopwatch.Elapsed >= timeout)
+                {
+                    stopReason = "WallClockTimeout";
+                    break;
+                }
+
+                if (screenshotCapture.IsComplete)
+                {
+                    stopReason = "ScreenshotsComplete";
+                    break;
+                }
+
+                var currentVblank = interpreterEngine.Scheduler!.VblankCount;
+                if (currentVblank == lastVblank && stopwatch.Elapsed > TimeSpan.FromSeconds(60))
+                {
+                    stopReason = "HangDetected";
+                    break;
+                }
+                lastVblank = currentVblank;
+
+                var result = orchestrator.Execute(interpreterEngine, handoff, currentRequest);
+                executionResult = result;
+
+                screenshotCapture.TryCapture();
+
+                if (result.State != TitleExecutionState.RuntimeHandoff)
+                {
+                    stopReason = result.State.ToString();
+                    break;
+                }
+
+                if (result.FinalSnapshot is not null)
+                {
+                    currentRequest = new TitleExecutionRequest(
+                        result.FinalSnapshot.PC,
+                        result.FinalSnapshot.Gpr.ToArray(),
+                        result.FinalSnapshot.HI,
+                        result.FinalSnapshot.LO,
+                        [],
+                        outerBudget,
+                        segmentBudget);
+                }
+                else
+                {
+                    stopReason = "NoSnapshot";
+                    break;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            stopReason = $"Crash: {ex.GetType().Name}";
+            standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+        }
+
+        if (screenshotCapture is not null && !screenshotCapture.IsComplete)
+        {
+            screenshotCapture.ForceCapture("persona_vblank_final.png");
+        }
+
+        if (Directory.Exists(outputDirectory))
+        {
+            savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
+                .OrderBy(f => f)
+                .Select(Path.GetFullPath));
+        }
+
+        var maxVblank = interpreterEngine.Scheduler?.VblankCount ?? 0;
+
+        return new HeadlessRunResult(
+            executionResult ?? new TitleExecutionResult(
+                TitleExecutionState.RuntimeFailure,
+                null, 0, InterpreterTitleExecutionEngine.EngineName,
+                "NO_RESULT", "Execution did not produce a result"),
+            screenshotCapture?.ScreenshotsTaken ?? 0,
+            maxVblank,
+            savedFiles.AsReadOnly(),
+            stopwatch.Elapsed,
+            stopReason);
+    }
+
+    private static OpenedDisc OpenDisc(string path)
+    {
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            var magic = new byte[8];
+            if (stream.Read(magic) == magic.Length && System.Text.Encoding.ASCII.GetString(magic) == "MComprHD")
+            {
+                stream.Position = 0;
+                return new OpenedDisc(new ChdCdSectorSource(ChdReader.Open(stream)), stream);
+            }
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+
+        stream.Dispose();
+        return new OpenedDisc(new RawCdSectorSource(File.ReadAllBytes(path)), null);
+    }
+
+    private sealed record OpenedDisc(ICdSectorSource Source, Stream? Stream) : IDisposable
+    {
+        public void Dispose() => Stream?.Dispose();
+    }
+
+    private sealed class OpenBiosHandoff : ITitleExecutionHandoff
+    {
+        public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState)
+        {
+            ArgumentNullException.ThrowIfNull(segmentState);
+            // OpenBIOS runs the firmware; we don't have a program end to detect.
+            // Execution continues until budget/timeout/hang.
+            return null;
         }
     }
 }
