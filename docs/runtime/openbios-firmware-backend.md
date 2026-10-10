@@ -94,7 +94,7 @@ guest's CD-ROM/DMA/GPU/MDEC register traffic:
 
 After these the intro movie plays: VRAM holds the decoded 24-bit ATLUS logo frame and the probe
 frame reports 29,609 non-zero pixels (the probe's frame evidence reads VRAM as 15-bit, so a
-24-bit display looks striped there). The run at 600 x 1M instructions is mid-movie, waiting on
+24-bit display looks striped there). This is a VRAM/probe observation, not a verified window presentation or a title-screen result. The run at 600 x 1M instructions is mid-movie, waiting on
 the stream at 0x800812E8 as designed between frames; no title screen yet.
 
 ### Disc in the drive (`--disc`)
