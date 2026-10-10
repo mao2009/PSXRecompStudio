@@ -100,3 +100,9 @@ This supersedes "no second RAM and no copy/sync" **for the duration of one fallb
 ## Related
 
 - ADR-014, ADR-016, #442 (`DeviceScheduler`), #587 (CD-ROM DMA3), #678, #680
+
+## Amendment (Issue #732): batched VBlank field parity
+
+Batching several VBlank intervals preserves the GPU interlace field by toggling
+for odd interval counts while retaining a single latched IRQ0 in the existing
+scheduler stage. Even interval counts leave the field unchanged.
