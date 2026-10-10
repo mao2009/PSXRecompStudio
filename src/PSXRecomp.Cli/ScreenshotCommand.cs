@@ -591,9 +591,6 @@ public static class ScreenshotCommand
         using var engine = backend.CreateEngine();
         var interpreterEngine = (InterpreterTitleExecutionEngine)engine;
 
-        var handoff = new OpenBiosHandoff();
-        var orchestrator = new ExecutionOrchestrator();
-
         var request = new TitleExecutionRequest(
             backend.EntryPc,
             new uint[TitleExecutionRequest.GprCount],
@@ -602,14 +599,7 @@ public static class ScreenshotCommand
             1000,
             segmentBudget);
 
-        var screenshotCapture = new ScreenshotCapture(
-            interpreterEngine.DiagnosticDevices.GpuDevice,
-            interpreterEngine.Scheduler!,
-            outputDirectory,
-            vblankInterval,
-            maxScreenshots,
-            startVblank);
-
+        ScreenshotCapture? screenshotCapture = null;
         TitleExecutionResult? executionResult = null;
         var stopReason = "Unknown";
         var lastVblank = 0ul;
@@ -618,9 +608,16 @@ public static class ScreenshotCommand
         {
             interpreterEngine.Load(request);
 
-            var outerBudget = 1000u;
-            var currentRequest = request;
+            screenshotCapture = new ScreenshotCapture(
+                interpreterEngine.DiagnosticDevices.GpuDevice,
+                interpreterEngine.Scheduler!,
+                outputDirectory,
+                vblankInterval,
+                maxScreenshots,
+                startVblank);
 
+            // Run the interpreter directly in a loop, capturing screenshots at VBlank intervals
+            // This avoids the ExecutionOrchestrator which is designed for recompiled engines
             while (true)
             {
                 if (stopwatch.Elapsed >= timeout)
@@ -643,33 +640,52 @@ public static class ScreenshotCommand
                 }
                 lastVblank = currentVblank;
 
-                var result = orchestrator.Execute(interpreterEngine, handoff, currentRequest);
-                executionResult = result;
+                // Run one segment directly on the interpreter
+                var gpr = new uint[32];
+                for (int i = 0; i < 32; i++)
+                {
+                    gpr[i] = interpreterEngine.ReadGuestGpr(i);
+                }
+                var segmentResult = interpreterEngine.RunSegment(new TitleExecutionSegmentRequest(
+                    gpr, interpreterEngine.DiagnosticDevices.Core.Hi, interpreterEngine.DiagnosticDevices.Core.Lo, interpreterEngine.DiagnosticDevices.Core.Pc, segmentBudget));
 
+                // Try to capture screenshot at VBlank boundaries
                 screenshotCapture.TryCapture();
 
-                if (result.State != TitleExecutionState.RuntimeHandoff)
+                if (segmentResult.Status != RecompilerExecutionStatus.Completed || segmentResult.Snapshot is null)
                 {
-                    stopReason = result.State.ToString();
+                    stopReason = "EngineFailure";
+                    executionResult = new TitleExecutionResult(
+                        TitleExecutionState.RuntimeFailure,
+                        segmentResult.Snapshot, 1, engine.Name,
+                        segmentResult.DiagnosticCode ?? "ENGINE_FAILED",
+                        segmentResult.DiagnosticMessage ?? "Engine failed");
                     break;
                 }
 
-                if (result.FinalSnapshot is not null)
+                // Check for termination conditions in the snapshot
+                // Note: Success termination can occur at known valid addresses (e.g., exception vector 0x80000080)
+                // due to RAM mirroring not being accounted for in PcWithinProgram. Continue in those cases.
+                var term = segmentResult.Snapshot.Termination;
+                var pc = segmentResult.Snapshot.PC;
+                var isKnownValidAddress = term == RecompilerIrTerminationReason.Success &&
+                    (pc == 0x80000080u || // general exception vector
+                     pc == 0x80000180u || // cache error vector
+                     pc == 0x00800000u || // RAM mirror of exception vector (physical 0x0)
+                     pc == 0x00000080u || // KUSEG mirror of exception vector
+                     (pc >= 0x80030000u && pc < 0x80050000u)); // shell range
+                if (term != RecompilerIrTerminationReason.ExecutionBudgetExceeded && !isKnownValidAddress)
                 {
-                    currentRequest = new TitleExecutionRequest(
-                        result.FinalSnapshot.PC,
-                        result.FinalSnapshot.Gpr.ToArray(),
-                        result.FinalSnapshot.HI,
-                        result.FinalSnapshot.LO,
-                        [],
-                        outerBudget,
-                        segmentBudget);
-                }
-                else
-                {
-                    stopReason = "NoSnapshot";
+                    stopReason = term.ToString();
+                    executionResult = new TitleExecutionResult(
+                        TitleExecutionState.RuntimeFailure,
+                        segmentResult.Snapshot, 1, engine.Name,
+                        term.ToString(),
+                        $"Guest terminated: {term}");
                     break;
                 }
+
+                // Continue loop - the interpreter state is preserved in the engine
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -682,11 +698,13 @@ public static class ScreenshotCommand
             stopwatch.Stop();
         }
 
+        // Final capture if not complete
         if (screenshotCapture is not null && !screenshotCapture.IsComplete)
         {
             screenshotCapture.ForceCapture("persona_vblank_final.png");
         }
 
+        // Collect saved files
         if (Directory.Exists(outputDirectory))
         {
             savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
@@ -733,16 +751,5 @@ public static class ScreenshotCommand
     private sealed record OpenedDisc(ICdSectorSource Source, Stream? Stream) : IDisposable
     {
         public void Dispose() => Stream?.Dispose();
-    }
-
-    private sealed class OpenBiosHandoff : ITitleExecutionHandoff
-    {
-        public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState)
-        {
-            ArgumentNullException.ThrowIfNull(segmentState);
-            // OpenBIOS runs the firmware; we don't have a program end to detect.
-            // Execution continues until budget/timeout/hang.
-            return null;
-        }
     }
 }
