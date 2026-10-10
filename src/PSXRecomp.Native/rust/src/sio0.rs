@@ -357,6 +357,23 @@ pub fn last_unsupported_command_byte(state: &Sio0State) -> u8 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pending_irq_is_a_consumed_delivery_latch_not_a_held_controller_level() {
+        let mut s = Sio0State::power_on();
+        assert!(!is_interrupt_pending(&s));
+        s.irq_pending = true; // a device /ACK pulse, not an empty-port DATA write
+        assert!(is_interrupt_pending(&s));
+        assert!(is_interrupt_pending(&s)); // querying does not consume delivery
+        clear_interrupt_pending(&mut s);
+        assert!(!is_interrupt_pending(&s));
+        clear_interrupt_pending(&mut s);
+        assert!(!is_interrupt_pending(&s));
+        s.irq_pending = true; // a later pulse has independent delivery
+        assert!(is_interrupt_pending(&s));
+        clear_interrupt_pending(&mut s);
+        assert!(!is_interrupt_pending(&s));
+    }
+
     const DATA: u32 = PSX_SIO0_BASE;
     const STAT: u32 = PSX_SIO0_BASE + OFFSET_STATUS;
     const MODE: u32 = PSX_SIO0_BASE + OFFSET_MODE;

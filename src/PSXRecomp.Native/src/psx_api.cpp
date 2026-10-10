@@ -162,11 +162,23 @@ void PSXCore_CompleteDmaChannel(PSXCore* core, uint32_t channel) {
     core->dma = psx_dma_complete_channel(core->dma, channel);
 }
 
+uint32_t PSXCore_GetNextDeviceEventCycles(PSXCore* core, uint32_t excluded_dma_channel) {
+    if (!core) return UINT32_MAX;
+    const auto timer = psx_timer_next_event_cycles(core->timers);
+    const auto dma = psx_dma_next_event_cycles(core->dma, excluded_dma_channel);
+    return timer < dma ? timer : dma;
+}
+
 uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address) {
     if (!core) return 0;
     PSXTimerReadResult result = psx_timer_read_register(core->timers, address);
     core->timers = result.state;
     return result.value;
+}
+
+uint32_t PSXCore_PeekTimerRegister(PSXCore* core, uint32_t address) {
+    if (!core) return 0;
+    return psx_timer_read_register(core->timers, address).value;
 }
 
 void PSXCore_WriteTimerRegister(PSXCore* core, uint32_t address, uint32_t value) {

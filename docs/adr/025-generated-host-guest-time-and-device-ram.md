@@ -97,6 +97,205 @@ This supersedes "no second RAM and no copy/sync" **for the duration of one fallb
 
 **Evidence.** Counts only, deterministic: transitions, returns, instructions retired by the interpreter, pages copied each way, and per target `(entries, instructions, last return PC)`. Timings are measurement-only and never enter a canonical document.
 
+## Amendment (Issue #744): exact asynchronous deadlines and retirement boundaries
+
+This amendment supersedes the original synchronization batching-equivalence claim,
+its permitted late device delivery, fused-MMIO timing allowance, and the #680
+statement that every dispatch boundary has a current IRQ line. It retains the
+existing modeled guest clock (one CPU cycle per retired instruction), scheduler,
+CPU exception rules, device RAM ownership, and AOT-only policy. It does not claim
+physical PS1 cycle accuracy.
+
+### Deadline ownership and delivery
+
+`DeviceScheduler.NextEventCycles` is a positive conservative distance from its
+current clock to the earliest possible timed effect. Devices own the calculation:
+Rust timer/DMA queries inspect their existing state without register-read side
+effects; the CD-ROM query includes sectors, response due times and acknowledge
+spacing; the scheduler adds VBlank and delivery of pending DMA, CD-ROM, SIO or GPU
+edges. A ready CD-ROM DMA burst requires the following scheduler advance because
+DMA precedes CD-ROM in the existing stage order. A deadline may precede an effect,
+but must never follow it. Unknown CD-ROM implementations conservatively return
+one cycle. No duplicate register or event model is introduced.
+
+SIO pending is a delivery latch, consumed by `ClearSio0Interrupt` before raising
+IRQ7. The controller's subsequently held I_STAT bit is a different owner and
+does not require one-cycle credit. No second SIO edge tracker is needed; the
+current empty-port model never produces an /ACK pulse.
+
+The host sends `T <positive instruction credit>` before the retired-report line
+ack and before a host-transfer decision, including initialization and fallback
+return. Initialization also sends the existing `L` IRQ level, including a line
+already pending before the first retirement. The artifact stores the corresponding absolute retired-instruction
+deadline. It reports as soon as that deadline is reached, before another guest
+instruction executes. The old 1024 limit remains an additional bounded reporting
+cap; reducing it is neither the fix nor a correctness prerequisite. MMIO accesses
+flush preceding retirements and flush their own retirement, so additions,
+rescheduling, cancellation and read side effects refresh the next deadline.
+
+The host rejects a report exceeding its issued credit before advancing devices
+(`ARTIFACT_EVENT_DEADLINE_EXCEEDED`). `AdvanceExact` also splits host-driven
+blocking-call waits at deadlines; the interpreter uses the same method for those
+waits. Ordinary interpreter retirement already advances one cycle. The legacy
+`Advance` API retains its explicit single-batch semantics for direct device tests.
+
+A native batch is allowed only while no device deadline occurs inside it. The existing
+scheduler stage order is preserved at every effect-producing retirement. IRQ
+source assertion at a scheduler advance and CPU acceptance at the following
+eligible fetch boundary are distinct events.
+
+### Fused instructions and exception acceptance
+
+Lowering records IR operation offsets for interior retirements. A branch retires
+before its delay-slot operations, so MMIO in the slot observes the branch's elapsed
+time. Every successful instruction is charged once, including interior
+retirements; a faulting instruction is not charged. This also preserves preceding
+retirements when a later fused instruction traps.
+
+Hardware INT remains gated by IEc and IM2. It cannot be accepted between a branch
+and its delay slot. A pending load is different: the native CPU permits INT before
+the observer, commits the pending load in `FlushPipeline`, then records EPC at the
+observer PC with BD clear. A fused load records that commit explicitly and applies
+it only for an accepted INT; the observer and any fused branch/slot do not execute.
+The exception itself retires no instruction. Ordinary observer cancellation and
+load-delay semantics remain unchanged when INT is not accepted.
+
+The host-serviced SYSCALL route remains the interpreter's HLE convention: the
+serviced instruction costs one cycle. Current lowering never fuses a standalone
+SYSCALL/BREAK with a load because it reads no GPR. Fused traps are branch-delay
+exceptions and cannot enter HostSyscall (`BD != 0`). Guest-owned traps charge only
+the successful fused prefix. The HLE offer performs the same shared exception
+entry as guest delivery, recording CAUSE/EPC as well as pushing SR before service;
+RFE changes SR but does not erase CAUSE/EPC.
+
+The host-owned scheduler remains the single clock during interpreter fallback.
+Before handoff, native retirements are synchronized; after a clean interpreter
+return, the host refreshes credit relative to the artifact's native retired total.
+Fallback instructions are never charged again by the artifact.
+
+### Protocol, cost, and failure behavior
+
+`T` is an extension to existing reply phases; it does not add a request or a
+round trip. Its payload is bounded and positive; malformed credits fail the
+existing protocol rather than silently clamping a deadline. Updated host and
+artifact must be paired for the exact-time contract: production passes
+`--exact-device-time`, requiring a fresh credit in each reply phase; missing
+credits fail closed. Legacy scripted peers retain
+the earlier reporting behavior; they cannot establish strict parity. An older
+artifact rejects the new command, failing closed. Existing RAM requests and IRQ
+line acknowledgements retain their meanings.
+
+Review follow-up (#746): every command token is matched in full. Transfer,
+initialization and SYSCALL reply phases recognize only `T/F/Y/B/K/S/R/W/C/E/G/H/L/P`
+and the explicit terminating `D` or `N`; unknown tokens fail with protocol exit 100,
+never implicit decline. Retirement replies recognize `R/W/T` and terminating
+`A/I/X`. Credit is a whole unsigned decimal token in `1..UINT32_MAX` (no sign,
+fraction, exponent or suffix) and at most one `T` is permitted in either phase.
+Exact mode requires that one credit before a decision/ack; valid legacy peers
+may omit it, retaining the earlier timing model. Malformed historical peers are
+not a compatibility promise. These checks add no protocol round trips.
+
+Artifact checks are local integer comparisons per retirement. IPC occurs at
+existing device observations and actual conservative deadlines, without
+mandatory instruction-by-instruction transport. The strict dispatch budget still
+prevents execution/exception acceptance after exhaustion. Scheduler/protocol
+failures retain existing diagnostics and terminate instead of accepting stale time.
+
+### Alternatives
+
+- Smaller periodic reporting alone: rejected; it leaves phase-dependent timing
+  errors and increases IPC without defining a correct acceptance point.
+- Host credit alone at dispatch-unit boundaries: rejected; a two/three-instruction
+  fused unit could overshoot a deadline and its MMIO would still see stale time.
+- Splitting all generated blocks or falling back at every deadline: rejected as
+  unnecessary here; explicit interior retirement points retain native execution
+  and the existing delay semantics without repeated RAM copy handoffs.
+- Fixed timer offsets or OpenBIOS PCs: rejected; they cannot represent rescheduled
+  events, interrupt masking, or common-runtime semantics.
+
+Regression evidence and reproducible OpenBIOS measurements are recorded in #744
+and its stacked PR. These operational measurements are not architecture constants.
+
 ## Related
 
 - ADR-014, ADR-016, #442 (`DeviceScheduler`), #587 (CD-ROM DMA3), #678, #680
+
+## Amendment (Issue #732): batched VBlank field parity
+
+Batching several VBlank intervals preserves the GPU interlace field by toggling
+for odd interval counts while retaining a single latched IRQ0 in the existing
+scheduler stage. Even interval counts leave the field unchanged.
+
+## Amendment (Issue #732): firmware COP0 registers across mixed execution
+
+SR, CAUSE and EPC keep their existing artifact fields and fallback state transfer.
+In firmware mode, all other COP0 registers belong to the shared native core:
+MFC0/MTC0 use an optional generated-state callback rather than independent
+artifact copies. This preserves native reset values (including PRID) and writes
+made by interpreter fallback. An absent callback retains the existing standalone
+codegen contract; ordinary HLE artifacts do not enable it.
+
+The additive request is `RHOST_COP0_ACCESS register write value`, where register
+is 0..31 except 12..14 and write is 0 or 1. The host validates all fields and
+serves the native core's existing GetCop0/SetCop0 ABI. The reply is `V value` or
+`X`; malformed replies, unknown tags and out-of-range unsigned values fail
+closed. The artifact flushes outstanding retired time before the access. The
+access itself retires no instruction and introduces no synthetic device address.
+Transfer commands, fallback state version, SR/CAUSE/EPC ownership and guest IRQ
+acceptance are unchanged. Older peers remain valid for ordinary artifacts;
+firmware peers must understand this additive request or fail closed. There is
+no runtime compilation or full-register copy protocol.
+
+## Amendment (Issue #749): aligned memory faults and completed prefixes
+
+### Context
+
+Generated memory helpers previously assembled unaligned words as bytes. Guest
+firmware therefore missed AdEL/AdES, and correct explicit COP0 ownership alone
+could not reproduce BadVAddr or the handler boundary.
+
+### Decision
+
+Attach validated, optional memory-fault-site provenance to aligned CPU memory
+operations, retaining the existing primitive and exception contracts. Check
+alignment before any RAM/MMIO effect or IsC suppression, preserve virtual
+BadVAddr through the existing COP0 service, and use the existing EPC/BD/SR/vector
+helper. Commit an owed pending load on a fault even when a successful observer
+write would cancel it. Preserve already completed branch/link and load effects.
+
+Credit only the successful source-instruction prefix, not IR operations or the
+faulting instruction. `partial_retired` records credits already accounted in the
+current unit; both a fault and normal completion add only the uncredited
+remainder. Reset it for every dispatch iteration, including host transfers.
+Flush credited time through the existing service before publishing BadVAddr.
+Native and fallback continue to use the same host-owned scheduler and graph.
+No new request/reply tokens or protocol versions are required.
+
+### Consequences and alternatives
+
+LWL/LWR/SWL/SWR remain legal because their internal word accesses are already
+aligned and carry no aligned-source fault provenance. Generic raw IR remains
+compatible, and empty provenance does not alter legacy serialization. Malformed
+source locations or pending SSA commits fail validation before code generation.
+Synthetic fixture tests compare full CPU/COP0/RAM/device state and cycles at the
+guest vector, plus RFE return and native/fallback transitions. Full OpenBIOS
+parity remains a separate gate on the integrated stack.
+
+Rejected: patching byte helpers without a source location (cannot recover EPC,
+BD or owed loads), host-only re-execution after a side effect (too late), and a
+new CPU engine or exception protocol (duplicates existing ownership/contracts).
+
+Alignment-fault provenance and exact-time interior boundaries compose without
+additional credit: a fault prefix must equal the number of instruction-boundary
+hooks at or before its IR operation. Validation rejects mismatches before C
+generation. Hooks synchronize the successful prefix before alignment checks;
+the fault only reports an uncredited remainder. A pending-load IRQ accepted
+before its observer suppresses that observer's fault, while a branch-delay-slot
+fault keeps branch EPC/BD and defers IRQ acceptance until after the owed slot.
+
+### Integration verification criterion
+
+Do not infer exact device-time parity from native coverage percentages alone.
+The acceptance gate compares interpreter and generated-host guest-cycle counts
+and CPU/COP0, RAM, scratchpad and device snapshots at every defined OpenBIOS
+observation boundary, including the first hardware IRQ and EXE marker.

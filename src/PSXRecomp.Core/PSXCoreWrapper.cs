@@ -387,6 +387,20 @@ public sealed class PSXCoreWrapper : IDisposable
         NativeInterop.PSXCore_WriteTimerRegister(_handle, address, value);
     }
 
+    /// <summary>Observes a timer register without consuming read-and-clear MODE flags.</summary>
+    public uint PeekTimerRegister(uint address)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_PeekTimerRegister(_handle, address);
+    }
+
+    /// <summary>Read-only conservative native timer/DMA deadline; no register-read side effects.</summary>
+    public uint GetNextDeviceEventCycles(uint excludedDmaChannel = uint.MaxValue)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return NativeInterop.PSXCore_GetNextDeviceEventCycles(_handle, excludedDmaChannel);
+    }
+
     /// <summary>Advances all timer counters by <paramref name="cycles"/> CPU clock cycles, evaluating targets/overflow/sync per timer mode.</summary>
     public void TickTimers(uint cycles)
     {

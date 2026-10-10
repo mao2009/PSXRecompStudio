@@ -141,6 +141,25 @@ Running a firmware (`RecompiledHostExecutionEngine(..., guestFirmware: true)`):
 - `NativeRetiredInstructions` (the sum of `RHOST_RETIRED` reports) and
   `MixedFallbackEvidence.FallbackInstructions` are the native/fallback split.
 
+### RAM-placed code versions (Issue #732, ADR-026)
+
+`RecompilerHostCodeGen.Generate(program, loadedCode)` additionally emits the pre-generated
+versions of code the guest places in RAM (`LoadedCodeTable`, built ahead of time by
+`ReachableProgramBuilder.BuildLoadedImage` from explicit images at their destination). Each
+version is its own function `recompiler_block_0x<pc>_v<n>`; the dispatch case for that PC
+calls the host helper
+
+```c
+extern int recompiler_code_current(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen);
+```
+
+once per version, in link order, with the words the version was compiled from, and runs the
+first version that matches; with none it jumps to the unknown-PC boundary (`default`). The
+production driver implements the helper over `artifact_ram` with per-4-KiB-page write
+generations (every RAM writer bumps them) and caches the generation of the last successful
+compare in `*seen`. Nothing is generated at run time. Without loaded code the source is
+byte-for-byte the single-argument output, and the helper is not declared.
+
 `recompiler_dispatch` selects the block with one `switch (state->pc)`; a
 default case is the unknown-PC boundary. A chain of comparisons cost time
 proportional to the block count per dispatch (7449 blocks for OpenBIOS).
@@ -307,3 +326,30 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
   register-held target as a static address.
 
 Generator never silently produces partial source for invalid IR.
+
+### Firmware COP0 service
+
+Firmware artifacts keep SR/CAUSE/EPC in their existing state fields. Other COP0
+registers use the optional `host_cop0` callback and the additive
+`RHOST_COP0_ACCESS register write value` service (reply `V value` or `X`). The
+shared native core owns these registers across native/fallback transitions;
+standalone generated code with no callback retains its local register storage.
+Outstanding retired time is flushed before access. See ADR-025 for validation,
+compatibility and ownership; this service does not change transfer or fallback
+protocol versions.
+
+### Generated aligned address traps (Issue #749)
+
+Aligned CPU memory primitives with fault-site provenance check alignment before
+RAM/MMIO access and before SR.IsC store suppression. Failed LH/LHU/LW raise AdEL;
+failed SH/SW raise AdES. Virtual BadVAddr uses the existing COP0 owner callback;
+EPC/BD, CAUSE, SR stack and vector selection use the existing exception entry
+helper. Firmware continues into its guest handler and RFE/JR; standalone code
+stops with the existing raised exception snapshot.
+
+A memory fault may complete a pending load from the preceding instruction,
+including an observer whose successful write would otherwise cancel it. Only
+the completed prefix is credited, using `partial_retired` so a downstream
+instruction-boundary reporter cannot double-charge it. This field resets at
+every dispatch iteration, including interpreter fallback transfers. No new host
+protocol, runtime compilation, MMIO route, or device-time correction is added.

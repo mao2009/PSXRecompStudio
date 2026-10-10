@@ -69,6 +69,20 @@ public static class BiosPadCardAutoAck
                 identity, $"{identity.StableKey} ChangeClearPAD: the auto-ack variable is not writable.");
     }
 
+    /// <summary>
+    /// StartPAD's / StartCARD's <c>setSIO0AutoAck(1)</c> (OpenBIOS <c>startPad</c>, <c>startCard</c>): the setting becomes
+    /// "configured, argument 1", overwriting an earlier B0:5B. False when the variable cannot be written.
+    /// </summary>
+    internal static bool TryEnable(IGuestMemoryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        var bytes = new byte[8];
+        BitConverter.TryWriteBytes(bytes.AsSpan(0, 4), 1u);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4, 4), 1u);
+        return writer.TryWrite(VariableAddress, bytes);
+    }
+
     /// <summary>Reads the current setting; false when the variable cannot be read.</summary>
     public static bool TryGetSetting(IGuestMemoryReader reader, out BiosPadCardAutoAckSetting setting) =>
         TryGetSetting(reader, out setting, out _);

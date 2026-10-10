@@ -1,7 +1,7 @@
 ---
 name: pre-pr-self-review
 description: >
-  Mandatory, tool-agnostic self-review gate performed by an AI agent before
+  Legacy pre-PR review checklist now assigned to an independent reviewer before
   creating a pull request. Finds requirement gaps, scope creep, design/SSOT/ADR
   conflicts, missing tests, and recurring review findings before external review.
 version: 0.2.0
@@ -10,7 +10,14 @@ related-issues: "#23, #85, #106"
 platform: agent-agnostic
 ---
 
-# Pre-PR Self Review
+# Independent Pre-PR Review Checklist
+
+**Current owner policy:** ChatGPT coordinates independent code review and minor fixes.
+Implementing agents must not perform self-review, launch review-only subagents,
+or autonomously choose the next Issue. Preserve focused tests, compilation,
+changed-file checks and normal CI. The historical checklist below is usable by
+an independent reviewer only; wording below about mandatory agent self-review
+is superseded by this policy.
 
 A mandatory quality gate executed **before creating a pull request**.
 The reviewer stance is adversarial toward the implementation:

@@ -171,8 +171,13 @@ PSX_API void     PSXCore_TickDmaExcludingChannel(PSXCore* core, uint32_t cycles,
  */
 PSX_API void     PSXCore_CompleteDmaChannel(PSXCore* core, uint32_t channel);
 
+/** Read-only conservative deadline for timer and generic DMA events; UINT32_MAX means none. */
+PSX_API uint32_t PSXCore_GetNextDeviceEventCycles(PSXCore* core, uint32_t excluded_dma_channel);
+
 /** Reads a timer (0-2) register at the given absolute address. */
 PSX_API uint32_t PSXCore_ReadTimerRegister(PSXCore* core, uint32_t address);
+/** Reads a timer register without clearing MODE flags (diagnostics only). */
+PSX_API uint32_t PSXCore_PeekTimerRegister(PSXCore* core, uint32_t address);
 /** Writes a timer (0-2) register at the given absolute address. */
 PSX_API void     PSXCore_WriteTimerRegister(PSXCore* core, uint32_t address, uint32_t value);
 /** Advances all timer counters by `cycles` CPU clock cycles, evaluating targets/overflow/sync per timer mode. */

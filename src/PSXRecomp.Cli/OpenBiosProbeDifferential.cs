@@ -10,7 +10,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// <summary>
 /// Issue #732: the guest state when an engine was about to fetch a boundary PC — CPU (PC, GPRs, HI/LO, COP0), the
 /// interrupt and device state that is deterministic in guest time, and all 2 MiB of RAM — and the comparison of two
-/// such states. Every read is side-effect free (no timer mode, no data FIFO, no acknowledge). Captured from the
+/// such states. Every read is side-effect free (timer MODE is peeked, no data FIFO or acknowledge is consumed). Captured from the
 /// interpreter engine in both runs: the reference interpreter, and the generated host's fallback interpreter, whose
 /// core holds the artifact's RAM while a fallback segment runs.
 /// </summary>
@@ -34,7 +34,12 @@ internal sealed record ProbeGuestState(
         var cpu = new List<(string, uint)> { ("pc", pc) };
         cpu.AddRange(Enumerable.Range(1, 31).Select(r => ($"r{r}", engine.ReadGuestGpr(r))));
         cpu.AddRange([("hi", hi), ("lo", lo), ("sr", cop0.Sr), ("cause", cop0.Cause), ("epc", cop0.Epc), ("badvaddr", cop0.BadVAddr)]);
-        return new ProbeGuestState(pc, atFetch, cpu, CaptureDevices(engine.DiagnosticDevices), ram);
+        var devices = CaptureDevices(engine.DiagnosticDevices);
+        devices.Insert(0, ("guest_cycles", engine.GuestCycles.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        var scratch = new byte[1024];
+        for (var i = 0; i < scratch.Length; i++) scratch[i] = engine.DiagnosticDevices.Core.ReadMemory8(0x1F800000u + (uint)i);
+        devices.Add(("scratchpad_sha256", Sha256(scratch)));
+        return new ProbeGuestState(pc, atFetch, cpu, devices, ram);
     }
 
     private static List<(string, string)> CaptureDevices(PsxDeviceGraph devices)
@@ -61,10 +66,15 @@ internal sealed record ProbeGuestState(
         {
             var b = 0x1F801100u + (uint)timer * 0x10u;
             state.Add(($"timer{timer}_counter", Hex(core.ReadTimerRegister(b))));
+            state.Add(($"timer{timer}_mode", Hex(core.PeekTimerRegister(b + 4))));
             state.Add(($"timer{timer}_target", Hex(core.ReadTimerRegister(b + 8))));
             state.Add(($"timer{timer}_irq", core.GetTimerInterruptPending(timer).ToString()));
         }
 
+        state.Add(("sio0_stat", Hex(core.ReadMemory16(0x1F801044u))));
+        state.Add(("sio0_mode", Hex(core.ReadMemory16(0x1F801048u))));
+        state.Add(("sio0_ctrl", Hex(core.ReadMemory16(0x1F80104Au))));
+        state.Add(("sio0_baud", Hex(core.ReadMemory16(0x1F80104Eu))));
         state.Add(("sio0_irq", core.GetSio0InterruptPending().ToString()));
         var gpu = devices.GpuDevice;
         state.Add(("gpustat", Hex(gpu.ReadGpustat())));
@@ -84,9 +94,16 @@ internal sealed record ProbeGuestState(
     /// <summary>The boundary as one engine saw it (hashes and counts only).</summary>
     public object Describe() => new
     {
+        pc = Hex(Pc),
         atFetch = AtFetch,
+        cpu = Cpu.ToDictionary(static c => c.Name, static c => Hex(c.Value)),
+        devices = Devices.ToDictionary(static d => d.Name, static d => d.Value),
+        instructionWord = (Pc & 0x1FFFFFFFu) <= RamBytes - 4
+            ? Hex(BitConverter.ToUInt32(Ram, (int)(Pc & 0x1FFFFFFFu))) : null,
         sr = Hex(Value("sr")), cause = Hex(Value("cause")), epc = Hex(Value("epc")),
         ramSha256 = Sha256(Ram),
+        guestCycles = Devices.First(static d => d.Name == "guest_cycles").Value,
+        scratchpadSha256 = Devices.First(static d => d.Name == "scratchpad_sha256").Value,
     };
 
     private uint Value(string name) => Cpu.First(c => c.Name == name).Value;

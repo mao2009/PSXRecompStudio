@@ -50,7 +50,7 @@ internal sealed class OpenBiosProbeAccounting
     /// <summary>
     /// Why the artifact handed a PC to the interpreter. Every PC reaching a handoff has no compiled block; the reason says
     /// which kind of code it is: the exception vector, an A0/B0/C0 kernel-call vector, ROM code the build did not reach,
-    /// RAM code (no RAM code is compiled before the run, so all of it), or anything else.
+    /// RAM without a matching compiled version, or anything else. An AOT-aware caller supplies its image/guard classification.
     /// </summary>
     public static string ReasonOf(uint pc)
     {
@@ -102,7 +102,7 @@ internal sealed class OpenBiosProbeAccounting
 
     /// <summary>
     /// The AOT class of a handoff when its producer did not say (<see cref="MixedFallbackTransition.AotClass"/>): ROM code
-    /// is a known image without a block; this build compiles no other image, so anything else is in no AOT image.
+    /// is a known image without a block. With no producer classification, other addresses use the conservative unknown-image class.
     /// </summary>
     public static string AotClassOf(MixedFallbackTransition transition) =>
         transition.AotClass ?? (RegionOf(transition.EntryPc) == Rom ? MixedFallbackAotClass.KnownNotYetAot : MixedFallbackAotClass.NotInAnyImage);
@@ -122,7 +122,7 @@ internal sealed class OpenBiosProbeAccounting
         _exits[exit] = _exits.GetValueOrDefault(exit) + 1;
     }
 
-    public object Report(ulong? nativeInstructions, ulong? fallbackRetired, IEnumerable<uint> blockEntryPcs, ProbeSymbols? symbols)
+    public object Report(ulong? nativeInstructions, ulong? fallbackRetired, IEnumerable<uint> blockEntryPcs, ProbeSymbols? symbols, Func<uint, string>? fallbackCause = null)
     {
         var blockRegions = blockEntryPcs.Select(RegionOf).Distinct().ToArray();
         var nativeRegion = blockRegions.Length == 1 ? blockRegions[0] : null;
@@ -157,7 +157,7 @@ internal sealed class OpenBiosProbeAccounting
                 total = transitions,
                 indirect = _entries.Values.Aggregate(0UL, static (sum, e) => sum + e.Indirect),
                 retiredInstructions = retired,
-                byReason = _entries.GroupBy(static e => ReasonOf(e.Key))
+                byReason = _entries.GroupBy(e => fallbackCause?.Invoke(e.Key) ?? ReasonOf(e.Key))
                     .Select(g => (Reason: g.Key, Transitions: g.Aggregate(0UL, static (s, e) => s + e.Value.Transitions),
                         Indirect: g.Aggregate(0UL, static (s, e) => s + e.Value.Indirect), Retired: g.Aggregate(0UL, static (s, e) => s + e.Value.Retired)))
                     .OrderByDescending(static g => g.Transitions).ThenBy(static g => g.Reason, StringComparer.Ordinal)
@@ -180,7 +180,7 @@ internal sealed class OpenBiosProbeAccounting
                 .Take(TopCount)
                 .Select(e => new
                 {
-                    pc = Hex(e.Key), region = RegionOf(e.Key), reason = ReasonOf(e.Key), symbol = symbols?.Lookup(e.Key),
+                    pc = Hex(e.Key), region = RegionOf(e.Key), reason = fallbackCause?.Invoke(e.Key) ?? ReasonOf(e.Key), symbol = symbols?.Lookup(e.Key),
                     transitions = e.Value.Transitions, indirect = e.Value.Indirect, retiredInstructions = e.Value.Retired,
                     transitionShare = Share(e.Value.Transitions, transitions), retiredShare = Share(e.Value.Retired, retired),
                 }).ToArray(),

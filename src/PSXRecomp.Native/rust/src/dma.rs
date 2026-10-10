@@ -320,6 +320,19 @@ pub extern "C" fn psx_dma_complete_channel(state: DmaState, channel: u32) -> Dma
     s
 }
 
+/// Earliest generic channel completion; the managed CD-ROM mover owns its excluded channel.
+#[no_mangle]
+pub extern "C" fn psx_dma_next_event_cycles(state: DmaState, excluded_channel: u32) -> u32 {
+    let mut next = u32::MAX;
+    for (ch, channel) in state.channels.iter().enumerate() {
+        if ch as u32 != excluded_channel && channel_started(state.dpcr, ch as u32, channel.chcr) {
+            let remaining = state.remaining[ch];
+            next = next.min(if remaining == 0 { transfer_cycles(channel) } else { remaining });
+        }
+    }
+    next
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +497,17 @@ mod tests {
         }
         s = psx_dma_write_register(s, chan_addr(6, 4), words);
         psx_dma_write_register(s, chan_addr(6, 8), CHCR_START_BUSY | CHCR_START_TRIGGER | 0x2)
+    }
+
+    #[test]
+    fn deadline_tracks_progress_exclusion_and_cancellation() {
+        let mut s = armed_otc(8, true);
+        assert_eq!(psx_dma_next_event_cycles(s, u32::MAX), 8);
+        assert_eq!(psx_dma_next_event_cycles(s, 6), u32::MAX);
+        s = psx_dma_tick(s, 3);
+        assert_eq!(psx_dma_next_event_cycles(s, u32::MAX), 5);
+        s = psx_dma_write_register(s, chan_addr(6, 8), 0);
+        assert_eq!(psx_dma_next_event_cycles(s, u32::MAX), u32::MAX);
     }
 
     #[test]

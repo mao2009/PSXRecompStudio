@@ -129,9 +129,9 @@ remains in the C ABI and its native test.
 
 BREAK is the first trap lowered by the recompiler as a first-class architectural
 exception (Excode 0x09, Bp). The interpreter oracle populates a snapshot-level
-exception resolution for BREAK only; every other modelled trap keeps its default
-(unraised) resolution, so existing single-difference guarantees (e.g. the CpU
-contract in Issue #377) are preserved:
+exception resolution initially for BREAK. The current oracle also reports
+SYSCALL and aligned-memory AdEL/AdES (Issue #749); other faults retain their
+default resolution, preserving the CpU contract in Issue #377:
 
 - A standalone BREAK lowers to an exception-terminated IR block whose
   resolution carries `faultPc = <own PC>` and `inDelaySlot = false`. The host
@@ -160,12 +160,22 @@ suppresses the owning transfer (the link write still retires) and reports
 populates the snapshot exception resolution for both Sys and Bp. No new IR op
 or exit kind exists; only the Excode differs (`MipsToIrLowerer.TrapExcode`).
 
-The generated host does not model COP0: Cause/SR/EPC writes and the BEV-dependent
-vector (0x80000080 / 0xBFC00180) remain the native runtime's job, derived from the
-`(code, faultPc, inDelaySlot)` tuple. `ReachableProgramBuilder` treats the SYSCALL
-block as a terminal leaf: no edge to the vector (a runtime, BEV-dependent target)
-and no fall-through to PC+4. Executing the guest handler and returning through
-RFE/JR is not part of this lowering.
+Standalone generated code reports `(code, faultPc, inDelaySlot)` and stops;
+firmware mode maintains COP0 state and delivers the exception through its
+BEV-dependent vector (0x80000080 / 0xBFC00180), executing the guest handler and
+returning through RFE/JR. The static reachable graph still treats a trap as a
+terminal leaf; the runtime vector is not a guessed static edge.
+
+### Aligned memory faults through the generated host (Issue #749)
+
+LH/LHU/LW and SH/SW validate alignment before effects or IsC suppression. The
+fault retains the original virtual BadVAddr, EPC at the instruction or owning
+branch, BD and the existing CAUSE/SR resolution. A prior pending load commits
+when the following instruction faults, even if that observer's successful
+write would cancel it. Branch/link effects already retired remain visible;
+the faulting access and pending target do not execute. Completed prefix cycles
+are accounted once. LWL/LWR/SWL/SWR remain exempt. See the recompiler IR contract
+and ADR-025 for fault provenance and native/fallback time synchronization.
 
 ### Hardware INT through the generated host (Issue #680)
 

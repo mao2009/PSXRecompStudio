@@ -34,6 +34,16 @@ public sealed class RecompiledArtifactCodeGenTests
     }
 
     [Fact]
+    public void Generate_ExactDeviceTimeFlag_IsEmittedFromSharedConstant()
+    {
+        var source = RecompiledArtifactCodeGen.Generate(GenerateDispatch()).Source!;
+
+        source.Should().Contain(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
+        source.Should().NotContain("@EXACT_DEVICE_TIME@");
+        source.Should().Contain($"if (strcmp(argv[i], \"{RecompiledArtifactCodeGen.ExactDeviceTimeFlag}\") == 0) artifact_exact_time = 1;");
+    }
+
+    [Fact]
     public void Generate_IsDeterministic_ForIdenticalInput()
     {
         var dispatch = GenerateDispatch();
@@ -94,7 +104,7 @@ public sealed class RecompiledArtifactCodeGenTests
         hook.Success.Should().BeTrue("the driver must define the SYSCALL hook");
         var body = hook.Groups["body"].Value;
 
-        var commit = body.IndexOf("state->cop0_sr = sr_entry;", StringComparison.Ordinal);
+        var commit = body.IndexOf("recompiler_exception_entry(state, 8u, state->exception_fault_pc, 0u)", StringComparison.Ordinal);
         var offer = body.IndexOf(RecompiledArtifactCodeGen.ProtocolSyscallPrefix, StringComparison.Ordinal);
         var serve = body.IndexOf("artifact_host_serve(state)", StringComparison.Ordinal);
         var pop = body.IndexOf(

@@ -118,8 +118,34 @@ public sealed class RecompiledArtifactDeviceTimeTests
 
         var run = RunScripted(dir, _ => "V 0");
 
-        // lui + 3 nops before the read, then the load's delay-slot nop and the rest at the end.
-        run.Retired.Should().Equal(4ul, (ulong)(words.Length - 4));
+        // The read synchronizes four preceding retirements, its own retirement, and the remaining pure code.
+        run.Retired.Should().Equal(4ul, 1ul, (ulong)(words.Length - 5));
+    }
+
+    [Fact]
+    public void TimerModeWriteInBranchDelaySlot_ChargesOnlyTheStoreAfterItsReset()
+    {
+        var target = Entry + 16u;
+        var words = Program([Lui(T0, 0x1F80), Ori(T1, Zero, 0),
+            MipsEncoding.Branch(0x04, 0, 0, Entry + 8u, target),
+            Mem(R3000aOpcode.Sw, T1, T0, 0x1124),
+            Mem(R3000aOpcode.Lw, S0, T0, 0x1120), Nop]);
+        using var dir = new TempDirectory();
+        var run = Run(words, dir, withRuntime: true);
+        run.FinalSnapshot.Should().NotBeNull(run.DiagnosticMessage);
+        run.FinalSnapshot!.Gpr[(int)S0].Should().Be(1,
+            "the preceding branch retires before the mode write resets the timer");
+    }
+
+    [Fact]
+    public void TrappingBranchDelaySlot_ChargesTheBranchButNotTheTrap()
+    {
+        var words = Program([Ori(T1, Zero, 1),
+            MipsEncoding.Branch(0x04, 0, 0, Entry + 4, Entry), MipsEncoding.Break()]);
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 0");
+        run.Retired.Sum(static count => (long)count).Should().Be(2);
     }
 
     // ---- the existing scheduler advances from those instructions ----------------
@@ -339,7 +365,7 @@ public sealed class RecompiledArtifactDeviceTimeTests
     }
 
     /// <summary>A stand-in child that answers the host's first RAM write request with <c>reply</c>.</summary>
-    private sealed class BadWriteAckChildBuildService(string reply) : IGeneratedHostBuildService
+    private sealed class BadWriteAckChildBuildService(string reply, ulong retired = 1) : IGeneratedHostBuildService
     {
         public GeneratedHostBuildResult Build(GeneratedHostBuildRequest request)
         {
@@ -354,9 +380,11 @@ public sealed class RecompiledArtifactDeviceTimeTests
                 "    if (b[0] == 'N') break;\n" +
                 "    if (b[0] == 'R' && scanf(\"%lu\", &a) == 1) { printf(\"RHOST_DATA 0\\n\"); fflush(stdout); }\n" +
                 "    else if (b[0] == 'W' && scanf(\"%lu %lu\", &a, &v) == 2) { printf(\"RHOST_OK\\n\"); fflush(stdout); }\n" +
+                "    else if (b[0] == 'T' && scanf(\"%lu\", &v) == 1) {}\n" +
+                "    else if (b[0] == 'L' && scanf(\"%lu\", &v) == 1) {}\n" +
                 "    else return 1;\n" +
                 "  }\n" +
-                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolRetiredPrefix}1\\n\"); fflush(stdout);\n" +
+                $"  printf(\"{RecompiledArtifactCodeGen.ProtocolRetiredPrefix}{retired}\\n\"); fflush(stdout);\n" +
                 // Answer every RAM write with the same reply until the host sends anything else.
                 "  while (scanf(\"%63s\", b) == 1 && b[0] == 'W') {\n" +
                 "    if (scanf(\"%lu %lu\", &a, &v) != 2) return 1;\n" +
@@ -366,6 +394,22 @@ public sealed class RecompiledArtifactDeviceTimeTests
                 "}\n";
             return new GeneratedHostBuildService().Build(request with { Source = source });
         }
+    }
+
+    [Fact]
+    public void Host_RefusesRetirementPastItsIssuedDeadlineBeforeDeviceEffects()
+    {
+        using var dir = new TempDirectory();
+        var run = Run(Program([Nop]), dir, withRuntime: true,
+            buildService: new BadWriteAckChildBuildService("RHOST_OK", retired: 26),
+            configureDevices: devices =>
+            {
+                devices.Core.WriteTimerRegister(0x1F801128u, 25);
+                devices.Core.WriteTimerRegister(Timer2Mode, 0x10);
+            });
+        run.State.Should().Be(TitleExecutionState.RuntimeFailure);
+        run.DiagnosticCode.Should().Be("ARTIFACT_EVENT_DEADLINE_EXCEEDED");
+        run.FinalSnapshot.Should().BeNull();
     }
 
     [Theory]

@@ -129,4 +129,69 @@ public sealed class OpenBiosProbeDifferentialTests
         Assert.Equal("0x00000004", devices[0]!["host"]!.ToString());
         Assert.Equal(0, diff["ramMismatchBytes"]!.GetValue<int>());
     }
+
+    [Theory]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    public void Consistency_RequiresBothBoundariesAndMatchingState(bool exeReached, bool stateMatches, bool pass)
+    {
+        var diff = new JsonObject { ["0x80030000"] = new JsonObject { ["match"] = stateMatches } };
+        if (exeReached) diff["0x80010000"] = new JsonObject { ["match"] = true };
+        var doc = new JsonObject
+        {
+            ["differential"] = diff,
+            ["milestoneComparison"] = new JsonObject { ["match"] = true },
+            ["referenceBoundariesMissing"] = new JsonArray(),
+        };
+        var verdict = OpenBiosProbeCommand.Consistency(doc, new HashSet<uint> { 0x80030000, 0x80010000 }, null);
+        Assert.Equal(pass, verdict["differentialPass"]!.GetValue<bool>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ShellStop_DoesNotDropAnExplicitExecutableComparison(bool explicitExe)
+    {
+        var required = OpenBiosProbeCommand.RequiredBoundaries(explicitExe ? [0x80010000u] : [], 0x80030000);
+        Assert.Equal(explicitExe, required.Contains(0x80010000));
+        var doc = new JsonObject
+        {
+            ["differential"] = new JsonObject { ["0x80030000"] = new JsonObject { ["match"] = true } },
+            ["milestoneComparison"] = new JsonObject { ["match"] = true },
+            ["referenceBoundariesMissing"] = new JsonArray(),
+        };
+        var verdict = OpenBiosProbeCommand.Consistency(doc, required, 0x80030000);
+        Assert.Equal(!explicitExe, verdict["differentialPass"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void FirstInterruptMismatch_FailsEvenWhenEntryBoundariesMatch()
+    {
+        var doc = new JsonObject
+        {
+            ["differential"] = new JsonObject
+            {
+                ["0x80030000"] = new JsonObject { ["match"] = true },
+                ["0x80010000"] = new JsonObject { ["match"] = true },
+            },
+            ["milestoneComparison"] = new JsonObject { ["match"] = true },
+            ["firstInterruptDifferential"] = new JsonObject { ["match"] = false },
+        };
+        var verdict = OpenBiosProbeCommand.Consistency(doc, new HashSet<uint> { 0x80030000, 0x80010000 }, null);
+        Assert.False(verdict["differentialPass"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void ScratchpadAndGuestClockDifferencesFailParity()
+    {
+        var baseline = RunToBoundary().State;
+        foreach (var name in new[] { "scratchpad_sha256", "guest_cycles" })
+        {
+            var changed = baseline with { Devices = baseline.Devices.Select(d => d.Name == name ? (d.Name, "different") : d).ToArray() };
+            var diff = Compare(baseline, changed);
+            Assert.False(diff["match"]!.GetValue<bool>());
+            Assert.Equal(name, diff["firstMismatch"]!["name"]!.GetValue<string>());
+        }
+    }
 }

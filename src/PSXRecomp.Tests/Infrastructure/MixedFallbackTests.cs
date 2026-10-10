@@ -1,3 +1,6 @@
+using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Infrastructure;
+using PSXRecomp.Infrastructure.Cli;
 using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.Cpu;
@@ -33,6 +36,57 @@ public sealed class MixedFallbackTests
 
         mixed.FinalSnapshot!.HI.Should().Be(reference.FinalSnapshot!.HI);
         mixed.FinalSnapshot.LO.Should().Be(reference.FinalSnapshot.LO);
+    }
+
+    [Theory]
+    [InlineData(2)] // event during the native JALR's branch delay pair
+    [InlineData(3)] // immediately before fallback
+    [InlineData(4)] // first fallback instruction
+    [InlineData(5)] // fallback JR, before its delay slot
+    [InlineData(6)] // fallback return boundary
+    [InlineData(7)] // first native instruction after fallback
+    public void TimerIrqAcrossNativeFallbackTransitions_MatchesPureInterpreter(ushort deadline)
+    {
+        var main = new Block(Entry);
+        main.Emit(Ori(T1, Zero, 0x401), 0x40896000u); // MTC0 t1,SR: guest-owned IRQ enable
+        main.Emit(Li(T0, Target), [MipsEncoding.I(0x0F, (byte)T3, 0, 0x1F80)]);
+        main.Emit(Ori(T1, Zero, 1 << 6), Sw(T1, T3, 0x1074));
+        main.Emit(Ori(T1, Zero, deadline), Sw(T1, T3, 0x1128));
+        main.Emit(Ori(T1, Zero, 0x10), Sw(T1, T3, 0x1124));
+        main.Emit(Jalr(T0), Nop);
+        main.Emit(Nop, Nop, Nop);
+        main.Emit(End());
+        var callee = new Block(Target);
+        callee.Emit(Nop, Jr(Ra), Nop);
+        var words = Image(main, callee);
+        using var dir = new TempDirectory();
+        ProbeGuestState? actual = null;
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+        using var host = new RecompiledHostExecutionEngine(program, words, Entry,
+            new GeneratedHostBuildService(), dir.FullPath, mixedFallback: On, guestFirmware: true);
+        host.FallbackFetchObserver = (engine, pc) =>
+        {
+            if (pc != 0x80000080u || actual is not null) return;
+            actual = ProbeGuestState.Capture(engine, pc, 0);
+            engine.StopRequested = true;
+        };
+        new ExecutionOrchestrator().Execute(host, null, Request(1000));
+
+        ProbeGuestState? expected = null;
+        using var interpreter = new InterpreterTitleExecutionEngine(words, Entry, allowRuntimeRamExecution: true);
+        interpreter.FetchObserver = pc =>
+        {
+            if (pc != 0x80000080u || expected is not null) return;
+            expected = ProbeGuestState.Capture(interpreter, pc, 0);
+            interpreter.StopRequested = true;
+        };
+        new ExecutionOrchestrator().Execute(interpreter, null, Request(1000));
+        actual.Should().NotBeNull("the generated CPU must accept the scheduled hardware IRQ");
+        expected.Should().NotBeNull();
+        var diff = System.Text.Json.JsonSerializer.SerializeToNode(ProbeGuestState.Compare(expected!, actual!))!;
+        diff["match"]!.GetValue<bool>().Should().BeTrue(diff["firstMismatch"]?.ToJsonString() ?? "all CPU, RAM and device fields match");
+        actual!.Cpu.Single(static v => v.Name == "cause").Value.Should().Be(0x400u);
+
     }
 
     /// <summary>The artifact writes RAM, the interpreter reads and rewrites it (two pages), and the artifact reads it back.</summary>

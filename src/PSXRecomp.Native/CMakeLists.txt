@@ -78,6 +78,7 @@ add_custom_command(
             ${PSX_RUST_DIR}/src/interrupt.rs
             ${PSX_RUST_DIR}/src/cpu_ops.rs
             ${PSX_RUST_DIR}/src/cpu_hilo.rs
+            ${PSX_RUST_DIR}/src/timer.rs
             ${PSX_RUST_DIR}/src/dma.rs
             ${PSX_RUST_DIR}/src/memory.rs
             ${PSX_RUST_DIR}/src/sio0.rs
