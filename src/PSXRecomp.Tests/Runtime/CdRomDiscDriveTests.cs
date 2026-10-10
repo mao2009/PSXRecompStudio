@@ -232,7 +232,9 @@ public sealed class CdRomDiscDriveTests
         Command(cd, 0x0E, mode);
         Command(cd, 0x02, 0x00, 0x02, 0x16); // LBA 16
         Command(cd, 0x1B);
-        TakeResponse(cd).Should().Equal(1, 0x22);
+        // A newly inserted disc retains ShellOpen (bit 4) until GetStat consumes it.
+        // The real-time XA route must not silently clear that independent drive state.
+        TakeResponse(cd).Should().Equal(1, 0x32);
 
         RunUntilInterrupt(cd).Should().Be((uint)(periodsToNextInt1 * CdRomDevice.SingleSpeedSectorCycles / 2));
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntDataReady);
