@@ -45,7 +45,7 @@ This document defines the CI scheduling policy for PSXRecompStudio through v0.1.
 **Label-based trigger:** Add `ci:cross-platform` label to any PR to run cross-platform verification before merge.
 
 ### 3. Release CLI (`.github/workflows/release.yml`)
-**Triggers:** Tag push (`v*`), manual dispatch
+**Triggers:** Tag push (`v*`), manual dispatch, or PRs that change `.github/workflows/release.yml` only. Ordinary CLI/Core/Infrastructure/Native code PRs do not run release packaging; the standard Linux CI remains their required gate.
 **Platforms:** Linux, Windows, macOS (all required for release)
 **Note:** Release validation requires all three OS builds/tests to pass.
 
@@ -67,7 +67,7 @@ This document defines the CI scheduling policy for PSXRecompStudio through v0.1.
 3. `native` (Native Core Build and Test)
 4. `dotnet` (.NET Build and Test)
 5. `gui-tests` (GUI Headless Tests)
-4. `ci` (CI Gate)
+6. `ci` (CI Gate)
 
 **NOT required:**
 - `cross-platform` / `cross-platform-dotnet` / `cross-platform-gate` (scheduled/manual only)
