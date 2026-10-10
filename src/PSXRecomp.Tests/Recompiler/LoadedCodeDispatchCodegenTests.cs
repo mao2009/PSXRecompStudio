@@ -38,6 +38,17 @@ public sealed class LoadedCodeDispatchCodegenTests
     }
 
     [Fact]
+    public void LoadedAlignedMemoryFaults_PreserveMetadataAndEnableGuestExceptionEntry()
+    {
+        var image = ReachableProgramBuilder.BuildLoadedImage(Dest,
+            [MipsEncoding.I(0x23, T0, T0, 1), MipsEncoding.Nop, MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop], [Dest], None);
+        image.Blocks.SelectMany(static b => b.Block.MemoryFaultSites).Should().ContainSingle();
+        var source = RecompilerHostCodeGen.Generate(RomProgram(), new LoadedCodeTable([image])).Source!;
+        source.Should().Contain("state->exception_code = 4u;");
+        source.Should().Contain("retired = state->partial_retired;");
+    }
+
+    [Fact]
     public void LoadedCodeAtAStaticBlockEntry_IsRejected()
     {
         var clash = ReachableProgramBuilder.BuildLoadedImage(Rom, [MipsEncoding.JumpRegister(Ra), MipsEncoding.Nop], [Rom], None);

@@ -319,11 +319,12 @@ through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so 
 past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
 
-### Remaining generated memory-fault coverage
+### Generated memory-fault coverage (Issue #749)
 
-Generated firmware execution does not yet deliver native address-error traps for
-misaligned LH/LW/SH/SW accesses with matching BadVAddr and exception state. A
-synthetic ROM LW at `0x80001001` reaches its guest handler on the interpreter but
-is currently read as bytes by the artifact. Explicit COP0 access ownership is
-fixed separately; it does not establish memory-fault parity. Track this gate
-before claiming complete firmware exception compatibility.
+Generated firmware now delivers aligned LH/LHU/LW AdEL and SH/SW AdES before
+RAM/MMIO effects, with virtual BadVAddr and existing EPC/BD/SR exception entry.
+Synthetic regressions compare full CPU/COP0/RAM/device state and guest cycles at
+the vector, pending-load commit, branch/link prefixes, IsC, and RFE return.
+Partial-word LWL/LWR/SWL/SWR remain legal. These focused results do not replace
+strict real-OpenBIOS parity on the integrated stack or establish compatibility
+with every firmware exception or real game.

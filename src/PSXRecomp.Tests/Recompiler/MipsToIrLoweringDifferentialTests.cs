@@ -98,11 +98,39 @@ public class MipsToIrLoweringDifferentialTests
     // LW/SW. That was never R3000A behaviour: the hardware raises AdEL/AdES for a
     // misaligned LH/LHU/LW/SH/SW, and the interpreter now does too (Issue #376) —
     // a misaligned SW smearing four bytes across a word boundary was exactly the
-    // silent corruption that fault exists to surface. The IR lowering has no
-    // address-error model yet, so these cases can no longer be run
-    // differentially; they pin the interpreter's architectural behaviour instead
-    // and the IR-side gap is called out in the PR for #376 as follow-up work.
-    // The aligned load/store differential coverage above is unaffected.
+    // silent corruption that fault exists to surface. Issue #749 now carries
+    // fault provenance for these aligned forms; the compiled and IR oracle
+    // comparison above complements the original interpreter regressions below.
+
+    [Theory]
+    [InlineData(0x21, false)]
+    [InlineData(0x25, false)]
+    [InlineData(0x23, false)]
+    [InlineData(0x29, false)]
+    [InlineData(0x2B, false)]
+    [InlineData(0x29, true)]
+    [InlineData(0x2B, true)]
+    public void AlignedAddressFault_MetadataMatchesTheCompiledAndInterpreterOracles(int opcode, bool delay)
+    {
+        var gpr = new uint[32];
+        gpr[8] = DataBase + 1; gpr[9] = 0x12345678;
+        uint[] words = delay
+            ? [MipsEncoding.JumpAndLink(EntryPc + 8), MipsEncoding.I((byte)opcode, 9, 8, 0), MipsEncoding.Nop]
+            : [MipsEncoding.I((byte)opcode, 9, 8, 0), MipsEncoding.Nop];
+        var fixture = new RecompilerDifferentialFixture("aligned-address-fault", words, EntryPc,
+            stepBudget: 4, referenceStepBudget: 4, initialGpr: gpr,
+            memoryWindow: Enumerable.Range(0, 8).Select(i => DataBase + (uint)i));
+        var result = RecompilerDifferentialRunner.Run(fixture, new RecompilerInterpreterExecutor(), new RecompilerHostExecutor());
+        result.BothCompleted.Should().BeTrue(result.Actual.DiagnosticMessage);
+        result.IsMatch.Should().BeTrue(RecompilerDifferentialArtifacts.FailureMessage(result));
+        result.Actual.Snapshot!.Exception.Code.Should().Be(opcode is 0x29 or 0x2B ? 5u : 4u);
+        result.Actual.Snapshot.Exception.FaultPc.Should().Be(EntryPc);
+        result.Actual.Snapshot.Exception.InDelaySlot.Should().Be(delay);
+        var program = MipsToIrLowerer.LowerProgram(words.Select((word, index) => (R3000aDecoder.Decode(word), EntryPc + (uint)index * 4)).ToArray());
+        var evaluation = RecompilerIrEvaluator.Run(program, EntryPc, gpr, new RecompilerGuestMemory(), 4);
+        evaluation.Exception.Should().Be(result.Actual.Snapshot.Exception);
+        evaluation.Gpr.Should().Equal(result.Actual.Snapshot.Gpr);
+    }
 
     [Fact]
     public void UnalignedLw_RaisesAnAddressErrorOnTheInterpreter()
