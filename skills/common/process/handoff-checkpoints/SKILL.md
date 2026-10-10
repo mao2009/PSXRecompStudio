@@ -22,9 +22,9 @@ and review skills. Respect their ownership and existing gates.
 
 1. **On start:** read the driving Issue (if one exists), related PRs, and the
    latest checkpoint; compare their claims with actual git/worktree state.
-   For an Issue-backed or PR-backed task, post a concise start checkpoint
-   identifying the objective, base/head branch and SHA, environment, available
-   evidence, and planned next step. When an explicit request has no Issue or PR,
+   For an Issue-backed or PR-backed task, reuse the existing checkpoint first.
+   Post a new start checkpoint only when there is a meaningful state change or
+   a handoff risk; identify the objective, base/head SHA, relevant evidence and next step. When an explicit request has no Issue or PR,
    do not invent an Issue or post in an unrelated thread: keep the checkpoint
    in the work report until a suitable PR or Issue exists, then publish the
    relevant handoff there. Do not assume a past claim is verified locally.
@@ -35,12 +35,11 @@ and review skills. Respect their ownership and existing gates.
    Record reproducible commands, input revisions/hashes, observed results,
    decisions, and concrete next actions. Clearly distinguish observed facts,
    inferences, and proposals.
-3. **During long-running work:** at approximately 30-minute intervals when
-   practical, or at natural phase boundaries, post a compact status update.
-   Avoid duplicate/no-information comments; consolidate where possible.
-   Never allow a timer to interrupt a critical operation or claim an
-   unobserved result. For parallel workers, the coordinator owns the
-   consolidated checkpoint and identifies each worker's branch/status.
+3. **During long-running work:** checkpoint at meaningful phase boundaries or
+   when work must be handed off. Do not post timer-driven updates solely due to
+   elapsed time; avoid duplicate/no-information comments. For parallel workers,
+   the coordinator owns the consolidated checkpoint and identifies each
+   worker's branch/status.
 4. **Before stopping, blocking, context exhaustion, or handoff:** publish a
    final HANDOFF CHECKPOINT to the relevant Issue or PR, if one exists, with
    current SHA, pushed/unpushed state, tests, blockers, artifact locations,
