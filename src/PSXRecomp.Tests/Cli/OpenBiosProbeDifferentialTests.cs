@@ -148,6 +148,23 @@ public sealed class OpenBiosProbeDifferentialTests
         Assert.Equal(pass, verdict["differentialPass"]!.GetValue<bool>());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ShellStop_DoesNotDropAnExplicitExecutableComparison(bool explicitExe)
+    {
+        var required = OpenBiosProbeCommand.RequiredBoundaries(explicitExe ? [0x80010000u] : [], 0x80030000);
+        Assert.Equal(explicitExe, required.Contains(0x80010000));
+        var doc = new JsonObject
+        {
+            ["differential"] = new JsonObject { ["0x80030000"] = new JsonObject { ["match"] = true } },
+            ["milestoneComparison"] = new JsonObject { ["match"] = true },
+            ["referenceBoundariesMissing"] = new JsonArray(),
+        };
+        var verdict = OpenBiosProbeCommand.Consistency(doc, required, 0x80030000);
+        Assert.Equal(!explicitExe, verdict["differentialPass"]!.GetValue<bool>());
+    }
+
     [Fact]
     public void FirstInterruptMismatch_FailsEvenWhenEntryBoundariesMatch()
     {

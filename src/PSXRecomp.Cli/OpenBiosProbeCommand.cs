@@ -243,8 +243,7 @@ internal static class OpenBiosProbeCommand
         var loadedImages = manifest.Images.Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observedPcs))).ToArray();
         var loadedCode = new LoadedCodeTable(loadedImages.Select(static i => i.Build));
         var buildMs = clock.Elapsed.TotalMilliseconds;
-        var boundaryPcs = new HashSet<uint>(probe.CompareAt) { OpenBiosBootMonitor.ShellLoadAddress, ExecutableBoundary };
-        if (probe.StopAt is { } boundary) boundaryPcs.Add(boundary);
+        var boundaryPcs = RequiredBoundaries(probe.CompareAt, probe.StopAt);
 
         Dictionary<uint, ProbeGuestState>? reference = null;
         OpenBiosBootReport? referenceMilestones = null;
@@ -470,14 +469,22 @@ internal static class OpenBiosProbeCommand
         }
     }
 
+    /// <summary>Retains explicit comparisons while choosing defaults appropriate for the requested stop.</summary>
+    internal static HashSet<uint> RequiredBoundaries(IEnumerable<uint> compareAt, uint? stopAt)
+    {
+        var required = new HashSet<uint>(compareAt) { OpenBiosBootMonitor.ShellLoadAddress };
+        if (stopAt != OpenBiosBootMonitor.ShellLoadAddress) required.Add(ExecutableBoundary);
+        if (stopAt is { } stop) required.Add(stop);
+        return required;
+    }
+
     /// <summary>A differential pass requires every requested boundary, matching device/CPU/RAM state and milestones.</summary>
     internal static JsonNode Consistency(JsonObject document, IReadOnlySet<uint> expected, uint? stopAt)
     {
         if (document["differential"] is not JsonObject differential)
             return new JsonObject { ["differentialPass"] = null };
         var matched = differential.Count(static b => b.Value is JsonObject o && o["match"]?.GetValue<bool>() == true);
-        // A stop before the EXE deliberately requests a shorter gate; explicit --compare-at points remain required.
-        var required = expected.Where(pc => stopAt != OpenBiosBootMonitor.ShellLoadAddress || pc != ExecutableBoundary).ToArray();
+        var required = expected.ToArray();
         var missing = required.Where(pc => !differential.ContainsKey(Hex(pc))).Select(Hex).ToArray();
         var milestones = document["milestoneComparison"]?["match"]?.GetValue<bool>() ?? false;
         var hostOnly = document["referenceBoundariesMissing"]?.AsArray().Count ?? 0;
