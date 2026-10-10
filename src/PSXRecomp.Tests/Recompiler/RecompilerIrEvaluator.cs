@@ -141,6 +141,18 @@ internal static class RecompilerIrEvaluator
             var values = new Dictionary<int, uint>();
             for (var operationIndex = 0; operationIndex < block.Operations.Count; operationIndex++)
             {
+                var operation = block.Operations[operationIndex];
+                foreach (var site in block.MemoryFaultSites.Where(site => site.OperationIndex == operationIndex))
+                {
+                    var mask = operation.Kind is RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Store16 ? 1u : 3u;
+                    var address = values[operation.InputValueA];
+                    if ((address & mask) == 0) continue;
+                    if (site.PendingLoadRegister > 0) gpr[site.PendingLoadRegister] = values[site.PendingLoadValueId];
+                    cop0[8] = address;
+                    var code = operation.Kind is RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32 ? 5u : 4u;
+                    return new RecompilerIrEvaluationResult(gpr, pc, RecompilerIrTerminationReason.Exception, retired + 1,
+                        hiLo[0], hiLo[1], new RecompilerExceptionState(true, code, site.FaultPc, site.InDelaySlot), cop0);
+                }
                 if (!Execute(operation, gpr, hiLo, cop0, values, memory, gte))
                 {
                     return new RecompilerIrEvaluationResult(
