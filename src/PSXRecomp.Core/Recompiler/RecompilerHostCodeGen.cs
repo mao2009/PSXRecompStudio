@@ -50,14 +50,44 @@ public static class RecompilerHostCodeGen
     private const string Cop0WriteHelper = "recompiler_cop0_write";
     private const string StoreIsolatedHelper = "recompiler_store_isolated";
     private const string ExceptionEntryHelper = "recompiler_exception_entry";
+    private const string CodeGuardHelper = "recompiler_code_current";
+    private const string UnknownPcLabel = "recompiler_unknown_pc";
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
-    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program)
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program) => Generate(program, loadedCode: null);
+
+    /// <summary>
+    /// <see cref="Generate(RecompilerIrProgram)"/>, plus the pre-generated versions of RAM-placed code (Issue #732). At a
+    /// PC of <paramref name="loadedCode"/> the dispatcher asks <c>recompiler_code_current</c> (a host-provided helper)
+    /// which version guest memory holds now and runs that version's block; with none it takes the unknown-PC boundary
+    /// (the host transfer) exactly as for a PC without a block. Null or empty generates the same source as the
+    /// single-argument overload.
+    /// </summary>
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode)
     {
         ArgumentNullException.ThrowIfNull(program);
+        loadedCode ??= LoadedCodeTable.Empty;
+        var entries = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
+        if (loadedCode.Blocks.FirstOrDefault(v => entries.Contains(v.Block.EntryPc) || v.Words.Count != v.Block.RetiredInstructionCount) is { } invalid)
+        {
+            return new RecompilerHostCodeGenResult(
+                false, null,
+                "INVALID_LOADED_CODE",
+                $"The loaded-code version at PC 0x{invalid.Block.EntryPc:X8} collides with a static block or does not carry exactly its unit's words.");
+        }
 
-        if (program.Blocks.Count == 0)
+        if (loadedCode.Blocks.Select(static v => RecompilerIrValidator.Validate(new RecompilerIrProgram([v.Block])))
+                .FirstOrDefault(static r => !r.IsValid) is { } invalidVersion)
+        {
+            return new RecompilerHostCodeGenResult(
+                false, null,
+                "IR_VALIDATION_FAILED",
+                $"IR validation failed with {invalidVersion.Diagnostics.Count} diagnostic(s): {invalidVersion.Diagnostics[0].Code}");
+        }
+
+        var allBlocks = program.Blocks.Concat(loadedCode.Blocks.Select(static v => v.Block)).ToArray();
+        if (allBlocks.Length == 0)
         {
             return new RecompilerHostCodeGenResult(
                 false, null,
@@ -74,12 +104,12 @@ public static class RecompilerHostCodeGen
                 $"IR validation failed with {validation.Diagnostics.Count} diagnostic(s): {validation.Diagnostics[0].Code}");
         }
 
-        for (var i = 0; i < program.Blocks.Count; i++)
+        for (var i = 0; i < allBlocks.Length; i++)
         {
             var definedResultIds = new HashSet<int>();
-            for (var j = 0; j < program.Blocks[i].Operations.Count; j++)
+            for (var j = 0; j < allBlocks[i].Operations.Count; j++)
             {
-                var id = program.Blocks[i].Operations[j].ResultValueId;
+                var id = allBlocks[i].Operations[j].ResultValueId;
                 if (id >= 0 && !definedResultIds.Add(id))
                 {
                     return new RecompilerHostCodeGenResult(
@@ -90,11 +120,11 @@ public static class RecompilerHostCodeGen
             }
         }
 
-        for (var i = 0; i < program.Blocks.Count; i++)
+        for (var i = 0; i < allBlocks.Length; i++)
         {
-            for (var j = 0; j < program.Blocks[i].Operations.Count; j++)
+            for (var j = 0; j < allBlocks[i].Operations.Count; j++)
             {
-                var op = program.Blocks[i].Operations[j];
+                var op = allBlocks[i].Operations[j];
                 if (!Enum.IsDefined(op.Kind))
                 {
                     return new RecompilerHostCodeGenResult(
@@ -113,15 +143,15 @@ public static class RecompilerHostCodeGen
                 }
             }
 
-            if (!Enum.IsDefined(program.Blocks[i].Exit.Reason))
+            if (!Enum.IsDefined(allBlocks[i].Exit.Reason))
             {
                 return new RecompilerHostCodeGenResult(
                     false, null,
                     "UNSUPPORTED_TERMINATION_REASON",
-                    $"Termination reason {(byte)program.Blocks[i].Exit.Reason} is not a defined enum value.");
+                    $"Termination reason {(byte)allBlocks[i].Exit.Reason} is not a defined enum value.");
             }
 
-            var flow = program.Blocks[i].Exit.Flow;
+            var flow = allBlocks[i].Exit.Flow;
             if (flow is not null)
             {
                 if (!IsEmittableFlow(flow.Kind))
@@ -135,7 +165,7 @@ public static class RecompilerHostCodeGen
             }
         }
 
-        var source = EmitSource(program);
+        var source = EmitSource(program, loadedCode);
         return new RecompilerHostCodeGenResult(true, source, null, null);
     }
 
@@ -201,7 +231,7 @@ public static class RecompilerHostCodeGen
         _ => false,
     };
 
-    private static string EmitSource(RecompilerIrProgram program)
+    private static string EmitSource(RecompilerIrProgram program, LoadedCodeTable loadedCode)
     {
         var sb = new StringBuilder();
 
@@ -212,6 +242,13 @@ public static class RecompilerHostCodeGen
         sb.AppendLine();
         EmitTerminationReasonMacros(sb);
         EmitMemoryHelperDeclarations(sb);
+        if (loadedCode.Blocks.Count != 0)
+        {
+            sb.AppendLine("/* Loaded-code identity (Issue #732) — provided by the host: nonzero when guest memory at pc holds exactly");
+            sb.AppendLine("   words[0..count). *seen is the host's memory generation at the last successful check (UINT64_MAX: never). */");
+            sb.AppendLine($"extern int {CodeGuardHelper}(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen);");
+            sb.AppendLine();
+        }
         EmitStateStruct(sb);
         EmitSra32Helper(sb);
         EmitMulDivHelpers(sb);
@@ -221,7 +258,16 @@ public static class RecompilerHostCodeGen
             EmitBlockFunction(sb, block);
         }
 
-        EmitDispatchFunction(sb, program);
+        foreach (var group in loadedCode.Blocks.GroupBy(static v => v.Block.EntryPc))
+        {
+            var version = 0;
+            foreach (var loaded in group)
+            {
+                EmitBlockFunction(sb, loaded.Block, $"_v{version++}");
+            }
+        }
+
+        EmitDispatchFunction(sb, program, loadedCode);
 
         return sb.ToString();
     }
@@ -452,9 +498,9 @@ public static class RecompilerHostCodeGen
         sb.AppendLine();
     }
 
-    private static void EmitBlockFunction(StringBuilder sb, RecompilerIrBlock block)
+    private static void EmitBlockFunction(StringBuilder sb, RecompilerIrBlock block, string suffix = "")
     {
-        var functionName = $"recompiler_block_0x{block.EntryPc:X8}";
+        var functionName = $"recompiler_block_0x{block.EntryPc:X8}{suffix}";
         var valueNames = new Dictionary<int, string>();
 
         sb.AppendLine($"static int32_t {functionName}({StateStruct}* {StateParam}) {{");
@@ -796,7 +842,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(indent + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
     }
 
-    private static void EmitDispatchFunction(StringBuilder sb, RecompilerIrProgram program)
+    private static void EmitDispatchFunction(
+        StringBuilder sb, RecompilerIrProgram program, LoadedCodeTable loadedCode)
     {
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
@@ -839,11 +886,41 @@ public static class RecompilerHostCodeGen
             sb.AppendLine(IndentUnit + IndentUnit + "}");
         }
 
+        // Issue #732: RAM-placed code. Each pre-generated version of the code at this PC runs only while guest memory
+        // holds exactly the words it was compiled from; the first version that matches is selected. With none, the PC is
+        // treated exactly like one without a block (the host transfer). The identity check retires nothing.
+        foreach (var group in loadedCode.Blocks.GroupBy(static v => v.Block.EntryPc))
+        {
+            var indent = IndentUnit + IndentUnit + IndentUnit;
+            sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(group.Key)}: {{");
+            var version = 0;
+            foreach (var loaded in group)
+            {
+                sb.AppendLine(indent + $"static const uint32_t code{version}[] = {{ {string.Join(", ", loaded.Words.Select(FormatHex))} }};");
+                sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
+                sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
+                sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
+                EmitBudgetExceededReturn(sb, 5);
+                sb.AppendLine(indent + IndentUnit + "}");
+                sb.AppendLine(indent + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
+                sb.AppendLine(indent + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
+                sb.AppendLine(indent + IndentUnit + "#endif");
+                sb.AppendLine(indent + IndentUnit + $"retired = {loaded.Block.RetiredInstructionCount}u;");
+                sb.AppendLine(indent + IndentUnit + $"{StateParam}->{TerminationField} = recompiler_block_0x{group.Key:X8}_v{version}({StateParam});");
+                sb.AppendLine(indent + IndentUnit + "break;");
+                sb.AppendLine(indent + "}");
+                version++;
+            }
+
+            sb.AppendLine(indent + $"goto {UnknownPcLabel};");
+            sb.AppendLine(IndentUnit + IndentUnit + "}");
+        }
+
         // The unknown-PC boundary. A null hook has no side effect, so the existing
         // normal fall-off / unsupported-entry distinction can be resolved without
         // spending budget. A real host callback may mutate state and therefore must
         // not be invoked once the strict dispatch budget is exhausted.
-        sb.AppendLine(IndentUnit + IndentUnit + "default: {");
+        sb.AppendLine(IndentUnit + IndentUnit + (loadedCode.Blocks.Count == 0 ? "default: {" : $"default: {UnknownPcLabel}: {{"));
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if ({StateParam}->{HostTransferField} == 0) {{");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"if (steps > 0) {{ {StateParam}->{TerminationField} = RECOMPILER_REASON_SUCCESS; return 0; }}");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + IndentUnit + $"{StateParam}->{TerminationField} = RECOMPILER_REASON_UNSUPPORTED_IR; return (int32_t)RECOMPILER_REASON_UNSUPPORTED_IR;");
@@ -872,7 +949,7 @@ public static class RecompilerHostCodeGen
         // Issue #732: in firmware mode a SYSCALL/BREAK exit enters the guest's own exception vector, exactly as
         // the interpreter's RaiseException does, and execution continues there (typically the kernel handler at
         // 0x80000080). The trapping instruction retires nothing. Emitted only for a program with a trap exit.
-        if (program.Blocks.Any(static block => block.Exit.Exception is { IsRaised: true } || block.MemoryFaultSites.Count != 0))
+        if (program.Blocks.Concat(loadedCode.Blocks.Select(static v => v.Block)).Any(static block => block.Exit.Exception is { IsRaised: true } || block.MemoryFaultSites.Count != 0))
         {
             sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} == RECOMPILER_REASON_EXCEPTION && " +
                 $"{StateParam}->{ExceptionRaisedField} != 0u && {StateParam}->{GuestExceptionsField} != 0u) {{");
@@ -890,7 +967,7 @@ public static class RecompilerHostCodeGen
         // stale exception. Without a hook (or when it declines) the exit is unchanged.
         // Emitted only for a program that has such an exit, so every other program's
         // dispatch text stays byte for byte as it was.
-        if (program.Blocks.Any(static block => block.Exit.Exception is { IsRaised: true, Code: SyscallExcode }))
+        if (program.Blocks.Concat(loadedCode.Blocks.Select(static v => v.Block)).Any(static block => block.Exit.Exception is { IsRaised: true, Code: SyscallExcode }))
         {
             sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} == RECOMPILER_REASON_EXCEPTION && " +
                 $"{StateParam}->{ExceptionRaisedField} != 0u && {StateParam}->{ExceptionCodeField} == 8u && " +

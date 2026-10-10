@@ -115,7 +115,8 @@ in the ROM code range, extracted with `nm` — the CLI does not parse ELF),
 compiled with `gcc` and run by `RecompiledHostExecutionEngine` in firmware mode
 (see [host codegen](../development/recompiler-host-codegen.md)). Kernel code
 copied to RAM, the `0x80`/A0/B0/C0 vectors, the shell and the loaded executable
-have no block and run in the mixed-execution interpreter over the same device
+run natively when the explicit `--load-images` manifest supplies a matching
+guarded version; otherwise they use interpreter fallback over the same device
 graph; the report separates `nativeInstructions` from `fallbackInstructions`.
 Milestones come from the fallback interpreter's fetches (native blocks are not
 observed per instruction; the reset vector is the build's first dispatch unit).
@@ -150,9 +151,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     `transitionsEntered` with their shares.
   - `transitions`: artifact→interpreter handoffs. `byReason[]` classifies the
     entry PC (`exception-vector` 0x80, `kernel-call-vector` A0/B0/C0,
-    `rom-no-block`, `ram-no-code-image` — no RAM code is compiled before the
-    run, so all RAM code is this; a future RAM compiler must add its own
-    invalidation reason — and `other-no-block`) with transitions, how many came
+    `rom-no-block`, `ram-no-code-image`, and `other-no-block` for generic
+    accounting callers; the probe also reports image-aware fallback causes) with transitions, how many came
     from JR/JALR (`indirect`), retired instructions and shares. `byAotClass[]`
     (`MixedFallbackAotClass`, AOT-only project: no run-time codegen) says why
     no AOT code ran: `known-not-yet-aot` (in a known image, no block),
@@ -162,8 +162,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     unanalysable self-modifying, `preDeterminable:false`). The producer of a
     handoff sets `MixedFallbackTransition.AotClass` when it knows (an AOT image
     table); otherwise the probe derives it from the address: ROM →
-    `known-not-yet-aot`, anything else → `not-in-any-aot-image` (today's build
-    compiles the ROM only). `byExit[]`: `returned-to-block`,
+    `known-not-yet-aot`, anything else → `not-in-any-aot-image` (a conservative address-derived
+    fallback, distinct from manifest-aware classification). `byExit[]`: `returned-to-block`,
     `budget-exhausted`, `stopped:<code>`. Each region names its `codeImage`
     (`rom`, `kernel-ram-image`, `shell`, `ps-x-exe` — the executable and its
     overlays, i.e. other RAM — or `unknown`) and the instructions retired in
@@ -224,6 +224,56 @@ host's native + fallback count to that point exceeds the interpreter's
 fetches by 1,880, so `differentialPass` is false: device time diverges
 (the earlier comparison did not read device state).
 
+### Ahead-of-time RAM-placed code (`--load-images`, [ADR-026](../adr/026-aot-ram-placed-code.md))
+
+PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. Code the firmware
+places in RAM is compiled before the run from explicit images listed in a manifest
+(`LoadImageManifest`; one directive per line, hex numbers, paths relative to the manifest):
+
+```text
+image kernel-data 0x00000500 rom 0xBFC1DF6C 0x45A0 kernel.roots  # ELF LOAD 0x500 <- ROM 0xBFC1DF6C (.data, RWE)
+image vector-80   0x80000080 rom 0xBFC06DE8 0x10 vector80.roots # exceptionVector (0x80000084)
+image vector-a0   0x000000A0 rom 0xBFC06DF8 0x10                # A0Vector; likewise B0Vector/C0Vector
+image shell       0x80030000 rom 0xBFC0A1F4 0x13D78 shell.roots  # _binary_shell_bin_start
+exe   test-exe    test.exe exe.roots                             # or: boot-exe <name> (SYSTEM.CNF on --disc)
+interpret 0x80000080   # observation points stay interpreted: exception vector, exceptionHandler
+interpret 0x000026A4   # (0x26A4, KernelRunningFromRam), shell entry 0x80030000, EXE entry 0x80010000
+```
+
+Addresses come from the pinned build's `openbios.elf` (program headers, `exceptionVector`/`A0Vector`/
+`B0Vector`/`C0Vector`, `_binary_shell_bin_start`/`_size`) and `shell/shell.elf`. Roots are the ELF `T`/`t`
+symbols inside each image plus the aligned words of read-only data that point into the image's code
+(switch tables: `.rodata`/`.data` of the shell, the kernel `.data` and the ROM `.rodata` for the
+kernel). A root that is not really an entry is harmless: its block holds the correct code for those
+bytes and runs only if control reaches it with those bytes in RAM. Each image is compiled at its
+destination (`BuildLoadedImage`), the builds are linked into one `LoadedCodeTable`, and the artifact
+runs a version only while RAM holds exactly its words (page generations, ADR-026); anything else is
+the counted fallback. The report lists every image (`loadedImages`), `loadedCodeVersions`,
+`precompileMilliseconds`, `atBoundary` (native instructions and seconds when each differential
+boundary was reached) and, per fallback target, its `cause` (`observation-point`, `version-mismatch`,
+`aot-coverage-gap:loaded-image|rom`, `unknown-code`).
+
+Measured (pinned build, synthetic disc, `--segment-budget 1000000 --segments 300 --differential`):
+
+| | baseline (ROM only) | AOT images |
+|---|---|---|
+| native / fallback before `0x80010000` | 13.8M / 178.1M (7.2 %) | 191,927,114 / 5,197 (99.997 %) |
+| native / fallback, whole run | 13.8M / 478.1M (2.8 %) | 476,966,271 / 5,198 |
+| artifact ↔ interpreter transitions | 712,411 | 368 |
+| copy-sync time | 808 s | 0.29 s |
+| loaded-code versions / pre-compile (gcc) | — / — | 7,211 / 68 s |
+
+The historical AOT comparison matched CPU and RAM at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
+SHA-256); it did not establish strict device/time parity. These earlier measurements
+used a different comparison contract. Both runs had the same milestones
+(111 INT, 9 SYSCALL). The remaining fallback is the four observation
+points (each exception: `0x80000080` and `0x26A4`), a kernel coverage gap after the observation point
+(`0x26E4`, 120 entries) and a ROM coverage gap (`0xBFC05734`, 6 entries). With only symbol roots the shell's
+`MOD_UpdateEffect` switch target `0x80032BD8` was a coverage gap entered ~1.46M times (each transition
+~1 ms of copy-sync); the code-pointer roots close it. The whole run is no faster yet: the executable's
+final `b .` loop now runs natively until the dispatch budget, and every native MMIO access and every
+1024 retired instructions is one protocol round trip to the host's devices.
+
 The existing `psxrecomp run` pipeline still uses its legacy HLE path until the
 OpenBIOS firmware can actually load a game via the same guest memory and handle
 all required hardware and generated-host transitions. **Do not change the default
@@ -248,9 +298,10 @@ The IR pipeline lowers COP0 (MFC0/MTC0/RFE), SYSCALL/BREAK as firmware traps and
 `SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. Measured on the
 pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector alone; with the
 257 ELF function symbols as explicit roots 9,228 are native. Code that exists only at run time
-(kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) has no
-generated block and can only run through the mixed-execution interpreter fallback, which is
-reported as fallback. The interpreter remains the only verified way to run OpenBIOS end to end;
+(kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) is
+compiled ahead of time from explicit images with `--load-images` (see above, ADR-026) and selected by
+content at run time; without it, or where RAM holds no pre-generated version, it runs in the
+mixed-execution interpreter fallback, which is reported as fallback. The interpreter remains the only verified way to run OpenBIOS end to end;
 generated-host execution of OpenBIOS is **not** verified (see the status line).
 
 **Status: the real OpenBIOS boots on the interpreter, loads and enters an executable from a disc

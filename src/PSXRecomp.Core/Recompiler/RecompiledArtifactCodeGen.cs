@@ -329,6 +329,28 @@ static int artifact_ram_offset(uint32_t address, uint32_t width, uint32_t* offse
     return 1;
 }
 
+/* Run-time code guard (Issue #732). Every write into artifact_ram — a guest store, a host/device byte write (W), a
+   fallback commit (K) — bumps the generation of each 4 KiB page it touches; generations only grow. A block compiled
+   from RAM runs only after recompiler_code_current confirmed that RAM still holds exactly the words it was compiled
+   from; the check is redone (a word compare) whenever a covered page's generation moved, so stale code never runs. */
+static uint64_t artifact_page_gen[PSX_RAM_SIZE >> 12];
+#define ARTIFACT_WROTE(pa, width) (artifact_page_gen[(pa) >> 12]++, artifact_page_gen[((pa) + (width) - 1u) >> 12]++)
+
+int recompiler_code_current(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen) {
+    uint32_t pa, i;
+    uint64_t gen;
+    (void)core;
+    if (!artifact_ram_offset(pc, 4u * count, &pa)) return 0;
+    gen = artifact_page_gen[pa >> 12] + artifact_page_gen[(pa + 4u * count - 1u) >> 12];
+    if (gen == *seen) return 1;
+    for (i = 0; i < count; i++) {
+        const uint8_t* b = artifact_ram + pa + 4u * i;
+        if (((uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24)) != words[i]) return 0;
+    }
+    *seen = gen;
+    return 1;
+}
+
 /* BIOS ROM window (Issue #732): physical 0x1FC00000, 512 KiB, reached through KUSEG/KSEG0/KSEG1 like RAM. A firmware
    image loaded there is artifact-local and read-only: loads are served here, stores are dropped (the ROM is not
    writable), and neither crosses the host protocol. Without a ROM image the window is not served here: an access is
@@ -359,6 +381,7 @@ static void artifact_ram_write8(uint32_t address, uint8_t value) {
     uint32_t pa;
     if (!artifact_ram_offset(address, 1u, &pa)) return;
     artifact_ram[pa] = value;
+    ARTIFACT_WROTE(pa, 1u);
 }
 
 /* Set once the parent has completed the host handshake; without it a non-RAM
@@ -516,7 +539,7 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
 void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;
     uint32_t pa;
-    if (artifact_ram_offset(address, 1u, &pa)) { artifact_ram[pa] = value; return; }
+    if (artifact_ram_offset(address, 1u, &pa)) { artifact_ram[pa] = value; ARTIFACT_WROTE(pa, 1u); return; }
     if (artifact_in_ram_window(address) || artifact_rom_offset(address, 1u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 1u, address, 1, (uint32_t)value);
 }
@@ -527,6 +550,7 @@ void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
     if (artifact_ram_offset(address, 2u, &pa)) {
         artifact_ram[pa] = (uint8_t)value;
         artifact_ram[pa + 1] = (uint8_t)(value >> 8);
+        ARTIFACT_WROTE(pa, 2u);
         return;
     }
     if (artifact_in_ram_window(address) || artifact_rom_offset(address, 2u, &pa)) return;
@@ -541,6 +565,7 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
         artifact_ram[pa + 1] = (uint8_t)(value >> 8);
         artifact_ram[pa + 2] = (uint8_t)(value >> 16);
         artifact_ram[pa + 3] = (uint8_t)(value >> 24);
+        ARTIFACT_WROTE(pa, 4u);
         return;
     }
     if (artifact_in_ram_window(address) || artifact_rom_offset(address, 4u, &pa)) return;
@@ -605,10 +630,27 @@ static uint32_t fallback_hash_page(uint32_t hash, uint32_t page, const uint8_t* 
     return hash;
 }
 
+/* Issue #732: a page whose generation (artifact_page_gen, bumped by every RAM writer) is unchanged since it last
+   agreed with the shadow cannot differ from it, so only written pages are compared. */
+static uint64_t fallback_shadow_gen[PSX_PAGE_COUNT];
+static uint8_t fallback_shadow_known[PSX_PAGE_COUNT];
+
+static void fallback_shadow_agrees(uint32_t p) {
+    fallback_shadow_gen[p] = artifact_page_gen[p];
+    fallback_shadow_known[p] = 1u;
+}
+
+static int fallback_page_dirty(uint32_t p) {
+    if (fallback_shadow_known[p] && fallback_shadow_gen[p] == artifact_page_gen[p]) return 0;
+    if (memcmp(artifact_ram + p * PSX_PAGE_SIZE, fallback_shadow + p * PSX_PAGE_SIZE, PSX_PAGE_SIZE) != 0) return 1;
+    fallback_shadow_agrees(p);
+    return 0;
+}
+
 static uint32_t fallback_dirty_count(void) {
     uint32_t p, n = 0u;
     for (p = 0; p < PSX_PAGE_COUNT; p++) {
-        if (memcmp(artifact_ram + p * PSX_PAGE_SIZE, fallback_shadow + p * PSX_PAGE_SIZE, PSX_PAGE_SIZE) != 0) n++;
+        if (fallback_page_dirty(p)) n++;
     }
     return n;
 }
@@ -642,7 +684,7 @@ static void fallback_send_pages(void) {
     uint32_t p, i, hash = 2166136261u;
     for (p = 0; p < PSX_PAGE_COUNT; p++) {
         uint8_t* page = artifact_ram + p * PSX_PAGE_SIZE;
-        if (memcmp(page, fallback_shadow + p * PSX_PAGE_SIZE, PSX_PAGE_SIZE) == 0) continue;
+        if (!fallback_page_dirty(p)) continue;
         for (i = 0; i < PSX_PAGE_SIZE; i++) {
             line[2u * i] = hex_digits[page[i] >> 4];
             line[2u * i + 1u] = hex_digits[page[i] & 15u];
@@ -651,6 +693,7 @@ static void fallback_send_pages(void) {
         printf(""RHOST_PAGE %lu %s\n"", (unsigned long)p, line);
         hash = fallback_hash_page(hash, p, page);
         memcpy(fallback_shadow + p * PSX_PAGE_SIZE, page, PSX_PAGE_SIZE);
+        fallback_shadow_agrees(p);
     }
     printf(""RHOST_PAGES_END %lu\n"", (unsigned long)hash);
     fflush(stdout);
@@ -691,6 +734,8 @@ static int32_t artifact_host_serve(RecompilerState* state) {
                 uint32_t s;
                 for (s = 0; s < fallback_stage_count; s++) {
                     memcpy(artifact_ram + fallback_stage_page[s] * PSX_PAGE_SIZE, fallback_stage + s * PSX_PAGE_SIZE, PSX_PAGE_SIZE);
+                    artifact_page_gen[fallback_stage_page[s]]++;
+                    fallback_shadow_agrees(fallback_stage_page[s]);
                     memcpy(fallback_shadow + fallback_stage_page[s] * PSX_PAGE_SIZE, fallback_stage + s * PSX_PAGE_SIZE, PSX_PAGE_SIZE);
                 }
                 fallback_stage_count = 0u;

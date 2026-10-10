@@ -25,7 +25,7 @@ internal static class OpenBiosProbeCommand
 
     internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
-                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--json]";
+                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--json]";
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
@@ -37,7 +37,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false;
-        string? discPath = null, rootsPath = null, symbolsPath = null, engineKind = "interpreter";
+        string? discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         var compareAt = new SortedSet<uint>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -66,7 +66,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -77,6 +77,7 @@ internal static class OpenBiosProbeCommand
                 if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
                 else if (option == "--symbols") symbolsPath = args[i];
+                else if (option == "--load-images") loadImagesPath = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -99,11 +100,11 @@ internal static class OpenBiosProbeCommand
         }
 
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
-            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || rootsPath is not null || seen.Contains("--code-bytes")))
+            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null || rootsPath is not null || seen.Contains("--code-bytes")))
             || (engineKind == "generated-host" && capturePc is not null)
             || (compareAt.Count != 0 && !differential))
         {
-            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --roots, --code-bytes, --differential, --compare-at, --stop-at and --symbols require --engine generated-host; --capture-at requires --engine interpreter; " +
+            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --roots, --code-bytes, --differential, --compare-at, --stop-at, --symbols and --load-images require --engine generated-host; --capture-at requires --engine interpreter; " +
                             "--compare-at requires --differential");
             error.WriteLine(Usage);
             return 1;
@@ -125,7 +126,7 @@ internal static class OpenBiosProbeCommand
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
             return engineKind == "generated-host"
                 ? RunGeneratedHost(new GeneratedHostProbe(
-                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols), json, output, error)
+                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath), json, output, error)
                 : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, json, output);
         }
         catch (Exception ex) when (
@@ -219,12 +220,12 @@ internal static class OpenBiosProbeCommand
 
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
-        uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols);
+        uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
-    /// it) is compiled from the reset vector plus the explicit roots; everything that has no block — kernel code copied
-    /// to RAM, vectors, the shell, a loaded executable — runs in the mixed-execution interpreter fallback over the same
+    /// it) is compiled from the reset vector plus the explicit roots. A <c>LoadImagesPath</c> manifest adds guarded
+    /// AOT versions of RAM-placed code; everything with no current compiled block runs in interpreter fallback over the same
     /// devices, is reported as fallback and is classified by <see cref="OpenBiosProbeAccounting"/>. With
     /// <c>Differential</c> the interpreter backend runs the same ROM and disc first and both are compared
     /// (<see cref="ProbeGuestState"/>) at the shell and executable entries plus every <c>CompareAt</c> PC. <c>StopAt</c>
@@ -237,6 +238,12 @@ internal static class OpenBiosProbeCommand
         var firmware = probe.Firmware;
         var codeWords = probe.CodeBytes == 0 ? firmware.Words : firmware.Words.Take((int)Math.Min(probe.CodeBytes / 4, (uint)firmware.Words.Count)).ToArray();
         var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, codeWords, OpenBiosFirmware.ResetVector, probe.Roots);
+        var manifest = probe.LoadImagesPath is null ? LoadImageManifest.None : LoadImageManifest.Read(probe.LoadImagesPath, firmware, probe.Disc);
+        var loadedImages = manifest.Images
+            .Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, manifest.Interpreted)))
+            .ToArray();
+        var loadedCode = new LoadedCodeTable(loadedImages.Select(static i => i.Build));
+        var referenceSeconds = new Dictionary<uint, double>();
         var buildMs = clock.Elapsed.TotalMilliseconds;
         var boundaryPcs = new HashSet<uint>(probe.CompareAt) { OpenBiosBootMonitor.ShellLoadAddress, ExecutableBoundary };
 
@@ -252,6 +259,7 @@ internal static class OpenBiosProbeCommand
             using var interpreter = (InterpreterTitleExecutionEngine)backend.CreateEngine();
             var referenceMonitor = new OpenBiosBootMonitor(() => (interpreter.Cop0Diagnostics.Cause, interpreter.Cop0Diagnostics.Epc, interpreter.Cop0Diagnostics.BadVAddr));
             ulong fetches = 0;
+            var referenceClock = System.Diagnostics.Stopwatch.StartNew();
             interpreter.FetchObserver = pc =>
             {
                 fetches++;
@@ -259,6 +267,7 @@ internal static class OpenBiosProbeCommand
                 if (boundaryPcs.Contains(pc) && !reference.ContainsKey(pc))
                 {
                     reference[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
+                    referenceSeconds[pc] = referenceClock.Elapsed.TotalSeconds;
                 }
 
                 if (pc == probe.StopAt)
@@ -276,6 +285,14 @@ internal static class OpenBiosProbeCommand
             referenceMilestones = referenceMonitor.Evaluate(interpreter.ReadGuestWord);
             referenceMs = clock.Elapsed.TotalMilliseconds;
         }
+
+        // Why a fallback target had no native code: a deliberate observation point, RAM-placed code whose bytes matched no
+        // pre-generated version (stale, overwritten or different code), a PC inside a known image that the AOT build did
+        // not cover (coverage gap), or code from no known image at all (unknown: cannot be compiled ahead of time).
+        string FallbackCause(uint pc) => ClassifyFallback(pc, manifest, loadedCode, codeWords.Count());
+        var nativeAtBoundary = new Dictionary<uint, object>();
+        var runClock = new System.Diagnostics.Stopwatch();
+        RecompiledHostExecutionEngine? hostEngine = null;
 
         var directory = Path.Combine(Path.GetTempPath(), "psxrecomp-openbios-host-" + Guid.NewGuid().ToString("N"));
         var boundaries = new Dictionary<uint, ProbeGuestState>();
@@ -302,7 +319,8 @@ internal static class OpenBiosProbeCommand
                 mixedFallback: new MixedFallbackOptions(budget, uint.MaxValue),
                 guestFirmware: true,
                 runTimeout: TimeSpan.FromMinutes(30),
-                disc: probe.Disc)
+                disc: probe.Disc,
+                loadedCode: loadedCode)
             {
                 FallbackFetchObserver = (interpreter, pc) =>
                 {
@@ -313,6 +331,7 @@ internal static class OpenBiosProbeCommand
                     if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
                         boundaries[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
+                        nativeAtBoundary[pc] = new { nativeInstructions = hostEngine?.NativeRetiredInstructions, seconds = runClock.Elapsed.TotalSeconds, mmioRoundTrips = hostEngine?.HostRoundTrips?.MmioAccesses, timeReportRoundTrips = hostEngine?.HostRoundTrips?.TimeReports };
                     }
 
                     if (pc == probe.StopAt)
@@ -327,6 +346,8 @@ internal static class OpenBiosProbeCommand
                 },
                 FallbackTransitionObserver = accounting.OnTransition,
             };
+            hostEngine = engine;
+            runClock.Start();
             var compileMs = clock.Elapsed.TotalMilliseconds;
 
             // The artifact's first dispatch unit is the reset-vector block (it is always the build's entry); fallback
@@ -370,6 +391,17 @@ internal static class OpenBiosProbeCommand
                     staticFallbackTargets = image.FallbackTargets.Count,
                     symbols = probe.Symbols?.Count,
                 },
+                loadedImages = loadedImages.Select(static i => new
+                {
+                    name = i.Name,
+                    blocks = i.Build.Blocks.Count,
+                    nativeInstructions = i.Build.NativeInstructionCount,
+                    skippedEntries = i.Build.SkippedEntries.Select(Hex).ToArray(),
+                }).ToArray(),
+                loadedCodeVersions = loadedCode.Blocks.Count,
+                interpretedEntries = manifest.Interpreted.Order().Select(Hex).ToArray(),
+                precompileMilliseconds = buildMs + compileMs,
+                atBoundary = nativeAtBoundary.OrderBy(static b => b.Key).ToDictionary(static b => $"0x{b.Key:X8}", static b => b.Value),
                 execution = new
                 {
                     nativeInstructions = engine.NativeRetiredInstructions,
@@ -379,12 +411,15 @@ internal static class OpenBiosProbeCommand
                     pagesToInterpreter = evidence?.PagesToInterpreter,
                     pagesToArtifact = evidence?.PagesToArtifact,
                     distinctFallbackTargets = evidence?.Targets.Count,
-                    topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(12)
-                        .Select(static t => $"0x{t.Target:X8}:entries={t.Entries}:instructions={t.Instructions}").ToArray(),
+                    topFallbackTargets = evidence?.Targets.OrderByDescending(static t => t.Instructions).Take(16)
+                        .Select(t => $"0x{t.Target:X8}:entries={t.Entries}:instructions={t.Instructions}:cause={FallbackCause(t.Target)}").ToArray(),
                     timings = costs,
+                    mmioRoundTrips = engine.HostRoundTrips?.MmioAccesses,
+                    timeReportRoundTrips = engine.HostRoundTrips?.TimeReports,
+                    runSeconds = runClock.Elapsed.TotalSeconds,
                 },
                 accounting = accounting.Report(
-                    engine.NativeRetiredInstructions, evidence?.FallbackInstructions, image.Program.Blocks.Select(static b => b.EntryPc), probe.Symbols),
+                    engine.NativeRetiredInstructions, evidence?.FallbackInstructions, image.Program.Blocks.Select(static b => b.EntryPc).Concat(loadedCode.Blocks.Select(static b => b.Block.EntryPc)), probe.Symbols, FallbackCause),
                 timings = new
                 {
                     buildMs = Math.Round(buildMs, 1),
@@ -405,6 +440,7 @@ internal static class OpenBiosProbeCommand
                     b => boundaries.TryGetValue(b.Key, out var host)
                         ? ProbeGuestState.Compare(b.Value, host)
                         : (object)"not reached by the generated host (a PC inside a compiled block is not observable)"),
+                referenceSecondsAtBoundary = referenceSeconds.OrderBy(static b => b.Key).ToDictionary(static b => Hex(b.Key), static b => b.Value),
                 referenceBoundariesMissing = reference is null ? null : boundaries.Keys.Except(reference.Keys).Order().Select(Hex).ToArray(),
                 milestoneComparison = referenceMilestones is null ? null : new
                 {
@@ -529,6 +565,27 @@ internal static class OpenBiosProbeCommand
     }
 
     private static string Percent(JsonNode? share) => share is null ? "-" : $"{share.GetValue<double>() * 100:F1}%";
+
+    /// <summary>Classifies code coverage using guest physical aliases while retaining the caller's original PC.</summary>
+    internal static string ClassifyFallback(uint pc, LoadImageManifest manifest, LoadedCodeTable loadedCode, int romWords)
+    {
+        static uint Physical(uint address)
+        {
+            if (address >= 0xC0000000u) return address;
+            var physical = address <= 0x7FFFFFFFu ? address : address & 0x1FFFFFFFu;
+            return physical < 0x00800000u ? physical & 0x001FFFFFu : physical;
+        }
+
+        var at = Physical(pc);
+        if (manifest.Interpreted.Any(point => Physical(point) == at)) return "observation-point";
+        if (loadedCode.Contains(pc)) return "version-mismatch";
+        if (manifest.Images.Any(image => at >= Physical(image.LoadAddress)
+            && (ulong)at < (ulong)Physical(image.LoadAddress) + (ulong)image.Words.Length * 4))
+            return "aot-coverage-gap:loaded-image";
+        var rom = Physical(OpenBiosFirmware.ResetVector);
+        return at >= rom && (ulong)at < (ulong)rom + (ulong)romWords * 4
+            ? "aot-coverage-gap:rom" : "unknown-code";
+    }
 
     /// <summary>One hexadecimal block-entry PC per line (blank lines ignored); an explicit input, never guessed.</summary>
     private static IReadOnlyList<uint> ReadRoots(string path) =>

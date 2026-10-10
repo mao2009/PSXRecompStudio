@@ -81,6 +81,52 @@ public static class ReachableProgramBuilder
         return new FirmwareImageProgram(program, instructionWords.Count, native, outOfImage.ToArray());
     }
 
+    /// <summary>
+    /// Ahead-of-time build of a <em>loaded</em> code image (Issue #732): code that the guest itself places in RAM at run
+    /// time — kernel code a firmware copies from its ROM, vector stubs, a shell, a PS-X EXE — given here as explicit
+    /// input bytes at their <em>destination</em> address. Discovery and lowering are exactly
+    /// <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/>'s, from the explicit
+    /// <paramref name="roots"/> only, so branch, J/JAL and link targets are those of the destination; the same bytes
+    /// meant for two destinations are two separate builds. Nothing is ever compiled at run time.
+    /// <para>
+    /// Because the guest decides at run time what is really in RAM, every block carries the words it was compiled from
+    /// (<see cref="GuardedImageProgram.Guards"/>). The executing engine enters a block only while guest RAM holds exactly
+    /// those words and otherwise runs that PC in its counted interpreter fallback, so stale native code never runs. A
+    /// root whose code cannot be lowered (an unsupported instruction, an unformable fused unit) keeps no block.
+    /// </para>
+    /// </summary>
+    /// <param name="loadAddress">The guest address the image is loaded at (where it executes).</param>
+    /// <param name="words">The image, as little-endian words, in guest order.</param>
+    /// <param name="roots">Explicit entry PCs inside the image (for example symbols, an EXE entry point).</param>
+    /// <param name="excludedEntries">PCs that must never get a native block (observation points that stay interpreted).</param>
+    public static GuardedImageProgram BuildLoadedImage(
+        uint loadAddress, IReadOnlyList<uint> words, IEnumerable<uint> roots, IReadOnlySet<uint> excludedEntries)
+    {
+        ArgumentNullException.ThrowIfNull(words);
+        ArgumentNullException.ThrowIfNull(roots);
+        ArgumentNullException.ThrowIfNull(excludedEntries);
+
+        var imageEnd = (ulong)loadAddress + (ulong)words.Count * InstructionSize;
+        var rootList = roots.Concat(excludedEntries.Where(pc => (pc & 3u) == 0 && pc >= loadAddress && pc < imageEnd))
+            .Distinct().Order().ToList();
+        if (rootList.Count == 0)
+        {
+            return new GuardedImageProgram([], []);
+        }
+
+        var program = BuildCore(loadAddress, words, rootList[0], rootList, outOfImageTargets: null, out _, out var skipped);
+        var blocks = program.Blocks
+            .Where(block => !excludedEntries.Any(pc => pc >= block.EntryPc
+                && (ulong)pc < (ulong)block.EntryPc + (ulong)block.RetiredInstructionCount * InstructionSize))
+            .Select(block =>
+            {
+                var offset = (int)((block.EntryPc - loadAddress) / InstructionSize);
+                return new GuardedBlock(block, Enumerable.Range(offset, block.RetiredInstructionCount).Select(i => words[i]).ToArray());
+            })
+            .ToArray();
+        return new GuardedImageProgram(blocks, skipped.Order().ToArray());
+    }
+
     private static RecompilerIrProgram BuildCore(
         uint loadAddress,
         IReadOnlyList<uint> instructionWords,
@@ -88,6 +134,29 @@ public static class ReachableProgramBuilder
         IEnumerable<uint> additionalRoots,
         SortedSet<uint>? outOfImageTargets,
         out int nativeInstructionCount)
+        => BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets, out nativeInstructionCount, skippedLeaders: null);
+
+    private static RecompilerIrProgram BuildCore(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
+        IEnumerable<uint> additionalRoots,
+        SortedSet<uint>? outOfImageTargets,
+        out int nativeInstructionCount,
+        out HashSet<uint> skippedLeaders)
+    {
+        skippedLeaders = [];
+        return BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets, out nativeInstructionCount, skippedLeaders);
+    }
+
+    private static RecompilerIrProgram BuildCore(
+        uint loadAddress,
+        IReadOnlyList<uint> instructionWords,
+        uint entryPc,
+        IEnumerable<uint> additionalRoots,
+        SortedSet<uint>? outOfImageTargets,
+        out int nativeInstructionCount,
+        HashSet<uint>? skippedLeaders)
     {
         ArgumentNullException.ThrowIfNull(instructionWords);
         ArgumentNullException.ThrowIfNull(additionalRoots);
@@ -158,15 +227,25 @@ public static class ReachableProgramBuilder
                 outOfImageTargets);
         }
 
-        foreach (var leader in leaders)
+        foreach (var leader in leaders.ToArray())
         {
-            if (delaySlots.Contains(leader))
+            if (delaySlots.Contains(leader) && skippedLeaders is not null)
+            {
+                // A loaded image (BuildLoadedImage): a root that is also a delay slot keeps no block of its own.
+                leaders.Remove(leader);
+                skippedLeaders.Add(leader);
+            }
+            else if (delaySlots.Contains(leader))
             {
                 throw InvalidFlow($"PC 0x{leader:X8} is both a discovered block entry and a delay slot.");
             }
         }
 
-        var unobservedDelaySlotLoads = FindUnobservedDelaySlotLoads(image, decoded, delaySlots);
+        // Immutable ROM may prove that the first successor ignores a pending load. RAM image guards
+        // cover the unit itself, not those mutable successor words, so that proof is unavailable.
+        var unobservedDelaySlotLoads = skippedLeaders is null
+            ? FindUnobservedDelaySlotLoads(image, decoded, delaySlots)
+            : new HashSet<uint>();
         var blocks = new List<RecompilerIrBlock>();
         foreach (var leader in leaders)
         {
@@ -175,9 +254,23 @@ public static class ReachableProgramBuilder
                 continue;
             }
 
-            var stream = BuildBlock(leader, image, decoded, reachable, leaders);
-            var program = MipsToIrLowerer.LowerProgram(stream, unobservedDelaySlotLoads);
-            blocks.AddRange(program.Blocks);
+            if (skippedLeaders is null)
+            {
+                var stream = BuildBlock(leader, image, decoded, reachable, leaders);
+                blocks.AddRange(MipsToIrLowerer.LowerProgram(stream, unobservedDelaySlotLoads).Blocks);
+                continue;
+            }
+
+            // Observed run-time code (BuildObservedCode): an unsupported leader keeps no block and stays interpreted.
+            try
+            {
+                var stream = BuildBlock(leader, image, decoded, reachable, leaders);
+                blocks.AddRange(MipsToIrLowerer.LowerProgram(stream, unobservedDelaySlotLoads).Blocks);
+            }
+            catch (InvalidOperationException)
+            {
+                skippedLeaders.Add(leader);
+            }
         }
 
         nativeInstructionCount = reachable.Count;

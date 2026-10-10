@@ -125,6 +125,25 @@ Running a firmware (`RecompiledHostExecutionEngine(..., guestFirmware: true)`):
 - `NativeRetiredInstructions` (the sum of `RHOST_RETIRED` reports) and
   `MixedFallbackEvidence.FallbackInstructions` are the native/fallback split.
 
+### RAM-placed code versions (Issue #732, ADR-026)
+
+`RecompilerHostCodeGen.Generate(program, loadedCode)` additionally emits the pre-generated
+versions of code the guest places in RAM (`LoadedCodeTable`, built ahead of time by
+`ReachableProgramBuilder.BuildLoadedImage` from explicit images at their destination). Each
+version is its own function `recompiler_block_0x<pc>_v<n>`; the dispatch case for that PC
+calls the host helper
+
+```c
+extern int recompiler_code_current(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen);
+```
+
+once per version, in link order, with the words the version was compiled from, and runs the
+first version that matches; with none it jumps to the unknown-PC boundary (`default`). The
+production driver implements the helper over `artifact_ram` with per-4-KiB-page write
+generations (every RAM writer bumps them) and caches the generation of the last successful
+compare in `*seen`. Nothing is generated at run time. Without loaded code the source is
+byte-for-byte the single-argument output, and the helper is not declared.
+
 `recompiler_dispatch` selects the block with one `switch (state->pc)`; a
 default case is the unknown-PC boundary. A chain of comparisons cost time
 proportional to the block count per dispatch (7449 blocks for OpenBIOS).

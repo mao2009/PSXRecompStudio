@@ -19,25 +19,7 @@ public sealed class CdRomDiscDriveTests
     private const string BootPath = @"cdrom:\TEST.EXE;1";
 
     /// <summary>Wraps 2048-byte ISO sectors into raw 2352-byte Mode 2 Form 1 sectors (sync, BCD header, data subheader).</summary>
-    internal static byte[] Mode2Form1Image(byte[] iso)
-    {
-        var sectors = iso.Length / Iso9660Reader.SectorSize;
-        var image = new byte[sectors * ICdSectorSource.RawSectorSize];
-        for (var lba = 0; lba < sectors; lba++)
-        {
-            var sector = image.AsSpan(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
-            sector.Slice(1, 10).Fill(0xFF);
-            var absolute = lba + 150;
-            sector[12] = Bcd(absolute / 4500);
-            sector[13] = Bcd(absolute / 75 % 60);
-            sector[14] = Bcd(absolute % 75);
-            sector[15] = 2;
-            sector[18] = sector[22] = 0x08; // submode: data
-            iso.AsSpan(lba * Iso9660Reader.SectorSize, Iso9660Reader.SectorSize).CopyTo(sector[24..]);
-        }
-
-        return image;
-    }
+    internal static byte[] Mode2Form1Image(byte[] iso) => SyntheticDiscBuilder.Mode2Form1(iso);
 
     internal static RawCdSectorSource SyntheticDisc() =>
         new(Mode2Form1Image(new SyntheticIsoImageBuilder()

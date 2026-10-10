@@ -122,6 +122,7 @@ Constraints:
 - [Synthetic showcase demo](development/showcase-demo.md)
 - [References and Prior Art](REFERENCES.md)
 - [Architecture Decision Records](adr/)
+  - [ADR-026: AOT RAM-placed code](adr/026-aot-ram-placed-code.md)
 - CPU / R3000A
   - [R3000A Overview](cpu/r3000a.md)
   - [Registers](cpu/registers.md)
