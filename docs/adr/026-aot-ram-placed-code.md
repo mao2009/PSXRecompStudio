@@ -84,6 +84,11 @@ and `ArtifactFallbackSession`. Tests cover manifest validation, duplicate and
 multiple versions, stale native/fallback writes, compiled RAM calls and
 exception returns, aligned-memory faults returning through a fallback handler
 to native RAM code, and fallback observer composition in
-`RuntimeCodeGeneratedHostTests`. The integration tip must independently verify
+`RuntimeCodeGeneratedHostTests`. At a compiled-to-fallback return point, the guard validates the exact word span
+of each candidate loaded-code version against the RAM boundary. It must not
+assume a fixed three-word minimum: a valid short version at the end of RAM
+remains eligible even when a longer version at the same entry cannot fit.
+
+The integration tip must independently verify
 OpenBIOS differential parity; intermediate AOT builds do not contain later
 exact IRQ timing fixes.
