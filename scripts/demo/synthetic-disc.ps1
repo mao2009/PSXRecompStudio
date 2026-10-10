@@ -27,11 +27,13 @@ $ErrorActionPreference = 'Stop'
 $SectorSize = 2048
 $RawSector = 2352
 $PvdSector = 16
+$TerminatorSector = 17
 $RootSector = 18
+$PathTableSector = 19
 $FirstFile = 20
 $BootPath = 'cdrom:\PSXRECOMP.EXE;1'
 $ExeIsoName = 'PSXRECOMP.EXE;1'
-$ExpectedSha256 = '38243c8aadf5f44b1aaa8b8084df2b92bf39027e46f5f42d47fd309477a36522'
+$ExpectedSha256 = '4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27'
 
 # --- 1. the boot PS-X EXE: the checked BiosPutCharMarker fixture, built from first principles ----
 function Imm([int]$op, [int]$rt, [int]$imm) { [uint32](($op -shl 26) -bor ($rt -shl 16) -bor $imm) }
@@ -83,6 +85,17 @@ $iso[$pvd] = 1
 $iso[$pvd + 6] = 1
 [Text.Encoding]::ASCII.GetBytes('PSXRECOMP_TEST'.PadRight(32).Substring(0, 32)).CopyTo($iso, $pvd + 40)
 WriteU32 $iso ($pvd + 80) ([uint32]$cursor)
+# L path table (size @132, LBA @140) + descriptor-set terminator: OpenBIOS's CD driver needs both.
+WriteU32 $iso ($pvd + 132) ([uint32]10)
+WriteU32 $iso ($pvd + 140) ([uint32]$PathTableSector)
+$term = $TerminatorSector * $SectorSize
+$iso[$term] = 255
+[Text.Encoding]::ASCII.GetBytes('CD001').CopyTo($iso, $term + 1)
+$iso[$term + 6] = 1
+$table = $PathTableSector * $SectorSize
+$iso[$table] = 1
+WriteU32 $iso ($table + 2) ([uint32]$RootSector)
+$iso[$table + 6] = 1
 WriteDirRecord $iso ($pvd + 156) ([uint32]$RootSector) ([uint32]$SectorSize) ([byte]0x02) ([byte[]]@(0)) | Out-Null
 $root = $RootSector * $SectorSize
 $root += WriteDirRecord $iso $root ([uint32]$RootSector) ([uint32]$SectorSize) ([byte]0x02) ([byte[]]@(0))

@@ -17,7 +17,7 @@ public sealed class SyntheticDiscReproducibilityTests
 {
     // SHA-256 of SyntheticDiscBuilder.Bootable(GeneratedPsxExeFixtures.BiosPutCharMarker.Generate()).
     // Mirror this pin in scripts/demo/synthetic-disc.ps1.
-    private const string ExpectedSha256 = "38243c8aadf5f44b1aaa8b8084df2b92bf39027e46f5f42d47fd309477a36522";
+    private const string ExpectedSha256 = "4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27";
 
     private const int RawSector = ICdSectorSource.RawSectorSize;
     private const int Payload = Iso9660Reader.SectorSize;
@@ -59,6 +59,35 @@ public sealed class SyntheticDiscReproducibilityTests
     public void TheSyntheticDisc_MatchesTheCheckedContract()
     {
         Sha256Hex(Disc()).Should().Be(ExpectedSha256);
+    }
+
+    [Fact]
+    public void TheDisc_HasTheTerminatorAndRootPathTable_OpenBiosReadsToResolveFiles()
+    {
+        // OpenBIOS's dev_cd_open (cdromReadPathTable) follows the PVD: path-table size @132, L path-table LBA @140,
+        // then reads each entry's directory LBA from bytes 2..5 and parent from 6..7. Without this the open fails.
+        var source = new RawCdSectorSource(Disc());
+        byte[] User(int lba)
+        {
+            var raw = new byte[RawSector];
+            source.TryReadSector(lba, raw).Should().BeTrue();
+            return raw[24..(24 + Payload)];
+        }
+
+        var pvd = User(16);
+        var tableSize = BitConverter.ToUInt32(pvd, 132);
+        var tableLba = (int)BitConverter.ToUInt32(pvd, 140);
+        tableSize.Should().BeGreaterThan(0);
+        tableLba.Should().BeGreaterThan(17, "after the descriptor set");
+
+        var terminator = User(17);
+        terminator[0].Should().Be(255);
+        Encoding.ASCII.GetString(terminator, 1, 5).Should().Be("CD001");
+
+        var table = User(tableLba);
+        table[0].Should().Be(1, "root entry name length");
+        BitConverter.ToUInt32(table, 2).Should().Be(BitConverter.ToUInt32(pvd, 158), "the root entry points at the root directory");
+        (table[6] + table[7]).Should().Be(1, "the root is its own parent (OpenBIOS adds the two parent bytes)");
     }
 
     [Fact]

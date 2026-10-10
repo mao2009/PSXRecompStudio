@@ -95,13 +95,27 @@ which the shell's `waitVSync` polls.
 Observed with the pinned build and a synthetic Mode 2 disc (ISO 9660,
 `SYSTEM.CNF`, a 6-instruction PS-X EXE; no commercial data): the shell accepts
 the disc, schedules its boot, returns; the kernel runs `initCDRom`, opens
-`cdrom:SYSTEM.CNF;1`, loads `\TEST.EXE;1` through CD reads and DMA3, and
+`cdrom:SYSTEM.CNF;1`, loads the boot EXE named by `SYSTEM.CNF` through CD reads and DMA3, and
 `gameMainThunk` → `exec` enters the executable's entry `0x80010000` (about 192M
 instructions), which then writes its marker to RAM. Known gaps: the CHD adapter
 reports a single data track (CHT2 metadata not parsed); seek time is a fixed
 constant; no XA/CD-DA audio; the native DMA model's DICR bit layout differs
 from psx-spx (enables/flags swapped), so the kernel's DMA3 IRQ bookkeeping does
 not see its flag.
+
+What OpenBIOS's own CD driver needs from the disc and the drive (diagnosed with a
+CD command/sector trace for #732): `dev_cd_open` reads the path table only when
+the `GetStat` stat byte has bit 4 (ShellOpen) set, so a drive with a disc reports
+it on the first `GetStat` after power-on and clears it there; it then reads the
+PVD (LBA 16), the L path table (PVD offsets 132 size / 140 LBA) and the root
+directory. The synthetic ISO therefore carries a descriptor-set terminator
+(sector 17) and a one-entry L path table (sector 19); without them `open`
+returns -1 for `SYSTEM.CNF`, the default `PSX.EXE` is not found, `loadExe` fails
+and `fatal(0x38A)` halts in `unimplemented` at `0xBFC05E48` (`b .`, its delay-slot
+NOP is `0xBFC05E4C`). With both, the probe reaches `0x80010000` with
+`bootVerified`/`titleStarted` true (`PSXRECOMP.EXE`, 8.3 names are not required).
+The optional M path table is not emitted; the optional/extra descriptors are
+not modelled.
 
 ### Generated host (`--engine generated-host`)
 
@@ -308,6 +322,13 @@ generated-host execution of OpenBIOS is **not** verified (see the status line).
 through its own CD driver (synthetic disc and Persona). Not done: GTE (#447) so Persona cannot get
 past its first COP2 instruction; generated-host execution/parity; OpenBIOS as the default `run`
 backend; redistribution approval (#730).**
+
+### CD-ROM event ordering
+
+When a guest-time advance crosses multiple pending CD-ROM response or sector
+deadlines, the device processes each event in chronological order rather than
+processing an entire type of event before the other. This preserves observable
+IRQ/response ordering even when host execution advances time in large chunks.
 
 ### Generated memory-fault coverage (Issue #749)
 

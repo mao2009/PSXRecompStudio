@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.DiscImage;
@@ -27,7 +27,15 @@ public sealed class CdRomDiscDriveTests
             .AddFile("TEST.EXE;1", SyntheticPsxExeBuilder.BuildValid())
             .Build()));
 
-    private static CdRomDevice Drive() => new(CdRomDiscIdentity.LicensedMode2(), SyntheticDisc());
+    private static CdRomDevice FreshDrive() => new(CdRomDiscIdentity.LicensedMode2(), SyntheticDisc());
+
+    /// <summary>A drive whose power-on ShellOpen flag the guest's first GetStat has already consumed.</summary>
+    private static CdRomDevice Drive()
+    {
+        var cd = FreshDrive();
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        return cd;
+    }
 
     private static byte Bcd(int value) => (byte)((value / 10 << 4) | (value % 10));
 
@@ -69,6 +77,26 @@ public sealed class CdRomDiscDriveTests
 
         cd.SetInterruptFlag(0x07);
         return bytes.ToArray();
+    }
+
+    [Fact]
+    public void GetStat_ReportsShellOpenOnce_AfterPowerOnWithADisc()
+    {
+        // OpenBIOS's dev_cd_open reads the path table only when GetStat reports stat bit 4 (psx-spx "ShellOpen").
+        var cd = FreshDrive();
+
+        Command(cd, 0x01).Should().Equal(3, 0x12);
+        Command(cd, 0x01).Should().Equal(3, 0x02);
+    }
+
+    [Fact]
+    public void GetStat_NeverReportsShellOpen_WithoutADisc()
+    {
+        var cd = new CdRomDevice();
+        cd.WriteCommand(0x01);
+
+        RunUntilInterrupt(cd);
+        (cd.ReadRegister(1) & 0x10).Should().Be(0);
     }
 
     [Fact]
@@ -219,6 +247,7 @@ public sealed class CdRomDiscDriveTests
     public void BatchedRead_PreservesEqualDeadlineFifoAndAcknowledgementSpacing()
     {
         var cd = Drive();
+        var initialGeneration = cd.InterruptGeneration;
         Command(cd, 0x02, 0, 2, 0x16);
         cd.WriteCommand(0x06); // INT3 at the same time as GetParam, but inserted first.
         cd.WriteCommand(0x0F);
@@ -227,14 +256,14 @@ public sealed class CdRomDiscDriveTests
         cd.ResponseCount.Should().Be(1);
         cd.ReadRegister(1).Should().Be(0x22);
         cd.DataBytesAvailable.Should().Be(0, "sector arrival alone must not load the guest FIFO");
-        cd.InterruptGeneration.Should().Be(2, "SetLoc then the first ReadN packet; held IRQ prevents duplicates");
+        cd.InterruptGeneration.Should().Be(initialGeneration + 2, "SetLoc then the first ReadN packet; held IRQ prevents duplicates");
         cd.SetInterruptFlag(7);
         cd.Advance(CdRomDevice.MinimumInterruptDelayCycles - 1);
         cd.HasInterrupt.Should().BeFalse();
         cd.Advance(1);
         cd.GetInterruptFlag().Should().Be(0xE0 | CdRomDevice.IntAcknowledge);
         cd.ResponseCount.Should().Be(5, "the earlier same-deadline command packet precedes pending sector packets");
-        cd.InterruptGeneration.Should().Be(3);
+        cd.InterruptGeneration.Should().Be(initialGeneration + 3);
         cd.Reset();
         cd.Advance(4 * CdRomDevice.SingleSpeedSectorCycles);
         cd.HasInterrupt.Should().BeFalse("reset cancels all scheduled read and response events");
