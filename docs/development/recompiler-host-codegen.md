@@ -85,6 +85,50 @@ Exits without an exception resolution (e.g. the runtime AddSigned overflow exit)
 leave the `exception_*` fields untouched — the dispatcher and runners must not
 read them unless `termination_reason == 6` and `exception_raised == 1`.
 
+### Firmware mode and COP0 (Issue #732)
+
+`state->guest_exceptions != 0` (the artifact's `--guest-exceptions` flag) runs a
+firmware such as OpenBIOS: the dispatcher delivers a SYSCALL/BREAK exit to the
+guest's own exception vector through `recompiler_exception_entry` — EPC, CAUSE
+Excode/BD (CE cleared), the SR KU/IE push, and `0xBFC00180`/`0x80000080` by
+SR.BEV — clears the `exception_*` fields and continues there; the trap retires
+nothing. The hardware INT entry of the artifact driver uses the same helper. With
+the flag clear (every zero-initialised state) the pre-existing HLE behavior
+(`host_syscall`, or an `Exception` stop) is unchanged.
+
+MFC0/MTC0 read and write SR/CAUSE/EPC through the existing `cop0_sr`/`cop0_cause`/
+`cop0_epc` fields and every other COP0 register through `cop0_other[32]`
+(`recompiler_cop0_slot`, `recompiler_cop0_write`); every store is guarded by
+`recompiler_store_isolated` (SR.IsC). All constants come from `RecompilerCop0`.
+
+A firmware ROM is built with `ReachableProgramBuilder.BuildFirmwareImage(loadAddress,
+words, entry, roots)`, which reports `NativeInstructionCount` and the static
+`FallbackTargets` outside the image. Code without a block — RAM code the firmware
+copies at run time, a KSEG0 ROM alias, any indirect target not given as a root —
+reaches `host_transfer` and, with mixed execution, the interpreter fallback
+(Issue #693), which counts it as fallback, never as native.
+
+Running a firmware (`RecompiledHostExecutionEngine(..., guestFirmware: true)`):
+
+- An image whose load address translates into the BIOS ROM window
+  (physical `0x1FC00000`, 512 KiB) is loaded into the artifact's own
+  read-only `artifact_rom`. Loads through KUSEG/KSEG0/KSEG1 are served there,
+  stores are dropped (mask ROM; the native interpreter's memory still accepts
+  them — a known divergence that OpenBIOS never exercises). Without a ROM image
+  the window is relayed and refused exactly as before (Issue #678).
+- No BIOS HLE Runtime may be attached; the Runtime's BIOS vector and kernel
+  exception-handler routes are skipped. Every PC without a block (direct or
+  indirect, in or out of the image) goes to the fallback interpreter, which is
+  attached with the ROM written into its core and permits RAM/ROM execution.
+  It returns at any block entry with a clean pipeline, also from inside a guest
+  exception handler (a firmware SYSCALL handler returns to `EPC + 4`).
+- `NativeRetiredInstructions` (the sum of `RHOST_RETIRED` reports) and
+  `MixedFallbackEvidence.FallbackInstructions` are the native/fallback split.
+
+`recompiler_dispatch` selects the block with one `switch (state->pc)`; a
+default case is the unknown-PC boundary. A chain of comparisons cost time
+proportional to the block count per dispatch (7449 blocks for OpenBIOS).
+
 ### Dispatch function
 
 ```c
@@ -92,7 +136,7 @@ int32_t recompiler_dispatch(RecompilerState* state, uint32_t budget);
 ```
 
 A budgeted sequential dispatcher. It selects the block function whose entry PC
-matches `state->pc`, executes it, stops on a non-Success termination, and
+matches `state->pc` (a `switch`), executes it, stops on a non-Success termination, and
 refuses to retire more than `budget` instructions (reporting
 `RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED`). When a PC matches no generated
 block, the dispatcher first calls the optional `state->host_transfer` hook. If
@@ -247,3 +291,30 @@ Generator rejects (returns `Success=false` with machine-readable diagnostic):
   register-held target as a static address.
 
 Generator never silently produces partial source for invalid IR.
+
+### Firmware COP0 service
+
+Firmware artifacts keep SR/CAUSE/EPC in their existing state fields. Other COP0
+registers use the optional `host_cop0` callback and the additive
+`RHOST_COP0_ACCESS register write value` service (reply `V value` or `X`). The
+shared native core owns these registers across native/fallback transitions;
+standalone generated code with no callback retains its local register storage.
+Outstanding retired time is flushed before access. See ADR-025 for validation,
+compatibility and ownership; this service does not change transfer or fallback
+protocol versions.
+
+### Generated aligned address traps (Issue #749)
+
+Aligned CPU memory primitives with fault-site provenance check alignment before
+RAM/MMIO access and before SR.IsC store suppression. Failed LH/LHU/LW raise AdEL;
+failed SH/SW raise AdES. Virtual BadVAddr uses the existing COP0 owner callback;
+EPC/BD, CAUSE, SR stack and vector selection use the existing exception entry
+helper. Firmware continues into its guest handler and RFE/JR; standalone code
+stops with the existing raised exception snapshot.
+
+A memory fault may complete a pending load from the preceding instruction,
+including an observer whose successful write would otherwise cancel it. Only
+the completed prefix is credited, using `partial_retired` so a downstream
+instruction-boundary reporter cannot double-charge it. This field resets at
+every dispatch iteration, including interpreter fallback transfers. No new host
+protocol, runtime compilation, MMIO route, or device-time correction is added.

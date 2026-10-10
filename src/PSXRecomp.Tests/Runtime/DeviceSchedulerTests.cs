@@ -178,6 +178,35 @@ public sealed class DeviceSchedulerTests : IDisposable
         _interrupts.Status.Should().Be(0u);
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Vblank_ChunkedAdvancePreservesInterlaceFieldParity(int intervals)
+    {
+        _gpu.WriteGP1(0x08000027);
+        var field = _gpu.ReadGpustat() >> 13 & 1;
+        _scheduler.Advance((uint)intervals * DeviceScheduler.VblankIntervalCycles);
+
+        var expectedField = field ^ (uint)(intervals & 1);
+        (_gpu.ReadGpustat() >> 13 & 1).Should().Be(expectedField);
+        (_gpu.ReadGpustat() >> 31 & 1).Should().Be(expectedField ^ 1u);
+        _interrupts.Status.Should().Be(VblankBit);
+    }
+
+    [Fact]
+    public void Vblank_StartsTheGpusNextInterlaceField()
+    {
+        _gpu.WriteGP1(0x08000027); // 640x480 interlaced
+        var field = _gpu.ReadGpustat() >> 13 & 1;
+
+        _scheduler.Advance(DeviceScheduler.VblankIntervalCycles - 1);
+        (_gpu.ReadGpustat() >> 13 & 1).Should().Be(field);
+        _scheduler.Advance(1);
+
+        (_gpu.ReadGpustat() >> 13 & 1).Should().Be(field ^ 1, "the field polled by OpenBIOS's waitVSync flips at VBlank (Issue #732)");
+        _interrupts.Status.Should().Be(VblankBit);
+    }
+
     [Fact]
     public void CdRomCommandResponse_RaisesIrq2OnceUntilANewPacketActivates()
     {

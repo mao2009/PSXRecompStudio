@@ -93,7 +93,7 @@ public static class MipsToIrLowerer
                     exception: CreateTrapException(trapExcode, entryPc, inDelaySlot: false))));
         }
 
-        var builder = new BlockBuilder();
+        var builder = new BlockBuilder(entryPc);
         var failure = TryEmitInstruction(builder, instruction);
         if (failure is not null)
         {
@@ -103,7 +103,7 @@ public static class MipsToIrLowerer
         var exit = new RecompilerIrExit(
             RecompilerIrTerminationReason.Success,
             unchecked(entryPc + InstructionSize));
-        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit));
+        return MipsToIrLoweringResult.Success(new RecompilerIrBlock(entryPc, builder.Operations, exit, memoryFaultSites: builder.FaultSites));
     }
 
     /// <summary>
@@ -154,10 +154,10 @@ public static class MipsToIrLowerer
                 $"Opcode '{control.Opcode}' does not own a branch delay slot; lower it with Lower instead.");
         }
 
-        var builder = new BlockBuilder();
+        var builder = new BlockBuilder(entryPc);
         var failure = TryEmitControlTransfer(builder, control, entryPc, delaySlot, pendingLoad: null, out var exit);
         return failure ?? MipsToIrLoweringResult.Success(
-            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2));
+            new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, memoryFaultSites: builder.FaultSites));
     }
 
     /// <summary>
@@ -173,7 +173,18 @@ public static class MipsToIrLowerer
     /// falls outside what a fused block can represent.
     /// </para>
     /// </summary>
-    public static RecompilerIrProgram LowerProgram(IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions)
+    public static RecompilerIrProgram LowerProgram(IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions) =>
+        LowerProgram(instructions, unobservedDelaySlotLoads: null);
+
+    /// <summary>
+    /// <see cref="LowerProgram(IReadOnlyList{ValueTuple{R3000aInstruction, uint}})"/>, plus the control-transfer
+    /// PCs whose delay-slot load (or MFC0) the caller has proven unobservable on every successor
+    /// (<see cref="LoadShadowIsUnobserved"/>, Issue #732). Only for those is a delay-slot load lowered, and it
+    /// commits immediately: no successor instruction can tell the difference.
+    /// </summary>
+    internal static RecompilerIrProgram LowerProgram(
+        IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions,
+        IReadOnlySet<uint>? unobservedDelaySlotLoads)
     {
         ArgumentNullException.ThrowIfNull(instructions);
 
@@ -185,7 +196,13 @@ public static class MipsToIrLowerer
             if (instruction.DelaySlot != R3000aDelaySlotKind.None)
             {
                 var delaySlot = RequireDelaySlot(instructions, i);
-                blocks.Add(Require(LowerControlTransfer(instruction, entryPc, delaySlot), instruction, entryPc));
+                var builder = new BlockBuilder(entryPc);
+                var failure = TryEmitControlTransfer(
+                    builder, instruction, entryPc, delaySlot, pendingLoad: null, out var exit,
+                    allowDelaySlotLoad: unobservedDelaySlotLoads?.Contains(entryPc) == true);
+                blocks.Add(failure is null
+                    ? new RecompilerIrBlock(entryPc, builder.Operations, exit, retiredInstructionCount: 2, memoryFaultSites: builder.FaultSites)
+                    : throw Unsupported(failure, instruction, entryPc));
                 i += 2;
                 continue;
             }
@@ -261,7 +278,7 @@ public static class MipsToIrLowerer
         var (load, loadPc) = instructions[index];
         var (observer, observerPc) = instructions[index + 1];
 
-        var builder = new BlockBuilder();
+        var builder = new BlockBuilder(loadPc);
         var failure = TryEmitLoadValue(builder, load, mergeSource: null, out var loadedValue);
         if (failure is not null)
         {
@@ -271,9 +288,10 @@ public static class MipsToIrLowerer
         // A write to the load's target register in the load-delay slot cancels the
         // pending load on hardware (PSXCpu::SetGPR / WriteRegDelayed), so the
         // commit is dropped rather than reordered.
-        var target = load.LoadDelayInfo.TargetRegister;
+        TryGetLoadDelayTarget(load, out var target);
         var writesTarget = TryGetDestinationRegister(observer, out var destination) && destination == target;
         var pendingLoad = writesTarget ? (PendingLoadCommit?)null : new PendingLoadCommit(target, loadedValue);
+        builder.SetFaultContext(observerPc, false, 1, new PendingLoadCommit(target, loadedValue));
 
         if (observer.DelaySlot != R3000aDelaySlotKind.None)
         {
@@ -286,7 +304,7 @@ public static class MipsToIrLowerer
             }
 
             consumed = 3;
-            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3);
+            return new RecompilerIrBlock(loadPc, builder.Operations, transferExit, retiredInstructionCount: 3, memoryFaultSites: builder.FaultSites);
         }
 
         // LWL/LWR to the load's own target merge into the still-pending value
@@ -307,7 +325,7 @@ public static class MipsToIrLowerer
         var exit = new RecompilerIrExit(
             RecompilerIrTerminationReason.Success,
             unchecked(loadPc + (2 * InstructionSize)));
-        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2);
+        return new RecompilerIrBlock(loadPc, builder.Operations, exit, retiredInstructionCount: 2, memoryFaultSites: builder.FaultSites);
     }
 
     /// <summary>
@@ -321,12 +339,11 @@ public static class MipsToIrLowerer
         IReadOnlyList<(R3000aInstruction Instruction, uint EntryPc)> instructions, int index)
     {
         var (load, loadPc) = instructions[index];
-        if (!load.LoadDelayInfo.ProducesLoadDelay)
+        if (!TryGetLoadDelayTarget(load, out var target))
         {
             return false;
         }
 
-        var target = load.LoadDelayInfo.TargetRegister;
         if (target == 0 || index + 1 >= instructions.Count)
         {
             return false;
@@ -348,7 +365,7 @@ public static class MipsToIrLowerer
         R3000aInstruction next,
         uint nextPc)
     {
-        if (!load.LoadDelayInfo.ProducesLoadDelay || load.LoadDelayInfo.TargetRegister == 0)
+        if (!TryGetLoadDelayTarget(load, out var target) || target == 0)
         {
             return false;
         }
@@ -359,8 +376,37 @@ public static class MipsToIrLowerer
         }
 
         return TryGetSourceRegisters(next, out var sources)
-            && Array.IndexOf(sources, load.LoadDelayInfo.TargetRegister) >= 0;
+            && Array.IndexOf(sources, target) >= 0;
     }
+
+    /// <summary>
+    /// The register an instruction writes through the R3000A load delay: a memory load's target, or MFC0's
+    /// <c>rt</c> (<c>PSXCpu::ExecMfc0</c> writes through <c>WriteRegDelayed</c>; the decoder carries no
+    /// load-delay info for it, so it is derived from the encoded word). False for any other instruction.
+    /// </summary>
+    internal static bool TryGetLoadDelayTarget(R3000aInstruction instruction, out byte target)
+    {
+        if (instruction.Opcode == R3000aOpcode.Mfc0)
+        {
+            target = Cop0Rt(instruction);
+            return true;
+        }
+
+        target = instruction.LoadDelayInfo.TargetRegister;
+        return instruction.LoadDelayInfo.ProducesLoadDelay;
+    }
+
+    /// <summary>
+    /// Whether a load-delay commit to <paramref name="target"/> pending across <paramref name="successor"/> is
+    /// unobservable there: the successor provably does not read <paramref name="target"/>. Fails closed (false)
+    /// for an opcode whose sources this stage does not know. Committing the load before such a successor is
+    /// therefore indistinguishable from committing it after (a successor write to the target overwrites the
+    /// value either way).
+    /// </summary>
+    internal static bool LoadShadowIsUnobserved(byte target, R3000aInstruction successor) =>
+        target == 0 || (TryGetSourceRegisters(successor, out var sources) && Array.IndexOf(sources, target) < 0);
+
+    private static byte Cop0Rt(R3000aInstruction instruction) => (byte)((instruction.EncodedWord >> 16) & 0x1F);
 
     /// <summary>
     /// Rejects a second load delay stacked on the one just fused. The observer of
@@ -434,7 +480,8 @@ public static class MipsToIrLowerer
         uint controlPc,
         R3000aInstruction delaySlot,
         PendingLoadCommit? pendingLoad,
-        out RecompilerIrExit exit)
+        out RecompilerIrExit exit,
+        bool allowDelaySlotLoad = false)
     {
         exit = null!;
 
@@ -447,7 +494,7 @@ public static class MipsToIrLowerer
                 "UNPREDICTABLE on MIPS I (docs/cpu/pipeline.md) and is not lowered.");
         }
 
-        if (delaySlot.LoadDelayInfo.ProducesLoadDelay)
+        if (!allowDelaySlotLoad && TryGetLoadDelayTarget(delaySlot, out _))
         {
             return MipsToIrLoweringResult.Unsupported(
                 delaySlot.Opcode,
@@ -801,6 +848,7 @@ public static class MipsToIrLowerer
             return null;
         }
 
+        builder.SetFaultContext(controlPc, true, builder.RetiredPrefix + 1, null);
         var failure = TryEmitInstruction(builder, delaySlot);
         if (failure is null)
         {
@@ -829,13 +877,19 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Lui:
             case R3000aOpcode.J:
             case R3000aOpcode.Jal:
+            case R3000aOpcode.Mfc0:
+            case R3000aOpcode.Rfe:
                 sources = Array.Empty<byte>();
+                return true;
+            case R3000aOpcode.Mtc0:
+                sources = new[] { Cop0Rt(instruction) };
                 return true;
             case R3000aOpcode.Sll:
             case R3000aOpcode.Srl:
             case R3000aOpcode.Sra:
                 sources = new[] { instruction.Operand1.Register };
                 return true;
+            case R3000aOpcode.Add:
             case R3000aOpcode.Addu:
             case R3000aOpcode.Subu:
             case R3000aOpcode.And:
@@ -846,6 +900,7 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Sltu:
                 sources = new[] { instruction.Operand1.Register, instruction.Operand2.Register };
                 return true;
+            case R3000aOpcode.Addi:
             case R3000aOpcode.Addiu:
             case R3000aOpcode.Andi:
             case R3000aOpcode.Ori:
@@ -950,10 +1005,17 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Divu:
             case R3000aOpcode.Mthi:
             case R3000aOpcode.Mtlo:
+            case R3000aOpcode.Mtc0:
+            case R3000aOpcode.Rfe:
                 // Mult/Multu/Div/Divu write HI/LO, not a GPR; Mthi/Mtlo write HI/LO
-                // from a GPR they only read. None of the six has a GPR destination.
+                // from a GPR they only read. None of the six has a GPR destination,
+                // nor do the COP0 writes MTC0/RFE.
                 destination = 0;
                 return false;
+            case R3000aOpcode.Mfc0:
+                destination = Cop0Rt(instruction);
+                return true;
+            case R3000aOpcode.Add:
             case R3000aOpcode.Sll:
             case R3000aOpcode.Srl:
             case R3000aOpcode.Sra:
@@ -970,6 +1032,7 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Nor:
             case R3000aOpcode.Slt:
             case R3000aOpcode.Sltu:
+            case R3000aOpcode.Addi:
             case R3000aOpcode.Addiu:
             case R3000aOpcode.Andi:
             case R3000aOpcode.Ori:
@@ -1121,6 +1184,20 @@ public static class MipsToIrLowerer
             case R3000aOpcode.Mtlo:
                 builder.WriteLo(builder.ReadGpr(instruction.Operand0.Register));
                 return null;
+            case R3000aOpcode.Add:
+                EmitThreeRegisterArithmetic(builder, instruction, RecompilerIrOperationKind.AddSigned);
+                return null;
+            case R3000aOpcode.Mfc0:
+                // An unobserved MFC0 commits at once; an observed one is fused like a load
+                // (LowerObservedLoadDelay through TryEmitLoadValue).
+                builder.WriteGpr(Cop0Rt(instruction), builder.ReadCop0(instruction.CopInfo.CopRegisterNumber));
+                return null;
+            case R3000aOpcode.Mtc0:
+                builder.WriteCop0(instruction.CopInfo.CopRegisterNumber, builder.ReadGpr(Cop0Rt(instruction)));
+                return null;
+            case R3000aOpcode.Rfe:
+                builder.ReturnFromException();
+                return null;
             default:
                 return MipsToIrLoweringResult.Unsupported(
                     instruction.Opcode,
@@ -1240,6 +1317,12 @@ public static class MipsToIrLowerer
             return TryEmitUnalignedLoadValue(builder, instruction, mergeSource, out value);
         }
 
+        if (instruction.Opcode == R3000aOpcode.Mfc0)
+        {
+            value = builder.ReadCop0(instruction.CopInfo.CopRegisterNumber);
+            return null;
+        }
+
         // The shift amount is the sign-extension width: 0 for the zero-extending
         // forms (LBU/LHU) and for LW, which use the loaded value directly.
         (RecompilerIrOperationKind Kind, byte SignExtendShift)? shape = instruction.Opcode switch
@@ -1268,7 +1351,7 @@ public static class MipsToIrLowerer
         }
 
         var address = EmitEffectiveAddress(builder, memory);
-        var loaded = builder.Load(loadKind, address);
+        var loaded = builder.Load(loadKind, address, aligned: true);
 
         if (signExtendShift != 0)
         {
@@ -1382,7 +1465,7 @@ public static class MipsToIrLowerer
 
         var address = EmitEffectiveAddress(builder, memory);
         var value = builder.ReadGpr(instruction.Operand0.Register);
-        builder.Store(storeKind, address, value);
+        builder.Store(storeKind, address, value, aligned: true);
         return null;
     }
 
@@ -1421,8 +1504,25 @@ public static class MipsToIrLowerer
     /// One builder spans one IR block, so a fused control-transfer block numbers
     /// its delay-slot values after the transfer's own.
     /// </summary>
-    private sealed class BlockBuilder
+    private sealed class BlockBuilder(uint entryPc)
     {
+        private uint _faultPc = entryPc;
+        private bool _inDelaySlot;
+        private PendingLoadCommit? _faultLoad;
+        private readonly List<RecompilerMemoryFaultSite> _faultSites = [];
+        public IReadOnlyList<RecompilerMemoryFaultSite> FaultSites => _faultSites;
+        public int RetiredPrefix { get; private set; }
+        public void SetFaultContext(uint pc, bool delay, int retired, PendingLoadCommit? pending)
+        {
+            _faultPc = pc; _inDelaySlot = delay; RetiredPrefix = retired; _faultLoad = pending;
+        }
+        private void RecordFault(RecompilerIrOperationKind kind, bool aligned)
+        {
+            if (aligned && kind is RecompilerIrOperationKind.Load16 or RecompilerIrOperationKind.Load32 or RecompilerIrOperationKind.Store16 or RecompilerIrOperationKind.Store32)
+                _faultSites.Add(new RecompilerMemoryFaultSite(_operations.Count, _faultPc, _inDelaySlot, RetiredPrefix,
+                    (int?)_faultLoad?.Register ?? -1, _faultLoad?.ValueId ?? -1));
+        }
+
         private readonly List<RecompilerIrOperation> _operations = [];
         private int _nextValueId;
 
@@ -1446,11 +1546,17 @@ public static class MipsToIrLowerer
             AddWithResult(id => new RecompilerIrOperation(
                 kind, resultValueId: id, inputValueA: inputValueA, shiftAmount: shiftAmount));
 
-        public int Load(RecompilerIrOperationKind kind, int address) =>
-            AddWithResult(id => new RecompilerIrOperation(kind, resultValueId: id, inputValueA: address));
+        public int Load(RecompilerIrOperationKind kind, int address, bool aligned = false)
+        {
+            RecordFault(kind, aligned);
+            return AddWithResult(id => new RecompilerIrOperation(kind, resultValueId: id, inputValueA: address));
+        }
 
-        public void Store(RecompilerIrOperationKind kind, int address, int value) =>
+        public void Store(RecompilerIrOperationKind kind, int address, int value, bool aligned = false)
+        {
+            RecordFault(kind, aligned);
             _operations.Add(new RecompilerIrOperation(kind, inputValueA: address, inputValueB: value));
+        }
 
         public int ReadHi() =>
             AddWithResult(id => new RecompilerIrOperation(RecompilerIrOperationKind.ReadHi, resultValueId: id));
@@ -1463,6 +1569,17 @@ public static class MipsToIrLowerer
 
         public void WriteLo(int value) =>
             _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.WriteLo, inputValueA: value));
+
+        public int ReadCop0(byte register) =>
+            AddWithResult(id => new RecompilerIrOperation(
+                RecompilerIrOperationKind.ReadCop0, resultValueId: id, register: register));
+
+        public void WriteCop0(byte register, int value) =>
+            _operations.Add(new RecompilerIrOperation(
+                RecompilerIrOperationKind.WriteCop0, inputValueA: value, register: register));
+
+        public void ReturnFromException() =>
+            _operations.Add(new RecompilerIrOperation(RecompilerIrOperationKind.ReturnFromException));
 
         /// <summary>
         /// MULT/MULTU/DIV/DIVU: a two-input operation with no SSA result — it

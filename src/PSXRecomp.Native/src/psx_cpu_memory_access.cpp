@@ -79,6 +79,9 @@ void PSXCpu::ExecSb(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
     if (a.status != PSX_MEM_ACCESS_OK) {
         return; // unmapped store is dropped
     }
+    if (StoreIsCacheIsolated(a.vaddr)) {
+        return;
+    }
     memory.Write8(a.phys, static_cast<uint8_t>(gpr_[rt] & 0xFF));
 }
 
@@ -88,7 +91,7 @@ void PSXCpu::ExecSh(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
         RaiseAddressError(0x05, a.vaddr); // AdES
         return;
     }
-    if (a.status == PSX_MEM_ACCESS_UNMAPPED) {
+    if (a.status == PSX_MEM_ACCESS_UNMAPPED || StoreIsCacheIsolated(a.vaddr)) {
         return;
     }
     memory.Write16(a.phys, static_cast<uint16_t>(gpr_[rt] & 0xFFFF));
@@ -100,7 +103,7 @@ void PSXCpu::ExecSw(uint32_t rt, uint32_t rs, int16_t offset, PSXMemory& memory)
         RaiseAddressError(0x05, a.vaddr); // AdES
         return;
     }
-    if (a.status == PSX_MEM_ACCESS_UNMAPPED) {
+    if (a.status == PSX_MEM_ACCESS_UNMAPPED || StoreIsCacheIsolated(a.vaddr)) {
         return;
     }
     memory.Write32(a.phys, gpr_[rt]);

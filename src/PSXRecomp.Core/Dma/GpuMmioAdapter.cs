@@ -119,6 +119,12 @@ public sealed class GpuMmioAdapter : GpuInterface, IMemoryBus, IDisposable
         _device.AcknowledgeVblank();
     }
 
+    public void OnVblank()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _device.OnVblank();
+    }
+
     public void Reset()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

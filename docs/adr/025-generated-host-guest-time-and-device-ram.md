@@ -100,3 +100,68 @@ This supersedes "no second RAM and no copy/sync" **for the duration of one fallb
 ## Related
 
 - ADR-014, ADR-016, #442 (`DeviceScheduler`), #587 (CD-ROM DMA3), #678, #680
+
+## Amendment (Issue #732): batched VBlank field parity
+
+Batching several VBlank intervals preserves the GPU interlace field by toggling
+for odd interval counts while retaining a single latched IRQ0 in the existing
+scheduler stage. Even interval counts leave the field unchanged.
+
+## Amendment (Issue #732): firmware COP0 registers across mixed execution
+
+SR, CAUSE and EPC keep their existing artifact fields and fallback state transfer.
+In firmware mode, all other COP0 registers belong to the shared native core:
+MFC0/MTC0 use an optional generated-state callback rather than independent
+artifact copies. This preserves native reset values (including PRID) and writes
+made by interpreter fallback. An absent callback retains the existing standalone
+codegen contract; ordinary HLE artifacts do not enable it.
+
+The additive request is `RHOST_COP0_ACCESS register write value`, where register
+is 0..31 except 12..14 and write is 0 or 1. The host validates all fields and
+serves the native core's existing GetCop0/SetCop0 ABI. The reply is `V value` or
+`X`; malformed replies, unknown tags and out-of-range unsigned values fail
+closed. The artifact flushes outstanding retired time before the access. The
+access itself retires no instruction and introduces no synthetic device address.
+Transfer commands, fallback state version, SR/CAUSE/EPC ownership and guest IRQ
+acceptance are unchanged. Older peers remain valid for ordinary artifacts;
+firmware peers must understand this additive request or fail closed. There is
+no runtime compilation or full-register copy protocol.
+
+## Amendment (Issue #749): aligned memory faults and completed prefixes
+
+### Context
+
+Generated memory helpers previously assembled unaligned words as bytes. Guest
+firmware therefore missed AdEL/AdES, and correct explicit COP0 ownership alone
+could not reproduce BadVAddr or the handler boundary.
+
+### Decision
+
+Attach validated, optional memory-fault-site provenance to aligned CPU memory
+operations, retaining the existing primitive and exception contracts. Check
+alignment before any RAM/MMIO effect or IsC suppression, preserve virtual
+BadVAddr through the existing COP0 service, and use the existing EPC/BD/SR/vector
+helper. Commit an owed pending load on a fault even when a successful observer
+write would cancel it. Preserve already completed branch/link and load effects.
+
+Credit only the successful source-instruction prefix, not IR operations or the
+faulting instruction. `partial_retired` records credits already accounted in the
+current unit; both a fault and normal completion add only the uncredited
+remainder. Reset it for every dispatch iteration, including host transfers.
+Flush credited time through the existing service before publishing BadVAddr.
+Native and fallback continue to use the same host-owned scheduler and graph.
+No new request/reply tokens or protocol versions are required.
+
+### Consequences and alternatives
+
+LWL/LWR/SWL/SWR remain legal because their internal word accesses are already
+aligned and carry no aligned-source fault provenance. Generic raw IR remains
+compatible, and empty provenance does not alter legacy serialization. Malformed
+source locations or pending SSA commits fail validation before code generation.
+Synthetic fixture tests compare full CPU/COP0/RAM/device state and cycles at the
+guest vector, plus RFE return and native/fallback transitions. Full OpenBIOS
+parity remains a separate gate on the integrated stack.
+
+Rejected: patching byte helpers without a source location (cannot recover EPC,
+BD or owed loads), host-only re-execution after a side effect (too late), and a
+new CPU engine or exception protocol (duplicates existing ownership/contracts).

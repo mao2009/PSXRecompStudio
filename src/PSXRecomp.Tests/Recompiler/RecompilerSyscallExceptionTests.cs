@@ -98,10 +98,10 @@ public sealed class RecompilerSyscallExceptionTests
     [Fact]
     public void UnrelatedUnsupportedOpcodes_StillFailClosed()
     {
-        var add = R3000aDecoder.Decode(MipsEncoding.R(0x20, rd: 8, rs: 9, rt: 10, shamt: 0));
-        MipsToIrLowerer.Lower(add, EntryPc).IsSupported.Should().BeFalse();
-        var mtc0 = R3000aDecoder.Decode((0x10u << 26) | (4u << 21) | (8u << 16) | (12u << 11));
-        MipsToIrLowerer.Lower(mtc0, EntryPc).IsSupported.Should().BeFalse();
+        var sub = R3000aDecoder.Decode(MipsEncoding.R(0x22, rd: 8, rs: 9, rt: 10, shamt: 0));
+        MipsToIrLowerer.Lower(sub, EntryPc).IsSupported.Should().BeFalse();
+        var mtc2 = R3000aDecoder.Decode((0x12u << 26) | (4u << 21) | (8u << 16) | (12u << 11));
+        MipsToIrLowerer.Lower(mtc2, EntryPc).IsSupported.Should().BeFalse();
     }
 
     [Fact]

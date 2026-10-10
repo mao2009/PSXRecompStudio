@@ -47,6 +47,12 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Command-line flag that opts the artifact into the host-transfer protocol.</summary>
     public const string HostTransferFlag = "--host-transfer";
 
+    /// <summary>
+    /// Command-line flag (any position after the image) that runs the artifact in firmware mode (Issue #732): a
+    /// guest SYSCALL/BREAK enters the guest's own exception vector instead of the HLE <c>RHOST_SYSCALL</c> offer.
+    /// </summary>
+    public const string GuestExceptionsFlag = "--guest-exceptions";
+
     /// <summary>The child's handshake line, sent once before the first guest instruction runs.</summary>
     public const string ProtocolInitLine = "RHOST_INIT";
 
@@ -142,6 +148,9 @@ public static class RecompiledArtifactCodeGen
     /// event can go unobserved by a parent that has no other reason to hear from the child.
     /// </summary>
     public const int RetiredReportThreshold = 1024;
+
+    /// <summary>Firmware-only host-owned COP0 request: register, write flag and value; reply is V value or X.</summary>
+    public const string ProtocolCop0AccessPrefix = "RHOST_COP0_ACCESS ";
 
     /// <summary>
     /// The parent's request for the mixed-execution fallback state (Issue #693): <c>F version</c>. The child answers
@@ -242,7 +251,9 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
+                .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal),
             null,
             null);
     }
@@ -315,6 +326,22 @@ static int artifact_ram_offset(uint32_t address, uint32_t width, uint32_t* offse
     pa &= PSX_RAM_SIZE - 1u;
     if (pa > PSX_RAM_SIZE - width) return 0;
     *offset = pa;
+    return 1;
+}
+
+/* BIOS ROM window (Issue #732): physical 0x1FC00000, 512 KiB, reached through KUSEG/KSEG0/KSEG1 like RAM. A firmware
+   image loaded there is artifact-local and read-only: loads are served here, stores are dropped (the ROM is not
+   writable), and neither crosses the host protocol. Without a ROM image the window is not served here: an access is
+   relayed and refused like any address the Runtime does not model (Issue #678), never answered with 0. */
+#define PSX_ROM_BASE 0x1FC00000u
+#define PSX_ROM_SIZE (512u * 1024u)
+static uint8_t artifact_rom[PSX_ROM_SIZE];
+static int artifact_rom_loaded = 0;
+
+static int artifact_rom_offset(uint32_t address, uint32_t width, uint32_t* offset) {
+    uint32_t pa = artifact_translate(address);
+    if (!artifact_rom_loaded || pa < PSX_ROM_BASE || pa - PSX_ROM_BASE > PSX_ROM_SIZE - width) return 0;
+    *offset = pa - PSX_ROM_BASE;
     return 1;
 }
 
@@ -418,6 +445,29 @@ static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t a
     return (uint32_t)v;
 }
 
+/* Firmware COP0 outside SR/CAUSE/EPC belongs to the shared native core, including reset values.
+   This additive service uses the ordinary request/reply phase; it never masquerades as MMIO. */
+static uint32_t artifact_cop0_access(RecompilerState* state, uint32_t reg, uint32_t is_write, uint32_t value) {
+    char reply[8];
+    char token[32];
+    uint32_t result = 0u;
+    unsigned i, digit;
+    (void)state;
+    artifact_report_retired();
+    printf(""@COP0_ACCESS@%u %u %lu\n"", (unsigned)reg, (unsigned)is_write, (unsigned long)value);
+    fflush(stdout);
+    if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
+    if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
+    if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%31s"", token) != 1 || strlen(token) > 10u) exit(@EXIT_MMIO_PROTOCOL@);
+    for (i = 0u; token[i] != '\0'; i++) {
+        if (token[i] < '0' || token[i] > '9') exit(@EXIT_MMIO_PROTOCOL@);
+        digit = (unsigned)(token[i] - '0');
+        if (result > (UINT32_MAX - digit) / 10u) exit(@EXIT_MMIO_PROTOCOL@);
+        result = result * 10u + digit;
+    }
+    return result;
+}
+
 /* The RAM mirror window that is not addressable (the seam past the 2 MiB
    buffer) stays unmapped, exactly as before; it is not a device. */
 static int artifact_in_ram_window(uint32_t address) {
@@ -429,6 +479,7 @@ uint8_t recompiler_read_mem8(void* core, uint32_t address) {
     uint32_t pa;
     if (artifact_ram_offset(address, 1u, &pa)) return artifact_ram[pa];
     if (artifact_in_ram_window(address)) return 0;
+    if (artifact_rom_offset(address, 1u, &pa)) return artifact_rom[pa];
     return (uint8_t)artifact_mmio_access(""@MMIO_READ@"", 1u, address, 0, 0u);
 }
 
@@ -439,6 +490,7 @@ uint16_t recompiler_read_mem16(void* core, uint32_t address) {
         return (uint16_t)(artifact_ram[pa] | ((uint16_t)artifact_ram[pa + 1] << 8));
     }
     if (artifact_in_ram_window(address)) return 0;
+    if (artifact_rom_offset(address, 2u, &pa)) return (uint16_t)(artifact_rom[pa] | ((uint16_t)artifact_rom[pa + 1] << 8));
     return (uint16_t)artifact_mmio_access(""@MMIO_READ@"", 2u, address, 0, 0u);
 }
 
@@ -452,6 +504,12 @@ uint32_t recompiler_read_mem32(void* core, uint32_t address) {
             | ((uint32_t)artifact_ram[pa + 3] << 24));
     }
     if (artifact_in_ram_window(address)) return 0;
+    if (artifact_rom_offset(address, 4u, &pa)) {
+        return (uint32_t)(artifact_rom[pa]
+            | ((uint32_t)artifact_rom[pa + 1] << 8)
+            | ((uint32_t)artifact_rom[pa + 2] << 16)
+            | ((uint32_t)artifact_rom[pa + 3] << 24));
+    }
     return artifact_mmio_access(""@MMIO_READ@"", 4u, address, 0, 0u);
 }
 
@@ -459,7 +517,7 @@ void recompiler_write_mem8(void* core, uint32_t address, uint8_t value) {
     (void)core;
     uint32_t pa;
     if (artifact_ram_offset(address, 1u, &pa)) { artifact_ram[pa] = value; return; }
-    if (artifact_in_ram_window(address)) return;
+    if (artifact_in_ram_window(address) || artifact_rom_offset(address, 1u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 1u, address, 1, (uint32_t)value);
 }
 
@@ -471,7 +529,7 @@ void recompiler_write_mem16(void* core, uint32_t address, uint16_t value) {
         artifact_ram[pa + 1] = (uint8_t)(value >> 8);
         return;
     }
-    if (artifact_in_ram_window(address)) return;
+    if (artifact_in_ram_window(address) || artifact_rom_offset(address, 2u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 2u, address, 1, (uint32_t)value);
 }
 
@@ -485,7 +543,7 @@ void recompiler_write_mem32(void* core, uint32_t address, uint32_t value) {
         artifact_ram[pa + 3] = (uint8_t)(value >> 24);
         return;
     }
-    if (artifact_in_ram_window(address)) return;
+    if (artifact_in_ram_window(address) || artifact_rom_offset(address, 4u, &pa)) return;
     artifact_mmio_access(""@MMIO_WRITE@"", 4u, address, 1, value);
 }
 
@@ -743,10 +801,8 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     /* Provenance only lasts while control is still at the vector the entry set. */
     if (state->pc != 0x80000080u && state->pc != 0xBFC00180u) artifact_int_entry = 0;
     if (state->irq_line == 0u || (sr & 0x1u) == 0u || (sr & 0x400u) == 0u) return;
-    state->cop0_epc = state->pc;
-    state->cop0_cause = (state->cop0_cause & ~(0x7Cu | 0x30000000u | 0x80000000u)) | 0x400u;
-    state->cop0_sr = (sr & ~0x3Fu) | ((sr << 2) & 0x3Cu);
-    state->pc = (sr & 0x400000u) != 0u ? 0xBFC00180u : 0x80000080u;
+    /* The same entry a guest SYSCALL/BREAK takes in firmware mode (Issue #732); IP2 is kept, not replaced. */
+    state->pc = recompiler_exception_entry(state, 0u, state->pc, 0u);
     artifact_int_entry = 1;
 }
 
@@ -780,9 +836,15 @@ int main(int argc, char** argv) {
     unsigned long image_len = u;
     /* The whole image must sit inside the mapped low-8-MiB window (bytes past it
        are unmapped and cannot be represented); within it, bytes alias into the
-       2 MiB RAM exactly as PSXMemory does, including across the 2 MiB seam. */
-    if (image_len == 0ul || image_pa >= PSX_RAM_MIRROR_END
-        || (unsigned long long)image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa)) return 95; /* InvalidImage */
+       2 MiB RAM exactly as PSXMemory does, including across the 2 MiB seam.
+       Or (Issue #732) it is a firmware image wholly inside the BIOS ROM window. */
+    int image_in_rom = image_pa >= PSX_ROM_BASE && image_pa - PSX_ROM_BASE < PSX_ROM_SIZE;
+    if (image_len == 0ul
+        || (image_in_rom && (unsigned long long)image_len > (unsigned long long)(PSX_ROM_SIZE - (image_pa - PSX_ROM_BASE))))
+        return 95; /* InvalidImage */
+    artifact_rom_loaded = image_in_rom;
+    if (!image_in_rom && (image_pa >= PSX_RAM_MIRROR_END
+        || (unsigned long long)image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa))) return 95; /* InvalidImage */
 
     state.gpr[0] = 0;
     state.core = (void*)0;
@@ -799,11 +861,17 @@ int main(int argc, char** argv) {
     for (image_i = 0; image_i < image_len; image_i++) {
         int image_byte = fgetc(image);
         if (image_byte == EOF) { fclose(image); return 95; } /* InvalidImage: truncated */
-        artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
+        if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + (uint32_t)image_i] = (uint8_t)image_byte;
+        else artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
     }
     int image_extra = fgetc(image);
     fclose(image);
     if (image_extra != EOF) return 95; /* InvalidImage: oversized */
+
+    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
+    for (i = 3; i < argc; i++) {
+        if (strcmp(argv[i], ""@GUEST_EXCEPTIONS@"") == 0) state.guest_exceptions = 1u;
+    }
 
     /* Opt-in only: a stray extra argument never enables the protocol, so a run
        with no parent listening can never block on the handshake. */
@@ -814,6 +882,7 @@ int main(int argc, char** argv) {
         state.host_interrupt = &artifact_interrupt_boundary;
         artifact_state = &state;
         artifact_mmio_bridge = 1;
+        if (state.guest_exceptions) state.host_cop0 = &artifact_cop0_access;
         printf(""RHOST_INIT\n"");
         fflush(stdout);
         /* The parent's Runtime seeds its own jump-table sentinels here (byte

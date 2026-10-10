@@ -95,9 +95,13 @@ public sealed class DeviceScheduler
         _cdRomDma = cdRomDma;
     }
 
+    /// <summary>Total guest cycles accepted by this scheduler, independent of report chunking.</summary>
+    public ulong ElapsedCycles { get; private set; }
+
     /// <summary>Advances every device by <paramref name="cycles"/> elapsed CPU cycles.</summary>
     public void Advance(uint cycles)
     {
+        ElapsedCycles = checked(ElapsedCycles + cycles);
         if (cycles == 0)
         {
             return;
@@ -138,9 +142,11 @@ public sealed class DeviceScheduler
         }
         _dmaIrqLine = dmaLine;
 
-        // CD-ROM: response packets are event-driven rather than cycle-driven.
-        // Use the packet generation, not only a level edge, so an INT3 ack that
-        // immediately exposes a queued INT1/INT2 still produces a distinct IRQ2.
+        // CD-ROM: the drive's clock (a disc's sector stream and response delays,
+        // Issue #732) advances first. Use the packet generation, not only a level
+        // edge, so an INT3 ack that exposes a queued INT1/INT2 still produces a
+        // distinct IRQ2.
+        _cdRom?.Advance(cycles);
         if (_cdRom is not null &&
             _cdRom.HasInterrupt &&
             _cdRom.InterruptGeneration != _lastCdRomInterruptGeneration)
@@ -177,6 +183,8 @@ public sealed class DeviceScheduler
         var phase = (ulong)_cyclesSinceVblank + cycles;
         if (phase >= VblankIntervalCycles)
         {
+            // Each VBlank toggles the field; an even number leaves it unchanged.
+            if (((phase / VblankIntervalCycles) & 1u) != 0) _gpu?.OnVblank();
             _interrupts.Raise(VblankIrq);
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);

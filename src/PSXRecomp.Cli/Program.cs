@@ -26,6 +26,7 @@ public static class Program
 {
     private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--json]";
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
+    private const string UsageOpenBiosProbe = OpenBiosProbeCommand.Usage;
     private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--frame-evidence] [--json]";
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
@@ -52,6 +53,7 @@ public static class Program
             "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, standardOutput, standardError),
             "run" => Dispatch("run", rest, allowSegmentBudget: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, standardOutput, standardError),
             "doctor" => Doctor(rest, standardOutput, standardError),
+            "openbios-probe" => OpenBiosProbeCommand.Run(rest, standardOutput, standardError),
             "--help" or "-h" => Usage(standardOutput),
             _ => UnknownCommand(command, standardError),
         };
@@ -357,10 +359,12 @@ public static class Program
         writer.WriteLine("  recompile   build a runnable recompiled host artifact from a PS-X EXE or CHD");
         writer.WriteLine("  run         build and run a recompiled artifact from a PS-X EXE or CHD");
         writer.WriteLine("  doctor      check the OS, .NET, native runtime, and C compiler this CLI needs");
+        writer.WriteLine("  openbios-probe   execute a locally built OpenBIOS ROM on the shared native CPU (no HLE)");
         writer.WriteLine();
         writer.WriteLine(UsageRecompile);
         writer.WriteLine(UsageRun);
         writer.WriteLine(UsageDoctor);
+        writer.WriteLine(UsageOpenBiosProbe);
         writer.WriteLine();
         WriteExitCodes(writer);
     }

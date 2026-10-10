@@ -296,19 +296,20 @@ public class RecompilerIrMemoryEffectTests
     // --- 9: an exception-producing (trapping) operation fails explicitly ---
 
     [Fact]
-    public void Add_TheOverflowTrappingOpcode_IsUnsupportedAndFailsExplicitly()
+    public void Sub_TheOverflowTrappingOpcode_IsUnsupportedAndFailsExplicitly()
     {
-        // ADD (unlike ADDU) traps to an Overflow exception on signed overflow.
-        // This lowering stage does not model that exception effect, so it must
-        // fail closed rather than silently lower it as if it were ADDU.
-        var instruction = R3000aDecoder.Decode(MipsEncoding.R(0x20, rd: 8, rs: 9, rt: 10, shamt: 0));
-        instruction.Opcode.Should().Be(R3000aOpcode.Add);
+        // SUB (unlike SUBU) traps to an Overflow exception on signed overflow.
+        // This lowering stage does not model that exception effect for SUB, so it
+        // must fail closed rather than silently lower it as if it were SUBU.
+        // (ADD lowers since Issue #732, through the trapping AddSigned operation.)
+        var instruction = R3000aDecoder.Decode(MipsEncoding.R(0x22, rd: 8, rs: 9, rt: 10, shamt: 0));
+        instruction.Opcode.Should().Be(R3000aOpcode.Sub);
 
         var result = MipsToIrLowerer.Lower(instruction, EntryPc);
 
         result.IsSupported.Should().BeFalse();
         result.Block.Should().BeNull();
-        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Add);
+        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Sub);
     }
 
     // Issue #481: a reachable BREAK raises a synchronous Bp exception (Excode

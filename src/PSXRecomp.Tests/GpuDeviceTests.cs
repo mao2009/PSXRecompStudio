@@ -418,6 +418,34 @@ public class GpuDeviceTests
     }
 
     [Fact]
+    public void OnVblank_In480iMode_AlternatesTheFieldBit13_WithOddLineBit31Opposite()
+    {
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(0x08000027); // 640x480, interlaced
+
+        (gpu.ReadGpustat() >> 13 & 1).Should().Be(0u);
+        (gpu.ReadGpustat() >> 31).Should().Be(1u);
+        gpu.OnVblank();
+        (gpu.ReadGpustat() >> 13 & 1).Should().Be(1u, "each VBlank starts the next field (Issue #732)");
+        (gpu.ReadGpustat() >> 31).Should().Be(0u);
+        gpu.OnVblank();
+        (gpu.ReadGpustat() >> 13 & 1).Should().Be(0u);
+        (gpu.ReadGpustat() >> 31).Should().Be(1u);
+    }
+
+    [Fact]
+    public void OnVblank_WithoutInterlace_KeepsBit13SetAndBit31Clear()
+    {
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(0x08000001); // 320x240, progressive
+
+        gpu.OnVblank();
+
+        (gpu.ReadGpustat() >> 13 & 1).Should().Be(1u, "bit 13 is always 1 when GP1(08h).5 is 0");
+        (gpu.ReadGpustat() >> 31).Should().Be(0u);
+    }
+
+    [Fact]
     public void VramPointer_IsStable()
     {
         using var gpu = new GpuDevice();

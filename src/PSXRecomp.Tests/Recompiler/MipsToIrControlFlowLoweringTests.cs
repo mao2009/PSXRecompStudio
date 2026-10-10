@@ -498,19 +498,19 @@ public class MipsToIrControlFlowLoweringTests
     public void UnsupportedDelaySlotInstruction_PropagatesADiagnostic()
     {
         var jump = R3000aDecoder.Decode(MipsEncoding.Jump(0x80002000u));
-        // MFC0 (COP0 opcode field 0x10, selector 0 = move-from-coprocessor) remains
-        // unsupported by this lowering stage and, unlike a load, never produces a
-        // load-delay shadow — so it exercises the generic "delay-slot instruction
-        // is itself unsupported" path this test targets, not the separate
-        // load-in-delay-slot rejection. Issue #597 lowered MULT/MULTU/DIV/DIVU/
-        // MFHI/MFLO/MTHI/MTLO, so MULT no longer serves as an unsupported probe.
-        var unsupported = R3000aDecoder.Decode((0x10u << 26) | MipsEncoding.R(0, rd: 12, rs: 0, rt: 9, shamt: 0));
-        unsupported.Opcode.Should().Be(R3000aOpcode.Mfc0);
+        // SUB remains unsupported by this lowering stage and, unlike a load, never
+        // produces a load-delay shadow — so it exercises the generic "delay-slot
+        // instruction is itself unsupported" path this test targets, not the
+        // separate load-in-delay-slot rejection. Issue #597 lowered MULT/MFHI/...,
+        // and Issue #732 lowered MFC0 (a load-delayed move), so neither serves as
+        // an unsupported probe any more.
+        var unsupported = R3000aDecoder.Decode(MipsEncoding.R(0x22, rd: 12, rs: 9, rt: 10, shamt: 0));
+        unsupported.Opcode.Should().Be(R3000aOpcode.Sub);
 
         var result = MipsToIrLowerer.LowerControlTransfer(jump, EntryPc, unsupported);
 
         result.IsSupported.Should().BeFalse();
-        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Mfc0);
+        result.UnsupportedOpcode.Should().Be(R3000aOpcode.Sub);
         result.DiagnosticMessage.Should().Contain("delay-slot");
     }
 

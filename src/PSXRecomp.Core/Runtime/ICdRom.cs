@@ -37,4 +37,7 @@ public interface ICdRom
     bool HasInterrupt { get; }
     void AcknowledgeInterrupt();
     void Reset();
+
+    /// <summary>Advances the drive by elapsed CPU cycles (sector stream, delayed responses).</summary>
+    void Advance(uint cycles);
 }

@@ -43,7 +43,10 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     /// artifact, Issue #679) passes its own seam, so a device never writes a second, private RAM.</param>
     /// <param name="memoryCardSlots">Which card is in each slot for this graph's whole life (Issue #715); null is
     /// <see cref="MemoryCardSlotConfiguration.Empty"/>, the production default.</param>
-    public PsxDeviceGraph(IMemoryBus? deviceRam = null, MemoryCardSlotConfiguration? memoryCardSlots = null)
+    /// <param name="disc">The disc in the CD-ROM drive (Issue #732): the controller reads its sectors with hardware
+    /// timing. Null keeps the legacy BIOS-less model (a licensed disc identity with no sector source).</param>
+    public PsxDeviceGraph(
+        IMemoryBus? deviceRam = null, MemoryCardSlotConfiguration? memoryCardSlots = null, ICdSectorSource? disc = null)
     {
         MemoryCardSlots = memoryCardSlots ?? MemoryCardSlotConfiguration.Empty;
         Core = new PSXCoreWrapper();
@@ -58,7 +61,7 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
         // content/format and swap UX remain out of scope (#587 non-goals).
         // LoadData still supplies sector bytes as a separate, format-independent
         // boundary (Issue #586/#587), same as every focused CD-ROM test.
-        CdRomDevice = new CdRomDevice(CdRomDiscIdentity.LicensedMode2());
+        CdRomDevice = new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), disc);
         CdRomAdapter = new CdRomMmioAdapter(CdRomDevice);
         CdRomDmaTransfer = new CdRomDmaTransfer(CdRomDevice, DmaAdapter, deviceRam ?? Bus);
         Bus.AttachDmaAdapter(DmaAdapter);

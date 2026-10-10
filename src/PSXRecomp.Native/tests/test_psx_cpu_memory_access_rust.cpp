@@ -381,7 +381,41 @@ static void test_kseg1_stores_translate() {
     PASS();
 }
 
+static void test_cache_isolation_drops_cached_stores() {
+    TEST("SR.IsC drops KUSEG/KSEG0 SB/SH/SW/SWL/SWR stores but not KSEG1");
+    PSXCore* core = PSXCore_Create();
+    PSXCore_SetGPR(core, 2, 0x12345678u);
+    PSXCore_SetCop0(core, 12, 0x00010000u); // IsC
+    PSXCore_WriteMemory32(core, 0x2000u, 0xCAFEBABEu);
+    PSXCore_SetGPR(core, 29, 0x00002000u);           // KUSEG
+    PSXCore_SetGPR(core, 30, 0x80002000u);           // KSEG0
+    PSXCore_SetGPR(core, 28, 0xA0002000u);           // KSEG1
+    PSXCore_WriteMemory32(core, 0x100, 0xAFA20000u); // SW  $2, 0($29)
+    PSXCore_WriteMemory32(core, 0x104, 0xA7C20004u); // SH  $2, 4($30)
+    PSXCore_WriteMemory32(core, 0x108, 0xA3A20006u); // SB  $2, 6($29)
+    PSXCore_WriteMemory32(core, 0x10C, 0xABC20008u); // SWL $2, 8($30)
+    PSXCore_WriteMemory32(core, 0x110, 0xBBA2000Cu); // SWR $2, 12($29)
+    PSXCore_SetPC(core, 0x100);
+    for (int i = 0; i < 5; ++i) PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2000u), 0xCAFEBABEu);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2004u), 0u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2008u), 0u);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x200Cu), 0u);
+
+    PSXCore_WriteMemory32(core, 0x114, 0xAF820000u); // SW $2, 0($28)  (KSEG1 is uncached)
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2000u), 0x12345678u);
+
+    PSXCore_SetCop0(core, 12, 0u); // IsC cleared: a KSEG0 store reaches RAM again
+    PSXCore_SetPC(core, 0x104);
+    PSXCore_Step(core);
+    ASSERT_EQ(PSXCore_ReadMemory32(core, 0x2004u) & 0xFFFFu, 0x5678u);
+    PSXCore_Destroy(core);
+    PASS();
+}
+
 void run_psx_cpu_memory_access_rust_tests() {
+    test_cache_isolation_drops_cached_stores();
     test_mem_access_rust_exports();
     test_negative_offset_and_wrap();
     test_unmapped_load_queues_zero();
