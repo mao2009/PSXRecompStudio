@@ -149,7 +149,9 @@ public sealed class ScreenshotCaptureTests : IDisposable
         files.Should().HaveCount(1);
 
         // Validate PNG signature, IHDR dimensions and the independently decompressed RGBA scanlines.
+        #pragma warning disable AARC003 // Test-only inspection of PNG output
         var png = File.ReadAllBytes(files[0]);
+        #pragma warning restore AARC003
         png.AsSpan(0, 8).ToArray().Should().Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
         BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(16, 4)).Should().BeGreaterThan(0);
         BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(20, 4)).Should().BeGreaterThan(0);
