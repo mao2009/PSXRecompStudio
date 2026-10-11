@@ -1,3 +1,4 @@
+using System.Linq;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -24,12 +25,19 @@ public static class RecompileCommand
     /// </summary>
     public const string ArtifactBinaryName = "recompiled-artifact";
 
+    /// <summary>
+    /// The standalone artifact binary name.
+    /// </summary>
+    public const string StandaloneArtifactBinaryName = "persona";
+
     internal static int Run(ParsedArguments arguments, TextWriter standardOutput, TextWriter standardError)
     {
         var outputDirectory = Path.GetFullPath(arguments.OutputDirectory!);
         try
         {
-            var input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget: 1);
+            // For standalone artifacts, use a larger default budget so the generated code can actually execute
+            var segmentBudget = arguments.Standalone ? 10000u : 1u;
+            var input = CliInput.Load(arguments.Input!, outerBudget: 1, segmentBudget: segmentBudget);
             var program = CliInput.Lower(input, arguments.EntryRoots);
 
             var dispatch = RecompilerHostCodeGen.Generate(program);
@@ -44,7 +52,52 @@ public static class RecompileCommand
                     standardError);
             }
 
-            var artifact = RecompiledArtifactCodeGen.Generate(dispatch);
+            RecompiledArtifactCodeGenResult artifact;
+            string binaryName;
+            if (arguments.Standalone)
+            {
+                // Build standalone artifact with embedded initial state and program image
+                binaryName = StandaloneArtifactBinaryName;
+                
+                // Extract initial state from input request
+                var request = input.Request;
+                var initialGpr = request.InitialGpr;
+                var initialHi = request.InitialHi;
+                var initialLo = request.InitialLo;
+                var initialPc = request.EntryPc;
+                var budget = request.SegmentBudget;
+                var initialMemory = request.InitialMemory.Select(m => (m.Address, (uint)m.Value)).ToArray();
+                var imageLoadAddress = input.LoadAddress;
+                
+                // Convert instruction words to byte array (little-endian)
+                var programImage = new byte[input.InstructionWords.Count * 4];
+                for (int i = 0; i < input.InstructionWords.Count; i++)
+                {
+                    var word = input.InstructionWords[i];
+                    programImage[i * 4] = (byte)(word & 0xFF);
+                    programImage[i * 4 + 1] = (byte)((word >> 8) & 0xFF);
+                    programImage[i * 4 + 2] = (byte)((word >> 16) & 0xFF);
+                    programImage[i * 4 + 3] = (byte)((word >> 24) & 0xFF);
+                }
+
+                artifact = RecompiledArtifactCodeGen.GenerateStandalone(
+                    dispatch,
+                    initialGpr,
+                    initialHi,
+                    initialLo,
+                    initialPc,
+                    budget,
+                    initialMemory,
+                    imageLoadAddress,
+                    programImage);
+            }
+            else
+            {
+                // Standard artifact (requires input files at runtime)
+                binaryName = ArtifactBinaryName;
+                artifact = RecompiledArtifactCodeGen.Generate(dispatch);
+            }
+
             if (!artifact.Success)
             {
                 return Fail(
@@ -57,7 +110,7 @@ public static class RecompileCommand
             }
 
             var build = new GeneratedHostBuildService().Build(
-                new GeneratedHostBuildRequest(artifact.Source!, outputDirectory, ArtifactBinaryName));
+                new GeneratedHostBuildRequest(artifact.Source!, outputDirectory, binaryName));
             if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {
                 return Fail(

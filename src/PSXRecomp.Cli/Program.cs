@@ -24,7 +24,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 [Infrastructure]
 public static class Program
 {
-    private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--json]";
+    private const string UsageRecompile = "usage: psxrecomp recompile <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--standalone] [--json]";
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
     private const string UsageOpenBiosProbe = OpenBiosProbeCommand.Usage;
     private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--frame-evidence] [--json]";
@@ -108,6 +108,7 @@ public static class Program
         var json = false;
         var report = false;
         var frameEvidence = false;
+        var standalone = false;
         uint? segmentBudget = null;
         // Mixed execution is on by default for 'run' (ADR-012 amendment, Issue #693); the engine and
         // launcher keep their own explicit opt-in for embedders, and '--no-mixed-fallback' restores
@@ -254,6 +255,9 @@ public static class Program
                 case "--json":
                     json = true;
                     break;
+                case "--standalone":
+                    standalone = true;
+                    break;
                 default:
                     if (token.StartsWith("--", StringComparison.Ordinal))
                     {
@@ -283,7 +287,7 @@ public static class Program
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
             error = null;
             return true;
         }
@@ -302,7 +306,7 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
         error = null;
         return true;
     }
@@ -399,6 +403,7 @@ internal sealed record ParsedArguments(
     uint? SegmentBudget,
     bool Report,
     bool FrameEvidence,
+    bool Standalone,
     IReadOnlyList<uint> EntryRoots,
     bool Help,
     bool MixedFallback = false,
