@@ -267,9 +267,377 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
                 .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
-                .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal),
+                .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal)
+                // Restore the original main() signature over the standalone-marker comment.
+                // The marker only sits where the signature used to be, so this perfectly
+                // reinstates the original main function for the non-standalone artifact.
+                .Replace("/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */", "int main(int argc, char** argv) {", StringComparison.Ordinal),
             null,
             null);
+    }
+
+    /// <summary>
+    /// Generates a standalone artifact with embedded initial state and program image.
+    /// The resulting C source can be compiled into a single executable that runs
+    /// without any external input files.
+    /// </summary>
+    public static RecompiledArtifactCodeGenResult GenerateStandalone(
+        RecompilerHostCodeGenResult generatedDispatch,
+        IReadOnlyList<uint> initialGpr,
+        uint initialHi,
+        uint initialLo,
+        uint initialPc,
+        uint budget,
+        IReadOnlyList<(uint Address, uint Value)> initialMemory,
+        uint imageLoadAddress,
+        IReadOnlyList<byte> programImage)
+    {
+        ArgumentNullException.ThrowIfNull(generatedDispatch);
+        ArgumentNullException.ThrowIfNull(initialGpr);
+        ArgumentNullException.ThrowIfNull(initialMemory);
+        ArgumentNullException.ThrowIfNull(programImage);
+
+        if (!generatedDispatch.Success || generatedDispatch.Source is null)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                generatedDispatch.DiagnosticCode ?? "UPSTREAM_CODEGEN_FAILED",
+                generatedDispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
+        }
+
+        if (initialGpr.Count != 32)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "INVALID_GPR_COUNT",
+                "Initial GPR array must have exactly 32 elements.");
+        }
+
+        if (initialMemory.Count > MaxInitEntries)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "TOO_MANY_INIT_ENTRIES",
+                $"Initial memory has {initialMemory.Count} entries, exceeding the {MaxInitEntries} limit.");
+        }
+
+        // Build the standalone driver with embedded data; validate and propagate any
+        // structured failure (missing placeholder, file-IO leak) before returning.
+        var standaloneSource = BuildStandaloneSource(
+            generatedDispatch.Source!,
+            DriverSource,
+            initialGpr,
+            initialHi,
+            initialLo,
+            initialPc,
+            budget,
+            initialMemory,
+            imageLoadAddress,
+            programImage);
+
+        if (!standaloneSource.Success)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                standaloneSource.DiagnosticCode ?? "UPSTREAM_CODEGEN_FAILED",
+                standaloneSource.DiagnosticMessage ?? "Standalone source generation failed.");
+        }
+
+        return standaloneSource;
+    }
+
+    /// <summary>Counts non-overlapping occurrences of <paramref name="needle"/> in <paramref name="haystack"/>.</summary>
+    private static int CountOccurrences(string haystack, string needle) =>
+        needle.Length == 0 ? 0 : haystack.Split(needle, StringSplitOptions.None).Length - 1;
+
+    internal static RecompiledArtifactCodeGenResult BuildStandaloneSource(
+        string dispatchSource,
+        string driverTemplate,
+        IReadOnlyList<uint> initialGpr,
+        uint initialHi,
+        uint initialLo,
+        uint initialPc,
+        uint budget,
+        IReadOnlyList<(uint Address, uint Value)> initialMemory,
+        uint imageLoadAddress,
+        IReadOnlyList<byte> programImage)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        // Embedded initial GPRs
+        sb.AppendLine("static const uint32_t embedded_gpr[32] = {");
+        for (int i = 0; i < 32; i++)
+        {
+            sb.Append($"    0x{initialGpr[i]:X8}u");
+            if (i < 31) sb.Append(",");
+            sb.AppendLine();
+        }
+        sb.AppendLine("};");
+
+        // Embedded HI/LO
+        sb.AppendLine($"static const uint32_t embedded_hi = 0x{initialHi:X8}u;");
+        sb.AppendLine($"static const uint32_t embedded_lo = 0x{initialLo:X8}u;");
+
+        // Embedded PC
+        sb.AppendLine($"static const uint32_t embedded_pc = 0x{initialPc:X8}u;");
+
+        // Embedded budget
+        sb.AppendLine($"static const uint32_t embedded_budget = {budget}u;");
+
+        // Embedded initial memory
+        sb.AppendLine($"static const uint32_t embedded_init_count = {initialMemory.Count}u;");
+        if (initialMemory.Count > 0)
+        {
+            sb.AppendLine("static const uint32_t embedded_init_addrs[] = {");
+            for (int i = 0; i < initialMemory.Count; i++)
+            {
+                sb.Append($"    0x{initialMemory[i].Address:X8}u");
+                if (i < initialMemory.Count - 1) sb.Append(",");
+                sb.AppendLine();
+            }
+            sb.AppendLine("};");
+
+            sb.AppendLine("static const uint32_t embedded_init_vals[] = {");
+            for (int i = 0; i < initialMemory.Count; i++)
+            {
+                sb.Append($"    0x{initialMemory[i].Value:X8}u");
+                if (i < initialMemory.Count - 1) sb.Append(",");
+                sb.AppendLine();
+            }
+            sb.AppendLine("};");
+        }
+        else
+        {
+            sb.AppendLine("static const uint32_t embedded_init_addrs[1] = {0};");
+            sb.AppendLine("static const uint32_t embedded_init_vals[1] = {0};");
+        }
+
+        // Embedded program image
+        sb.AppendLine($"static const uint32_t embedded_image_load_address = 0x{imageLoadAddress:X8}u;");
+        sb.AppendLine($"static const uint32_t embedded_image_len = {programImage.Count}u;");
+        sb.AppendLine("static const uint8_t embedded_image[] = {");
+        for (int i = 0; i < programImage.Count; i++)
+        {
+            if (i % 16 == 0) sb.Append("    ");
+            sb.Append($"0x{programImage[i]:X2}");
+            if (i < programImage.Count - 1) sb.Append(", ");
+            if (i % 16 == 15 || i == programImage.Count - 1) sb.AppendLine();
+        }
+        sb.AppendLine("};");
+
+        // Build the standalone dispatch source: add the unsupported-transfer reason and
+        // remap the unknown-PC-with-steps branch so a run that stops at an unresolved
+        // transfer (no host_transfer attached) is not reported as success (Issue #757).
+        // These Replace targets are the exact lines emitted by RecompilerHostCodeGen.Generate;
+        // the legacy host-transfer artifact path leaves host_transfer != null, so this patch
+        // applies only to the standalone path.
+        // The unsupported-transfer reason is defined for the standalone unknown-PC path
+        // (Issue #757). Insert its #define right after the budget-exceeded reason so it is
+        // available to recompiler_dispatch before main runs the guest.
+        const string unsupportedTransferReasonDefine = "\n#define RECOMPILER_REASON_UNSUPPORTED_TRANSFER 5";
+        var unsupportedTransferReasonLine =
+            "#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7" + unsupportedTransferReasonDefine;
+
+        const string unknownPcSuccessLine =
+            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }";
+        const string unknownPcUnsupportedTransferLine =
+            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_UNSUPPORTED_TRANSFER; return 0; }";
+
+        var unknownPcLineCount = CountOccurrences(dispatchSource, unknownPcSuccessLine);
+        if (unknownPcLineCount != 1)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                unknownPcLineCount == 0
+                    ? "STANDALONE_DISPATCH_SEMANTICS_MISSING_TARGET"
+                    : "STANDALONE_DISPATCH_SEMANTICS_DUPLICATE_TARGET",
+                unknownPcLineCount == 0
+                    ? "The dispatch source's unknown-PC boundary rewrite target was not found; the standalone rewrite must not apply."
+                    : "The dispatch source's unknown-PC boundary rewrite target appears more than once; the standalone rewrite must not apply.");
+        }
+
+        var standaloneDispatchSource = dispatchSource.Replace(
+            "#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7",
+            unsupportedTransferReasonLine,
+            StringComparison.Ordinal).Replace(
+            unknownPcSuccessLine,
+            unknownPcUnsupportedTransferLine,
+            StringComparison.Ordinal);
+
+        // Verify the rewrite applied exactly once and no other branch was mutated.
+        if (CountOccurrences(standaloneDispatchSource, unknownPcSuccessLine) != 0
+            || CountOccurrences(standaloneDispatchSource, unknownPcUnsupportedTransferLine) != 1
+            || !standaloneDispatchSource.Contains("#define RECOMPILER_REASON_UNSUPPORTED_TRANSFER 5"))
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_DISPATCH_SEMANTICS_NOT_APPLIED",
+                "The standalone dispatch rewrite did not apply exactly once as expected.");
+        }
+
+        // Build the full driver source with replacements, then replace the driver's
+        // original main() with the standalone version at the explicit placeholder.
+        var fullDriver = driverTemplate
+            .Replace("#define PSX_MAX_INIT 4096u", $"#define PSX_MAX_INIT {MaxInitEntries}u", StringComparison.Ordinal)
+            .Replace("@MMIO_READ@", ProtocolMmioReadPrefix, StringComparison.Ordinal)
+            .Replace("@GTE@", ProtocolGtePrefix, StringComparison.Ordinal)
+            .Replace("@MMIO_WRITE@", ProtocolMmioWritePrefix, StringComparison.Ordinal)
+            .Replace("@MMIO_VALUE@", ProtocolMmioValueReply, StringComparison.Ordinal)
+            .Replace("@MMIO_REFUSED@", ProtocolMmioRefusedReply, StringComparison.Ordinal)
+            .Replace("@EXIT_MMIO_UNAVAILABLE@", MmioUnavailableExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_MMIO_REFUSED@", MmioRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_MMIO_PROTOCOL@", MmioProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@RETIRED@", ProtocolRetiredPrefix, StringComparison.Ordinal)
+            .Replace("@RETIRED_ACK@", ProtocolRetiredAckReply, StringComparison.Ordinal)
+            .Replace("@RETIRED_ACK_IRQ@", ProtocolRetiredAckInterruptReply, StringComparison.Ordinal)
+            .Replace("@RETIRED_REFUSED@", ProtocolRetiredRefusedReply, StringComparison.Ordinal)
+            .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
+            .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
+            .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal);
+
+        // Replace the original driver's main function with the standalone version. The
+        // marker comment is the explicit replacement point: we match on a dedicated
+        // comment that sits exactly where the old main began, not on the signature
+        // text itself (fragile). The old main body immediately follows the marker, so
+        // we replace the whole [marker .. old main closing brace] region at once.
+        var standaloneMain = BuildStandaloneMain();
+        const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
+        var mainStart = fullDriver.IndexOf(mainMarker, StringComparison.Ordinal);
+        if (mainStart < 0)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_MAIN_MISSING",
+                "The driver template is missing the standalone main marker; the standalone artifact cannot be built.");
+        }
+
+        // Detect a duplicated marker: the replacement point must be unique, otherwise
+        // the region we would clobber is ambiguous.
+        if (fullDriver.Split(mainMarker, StringSplitOptions.None).Length - 1 > 1)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_MAIN_DUPLICATED",
+                "The driver template contains the standalone main marker more than once; the main replacement point is ambiguous.");
+        }
+
+        // The original driver's main is the last function in the template, so its
+        // closing brace is the last '}' in the generated source. Replace the entire
+        // old-main region so the standalone artifact cannot accidentally inherit the
+        // old main's file-reading body.
+        var mainEnd = fullDriver.LastIndexOf('}');
+        if (mainEnd <= mainStart)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_MAIN_PARSE_ERROR",
+                "The driver template's main marker and its closing brace are in an unexpected order.");
+        }
+
+        fullDriver = fullDriver.Substring(0, mainStart) + standaloneMain + fullDriver.Substring(mainEnd + 1);
+
+        // Validate that the standalone main was inserted and that no file-reading
+        // helper from the original driver leaked into the source (the artifact must be
+        // self-contained). If the region replacement missed the old main, its fopen /
+        // fscanf usage would still be present and this check catches that.
+        if (fullDriver.Contains("fopen") || fullDriver.Contains("fscanf") || fullDriver.Contains("argv[1]") || fullDriver.Contains("argv[2]"))
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_FILE_IO_LEAK",
+                "The standalone artifact must be self-contained and must not contain file-reading helpers.");
+        }
+
+        return new RecompiledArtifactCodeGenResult(
+            true, standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
+    }
+
+    private static string BuildStandaloneMain()
+    {
+        return @"
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
+    RecompilerState state;
+    memset(&state, 0, sizeof(state));
+
+    // Copy embedded initial GPRs
+    for (int i = 0; i < 32; i++) {
+        state.gpr[i] = embedded_gpr[i];
+    }
+    state.hi = embedded_hi;
+    state.lo = embedded_lo;
+    state.pc = embedded_pc;
+    state.gpr[0] = 0;
+
+    uint32_t budget = embedded_budget;
+
+    // Apply embedded initial memory
+    memset(artifact_ram, 0, sizeof(artifact_ram));
+    for (uint32_t i = 0; i < embedded_init_count; i++) {
+        artifact_ram_write8(embedded_init_addrs[i], (uint8_t)embedded_init_vals[i]);
+    }
+
+    // Load embedded program image
+    uint32_t image_pa = artifact_translate(embedded_image_load_address);
+    int image_in_rom = image_pa >= PSX_ROM_BASE && image_pa - PSX_ROM_BASE < PSX_ROM_SIZE;
+    if (embedded_image_len == 0u
+        || (image_in_rom && (unsigned long long)embedded_image_len > (unsigned long long)(PSX_ROM_SIZE - (image_pa - PSX_ROM_BASE)))) {
+        return 95; /* InvalidImage */
+    }
+    artifact_rom_loaded = image_in_rom;
+    if (!image_in_rom && (image_pa >= PSX_RAM_MIRROR_END
+        || (unsigned long long)embedded_image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa))) {
+        return 95; /* InvalidImage */
+    }
+
+    for (uint32_t image_i = 0; image_i < embedded_image_len; image_i++) {
+        if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + image_i] = embedded_image[image_i];
+        else artifact_ram[(image_pa + image_i) & (PSX_RAM_SIZE - 1u)] = embedded_image[image_i];
+    }
+
+    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
+    state.guest_exceptions = 0;
+    state.host_transfer = 0;
+    state.host_syscall = 0;
+    state.host_retired = 0;
+    state.host_interrupt = 0;
+    artifact_mmio_bridge = 0;
+
+    recompiler_dispatch(&state, budget);
+    artifact_report_retired();
+
+    printf(""RSNAPSHOT_BEGIN\n"");
+    printf(""termination=%d\n"", (int)state.termination_reason);
+    printf(""pc=0x%08X\n"", state.pc);
+    printf(""hi=0x%08X\n"", state.hi);
+    printf(""lo=0x%08X\n"", state.lo);
+    for (int i = 0; i < 32; i++) printf(""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
+    printf(""exception.raised=%d\n"", (int)state.exception_raised);
+    printf(""exception.code=0x%08X\n"", state.exception_code);
+    printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
+    printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
+    printf(""cop0.sr=0x%08X\n"", state.cop0_sr);
+    printf(""cop0.cause=0x%08X\n"", state.cop0_cause);
+    printf(""cop0.epc=0x%08X\n"", state.cop0_epc);
+    printf(""RSNAPSHOT_END\n"");
+
+    return (int)state.termination_reason;
+}
+";
     }
 
     /// <summary>Artifact exit code: the program image file named by <c>argv[2]</c> could not be opened.</summary>
@@ -921,7 +1289,7 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     artifact_int_entry = 1;
 }
 
-int main(int argc, char** argv) {
+/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */
     if (argc < 3) return 90; /* MissingInput: argv[1] input file, argv[2] program image */
     FILE* in = fopen(argv[1], ""r"");
     if (!in) return 91;      /* CannotOpenInput */
