@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Recompiler;
@@ -251,4 +254,273 @@ public sealed class RecompiledArtifactCodeGenTests
             "if (declined == 0 && state->termination_reason == 0) {",
             "the RFE pop must stay gated on the serviced-return branch so a declined, unsupported, or fail-closed path keeps the post-entry SR");
     }
+
+    /// <summary>
+    /// The standalone builder rewrites the dispatch's legacy unknown-PC-with-steps
+    /// branch so that stopping at an unresolved transfer is never reported as
+    /// success — see #757. This test is source-level: the C text produced by
+    /// GenerateStandalone is asserted against the exact patch target, and the
+    /// compiled-run case is covered by GenerateStandalone_UnknownTransfer_LeavesELFWithTermination5AndExitCode5.
+    /// </summary>
+    [Fact]
+    public void GenerateStandalone_UnknownTransferBranch_ReplacedWithUnsupportedTransferReason()
+    {
+        // A JAL to an uncompiled address produces the dispatch's unknown-PC branch,
+        // which the standalone builder rewrites to RECOMPILER_REASON_UNSUPPORTED_TRANSFER
+        // (value 5, matching RecompilerIrTerminationReason.UnresolvedIndirectFlow)
+        // instead of RECOMPILER_REASON_SUCCESS.
+        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        var initialGpr = new uint[32];
+        var initialMemory = Array.Empty<(uint Address, uint Value)>();
+        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var result = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch,
+            initialGpr,
+            0u, 0u, 0x80001000u,
+            1000u,
+            initialMemory,
+            0x80001000u,
+            programImage);
+
+        result.Success.Should().BeTrue();
+        result.Source.Should().NotBeNull();
+        var source = result.Source!;
+
+        source.Should().Contain("#define RECOMPILER_REASON_UNSUPPORTED_TRANSFER 5");
+        source.Should().Contain(
+            "if (steps > 0) { state->termination_reason = RECOMPILER_REASON_UNSUPPORTED_TRANSFER; return 0; }");
+        // The legacy rewrite must not still label the unresolved PC as success.
+        source.Should().NotContain(
+            "if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }");
+    }
+
+    [Fact]
+    public void GenerateStandalone_UnknownTransfer_LeavesELFWithTermination5AndExitCode5()
+    {
+#pragma warning disable AARC003
+        // The full pipeline: generate standalone C, compile it with gcc, launch the ELF,
+        // and assert the stop reason is the unsupported-transfer boundary rather than
+        // success. Skips only if no C compiler is present; the source-level assertions
+        // above still hold without it.
+        var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
+        if (!File.Exists(gccPath))
+        {
+            return;
+        }
+
+        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        var initialGpr = new uint[32];
+        var initialMemory = Array.Empty<(uint Address, uint Value)>();
+        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var result = RecompiledArtifactCodeGen.GenerateStandalone(
+                dispatch,
+                initialGpr,
+                0u, 0u, 0x80001000u,
+                1000u,
+                initialMemory,
+                0x80001000u,
+                programImage);
+
+            result.Success.Should().BeTrue();
+            result.Source.Should().NotBeNull();
+
+            var cPath = Path.Combine(tempDir, "test.c");
+            File.WriteAllText(cPath, result.Source!);
+            var exePath = Path.Combine(tempDir, OperatingSystem.IsWindows() ? "test.exe" : "test");
+
+            var compile = RunCompiler(gccPath, cPath, exePath);
+            compile.ExitCode.Should().Be(0, "the self-contained generated artifact must compile");
+
+            var run = RunProcess(exePath);
+            run.ExitCode.Should().Be(5, "the process exit code must equal the stop reason (5 = unsupported transfer)");
+            run.Output.Should().Contain("termination=5");
+            run.Output.Should().Contain("pc=");
+            run.Output.Should().Contain("gpr[0]=0x00000000");
+            run.Output.Should().Contain("RSNAPSHOT_BEGIN");
+            run.Output.Should().Contain("RSNAPSHOT_END");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+#pragma warning restore AARC003
+    }
+
+    private static string GetOriginalDriverTemplate()
+    {
+        // DriverSource is a private const in the class; reflection reads the literal
+        // so the failure-mode tests can inject modified templates without changing
+        // production visibility of the generation machinery.
+        var field = typeof(RecompiledArtifactCodeGen)
+            .GetField("DriverSource", BindingFlags.NonPublic | BindingFlags.Static)!;
+        return (string)field.GetValue(null)!;
+    }
+
+    [Fact]
+    public void GenerateStandalone_MainMarkerMissing_ReturnsFailure()
+    {
+        var instr = R3000aDecoder.Decode(0x34020000u); // ori $v0, $zero, 0
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80010000u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        var template = GetOriginalDriverTemplate()
+            .Replace("/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */", string.Empty);
+        var initialGpr = new uint[32];
+        var result = RecompiledArtifactCodeGen.BuildStandaloneSource(
+            dispatch.Source!,
+            template,
+            initialGpr,
+            0u, 0u, 0x80010000u,
+            1000u,
+            Array.Empty<(uint Address, uint Value)>(),
+            0x80010000u,
+            Array.Empty<byte>());
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("STANDALONE_MAIN_MISSING");
+    }
+
+    [Fact]
+    public void GenerateStandalone_MainMarkerDuplicated_ReturnsFailure()
+    {
+        var instr = R3000aDecoder.Decode(0x34020000u); // ori $v0, $zero, 0
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80010000u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        var template = GetOriginalDriverTemplate()
+            .Replace("/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */",
+                "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */ /* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */");
+        var initialGpr = new uint[32];
+        var result = RecompiledArtifactCodeGen.BuildStandaloneSource(
+            dispatch.Source!,
+            template,
+            initialGpr,
+            0u, 0u, 0x80010000u,
+            1000u,
+            Array.Empty<(uint Address, uint Value)>(),
+            0x80010000u,
+            Array.Empty<byte>());
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("STANDALONE_MAIN_DUPLICATED");
+    }
+
+    [Fact]
+    public void GenerateStandalone_FileIOLeak_ReturnsFailure()
+    {
+        var instr = R3000aDecoder.Decode(0x34020000u); // ori $v0, $zero, 0
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80010000u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        // The leak check must not pass if the original driver's file-reading body
+        // survives. We inject an fopen immediately after the original main's closing
+        // brace so the region replacement (marker .. last '}') leaves it in the output.
+        var template = GetOriginalDriverTemplate();
+        var brace = template.LastIndexOf("}");
+        template = template.Insert(brace + 1, "\nFILE* leak = fopen(\"/dev/null\", \"r\");\n");
+        var initialGpr = new uint[32];
+        var result = RecompiledArtifactCodeGen.BuildStandaloneSource(
+            dispatch.Source!,
+            template,
+            initialGpr,
+            0u, 0u, 0x80010000u,
+            1000u,
+            Array.Empty<(uint Address, uint Value)>(),
+            0x80010000u,
+            Array.Empty<byte>());
+
+        result.Success.Should().BeFalse();
+        result.DiagnosticCode.Should().Be("STANDALONE_FILE_IO_LEAK");
+    }
+
+    [Fact]
+    public void GenerateStandalone_InitialState_EmbedsGpr0HiLoPcAndMemoryWithByteLevelWrap()
+    {
+        var dispatch = GenerateDispatch();
+        var initialGpr = new uint[32];
+        initialGpr[2] = 0x12345678u; // V0
+        var initialMemory = new (uint Address, uint Value)[] { (0x80010000u, 0xDEADBEEFu) };
+        var programImage = new byte[] { 0x00, 0x00, 0x02, 0x34 }; // ori $v0, $zero, 0
+        var result = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch,
+            initialGpr,
+            0xABCDABCDu,
+            0xEFEFEFEFu,
+            0x80010000u,
+            1000u,
+            initialMemory,
+            0x80010000u,
+            programImage);
+
+        result.Success.Should().BeTrue();
+        var source = result.Source!;
+
+        // gpr[0] is explicitly forced to zero — a requirement of the initial CPU state.
+        source.Should().Contain("state.gpr[0] = 0;");
+        source.Should().Contain("state.hi = embedded_hi;");
+        source.Should().Contain("state.lo = embedded_lo;");
+        source.Should().Contain("state.pc = embedded_pc;");
+        // Initial RAM starts zeroed, then embedded init values are written byte-wise.
+        source.Should().Contain("memset(artifact_ram, 0, sizeof(artifact_ram));");
+        source.Should().Contain("artifact_ram_write8(embedded_init_addrs[i], (uint8_t)embedded_init_vals[i]);");
+        // Image bytes are written one at a time and wrap inside the low 2 MiB RAM window.
+        source.Should().Contain("artifact_rom_loaded = image_in_rom;");
+        source.Should().Contain("(image_pa + image_i) & (PSX_RAM_SIZE - 1u)");
+        source.Should().Contain("PSX_ROM_BASE");
+        source.Should().Contain("PSX_ROM_SIZE");
+        source.Should().Contain("PSX_RAM_MIRROR_END");
+    }
+
+    private static (int ExitCode, string Output) RunCompiler(string gccPath, string sourcePath, string outputPath)
+    {
+        var compile = RunProcess(gccPath, $"-std=c11 -O0 -Wall -Wextra \"{sourcePath}\" -o \"{outputPath}\"", 30000);
+        if (compile.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"generated artifact failed to compile:\n{compile.Output}");
+        }
+        return (0, compile.Output);
+    }
+
+    private static (int ExitCode, string Output) RunProcess(string filePath) =>
+        RunProcess(filePath, string.Empty, 60000);
+
+#pragma warning disable AARC003
+    private static (int ExitCode, string Output) RunProcess(string fileName, string arguments, int timeoutMs)
+    {
+        var startInfo = new ProcessStartInfo(fileName, arguments)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        using var process = Process.Start(startInfo)!;
+        if (!process.WaitForExit(timeoutMs))
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            process.WaitForExit();
+            throw new TimeoutException($"host process timed out: {fileName} {arguments}");
+        }
+        process.WaitForExit();
+        return (process.ExitCode, process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd());
+    }
+#pragma warning restore AARC003
 }

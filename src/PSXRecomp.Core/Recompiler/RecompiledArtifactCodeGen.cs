@@ -267,7 +267,11 @@ public static class RecompiledArtifactCodeGen
                 .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
                 .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
-                .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal),
+                .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal)
+                // Restore the original main() signature over the standalone-marker comment.
+                // The marker only sits where the signature used to be, so this perfectly
+                // reinstates the original main function for the non-standalone artifact.
+                .Replace("/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */", "int main(int argc, char** argv) {", StringComparison.Ordinal),
             null,
             null);
     }
@@ -320,9 +324,11 @@ public static class RecompiledArtifactCodeGen
                 $"Initial memory has {initialMemory.Count} entries, exceeding the {MaxInitEntries} limit.");
         }
 
-        // Build the standalone driver with embedded data
+        // Build the standalone driver with embedded data; validate and propagate any
+        // structured failure (missing placeholder, file-IO leak) before returning.
         var standaloneSource = BuildStandaloneSource(
             generatedDispatch.Source!,
+            DriverSource,
             initialGpr,
             initialHi,
             initialLo,
@@ -332,15 +338,21 @@ public static class RecompiledArtifactCodeGen
             imageLoadAddress,
             programImage);
 
-        return new RecompiledArtifactCodeGenResult(
-            true,
-            standaloneSource,
-            null,
-            null);
+        if (!standaloneSource.Success)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                standaloneSource.DiagnosticCode ?? "UPSTREAM_CODEGEN_FAILED",
+                standaloneSource.DiagnosticMessage ?? "Standalone source generation failed.");
+        }
+
+        return standaloneSource;
     }
 
-    private static string BuildStandaloneSource(
+    internal static RecompiledArtifactCodeGenResult BuildStandaloneSource(
         string dispatchSource,
+        string driverTemplate,
         IReadOnlyList<uint> initialGpr,
         uint initialHi,
         uint initialLo,
@@ -413,8 +425,30 @@ public static class RecompiledArtifactCodeGen
         }
         sb.AppendLine("};");
 
-        // Build the full driver source with replacements, then replace main()
-        var fullDriver = DriverSource
+        // Build the standalone dispatch source: add the unsupported-transfer reason and
+        // remap the unknown-PC-with-steps branch so a run that stops at an unresolved
+        // transfer (no host_transfer attached) is not reported as success (Issue #757).
+        // These Replace targets are the exact lines emitted by RecompilerHostCodeGen.Generate;
+        // the legacy host-transfer artifact path leaves host_transfer != null, so this patch
+        // applies only to the standalone path.
+        // The unsupported-transfer reason is defined for the standalone unknown-PC path
+        // (Issue #757). Insert its #define right after the budget-exceeded reason so it is
+        // available to recompiler_dispatch before main runs the guest.
+        const string unsupportedTransferReasonDefine = "\n#define RECOMPILER_REASON_UNSUPPORTED_TRANSFER 5";
+        var unsupportedTransferReasonLine =
+            "#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7" + unsupportedTransferReasonDefine;
+
+        var standaloneDispatchSource = dispatchSource.Replace(
+            "#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7",
+            unsupportedTransferReasonLine,
+            StringComparison.Ordinal).Replace(
+            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }",
+            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_UNSUPPORTED_TRANSFER; return 0; }",
+            StringComparison.Ordinal);
+
+        // Build the full driver source with replacements, then replace the driver's
+        // original main() with the standalone version at the explicit placeholder.
+        var fullDriver = driverTemplate
             .Replace("#define PSX_MAX_INIT 4096u", $"#define PSX_MAX_INIT {MaxInitEntries}u", StringComparison.Ordinal)
             .Replace("@MMIO_READ@", ProtocolMmioReadPrefix, StringComparison.Ordinal)
             .Replace("@GTE@", ProtocolGtePrefix, StringComparison.Ordinal)
@@ -436,15 +470,65 @@ public static class RecompiledArtifactCodeGen
             .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
             .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal);
 
-        // Replace the main function with standalone version
+        // Replace the original driver's main function with the standalone version. The
+        // marker comment is the explicit replacement point: we match on a dedicated
+        // comment that sits exactly where the old main began, not on the signature
+        // text itself (fragile). The old main body immediately follows the marker, so
+        // we replace the whole [marker .. old main closing brace] region at once.
         var standaloneMain = BuildStandaloneMain();
-        var mainStart = fullDriver.IndexOf("int main(int argc, char** argv)");
-        if (mainStart >= 0)
+        const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
+        var mainStart = fullDriver.IndexOf(mainMarker, StringComparison.Ordinal);
+        if (mainStart < 0)
         {
-            fullDriver = fullDriver.Substring(0, mainStart) + standaloneMain;
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_MAIN_MISSING",
+                "The driver template is missing the standalone main marker; the standalone artifact cannot be built.");
         }
 
-        return dispatchSource + "\n" + sb.ToString() + "\n" + fullDriver;
+        // Detect a duplicated marker: the replacement point must be unique, otherwise
+        // the region we would clobber is ambiguous.
+        if (fullDriver.Split(mainMarker, StringSplitOptions.None).Length - 1 > 1)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_MAIN_DUPLICATED",
+                "The driver template contains the standalone main marker more than once; the main replacement point is ambiguous.");
+        }
+
+        // The original driver's main is the last function in the template, so its
+        // closing brace is the last '}' in the generated source. Replace the entire
+        // old-main region so the standalone artifact cannot accidentally inherit the
+        // old main's file-reading body.
+        var mainEnd = fullDriver.LastIndexOf('}');
+        if (mainEnd <= mainStart)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_MAIN_PARSE_ERROR",
+                "The driver template's main marker and its closing brace are in an unexpected order.");
+        }
+
+        fullDriver = fullDriver.Substring(0, mainStart) + standaloneMain + fullDriver.Substring(mainEnd + 1);
+
+        // Validate that the standalone main was inserted and that no file-reading
+        // helper from the original driver leaked into the source (the artifact must be
+        // self-contained). If the region replacement missed the old main, its fopen /
+        // fscanf usage would still be present and this check catches that.
+        if (fullDriver.Contains("fopen") || fullDriver.Contains("fscanf") || fullDriver.Contains("argv[1]") || fullDriver.Contains("argv[2]"))
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_FILE_IO_LEAK",
+                "The standalone artifact must be self-contained and must not contain file-reading helpers.");
+        }
+
+        return new RecompiledArtifactCodeGenResult(
+            true, standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
     }
 
     private static string BuildStandaloneMain()
@@ -1170,7 +1254,7 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     artifact_int_entry = 1;
 }
 
-int main(int argc, char** argv) {
+/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */
     if (argc < 3) return 90; /* MissingInput: argv[1] input file, argv[2] program image */
     FILE* in = fopen(argv[1], ""r"");
     if (!in) return 91;      /* CannotOpenInput */
