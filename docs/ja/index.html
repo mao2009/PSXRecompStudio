@@ -46,6 +46,16 @@
       <p class="actions"><a class="button" href="https://github.com/mao2009/PSXRecompStudio">GitHubでソースを見る</a></p>
     </section>
 
+    <section id="persona-milestone">
+      <h2>最新の成果：Personaのオープニング描画</h2>
+      <p>OpenBIOSを用いたインタープリタ経路で『女神異聞録ペルソナ』のオープニング冒頭を表示できました。ATLUSロゴと「胡蝶の夢」に関する文章をVBlank単位で確認しています。</p>
+      <div class="grid">
+        <figure class="card"><img src="../assets/images/persona-opening/atlus-logo.png" width="320" height="240" loading="lazy" alt="ペルソナのオープニングに表示されたATLUSロゴ" style="max-width:100%;height:auto"><figcaption>ATLUSロゴ — VBlank 1200</figcaption></figure>
+        <figure class="card"><img src="../assets/images/persona-opening/butterfly-dream.png" width="320" height="240" loading="lazy" alt="胡蝶の夢を題材としたオープニング文章" style="max-width:100%;height:auto"><figcaption>冒頭の文章 — VBlank 2700</figcaption></figure>
+      </div>
+      <p><strong>達成範囲：</strong>実ゲームの描画進行を確認しましたが、タイトル画面到達、ゲーム全体のAOT再コンパイル、操作可能性は未確認です。<a href="https://github.com/mao2009/PSXRecompStudio/pull/754">証拠・実装（PR #754）</a>をご覧ください。画像は互換性研究の限定的な資料であり、本プロジェクトはATLUSと無関係です。</p>
+    </section>
+
     <section>
       <h2>PSXRecompStudioとは？</h2>
       <p>合法的に用意したPS-X EXEや対応CHDを解析し、MIPS R3000A命令、制御フロー、BIOS呼び出し、再コンパイル可能範囲を検証する研究基盤です。C#/.NETの解析・アプリケーション層と、C++/Rust混在のNative Coreを安定したC ABIで接続しています。</p>

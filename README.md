@@ -9,6 +9,17 @@ It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a determinist
 
 [日本語 README](README.ja.md) · [Project website](https://mao2009.github.io/PSXRecompStudio/) · [Latest release](https://github.com/mao2009/PSXRecompStudio/releases/latest)
 
+## Milestone: Persona opening captured (October 2026)
+
+**The OpenBIOS interpreter execution path has visibly reached the opening sequence of *Megami Ibunroku Persona*.** VBlank-accurate screenshots show the ATLUS logo followed by the opening text inspired by Zhuangzi's butterfly dream. This is a real game-rendering milestone, not proof of complete static recompilation or a playable native port.
+
+![ATLUS logo from Persona opening](docs/assets/images/persona-opening/atlus-logo.png)
+![Persona opening text — butterfly dream](docs/assets/images/persona-opening/butterfly-dream.png)
+
+*Captured at VBlank 1200 and 2700 respectively. [Capture implementation and verification (PR #754)](https://github.com/mao2009/PSXRecompStudio/pull/754). Game imagery is shown solely to document interoperability research; Persona and ATLUS belong to their respective rights holders. This project is unaffiliated with ATLUS.*
+
+**Important boundaries:** This result uses the OpenBIOS / interpreter path. Full intro completion, title screen, user input, AOT parity, and full-game compatibility are **not established**.
+
 ## What works today
 
 - **Runnable recompilation pipeline:** MIPS → IR/lowering → deterministic host code → native artifact → bounded execution.
