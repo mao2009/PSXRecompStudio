@@ -616,7 +616,7 @@ public static class ScreenshotCommand
             new uint[TitleExecutionRequest.GprCount],
             0, 0,
             [],
-            1000,
+            segments, // outer budget: segments like openbios-probe
             segmentBudget);
 
         ScreenshotCapture? screenshotCapture = null;
@@ -644,114 +644,114 @@ public static class ScreenshotCommand
                 maxScreenshots,
                 startVblank);
 
-            // Run the interpreter directly in a loop, capturing screenshots at VBlank intervals
-            // This avoids the ExecutionOrchestrator which is designed for recompiled engines
-            while (true)
+            var orchestrator = new ExecutionOrchestrator();
+            var handoff = new ScreenshotHandoff(screenshotCapture, vblankInterval, startVblank, maxScreenshots);
+            var result = orchestrator.Execute(interpreterEngine, handoff, request);
+            executionResult = result;
+            stopReason = result.State.ToString();
+
+            // Capture screenshots at VBlank intervals by checking VBlank count
+            var vblankCount = interpreterEngine.Scheduler?.VblankCount ?? 0;
+            for (ulong v = startVblank; v <= vblankCount && screenshotCapture.ScreenshotsTaken < maxScreenshots; v += vblankInterval)
             {
-                if (stopwatch.Elapsed >= timeout)
+                screenshotCapture.ForceCapture($"persona_vblank_{v:D4}.png");
+            }
+
+            // Final capture if not complete
+            if (!screenshotCapture.IsComplete)
+            {
+                screenshotCapture.ForceCapture("persona_vblank_final.png");
+            }
+
+            // Collect saved files
+            if (Directory.Exists(outputDirectory))
+            {
+                savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
+                    .OrderBy(f => f)
+                    .Select(Path.GetFullPath));
+            }
+
+            var maxVblank = interpreterEngine.Scheduler?.VblankCount ?? 0;
+
+            return new HeadlessRunResult(
+                executionResult ?? new TitleExecutionResult(
+                    TitleExecutionState.RuntimeFailure,
+                    null, 0, InterpreterTitleExecutionEngine.EngineName,
+                    "NO_RESULT", "Execution did not produce a result"),
+                screenshotCapture.ScreenshotsTaken,
+                maxVblank,
+                savedFiles.AsReadOnly(),
+                stopwatch.Elapsed,
+                stopReason);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                stopReason = $"Crash: {ex.GetType().Name}";
+                standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
+
+                // Final capture if not complete
+                if (!screenshotCapture.IsComplete)
                 {
-                    stopReason = "WallClockTimeout";
-                    break;
+                    screenshotCapture.ForceCapture("persona_vblank_final.png");
                 }
 
-                if (screenshotCapture.IsComplete)
+                // Collect saved files
+                if (Directory.Exists(outputDirectory))
                 {
-                    stopReason = "ScreenshotsComplete";
-                    break;
+                    savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
+                        .OrderBy(f => f)
+                        .Select(Path.GetFullPath));
                 }
 
-                var currentVblank = interpreterEngine.Scheduler!.VblankCount;
-                if (currentVblank == lastVblank && stopwatch.Elapsed > TimeSpan.FromSeconds(60))
-                {
-                    stopReason = "HangDetected";
-                    break;
-                }
-                lastVblank = currentVblank;
+                var maxVblank = interpreterEngine.Scheduler?.VblankCount ?? 0;
 
-                // Run one segment directly on the interpreter
-                var gpr = new uint[32];
-                for (int i = 0; i < 32; i++)
-                {
-                    gpr[i] = interpreterEngine.ReadGuestGpr(i);
-                }
-                var segmentResult = interpreterEngine.RunSegment(new TitleExecutionSegmentRequest(
-                    gpr, interpreterEngine.DiagnosticDevices.Core.Hi, interpreterEngine.DiagnosticDevices.Core.Lo, interpreterEngine.DiagnosticDevices.Core.Pc, segmentBudget));
-
-                // Try to capture screenshot at VBlank boundaries
-                screenshotCapture.TryCapture();
-
-                if (segmentResult.Status != RecompilerExecutionStatus.Completed || segmentResult.Snapshot is null)
-                {
-                    stopReason = "EngineFailure";
-                    executionResult = new TitleExecutionResult(
+                return new HeadlessRunResult(
+                    new TitleExecutionResult(
                         TitleExecutionState.RuntimeFailure,
-                        segmentResult.Snapshot, 1, engine.Name,
-                        segmentResult.DiagnosticCode ?? "ENGINE_FAILED",
-                        segmentResult.DiagnosticMessage ?? "Engine failed");
-                    break;
-                }
-
-                // Check for termination conditions in the snapshot
-                // Note: Success termination can occur at known valid addresses (e.g., exception vector 0x80000080)
-                // due to RAM mirroring not being accounted for in PcWithinProgram. Continue in those cases.
-                var term = segmentResult.Snapshot.Termination;
-                var pc = segmentResult.Snapshot.PC;
-                var isKnownValidAddress = term == RecompilerIrTerminationReason.Success &&
-                    (pc == 0x80000080u || // general exception vector
-                     pc == 0x80000180u || // cache error vector
-                     pc == 0x00800000u || // RAM mirror of exception vector (physical 0x0)
-                     pc == 0x00000080u || // KUSEG mirror of exception vector
-                     (pc >= 0x80030000u && pc < 0x80050000u)); // shell range
-                if (term != RecompilerIrTerminationReason.ExecutionBudgetExceeded && !isKnownValidAddress)
-                {
-                    stopReason = term.ToString();
-                    executionResult = new TitleExecutionResult(
-                        TitleExecutionState.RuntimeFailure,
-                        segmentResult.Snapshot, 1, engine.Name,
-                        term.ToString(),
-                        $"Guest terminated: {term}");
-                    break;
-                }
-
-                // Continue loop - the interpreter state is preserved in the engine
+                        null, 0, InterpreterTitleExecutionEngine.EngineName,
+                        "CRASH", $"Runtime crash: {ex}"),
+                    screenshotCapture.ScreenshotsTaken,
+                    maxVblank,
+                    savedFiles.AsReadOnly(),
+                    stopwatch.Elapsed,
+                    stopReason);
+            }
+            finally
+            {
+                stopwatch.Stop();
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            stopReason = $"Crash: {ex.GetType().Name}";
-            standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
-        }
-        finally
-        {
-            stopwatch.Stop();
-        }
 
-        // Final capture if not complete
-        if (screenshotCapture is not null && !screenshotCapture.IsComplete)
-        {
-            screenshotCapture.ForceCapture("persona_vblank_final.png");
-        }
+    private sealed class ScreenshotHandoff : ITitleExecutionHandoff
+    {
+        private readonly ScreenshotCapture _screenshotCapture;
+        private readonly uint _vblankInterval;
+        private readonly ulong _startVblank;
+        private readonly int _maxScreenshots;
 
-        // Collect saved files
-        if (Directory.Exists(outputDirectory))
+        public ScreenshotHandoff(ScreenshotCapture screenshotCapture, uint vblankInterval, ulong startVblank, int maxScreenshots)
         {
-            savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
-                .OrderBy(f => f)
-                .Select(Path.GetFullPath));
+            _screenshotCapture = screenshotCapture;
+            _vblankInterval = vblankInterval;
+            _startVblank = startVblank;
+            _maxScreenshots = maxScreenshots;
         }
 
-        var maxVblank = interpreterEngine.Scheduler?.VblankCount ?? 0;
+        public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState)
+        {
+            ArgumentNullException.ThrowIfNull(segmentState);
 
-        return new HeadlessRunResult(
-            executionResult ?? new TitleExecutionResult(
-                TitleExecutionState.RuntimeFailure,
-                null, 0, InterpreterTitleExecutionEngine.EngineName,
-                "NO_RESULT", "Execution did not produce a result"),
-            screenshotCapture?.ScreenshotsTaken ?? 0,
-            maxVblank,
-            savedFiles.AsReadOnly(),
-            stopwatch.Elapsed,
-            stopReason);
+            // Capture screenshot at VBlank intervals
+            _screenshotCapture.TryCapture();
+
+            // Check if screenshot capture is complete
+            if (_screenshotCapture.IsComplete)
+            {
+                return TitleExecutionHandoffResult.Exit();
+            }
+
+            return null; // Continue execution
+        }
     }
 
     private static OpenedDisc OpenDisc(string path)
