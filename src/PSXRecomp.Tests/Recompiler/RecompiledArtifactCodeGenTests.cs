@@ -491,6 +491,12 @@ public sealed class RecompiledArtifactCodeGenTests
 
     #pragma warning disable AARC003
 
+    // Track the exact child this runner started on the calling thread, so the
+    // timeout test can verify it was killed rather than scanning the whole
+    // machine for processes named "sleep". Each concurrent test thread keeps
+    // its own value.
+    private static readonly ThreadLocal<int> s_lastSpawnedProcessId = new();
+
     /// <summary>
     /// Runs <paramref name="fileName"/> with <paramref name="arguments"/>, draining
     /// stdout/stderr asynchronously while it runs so a large or blocking child
@@ -510,6 +516,10 @@ public sealed class RecompiledArtifactCodeGenTests
         };
 
         using var process = Process.Start(startInfo)!;
+
+        // Track the exact child this runner started on this thread so the timeout
+        // test can verify it was killed rather than scanning the whole machine.
+        s_lastSpawnedProcessId.Value = process.Id;
 
         // Drain both pipes asynchronously while the process runs. Without this, a
         // child that writes more than the pipe buffer can hold blocks on write and
@@ -532,6 +542,26 @@ public sealed class RecompiledArtifactCodeGenTests
 
         process.WaitForExit();
         return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
+    }
+
+    /// <summary>
+    /// True when a live process with the given id exists. A terminated and reaped
+    /// child makes <see cref="Process.GetProcessById(int)"/> throw
+    /// <see cref="ArgumentException"/>, which is reported here as "not alive" so
+    /// the timeout test can verify the exact child it started has stopped without
+    /// scanning the whole machine for unrelated processes.
+    /// </summary>
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using var probe = Process.GetProcessById(pid);
+            return !probe.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     #pragma warning restore AARC003
@@ -565,11 +595,22 @@ public sealed class RecompiledArtifactCodeGenTests
     /// stdout/stderr without hanging, correctly returns separate streams,
     /// honours timeouts by killing the tree, and keeps compiler diagnostics.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void RunProcessVerbose_LargeOutputDoesNotHangAndRetainsSeparateStreams()
     {
         // Compile a self-contained C program that flushes several megabytes to
         // stdout and stderr independently — this exercises the async drains.
+        var gccPath = File.Exists("/usr/bin/gcc")
+            ? "/usr/bin/gcc"
+            : File.Exists("/usr/bin/cc")
+                ? "/usr/bin/cc"
+                : null;
+        if (gccPath is null)
+        {
+            Skip.If(true,
+                "no C compiler (gcc or cc) available on this host; large-output test skipped");
+        }
+
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
         Directory.CreateDirectory(tempDir);
         try
@@ -590,7 +631,6 @@ public sealed class RecompiledArtifactCodeGenTests
                 "}\n";
             File.WriteAllText(cPath, program);
 
-            var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
             var (exit, stdout, stderr) = RunCompiler(gccPath, cPath, exePath);
             exit.Should().Be(0, "the flood program must compile");
 
@@ -610,19 +650,35 @@ public sealed class RecompiledArtifactCodeGenTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void RunProcessVerbose_TimeoutKillsTreeAndThrows()
     {
         // RunProcessVerbose is designed to terminate the process tree on timeout and
         // surface the timeout as an exception (the companion RecompilerHostExecutor
         // runner instead returns int.MinValue with timedOut = true).
+        // sleep is a POSIX utility, so this verification runs only on platforms that
+        // provide it.
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            Skip.If(true,
+                "the sleep utility is unavailable on this platform; timeout/tree-kill verification skipped");
+        }
+
+        // ThreadLocal tracks the exact child this runner started on this thread, so
+        // the verification targets this test's process tree rather than scanning the
+        // whole machine for processes named "sleep" (which could match unrelated
+        // sleep invocations on the host).
         Assert.Throws<TimeoutException>(
             () => RunProcessVerbose("sleep", "999", 1000));
-        // The tree must be dead: no orphan left behind.
-        Process.GetProcessesByName("sleep").Length.Should().Be(0);
+
+        var pid = s_lastSpawnedProcessId.Value;
+        pid.Should().BeGreaterThan(0,
+            "the runner must have tracked the child process it started");
+        IsProcessAlive(pid).Should().BeFalse(
+            "the child process the runner started must have been terminated on timeout");
     }
 
-    [Fact]
+    [SkippableFact]
     public void RunProcessVerbose_CompilerFailureRetainsStderrDiagnostics()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
@@ -632,7 +688,16 @@ public sealed class RecompiledArtifactCodeGenTests
             var cPath = Path.Combine(tempDir, "bad.c");
             var exePath = Path.Combine(tempDir, "bad");
             File.WriteAllText(cPath, "int main(void) { return broken_undefined_identifier; }\n");
-            var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
+            var gccPath = File.Exists("/usr/bin/gcc")
+                ? "/usr/bin/gcc"
+                : File.Exists("/usr/bin/cc")
+                    ? "/usr/bin/cc"
+                    : null;
+            if (gccPath is null)
+            {
+                Skip.If(true,
+                    "no C compiler (gcc or cc) available on this host; compiler-diagnostics test skipped");
+            }
             Assert.Throws<InvalidOperationException>(
                 () => RunCompiler(gccPath, cPath, exePath));
         }

@@ -1262,18 +1262,28 @@ int main() {
         exit.Should().Be(0, "without firmware mode a trap keeps the pre-existing HLE stop");
     }
 
-    [Fact]
+    [SkippableFact]
     public void RunHostProcess_TimesOut_When_Process_Exceeds_Budget()
     {
-        if (OperatingSystem.IsWindows())
+        // sleep is a POSIX utility, so this timeout + tree-kill verification runs
+        // only on Linux/macOS.
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-            return;
+            Skip.If(true,
+                "the sleep utility is unavailable on this platform; timeout/tree-kill verification skipped");
         }
 
         #pragma warning disable AARC003
         Action act = () => RunHostProcess("sleep", "30", 500);
         #pragma warning restore AARC003
         act.Should().Throw<TimeoutException>();
+
+        // Verify the exact process this test started has been terminated.
+        var pid = s_lastSpawnedProcessId.Value;
+        pid.Should().BeGreaterThan(0,
+            "the helper must have tracked the child process it started");
+        IsProcessAlive(pid).Should().BeFalse(
+            "the child process the helper started must have been terminated on timeout");
     }
 
     #pragma warning disable AARC003
@@ -1331,6 +1341,12 @@ int main() {
         }
     }
 
+    // Track the exact child this helper started on the calling thread, so the
+    // timeout test can verify it was killed rather than scanning the whole
+    // machine for processes named "sleep". Each concurrent test thread keeps
+    // its own value.
+    private static readonly ThreadLocal<int> s_lastSpawnedProcessId = new();
+
     private static (int ExitCode, string Stdout, string Stderr) RunHostProcess(string fileName, string arguments, int timeoutMs)
     {
         var psi = new ProcessStartInfo(fileName, arguments)
@@ -1343,12 +1359,20 @@ int main() {
 
         using var process = Process.Start(psi)!;
 
+        // Track the exact child this helper started on this thread so the timeout
+        // test can verify it was killed rather than scanning the whole machine.
+        s_lastSpawnedProcessId.Value = process.Id;
+
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
 
         if (!process.WaitForExit(timeoutMs))
         {
             TryKillTree(process);
+
+            // Reap the killed child so it cannot linger as a zombie and so the
+            // exact pid the timeout test tracks is observably gone.
+            process.WaitForExit();
 
             var timedOutOut = stdoutTask.Result;
             var timedOutErr = stderrTask.Result;
@@ -1372,6 +1396,24 @@ int main() {
         }
         catch (InvalidOperationException)
         {
+        }
+    }
+
+    /// <summary>
+    /// True when a live process with the given id exists. A terminated and reaped
+    /// child makes <see cref="Process.GetProcessById(int)"/> throw
+    /// <see cref="ArgumentException"/>, which is reported here as "not alive".
+    /// </summary>
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using var probe = Process.GetProcessById(pid);
+            return !probe.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 #pragma warning restore AARC003
