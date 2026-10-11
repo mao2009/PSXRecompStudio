@@ -1,6 +1,4 @@
 using System.IO;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.Gpu;
@@ -207,9 +205,7 @@ public sealed class ScreenshotCapture : IDisposable
         var fileName = customName ?? $"persona_vblank_{vblank:D4}.png";
         var filePath = Path.Combine(_outputDirectory, fileName);
 
-        // Save as PNG using ImageSharp
-        using var image = Image.LoadPixelData<Bgra32>(bgra, frame.Width, frame.Height);
-        image.SaveAsPng(filePath);
+        PngWriter.Save(filePath, bgra, frame.Width, frame.Height);
     }
 
     /// <summary>
