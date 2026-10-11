@@ -1,10 +1,12 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text;
+using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Infrastructure.Runtime.Gpu;
 
 /// <summary>Minimal 8-bit RGBA PNG writer for GPU screenshots. Uses only .NET libraries.</summary>
+[Infrastructure]
 internal static class PngWriter
 {
     private static readonly byte[] Signature = [137, 80, 78, 71, 13, 10, 26, 10];
