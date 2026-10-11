@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-12
 - Issue: #739
-- Parent implementation: Phase 2 Step A (Runtime Bridge)
+- Parent implementation: Phase 2 Step A (Runtime Bridge), PR #758
 
 ## Context
 
