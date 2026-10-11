@@ -83,7 +83,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly BiosExceptionChain? _exceptionChain;
     private readonly IReadOnlySet<uint> _blockEntryPcs;
     private readonly MixedFallbackOptions? _mixedFallback;
-    private readonly string _binaryPath;
+    private string _binaryPath = string.Empty;
     private readonly string _inputPath;
     private readonly string _imagePath;
     private readonly uint _imageLoadAddress;
@@ -92,6 +92,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly ICdSectorSource? _disc;
     private readonly int _runTimeoutMs;
     private readonly LoadedCodeTable _loadedCode;
+    private readonly RecompilerIrProgram _program;
+    private readonly string _outputDirectory;
+    private readonly IGeneratedHostBuildService _buildService;
+    private readonly bool _embedImage;
 
     /// <summary>
     /// Called with the mixed-execution interpreter and the PC of every instruction it is about to fetch (diagnostic
@@ -164,6 +168,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// interpreter before returning to it — and otherwise its PC runs in the <paramref name="mixedFallback"/>
     /// interpreter. Null: no RAM-placed code.
     /// </param>
+    /// <param name="embedImage">
+    /// When true, the artifact embeds the program image and this run's initial
+    /// state (Phase 2, Issue #757): no input files are written and the artifact
+    /// attaches the shared Runtime host bridge over the existing --host-transfer
+    /// path. The embedded state is generated at the first RunSegment — the state
+    /// THAT call names — so Load's "never frozen here" contract is preserved and
+    /// build failures surface at that call. When false (the default) the artifact
+    /// reads its input files exactly as before.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/>,
     /// <paramref name="imageWords"/>, or <paramref name="buildService"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="imageWords"/> is empty.</exception>
@@ -182,7 +195,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         bool guestFirmware = false,
         TimeSpan? runTimeout = null,
         ICdSectorSource? disc = null,
-        LoadedCodeTable? loadedCode = null)
+        LoadedCodeTable? loadedCode = null,
+        bool embedImage = false)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -219,6 +233,21 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         _imageWords = imageWords;
 
         _loadedCode = loadedCode ?? LoadedCodeTable.Empty;
+        _program = program;
+        _outputDirectory = outputDirectory;
+        _buildService = buildService;
+        _embedImage = embedImage;
+
+        if (embedImage)
+        {
+            // The embedded-image artifact is generated at the first RunSegment:
+            // the state it embeds is the state THAT call names (PC, GPRs, HI/LO,
+            // budget), matching Load's "the architectural state a run starts from
+            // is named by each RunSegment call, never frozen here" contract.
+            // Build failures then surface at that call, not at construction.
+            return;
+        }
+
         var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode);
         if (!dispatch.Success)
         {
@@ -292,14 +321,29 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // PC, GPRs, HI/LO and budget — not the state Load was handed, so the input
         // file is written here, immediately before launch. InitialMemory is the
         // sole input a TitleExecutionSegmentRequest carries no field for: it is
-        // retained from Load and re-applied to this rewrite.
-        WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
+        // retained from Load and re-applied to this rewrite. The embedded-image
+        // artifact (Phase 2, Issue #757) instead embeds exactly this state and
+        // needs no input files.
+        if (_embedImage)
+        {
+            BuildEmbeddedArtifact(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
+        }
+        else
+        {
+            WriteInputFile(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
+        }
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
             : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
         _bridge = bridge;
-        var arguments = new List<string>(4) { _inputPath, _imagePath };
+        var arguments = new List<string>(4);
+        if (!_embedImage)
+        {
+            arguments.Add(_inputPath);
+            arguments.Add(_imagePath);
+        }
+
         if (bridge is not null)
         {
             arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
@@ -430,6 +474,73 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         File.WriteAllText(_inputPath, sb.ToString());
         File.WriteAllBytes(_imagePath, image);
+    }
+
+    /// <summary>
+    /// Generates, builds, and stages the embedded-image artifact for this run
+    /// (Phase 2, Issue #757): initial GPR/HI/LO/PC/budget, the init-memory seed
+    /// and the program image are embedded in the C source, so the artifact needs
+    /// no input files and attaches the shared Runtime host bridge over the
+    /// existing <c>--host-transfer</c> path. The embedded state is the state the
+    /// calling <see cref="RunSegment"/> names, so generation is deferred to the
+    /// first (and only) segment call and Load's "never frozen here" contract is
+    /// preserved.
+    /// </summary>
+    private void BuildEmbeddedArtifact(
+        uint pc,
+        IReadOnlyList<uint> gpr,
+        uint hi,
+        uint lo,
+        IReadOnlyList<RecompilerInitialMemoryItem> initialMemory,
+        uint budget)
+    {
+        if (initialMemory.Count > RecompiledArtifactCodeGen.MaxInitEntries)
+        {
+            // Same defense as WriteInputFile/Load: the embedded driver's own
+            // PSX_MAX_INIT bound would otherwise reject the source with an opaque
+            // artifact exit code.
+            throw new InvalidOperationException(
+                $"Initial memory has {initialMemory.Count} entries, exceeding the artifact driver's " +
+                $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
+        }
+
+        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode);
+        if (!dispatch.Success)
+        {
+            throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
+        }
+
+        var image = new byte[_imageWords.Count * sizeof(uint)];
+        for (var i = 0; i < _imageWords.Count; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(i * sizeof(uint)), _imageWords[i]);
+        }
+
+        var artifact = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch,
+            gpr,
+            hi,
+            lo,
+            pc,
+            budget,
+            initialMemory.Select(static item => (item.Address, (uint)item.Value)).ToArray(),
+            _imageLoadAddress,
+            image,
+            hostBridge: true);
+        if (!artifact.Success)
+        {
+            throw new InvalidOperationException(artifact.DiagnosticMessage ?? "Embedded artifact code generation failed.");
+        }
+
+        var build = _buildService.Build(new GeneratedHostBuildRequest(artifact.Source!, _outputDirectory, "recompiled-artifact"));
+        if (build.Status != GeneratedHostBuildStatus.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Artifact build failed ({build.Status})." +
+                (string.IsNullOrEmpty(build.DiagnosticMessage) ? "" : "\n" + build.DiagnosticMessage));
+        }
+
+        _binaryPath = build.Artifact!.BinaryPath;
     }
 
     /// <summary>

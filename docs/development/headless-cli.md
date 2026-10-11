@@ -24,7 +24,7 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 
 ```
 psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
-psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--json]
+psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--standalone] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--json]
 psxrecomp doctor    [--json]
 ```
 
@@ -81,6 +81,13 @@ failure (`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`,
 `ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`), never a silent stop. Other fail-closed diagnostics are
 `ARTIFACT_FALLBACK_UNSUPPORTED_STATE`, `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` and
 `ARTIFACT_FALLBACK_SYNC_FAILED`.
+
+`--standalone` (run only) embeds the program image and this launch's initial state in the artifact
+(Phase 2, Issue #739, ADR-027) and attaches the shared Runtime host bridge over the existing
+`--host-transfer` path, so the built executable runs recompiled code against the shared `BiosHleRuntime`
+with no input files and no Studio, while reusing the same engine, device graph and termination
+classification as the file-driven run. The artifact still keeps its parentless Phase 1 behavior when the
+bridge is not attached (e.g. `recompile --standalone` output run by hand).
 
 ### `doctor`
 

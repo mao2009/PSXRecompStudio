@@ -101,6 +101,50 @@ public sealed class RecompiledArtifactLauncherTests
     }
 
     [Fact]
+    public void Launch_StandaloneEmbeddedImage_AttachesSharedRuntimeBridgeAndCompletes()
+    {
+        const uint entryPc = 0x80020000u;
+        var words = new uint[]
+        {
+            Immediate(OriOpcode, FunctionNumberRegister, BiosHleRuntime.PutCharFunction),
+            Immediate(OriOpcode, FirstArgumentRegister, DiagnosticCharacter),
+            (uint)JalOpcode << 26 | (BiosJumpTables.A0VectorAddress & 0x0FFFFFFCu) >> 2,
+            0u, // branch delay slot
+            Immediate(OriOpcode, MarkerRegister, DiagnosticMarker),
+        };
+        var program = Lower(entryPc, words);
+        var programEnd = entryPc + (uint)(words.Length * 4);
+
+        using var dir = new TempDirectory();
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 1, segmentBudget: 64);
+
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program, new PsxExeTitleExecution(entryPc, words, request), new ProgramEndHandoff(programEnd), dir.FullPath,
+            resultRegister: (int)R3000aRegister.S1,
+            standalone: true);
+
+        // Phase 2 (Issue #757): the embedded-image artifact attached the shared
+        // Runtime host bridge over the existing --host-transfer path — the
+        // putchar syscall was dispatched through the real, shared BiosHleRuntime
+        // (ADR-014) and execution resumed past it to the marked completion.
+        outcome.Result.State.Should().Be(TitleExecutionState.Completed);
+        outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Success);
+        outcome.Result.ExitCode.Should().Be(RecompiledArtifactExitCode.Success);
+        outcome.Result.ResultValue.Should().Be(DiagnosticMarker);
+        outcome.Output.Should().Equal(DiagnosticCharacter);
+
+        // The embedded artifact is self-contained: no input or image files are
+        // written (they are embedded in the built binary), so the run needs no
+        // external data and no Studio.
+#pragma warning disable AARC003 // Test-only check of the embedded artifact's own output directory.
+        File.Exists(dir.Combine("artifact-input.txt")).Should().BeFalse();
+        File.Exists(dir.Combine("artifact-image.bin")).Should().BeFalse();
+#pragma warning restore AARC003
+    }
+
+    [Fact]
     public void RunSegment_CalledTwice_ThrowsRatherThanSilentlyRestartingFromStaleMemory()
     {
         const uint entryPc = 0x80030000u;

@@ -90,6 +90,65 @@ public sealed class RecompiledArtifactCodeGenTests
     }
 
     [Fact]
+    public void GenerateStandalone_WithHostBridge_ProducesBridgeCapableEmbeddedMain()
+    {
+        var dispatch = GenerateDispatch();
+        var initialGpr = new uint[32];
+        var initialMemory = new (uint Address, uint Value)[] { (0x80010000u, 0xDEADBEEFu) };
+        var programImage = new byte[] { 0x00, 0x00, 0x02, 0x34 };
+
+        var result = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch,
+            initialGpr,
+            0xABCDABCDu,
+            0xEFEFEFEFu,
+            0x80010000u,
+            1000,
+            initialMemory,
+            0x80010000u,
+            programImage,
+            hostBridge: true);
+
+        result.Success.Should().BeTrue();
+        var source = result.Source!;
+
+        // Phase 2 (Issue #757): the embedded-image main can attach the shared
+        // Runtime host bridge over the existing --host-transfer path.
+        source.Should().Contain("int main(int argc, char** argv) {");
+        source.Should().Contain("artifact_attach_host_bridge(&state);");
+        source.Should().Contain("--host-transfer");
+        source.Should().Contain("--guest-exceptions");
+        source.Should().Contain("--exact-device-time");
+        // The bridge is opt-in: without the flag the run stays parentless, so
+        // the flag must never be enabled unconditionally.
+        source.Should().NotContain("(void)argc;");
+        // Still a self-contained embedded artifact: no file reading leaks in.
+        source.Should().NotContain("fopen");
+        source.Should().NotContain("fscanf");
+        source.Should().NotContain("argv[1]");
+        source.Should().NotContain("argv[2]");
+    }
+
+    [Fact]
+    public void GenerateStandalone_WithHostBridge_IsDeterministic_ForIdenticalInput()
+    {
+        var dispatch = GenerateDispatch();
+        var initialGpr = new uint[32];
+        initialGpr[2] = 0x12345678u;
+        var initialMemory = new (uint Address, uint Value)[] { (0x80010000u, 0xDEADBEEFu) };
+        var programImage = new byte[] { 0x00, 0x00, 0x02, 0x34 };
+
+        var first = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, initialGpr, 0xABCDABCDu, 0xEFEFEFEFu, 0x80010000u, 1000, initialMemory, 0x80010000u, programImage, hostBridge: true);
+        var second = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, initialGpr, 0xABCDABCDu, 0xEFEFEFEFu, 0x80010000u, 1000, initialMemory, 0x80010000u, programImage, hostBridge: true);
+
+        first.Success.Should().BeTrue();
+        second.Success.Should().BeTrue();
+        first.Source.Should().Be(second.Source);
+    }
+
+    [Fact]
     public void GenerateStandalone_InvalidGprCount_ReturnsFailure()
     {
         var dispatch = GenerateDispatch();
