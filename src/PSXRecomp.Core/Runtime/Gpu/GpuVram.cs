@@ -44,6 +44,15 @@ public sealed class GpuVram : IDisposable
     /// <summary>Pointer to pixel (0,0). Valid until this VRAM is disposed.</summary>
     public IntPtr Pointer => _pin.AddrOfPinnedObject();
 
+    /// <summary>Gets the raw VRAM bytes for 24-bit mode capture.</summary>
+    public ReadOnlySpan<byte> GetBytes()
+    {
+        unsafe
+        {
+            return new ReadOnlySpan<byte>((byte*)_pin.AddrOfPinnedObject(), _data.Length * sizeof(ushort));
+        }
+    }
+
     /// <summary>Writes every halfword to zero. Not called by GPU reset.</summary>
     public void Clear()
     {

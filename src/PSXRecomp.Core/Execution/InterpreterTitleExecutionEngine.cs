@@ -289,6 +289,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
     public PsxDeviceGraph DiagnosticDevices => _devices;
 
+    /// <summary>Active device scheduler, available after Load; used for VBlank-aligned capture.</summary>
+    public DeviceScheduler? Scheduler => _scheduler;
+
     /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
     public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
 

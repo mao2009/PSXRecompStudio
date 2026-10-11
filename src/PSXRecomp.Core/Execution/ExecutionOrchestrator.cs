@@ -43,6 +43,12 @@ public sealed class ExecutionOrchestrator
     /// a PC) reports <see cref="TitleExecutionState.UnsupportedTransfer"/> for
     /// that transfer.</param>
     /// <param name="request">The initial guest state and budgets.</param>
+    /// <param name="segmentCallback">Optional callback invoked after each segment
+    /// completes, receiving the segment snapshot. Useful for periodic checks
+    /// like VBlank-based screenshot capture.</param>
+    /// <param name="postLoadAction">Optional action invoked after <see cref="IRecompiledExecutionEngine.Load"/>
+    /// completes but before the first segment runs. Useful for configuring
+    /// engine-specific callbacks (e.g., VBlank callbacks on DeviceScheduler).</param>
     /// <returns>A classified terminal outcome. Guest failure paths never throw;
     /// only contract-contradicting segments (engine or handoff) map to
     /// <see cref="TitleExecutionState.InvalidState"/>; engine mechanism and
@@ -55,12 +61,15 @@ public sealed class ExecutionOrchestrator
     public TitleExecutionResult Execute(
         IRecompiledExecutionEngine engine,
         ITitleExecutionHandoff? handoff,
-        TitleExecutionRequest request)
+        TitleExecutionRequest request,
+        Action<RecompilerStateSnapshot>? segmentCallback = null,
+        Action? postLoadAction = null)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(request);
 
         engine.Load(request);
+        postLoadAction?.Invoke();
 
         var gpr = request.InitialGpr.ToArray();
         uint hi = request.InitialHi;
@@ -120,6 +129,9 @@ public sealed class ExecutionOrchestrator
             lo = snap.LO;
             pc = snap.PC;
             outer--;
+
+            // Invoke segment callback for periodic checks (e.g., screenshot capture)
+            segmentCallback?.Invoke(snap);
 
             switch (snap.Termination)
             {

@@ -281,6 +281,17 @@ public sealed class GpuDevice : IGpu, IDisposable
     /// <summary>The scheduler's VBlank starts the next field: the interlace field (GPUSTAT bit 13) alternates.</summary>
     public void OnVblank() => _state.InterlaceField = !_state.InterlaceField;
 
+    /// <summary>Gets the current GPU state for diagnostic purposes.</summary>
+    public GpuState GetState() => _state;
+
+    /// <summary>
+    /// Gets the raw VRAM bytes for 24-bit mode capture.
+    /// </summary>
+    public ReadOnlySpan<byte> GetVramBytes()
+    {
+        return Vram.GetBytes();
+    }
+
     /// <summary>Releases the pinned VRAM buffer. The device must not be used afterwards.</summary>
     public void Dispose()
     {
