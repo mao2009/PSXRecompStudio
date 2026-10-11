@@ -350,6 +350,10 @@ public static class RecompiledArtifactCodeGen
         return standaloneSource;
     }
 
+    /// <summary>Counts non-overlapping occurrences of <paramref name="needle"/> in <paramref name="haystack"/>.</summary>
+    private static int CountOccurrences(string haystack, string needle) =>
+        needle.Length == 0 ? 0 : haystack.Split(needle, StringSplitOptions.None).Length - 1;
+
     internal static RecompiledArtifactCodeGenResult BuildStandaloneSource(
         string dispatchSource,
         string driverTemplate,
@@ -438,13 +442,44 @@ public static class RecompiledArtifactCodeGen
         var unsupportedTransferReasonLine =
             "#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7" + unsupportedTransferReasonDefine;
 
+        const string unknownPcSuccessLine =
+            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }";
+        const string unknownPcUnsupportedTransferLine =
+            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_UNSUPPORTED_TRANSFER; return 0; }";
+
+        var unknownPcLineCount = CountOccurrences(dispatchSource, unknownPcSuccessLine);
+        if (unknownPcLineCount != 1)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                unknownPcLineCount == 0
+                    ? "STANDALONE_DISPATCH_SEMANTICS_MISSING_TARGET"
+                    : "STANDALONE_DISPATCH_SEMANTICS_DUPLICATE_TARGET",
+                unknownPcLineCount == 0
+                    ? "The dispatch source's unknown-PC boundary rewrite target was not found; the standalone rewrite must not apply."
+                    : "The dispatch source's unknown-PC boundary rewrite target appears more than once; the standalone rewrite must not apply.");
+        }
+
         var standaloneDispatchSource = dispatchSource.Replace(
             "#define RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED 7",
             unsupportedTransferReasonLine,
             StringComparison.Ordinal).Replace(
-            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }",
-            "        if (steps > 0) { state->termination_reason = RECOMPILER_REASON_UNSUPPORTED_TRANSFER; return 0; }",
+            unknownPcSuccessLine,
+            unknownPcUnsupportedTransferLine,
             StringComparison.Ordinal);
+
+        // Verify the rewrite applied exactly once and no other branch was mutated.
+        if (CountOccurrences(standaloneDispatchSource, unknownPcSuccessLine) != 0
+            || CountOccurrences(standaloneDispatchSource, unknownPcUnsupportedTransferLine) != 1
+            || !standaloneDispatchSource.Contains("#define RECOMPILER_REASON_UNSUPPORTED_TRANSFER 5"))
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "STANDALONE_DISPATCH_SEMANTICS_NOT_APPLIED",
+                "The standalone dispatch rewrite did not apply exactly once as expected.");
+        }
 
         // Build the full driver source with replacements, then replace the driver's
         // original main() with the standalone version at the explicit placeholder.
