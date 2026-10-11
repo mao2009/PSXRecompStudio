@@ -9,6 +9,17 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の静的再コンパイルと
 
 *[English README (Canonical / SSOT)](README.md)* · [Project website](https://mao2009.github.io/PSXRecompStudio/) · [Latest release](https://github.com/mao2009/PSXRecompStudio/releases/latest)
 
+## 最新の成果：Personaのオープニング描画（2026年10月）
+
+**OpenBIOSを用いたインタープリタ実行経路で、『女神異聞録ペルソナ』のオープニング冒頭を実際に描画できました。** VBlank単位のスクリーンショットでATLUSロゴと、荘子の「胡蝶の夢」を題材とする冒頭の文章を確認しています。ゲーム全体の静的再コンパイルや、遊べるネイティブ移植の達成を意味するものではありません。
+
+![PersonaオープニングのATLUSロゴ](docs/assets/images/persona-opening/atlus-logo.png)
+![Personaオープニングの胡蝶の夢に関する文章](docs/assets/images/persona-opening/butterfly-dream.png)
+
+*それぞれVBlank 1200と2700で取得。[キャプチャ機能と検証（PR #754）](https://github.com/mao2009/PSXRecompStudio/pull/754)。画像は互換性研究の成果を示すための限定的な資料です。ゲーム及び商標の権利は各権利者に帰属し、本プロジェクトはATLUSとは無関係です。*
+
+**未確認の範囲：** オープニング全編、タイトル画面、操作入力、AOTとの同等性、ゲーム全体の互換性。
+
 ## 現在できること
 
 - **実行可能な再コンパイルパイプライン:** MIPS → IR/lowering → 決定論的 host code → native artifact → bounded execution。
