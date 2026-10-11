@@ -272,6 +272,255 @@ public static class RecompiledArtifactCodeGen
             null);
     }
 
+    /// <summary>
+    /// Generates a standalone artifact with embedded initial state and program image.
+    /// The resulting C source can be compiled into a single executable that runs
+    /// without any external input files.
+    /// </summary>
+    public static RecompiledArtifactCodeGenResult GenerateStandalone(
+        RecompilerHostCodeGenResult generatedDispatch,
+        IReadOnlyList<uint> initialGpr,
+        uint initialHi,
+        uint initialLo,
+        uint initialPc,
+        uint budget,
+        IReadOnlyList<(uint Address, uint Value)> initialMemory,
+        uint imageLoadAddress,
+        IReadOnlyList<byte> programImage)
+    {
+        ArgumentNullException.ThrowIfNull(generatedDispatch);
+        ArgumentNullException.ThrowIfNull(initialGpr);
+        ArgumentNullException.ThrowIfNull(initialMemory);
+        ArgumentNullException.ThrowIfNull(programImage);
+
+        if (!generatedDispatch.Success || generatedDispatch.Source is null)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                generatedDispatch.DiagnosticCode ?? "UPSTREAM_CODEGEN_FAILED",
+                generatedDispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
+        }
+
+        if (initialGpr.Count != 32)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "INVALID_GPR_COUNT",
+                "Initial GPR array must have exactly 32 elements.");
+        }
+
+        if (initialMemory.Count > MaxInitEntries)
+        {
+            return new RecompiledArtifactCodeGenResult(
+                false,
+                null,
+                "TOO_MANY_INIT_ENTRIES",
+                $"Initial memory has {initialMemory.Count} entries, exceeding the {MaxInitEntries} limit.");
+        }
+
+        // Build the standalone driver with embedded data
+        var standaloneSource = BuildStandaloneSource(
+            generatedDispatch.Source!,
+            initialGpr,
+            initialHi,
+            initialLo,
+            initialPc,
+            budget,
+            initialMemory,
+            imageLoadAddress,
+            programImage);
+
+        return new RecompiledArtifactCodeGenResult(
+            true,
+            standaloneSource,
+            null,
+            null);
+    }
+
+    private static string BuildStandaloneSource(
+        string dispatchSource,
+        IReadOnlyList<uint> initialGpr,
+        uint initialHi,
+        uint initialLo,
+        uint initialPc,
+        uint budget,
+        IReadOnlyList<(uint Address, uint Value)> initialMemory,
+        uint imageLoadAddress,
+        IReadOnlyList<byte> programImage)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        // Embedded initial GPRs
+        sb.AppendLine("static const uint32_t embedded_gpr[32] = {");
+        for (int i = 0; i < 32; i++)
+        {
+            sb.Append($"    0x{initialGpr[i]:X8}u");
+            if (i < 31) sb.Append(",");
+            sb.AppendLine();
+        }
+        sb.AppendLine("};");
+
+        // Embedded HI/LO
+        sb.AppendLine($"static const uint32_t embedded_hi = 0x{initialHi:X8}u;");
+        sb.AppendLine($"static const uint32_t embedded_lo = 0x{initialLo:X8}u;");
+
+        // Embedded PC
+        sb.AppendLine($"static const uint32_t embedded_pc = 0x{initialPc:X8}u;");
+
+        // Embedded budget
+        sb.AppendLine($"static const uint32_t embedded_budget = {budget}u;");
+
+        // Embedded initial memory
+        sb.AppendLine($"static const uint32_t embedded_init_count = {initialMemory.Count}u;");
+        if (initialMemory.Count > 0)
+        {
+            sb.AppendLine("static const uint32_t embedded_init_addrs[] = {");
+            for (int i = 0; i < initialMemory.Count; i++)
+            {
+                sb.Append($"    0x{initialMemory[i].Address:X8}u");
+                if (i < initialMemory.Count - 1) sb.Append(",");
+                sb.AppendLine();
+            }
+            sb.AppendLine("};");
+
+            sb.AppendLine("static const uint32_t embedded_init_vals[] = {");
+            for (int i = 0; i < initialMemory.Count; i++)
+            {
+                sb.Append($"    0x{initialMemory[i].Value:X8}u");
+                if (i < initialMemory.Count - 1) sb.Append(",");
+                sb.AppendLine();
+            }
+            sb.AppendLine("};");
+        }
+        else
+        {
+            sb.AppendLine("static const uint32_t embedded_init_addrs[1] = {0};");
+            sb.AppendLine("static const uint32_t embedded_init_vals[1] = {0};");
+        }
+
+        // Embedded program image
+        sb.AppendLine($"static const uint32_t embedded_image_load_address = 0x{imageLoadAddress:X8}u;");
+        sb.AppendLine($"static const uint32_t embedded_image_len = {programImage.Count}u;");
+        sb.AppendLine("static const uint8_t embedded_image[] = {");
+        for (int i = 0; i < programImage.Count; i++)
+        {
+            if (i % 16 == 0) sb.Append("    ");
+            sb.Append($"0x{programImage[i]:X2}");
+            if (i < programImage.Count - 1) sb.Append(", ");
+            if (i % 16 == 15 || i == programImage.Count - 1) sb.AppendLine();
+        }
+        sb.AppendLine("};");
+
+        // Build the full driver source with replacements, then replace main()
+        var fullDriver = DriverSource
+            .Replace("#define PSX_MAX_INIT 4096u", $"#define PSX_MAX_INIT {MaxInitEntries}u", StringComparison.Ordinal)
+            .Replace("@MMIO_READ@", ProtocolMmioReadPrefix, StringComparison.Ordinal)
+            .Replace("@GTE@", ProtocolGtePrefix, StringComparison.Ordinal)
+            .Replace("@MMIO_WRITE@", ProtocolMmioWritePrefix, StringComparison.Ordinal)
+            .Replace("@MMIO_VALUE@", ProtocolMmioValueReply, StringComparison.Ordinal)
+            .Replace("@MMIO_REFUSED@", ProtocolMmioRefusedReply, StringComparison.Ordinal)
+            .Replace("@EXIT_MMIO_UNAVAILABLE@", MmioUnavailableExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_MMIO_REFUSED@", MmioRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_MMIO_PROTOCOL@", MmioProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@RETIRED@", ProtocolRetiredPrefix, StringComparison.Ordinal)
+            .Replace("@RETIRED_ACK@", ProtocolRetiredAckReply, StringComparison.Ordinal)
+            .Replace("@RETIRED_ACK_IRQ@", ProtocolRetiredAckInterruptReply, StringComparison.Ordinal)
+            .Replace("@RETIRED_REFUSED@", ProtocolRetiredRefusedReply, StringComparison.Ordinal)
+            .Replace("@RETIRED_THRESHOLD@", RetiredReportThreshold.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_RETIRED_REFUSED@", RetiredRefusedExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_RETIRED_PROTOCOL@", RetiredProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@EXIT_FALLBACK_PROTOCOL@", FallbackProtocolExitCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@COP0_ACCESS@", ProtocolCop0AccessPrefix, StringComparison.Ordinal)
+            .Replace("@GUEST_EXCEPTIONS@", GuestExceptionsFlag, StringComparison.Ordinal)
+            .Replace("@EXACT_DEVICE_TIME@", ExactDeviceTimeFlag, StringComparison.Ordinal);
+
+        // Replace the main function with standalone version
+        var standaloneMain = BuildStandaloneMain();
+        var mainStart = fullDriver.IndexOf("int main(int argc, char** argv)");
+        if (mainStart >= 0)
+        {
+            fullDriver = fullDriver.Substring(0, mainStart) + standaloneMain;
+        }
+
+        return dispatchSource + "\n" + sb.ToString() + "\n" + fullDriver;
+    }
+
+    private static string BuildStandaloneMain()
+    {
+        return @"
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
+    RecompilerState state;
+    memset(&state, 0, sizeof(state));
+
+    // Copy embedded initial GPRs
+    for (int i = 0; i < 32; i++) {
+        state.gpr[i] = embedded_gpr[i];
+    }
+    state.hi = embedded_hi;
+    state.lo = embedded_lo;
+    state.pc = embedded_pc;
+    state.gpr[0] = 0;
+
+    uint32_t budget = embedded_budget;
+
+    // Apply embedded initial memory
+    memset(artifact_ram, 0, sizeof(artifact_ram));
+    for (uint32_t i = 0; i < embedded_init_count; i++) {
+        artifact_ram_write8(embedded_init_addrs[i], (uint8_t)embedded_init_vals[i]);
+    }
+
+    // Load embedded program image
+    uint32_t image_pa = artifact_translate(embedded_image_load_address);
+    int image_in_rom = image_pa >= PSX_ROM_BASE && image_pa - PSX_ROM_BASE < PSX_ROM_SIZE;
+    if (embedded_image_len == 0u
+        || (image_in_rom && (unsigned long long)embedded_image_len > (unsigned long long)(PSX_ROM_SIZE - (image_pa - PSX_ROM_BASE)))) {
+        return 95; /* InvalidImage */
+    }
+    artifact_rom_loaded = image_in_rom;
+    if (!image_in_rom && (image_pa >= PSX_RAM_MIRROR_END
+        || (unsigned long long)embedded_image_len > (unsigned long long)(PSX_RAM_MIRROR_END - image_pa))) {
+        return 95; /* InvalidImage */
+    }
+
+    for (uint32_t image_i = 0; image_i < embedded_image_len; image_i++) {
+        if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + image_i] = embedded_image[image_i];
+        else artifact_ram[(image_pa + image_i) & (PSX_RAM_SIZE - 1u)] = embedded_image[image_i];
+    }
+
+    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
+    state.guest_exceptions = 0;
+    state.host_transfer = 0;
+    state.host_syscall = 0;
+    state.host_retired = 0;
+    state.host_interrupt = 0;
+    artifact_mmio_bridge = 0;
+
+    recompiler_dispatch(&state, budget);
+    artifact_report_retired();
+
+    printf(""RSNAPSHOT_BEGIN\n"");
+    printf(""termination=%d\n"", (int)state.termination_reason);
+    printf(""pc=0x%08X\n"", state.pc);
+    printf(""hi=0x%08X\n"", state.hi);
+    printf(""lo=0x%08X\n"", state.lo);
+    for (int i = 0; i < 32; i++) printf(""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
+    printf(""exception.raised=%d\n"", (int)state.exception_raised);
+    printf(""exception.code=0x%08X\n"", state.exception_code);
+    printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
+    printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
+    printf(""cop0.sr=0x%08X\n"", state.cop0_sr);
+    printf(""cop0.cause=0x%08X\n"", state.cop0_cause);
+    printf(""cop0.epc=0x%08X\n"", state.cop0_epc);
+    printf(""RSNAPSHOT_END\n"");
+
+    return (int)state.termination_reason;
+}
+";
+    }
+
     /// <summary>Artifact exit code: the program image file named by <c>argv[2]</c> could not be opened.</summary>
     public const int CannotOpenImageExitCode = 94;
 
