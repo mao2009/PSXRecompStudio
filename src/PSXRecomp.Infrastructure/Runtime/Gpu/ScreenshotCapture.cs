@@ -22,6 +22,7 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly List<ulong> _targetVblanks;
     private readonly HashSet<ulong> _capturedVblanks = new();
     private int _screenshotsTaken;
+    private ulong _lastVblank = 0;
     private bool _disposed;
 
     /// <summary>The output directory for screenshots.</summary>
@@ -76,17 +77,34 @@ public sealed class ScreenshotCapture : IDisposable
             return false;
 
         var currentVblank = _scheduler.VblankCount;
+        
+        // Check for exact match first
         var targetIndex = _targetVblanks.BinarySearch(currentVblank);
-        if (targetIndex < 0)
-            return false; // Current VBlank is not a target
+        if (targetIndex >= 0)
+        {
+            if (_capturedVblanks.Contains(currentVblank))
+                return false; // Already captured this VBlank (duplicate notification)
 
-        if (_capturedVblanks.Contains(currentVblank))
-            return false; // Already captured this VBlank (duplicate notification)
+            _capturedVblanks.Add(currentVblank);
+            CaptureAndSave(currentVblank);
+            _screenshotsTaken++;
+            return true;
+        }
 
-        _capturedVblanks.Add(currentVblank);
-        CaptureAndSave(currentVblank);
-        _screenshotsTaken++;
-        return true;
+        // Also check if we've passed any target VBlanks since last check
+        // This handles cases where VBlank counter jumps over target values
+        foreach (var targetVblank in _targetVblanks)
+        {
+            if (targetVblank <= currentVblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
+            {
+                _capturedVblanks.Add(targetVblank);
+                CaptureAndSave(targetVblank);
+                _screenshotsTaken++;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -99,6 +117,7 @@ public sealed class ScreenshotCapture : IDisposable
 
         var currentVblank = _scheduler.VblankCount;
         CaptureAndSave(currentVblank, customName);
+        _screenshotsTaken++;
     }
 
     /// <summary>

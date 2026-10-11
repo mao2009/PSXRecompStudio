@@ -650,14 +650,14 @@ public static class ScreenshotCommand
             executionResult = result;
             stopReason = result.State.ToString();
 
-            // Capture screenshots at VBlank intervals by checking VBlank count
+            // Capture screenshots at VBlank intervals by checking VBlank count after execution
             var vblankCount = interpreterEngine.Scheduler?.VblankCount ?? 0;
             for (ulong v = startVblank; v <= vblankCount && screenshotCapture.ScreenshotsTaken < maxScreenshots; v += vblankInterval)
             {
                 screenshotCapture.ForceCapture($"persona_vblank_{v:D4}.png");
             }
 
-            // Final capture if not complete
+            // Final capture if not complete (will be skipped if already captured)
             if (!screenshotCapture.IsComplete)
             {
                 screenshotCapture.ForceCapture("persona_vblank_final.png");
