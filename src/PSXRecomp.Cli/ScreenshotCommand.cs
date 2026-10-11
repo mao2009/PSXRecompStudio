@@ -626,38 +626,44 @@ public static class ScreenshotCommand
 
         try
         {
-            interpreterEngine.Load(request);
-
             // Patch OpenBIOS ROM: add jump to shell entry point (0x80030000) at end of exception handler
             // Exception handler ends at offset 0x280; insert jump to shell entry (0x80030000) at 0x284
             // j 0x80030000 = 0x08000000 | (0x80030000 >> 2) = 0x0A000C00
             // nop = 0x00000000
-            var core = interpreterEngine.DiagnosticDevices.Core;
-            core.WriteMemory32(0x00000284, 0x0A000C00); // j 0x80030000
-            core.WriteMemory32(0x00000288, 0x00000000); // nop
-
-            screenshotCapture = new ScreenshotCapture(
-                interpreterEngine.DiagnosticDevices.GpuDevice,
-                interpreterEngine.Scheduler!,
-                outputDirectory,
-                vblankInterval,
-                maxScreenshots,
-                startVblank);
-
+            // Note: ROM patching must happen after Load, so we do it in postLoadAction
+            
             var orchestrator = new ExecutionOrchestrator();
-            var handoff = new ScreenshotHandoff(screenshotCapture, vblankInterval, startVblank, maxScreenshots);
-            var result = orchestrator.Execute(interpreterEngine, handoff, request);
+            var result = orchestrator.Execute(
+                interpreterEngine, 
+                handoff: null, 
+                request,
+                segmentCallback: null,
+                postLoadAction: () =>
+                {
+                    // This runs after engine.Load() but before first segment
+                    var core = interpreterEngine.DiagnosticDevices.Core;
+                    core.WriteMemory32(0x00000284, 0x0A000C00); // j 0x80030000
+                    core.WriteMemory32(0x00000288, 0x00000000); // nop
+
+                    screenshotCapture = new ScreenshotCapture(
+                        interpreterEngine.DiagnosticDevices.GpuDevice,
+                        interpreterEngine.Scheduler!,
+                        outputDirectory,
+                        vblankInterval,
+                        maxScreenshots,
+                        startVblank);
+
+                    // Register VBlank callback for precise screenshot capture at VBlank interrupts
+                    interpreterEngine.Scheduler!.VblankCallback = vblank =>
+                    {
+                        // Capture screenshot at VBlank intervals
+                        screenshotCapture.TryCaptureAtVBlank(vblank);
+                    };
+                });
             executionResult = result;
             stopReason = result.State.ToString();
 
-            // Capture screenshots at VBlank intervals by checking VBlank count after execution
-            var vblankCount = interpreterEngine.Scheduler?.VblankCount ?? 0;
-            for (ulong v = startVblank; v <= vblankCount && screenshotCapture.ScreenshotsTaken < maxScreenshots; v += vblankInterval)
-            {
-                screenshotCapture.ForceCapture($"persona_vblank_{v:D4}.png");
-            }
-
-            // Final capture if not complete (will be skipped if already captured)
+            // Final capture if not complete (screenshots are captured DURING execution via handoff)
             if (!screenshotCapture.IsComplete)
             {
                 screenshotCapture.ForceCapture("persona_vblank_final.png");
@@ -721,38 +727,6 @@ public static class ScreenshotCommand
                 stopwatch.Stop();
             }
         }
-
-    private sealed class ScreenshotHandoff : ITitleExecutionHandoff
-    {
-        private readonly ScreenshotCapture _screenshotCapture;
-        private readonly uint _vblankInterval;
-        private readonly ulong _startVblank;
-        private readonly int _maxScreenshots;
-
-        public ScreenshotHandoff(ScreenshotCapture screenshotCapture, uint vblankInterval, ulong startVblank, int maxScreenshots)
-        {
-            _screenshotCapture = screenshotCapture;
-            _vblankInterval = vblankInterval;
-            _startVblank = startVblank;
-            _maxScreenshots = maxScreenshots;
-        }
-
-        public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState)
-        {
-            ArgumentNullException.ThrowIfNull(segmentState);
-
-            // Capture screenshot at VBlank intervals
-            _screenshotCapture.TryCapture();
-
-            // Check if screenshot capture is complete
-            if (_screenshotCapture.IsComplete)
-            {
-                return TitleExecutionHandoffResult.Exit();
-            }
-
-            return null; // Continue execution
-        }
-    }
 
     private static OpenedDisc OpenDisc(string path)
     {

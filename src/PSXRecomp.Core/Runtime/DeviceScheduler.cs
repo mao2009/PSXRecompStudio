@@ -72,6 +72,9 @@ public sealed class DeviceScheduler
     private bool _gpuIrqLine;
     private ulong _lastCdRomInterruptGeneration;
 
+    /// <summary>Optional callback invoked when VBlank interrupts are delivered.</summary>
+    internal Action<ulong>? VblankCallback { get; set; }
+
     /// <summary>Total VBlank interrupts that have been delivered since scheduler creation.</summary>
     public ulong VblankCount => _vblankCount;
 
@@ -231,7 +234,17 @@ public sealed class DeviceScheduler
             // Each VBlank toggles the field; an even number leaves it unchanged.
             if ((vblanksElapsed & 1u) != 0) _gpu?.OnVblank();
             _interrupts.Raise(VblankIrq);
+            var previousVblankCount = _vblankCount;
             _vblankCount += vblanksElapsed;
+
+            // Invoke VBlank callback for each VBlank that elapsed
+            if (VblankCallback is not null)
+            {
+                for (ulong i = 1; i <= vblanksElapsed; i++)
+                {
+                    VblankCallback(previousVblankCount + i);
+                }
+            }
         }
         _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);
     }

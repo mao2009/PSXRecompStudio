@@ -28,6 +28,9 @@ public sealed class ScreenshotCapture : IDisposable
     /// <summary>The output directory for screenshots.</summary>
     public string OutputDirectory => _outputDirectory;
 
+    /// <summary>The GPU device for diagnostic access.</summary>
+    internal GpuDevice GpuDevice => _gpuDevice;
+
     /// <summary>
     /// Creates a screenshot capture service.
     /// </summary>
@@ -88,6 +91,7 @@ public sealed class ScreenshotCapture : IDisposable
             _capturedVblanks.Add(currentVblank);
             CaptureAndSave(currentVblank);
             _screenshotsTaken++;
+            _lastVblank = currentVblank;
             return true;
         }
 
@@ -100,10 +104,12 @@ public sealed class ScreenshotCapture : IDisposable
                 _capturedVblanks.Add(targetVblank);
                 CaptureAndSave(targetVblank);
                 _screenshotsTaken++;
+                _lastVblank = targetVblank;
                 return true;
             }
         }
 
+        _lastVblank = currentVblank;
         return false;
     }
 
@@ -118,6 +124,47 @@ public sealed class ScreenshotCapture : IDisposable
         var currentVblank = _scheduler.VblankCount;
         CaptureAndSave(currentVblank, customName);
         _screenshotsTaken++;
+    }
+
+    /// <summary>
+    /// Attempts to capture a screenshot at a specific VBlank count (from VBlank callback).
+    /// </summary>
+    /// <param name="vblank">The VBlank count at which the interrupt occurred.</param>
+    /// <returns>True if a screenshot was captured, false otherwise.</returns>
+    public bool TryCaptureAtVBlank(ulong vblank)
+    {
+        if (_disposed || _screenshotsTaken >= _maxScreenshots)
+            return false;
+
+        // Check for exact match first
+        var targetIndex = _targetVblanks.BinarySearch(vblank);
+        if (targetIndex >= 0)
+        {
+            if (_capturedVblanks.Contains(vblank))
+                return false; // Already captured this VBlank
+
+            _capturedVblanks.Add(vblank);
+            CaptureAndSave(vblank);
+            _screenshotsTaken++;
+            _lastVblank = vblank;
+            return true;
+        }
+
+        // Also check if we've passed any target VBlanks since last check
+        foreach (var targetVblank in _targetVblanks)
+        {
+            if (targetVblank <= vblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
+            {
+                _capturedVblanks.Add(targetVblank);
+                CaptureAndSave(targetVblank);
+                _screenshotsTaken++;
+                _lastVblank = targetVblank;
+                return true;
+            }
+        }
+
+        _lastVblank = vblank;
+        return false;
     }
 
     /// <summary>
@@ -150,6 +197,8 @@ public sealed class ScreenshotCapture : IDisposable
     private void CaptureAndSave(ulong vblank, string? customName = null)
     {
         var frame = _gpuDevice.CaptureFrame();
+        var frameHash = frame.ComputeStableHash();
+        var frameHashStr = Convert.ToHexString(frameHash)[..16];
         var bgra = ConvertToBgra32(frame);
 
         if (bgra.Length == 0)
@@ -164,9 +213,31 @@ public sealed class ScreenshotCapture : IDisposable
     }
 
     /// <summary>
-    /// Converts a FrameSnapshot's native 15-bit VRAM pixels to BGRA32 format.
+    /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
+    /// Handles both 15-bit (5-5-5) and 24-bit (8-8-8) display modes.
     /// </summary>
-    private static byte[] ConvertToBgra32(FrameSnapshot frame)
+    private byte[] ConvertToBgra32(FrameSnapshot frame)
+    {
+        if (frame.Width <= 0 || frame.Height <= 0)
+            return [];
+
+        var gpuState = _gpuDevice.GetState();
+        bool is24BitMode = (gpuState.DisplayMode & 0x10) != 0; // Bit 4: 24-bit color depth
+
+        if (is24BitMode)
+        {
+            return Convert24BitToBgra32(frame, gpuState);
+        }
+        else
+        {
+            return Convert15BitToBgra32(frame);
+        }
+    }
+
+    /// <summary>
+    /// Converts 15-bit (5-5-5) VRAM pixels to BGRA32 format.
+    /// </summary>
+    private static byte[] Convert15BitToBgra32(FrameSnapshot frame)
     {
         if (frame.Width <= 0 || frame.Height <= 0)
             return [];
@@ -182,6 +253,65 @@ public sealed class ScreenshotCapture : IDisposable
             bgra[(i * 4) + 2] = Expand5To8(v & 0x1F);         // R
             bgra[(i * 4) + 3] = 0xFF;                          // A
         }
+        return bgra;
+    }
+
+    /// <summary>
+    /// Converts 24-bit (8-8-8) VRAM pixels to BGRA32 format.
+    /// In 24-bit mode, VRAM stores 24-bit pixels as 3 bytes per pixel (R, G, B).
+    /// VRAM is byte-addressed in 24-bit mode with stride of 1024 * 2 = 2048 bytes (same halfword layout, read as bytes).
+    /// </summary>
+    private byte[] Convert24BitToBgra32(FrameSnapshot frame, GpuState gpuState)
+    {
+        if (frame.Width <= 0 || frame.Height <= 0)
+            return [];
+
+        // Get display region from GPU state
+        int startX = (int)(gpuState.DisplayVramStart & 0x3FF);
+        int startY = (int)((gpuState.DisplayVramStart >> 10) & 0x1FF);
+        var resolution = _gpuDevice.GetDisplayResolution();
+        int width = Math.Max(0, Math.Min((int)resolution.Width, GpuVram.Width - startX));
+        int height = Math.Max(0, Math.Min((int)resolution.Height, GpuVram.Height - startY));
+
+        if (width <= 0 || height <= 0)
+            return [];
+
+        var bgra = new byte[width * height * 4];
+
+        // In 24-bit mode, VRAM is byte-addressed with 3 bytes per pixel (R, G, B)
+        // VRAM stride = 1024 * 2 = 2048 bytes per row (same halfword layout, read as bytes)
+        // Each pixel = 3 bytes, so effective pixels per row = 2048 / 3 = 682
+        const int VRAM_STRIDE_24BIT = GpuVram.Width * 2; // 2048 bytes per row
+
+        var vramBytes = _gpuDevice.GetVramBytes();
+
+        for (int y = 0; y < height; y++)
+        {
+            int vramY = (startY + y) & 0x1FF;
+            int vramRowOffset = vramY * VRAM_STRIDE_24BIT;
+
+            for (int x = 0; x < width; x++)
+            {
+                int vramX = (startX + x) & 0x3FF;
+                int vramByteOffset = vramRowOffset + vramX * 3;
+
+                // Bounds check
+                if (vramByteOffset + 2 >= vramBytes.Length)
+                    break;
+
+                // VRAM stores RGB (R, G, B) in 24-bit mode
+                byte r = vramBytes[vramByteOffset];
+                byte g = vramBytes[vramByteOffset + 1];
+                byte b = vramBytes[vramByteOffset + 2];
+
+                int dstIdx = (y * width + x) * 4;
+                bgra[dstIdx + 0] = b;  // B
+                bgra[dstIdx + 1] = g;  // G
+                bgra[dstIdx + 2] = r;  // R
+                bgra[dstIdx + 3] = 0xFF; // A
+            }
+        }
+
         return bgra;
     }
 
