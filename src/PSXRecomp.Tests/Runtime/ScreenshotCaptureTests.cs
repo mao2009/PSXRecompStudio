@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.IO.Compression;
 using PSXRecomp.Core;
 using PSXRecomp.Core.Dma;
 using PSXRecomp.Core.Runtime;
@@ -146,10 +148,40 @@ public sealed class ScreenshotCaptureTests : IDisposable
         #pragma warning restore AARC003
         files.Should().HaveCount(1);
 
-        // Verify it's a valid PNG by loading with ImageSharp
-        using var image = SixLabors.ImageSharp.Image.Load(files[0]);
-        image.Width.Should().BeGreaterThan(0);
-        image.Height.Should().BeGreaterThan(0);
+        // Validate PNG signature, IHDR dimensions and the independently decompressed RGBA scanlines.
+        var png = File.ReadAllBytes(files[0]);
+        png.AsSpan(0, 8).ToArray().Should().Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
+        BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(16, 4)).Should().BeGreaterThan(0);
+        BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(20, 4)).Should().BeGreaterThan(0);
+        png[24].Should().Be(8);
+        png[25].Should().Be(6);
+
+        int offset = 8;
+        using var idat = new MemoryStream();
+        bool hasEnd = false;
+        while (offset + 12 <= png.Length)
+        {
+            int length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(offset, 4)));
+            offset += 4;
+            string type = System.Text.Encoding.ASCII.GetString(png, offset, 4);
+            offset += 4;
+            (offset + length + 4 <= png.Length).Should().BeTrue();
+            if (type == "IDAT")
+                idat.Write(png, offset, length);
+            if (type == "IEND")
+                hasEnd = true;
+            offset += length + 4;
+        }
+        hasEnd.Should().BeTrue();
+        idat.Position = 0;
+        using var inflater = new ZLibStream(idat, CompressionMode.Decompress);
+        using var raw = new MemoryStream();
+        inflater.CopyTo(raw);
+        int width = (int)BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(16, 4));
+        int height = (int)BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(20, 4));
+        raw.Length.Should().Be((long)height * (1 + width * 4));
+        for (int y = 0; y < height; y++)
+            raw.GetBuffer()[y * (1 + width * 4)].Should().Be(0);
     }
 
     [Fact]
