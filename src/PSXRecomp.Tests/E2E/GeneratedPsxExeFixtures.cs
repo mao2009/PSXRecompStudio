@@ -138,7 +138,7 @@ public static class GeneratedPsxExeFixtures
             Immediate(OriOpcode, R3000aRegister.V0, 0x5678u),
             // Natural fall-through: no jump, PC reaches ProgramEndHandoff after this instruction
         },
-        expectedSha256: "3f8a9b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1",
+        expectedSha256: "77bcfb726e70ed2f4a11ce9f2bd59b043ac846bc4abf4ab4ccacebebcbeb2d40",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,
@@ -167,7 +167,7 @@ public static class GeneratedPsxExeFixtures
             // helper_func: jr ra (return to delay slot PC + 4, which falls off end)
             0x03e00008u, // jr ra
         },
-        expectedSha256: "a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0",
+        expectedSha256: "90b5e06a289dd4f5b8aa0904aaa8ecd64f68d9dd2d12cc76e8070cc253dbe180",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,

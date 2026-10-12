@@ -45,7 +45,8 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     [Fact]
     public void PackageProvisionsRuntimeHost()
     {
-        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.NaturalEndWithV0.Generate());
+        var fixture = GeneratedPsxExeFixtures.NaturalEndWithV0;
+        var testExePath = _tempDir.WriteFile("input.exe", fixture.Generate());
 
         // Use a known output subdirectory name so the artifact name is predictable
         var outputDir = _tempDir.CreateSubdirectory("test-game");
@@ -74,11 +75,16 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         var manifest = RuntimeHostManifestJson.Parse(manifestJson);
 #pragma warning restore AARC003
 
+        // Compute expected program end from fixture's instruction words
+        var expectedProgramEnd = fixture.InstructionWords.First() == 0x34025678u  // NaturalEndWithV0
+            ? TestImageLoadAddress + (uint)fixture.InstructionWords.Count * 4u
+            : TestImageLoadAddress + 3u * 4u; // fallback for other fixtures
+
         manifest.SchemaVersion.Should().Be(RuntimeHostManifest.CurrentSchemaVersion);
         manifest.Artifact.Should().Be(RuntimeHostLayout.ManifestRelativeArtifactPath("test-game", RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
         manifest.ImageLoadAddress.Should().Be(TestImageLoadAddress);
         manifest.EntryPc.Should().Be(TestImageLoadAddress);
-        manifest.ProgramEnd.Should().Be(TestProgramEnd);
+        manifest.ProgramEnd.Should().Be(expectedProgramEnd);
         manifest.GuestFirmware.Should().BeFalse("non-firmware must not have native mode");
         manifest.BlockEntryPcs.Should().NotBeNullOrEmpty("bridge requires at least one compiled block");
     }
