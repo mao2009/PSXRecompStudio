@@ -421,10 +421,20 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 "A guest firmware owns its kernel: no BIOS HLE Runtime may be attached.", nameof(biosRuntimeFactory));
         }
 
-        if (guestFirmware && (mixedFallback is not null || loadedCode is not null))
+        if (guestFirmware && biosRuntimeFactory is not null)
         {
             throw new ArgumentException(
-                "Guest firmware has no HLE runtime, mixed-fallback interpreter or loaded code table attached.",
+                "A guest firmware owns its kernel: no BIOS HLE Runtime may be attached.", nameof(biosRuntimeFactory));
+        }
+
+        if (guestFirmware && mixedFallback is not null && launchMode == PrebuiltArtifactLaunchMode.HostTransfer)
+        {
+            // Guest firmware with HostTransfer launch mode and mixed fallback is not a supported combination:
+            // the firmware owns its kernel and vectors, so HLE bridge + fallback doesn't apply.
+            // For RuntimeHost launch mode (native firmware), mixed fallback is allowed for the
+            // interpreter to handle RAM-resident code the firmware places.
+            throw new ArgumentException(
+                "Guest firmware with HostTransfer launch mode does not support mixed fallback.",
                 nameof(mixedFallback));
         }
 
@@ -440,7 +450,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             loadedCode: loadedCode,
             blockEntryPcs: blockEntryPcs,
             prebuiltArtifactPath: prebuiltArtifactPath,
-            launchMode: launchMode);
+            launchMode: launchMode,
+            mixedFallback: mixedFallback);
     }
 
     public string Name => EngineName;

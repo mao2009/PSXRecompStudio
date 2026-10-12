@@ -89,14 +89,16 @@ public static class Program
                 Path.Combine(manifestDirectory, manifest.Artifact));
 
             // Choose the launch mode: firmware (openBIOS) runs the artifact
-            // natively with no bridge; otherwise a bridge is attached so BIOS
-            // HLE service calls and mixed-fallback transfers are serviced.
-            var needsBridge = !manifest.GuestFirmware || manifest.MixedFallback;
+            // natively with no bridge; HLE games use the bridge for BIOS service
+            // calls and mixed-fallback transfers. Mixed fallback is only meaningful
+            // for HLE games (GuestFirmware=false), not for guest firmware which
+            // owns its kernel and vectors.
+            var needsBridge = !manifest.GuestFirmware;
 
             IBiosRuntime BiosRuntime(IGuestMemoryReader reader, IGuestMemoryWriter writer)
                 => new BiosHleRuntime(new ConsoleRuntimeOutputSink(), reader, writer);
 
-            var mixedFallback = manifest.MixedFallback
+            var mixedFallback = (!manifest.GuestFirmware && manifest.MixedFallback)
                 ? new MixedFallbackOptions(
                     manifest.FallbackSegmentInstructionBudget,
                     manifest.FallbackMaxTransitions)

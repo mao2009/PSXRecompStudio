@@ -222,12 +222,16 @@ public static class RuntimeHostBuildService
     {
         var psi = new ProcessStartInfo(fileName)
         {
-            Arguments = string.Join(" ", arguments),
+
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
         Process process;
         try
         {
@@ -322,12 +326,12 @@ public static class RuntimeHostBuildService
 
         var psi = new ProcessStartInfo(hostPath)
         {
-            Arguments = manifestPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        psi.ArgumentList.Add(manifestPath);
 
         Process process;
         try

@@ -67,6 +67,9 @@ Explicitly **not** implemented in Step A:
 - **Self-contained distribution** — a package with no user-side .NET install
   is a future completion condition of #739, not a Step A property.
 
+**Step C (PR #761) supersedes the above**: it implements host bundling, direct
+launch, and self-contained distribution as described in the Step C scope below.
+
 Option B's policy decision is adopted and maintained (the host structure keeps
 the NativeAOT path of Option C composable), and **Phase 1's parentless
 execution contract is preserved**: an embedded artifact generated without the
@@ -213,8 +216,10 @@ E2E tests in `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs` verify:
 - ✅ Package command with host generation and manifest emission.
 - ✅ E2E tests for layout, host launch, and exit code 78.
 - ✅ Fixed C verbatim delimiter issues in launcher prologue (Phase 2 Step C prerequisite).
-- ⏳ E2E runtime-host launch verification (scripted, requires fresh dotnet toolchain since build artifacts exist locally).
-- ⏳ Documentation updates (headless-cli.md, runtime-host.md, README.md).
-- ⏳ Full build and test suite verification.
-- ⏳ PR creation and CodeRabbit review.
-- ⏳ Issue #739 progress record..
+- ✅ Windows launcher fixes (PATH_MAX, command line quoting, handle cleanup).
+- ✅ Mixed fallback support for prebuilt artifacts.
+- ✅ ArgumentList-based process invocation for paths with spaces.
+- ✅ Guest firmware + mixed fallback logic corrected.
+- ✅ Documentation updates (headless-cli.md, runtime-host.md, README.md).
+- ✅ Full build and test suite verification (Linux CI passing).
+- ✅ PR creation and CodeRabbit review.

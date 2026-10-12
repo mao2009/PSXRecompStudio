@@ -40,7 +40,7 @@ that:
    through the sink (for HLE-routed runs).
 7. Returns an exit code:
    - **0:** Successful completion
-   - **1:** Tooling failure (invalid input, parsing error, host setup failure)
+   - **1:** Tooling failure (invalid input, parsing error, host setup failure, bad argument count)
    - **2:** Explicit runtime stop (guest-initiated termination during the run)
    - **78:** Missing manifest, missing manifest directory, or missing bundled
      Runtime host binary (launcher exit code; host itself does not return 78).
@@ -55,7 +55,7 @@ the following required fields (schema version 1):
 | Field | Type | Meaning |
 |:--- |:--- |:--- |
 | `schemaVersion` | `int` | Must equal `RuntimeHostManifest.CurrentSchemaVersion` (1) |
-| `artifact` | `string` | Relative path from manifest directory to the native game executable (`../game.exe` Linux, `../game.exe` Windows) |
+| `artifact` | `string` | Relative path from manifest directory to the native game executable (`../game` Linux, `../game.exe` Windows) |
 | `guestFirmware` | `bool` | True when the image is guest firmware (OpenBIOS) that owns its kernel; false for HLE-bridged games |
 | `mixedFallback` | `bool` | True when the artifact uses the mixed execution fallback (requires bridge) |
 | `fallbackSegmentInstructionBudget` | `uint` | Per-segment instruction cap for interpreter fallback (used only when `mixedFallback=true`) |
@@ -67,7 +67,6 @@ the following required fields (schema version 1):
 | `resultRegister` | `int?` | GPR index used for result abstraction (0 for V0, null for none) |
 | `runTimeoutMs` | `int` | Bounded per-run timeout in milliseconds (default 60000) |
 | `entryPc` | `uint` | Guest PC at which the program begins (PS-X EXE entry point or firmware load address) |
-| `blockEntryPcs` | `uint[]` | Sorted, unique PC list (required for bridge/HLE mode, ignored for native firmware) |
 
 The manifest carries **no absolute paths** (all paths are relative to the
 distribution root). Schema version mismatches fail closed with an exception.
@@ -128,8 +127,9 @@ Key constants:
 
 The launcher in the generated artifact uses `HostRelativePath` to locate the
 host (appending `.exe` on Windows via generated C macros). The manifest is placed
-one level above the host and uses relative paths (`../game.exe` Linux, `../game.exe`
-Windows) to reference the artifact.
+one level above the host and uses relative paths (`../game` Linux, `../game.exe`
+Windows) to reference the artifact. The `ManifestRelativeArtifactPath` helper
+adds the platform-appropriate `.exe` suffix on Windows.
 
 ### CLI Integration
 
@@ -240,4 +240,4 @@ Step C fixtures added:
 - [ADR-027: Standalone artifact — shared Runtime integration](../../adr/027-standalone-artifact-runtime-integration.md)
 - [ADR-014: BIOS HLE runtime contract](../../adr/014-bios-hle-runtime-contract.md)
 - [ADR-025: IR observable effect semantics](../../adr/020-ir-observable-effect-semantics.md)
-- [Issue #739: Standalone artifact generation and distributed Runtime provision](../../.github/ISSUE_TEMPLATE/Feature.md)
+- [Issue #739: Standalone artifact generation and distributed Runtime provision](https://github.com/mao2009/PSXRecompStudio/issues/739)

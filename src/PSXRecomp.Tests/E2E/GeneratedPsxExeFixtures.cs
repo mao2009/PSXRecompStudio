@@ -131,47 +131,48 @@ public static class GeneratedPsxExeFixtures
     /// </summary>
     public static GeneratedPsxExeFixture NaturalEndWithV0 { get; } = new(
         id: "natural-end-v0",
-        description: "RuntimeHost-managed natural-end flow: loads V0=0x5678, JAL delay slot falls off the end, ProgramEndHandoff triggers.",
+        description: "RuntimeHost-managed natural-end flow: loads V0=0x5678 and falls off the end, ProgramEndHandoff triggers.",
         instructionWords: new uint[]
         {
             // ori v0, $zero, 0x5678  (special-purpose V0 value 0x5678 for runtime-host testing)
             Immediate(OriOpcode, R3000aRegister.V0, 0x5678u),
-            // jal <nowhere> (placeholder target falls into non-executable or late memory; delay slot immediately falls off)
-            Jump(JalOpcode, uint.MaxValue - 8u),
-            0u, // JAL delay slot: unconditional fall off past ProgramEndHandoff
+            // Natural fall-through: no jump, PC reaches ProgramEndHandoff after this instruction
         },
-        expectedSha256: "77d426b78858f63796548f65ddd6bae6b3b2ab1d0750f798ec3a5870f8f2d4a4",
+        expectedSha256: "3f8a9b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,
         expectedResultValue: 0x5678u,
-        expectedGuestPc: UnresolvedJumpTarget,
+        expectedGuestPc: EntryPc + 4,
         expectedOutputByte: null,
         expectedDiagnosticCode: null);
 
     /// <summary>
     /// Natural-end program with actual finite transitions before the natural exit.
-    /// Regular exit logic: JAL to a useful function and fall off the end. This is used for
-    /// cross-platform sanity verification that the bridge mode works for non-guest-firmware
-    /// cases (Phase 2 Step C Option B).
+    /// Regular exit logic: JAL to a helper function within the image and fall off the end.
+    /// This is used for cross-platform sanity verification that the bridge mode works
+    /// for non-guest-firmware cases (Phase 2 Step C Option B).
     /// </summary>
     public static GeneratedPsxExeFixture NaturalEndWithTransitions { get; } = new(
         id: "natural-end-transitions",
-        description: "Natural-end program with regular JAL transitions (e.g., to helper function) then falls off the end.",
+        description: "Natural-end program with regular JAL transition to helper function then falls off the end.",
         instructionWords: new uint[]
         {
             // ori v0, $zero, 0x42
             Immediate(OriOpcode, R3000aRegister.V0, 0x42u),
-            // jal <useful_func> (immediate fall in delay slot)
-            Jump(JalOpcode, 0x80020000u),
-            0u, // delay slot: falls off text
+            // jal helper_func (at 0x80010008, within image)
+            Jump(JalOpcode, EntryPc + 8),
+            // delay slot: ori v1, $zero, 0x1 (executed before jump)
+            Immediate(OriOpcode, R3000aRegister.V1, 0x1u),
+            // helper_func: jr ra (return to delay slot PC + 4, which falls off end)
+            0x03e00008u, // jr ra
         },
-        expectedSha256: "917661c76f98eea33b3e3bbc80cb3b9dbad506be329bd41a97da1e698f0c85fc",
+        expectedSha256: "a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,
         expectedResultValue: 0x42u,
-        expectedGuestPc: 0x80020000u + 8,
+        expectedGuestPc: EntryPc + 16,
         expectedDiagnosticCode: null);
 
     /// <summary>

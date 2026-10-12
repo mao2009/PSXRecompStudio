@@ -669,6 +669,9 @@ int main(int argc, char** argv) {
 #include <string.h>
 #include <wchar.h>
 #define RUNTIME_HOST_BINARY ""PSXRecomp.RuntimeHost.exe""
+#if !defined(PATH_MAX)
+#define PATH_MAX MAX_PATH
+#endif
 #else
 /* Enable POSIX declarations (PATH_MAX, readlink, ssize_t, execl) under
    strict -std=c11. Windows path resolution above uses the Win32 API only. */
@@ -692,10 +695,10 @@ int main(int argc, char** argv) {
     static int run_via_runtime_host(void) {
         char exe_dir[PATH_MAX];
 #ifdef _WIN32
-        wchar_t exe_w[_MAX_PATH];
-        DWORD n = GetModuleFileNameW(NULL, exe_w, _countof(exe_w));
-        if (n == 0 || n >= _MAX_PATH) {
-            fprintf(stderr, ""error: cannot resolve this executable path (error %lu)\n"", GetLastError());
+        wchar_t exe_w[MAX_PATH];
+        DWORD n = GetModuleFileNameW(NULL, exe_w, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) {
+            fprintf(stderr, ""error: cannot resolve this executable path (error %lu)\n"", (unsigned long)GetLastError());
             return MissingRuntimeHostExitCode;
         }
         wchar_t* slash = wcsrchr(exe_w, L'\\');
@@ -726,29 +729,31 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         wchar_t host_w[PATH_MAX];
         wchar_t manifest_w[PATH_MAX];
-        int hl = MultiByteToWideChar(CP_UTF8, 0, host_path, -1, host_w, _countof(host_w));
-        int ml = MultiByteToWideChar(CP_UTF8, 0, manifest_path, -1, manifest_w, _countof(manifest_w));
+        int hl = MultiByteToWideChar(CP_UTF8, 0, host_path, -1, host_w, PATH_MAX);
+        int ml = MultiByteToWideChar(CP_UTF8, 0, manifest_path, -1, manifest_w, PATH_MAX);
         if (hl == 0 || ml == 0) {
-            fprintf(stderr, ""error: cannot encode runtime host paths\n"", GetLastError());
+            fprintf(stderr, ""error: cannot encode runtime host paths (error %lu)\n"", (unsigned long)GetLastError());
             return MissingRuntimeHostExitCode;
         }
         wchar_t cmd_line[PATH_MAX * 2 + 16];
-        wchar_t space = L' ';
-        wcscpy(cmd_line, host_w);
-        wcscat(cmd_line, &space);
-        wcscat(cmd_line, manifest_w);
+        /* Quote both paths to handle spaces and special characters safely. */
+        int cmd_len = swprintf(cmd_line, PATH_MAX * 2 + 16, L""\""%s\"" \""%s\"""", host_w, manifest_w);
+        if (cmd_len < 0) {
+            fprintf(stderr, ""error: cannot build command line\n"");
+            return MissingRuntimeHostExitCode;
+        }
 
         STARTUPINFOW si = { sizeof(si) };
         PROCESS_INFORMATION pi = { 0 };
         if (!CreateProcessW(NULL, cmd_line, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-            fprintf(stderr, ""error: could not start the runtime host\n"", GetLastError());
+            fprintf(stderr, ""error: could not start the runtime host (error %lu)\n"", (unsigned long)GetLastError());
             return MissingRuntimeHostExitCode;
         }
         WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD exit_code = 0;
         GetExitCodeProcess(pi.hProcess, &exit_code);
         CloseHandle(pi.hProcess);
-        CloseHandle(si.hThread);
+        CloseHandle(pi.hThread);
         return (int)exit_code;
 #else
         if (access(host_path, F_OK) != 0) {
