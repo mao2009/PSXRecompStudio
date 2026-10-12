@@ -768,11 +768,12 @@ int main(int argc, char** argv) {
     /* Direct launch (Issue #739 Phase 2 Step C, ADR-027 Option B): delegate to
        the bundled Runtime host so the packaged distribution can launch with no
        Studio, CLI or development repository present. Re-launched by the runtime
-       host with --host-transfer, which suppresses this delegation. */
+       host with --host-transfer or --runtime-host, which suppresses this delegation. */
     {
         int skip = 0;
         for (int argi = 1; argi < argc; argi++) {
             if (strcmp(argv[argi], ""--host-transfer"") == 0) skip = 1;
+            if (strcmp(argv[argi], ""--runtime-host"") == 0) skip = 1;
         }
         if (!skip) {
             int ret = run_via_runtime_host();
