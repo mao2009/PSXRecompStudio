@@ -122,6 +122,17 @@ public sealed class RecompiledArtifactCodeGenTests
         // The bridge is opt-in: without the flag the run stays parentless, so
         // the flag must never be enabled unconditionally.
         source.Should().NotContain("(void)argc;");
+        // Flag order cannot change the result: every flag is an independent
+        // `if (strcmp(argv[argi], ...))` inside one position-scanning loop, and
+        // the attach happens only after the whole scan (no positional argv[3]
+        // shortcut, no else-if chain, no early break).
+        source.Should().Contain("for (int argi = 1; argi < argc; argi++) {");
+        source.Should().Contain("if (strcmp(argv[argi], \"--guest-exceptions\") == 0) state.guest_exceptions = 1u;");
+        source.Should().Contain("if (strcmp(argv[argi], \"--exact-device-time\") == 0) artifact_exact_time = 1;");
+        source.Should().Contain("if (strcmp(argv[argi], \"--host-transfer\") == 0) attach_bridge = 1;");
+        source.Should().Contain("if (attach_bridge) artifact_attach_host_bridge(&state);");
+        source.Should().NotContain("else if (strcmp(argv[argi]");
+        source.Should().NotContain("argv[3]");
         // Still a self-contained embedded artifact: no file reading leaks in.
         source.Should().NotContain("fopen");
         source.Should().NotContain("fscanf");
@@ -409,6 +420,74 @@ public sealed class RecompiledArtifactCodeGenTests
             run.Output.Should().Contain("gpr[0]=0x00000000");
             run.Output.Should().Contain("RSNAPSHOT_BEGIN");
             run.Output.Should().Contain("RSNAPSHOT_END");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void GenerateStandalone_WithHostBridge_WithoutAttachFlag_NeitherWaitsForHandshake_NorDependsOnFlagOrder()
+    {
+#pragma warning disable AARC003
+        // The full pipeline with the bridge-capable main, launched WITHOUT
+        // --host-transfer: the run must stay parentless (termination 5 / exit 5)
+        // and must never block on a handshake — if it did, RunProcess's bounded
+        // timeout would throw and fail this test. The optional flags must also
+        // produce identical results in either order.
+        var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
+        if (!File.Exists(gccPath))
+        {
+            Skip.If(true, "no C compiler available on this host");
+        }
+
+        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        var initialGpr = new uint[32];
+        var initialMemory = Array.Empty<(uint Address, uint Value)>();
+        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var result = RecompiledArtifactCodeGen.GenerateStandalone(
+                dispatch,
+                initialGpr,
+                0u, 0u, 0x80001000u,
+                1000u,
+                initialMemory,
+                0x80001000u,
+                programImage,
+                hostBridge: true);
+
+            result.Success.Should().BeTrue();
+            result.Source.Should().NotBeNull();
+
+            var cPath = Path.Combine(tempDir, "bridge.c");
+            File.WriteAllText(cPath, result.Source!);
+            var exePath = Path.Combine(tempDir, OperatingSystem.IsWindows() ? "bridge.exe" : "bridge");
+
+            var compile = RunCompiler(gccPath, cPath, exePath);
+            compile.ExitCode.Should().Be(0, "the bridge-capable generated artifact must compile");
+
+            var parentless = RunProcess(exePath);
+            parentless.ExitCode.Should().Be(5, "without the opt-in flag the run stays parentless (5 = unsupported transfer)");
+            parentless.Output.Should().Contain("termination=5");
+
+            var orderA = RunProcess(exePath, "--guest-exceptions --exact-device-time", 60000);
+            var orderB = RunProcess(exePath, "--exact-device-time --guest-exceptions", 60000);
+            orderA.ExitCode.Should().Be(5);
+            orderB.ExitCode.Should().Be(5);
+            orderA.Output.Should().Be(orderB.Output, "the flags parse position-independently, so order must not change the result");
+            orderA.Output.Should().Contain("termination=5");
         }
         finally
         {
