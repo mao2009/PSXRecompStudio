@@ -25,7 +25,7 @@ internal static class OpenBiosProbeCommand
 
     internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
-                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--json]";
+                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]";
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
@@ -36,7 +36,7 @@ internal static class OpenBiosProbeCommand
         }
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
-        bool json = false, differential = false;
+        bool json = false, differential = false, standalone = false;
         string? discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         var compareAt = new SortedSet<uint>();
@@ -52,6 +52,7 @@ internal static class OpenBiosProbeCommand
 
             if (option == "--json") { json = true; continue; }
             if (option == "--differential") { differential = true; continue; }
+            if (option == "--standalone") { standalone = true; continue; }
             if (option is "--capture-at" or "--compare-at" or "--stop-at")
             {
                 if (++i >= args.Count || !uint.TryParse(args[i].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? args[i][2..] : args[i], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var pc))
@@ -100,11 +101,11 @@ internal static class OpenBiosProbeCommand
         }
 
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
-            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null || rootsPath is not null || seen.Contains("--code-bytes")))
+            || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null || rootsPath is not null || standalone || seen.Contains("--code-bytes")))
             || (engineKind == "generated-host" && capturePc is not null)
             || (compareAt.Count != 0 && !differential))
         {
-            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --roots, --code-bytes, --differential, --compare-at, --stop-at, --symbols and --load-images require --engine generated-host; --capture-at requires --engine interpreter; " +
+            error.WriteLine("openbios-probe: --engine generated-host requires --roots; --roots, --code-bytes, --differential, --compare-at, --stop-at, --symbols, --load-images and --standalone require --engine generated-host; --capture-at requires --engine interpreter; " +
                             "--compare-at requires --differential");
             error.WriteLine(Usage);
             return 1;
@@ -126,7 +127,7 @@ internal static class OpenBiosProbeCommand
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
             return engineKind == "generated-host"
                 ? RunGeneratedHost(new GeneratedHostProbe(
-                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath), json, output, error)
+                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error)
                 : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, json, output);
         }
         catch (Exception ex) when (
@@ -225,7 +226,8 @@ internal static class OpenBiosProbeCommand
 
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
-        uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath);
+        uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath,
+        bool Standalone);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
@@ -235,6 +237,11 @@ internal static class OpenBiosProbeCommand
     /// <c>Differential</c> the interpreter backend runs the same ROM and disc first and both are compared
     /// (<see cref="ProbeGuestState"/>) at the shell and executable entries plus every <c>CompareAt</c> PC. <c>StopAt</c>
     /// ends each run before it executes that PC the first time (the host sees only fallback PCs).
+    /// <c>Standalone</c> (Phase 2 Step B, Issue #739) runs the same firmware through the standalone embedded-image
+    /// artifact: the ROM image and the run's initial state are compiled into the generated C source (no
+    /// artifact-input.txt/artifact-image.bin are written) and the artifact attaches the shared Runtime host bridge over
+    /// the existing <c>--host-transfer</c> path. It changes only how the ROM is delivered to the engine, never whether
+    /// the result is a verified boot.
     /// </summary>
     private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error)
     {
@@ -324,7 +331,14 @@ internal static class OpenBiosProbeCommand
                 mixedFallback: new MixedFallbackOptions(budget, uint.MaxValue),
                 guestFirmware: true,
                 runTimeout: TimeSpan.FromMinutes(30),
-                disc: probe.Disc, loadedCode: loadedCode)
+                disc: probe.Disc, loadedCode: loadedCode,
+                // Phase 2 Step B (Issue #739): the probe can run the firmware through
+                // the standalone embedded-image artifact (Phase 1 / Step A path):
+                // the ROM image and the run's initial state are embedded in the
+                // generated C source, no artifact-input.txt/artifact-image.bin are
+                // written, and the artifact attaches the shared Runtime host bridge
+                // over the existing --host-transfer path.
+                embedImage: probe.Standalone)
             {
                 FallbackFetchObserver = (interpreter, pc) =>
                 {
@@ -369,6 +383,12 @@ internal static class OpenBiosProbeCommand
                 OpenBiosFirmware.ResetVector, new uint[TitleExecutionRequest.GprCount], 0, 0, [], 1, budget));
             var runMs = clock.Elapsed.TotalMilliseconds;
 
+            // The embedded-image artifact (Phase 2 Step B) is generated at the first RunSegment, so its gcc build is
+            // timed inside runMs rather than the construction window compileMs covers. Attribute it back to codegen/gcc
+            // so codegenMs stays non-negative and nativeAndHostMs is not inflated by compilation.
+            var reportedCompileMs = compileMs + (probe.Standalone ? measuredBuild.Milliseconds : 0);
+            var reportedRunMs = runMs - (probe.Standalone ? measuredBuild.Milliseconds : 0);
+
             var lastRam = boundaries.Values.OrderBy(static b => b.AtFetch).LastOrDefault()?.Ram;
             var report = monitor.Evaluate(address => lastRam is null || (address & 0x1FFFFFFFu) > ProbeGuestState.RamBytes - 4
                 ? 0u
@@ -380,6 +400,7 @@ internal static class OpenBiosProbeCommand
             {
                 kind = "openbios-probe",
                 engine = "generated-host",
+                standalone = probe.Standalone,
                 sha256 = probe.Hash,
                 bootVerified = kernelBooted && report.TitleStarted,
                 kernelBooted,
@@ -427,14 +448,14 @@ internal static class OpenBiosProbeCommand
                 timings = new
                 {
                     buildMs = Math.Round(buildMs, 1),
-                    compileMs = Math.Round(compileMs, 1),
-                    codegenMs = Math.Round(compileMs - measuredBuild.Milliseconds, 1),
+                    compileMs = Math.Round(reportedCompileMs, 1),
+                    codegenMs = Math.Round(reportedCompileMs - measuredBuild.Milliseconds, 1),
                     gccMs = Math.Round(measuredBuild.Milliseconds, 1),
                     referenceMs = Math.Round(referenceMs, 1),
-                    runMs = Math.Round(runMs, 1),
+                    runMs = Math.Round(reportedRunMs, 1),
                     fallbackMs = costs is null ? (double?)null : Math.Round(costs.FallbackMilliseconds, 1),
                     transferMs = costs is null ? (double?)null : Math.Round(costs.TransferMilliseconds, 1),
-                    nativeAndHostMs = Math.Round(runMs - (costs?.FallbackMilliseconds ?? 0) - (costs?.TransferMilliseconds ?? 0), 1),
+                    nativeAndHostMs = Math.Round(reportedRunMs - (costs?.FallbackMilliseconds ?? 0) - (costs?.TransferMilliseconds ?? 0), 1),
                     totalMs = Math.Round(wall.Elapsed.TotalMilliseconds, 1),
                 },
                 aot = new { generatedCBytes = measuredBuild.SourceBytes, artifactBytes = measuredBuild.ArtifactBytes },
@@ -548,7 +569,7 @@ internal static class OpenBiosProbeCommand
         var native = a["native"]!;
         var fallback = a["fallback"]!;
         var transitions = a["transitions"]!;
-        yield return $"OpenBIOS generated-host probe: {document["executionState"]} ({document["diagnosticCode"]}); kernelBooted={document["kernelBooted"]}, titleStarted={document["titleStarted"]}";
+        yield return $"OpenBIOS generated-host probe: {document["executionState"]} ({document["diagnosticCode"]}); kernelBooted={document["kernelBooted"]}, titleStarted={document["titleStarted"]}, standalone={document["standalone"]}";
         yield return $"Instructions: native {native["instructions"]} ({native["region"]?.ToString() ?? "unattributed"}); fallback {fallback["retiredInstructions"]} retired, " +
                      $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
         yield return "Regions (fallback fetches / transitions): " + string.Join(", ", a["regions"]!.AsArray()
