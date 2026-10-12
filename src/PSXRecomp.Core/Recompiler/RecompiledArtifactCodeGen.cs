@@ -673,8 +673,9 @@ int main(int argc, char** argv) {
 #define PATH_MAX MAX_PATH
 #endif
 #else
-/* Enable POSIX declarations (PATH_MAX, readlink, ssize_t, execl) under
-   strict -std=c11. Windows path resolution above uses the Win32 API only. */
+/* macOS: dyld API for executable path resolution (see below); Linux and
+   other Unix: /proc/self/exe. Enable POSIX declarations under strict
+   -std=c11. */
 #define _POSIX_C_SOURCE 200809L
 #include <unistd.h>
 #include <stdlib.h>
@@ -682,7 +683,13 @@ int main(int argc, char** argv) {
 #include <stdio.h>
 #include <errno.h>
 #include <limits.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #define RUNTIME_HOST_BINARY ""PSXRecomp.RuntimeHost""
+#endif
+#if !defined(PATH_MAX)
+#define PATH_MAX 1024
 #endif
 #define RUNTIME_HOST_REL_PATH ""runtime/"" RUNTIME_HOST_BINARY
 #define RUNTIME_HOST_MANIFEST ""runtime/runtime-host.json""
@@ -711,6 +718,20 @@ int main(int argc, char** argv) {
         snprintf(exe_dir, sizeof(exe_dir), ""%s"", utf8);
         free(utf8);
 #else
+#if defined(__APPLE__)
+        /* macOS: resolve executable path via dyld. */
+        char exe_path[PATH_MAX * 2];
+        uint32_t len = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &len) != 0) {
+            fprintf(stderr, ""error: cannot resolve executable path\n"");
+            return MissingRuntimeHostExitCode;
+        }
+        strncpy(exe_dir, exe_path, sizeof(exe_dir) - 1);
+        exe_dir[sizeof(exe_dir) - 1] = '\0';
+        char* slash = strrchr(exe_dir, '/');
+        if (slash) *slash = '\0';
+#else
+        /* Linux and other Unix systems: resolve executable path via /proc/self/exe. */
         ssize_t r = readlink(""/proc/self/exe"", exe_dir, sizeof(exe_dir) - 1);
         if (r <= 0) {
             fprintf(stderr, ""error: cannot resolve this executable path: %s\n"", strerror(errno));
@@ -719,6 +740,7 @@ int main(int argc, char** argv) {
         exe_dir[r] = '\0';
         char* slash = strrchr(exe_dir, '/');
         if (slash) *slash = '\0';
+#endif
 #endif
 
         char host_path[PATH_MAX + 64];
