@@ -137,3 +137,4 @@ build/
 # binary directory; this covers a bare `cargo build`/`cargo test` run inside
 # the crate, which uses the default local target directory instead.
 src/PSXRecomp.Native/rust/target/
+artifacts/

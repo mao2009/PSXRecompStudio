@@ -228,7 +228,9 @@ public sealed class RuntimeHostPublishE2E : IDisposable
 
     private static void TryKillTree(Process process)
     {
+#pragma warning disable AARC003 // Process control is Infrastructure responsibility; this test helper cleans up test processes
         try { process.Kill(true); } catch (InvalidOperationException) { }
+#pragma warning restore AARC003
     }
 
     /// <summary>
