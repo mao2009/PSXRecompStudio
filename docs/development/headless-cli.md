@@ -25,6 +25,7 @@ the `PSXRecomp.Core` and `PSXRecomp.Infrastructure` contracts it calls into.
 ```
 psxrecomp recompile <input.exe|input.chd> --output <dir> [--json]
 psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--standalone] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--json]
+psxrecomp package  <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--self-contained] [--json]
 psxrecomp doctor    [--json]
 ```
 
@@ -97,6 +98,70 @@ output run by hand).
 Read-only preflight of the environment `recompile`/`run` need (Issue #623). It
 takes no input and touches no files, network, or BIOS/ROM. Checks run in this
 fixed order with stable IDs:
+
+### `package`
+
+Produces a complete, standalone game distribution that launches directly on
+the end user's Windows or Linux machine — no Studio, no `psxrecomp` CLI, and no
+.NET SDK at runtime (ADR-027 Option B, Phase 2 Step C). The distribution bundles
+the shared managed Runtime host (`PSXRecomp.RuntimeHost[.exe]`) alongside the
+generated native artifact and the guest program image, and emits a
+`runtime/runtime-host.json` manifest describing the run and the relative paths
+to the bundled components. Guest firmware (OpenBIOS) runs through the Runtime
+host in native mode without HLE; HLE-bridged games require the host to be
+present.
+
+The package command:
+
+- Generates the direct-launch artifact in `<outputDir>` (same codebase and
+  layout as `psxrecomp run --standalone`), compiling all blocks reachable from
+  the entry points.
+- Bundles the shared Runtime host as a framework-dependent deploy by default
+  (`--self-contained=false`); to run without an end-user .NET installation,
+  use `--self-contained=true` (bundles a fully contained single-file host).
+- Provisions the host via `dotnet publish -c Release -r <rid>` of the
+  `PSXRecomp.RuntimeHost` project into `<outputDir>/runtime/`.
+- Writes the guest program image as `runtime/artifact-image.bin` (a sidecar that
+  the host uses for the interpreter fallback).
+- Writes `runtime/runtime-host.json` with schema version 1, containing the
+  relative paths to the artifact and image, the entry PC, program end boundary,
+  block entry PCs (for the bridge), guest firmware flag, mixed fallback
+  settings, and timeout.
+- Writes `README.txt` with cross-platform launch instructions and exit code
+  documentation (0 = success, 2 = blocked, 1 = tooling failure, 78 = missing
+  Runtime host).
+
+#### Exit codes
+
+| Code | Meaning |
+|:--- |:--- |
+| 0 | Success (distribution written) |
+| 1 | Tooling / input / build / launch failure |
+
+#### Example
+
+```
+psxrecomp package game.exe --output dist
+```
+
+Produces:
+
+```
+dist/
+  game.exe           # native AOT artifact (bridge-capable, direct-launch)
+  README.txt         # launch instructions and exit codes
+  runtime/
+    PSXRecomp.RuntimeHost   # shared managed Runtime host (framework-dependent)
+    runtime-host.json       # run manifest
+    artifact-image.bin      # guest program image sidecar
+```
+
+On Windows, the artifact executable is `game.exe`; on Linux, `game`. The
+distribution root's relative paths are used exclusively; no absolute paths
+from the build machine are embedded in the manifest or the runtime host. The
+launcher in the generated artifact resolves `psxrecomp runtime/PSXRecomp.RuntimeHost[.exe]`
+at runtime (unless `--host-transfer` is provided to bypass the host and run
+natively). Missing Runtime host → launcher exits 78.
 
 | ID | Passes when | `errorCode` on failure |
 |---|---|---|

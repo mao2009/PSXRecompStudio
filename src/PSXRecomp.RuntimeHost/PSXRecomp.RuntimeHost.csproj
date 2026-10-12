@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The shared managed Runtime host for packaged game distributions (Issue #739
+    Phase 2 Step C, ADR-027 Option B). It lives in the Infrastructure layer
+    (namespace root PSXRecomp.Infrastructure descends from the Infrastructure
+    root) and consumes production contracts: it reads runtime-host.json, locates
+    the prebuilt native artifact, and drives it through the same engine,
+    orchestrator, classification and timing path that psxrecomp run uses.
+    It performs no code generation or build itself; the packaging flow
+    provisions it via dotnet publish.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PSXRecomp.RuntimeHost</AssemblyName>
+    <RootNamespace>PSXRecomp.Infrastructure.RuntimeHost</RootNamespace>
+    <EnableArchitectureAnalyzer>true</EnableArchitectureAnalyzer>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PSXRecomp.Infrastructure/PSXRecomp.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

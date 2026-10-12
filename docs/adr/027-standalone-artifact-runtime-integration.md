@@ -121,3 +121,100 @@ exit 5; out-of-RAM access with no bridge: exit 96).
   firmware through the standalone artifact; it adds no new execution path and
   is documented in
   [`docs/runtime/openbios-firmware-backend.md`](../runtime/openbios-firmware-backend.md).
+
+## Step C scope: distributed Runtime host provisioning (ADR-027 Option B)
+
+Step C implements the distributed Runtime host provisioning path, enabling a
+packaged game distribution to launch directly on the end user's machine with no
+Studio, no CLI, and no .NET SDK at runtime.
+
+### Implementation (Phase 2 Step C, 2026-10-12)
+
+**New files:**
+- `src/PSXRecomp.RuntimeHost/Program.cs` - Host entry point that reads
+  `runtime/runtime-host.json`, locates the bundled `artifact-image.bin`, and
+  runs the guest artifact through the shared Runtime.
+- `src/PSXRecomp.Infrastructure/RuntimeHostBuildService.cs` - Provisioning
+  service that runs `dotnet publish -c Release -r <rid>` of the RuntimeHost
+  project into `<outputDir>/runtime/`.
+- `src/PSXRecomp.Cli/PackageCommand.cs` - E2E packaging command that generates
+  the host and emits `runtime/runtime-host.json` manifest.
+- `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostManifest.cs` - On-disk
+  manifest describing the guest artifact (image, block entry PCs, entry PC, program end).
+- `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostLayout.cs` - SSOT for the
+  distribution layout:
+  ```
+  <game>/
+    <game>[.exe]          native AOT artifact (bridge-capable, direct-launch)
+    runtime/
+      PSXRecomp.RuntimeHost[.exe]   shared managed Runtime host
+      runtime-host.json               guest run configuration
+      artifact-image.bin              embedded program image (sidecar)
+    README.txt
+  ```
+- `src/PSXRecomp.Core/Execution/ProgramEndHandoff.cs` - Natural program end
+  signal for the host-driven run (`TitleExecutionService.Execute` returns the
+  completion state).
+
+**Key behavior:**
+- Guest firmware (OpenBIOS) is auto-detected by load address 0x1FC00000 (or size 0x80000).
+  When `GuestFirmware` is true, the host bypasses the HLE bridge and runs the
+  artifact natively (no bridge, no mixed fallback).
+- Mixed fallback requires a bridge; the manifest carries `BlockEntryPcs` and
+  `EntryPc` for a direct-launch engine that does not emit code.
+- The launcher (`GenerateStandalone(..., directLaunchHostRelativePath)`) generates
+  a C prologue that checks for the host (`--host-transfer` flag) and either:
+  - Launches `runtime/PSXRecomp.RuntimeHost[.exe]` with the manifest path when
+    `--host-transfer` is not present (direct-launch mode), or
+  - Bypasses the host and executes the embedded artifact directly when
+    `--host-transfer` is present (Phase 1 path).
+- Missing host → exit code 78 (defined in `RuntimeHostLayout.MissingRuntimeHostExitCode`).
+- Exit codes: 0 = success, 2 = blocked transfer, 1 = tooling failure, 78 = missing host.
+
+**Exit code 78 contract:**
+- Exit 78 is returned by the **launcher** when it cannot locate or start the
+  bundled Runtime host. The Runtime host itself does not return 78 (it returns
+  0, 1, or 2 on its own internal errors).
+- The launcher checks for `RuntimeHostLayout.HostRelativePathFor(platform)`;
+  if the directory or binary is missing, it exits 78 and emits a missing-host
+  diagnostic.
+
+**Commands:**
+- `psxrecomp package <input.exe|input.chd> --output <dir> ...`:
+  - Generates the host directly with `RuntimeHostBuildService.ProvisionRuntimeHost`.
+  - By default (`--self-contained=false`), publishes a framework-dependent
+    deploy (requires .NET runtime on the host).
+  - With `--self-contained=true`, publishes a fully contained single-file host
+    (no end-user .NET needed).
+  - Emits `runtime/runtime-host.json` with schema version 1.
+  - Emits `runtime/artifact-image.bin` sidecar for the host's fallback.
+  - Emits `README.txt` with cross-platform launch instructions.
+
+**Testing:**
+E2E tests in `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs` verify:
+- Package command provisions host into `runtime/` directory.
+- Generated layout contains all required files (host binary, manifest, image).
+- Runtime host can launch bundled artifact and terminates with correct exit code.
+- Missing runtime → launcher exits 78.
+- Self-contained publishing produces a non-empty single-file host.
+
+**Remaining work:**
+- No HLE BIOS deployment (OpenBIOS-only for now, BIOS service calls are not
+  served in this release).
+- No absolute paths in the manifest (all paths are relative to the distribution root).
+- Runtime bridge optimization (eliminate unnecessary host spawns when no bridge is needed)
+  and migration of the "Phase 1 path" (direct-launch no-host) to the launcher's
+  `--host-transfer` flag for parity with the host-provisioned flow.
+
+**Verification status:**
+- ✅ ADR-027 Option B decision implemented.
+- ✅ Runtime host entry point with manifest parsing and execution flow.
+- ✅ Provisioning service with `dotnet publish` integration.
+- ✅ Package command with host generation and manifest emission.
+- ✅ E2E tests for layout, host launch, and exit code 78.
+- ✅ Fixed C verbatim delimiter issues in launcher prologue (Phase 2 Step C prerequisite).
+- ⏳ E2E runtime-host launch verification (scripted, requires fresh dotnet toolchain since build artifacts exist locally).
+- ⏳ Documentation updates (headless-cli.md, runtime-host.md, README.md).
+- ⏳ Full build and test suite verification.
+- ⏳ PR creation and CodeRabbit review.
+- ⏳ Issue #739 progress record..

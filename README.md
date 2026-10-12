@@ -71,7 +71,39 @@ No input to hand? Run the [synthetic demo](docs/development/showcase-demo.md), w
 
 ![Synthetic demo: pipeline and terminal output](docs/assets/demo/synthetic-demo.svg)
 
-See the [headless CLI reference](docs/development/headless-cli.md) for JSON output, exit codes, report contents, and input behavior.
+**Packaged standalone distribution (Phase 2 Step C, Issue #739, ADR-027 Option B):**
+
+The CLI can generate complete, self-contained game distributions that launch
+directly on the end user's Windows or Linux machine — no Studio, no CLI, and
+no .NET SDK at runtime:
+
+```bash
+psxrecomp package <game.exe|game.chd> --output dist --self-contained
+cd dist
+./game       # on Linux
+game.exe     # on Windows
+```
+
+The distribution includes:
+
+- Native ahead-of-time artifact (`game.exe` / `game`)
+- Shared managed Runtime host (`runtime/PSXRecomp.RuntimeHost[.exe]`)
+- Guest program image (`runtime/artifact-image.bin`)
+- Run manifest (`runtime/runtime-host.json`)
+- README with cross-platform instructions
+
+Exit codes: 0 = success, 2 = blocked, 1 = tooling failure, 78 = missing Runtime host.
+
+By default (`--self-contained=false`), host deployment is framework-dependent
+(require .NET runtime on host); use `--self-contained=true` for fully contained
+single-file host executable.
+
+See the [Runtime host documentation](docs/runtime/runtime-host.md) and
+[ADR-027 Step C](docs/adr/027-standalone-artifact-runtime-integration.md) for
+details about layout, provisioning, and exit code 78 contract.
+
+See the [headless CLI reference](docs/development/headless-cli.md) for JSON
+output, exit codes, report contents, and input behavior.
 
 ## Architecture
 

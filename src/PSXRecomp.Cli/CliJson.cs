@@ -19,6 +19,7 @@ internal static class CliJson
 {
     public const string RecompileKind = "recompile";
     public const string RunKind = "run";
+    public const string PackageKind = "package";
 
     [Infrastructure]
     public sealed record RecompileResult(
@@ -28,6 +29,16 @@ internal static class CliJson
         string? Artifact,
         string? ErrorCode,
         string? Message);
+
+    /// <summary>Machine-readable summary of a packaged game distribution.</summary>
+    [Infrastructure]
+    public sealed record PackageResult(
+        string Kind,
+        bool Success,
+        string DistributionDirectory,
+        string Artifact,
+        string Runtime,
+        string InputSha256);
 
     [Infrastructure]
     public sealed record RunResult(
