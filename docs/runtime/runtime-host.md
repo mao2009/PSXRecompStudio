@@ -42,8 +42,8 @@ that:
    - **0:** Successful completion
    - **1:** Tooling failure (invalid input, parsing error, host setup failure, bad argument count)
    - **2:** Explicit runtime stop (guest-initiated termination during the run)
-   - **78:** Missing manifest, missing manifest directory, or missing bundled
-     Runtime host binary (launcher exit code; host itself does not return 78).
+   - **78:** Missing manifest, missing manifest directory, missing bundled
+     Runtime host binary, or bad argument count (launcher exit code; host itself does not return 78).
 
 ### Manifest Contract
 
@@ -55,14 +55,14 @@ the following required fields (schema version 1):
 | Field | Type | Meaning |
 |:--- |:--- |:--- |
 | `schemaVersion` | `int` | Must equal `RuntimeHostManifest.CurrentSchemaVersion` (1) |
-| `artifact` | `string` | Relative path from manifest directory to the native game executable (`../game` Linux, `../game.exe` Windows) |
+| `artifact` | `string` | Relative path from manifest directory to the native game executable (`../game` on Linux, `../game.exe` on Windows) |
 | `guestFirmware` | `bool` | True when the image is guest firmware (OpenBIOS) that owns its kernel; false for HLE-bridged games |
-| `mixedFallback` | `bool` | True when the artifact uses the mixed execution fallback (requires bridge) |
+| `mixedFallback` | `bool` | True when the artifact uses the mixed execution fallback (requires bridge for HLE games; for guest firmware, mixed fallback runs without a bridge) |
 | `fallbackSegmentInstructionBudget` | `uint` | Per-segment instruction cap for interpreter fallback (used only when `mixedFallback=true`) |
 | `fallbackMaxTransitions` | `uint` | Maximum number of handoffs from artifact to interpreter (used only when `mixedFallback=true`) |
 | `imageLoadAddress` | `uint` | Guest address where the program image is loaded (e.g., 0x80010000 for games, 0x1FC00000 for OpenBIOS) |
 | `image` | `string` | Relative path to the guest program image sidecar (`artifact-image.bin`) |
-| `blockEntryPcs` | `uint[]` | Sorted, unique list of PCs that have compiled blocks (required for bridge/HLE only) |
+| `blockEntryPcs` | `uint[]` | Sorted, unique list of PCs that have compiled blocks (required for bridge/HLE mode; optional for guest firmware without mixed fallback) |
 | `programEnd` | `uint` | Guest PC one past the image (natural program end boundary) |
 | `resultRegister` | `int?` | GPR index used for result abstraction (0 for V0, null for none) |
 | `runTimeoutMs` | `int` | Bounded per-run timeout in milliseconds (default 60000) |
@@ -127,8 +127,8 @@ Key constants:
 
 The launcher in the generated artifact uses `HostRelativePath` to locate the
 host (appending `.exe` on Windows via generated C macros). The manifest is placed
-one level above the host and uses relative paths (`../game` Linux, `../game.exe`
-Windows) to reference the artifact. The `ManifestRelativeArtifactPath` helper
+one level above the host and uses relative paths (`../game` on Linux, `../game.exe`
+on Windows) to reference the artifact. The `ManifestRelativeArtifactPath` helper
 adds the platform-appropriate `.exe` suffix on Windows.
 
 ### CLI Integration
@@ -237,7 +237,7 @@ Step C fixtures added:
 
 ## References
 
-- [ADR-027: Standalone artifact — shared Runtime integration](../../adr/027-standalone-artifact-runtime-integration.md)
-- [ADR-014: BIOS HLE runtime contract](../../adr/014-bios-hle-runtime-contract.md)
-- [ADR-025: IR observable effect semantics](../../adr/020-ir-observable-effect-semantics.md)
+- [ADR-027: Standalone artifact — shared Runtime integration](../adr/027-standalone-artifact-runtime-integration.md)
+- [ADR-014: BIOS HLE runtime contract](../adr/014-bios-hle-runtime-contract.md)
+- [ADR-025: IR observable effect semantics](../adr/025-ir-observable-effect-semantics.md)
 - [Issue #739: Standalone artifact generation and distributed Runtime provision](https://github.com/mao2009/PSXRecompStudio/issues/739)

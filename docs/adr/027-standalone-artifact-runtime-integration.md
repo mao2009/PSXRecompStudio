@@ -216,7 +216,7 @@ E2E tests in `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs` verify:
 - ✅ Package command with host generation and manifest emission.
 - ✅ E2E tests for layout, host launch, and exit code 78.
 - ✅ Fixed C verbatim delimiter issues in launcher prologue (Phase 2 Step C prerequisite).
-- ✅ Windows launcher fixes (PATH_MAX, command line quoting, handle cleanup).
+- ✅ Windows launcher fixes (PATH_MAX, command-line quoting, handle cleanup).
 - ✅ Mixed fallback support for prebuilt artifacts.
 - ✅ ArgumentList-based process invocation for paths with spaces.
 - ✅ Guest firmware + mixed fallback logic corrected.

@@ -88,17 +88,23 @@ public static class Program
             var prebuiltArtifactPath = Path.GetFullPath(
                 Path.Combine(manifestDirectory, manifest.Artifact));
 
-            // Choose the launch mode: firmware (openBIOS) runs the artifact
-            // natively with no bridge; HLE games use the bridge for BIOS service
-            // calls and mixed-fallback transfers. Mixed fallback is only meaningful
-            // for HLE games (GuestFirmware=false), not for guest firmware which
-            // owns its kernel and vectors.
+            // Choose the launch mode:
+            // - Guest firmware (OpenBIOS) runs natively with no HLE bridge.
+            //   Mixed fallback IS supported for guest firmware to handle unresolved
+            //   transfers via the interpreter (the firmware owns its kernel/vectors).
+            // - HLE games use the bridge for BIOS service calls and mixed-fallback
+            //   transfers.
             var needsBridge = !manifest.GuestFirmware;
 
             IBiosRuntime BiosRuntime(IGuestMemoryReader reader, IGuestMemoryWriter writer)
                 => new BiosHleRuntime(new ConsoleRuntimeOutputSink(), reader, writer);
 
-            var mixedFallback = (!manifest.GuestFirmware && manifest.MixedFallback)
+            // Mixed fallback is honored regardless of GuestFirmware.
+            // For guest firmware: the artifact runs in RuntimeHost mode (no bridge)
+            // but unresolved transfers can still reach the interpreter fallback.
+            // For HLE games: the artifact runs in HostTransfer mode (with bridge)
+            // and mixed fallback works through the bridge.
+            var mixedFallback = manifest.MixedFallback
                 ? new MixedFallbackOptions(
                     manifest.FallbackSegmentInstructionBudget,
                     manifest.FallbackMaxTransitions)
@@ -110,10 +116,10 @@ public static class Program
 
             using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
                 prebuiltArtifactPath,
-                manifest.BlockEntryPcs.ToHashSet(),
+                (manifest.BlockEntryPcs ?? Array.Empty<uint>()).ToHashSet(),
                 guestFirmware: manifest.GuestFirmware,
                 biosRuntimeFactory: needsBridge ? BiosRuntime : null,
-                mixedFallback: manifest.MixedFallback ? mixedFallback : null,
+                mixedFallback: mixedFallback,
                 runTimeout: TimeSpan.FromMilliseconds(manifest.RunTimeoutMs),
                 imageWords: imageWords,
                 imageLoadAddress: manifest.ImageLoadAddress,
