@@ -227,12 +227,32 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
-        ArgumentNullException.ThrowIfNull(buildService);
-        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
-        if (imageWords.Count == 0)
+
+        // Prebuilt artifact: no build service or output directory needed; they are ignored.
+        // Validate prebuilt-specific parameters first to allow null buildService/empty outputDirectory.
+        var prebuilt = prebuiltArtifactPath is not null;
+        if (prebuilt)
         {
-            // Mirrors InterpreterTitleExecutionEngine: no program image, nothing to run.
-            throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+            if (buildService is not null || !string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                throw new InvalidOperationException(
+                    "A prebuilt artifact is supplied directly; buildService and outputDirectory are ignored.");
+            }
+            // For prebuilt artifacts, we still need a non-empty program image.
+            if (imageWords.Count == 0)
+            {
+                throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+            }
+        }
+        else
+        {
+            ArgumentNullException.ThrowIfNull(buildService);
+            ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+            if (imageWords.Count == 0)
+            {
+                // Mirrors InterpreterTitleExecutionEngine: no program image, nothing to run.
+                throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+            }
         }
 
         if (guestFirmware && biosRuntimeFactory is not null)

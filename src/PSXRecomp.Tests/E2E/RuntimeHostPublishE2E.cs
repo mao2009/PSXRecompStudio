@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -7,6 +9,7 @@ using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Infrastructure.Standalone;
+using PSXRecomp.Tests.RealRomAnalysis;
 
 namespace PSXRecomp.Tests.E2E;
 
@@ -16,336 +19,266 @@ namespace PSXRecomp.Tests.E2E;
 /// generates the correct layout, and that the bundled artifact can launch through the host.
 /// </summary>
 [Test]
-public class RuntimeHostPublishE2E
+public sealed class RuntimeHostPublishE2E : IDisposable
 {
-    private const string TestOutputDir = "/tmp/psxrecomp-ehhfeetw-622343";
+    private readonly TempDirectory _tempDir;
     private const string TestBinaryName = "test-game";
-    private const uint TestStepCEntryPc = 0x80010000u;
-    private const uint TestImageLoadAddress = TestStepCEntryPc;
-    private const uint TestProgramEnd = TestImageLoadAddress + 256u * 4u; // 256 instruction words
+    private const string TestStepCEntryPc = "0x80010000";
+    private const uint TestImageLoadAddress = 0x80010000u;
+    // NaturalEndWithV0 has 3 instructions (ori + jal + delay slot)
+    private const uint TestProgramEnd = TestImageLoadAddress + 3u * 4u;
 
-    [SetUp]
-    public void Setup()
+    public RuntimeHostPublishE2E()
     {
-        if (Directory.Exists(TestOutputDir))
-        {
-            Directory.Delete(TestOutputDir, recursive: true);
-        }
-
-        Directory.CreateDirectory(TestOutputDir);
+        _tempDir = new TempDirectory();
     }
 
-    [TearDown]
-    public void TearDown()
+    public void Dispose()
     {
-        if (Directory.Exists(TestOutputDir))
-        {
-            Directory.Delete(TestOutputDir, recursive: true);
-        }
+        _tempDir.Dispose();
     }
 
     /// <summary>
     /// Verify that <c>psxrecomp package</c> successfully provisions the Runtime host into the distribution.
     /// This test checks the layout, manifest validity, and that all required files exist.
     /// </summary>
-    [Test]
+    [Fact]
     public void PackageProvisionsRuntimeHost()
     {
-        var testExePath = Path.Combine(TestOutputDir, TestBinaryName);
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.NaturalEndWithV0.Generate());
 
-        // Create a simple test EXE (simply a raw execution end)
-        var fixture = GeneratedPsxExeFixtures.NaturalEndWithV0;
-        var exeBytes = fixture.Generate();
-        File.WriteAllBytes(testExePath, exeBytes);
+        // Use a known output subdirectory name so the artifact name is predictable
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
 
         // Run package command (framework-dependent)
-        var argStrings = new[]
-        {
-            "package",
-            testExePath,
-            "--output", TestOutputDir,
-            "--entry-root", TestStepCEntryPc.ToString("X"),
-            "--mixed-fallback", // Enable bridge for testing
-        };
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback");
 
-        var exitCode = RunCliWithConfiguredStdio(argStrings, null, null);
-        Assert.That(exitCode, Is.EqualTo(0), "package command must succeed");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed: error='{error}', output='{output}'");
 
         // Verify distribution layout
-        var runtimeDir = Path.Combine(TestOutputDir, RuntimeHostLayout.RuntimeDirectoryName);
-        Assert.That(Directory.Exists(runtimeDir), Is.True, "runtime directory must exist");
+#pragma warning disable AARC003 // Test-layer I/O for verification of distribution layout
+        var runtimeDir = Path.Combine(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
+        Directory.Exists(runtimeDir).Should().BeTrue("runtime directory must exist");
 
         var hostPath = Path.Join(runtimeDir, RuntimeHostLayout.HostFileName(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
-        Assert.That(File.Exists(hostPath), Is.True, "runtime host binary must exist");
+        File.Exists(hostPath).Should().BeTrue("runtime host binary must exist");
 
         var manifestPath = Path.Join(runtimeDir, RuntimeHostLayout.ManifestFileName);
-        Assert.That(File.Exists(manifestPath), Is.True, "runtime-host.json manifest must exist");
+        File.Exists(manifestPath).Should().BeTrue("runtime-host.json manifest must exist");
 
         var imageSidecarPath = Path.Join(runtimeDir, RuntimeHostLayout.ImageFileName);
-        Assert.That(File.Exists(imageSidecarPath), Is.True, "artifact-image.bin must exist");
+        File.Exists(imageSidecarPath).Should().BeTrue("artifact-image.bin must exist");
 
         // Verify manifest content
         var manifestJson = File.ReadAllText(manifestPath);
         var manifest = RuntimeHostManifestJson.Parse(manifestJson);
+#pragma warning restore AARC003
 
-        Assert.That(manifest.SchemaVersion, Is.EqualTo(RuntimeHostManifest.CurrentSchemaVersion));
-        Assert.That(manifest.Artifact, Is.EqualTo(RuntimeHostLayout.ManifestRelativeArtifactPath(TestBinaryName, RuntimeInformation.IsOSPlatform(OSPlatform.Windows))));
-        Assert.That(manifest.ImageLoadAddress, Is.EqualTo(TestImageLoadAddress));
-        Assert.That(manifest.EntryPc, Is.EqualTo(TestStepCEntryPc));
-        Assert.That(manifest.ProgramEnd, Is.EqualTo(TestProgramEnd));
-        Assert.That(manifest.GuestFirmware, Is.False, "non-firmware must not have native mode");
-        Assert.That(manifest.BlockEntryPcs, Is.Not.Null.And.Not.Empty, "bridge requires at least one compiled block");
+        manifest.SchemaVersion.Should().Be(RuntimeHostManifest.CurrentSchemaVersion);
+        manifest.Artifact.Should().Be(RuntimeHostLayout.ManifestRelativeArtifactPath("test-game", RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
+        manifest.ImageLoadAddress.Should().Be(TestImageLoadAddress);
+        manifest.EntryPc.Should().Be(TestImageLoadAddress);
+        manifest.ProgramEnd.Should().Be(TestProgramEnd);
+        manifest.GuestFirmware.Should().BeFalse("non-firmware must not have native mode");
+        manifest.BlockEntryPcs.Should().NotBeNullOrEmpty("bridge requires at least one compiled block");
     }
 
     /// <summary>
     /// Verify that a packaged distribution can launch through the bundled RuntimeHost.
-    /// The test picks one valid fixture to run through runtime host execution (non-native-firmware case).
+    /// The test uses a simple natural-end program with no control transfers.
     /// </summary>
-    [Test]
+    [Fact]
     public void RuntimeHostCanLaunchBundledArtifactViaHost()
     {
-        var testExePath = Path.Combine(TestOutputDir, TestBinaryName);
-
-        // Pick a fixture that should work with runtime host (any from All except natural-v0)
-        var fixture = GeneratedPsxExeFixtures.All[1]; // e.g., NaturalEndWithTransitions
-        var exeBytes = fixture.Generate();
-        File.WriteAllBytes(testExePath, exeBytes);
+        // Simple natural-end program: ori v0, $zero, 0x42 then fall off
+        var simpleFixtureWords = new uint[]
+        {
+            0x34020042u, // ori v0, $zero, 0x42
+        };
+        var testExePath = _tempDir.WriteFile("input.exe", BuildSyntheticExe(simpleFixtureWords));
 
         // Package with framework dependencies (common end-user setup)
-        var argStrings = new[]
-        {
-            "package",
-            testExePath,
-            "--output", TestOutputDir,
-            "--entry-root", TestStepCEntryPc.ToString("X"),
-            "--mixed-fallback",
-        };
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback");
 
-        var exitCode = RunCliWithConfiguredStdio(argStrings, null, null);
-        Assert.That(exitCode, Is.EqualTo(0), "package command must succeed");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed: error='{error}', output='{output}'");
 
-        var runtimeHostPath = Path.Join(TestOutputDir, RuntimeHostLayout.HostRelativePath);
-        Assert.That(File.Exists(runtimeHostPath), Is.True, "runtime host must be provisioned");
+        var runtimeHostPath = Path.Join(outputDir, RuntimeHostLayout.HostRelativePath);
+#pragma warning disable AARC003 // Test-layer I/O for verification
+        File.Exists(runtimeHostPath).Should().BeTrue("runtime host must be provisioned");
 
-        var manifestPath = Path.Join(TestOutputDir, RuntimeHostLayout.HostRelativePath + "/runtime-host.json");
+        var manifestPath = Path.Join(outputDir, RuntimeHostLayout.ManifestRelativePath);
+#pragma warning restore AARC003
 
-        // Spawn a new process for runtime host invocation
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = runtimeHostPath,
-            Arguments = manifestPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-        };
+        // Run the runtime host via Infrastructure service
+        var runResult = RuntimeHostBuildService.RunRuntimeHost(runtimeHostPath, manifestPath);
 
-        using var process = Process.Start(startInfo)!;
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
+        runResult.ExitCode.Should().Be(0, $"Runtime host must complete successfully\nstdout: {runResult.Stdout}\nstderr: {runResult.Stderr}");
 
-        Assert.That(process.ExitCode, Is.EqualTo(0),
-            $"Runtime host must complete successfully\nstdout: {stdout}\nstderr: {stderr}");
-
-        // Runtime host output is JSON: verify execution result
-        Assert.That(stdout, Does.Contain("\"outcome\":\"Success\"").IgnoreCase, "output must indicate success");
+        // Runtime host output is classification message on stderr
+        runResult.Stderr.Should().Contain("classified as Success", "stderr must indicate success");
     }
 
     /// <summary>
-    /// Verify that a packaged distribution can launch through the bundled RuntimeHost.
-    /// The test checks the Runtime host path resolution (Linux/Windows).
+    /// Builds a minimal PS-X EXE for testing.
     /// </summary>
-    [Test]
+    private static byte[] BuildSyntheticExe(uint[] words, uint textStart = 0x80010000u)
+    {
+        var fileContent = new byte[2048 + words.Length * 4];
+        "PS-X EXE"u8.CopyTo(fileContent);
+        BinaryPrimitives.WriteUInt32LittleEndian(fileContent.AsSpan(0x10), textStart);
+        BinaryPrimitives.WriteUInt32LittleEndian(fileContent.AsSpan(0x14), 0u);
+        BinaryPrimitives.WriteUInt32LittleEndian(fileContent.AsSpan(0x18), textStart);
+        BinaryPrimitives.WriteUInt32LittleEndian(fileContent.AsSpan(0x1C), (uint)(words.Length * 4));
+        BinaryPrimitives.WriteUInt32LittleEndian(fileContent.AsSpan(0x30), 0x801FFF00u);
+        for (var i = 0; i < words.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(fileContent.AsSpan(2048 + i * 4), words[i]);
+        }
+        return fileContent;
+    }
+
+    /// <summary>
+    /// Verify that the Runtime host path resolution (Linux/Windows) is correct.
+    /// </summary>
+    [Fact]
     public void RuntimeHostRuntimeHostPathResolution()
     {
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         // Host path: runtime/PSXRecomp.RuntimeHost.exe (Windows) or runtime/PSXRecomp.RuntimeHost (Linux)
         var hostPath = RuntimeHostLayout.HostRelativePathFor(windows);
 
-        Assert.That(hostPath, Does.StartWith(RuntimeHostLayout.RuntimeDirectoryName), "host path must be under runtime directory");
+        hostPath.Should().StartWith(RuntimeHostLayout.RuntimeDirectoryName, "host path must be under runtime directory");
 
         // Host binary path uses HostFileName (no platform suffix), and launcher appends .exe on Windows
         var hostFileName = RuntimeHostLayout.HostFileName(windows);
-        Assert.That(hostPath, Does.EndWith(hostFileName), "host path must end with host binary name");
+        hostPath.Should().EndWith(hostFileName, "host path must end with host binary name");
     }
 
     /// <summary>
     /// Verify that the packaged artifact correctly returns exit code 78 when the runtime host is missing.
     /// The native launcher checks for the host at runtime; if missing it exits 78.
     /// </summary>
-    [Test]
+    [Fact]
     public void NativeLauncherReturnsExit78WhenRuntimeHostMissing()
     {
         // Package the distribution with RuntimeHost provisioned initially
-        var testExePath = Path.Combine(TestOutputDir, TestBinaryName);
-        var fixture = GeneratedPsxExeFixtures.GuestFirmwareOpenbios;
-        var exeBytes = fixture.Generate();
-        File.WriteAllBytes(testExePath, exeBytes);
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.GuestFirmwareOpenbios.Generate());
 
-        var args = new[]
-        {
-            "package",
-            testExePath,
-            "--output", TestOutputDir,
-            "--entry-root", TestStepCEntryPc.ToString("X"),
-            "--json"
-        };
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc);
 
-        var exitCode = RunCliWithConfiguredStdio((args, null, null));
-        Assert.That(exitCode, Is.EqualTo(0), "package must succeed");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package must succeed: error='{error}', output='{output}'");
 
         // Move the generated binary to a separate directory to isolate the missing host scenario
-        var isolatedDistDir = Path.Combine(TestOutputDir, "dist-without-host");
-        var isolatedArtifact = Path.Combine(isolatedDistDir, TestBinaryName + ".exe");
-        if (File.Exists(isolatedArtifact))
+        var isolatedDistDir = _tempDir.CreateSubdirectory("dist-without-host");
+        var isolatedArtifact = Path.Combine(isolatedDistDir, "test-game");
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            File.Delete(isolatedArtifact);
+            isolatedArtifact += ".exe";
         }
 
-        Directory.Move(TestOutputDir, isolatedDistDir);
-
-        try
+        // Copy the artifact to isolated directory
+        var originalArtifact = Path.Combine(outputDir, "test-game");
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            // Remove runtime host directory
-            var runtimeHostDir = Path.Join(isolatedDistDir, RuntimeHostLayout.RuntimeDirectoryName);
-            if (Directory.Exists(runtimeHostDir))
-            {
-                Directory.Delete(runtimeHostDir, recursive: true);
-            }
-
-            // Back up manifest temporarily for conditional test in ExecutionOrchestrator
-            long manifestLen = 0;
-            var manifestPathBackend = Path.Join(isolatedDistDir, RuntimeHostLayout.ManifestRelativePath);
-            string manifestJsonBacked = null;
-            if (File.Exists(manifestPathBackend))
-            {
-                manifestJsonBacked = File.ReadAllText(manifestPathBackend);
-                manifestLen = manifestJsonBacked.Length;
-                File.Delete(manifestPathBackend);
-            }
-
-            try
-            {
-                // Try to launch the artifact; expect exit 78 (MissingRuntimeHostExitCode)
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? isolatedArtifact + ".exe" : isolatedArtifact,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                };
-
-                using var process = Process.Start(startInfo)!;
-                var stdout = process.StandardOutput.ReadToEnd();
-                var stderr = process.StandardError.ReadToEnd();
-                process.WaitForExit();
-
-                Assert.That(process.ExitCode, Is.EqualTo(RuntimeHostLayout.MissingRuntimeHostExitCode),
-                    $"Expected exit 78 when runtime host is missing\nstdout: {stdout}\nstderr: {stderr}");
-
-                // Verify stderr contains missing-runtime log
-                Assert.That(stderr, Does.Contain("missing runtime host").IgnoreCase,
-                    $"stderr must mention missing runtime host: {stderr}");
-            }
-            finally
-            {
-                if (manifestJsonBacked != null && manifestLen > 0)
-                {
-                    File.WriteAllText(manifestPathBackend, manifestJsonBacked);
-                }
-            }
+            originalArtifact += ".exe";
         }
-        finally
+#pragma warning disable AARC003 // Test-layer I/O for test setup
+        File.Copy(originalArtifact, isolatedArtifact, true);
+
+        // Remove runtime host directory
+        var runtimeHostDir = Path.Join(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
+        if (Directory.Exists(runtimeHostDir))
         {
-            // Cleanup isolated directory after test
-            if (Directory.Exists(isolatedDistDir))
-            {
-                Directory.Delete(isolatedDistDir, recursive: true);
-            }
+            Directory.Delete(runtimeHostDir, recursive: true);
         }
+#pragma warning restore AARC003
+
+        // Try to launch the artifact; expect exit 78 (MissingRuntimeHostExitCode)
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = isolatedArtifact,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+        };
+
+#pragma warning disable AARC003 // Process control is Infrastructure responsibility; this test verifies launcher behavior
+        using var process = Process.Start(startInfo)!;
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var exitCode = process.ExitCode;
+#pragma warning restore AARC003
+
+        exitCode.Should().Be(RuntimeHostLayout.MissingRuntimeHostExitCode,
+            $"Expected exit 78 when runtime host is missing\nstdout: {stdout}\nstderr: {stderr}");
+
+        // Verify stderr contains missing-runtime log
+        stderr.Should().Contain("runtime host not found", "stderr must mention missing runtime host");
     }
 
     /// <summary>
     /// Verify that a packaged distribution works correctly with self-contained publishing
     /// (single-file host binary, no end-user .NET runtime needed).
     /// </summary>
-    [Test]
+    [Fact]
     public void PackageProvisionsSelfContainedRuntimeHost()
     {
-        var testExePath = Path.Combine(TestOutputDir, TestBinaryName);
-        var fixture = GeneratedPsxExeFixtures.NaturalEndWithV0;
-        var exeBytes = fixture.Generate();
-        File.WriteAllBytes(testExePath, exeBytes);
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.NaturalEndWithV0.Generate());
 
-        var args = new[]
-        {
-            "package",
-            testExePath,
-            "--output", TestOutputDir,
-            "--entry-root", TestStepCEntryPc.ToString("X"),
-            "--mixed-fallback",
-            "--self-contained",
-            "--json"
-        };
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback", "--self-contained");
 
-        var exitCode = RunCliWithConfiguredStdio((args, null, null));
-        Assert.That(exitCode, Is.EqualTo(0), "package command must succeed with self-contained");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed with self-contained: error='{error}', output='{output}'");
 
-        var runtimeHostPath = Path.Join(TestOutputDir, RuntimeHostLayout.HostRelativePath);
-        Assert.That(File.Exists(runtimeHostPath), Is.True, "Runtime host must be provisioned");
+#pragma warning disable AARC003 // Test-layer I/O for verification
+        var runtimeHostPath = Path.Join(outputDir, RuntimeHostLayout.HostRelativePath);
+        File.Exists(runtimeHostPath).Should().BeTrue("Runtime host must be provisioned");
 
         // Verify the host is a single self-contained executable
         var fileInfo = new FileInfo(runtimeHostPath);
-        Assert.That(fileInfo.Length, Is.GreaterThan(0), "self-contained host must be a non-empty binary");
+        fileInfo.Length.Should().BeGreaterThan(0, "self-contained host must be a non-empty binary");
 
         // Verify manifest contains self-contained metadata
-        var manifestPath = Path.Join(TestOutputDir, RuntimeHostLayout.ManifestRelativePath);
+        var manifestPath = Path.Join(outputDir, RuntimeHostLayout.ManifestRelativePath);
         var manifestJson = File.ReadAllText(manifestPath);
         var manifest = RuntimeHostManifestJson.Parse(manifestJson);
+#pragma warning restore AARC003
 
-        Assert.That(manifest.BlockEntryPcs, Is.Not.Null.And.Not.Empty, "bridge requires compiled blocks");
+        manifest.BlockEntryPcs.Should().NotBeNullOrEmpty("bridge requires compiled blocks");
     }
 
     /// <summary>
     /// Verify that cross-platform layout coordinate consistency (forward slashes, no trailing separator)
     /// works for both Windows and Linux builds.
     /// </summary>
-    [Test]
+    [Fact]
     public void RuntimeHostLayoutIsCrossPlatformConsistent()
     {
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         // Host binary path uses forward slashes: runtime/PSXRecomp.RuntimeHost.exe (Windows) or runtime/PSXRecomp.RuntimeHost (Linux)
         var hostPath = RuntimeHostLayout.HostRelativePathFor(windows);
 
-        Assert.That(hostPath, Does.Contain("/"), "relative paths must use forward slashes for consistency");
+        hostPath.Should().Contain("/", "relative paths must use forward slashes for consistency");
 
         // The generated C sources use the const value HostRelativePath (no platform suffix), and the launcher
         // appends .exe on Windows via macros. Path contract requires forward slashes and no trailing separator.
-        Assert.That(hostPath, Does.Not.EndWith("/"), "relative path must not end with separator");
+        hostPath.Should().NotEndWith("/", "relative path must not end with separator");
     }
 
-    /// <summary>
-    /// Run the CLI with configured standard output and error streams.
-    /// Uses in-memory TextWriters to capture output without touching terminal.
-    /// </summary>
-    private static int RunCliWithConfiguredStdio(string[] args, TextWriter? stdOut, TextWriter? stdErr)
+    private static (int Exit, string Output, string Error) Invoke(params string[] args)
     {
-        var oldStdOut = Console.Out;
-        var oldStdErr = Console.Error;
-
-        try
-        {
-            if (stdOut != null) Console.SetOut(stdOut);
-            if (stdErr != null) Console.SetError(stdErr);
-
-            return CliProgram.Run(args);
-        }
-        finally
-        {
-            Console.SetOut(oldStdOut);
-            Console.SetError(oldStdErr);
-        }
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var exit = Program.Execute(args, output, error);
+        var outStr = output.ToString();
+        var errStr = error.ToString();
+#pragma warning disable AARC003 // Debug output for test diagnostics
+        Console.WriteLine($"[DEBUG] Exit: {exit}, Output: {outStr}, Error: {errStr}");
+#pragma warning restore AARC003
+        return (exit, outStr, errStr);
     }
 }

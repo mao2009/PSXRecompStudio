@@ -52,9 +52,9 @@ public static class Program
         var rest = args[1..];
         return command switch
         {
-            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
-            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
-            "package" => Dispatch("package", rest, allowSegmentBudget: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: true, allowGuestFirmware: true, standardOutput, standardError),
+            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowMixedFallback: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
+            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowMixedFallback: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
+            "package" => Dispatch("package", rest, allowSegmentBudget: false, allowMixedFallback: true, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: true, allowGuestFirmware: true, standardOutput, standardError),
             "screenshot" => ScreenshotCommand.Run(rest, standardOutput, standardError),
             "doctor" => Doctor(rest, standardOutput, standardError),
             "openbios-probe" => OpenBiosProbeCommand.Run(rest, standardOutput, standardError),
@@ -67,6 +67,7 @@ public static class Program
         string command,
         IReadOnlyList<string> arguments,
         bool allowSegmentBudget,
+        bool allowMixedFallback,
         bool allowReport,
         bool allowFrameEvidence,
         bool requireOutput,
@@ -75,7 +76,7 @@ public static class Program
         TextWriter standardOutput,
         TextWriter standardError)
     {
-        if (!TryParse(arguments, allowSegmentBudget, allowReport, allowFrameEvidence, requireOutput, allowSelfContained, allowGuestFirmware, out var parsed, out var error))
+        if (!TryParse(arguments, allowSegmentBudget, allowMixedFallback, allowReport, allowFrameEvidence, requireOutput, allowSelfContained, allowGuestFirmware, out var parsed, out var error))
         {
             standardError.WriteLine($"psxrecomp {command}: {error}");
             WriteCommandUsage(command, standardError);
@@ -105,6 +106,7 @@ public static class Program
     private static bool TryParse(
         IReadOnlyList<string> arguments,
         bool allowSegmentBudget,
+        bool allowMixedFallback,
         bool allowReport,
         bool allowFrameEvidence,
         bool requireOutput,
@@ -172,10 +174,10 @@ public static class Program
                     segmentBudget = budget;
                     break;
                 case "--mixed-fallback":
-                    if (!allowSegmentBudget)
+                    if (!allowMixedFallback)
                     {
                         parsed = default;
-                        error = $"'{token}' is only valid for 'run'.";
+                        error = $"'{token}' is only valid for 'run' or 'package'.";
                         return false;
                     }
                     if (explicitMixedFallback == false)
@@ -187,10 +189,10 @@ public static class Program
                     explicitMixedFallback = true;
                     break;
                 case "--no-mixed-fallback":
-                    if (!allowSegmentBudget)
+                    if (!allowMixedFallback)
                     {
                         parsed = default;
-                        error = $"'{token}' is only valid for 'run'.";
+                        error = $"'{token}' is only valid for 'run' or 'package'.";
                         return false;
                     }
                     if (explicitMixedFallback == true)
@@ -202,10 +204,10 @@ public static class Program
                     explicitMixedFallback = false;
                     break;
                 case "--fallback-segment-budget" or "--fallback-max-transitions":
-                    if (!allowSegmentBudget)
+                    if (!allowMixedFallback)
                     {
                         parsed = default;
-                        error = $"'{token}' is only valid for 'run'.";
+                        error = $"'{token}' is only valid for 'run' or 'package'.";
                         return false;
                     }
                     if (i + 1 >= arguments.Count)
@@ -319,7 +321,7 @@ public static class Program
             }
         }
 
-        var mixedFallback = explicitMixedFallback ?? allowSegmentBudget;
+        var mixedFallback = explicitMixedFallback ?? allowMixedFallback;
 
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {

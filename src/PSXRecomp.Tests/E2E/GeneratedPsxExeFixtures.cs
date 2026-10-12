@@ -140,7 +140,7 @@ public static class GeneratedPsxExeFixtures
             Jump(JalOpcode, uint.MaxValue - 8u),
             0u, // JAL delay slot: unconditional fall off past ProgramEndHandoff
         },
-        expectedSha256: "9ced15525a0a35f051221bb607183abc198240749216d738fbd34e008a84e6fd",
+        expectedSha256: "77d426b78858f63796548f65ddd6bae6b3b2ab1d0750f798ec3a5870f8f2d4a4",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,
@@ -166,7 +166,7 @@ public static class GeneratedPsxExeFixtures
             Jump(JalOpcode, 0x80020000u),
             0u, // delay slot: falls off text
         },
-        expectedSha256: "6625ab02c09622e2289a103e10ee534c775fcaecf6e74b530cbcd467409365a1",
+        expectedSha256: "917661c76f98eea33b3e3bbc80cb3b9dbad506be329bd41a97da1e698f0c85fc",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,
@@ -190,7 +190,7 @@ public static class GeneratedPsxExeFixtures
             Jump(JalOpcode, uint.MaxValue - 8u),
             0u,
         },
-        expectedSha256: "3f9c694e0fe9e581ac15b2ce1d3c5d2c5e4a6f80b48ee66a8f91e8f39b4db079",
+        expectedSha256: "4a5764c64610a1ad9bd347c1735604296d9d3d61d36d8acfe7ee4168a43b5503",
         expectedOutcome: RecompiledArtifactOutcome.Success,
         expectedState: TitleExecutionState.Completed,
         resultRegister: R3000aRegister.V0,

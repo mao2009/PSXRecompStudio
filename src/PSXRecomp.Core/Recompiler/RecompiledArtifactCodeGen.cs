@@ -682,7 +682,7 @@ int main(int argc, char** argv) {
 #define RUNTIME_HOST_BINARY ""PSXRecomp.RuntimeHost""
 #endif
 #define RUNTIME_HOST_REL_PATH ""runtime/"" RUNTIME_HOST_BINARY
-#define RUNTIME_HOST_MANIFEST ""runtime-host.json""
+#define RUNTIME_HOST_MANIFEST ""runtime/runtime-host.json""
 #define MissingRuntimeHostExitCode 78
 
     /* Launch the bundled Runtime host with the manifest path so it can run the

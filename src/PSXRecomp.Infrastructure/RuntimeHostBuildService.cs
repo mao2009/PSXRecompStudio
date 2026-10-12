@@ -104,12 +104,23 @@ public static class RuntimeHostBuildService
                 "The PSXRecomp.RuntimeHost project could not be located; the runtime host must be published from its csproj.",
                 "RUNTIME_HOST_NOT_FOUND");
 
+        // Restore the project for the target RID to ensure assets are available.
+        var restoreArgs = new[] { "restore", hostProject, "-r", rid };
+        var restoreResult = RunToolchain("dotnet", restoreArgs, timeout);
+        if (restoreResult.Outcome != ToolchainOutcome.Success)
+        {
+            throw new RuntimeHostProvisionFailed(
+                $"{restoreResult.Outcome} while restoring the runtime host ({string.Join(" ", restoreArgs)}):\n{restoreResult.Stderr}",
+                MapProvisionFailure(restoreResult.Outcome));
+        }
+
         var args = new[]
         {
             "publish", hostProject,
             "-c", "Release",
             "-r", rid,
             "-o", Path.GetFullPath(targetDirectory),
+            // Restore is done explicitly above; --no-restore avoids duplicate work.
             "--no-restore",
         };
 
@@ -162,8 +173,38 @@ public static class RuntimeHostBuildService
             {
                 return candidate;
             }
+            // Also check in PSXRecomp.RuntimeHost subdirectory
+            var subCandidate = Path.Combine(dir, "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj");
+            if (File.Exists(subCandidate))
+            {
+                return subCandidate;
+            }
             dir = Path.GetDirectoryName(dir);
         }
+
+        // Fallback: try from the solution root (for when running from published CLI or test projects)
+        // The solution root contains the src/ directory with all projects.
+        var baseDir = AppContext.BaseDirectory;
+        var relatives = new[]
+        {
+            // From test project output: bin/Debug/net10.0 -> ../../../../src/PSXRecompRuntimeHost/PSXRecomp.RuntimeHost.csproj
+            Path.Combine(baseDir, "..", "..", "..", "..", "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            // From CLI output: bin/Release/net10.0 -> ../../../../src/PSXRecompRuntimeHost/PSXRecomp.RuntimeHost.csproj
+            Path.Combine(baseDir, "..", "..", "..", "..", "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            // From solution root
+            Path.Combine(baseDir, "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            // Direct from source tree
+            Path.Combine(baseDir, "..", "..", "..", "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+        };
+        foreach (var rel in relatives)
+        {
+            var full = Path.GetFullPath(rel);
+            if (File.Exists(full))
+            {
+                return full;
+            }
+        }
+
         return null;
     }
 
@@ -233,6 +274,87 @@ public static class RuntimeHostBuildService
         return streamTask.Wait(cleanupMs) && streamTask.IsCompletedSuccessfully
             ? streamTask.Result
             : string.Empty;
+    }
+
+    /// <summary>
+    /// Result of running the Runtime host.
+    /// </summary>
+    public sealed class RuntimeHostRunResult
+    {
+        private RuntimeHostRunResult(int exitCode, string stdout, string stderr)
+        {
+            ExitCode = exitCode;
+            Stdout = stdout;
+            Stderr = stderr;
+        }
+
+        public int ExitCode { get; }
+        public string Stdout { get; }
+        public string Stderr { get; }
+
+        public static RuntimeHostRunResult Succeeded(int exitCode, string stdout, string stderr) =>
+            new(exitCode, stdout, stderr);
+    }
+
+    /// <summary>
+    /// Runs the provisioned Runtime host with the given manifest.
+    /// </summary>
+    /// <param name="hostPath">Absolute path to the Runtime host executable.</param>
+    /// <param name="manifestPath">Absolute path to the runtime-host.json manifest.</param>
+    /// <param name="timeout">Optional timeout for the host execution.</param>
+    /// <returns>The run result with exit code, stdout, and stderr.</returns>
+    public static RuntimeHostRunResult RunRuntimeHost(
+        string hostPath,
+        string manifestPath,
+        TimeSpan? timeout = null)
+    {
+        if (string.IsNullOrWhiteSpace(hostPath) || !File.Exists(hostPath))
+        {
+            throw new ArgumentException("The runtime host executable does not exist.", nameof(hostPath));
+        }
+
+        if (string.IsNullOrWhiteSpace(manifestPath) || !File.Exists(manifestPath))
+        {
+            throw new ArgumentException("The manifest file does not exist.", nameof(manifestPath));
+        }
+
+        var timeoutMs = (int)(timeout ?? TimeSpan.FromMinutes(5)).TotalMilliseconds;
+
+        var psi = new ProcessStartInfo(hostPath)
+        {
+            Arguments = manifestPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        Process process;
+        try
+        {
+            process = Process.Start(psi)!;
+        }
+        catch (Win32Exception ex)
+        {
+            return RuntimeHostRunResult.Succeeded(int.MinValue, string.Empty, ex.Message);
+        }
+
+        using (process)
+        {
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+
+            if (!process.WaitForExit(timeoutMs))
+            {
+                TryKill(process);
+                return RuntimeHostRunResult.Succeeded(int.MinValue, string.Empty, "Runtime host timed out");
+            }
+
+            var stdout = stdoutTask.Result;
+            var stderr = stderrTask.Result;
+
+            return RuntimeHostRunResult.Succeeded(process.ExitCode, stdout, stderr);
+        }
     }
 
     internal readonly record struct ToolchainResult(ToolchainOutcome Outcome, int ExitCode, string Stderr);

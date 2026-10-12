@@ -195,6 +195,9 @@ public static class PackageCommand
                     "The packaged manifest failed its own parse-and-verify round trip.");
             }
 
+            // Write the manifest.
+            File.WriteAllText(Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName), serialized);
+
             // Write the end-user README.
             WriteReadme(outputDir, guestFirmware, mixedFallback, binaryName);
 
