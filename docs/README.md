@@ -123,6 +123,7 @@ Constraints:
 - [References and Prior Art](REFERENCES.md)
 - [Architecture Decision Records](adr/)
   - [ADR-026: AOT RAM-placed code](adr/026-aot-ram-placed-code.md)
+  - [ADR-027: Standalone artifact — shared Runtime integration](adr/027-standalone-artifact-runtime-integration.md)
 - CPU / R3000A
   - [R3000A Overview](cpu/r3000a.md)
   - [Registers](cpu/registers.md)

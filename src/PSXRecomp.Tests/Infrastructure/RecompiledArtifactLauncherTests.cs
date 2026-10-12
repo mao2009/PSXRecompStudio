@@ -101,6 +101,50 @@ public sealed class RecompiledArtifactLauncherTests
     }
 
     [Fact]
+    public void Launch_StandaloneEmbeddedImage_AttachesSharedRuntimeBridgeAndCompletes()
+    {
+        const uint entryPc = 0x80020000u;
+        var words = new uint[]
+        {
+            Immediate(OriOpcode, FunctionNumberRegister, BiosHleRuntime.PutCharFunction),
+            Immediate(OriOpcode, FirstArgumentRegister, DiagnosticCharacter),
+            (uint)JalOpcode << 26 | (BiosJumpTables.A0VectorAddress & 0x0FFFFFFCu) >> 2,
+            0u, // branch delay slot
+            Immediate(OriOpcode, MarkerRegister, DiagnosticMarker),
+        };
+        var program = Lower(entryPc, words);
+        var programEnd = entryPc + (uint)(words.Length * 4);
+
+        using var dir = new TempDirectory();
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 1, segmentBudget: 64);
+
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program, new PsxExeTitleExecution(entryPc, words, request), new ProgramEndHandoff(programEnd), dir.FullPath,
+            resultRegister: (int)R3000aRegister.S1,
+            standalone: true);
+
+        // Phase 2 (Issue #757): the embedded-image artifact attached the shared
+        // Runtime host bridge over the existing --host-transfer path — the
+        // putchar syscall was dispatched through the real, shared BiosHleRuntime
+        // (ADR-014) and execution resumed past it to the marked completion.
+        outcome.Result.State.Should().Be(TitleExecutionState.Completed);
+        outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Success);
+        outcome.Result.ExitCode.Should().Be(RecompiledArtifactExitCode.Success);
+        outcome.Result.ResultValue.Should().Be(DiagnosticMarker);
+        outcome.Output.Should().Equal(DiagnosticCharacter);
+
+        // The embedded artifact is self-contained: no input or image files are
+        // written (they are embedded in the built binary), so the run needs no
+        // external data and no Studio.
+#pragma warning disable AARC003 // Test-only check of the embedded artifact's own output directory.
+        File.Exists(dir.Combine("artifact-input.txt")).Should().BeFalse();
+        File.Exists(dir.Combine("artifact-image.bin")).Should().BeFalse();
+#pragma warning restore AARC003
+    }
+
+    [Fact]
     public void RunSegment_CalledTwice_ThrowsRatherThanSilentlyRestartingFromStaleMemory()
     {
         const uint entryPc = 0x80030000u;
@@ -109,6 +153,34 @@ public sealed class RecompiledArtifactLauncherTests
 
         using var dir = new TempDirectory();
         using var engine = new RecompiledHostExecutionEngine(program, words, entryPc, new GeneratedHostBuildService(), dir.FullPath);
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 1, segmentBudget: 8);
+        engine.Load(request);
+
+        var segmentRequest = new TitleExecutionSegmentRequest(request.InitialGpr, 0, 0, entryPc, request.SegmentBudget);
+        engine.RunSegment(segmentRequest).Status.Should().Be(RecompilerExecutionStatus.Completed);
+
+        // This milestone's engine carries no guest RAM across repeated launches
+        // (see its class remarks), so a second call must fail loud rather than
+        // silently restart from the first call's initial memory.
+        var act = () => engine.RunSegment(segmentRequest);
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void RunSegment_WithEmbedImage_CalledTwice_ThrowsRatherThanSilentlyRestartingFromStaleMemory()
+    {
+        const uint entryPc = 0x80030000u;
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
+
+        using var dir = new TempDirectory();
+        // The embedded-image path builds its artifact at the first RunSegment;
+        // the one-shot-per-instance contract must hold there exactly as it does
+        // for the file-driven path (the check precedes the embedded build).
+        using var engine = new RecompiledHostExecutionEngine(
+            program, words, entryPc, new GeneratedHostBuildService(), dir.FullPath, embedImage: true);
         var request = new TitleExecutionRequest(
             entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
             initialMemory: [], outerBudget: 1, segmentBudget: 8);
@@ -176,6 +248,48 @@ public sealed class RecompiledArtifactLauncherTests
         // V0 holds the marker only the recompiled ori could produce, and the
         // GPR/HI/LO snapshot reflects the segment request's values — proving the
         // input file was rewritten from RunSegment's state, not Load's.
+        result.Status.Should().Be(RecompilerExecutionStatus.Completed);
+        result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(DiagnosticMarker);
+        result.Snapshot.Gpr[1].Should().Be(0xAAAAAAAAu);
+        result.Snapshot.HI.Should().Be(0xBBBBBBBBu);
+        result.Snapshot.LO.Should().Be(0xCCCCCCCCu);
+    }
+
+    [Fact]
+    public void RunSegment_WithEmbedImage_ExecutesFromSegmentRequestState_NotFromStaleLoadState()
+    {
+        const uint entryPc = 0x80050000u;
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
+
+        using var dir = new TempDirectory();
+        // Same contract as the file-driven path, through the embedded image: the
+        // artifact is generated from the FIRST RunSegment call's state (PC, GPRs,
+        // HI/LO, budget), never from the state Load was handed.
+        using var engine = new RecompiledHostExecutionEngine(
+            program, words, entryPc, new GeneratedHostBuildService(), dir.FullPath, embedImage: true);
+
+        // Load must not freeze the architectural state the artifact runs from:
+        // its entry pc points at no compiled block and its budget of 0 would end
+        // the run before the first instruction, so a run driven from Load's
+        // input would never reach the generated block.
+        var loadGpr = new uint[TitleExecutionRequest.GprCount];
+        loadGpr[1] = 0x11111111u;
+        engine.Load(new TitleExecutionRequest(
+            entryPc + 0x1000, loadGpr, initialHi: 0x22222222, initialLo: 0x33333333,
+            initialMemory: [], outerBudget: 1, segmentBudget: 0));
+
+        // RunSegment's own named state — real block entry pc, live budget, and
+        // distinctive registers/HI/LO — is what must drive the embedded artifact.
+        var segmentGpr = new uint[TitleExecutionRequest.GprCount];
+        segmentGpr[1] = 0xAAAAAAAAu;
+        var segment = new TitleExecutionSegmentRequest(segmentGpr, 0xBBBBBBBB, 0xCCCCCCCC, entryPc, 8);
+
+        var result = engine.RunSegment(segment);
+
+        // V0 holds the marker only the recompiled ori could produce, and the
+        // GPR/HI/LO snapshot reflects the segment request's values — proving the
+        // embedded image was built from RunSegment's state, not Load's.
         result.Status.Should().Be(RecompilerExecutionStatus.Completed);
         result.Snapshot!.Gpr[(int)R3000aRegister.V0].Should().Be(DiagnosticMarker);
         result.Snapshot.Gpr[1].Should().Be(0xAAAAAAAAu);
@@ -265,6 +379,42 @@ public sealed class RecompiledArtifactLauncherTests
             dir.FullPath,
             resultRegister: (int)R3000aRegister.V0,
             biosRuntimeFactory: (_, _) => throw new InvalidOperationException("simulated protocol fault"));
+
+        // A pump fault is an engine mechanism failure, classified and returned —
+        // the underlying exception must never escape the launcher nor leak its
+        // message into the stable machine-readable result.
+        outcome.Result.Outcome.Should().Be(RecompiledArtifactOutcome.Failure);
+        outcome.Result.State.Should().Be(TitleExecutionState.RuntimeFailure);
+        outcome.Result.DiagnosticCode.Should().Be("ARTIFACT_HOST_PROTOCOL_FAILED");
+        outcome.Result.DiagnosticMessage.Should().Be("The artifact host-transfer protocol failed.");
+        outcome.Json.Should().Contain("ARTIFACT_HOST_PROTOCOL_FAILED");
+        outcome.Json.Should().NotContain("simulated protocol fault");
+    }
+
+    [Fact]
+    public void Launch_Standalone_HostTransferProtocolFault_IsClassifiedProtocolFailure_NotLeakedException()
+    {
+        const uint entryPc = 0x80080000u;
+        uint[] words = [Immediate(OriOpcode, (byte)R3000aRegister.V0, DiagnosticMarker)];
+        var program = Lower(entryPc, words);
+
+        using var dir = new TempDirectory();
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], initialHi: 0, initialLo: 0,
+            initialMemory: [], outerBudget: 1, segmentBudget: 8);
+
+        // Same pump-fault contract through the embedded image: the Runtime
+        // factory is invoked at the very first host-transfer handshake, so a
+        // faulting factory must classify as a protocol failure rather than
+        // escape the launcher or leak its message.
+        var outcome = new RecompiledArtifactLauncher().Launch(
+            program,
+            new PsxExeTitleExecution(entryPc, words, request),
+            handoff: null,
+            dir.FullPath,
+            resultRegister: (int)R3000aRegister.V0,
+            biosRuntimeFactory: (_, _) => throw new InvalidOperationException("simulated protocol fault"),
+            standalone: true);
 
         // A pump fault is an engine mechanism failure, classified and returned —
         // the underlying exception must never escape the launcher nor leak its

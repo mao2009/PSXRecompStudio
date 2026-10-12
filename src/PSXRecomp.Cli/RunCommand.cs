@@ -75,7 +75,8 @@ public static class RunCommand
                     ? new MixedFallbackOptions(
                         arguments.FallbackSegmentBudget ?? MixedFallbackOptions.DefaultSegmentInstructionBudget,
                         arguments.FallbackMaxTransitions ?? MixedFallbackOptions.DefaultMaxTransitions)
-                    : null);
+                    : null,
+                standalone: arguments.Standalone);
 
             var artifactPath = ResolveArtifactPath(outputDirectory);
             var frameEvidence = arguments.FrameEvidence

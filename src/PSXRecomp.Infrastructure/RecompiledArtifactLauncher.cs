@@ -53,6 +53,17 @@ public sealed class RecompiledArtifactLauncher
     /// <param name="biosRuntimeFactory">Builds the Runtime the artifact's unresolved control
     /// transfers are relayed to; defaults to the shared <see cref="BiosHleRuntime"/> attached
     /// to this launch's output sink.</param>
+    /// <param name="standalone">
+    /// When true, the artifact embeds the program image and this launch's initial state and
+    /// attaches the shared Runtime host bridge over the existing --host-transfer path
+    /// (Phase 2, Issue #739 — Step A, the Runtime Bridge): no input files are needed, and
+    /// this launcher process supplies the shared managed Runtime host for the run, so
+    /// Studio is not required at runtime. Step A does not bundle that host into the
+    /// distributed executable — direct, host-less launch of the built binary is a later
+    /// #739 completion condition, and without the attaching bridge flag the embedded
+    /// artifact keeps its parentless Phase 1 behavior. When false the artifact reads its
+    /// input files exactly as before.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/> or
     /// <paramref name="input"/> is null.</exception>
     /// <exception cref="InvalidOperationException">Code generation or the artifact build failed,
@@ -67,7 +78,8 @@ public sealed class RecompiledArtifactLauncher
         IGeneratedHostBuildService? buildService = null,
         int? resultRegister = null,
         Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
-        MixedFallbackOptions? mixedFallback = null)
+        MixedFallbackOptions? mixedFallback = null,
+        bool standalone = false)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(input);
@@ -97,7 +109,8 @@ public sealed class RecompiledArtifactLauncher
             buildService ?? new GeneratedHostBuildService(),
             outputDirectory,
             biosRuntimeFactory ?? ((reader, writer) => new BiosHleRuntime(sink, reader, writer)),
-            mixedFallback: mixedFallback);
+            mixedFallback: mixedFallback,
+            embedImage: standalone);
 
         var execution = InImageTransferDiagnostic.Apply(
             new ExecutionOrchestrator().Execute(engine, handoff, request),

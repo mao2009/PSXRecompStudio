@@ -281,6 +281,13 @@ public static class RecompiledArtifactCodeGen
     /// The resulting C source can be compiled into a single executable that runs
     /// without any external input files.
     /// </summary>
+    /// <param name="hostBridge">
+    /// When true, the generated <c>main()</c> can attach the shared Runtime host
+    /// bridge (<c>--host-transfer</c>), so the embedded-image artifact runs
+    /// recompiled code against the shared Runtime with no input files and no Studio
+    /// (Phase 2, Issue #757). When false the artifact is exactly Phase 1's
+    /// parentless run.
+    /// </param>
     public static RecompiledArtifactCodeGenResult GenerateStandalone(
         RecompilerHostCodeGenResult generatedDispatch,
         IReadOnlyList<uint> initialGpr,
@@ -290,7 +297,8 @@ public static class RecompiledArtifactCodeGen
         uint budget,
         IReadOnlyList<(uint Address, uint Value)> initialMemory,
         uint imageLoadAddress,
-        IReadOnlyList<byte> programImage)
+        IReadOnlyList<byte> programImage,
+        bool hostBridge = false)
     {
         ArgumentNullException.ThrowIfNull(generatedDispatch);
         ArgumentNullException.ThrowIfNull(initialGpr);
@@ -336,7 +344,8 @@ public static class RecompiledArtifactCodeGen
             budget,
             initialMemory,
             imageLoadAddress,
-            programImage);
+            programImage,
+            hostBridge);
 
         if (!standaloneSource.Success)
         {
@@ -364,7 +373,8 @@ public static class RecompiledArtifactCodeGen
         uint budget,
         IReadOnlyList<(uint Address, uint Value)> initialMemory,
         uint imageLoadAddress,
-        IReadOnlyList<byte> programImage)
+        IReadOnlyList<byte> programImage,
+        bool hostBridge = false)
     {
         var sb = new System.Text.StringBuilder();
 
@@ -510,7 +520,7 @@ public static class RecompiledArtifactCodeGen
         // comment that sits exactly where the old main began, not on the signature
         // text itself (fragile). The old main body immediately follows the marker, so
         // we replace the whole [marker .. old main closing brace] region at once.
-        var standaloneMain = BuildStandaloneMain();
+        var standaloneMain = BuildStandaloneMain(hostBridge);
         const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
         var mainStart = fullDriver.IndexOf(mainMarker, StringComparison.Ordinal);
         if (mainStart < 0)
@@ -566,12 +576,55 @@ public static class RecompiledArtifactCodeGen
             true, standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
     }
 
-    private static string BuildStandaloneMain()
+    private static string BuildStandaloneMain(bool hostBridge)
     {
-        return @"
+        // Phase 2 (Issue #757): the embedded-image artifact may attach the shared
+        // Runtime host bridge when the caller opts in (--host-transfer), so it runs
+        // recompiled code with no input files and no Studio. The attach path is the
+        // driver's single artifact_attach_host_bridge helper (shared with the
+        // file-driven main), and the parentless Phase 1 behavior is preserved when
+        // the bridge is not requested.
+        string bridgePrologue = hostBridge
+            ? @"
+int main(int argc, char** argv) {
+"
+            : @"
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
-    RecompilerState state;
+";
+
+        string bridgeAttach = hostBridge ? @"
+    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
+    state.guest_exceptions = 0;
+    state.host_transfer = 0;
+    state.host_syscall = 0;
+    state.host_retired = 0;
+    state.host_interrupt = 0;
+    artifact_mmio_bridge = 0;
+
+    /* Attach the shared Runtime host bridge, opt-in only: without --host-transfer
+       the run never blocks on a handshake (a parentless Phase 1 launch or stray
+       argument takes this branch, exactly as before). */
+    {
+        int attach_bridge = 0;
+        for (int argi = 1; argi < argc; argi++) {
+            if (strcmp(argv[argi], ""--guest-exceptions"") == 0) state.guest_exceptions = 1u;
+            if (strcmp(argv[argi], ""--exact-device-time"") == 0) artifact_exact_time = 1;
+            if (strcmp(argv[argi], ""--host-transfer"") == 0) attach_bridge = 1;
+        }
+        if (attach_bridge) artifact_attach_host_bridge(&state);
+    }
+" : @"
+    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
+    state.guest_exceptions = 0;
+    state.host_transfer = 0;
+    state.host_syscall = 0;
+    state.host_retired = 0;
+    state.host_interrupt = 0;
+    artifact_mmio_bridge = 0;
+";
+
+        return bridgePrologue + @"    RecompilerState state;
     memset(&state, 0, sizeof(state));
 
     // Copy embedded initial GPRs
@@ -609,15 +662,7 @@ int main(int argc, char** argv) {
         else artifact_ram[(image_pa + image_i) & (PSX_RAM_SIZE - 1u)] = embedded_image[image_i];
     }
 
-    /* Firmware mode (Issue #732): guest SYSCALL/BREAK enter the guest's own exception vector. */
-    state.guest_exceptions = 0;
-    state.host_transfer = 0;
-    state.host_syscall = 0;
-    state.host_retired = 0;
-    state.host_interrupt = 0;
-    artifact_mmio_bridge = 0;
-
-    recompiler_dispatch(&state, budget);
+" + bridgeAttach + @"    recompiler_dispatch(&state, budget);
     artifact_report_retired();
 
     printf(""RSNAPSHOT_BEGIN\n"");
@@ -1289,6 +1334,29 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     artifact_int_entry = 1;
 }
 
+/* Attach the shared Runtime host bridge (Issue #757 Phase 2). This is the
+   artifact's only channel to the managed Runtime / BIOS HLE (ADR-014). One
+   definition, called by both the file-driven main and the embedded-image main,
+   so the two attach paths cannot diverge. */
+static void artifact_attach_host_bridge(RecompilerState* state) {
+    state->host_transfer = &artifact_host_transfer;
+    state->host_syscall = &artifact_host_syscall;
+    state->event_deadline = UINT64_MAX;
+    state->host_retired = &artifact_after_unit;
+    state->host_interrupt = &artifact_interrupt_boundary;
+    artifact_state = state;
+    artifact_mmio_bridge = 1;
+    if (state->guest_exceptions) state->host_cop0 = &artifact_cop0_access;
+    printf(""RHOST_INIT\n"");
+    fflush(stdout);
+    /* The parent's Runtime seeds its own jump-table sentinels here (byte
+       R/W requests) before replying 'N' to this initial handshake, so its
+       seeding is visible to the guest exactly as it is to the interpreter. */
+    artifact_host_serve(state);
+    state->termination_reason = 0;
+    state->next_pc = 0;
+}
+
 /* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */
     if (argc < 3) return 90; /* MissingInput: argv[1] input file, argv[2] program image */
     FILE* in = fopen(argv[1], ""r"");
@@ -1360,22 +1428,7 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     /* Opt-in only: a stray extra argument never enables the protocol, so a run
        with no parent listening can never block on the handshake. */
     if (argc >= 4 && strcmp(argv[3], ""--host-transfer"") == 0) {
-        state.host_transfer = &artifact_host_transfer;
-        state.host_syscall = &artifact_host_syscall;
-        state.event_deadline = UINT64_MAX;
-        state.host_retired = &artifact_after_unit;
-        state.host_interrupt = &artifact_interrupt_boundary;
-        artifact_state = &state;
-        artifact_mmio_bridge = 1;
-        if (state.guest_exceptions) state.host_cop0 = &artifact_cop0_access;
-        printf(""RHOST_INIT\n"");
-        fflush(stdout);
-        /* The parent's Runtime seeds its own jump-table sentinels here (byte
-           R/W requests) before replying 'N' to this initial handshake, so its
-           seeding is visible to the guest exactly as it is to the interpreter. */
-        artifact_host_serve(&state);
-        state.termination_reason = 0;
-        state.next_pc = 0;
+        artifact_attach_host_bridge(&state);
     }
 
     recompiler_dispatch(&state, (uint32_t)budget);

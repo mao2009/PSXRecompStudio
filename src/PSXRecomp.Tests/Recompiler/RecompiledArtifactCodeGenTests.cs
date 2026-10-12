@@ -90,6 +90,76 @@ public sealed class RecompiledArtifactCodeGenTests
     }
 
     [Fact]
+    public void GenerateStandalone_WithHostBridge_ProducesBridgeCapableEmbeddedMain()
+    {
+        var dispatch = GenerateDispatch();
+        var initialGpr = new uint[32];
+        var initialMemory = new (uint Address, uint Value)[] { (0x80010000u, 0xDEADBEEFu) };
+        var programImage = new byte[] { 0x00, 0x00, 0x02, 0x34 };
+
+        var result = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch,
+            initialGpr,
+            0xABCDABCDu,
+            0xEFEFEFEFu,
+            0x80010000u,
+            1000,
+            initialMemory,
+            0x80010000u,
+            programImage,
+            hostBridge: true);
+
+        result.Success.Should().BeTrue();
+        var source = result.Source!;
+
+        // Phase 2 (Issue #757): the embedded-image main can attach the shared
+        // Runtime host bridge over the existing --host-transfer path.
+        source.Should().Contain("int main(int argc, char** argv) {");
+        source.Should().Contain("artifact_attach_host_bridge(&state);");
+        source.Should().Contain("--host-transfer");
+        source.Should().Contain("--guest-exceptions");
+        source.Should().Contain("--exact-device-time");
+        // The bridge is opt-in: without the flag the run stays parentless, so
+        // the flag must never be enabled unconditionally.
+        source.Should().NotContain("(void)argc;");
+        // Flag order cannot change the result: every flag is an independent
+        // `if (strcmp(argv[argi], ...))` inside one position-scanning loop, and
+        // the attach happens only after the whole scan (no positional argv[3]
+        // shortcut, no else-if chain, no early break).
+        source.Should().Contain("for (int argi = 1; argi < argc; argi++) {");
+        source.Should().Contain("if (strcmp(argv[argi], \"--guest-exceptions\") == 0) state.guest_exceptions = 1u;");
+        source.Should().Contain("if (strcmp(argv[argi], \"--exact-device-time\") == 0) artifact_exact_time = 1;");
+        source.Should().Contain("if (strcmp(argv[argi], \"--host-transfer\") == 0) attach_bridge = 1;");
+        source.Should().Contain("if (attach_bridge) artifact_attach_host_bridge(&state);");
+        source.Should().NotContain("else if (strcmp(argv[argi]");
+        source.Should().NotContain("argv[3]");
+        // Still a self-contained embedded artifact: no file reading leaks in.
+        source.Should().NotContain("fopen");
+        source.Should().NotContain("fscanf");
+        source.Should().NotContain("argv[1]");
+        source.Should().NotContain("argv[2]");
+    }
+
+    [Fact]
+    public void GenerateStandalone_WithHostBridge_IsDeterministic_ForIdenticalInput()
+    {
+        var dispatch = GenerateDispatch();
+        var initialGpr = new uint[32];
+        initialGpr[2] = 0x12345678u;
+        var initialMemory = new (uint Address, uint Value)[] { (0x80010000u, 0xDEADBEEFu) };
+        var programImage = new byte[] { 0x00, 0x00, 0x02, 0x34 };
+
+        var first = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, initialGpr, 0xABCDABCDu, 0xEFEFEFEFu, 0x80010000u, 1000, initialMemory, 0x80010000u, programImage, hostBridge: true);
+        var second = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, initialGpr, 0xABCDABCDu, 0xEFEFEFEFu, 0x80010000u, 1000, initialMemory, 0x80010000u, programImage, hostBridge: true);
+
+        first.Success.Should().BeTrue();
+        second.Success.Should().BeTrue();
+        first.Source.Should().Be(second.Source);
+    }
+
+    [Fact]
     public void GenerateStandalone_InvalidGprCount_ReturnsFailure()
     {
         var dispatch = GenerateDispatch();
@@ -269,14 +339,15 @@ public sealed class RecompiledArtifactCodeGenTests
         // which the standalone builder rewrites to RECOMPILER_REASON_UNSUPPORTED_TRANSFER
         // (value 5, matching RecompilerIrTerminationReason.UnresolvedIndirectFlow)
         // instead of RECOMPILER_REASON_SUCCESS.
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var result = RecompiledArtifactCodeGen.GenerateStandalone(
             dispatch,
             initialGpr,
@@ -312,14 +383,15 @@ public sealed class RecompiledArtifactCodeGenTests
             Skip.If(true, "no C compiler available on this host");
         }
 
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
         Directory.CreateDirectory(tempDir);
         try
@@ -350,6 +422,75 @@ public sealed class RecompiledArtifactCodeGenTests
             run.Output.Should().Contain("gpr[0]=0x00000000");
             run.Output.Should().Contain("RSNAPSHOT_BEGIN");
             run.Output.Should().Contain("RSNAPSHOT_END");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void GenerateStandalone_WithHostBridge_WithoutAttachFlag_NeitherWaitsForHandshake_NorDependsOnFlagOrder()
+    {
+#pragma warning disable AARC003
+        // The full pipeline with the bridge-capable main, launched WITHOUT
+        // --host-transfer: the run must stay parentless (termination 5 / exit 5)
+        // and must never block on a handshake — if it did, RunProcess's bounded
+        // timeout would throw and fail this test. The optional flags must also
+        // produce identical results in either order.
+        var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
+        if (!File.Exists(gccPath))
+        {
+            Skip.If(true, "no C compiler available on this host");
+        }
+
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
+        var dispatch = RecompilerHostCodeGen.Generate(program);
+        dispatch.Success.Should().BeTrue();
+
+        var initialGpr = new uint[32];
+        var initialMemory = Array.Empty<(uint Address, uint Value)>();
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
+        var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var result = RecompiledArtifactCodeGen.GenerateStandalone(
+                dispatch,
+                initialGpr,
+                0u, 0u, 0x80001000u,
+                1000u,
+                initialMemory,
+                0x80001000u,
+                programImage,
+                hostBridge: true);
+
+            result.Success.Should().BeTrue();
+            result.Source.Should().NotBeNull();
+
+            var cPath = Path.Combine(tempDir, "bridge.c");
+            File.WriteAllText(cPath, result.Source!);
+            var exePath = Path.Combine(tempDir, OperatingSystem.IsWindows() ? "bridge.exe" : "bridge");
+
+            var compile = RunCompiler(gccPath, cPath, exePath);
+            compile.ExitCode.Should().Be(0, "the bridge-capable generated artifact must compile");
+
+            var parentless = RunProcess(exePath);
+            parentless.ExitCode.Should().Be(5, "without the opt-in flag the run stays parentless (5 = unsupported transfer)");
+            parentless.Output.Should().Contain("termination=5");
+
+            var orderA = RunProcess(exePath, "--guest-exceptions --exact-device-time", 60000);
+            var orderB = RunProcess(exePath, "--exact-device-time --guest-exceptions", 60000);
+            orderA.ExitCode.Should().Be(5);
+            orderB.ExitCode.Should().Be(5);
+            orderA.Output.Should().Be(orderB.Output, "the flags parse position-independently, so order must not change the result");
+            orderA.Output.Should().Contain("termination=5");
         }
         finally
         {
@@ -749,8 +890,9 @@ public sealed class RecompiledArtifactCodeGenTests
         // The host-transfer (non-standalone) path must keep the legacy unknown-PC
         // branch semantics (success when steps > 0) so the standalone rewrite
         // does not leak into ordinary artifacts.
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
         var source = RecompiledArtifactCodeGen.Generate(dispatch).Source!;
@@ -759,7 +901,7 @@ public sealed class RecompiledArtifactCodeGenTests
             "if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }");
         // Whereas the standalone path must not.
         var initialGpr = new uint[32];
-        var image = new byte[] { 0x30, 0x00, 0x04, 0x8D };
+        var image = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 };
         var standalone = RecompiledArtifactCodeGen.GenerateStandalone(
             dispatch, initialGpr, 0u, 0u, 0x80001000u, 1000u,
             Array.Empty<(uint Address, uint Value)>(), 0x80001000u, image);
@@ -786,14 +928,15 @@ public sealed class RecompiledArtifactCodeGenTests
             Skip.If(true, "x86_64-w64-mingw32-gcc not available on this host; x64 PE32+ build unverified.");
         }
 
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
         Directory.CreateDirectory(tempDir);
         try
