@@ -223,6 +223,11 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Contains("--compare-at requires --differential", error.ToString());
         Assert.Equal(1, OpenBiosProbeCommand.Run(["rom.bin", "--stop-at", "80030000"], TextWriter.Null, TextWriter.Null));
         Assert.Equal(1, OpenBiosProbeCommand.Run(["rom.bin", "--engine", "generated-host", "--roots", "r.txt", "--stop-at", "zz"], TextWriter.Null, TextWriter.Null));
+        // Issue #739 Phase 2 Step B: --standalone is host-only, exactly like the other generated-host options, and is
+        // rejected before the firmware file is even opened.
+        var standalone = new StringWriter();
+        Assert.Equal(1, OpenBiosProbeCommand.Run(["rom.bin", "--standalone"], TextWriter.Null, standalone));
+        Assert.Contains("--standalone require --engine generated-host", standalone.ToString());
     }
     [Theory]
     [InlineData("--code-bytes", "0")]
@@ -242,6 +247,7 @@ public sealed class OpenBiosProbeAccountingTests
     [InlineData("--segments", "4294967296")]
     [InlineData("--segments", "+1")]
     [InlineData("--segments", "1", "--segments", "2")]
+    [InlineData("--standalone", "--standalone")]
     [InlineData("--capture-at", "0x0x80010000")]
     [InlineData("--roots", "--json")]
     [InlineData("--unknown")]
@@ -255,6 +261,7 @@ public sealed class OpenBiosProbeAccountingTests
     [Theory]
     [InlineData("--capture-at", "0X80010000", "--segments", "1")]
     [InlineData("--engine", "generated-host", "--roots", "r.txt", "--code-bytes", "0")]
+    [InlineData("--engine", "generated-host", "--roots", "r.txt", "--standalone")]
     [InlineData("--engine", "generated-host", "--roots", "r.txt", "--differential", "--compare-at", "80010000", "--compare-at", "80030000")]
     public void ValidEngineOptionsReachFirmwareInputValidation(params string[] options)
     {
@@ -272,6 +279,8 @@ public sealed class OpenBiosProbeAccountingTests
         var error = new StringWriter();
         OpenBiosProbeCommand.Run([], TextWriter.Null, error);
         error.ToString().TrimEnd().Should().Be(OpenBiosProbeCommand.Usage);
+        // Issue #739 Phase 2 Step B: the generated-host probe documents its standalone embedded-image mode.
+        OpenBiosProbeCommand.Usage.Should().Contain("--standalone");
     }
 
 }

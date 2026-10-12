@@ -64,6 +64,7 @@ Current records:
 | 024 | Reference-first Execution Window Alignment | Accepted |
 | 025 | Generated-host Guest Time and Device-originated RAM | Accepted |
 | 026 | AOT RAM-placed Code | Accepted |
+| 027 | Standalone artifact — shared Runtime integration (Phase 2) | Accepted |
 
 ADR numbering is sequential with zero-padded three digits; format follows the
 existing records (`Context` / `Decision` / `Consequences`, Status/Date/Issue header).

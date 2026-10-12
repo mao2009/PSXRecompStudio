@@ -142,6 +142,7 @@ Constraints:
   - [Runtime Architecture](runtime/architecture.md)
   - [RTPS MAC1-3 Width and IR Saturation](runtime/gte-rtps-mac-width.md)
   - [Memory Card Format and Storage Policy](runtime/memory-card.md)
+  - [OpenBIOS Firmware Backend](runtime/openbios-firmware-backend.md)
 
 ## Translation relationship checks
 

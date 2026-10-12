@@ -162,7 +162,7 @@ psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-di
   --stop-at 0x80010014 --differential --json
 ```
 
-`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--json]`
+`psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]`
 
 The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =
 37160 bytes for the pinned build) is built by
@@ -187,6 +187,22 @@ check need not spin the executable's final loop; without it the full run is
 unchanged. `--symbols` takes `nm -n` output (the CLI never parses ELF).
 Without `--json` a compact summary precedes the indented document; progress
 goes to stderr every 2^25 fetches.
+
+#### Standalone embedded-image mode (`--standalone`)
+
+`--standalone` (Phase 2 Step B, Issue #739) delivers the same firmware run
+through the standalone embedded-image artifact decided in
+[ADR-027](../adr/027-standalone-artifact-runtime-integration.md): the ROM image
+and the run's initial state are compiled into the generated C source and the
+artifact attaches the shared Runtime host bridge over the existing
+`--host-transfer` path, so no `artifact-input.txt`/`artifact-image.bin` are
+written and no Studio is involved. It is a delivery change, not a second
+execution path: the accounting, milestones and differential comparison are
+unchanged. It requires `--engine generated-host` (the interpreter backend
+rejects it) and is reported as `standalone:true` so no reader can mistake which
+path produced a number. The BIOS → RAM executable handoff (a pre-generated
+`--load-images` executable the firmware jumps to runs natively) is verified
+against the firmware interpreter.
 
 #### Report schema (generated host)
 

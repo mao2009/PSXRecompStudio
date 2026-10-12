@@ -116,3 +116,8 @@ exit 5; out-of-RAM access with no bridge: exit 96).
   `BiosHleRuntime` (putchar through the A0 vector completes with the TTY byte
   and no input files), and a CLI E2E run of a synthetic PS-X EXE in both
   plain and `--standalone` modes.
+- Phase 2 Step B (Issue #739) reuses this same `embedImage` mode from
+  `openbios-probe --engine generated-host --standalone` to run the OpenBIOS
+  firmware through the standalone artifact; it adds no new execution path and
+  is documented in
+  [`docs/runtime/openbios-firmware-backend.md`](../runtime/openbios-firmware-backend.md).
