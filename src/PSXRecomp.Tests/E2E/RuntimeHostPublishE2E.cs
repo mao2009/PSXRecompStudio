@@ -228,8 +228,12 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         exitCode.Should().Be(RuntimeHostLayout.MissingRuntimeHostExitCode,
             $"Expected exit 78 when runtime host is missing\nstdout: {stdout}\nstderr: {stderr}");
 
-        // Verify stderr contains missing-runtime log
-        stderr.Should().Contain("runtime host not found", "stderr must mention missing runtime host");
+        // Verify stderr contains a missing-runtime diagnostic (platform-dependent message).
+        stderr.Should().Contain(
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                ? "could not start the runtime host"
+                : "runtime host not found",
+            "stderr must mention missing runtime host");
     }
 
     private static void TryKillTree(Process process)
@@ -254,7 +258,9 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed with self-contained: error='{error}', output='{output}'");
 
 #pragma warning disable AARC003 // Test-layer I/O for verification
-        var runtimeHostPath = Path.Join(outputDir, RuntimeHostLayout.HostRelativePath);
+        var runtimeHostPath = Path.Join(
+            outputDir,
+            RuntimeHostLayout.HostRelativePathFor(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
         File.Exists(runtimeHostPath).Should().BeTrue("Runtime host must be provisioned");
 
         // Verify the host is a single self-contained executable
