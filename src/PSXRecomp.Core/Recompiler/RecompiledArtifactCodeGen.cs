@@ -667,6 +667,7 @@ int main(int argc, char** argv) {
 #include <windows.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <wchar.h>
 #define RUNTIME_HOST_BINARY ""PSXRecomp.RuntimeHost.exe""
 #if !defined(PATH_MAX)
