@@ -83,4 +83,13 @@ public sealed class OpenBiosProbeStandaloneTests
         timings["codegenMs"]!.GetValue<double>().Should().BeGreaterThanOrEqualTo(0.0,
             "compilation time must not be netted out of codegen, which would drive codegenMs negative");
     }
+
+    [Theory]
+    [InlineData(25.0, 24000.0, 1.0)] // standalone: the embedded artifact's gcc build is excluded from the run/boundary clock
+    [InlineData(25.0, 0.0, 25.0)] // file-driven: nothing to exclude, so the elapsed time is unchanged
+    [InlineData(0.4, 0.0, 0.4)]
+    public void RunSecondsExcludingBuild_ExcludesTheEmbeddedBuildOnly(double elapsed, double buildOffsetMs, double expected)
+    {
+        OpenBiosProbeCommand.RunSecondsExcludingBuild(elapsed, buildOffsetMs).Should().BeApproximately(expected, 1e-9);
+    }
 }

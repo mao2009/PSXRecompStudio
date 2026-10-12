@@ -318,6 +318,12 @@ internal static class OpenBiosProbeCommand
         try
         {
             var measuredBuild = new MeasuredBuild(new GeneratedHostBuildService(TimeSpan.FromMinutes(3)));
+            // The embedded artifact (Phase 2 Step B) is generated inside RunSegment, so its gcc build is timed inside
+            // this clock's window rather than the construction window compileMs covers. It is known by the time any
+            // fallback boundary fires (the build precedes execution). The offset is subtracted from the reported run
+            // and boundary seconds so they exclude compilation and stay comparable with the build-free reference run;
+            // the file-driven path is a no-op (offset 0).
+            double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
@@ -351,7 +357,7 @@ internal static class OpenBiosProbeCommand
                     if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
                         boundaries[pc] = ProbeGuestState.Capture(interpreter, pc, fetches);
-                        nativeAtBoundary[pc] = new { nativeInstructions = hostEngine?.NativeRetiredInstructions, seconds = clock.Elapsed.TotalSeconds,
+                        nativeAtBoundary[pc] = new { nativeInstructions = hostEngine?.NativeRetiredInstructions, seconds = RunSecondsExcludingBuild(clock.Elapsed.TotalSeconds, BuildOffsetMs()),
                             mmioRoundTrips = hostEngine?.HostRoundTrips?.MmioAccesses, timeReportRoundTrips = hostEngine?.HostRoundTrips?.TimeReports };
                     }
 
@@ -386,8 +392,8 @@ internal static class OpenBiosProbeCommand
             // The embedded-image artifact (Phase 2 Step B) is generated at the first RunSegment, so its gcc build is
             // timed inside runMs rather than the construction window compileMs covers. Attribute it back to codegen/gcc
             // so codegenMs stays non-negative and nativeAndHostMs is not inflated by compilation.
-            var reportedCompileMs = compileMs + (probe.Standalone ? measuredBuild.Milliseconds : 0);
-            var reportedRunMs = runMs - (probe.Standalone ? measuredBuild.Milliseconds : 0);
+            var reportedCompileMs = compileMs + BuildOffsetMs();
+            var reportedRunMs = runMs - BuildOffsetMs();
 
             var lastRam = boundaries.Values.OrderBy(static b => b.AtFetch).LastOrDefault()?.Ram;
             var report = monitor.Evaluate(address => lastRam is null || (address & 0x1FFFFFFFu) > ProbeGuestState.RamBytes - 4
@@ -496,6 +502,14 @@ internal static class OpenBiosProbeCommand
             try { Directory.Delete(directory, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }
+
+    /// <summary>
+    /// Seconds elapsed on the run clock, excluding the embedded artifact's gcc build when it is timed inside the run
+    /// window (Phase 2 Step B). The reported run and boundary seconds both use this so they stay comparable with the
+    /// build-free reference run; the file-driven path passes a zero offset and is unchanged.
+    /// </summary>
+    internal static double RunSecondsExcludingBuild(double elapsedSeconds, double buildOffsetMilliseconds) =>
+        elapsedSeconds - buildOffsetMilliseconds / 1000.0;
 
     /// <summary>Retains explicit comparisons while choosing defaults appropriate for the requested stop.</summary>
     internal static HashSet<uint> RequiredBoundaries(IEnumerable<uint> compareAt, uint? stopAt)
