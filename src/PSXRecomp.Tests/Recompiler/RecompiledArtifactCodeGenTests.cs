@@ -339,14 +339,15 @@ public sealed class RecompiledArtifactCodeGenTests
         // which the standalone builder rewrites to RECOMPILER_REASON_UNSUPPORTED_TRANSFER
         // (value 5, matching RecompilerIrTerminationReason.UnresolvedIndirectFlow)
         // instead of RECOMPILER_REASON_SUCCESS.
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var result = RecompiledArtifactCodeGen.GenerateStandalone(
             dispatch,
             initialGpr,
@@ -382,14 +383,15 @@ public sealed class RecompiledArtifactCodeGenTests
             Skip.If(true, "no C compiler available on this host");
         }
 
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
         Directory.CreateDirectory(tempDir);
         try
@@ -446,14 +448,15 @@ public sealed class RecompiledArtifactCodeGenTests
             Skip.If(true, "no C compiler available on this host");
         }
 
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
         Directory.CreateDirectory(tempDir);
         try
@@ -887,8 +890,9 @@ public sealed class RecompiledArtifactCodeGenTests
         // The host-transfer (non-standalone) path must keep the legacy unknown-PC
         // branch semantics (success when steps > 0) so the standalone rewrite
         // does not leak into ordinary artifacts.
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
         var source = RecompiledArtifactCodeGen.Generate(dispatch).Source!;
@@ -897,7 +901,7 @@ public sealed class RecompiledArtifactCodeGenTests
             "if (steps > 0) { state->termination_reason = RECOMPILER_REASON_SUCCESS; return 0; }");
         // Whereas the standalone path must not.
         var initialGpr = new uint[32];
-        var image = new byte[] { 0x30, 0x00, 0x04, 0x8D };
+        var image = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 };
         var standalone = RecompiledArtifactCodeGen.GenerateStandalone(
             dispatch, initialGpr, 0u, 0u, 0x80001000u, 1000u,
             Array.Empty<(uint Address, uint Value)>(), 0x80001000u, image);
@@ -924,14 +928,15 @@ public sealed class RecompiledArtifactCodeGenTests
             Skip.If(true, "x86_64-w64-mingw32-gcc not available on this host; x64 PE32+ build unverified.");
         }
 
-        var instr = R3000aDecoder.Decode(0x3000048Du); // jal 0x80001234 from 0x80001000
-        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u)]);
+        var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
+        var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
+        var program = MipsToIrLowerer.LowerProgram([(instr, 0x80001000u), (delaySlot, 0x80001004u)]);
         var dispatch = RecompilerHostCodeGen.Generate(program);
         dispatch.Success.Should().BeTrue();
 
         var initialGpr = new uint[32];
         var initialMemory = Array.Empty<(uint Address, uint Value)>();
-        var programImage = new byte[] { 0x30, 0x00, 0x04, 0x8D }; // the jal word, little-endian
+        var programImage = new byte[] { 0x8D, 0x04, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00 }; // jal 0x0C00048D + nop delay slot, little-endian
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
         Directory.CreateDirectory(tempDir);
         try
