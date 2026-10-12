@@ -109,7 +109,9 @@ public sealed class RuntimeHostPublishE2E : IDisposable
 
         exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed: error='{error}', output='{output}'");
 
-        var runtimeHostPath = Path.Join(outputDir, RuntimeHostLayout.HostRelativePath);
+        var runtimeHostPath = Path.Join(
+            outputDir,
+            RuntimeHostLayout.HostRelativePathFor(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
 #pragma warning disable AARC003 // Test-layer I/O for verification
         File.Exists(runtimeHostPath).Should().BeTrue("runtime host must be provisioned");
 
