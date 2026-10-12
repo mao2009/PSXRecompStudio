@@ -56,9 +56,13 @@ public sealed class RecompiledArtifactLauncher
     /// <param name="standalone">
     /// When true, the artifact embeds the program image and this launch's initial state and
     /// attaches the shared Runtime host bridge over the existing --host-transfer path
-    /// (Phase 2, Issue #757): no input files are needed, and the resulting executable is a
-    /// self-contained, Studio-free runnable that reuses the shared Runtime. When false the
-    /// artifact reads its input files exactly as before.
+    /// (Phase 2, Issue #739 — Step A, the Runtime Bridge): no input files are needed, and
+    /// this launcher process supplies the shared managed Runtime host for the run, so
+    /// Studio is not required at runtime. Step A does not bundle that host into the
+    /// distributed executable — direct, host-less launch of the built binary is a later
+    /// #739 completion condition, and without the attaching bridge flag the embedded
+    /// artifact keeps its parentless Phase 1 behavior. When false the artifact reads its
+    /// input files exactly as before.
     /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="program"/> or
     /// <paramref name="input"/> is null.</exception>

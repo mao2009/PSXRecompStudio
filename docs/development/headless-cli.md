@@ -86,8 +86,11 @@ failure (`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`,
 (Phase 2, Issue #739, ADR-027) and attaches the shared Runtime host bridge over the existing
 `--host-transfer` path, so the built executable runs recompiled code against the shared `BiosHleRuntime`
 with no input files and no Studio, while reusing the same engine, device graph and termination
-classification as the file-driven run. The artifact still keeps its parentless Phase 1 behavior when the
-bridge is not attached (e.g. `recompile --standalone` output run by hand).
+classification as the file-driven run — the CLI process supplies the shared managed Runtime host
+(bundling that host into the distributed executable, and direct launch without a host process, are
+later #739 completion conditions; Step A implements only the Runtime Bridge). The artifact still
+keeps its parentless Phase 1 behavior when the bridge is not attached (e.g. `recompile --standalone`
+output run by hand).
 
 ### `doctor`
 
