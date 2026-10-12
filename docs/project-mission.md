@@ -7,7 +7,7 @@ Authority: Project direction (strategic goals, not an implementation or compatib
 
 PSXRecompStudio aims to help original publishers and authorized rights holders bring PlayStation 1-era games back to market on modern platforms, including when their original source code, build tools, or development environments have been lost.
 
-The project develops an open-source binary analysis, static recompilation, and host-runtime foundation. Its long-term goal is to turn legally supplied retail game binaries into **maintainable, verifiable porting inputs**, rather than merely reproduce an emulator's gameplay experience.
+The project develops an open-source binary analysis, static recompilation, and host-runtime foundation. Its long-term goal is to turn legally supplied retail game binaries into **maintainable, verifiable, **developer-editable source code and porting inputs****, rather than merely reproduce an emulator's gameplay experience.
 
 This is a long-term objective, **not a claim that complete commercial-game recompilation or commercially shippable ports work today**.
 
@@ -24,7 +24,23 @@ The intended differentiator is a **porting and maintenance workflow** for author
 - Support reproducible builds, differential verification, diagnostics, and future platform retargeting.
 - Reduce the engineering cost and risk of authorized re-releases, where evidence shows it can.
 
-A generated binary is not equivalent to recovered human-readable source code. Producing maintainable modification surfaces requires additional tooling, symbols/metadata, documentation and validation.
+A generated binary is not equivalent to recovered human-readable source code. **Editable, rebuildable source output that an authorized developer can actually modify is a mandatory long-term capability, not an optional enhancement.** Producing maintainable modification surfaces requires additional tooling, symbols/metadata, documentation and validation.
+
+## Required developer-editable outcome
+
+A successful long-term porting workflow must enable an authorized publisher or developer to:
+
+- Generate source code from a legally supplied game binary that can be inspected, edited, compiled again and maintained without requiring the original lost source or toolchain.
+- Locate the code and data relevant to a game-specific defect or behavior, make a change, and build a modified host executable without modifying PSXRecompStudio itself for each title.
+- Preserve traceability from original MIPS addresses/regions to generated code, including function boundaries, data references, unresolved indirect targets, and identified limitations where available.
+- Run regression and differential tests that distinguish intentional changes from unintended semantic regressions, with reproducible build inputs.
+- Maintain game-specific patches, enhancements and platform adaptations separately from the generic recompilation/runtime core, supporting authorized commercial redistribution after independent rights clearance.
+
+**Editable** does not automatically mean **readable or maintainable**. Progressive recovery of meaningful function names, types, structures and control flow is therefore an important subsequent goal. The project may use AI-assisted analysis and high-level source refinement, but **AI must not be required to edit, rebuild or verify the generated source**. Machine-generated suggestions must be verified; behavioral equivalence must not be assumed.
+
+The architecture may support a correctness-oriented lower-level output alongside an increasingly human-readable output, provided both retain traceability and a verifiable rebuild path. Language choice and exact intermediate representations remain design decisions, not commitments of this mission.
+
+This goal does not require perfect reconstruction of the original game's source code or byte-identical recompilation. It requires practical, documented modification and rebuild workflows with explicit limits.
 
 ## Priorities and decision criteria
 
@@ -32,7 +48,7 @@ A generated binary is not equivalent to recovered human-readable source code. Pr
 2. **Reliable output.** Favor deterministic, reproducible builds and evidence-backed differential checks against reference behavior.
 3. **Commercial adoption readiness.** Keep runtime and generated-artifact licenses and dependency provenance understandable to commercial teams; avoid unlicensed proprietary assets and undocumented redistribution requirements.
 4. **Porting and extensibility.** Design interfaces for game-specific patches, platform services, controller/input, saves and optional modern enhancements without hard-coding a single game into the generic core.
-5. **Maintainability.** Preserve mappings between source binary regions and generated code, diagnostics, and repeatable toolchains.
+5. **Developer editability and maintainability.** Treat source-level modification and rebuildability by rights holders as a required architectural outcome. Preserve mappings between source binary regions and generated code, diagnostics, and repeatable toolchains.
 6. **Measured business value.** Eventually evaluate compatibility, required manual porting effort, QA burden, platform constraints, and ongoing maintenance cost against emulation and other alternatives.
 
 Performance and smaller runtime footprints are welcome outcomes, **not the main project objective**, and require measured comparisons.
@@ -40,8 +56,8 @@ Performance and smaller runtime footprints are welcome outcomes, **not the main 
 ## Milestones (intent, not release commitments)
 
 - **Near term (v0.1):** establish and validate a bounded, honest end-to-end recompilation/execution foundation. Do not market this as complete game portability.
-- **Medium term:** broaden real-title compatibility, generated-code coverage, recompile/patch workflows and host-platform support.
-- **Long term:** provide a licensable, documented, reproducible porting foundation that authorized publishers can evaluate for commercial re-releases.
+- **Medium term:** broaden real-title compatibility, generated-code coverage, editable-source recompile/patch workflows and host-platform support.
+- **Long term:** provide an editable, rebuildable, verifiable and maintainable source-based porting foundation that authorized publishers can use to fix, extend, port and commercially re-release games.
 
 ## Boundaries
 
