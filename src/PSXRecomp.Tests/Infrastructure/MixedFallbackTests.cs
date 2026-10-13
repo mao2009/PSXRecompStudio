@@ -234,10 +234,10 @@ public sealed class MixedFallbackTests
     }
 
     [Theory]
-    [InlineData(0x80001102u, "an unaligned PC")]
-    [InlineData(0x80003000u, "a PC outside the text image")]
-    [InlineData(0x80000300u, "a PC below the text image")]
-    public void IneligibleTargets_FailClosed_AsTheUnresolvedTransferTheyAlwaysWere(uint destination, string why)
+    [InlineData(0x80001102u, "an unaligned PC", MixedFallbackDiagnostics.IneligibleUnaligned)]
+    [InlineData(0x80003000u, "a PC outside the text image", MixedFallbackDiagnostics.IneligibleOutOfImage)]
+    [InlineData(0x80000300u, "a PC below the text image", MixedFallbackDiagnostics.IneligibleOutOfImage)]
+    public void IneligibleTargets_FailClosed_AsTheUnresolvedTransferTheyAlwaysWere(uint destination, string why, string expectedReason)
     {
         var (words, _) = JumpTo(destination);
         using var dir = new TempDirectory();
@@ -248,6 +248,11 @@ public sealed class MixedFallbackTests
         run.Result.DiagnosticCode.Should().Be("UNRESOLVED_TRANSFER");
         run.Result.FinalSnapshot!.PC.Should().Be(destination);
         run.Evidence!.Transitions.Should().Be(0, "nothing was handed to the interpreter");
+        // Issue #763: the host records why the transfer was declined, so the stop is identifiable.
+        run.DeclinedTransfer.Should().NotBeNull();
+        run.DeclinedTransfer!.TargetPc.Should().Be(destination);
+        run.DeclinedTransfer.FallbackAttempted.Should().BeTrue();
+        run.DeclinedTransfer.RejectReason.Should().Be(expectedReason);
     }
 
     [Fact]

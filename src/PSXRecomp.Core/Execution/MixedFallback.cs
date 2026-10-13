@@ -46,6 +46,21 @@ public static class MixedFallbackDiagnostics
 
     /// <summary>The RAM copy-sync failed its integrity check; no side was left half-updated.</summary>
     public const string SyncFailed = "ARTIFACT_FALLBACK_SYNC_FAILED";
+
+    /// <summary>Static eligibility: the transfer target is not a 4-byte-aligned PC (Issue #763).</summary>
+    public const string IneligibleUnaligned = "ARTIFACT_FALLBACK_INELIGIBLE_UNALIGNED";
+
+    /// <summary>Static eligibility: the target is outside the executable image and the run is not guest firmware (Issue #763).</summary>
+    public const string IneligibleOutOfImage = "ARTIFACT_FALLBACK_INELIGIBLE_OUT_OF_IMAGE";
+
+    /// <summary>Static eligibility: the target already has a compiled block, so a fallback must not claim it (Issue #763).</summary>
+    public const string IneligibleHasBlock = "ARTIFACT_FALLBACK_INELIGIBLE_HAS_BLOCK";
+
+    /// <summary>The artifact refused the fallback query (unsupported protocol version) (Issue #763).</summary>
+    public const string IneligibleQueryRefused = "ARTIFACT_FALLBACK_INELIGIBLE_QUERY_REFUSED";
+
+    /// <summary>The transfer did not come from JR/JALR: a statically-known target the build should have compiled (Issue #763).</summary>
+    public const string IneligibleNotIndirect = "ARTIFACT_FALLBACK_INELIGIBLE_NOT_INDIRECT";
 }
 
 /// <summary>
@@ -163,3 +178,15 @@ public static class MixedFallbackAotClass
 /// <param name="FallbackMilliseconds">Time spent executing interpreter segments.</param>
 [Domain]
 public sealed record MixedFallbackTimings(double TransferMilliseconds, double FallbackMilliseconds);
+
+/// <summary>
+/// The last control transfer the host declined to claim (Issue #763): the transfer the artifact then treated as unsupported.
+/// Observation only, captured host-side: it carries the target and whether the mixed-execution fallback was consulted, not
+/// the transfer's source or opcode (those are not on the artifact's wire protocol).
+/// </summary>
+/// <param name="TargetPc">The unresolved PC the artifact offered; the run's stop PC when a decline ends it.</param>
+/// <param name="FallbackAttempted">Whether mixing was enabled and the fallback was asked about this target.</param>
+/// <param name="RejectReason">Why the fallback declined, one of <see cref="MixedFallbackDiagnostics"/>'s "ineligible" codes;
+/// null when mixing was off (not asked) or the fallback stopped the run instead of declining.</param>
+[Domain]
+public sealed record FallbackDeclinedTransfer(uint TargetPc, bool FallbackAttempted, string? RejectReason);

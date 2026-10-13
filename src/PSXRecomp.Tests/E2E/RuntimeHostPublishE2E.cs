@@ -132,6 +132,46 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     }
 
     /// <summary>
+    /// Issue #763: with <c>--diagnostics &lt;path&gt;</c> the runtime host writes the machine-readable stop
+    /// diagnostic and leaves the run's exit code and classification unchanged.
+    /// </summary>
+    [SkippableFact]
+    public void RuntimeHostWritesStopDiagnosticWhenAsked()
+    {
+        RequireGcc();
+
+        var simpleFixtureWords = new uint[]
+        {
+            0x34020042u, // ori v0, $zero, 0x42
+        };
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.BuildExe(simpleFixtureWords));
+
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed: error='{error}', output='{output}'");
+
+        var runtimeHostPath = Path.Join(
+            outputDir,
+            RuntimeHostLayout.HostRelativePathFor(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
+        var manifestPath = Path.Join(outputDir, RuntimeHostLayout.ManifestRelativePath);
+        var diagnosticsPath = Path.Join(outputDir, "stop-diagnostic.json");
+
+        var runResult = RuntimeHostBuildService.RunRuntimeHost(
+            runtimeHostPath, manifestPath, extraArguments: ["--diagnostics", diagnosticsPath]);
+
+        runResult.ExitCode.Should().Be(0, $"Runtime host must complete successfully\nstdout: {runResult.Stdout}\nstderr: {runResult.Stderr}");
+#pragma warning disable AARC003 // Test-layer verification of the diagnostic artifact
+        File.Exists(diagnosticsPath).Should().BeTrue("--diagnostics must write the stop diagnostic");
+        var json = File.ReadAllText(diagnosticsPath);
+#pragma warning restore AARC003
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var root = document.RootElement;
+        root.GetProperty("orchestratorState").GetString().Should().Be("Completed");
+        root.GetProperty("nativeExitCode").GetInt32().Should().Be(0);
+        root.GetProperty("fallbackEnabled").GetBoolean().Should().BeTrue();
+    }
+
+    /// <summary>
     /// The artifact compilation these tests need requires gcc. Where the environment is allowed to lack it the
     /// test is reported as skipped (never a silent pass); on CI (GITHUB_ACTIONS) a missing compiler is a failure.
     /// </summary>

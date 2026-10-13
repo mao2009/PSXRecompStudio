@@ -83,10 +83,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public (ulong MmioAccesses, ulong TimeReports)? HostRoundTrips =>
         _bridge is null ? null : (_bridge.MmioAccesses, _bridge.TimeReports);
 
+    /// <summary>
+    /// The last control transfer the last run's host bridge declined to claim, or null without the bridge (Issue #763).
+    /// </summary>
+    public FallbackDeclinedTransfer? LastDeclinedTransfer => _bridge?.LastDeclinedTransfer;
+
     private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
     public const string ExceptionVectorUnhandledDiagnosticCode = "ARTIFACT_EXCEPTION_VECTOR_UNHANDLED";
+
+    /// <summary>Reported when the runnable artifact exceeds the run timeout (Issue #763 diagnostics).</summary>
+    public const string TimeoutDiagnosticCode = "ARTIFACT_TIMEOUT";
 
     private const int RunTimeoutMs = 30000;
     private const int PumpDrainTimeoutMs = 5000;
@@ -594,7 +602,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         if (timedOut)
         {
             return RecompilerExecutionResult.Failed(
-                RecompilerExecutionStatus.TimedOut, "ARTIFACT_TIMEOUT", "The runnable artifact exceeded its bounded execution timeout.");
+                RecompilerExecutionStatus.TimedOut, TimeoutDiagnosticCode, "The runnable artifact exceeded its bounded execution timeout.");
         }
 
         if (bridge?.MmioFailureCode is { } mmioFailureCode)
@@ -951,6 +959,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public string? DiagnosticCode { get; private set; }
         public string? DiagnosticMessage { get; private set; }
 
+        /// <summary>
+        /// The last control transfer the host declined to claim, with whether the fallback was consulted and why it
+        /// declined (Issue #763). The artifact treats a decline as an unsupported transfer, so this names the transfer
+        /// that ends the run when it stops there.
+        /// </summary>
+        public FallbackDeclinedTransfer? LastDeclinedTransfer { get; private set; }
+
         /// <summary>The R3000A general exception vector, SR.BEV = 0 (RAM) and BEV = 1 (BIOS ROM), docs/cpu/exceptions.md.</summary>
         public const uint GeneralExceptionVectorBev0 = 0x80000080u;
         public const uint GeneralExceptionVectorBev1 = 0xBFC00180u;
@@ -1161,6 +1176,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     }
                 }
 
+                LastDeclinedTransfer = new FallbackDeclinedTransfer(pc, _fallback is not null, _fallback?.RejectReason);
                 Decline();
                 return;
             }
@@ -1246,6 +1262,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                     return;
                 default:
+                    LastDeclinedTransfer = new FallbackDeclinedTransfer(pc, _fallback is not null, _fallback?.RejectReason);
                     Decline();
                     return;
             }
