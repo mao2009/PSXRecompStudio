@@ -442,6 +442,18 @@ not distribution approval.
 `FirmwareGameRoundTripTests` (ROM code → RAM game → ROM routine → game → ROM, COP0/RAM preserved, interpreter parity,
 native vs counted-fallback) and the existing `FirmwareStandaloneHandoffTests`.
 
+**Measured (pinned OpenBIOS build, `--instruction-budget`/timeout bounded, local only).**
+
+| Run | Result |
+|---|---|
+| Synthetic Mode 2 disc, `openbios-probe --standalone --stop-at 0x80010014` | `bootVerified`; 195,060,431 native / 2,338 fallback instructions; 327 transitions |
+| Same disc, packaged, `./synth` launched directly (200M budget) | OpenBIOS loads the synthetic EXE and reaches its `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
+| Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
+
+The Persona gap is the game's own AOT roots (derive them with the existing reachable-program analysis and pass them as
+an `exe`/roots entry instead of the entry-only `boot-exe`) and the mixed-fallback transfer protocol of #764; both
+precede any Persona claim.
+
 **Dependency on PR #764.** The only edit in a file #764 also changes is the three-line hook in
 `PSXRecomp.RuntimeHost/Program.cs`; the engine is not edited (the public constructor is used). After #764 merges,
 `ForPrebuiltArtifact` should gain a `disc` parameter and the launcher switch to it, and a Persona run must be repeated
