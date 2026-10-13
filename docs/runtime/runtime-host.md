@@ -20,8 +20,10 @@ and HLE bridge). By default, the host ships as a framework-dependent deploy
 The host is a standalone console application (`net10.0` target, `OutputType=Exe`)
 that:
 
-1. Accepts a single command-line argument: the path to the `runtime-host.json`
-   manifest.
+1. Accepts the path to the `runtime-host.json` manifest, an optional
+   `--diagnostics <path>` sink (Issue #763: writes the machine-readable stop
+   diagnostic, observation only — it never changes the exit code or the run's
+   output), and `--help`/`-h`.
 2. Parses the manifest (schema version 1), verifying artifact and image paths,
    entry PC, program end, and block entry PCs.
 3. Loads the guest program image from `artifact-image.bin` (sidecar used for

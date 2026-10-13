@@ -405,7 +405,7 @@ default must not change until the real-game gate below passes:
 
 ```bash
 python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
-psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800]
+psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]
 ./persona/persona          # persona.exe on Windows
 ```
 
@@ -420,17 +420,21 @@ reset vector, its own CD driver reads the disc through the Runtime host's `CdRom
 jumps into the game in the same RAM, COP0 and device state. The game's calls back into A0/B0/C0 reach OpenBIOS code
 (native if it has a block, counted interpreter fallback otherwise); no `IBiosRuntime` is attached to a guest firmware.
 Unknown or changed RAM code is the explicit, counted, bounded fallback (ADR-025/026); it is reported, never silent.
+The distribution's AOT compiles the probe's post-shell milestones too: `0x80030000` and `0x80010000` are lowered as
+guarded blocks, never kept interpreted (`FirmwareAotPlan.FixedExceptionObservationPcs`); only OpenBIOS's own exception
+vectors (`0x80000080`, `0x26A4`) stay observed/interpreted, and a guarded game block runs only while RAM holds its
+compiled words.
 
 | Item | Where |
 |---|---|
 | BIOS ROM | user-supplied `--bios-rom`, exactly 512 KiB; copied to `runtime/artifact-image.bin`; SHA-256 re-verified on every run |
 | Disc (CD sector source) | user-supplied, copied to `runtime/disc/disc.{chd,bin}`; SHA-256 re-verified on every run |
-| AOT inputs | `--aot-dir` files copied to `runtime/firmware/`; the host rebuilds the identical `LoadedCodeTable` (analysis only, no code generation) |
-| Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`), selects the firmware run in the shared RuntimeHost |
-| Run settings | `runtime/runtime-host.json` (`guestFirmware:true`, mixed fallback on) |
+| AOT inputs | `--aot-dir` files (`rom.roots`, `images.txt` and every `image`/`exe` reference, resolved fail-closed against the AOT directory) copied to `runtime/firmware/` preserving their layout; per-file SHA-256 pinned in the boot manifest (`aotInputs`, schema 2) and re-verified before every plan rebuild; the host rebuilds the identical `LoadedCodeTable` (analysis only, no code generation) |
+| Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`, schema 2), selects the firmware run in the shared RuntimeHost |
+| Run settings | `runtime/runtime-host.json` (`guestFirmware:true`; mixed fallback on by default — `--mixed-fallback`/`--no-mixed-fallback` with `--fallback-segment-budget`/`--fallback-max-transitions` propagate through the manifest, recorded as 0 budgets when off) |
 
-`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend or manifest path stops the run with exit 78 before anything executes.
-The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts.
+`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes.
+The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts and the final register file, and `RuntimeHost --diagnostics <path>` additionally writes the Issue #763 stop diagnostic (best-effort; the classified exit code is unchanged).
 
 **Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
 commercial game or genuine BIOS is bundled. Redistributing OpenBIOS (even the compiled artifact embeds the ROM) waits
@@ -439,7 +443,14 @@ not distribution approval.
 
 **Tests.** `OpenBiosStandaloneSelectionTests` (selection, manifest, ROM/disc rejection, CLI fail-closed),
 `FirmwareGameRoundTripTests` (ROM code → RAM game → ROM routine → game → ROM, COP0/RAM preserved, interpreter parity,
-native vs counted-fallback) and the existing `FirmwareStandaloneHandoffTests`.
+native vs counted-fallback), `FirmwareAotPlanTests` (the game entry is compiled to a guarded native block whose
+flipped RAM word voids the match; the exception vectors stay observed), `FirmwareAotBundleTests` (input containment,
+copy layout, digest pinning and tamper/missing/escape/link rejection, schema-2 manifest negatives),
+`FirmwareRuntimeLauncherTests`/`FirmwareRuntimeLauncherDiagnosticsTests` (fallback-policy propagation and
+`--diagnostics` honoring) and the packaging E2E `OpenBiosStandalonePackageE2E` (a bootable disc's `boot-exe` runs
+through the Runtime host with zero fallback instructions and ROM → game → ROM register continuity; the explicit
+fallback budgets reach the packaged manifest and the host writes the diagnostics document) plus the existing
+`FirmwareStandaloneHandoffTests`.
 
 **Measured (pinned OpenBIOS build, `--instruction-budget`/timeout bounded, local only).**
 
@@ -459,8 +470,10 @@ code (it is loaded or placed at run time), so the fix is more game AOT images su
 under the generated host. Until then Persona is **not** verified on this path.
 
 **Relation to #764.** #764 (host-resolved indirect resume, the `J` protocol, `--diagnostics`) is merged and this
-branch builds on it. `RuntimeHost` rejects `--diagnostics` for a firmware distribution (its report is the
-`firmware-run` line) rather than ignoring it. `ForPrebuiltArtifact` now takes the `disc`.
+branch builds on it. `RuntimeHost` now honors `--diagnostics` for a firmware distribution as well: the launcher
+writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFailure`, best-effort — the run's
+classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
+as part of the one guest state.
 
 ### Remaining acceptance gates
 
