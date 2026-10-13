@@ -1457,6 +1457,9 @@ static int32_t artifact_host_serve(RecompilerState* state) {
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;
             state->next_pc = (uint32_t)np;
+            /* A host-resolved resume (an HLE BIOS call returning to ra, a fallback return) is the host's register-indirect
+               `jr ra`: the next pc is a runtime target, so the mixed-fallback query must see it as one (Issue #763). */
+            if (t == 0ul) state->indirect_target = (uint32_t)np;
             if (has_v0 != 0ul) state->gpr[PSX_REG_V0] = (uint32_t)v;
             return 0;
         } else if (strcmp(cmd, ""N"") == 0) {

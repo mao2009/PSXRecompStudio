@@ -191,6 +191,23 @@ public sealed class MixedFallbackProtocolTests
     }
 
     [Fact]
+    public void Query_ReportsAHostResolvedResumeAsIndirect_WhenItLandsOnUncompiledCode()
+    {
+        // Issue #763: a host-handled BIOS call returns to ra (the host's own `jr ra`). When ra lies in code the build never
+        // compiled, the artifact offers it again; the fallback must see a runtime target, not a "static" transfer.
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer().Should().Be(Target);
+        QueryHeader(session)[2].Should().Be("1", "the first transfer is the target of the artifact's own JALR");
+
+        var resume = Target + 0x40u;
+        session.Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {resume} 0 0");
+
+        session.AwaitTransfer().Should().Be(resume, "the resume pc has no block, so the artifact offers it");
+        QueryHeader(session)[2].Should().Be("1", "a host-resolved resume is a runtime target like a register-indirect jump");
+    }
+
+    [Fact]
     public void Query_AnUnknownVersionIsRefused_AndChangesNothing()
     {
         using var dir = BuildStoreAndJump();
