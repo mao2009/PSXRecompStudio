@@ -114,10 +114,57 @@ public sealed class FirmwareAotBundleTests
         using var dir = new TempDirectory();
         var aot = WriteAot(dir, "exe prog linked.exe\n");
         var outside = dir.WriteFile("outside.exe", Text("outside"));
+        SymlinkFileOrSkip(Path.Combine(aot, "linked.exe"), outside);
+
+        ((Action)(() => FirmwareAotBundle.Collect(aot))).Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
+    }
+
+    /// <summary>
+    /// Issue #732 review P2: the two base files are inputs like any other, so a linked <c>rom.roots</c> or
+    /// <c>images.txt</c> must be rejected rather than hashed and copied through its target.
+    /// </summary>
+    [SkippableFact]
+    public void Collect_RejectsALinkedRootsFile()
+    {
+        using var dir = new TempDirectory();
+        var aot = WriteAot(dir, "# none\n");
+        var outside = dir.WriteFile("outside.roots", Text("0xBFC00000\n"));
+        var roots = Path.Combine(aot, "rom.roots");
+#pragma warning disable AARC003 // Test-layer I/O to swap the base file for a symlink
+        File.Delete(roots);
+#pragma warning restore AARC003
+        SymlinkFileOrSkip(roots, outside);
+
+        ((Action)(() => FirmwareAotBundle.Collect(aot))).Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
+    }
+
+    [SkippableFact]
+    public void Collect_RejectsALinkedImagesFile()
+    {
+        using var dir = new TempDirectory();
+        var aot = WriteAot(dir, "# none\n");
+        var outside = dir.WriteFile("outside.images", Text("# none\n"));
+        var images = Path.Combine(aot, "images.txt");
+#pragma warning disable AARC003 // Test-layer I/O to swap the base file for a symlink
+        File.Delete(images);
+#pragma warning restore AARC003
+        SymlinkFileOrSkip(images, outside);
+
+        ((Action)(() => FirmwareAotBundle.Collect(aot))).Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
+    }
+
+    [SkippableFact]
+    public void Collect_RejectsALinkedAotRoot()
+    {
+        using var dir = new TempDirectory();
+        var realRoot = dir.CreateSubdirectory("real-aot");
+        dir.WriteFile("real-aot/rom.roots", Text("0xBFC00000\n"));
+        dir.WriteFile("real-aot/images.txt", Text("# none\n"));
+        var linkedRoot = dir.Combine("aot");
 #pragma warning disable AARC003 // Test-layer I/O for a symlink fixture
         try
         {
-            File.CreateSymbolicLink(Path.Combine(aot, "linked.exe"), outside);
+            Directory.CreateSymbolicLink(linkedRoot, realRoot);
         }
         catch (Exception e) when (e is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
         {
@@ -125,7 +172,21 @@ public sealed class FirmwareAotBundleTests
         }
 #pragma warning restore AARC003
 
-        ((Action)(() => FirmwareAotBundle.Collect(aot))).Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
+        ((Action)(() => FirmwareAotBundle.Collect(linkedRoot))).Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
+    }
+
+    private static void SymlinkFileOrSkip(string linkPath, string target)
+    {
+#pragma warning disable AARC003 // Test-layer I/O for a symlink fixture
+        try
+        {
+            File.CreateSymbolicLink(linkPath, target);
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Skip.If(true, $"symbolic links cannot be created in this environment: {e.Message}");
+        }
+#pragma warning restore AARC003
     }
 
     [Fact]

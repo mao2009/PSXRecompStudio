@@ -130,4 +130,23 @@ public sealed class LoadImageManifestTests
         var act = () => LoadImageManifest.Read(path, Firmware(), disc: null);
         act.Should().Throw<InvalidDataException>().WithMessage("*unknown directive*");
     }
+
+    /// <summary>
+    /// Issue #732 review P2: <see cref="LoadImageManifest.ReadRootsFile"/> is the one roots parser shared by the
+    /// manifest's <c>image</c>/<c>exe</c> roots and the firmware AOT plan's <c>rom.roots</c>. It ignores comments
+    /// and blank lines, accepts an optional <c>0x</c> prefix and case-insensitive hex, and rejects invalid lines with
+    /// <see cref="InvalidDataException"/> so no <see cref="FormatException"/> escapes the CLI.
+    /// </summary>
+    [Fact]
+    public void ReadRootsFile_IgnoresCommentsAndBlanks_AndRejectsInvalidLines()
+    {
+        using var dir = new TempDirectory();
+        var roots = dir.WriteFile("rom.roots", Text("# reset\n\n0xBFC00000\nbfc00000  # duplicate\n26a4\n"));
+
+        LoadImageManifest.ReadRootsFile(roots).Should().Equal(0x000026A4u, 0xBFC00000u);
+
+        var invalid = dir.WriteFile("invalid.roots", Text("0xBFC00000\nnonsense\n"));
+        ((Action)(() => LoadImageManifest.ReadRootsFile(invalid)))
+            .Should().Throw<InvalidDataException>().WithMessage("*not a hexadecimal number*");
+    }
 }

@@ -37,14 +37,9 @@ public sealed record FirmwareAotPlan(
     public static FirmwareAotPlan Build(
         OpenBiosFirmware firmware, string rootsFile, uint codeBytes, string loadImagesFile, ICdSectorSource disc)
     {
-        var roots = File.ReadAllLines(rootsFile)
-            .Select(static line => line.Trim())
-            .Where(static line => line.Length != 0)
-            .Select(static line => uint.Parse(
-                line.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? line[2..] : line,
-                System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture))
-            .Distinct()
-            .ToArray();
+        // The shared roots parser (Issue #732 review): comments/blank lines and hex interpretation match the
+        // manifest's own roots files, and an invalid line is an InvalidDataException the CLI classifies.
+        var roots = LoadImageManifest.ReadRootsFile(rootsFile);
         var code = firmware.Words.Take((int)Math.Min(codeBytes / 4, (uint)firmware.Words.Count)).ToArray();
         var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, code, OpenBiosFirmware.ResetVector, roots);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
@@ -122,6 +117,7 @@ public static class FirmwareAotBundle
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(aotDirectory);
         var root = Path.GetFullPath(aotDirectory);
+        RequireRealDirectory(root);
         var roots = Path.Combine(root, RootsFileName);
         var images = Path.Combine(root, ImagesFileName);
         if (!File.Exists(roots) || !File.Exists(images))
@@ -129,6 +125,12 @@ public static class FirmwareAotBundle
             throw new FileNotFoundException(
                 $"The AOT directory must hold {RootsFileName} and {ImagesFileName} (see scripts/openbios/prepare-aot.py): {root}");
         }
+
+        // The two base files are inputs too (Issue #732 review P2): a linked <c>rom.roots</c> or <c>images.txt</c>
+        // would otherwise be hashed and copied through its target while the AOT root's own reparse state is never
+        // inspected.
+        EnsureLinkFree(root, roots, RootsFileName);
+        EnsureLinkFree(root, images, ImagesFileName);
 
         // A dependency is any manifest-referenced file plus the roots and images files themselves. Every one is
         // resolved against the AOT root (the images.txt directory), confined to it and checked for links.
@@ -225,6 +227,23 @@ public static class FirmwareAotBundle
         }
     }
 
+    // The AOT root itself must be a real directory: a linked root would resolve every relative reference outside
+    // the directory the containment checks normalised against, and DirectoryInfo.LinkTarget on the root is not
+    // reached by the per-file walk below.
+    private static void RequireRealDirectory(string root)
+    {
+        var info = new DirectoryInfo(root);
+        if (!info.Exists)
+        {
+            throw new FileNotFoundException($"The AOT directory was not found: {root}");
+        }
+
+        if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidDataException($"The AOT directory must not be a symbolic link or reparse point: {root}");
+        }
+    }
+
     // The file and every directory between the AOT root and it must be real: a linked component could resolve the
     // name to a file outside the directory the containment check normalised against.
     private static void EnsureLinkFree(string root, string full, string what)
@@ -291,105 +310,210 @@ public static class FirmwareDistributionBuilder
 {
     public static string Build(FirmwareDistributionRequest request, bool windows)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // P1 (Issue #732 review): validate and freeze every input before any code generation, compiler run or
+        // output write. The ROM bytes are read and hashed; the AOT inputs are enumerated, confined, link-checked
+        // and hashed; then the AOT inputs and the disc are copied into a staging directory and the plan is derived
+        // from those frozen copies. The compiled code and the distributed data are therefore the same snapshot,
+        // and a failure at any step leaves no partial distribution and never touches a pre-existing output.
         var (rom, romHash) = OpenBiosRomInput.Read(request.RomPath, request.ExpectedRomSha256);
         var firmware = OpenBiosFirmware.FromBytes(rom);
         var outputDir = Path.GetFullPath(request.OutputDirectory);
         var aotDir = Path.GetFullPath(request.AotDirectory);
-        var rootsSource = Path.Combine(aotDir, "rom.roots");
-        var imagesSource = Path.Combine(aotDir, "images.txt");
-        if (!File.Exists(rootsSource) || !File.Exists(imagesSource))
-        {
-            throw new FileNotFoundException($"The AOT directory must hold rom.roots and images.txt (see scripts/openbios/prepare-aot.py): {aotDir}");
-        }
-
-        using var disc = DiscSectorSourceOpener.Open(request.DiscPath);
-        var plan = FirmwareAotPlan.Build(firmware, rootsSource, request.CodeBytes, imagesSource, disc.Source);
-
-        var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode);
-        if (!dispatch.Success)
-        {
-            throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
-        }
 
         var artifactName = Path.GetFileName(outputDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (string.IsNullOrEmpty(artifactName))
+        {
+            throw new InvalidDataException($"The output directory has no name to derive the artifact from: {outputDir}");
+        }
+
         var binaryName = artifactName + (windows ? ".exe" : "");
-        var source = RecompiledArtifactCodeGen.GenerateStandalone(
-            dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
-            OpenBiosFirmware.ResetVector, rom, hostBridge: true,
-            directLaunchHostRelativePath: RuntimeHostLayout.HostRelativePath);
-        if (!source.Success)
-        {
-            throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
-        }
 
-        // The ROM + RAM-image dispatch is large; the probe allows the same bounded three minutes per compiler step.
-        var build = new GeneratedHostBuildService(TimeSpan.FromMinutes(3)).Build(
-            new GeneratedHostBuildRequest(source.Source!, outputDir, binaryName));
-        if (build.Status != GeneratedHostBuildStatus.Succeeded)
-        {
-            throw new InvalidOperationException($"Artifact build failed ({build.Status}). {build.DiagnosticMessage}");
-        }
+        // Collect (which enforces containment, existence and link-freedom) before anything is created.
+        var (_, aotSourceFiles) = FirmwareAotBundle.Collect(aotDir);
 
-        var runtimeDir = Path.Combine(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
+        var staging = StagingDirectoryFor(outputDir, artifactName);
         try
         {
-            RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, request.SelfContained);
+            Directory.CreateDirectory(staging);
+            var stagingRuntimeDir = Path.Combine(staging, RuntimeHostLayout.RuntimeDirectoryName);
+
+            // Freeze the AOT inputs under staging and pin the copies (Collect on the staged layout), so the
+            // digests recorded in the boot manifest describe exactly the files this distribution ships.
+            var stagingFirmwareDir = Directory.CreateDirectory(
+                Path.Combine(stagingRuntimeDir, FirmwareBootManifest.FirmwareDirectory));
+            FirmwareAotBundle.CopyInto(aotSourceFiles, stagingFirmwareDir.FullName);
+            var (aotInputs, _) = FirmwareAotBundle.Collect(stagingFirmwareDir.FullName);
+
+            // Freeze the disc the same way: build the plan against the staged copy, and hash that copy.
+            var discLeaf = Path.GetExtension(request.DiscPath).Equals(".chd", StringComparison.OrdinalIgnoreCase) ? "disc.chd" : "disc.bin";
+            var stagingDiscDir = Directory.CreateDirectory(
+                Path.Combine(stagingRuntimeDir, FirmwareBootManifest.DiscDirectory));
+            var stagedDisc = Path.Combine(stagingDiscDir.FullName, discLeaf);
+            File.Copy(request.DiscPath, stagedDisc, overwrite: true);
+            var discHash = OpenBiosRomInput.Sha256HexOfFile(stagedDisc);
+
+            FirmwareAotPlan plan;
+            using (var disc = DiscSectorSourceOpener.Open(stagedDisc))
+            {
+                plan = FirmwareAotPlan.Build(
+                    firmware,
+                    Path.Combine(stagingFirmwareDir.FullName, FirmwareAotBundle.RootsFileName),
+                    request.CodeBytes,
+                    Path.Combine(stagingFirmwareDir.FullName, FirmwareAotBundle.ImagesFileName),
+                    disc.Source);
+            }
+
+            var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode);
+            if (!dispatch.Success)
+            {
+                throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
+            }
+
+            var source = RecompiledArtifactCodeGen.GenerateStandalone(
+                dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
+                OpenBiosFirmware.ResetVector, rom, hostBridge: true,
+                directLaunchHostRelativePath: RuntimeHostLayout.HostRelativePath);
+            if (!source.Success)
+            {
+                throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
+            }
+
+            // The ROM + RAM-image dispatch is large; the probe allows the same bounded three minutes per compiler step.
+            var build = new GeneratedHostBuildService(TimeSpan.FromMinutes(3)).Build(
+                new GeneratedHostBuildRequest(source.Source!, staging, binaryName));
+            if (build.Status != GeneratedHostBuildStatus.Succeeded)
+            {
+                throw new InvalidOperationException($"Artifact build failed ({build.Status}). {build.DiagnosticMessage}");
+            }
+
+            try
+            {
+                RuntimeHostBuildService.ProvisionRuntimeHost(stagingRuntimeDir, request.SelfContained);
+            }
+            catch (RuntimeHostBuildService.RuntimeHostProvisionFailed exception)
+            {
+                throw new InvalidOperationException(exception.Message, exception);
+            }
+
+            // Sidecars. The ROM is the program image the host's interpreter fallback and device RAM read.
+            File.WriteAllBytes(Path.Combine(stagingRuntimeDir, RuntimeHostLayout.ImageFileName), rom);
+
+            var boot = new FirmwareBootManifest(
+                FirmwareBootManifest.CurrentSchemaVersion,
+                BiosBackendSelection.NameOf(BiosBackendKind.OpenBios),
+                romHash,
+                request.CodeBytes,
+                $"{FirmwareBootManifest.FirmwareDirectory}/{FirmwareAotBundle.RootsFileName}",
+                $"{FirmwareBootManifest.FirmwareDirectory}/{FirmwareAotBundle.ImagesFileName}",
+                $"{FirmwareBootManifest.DiscDirectory}/{discLeaf}",
+                discHash,
+                aotInputs);
+            var bootText = FirmwareBootManifestJson.Serialize(boot);
+            _ = FirmwareBootManifestJson.Parse(bootText);
+            File.WriteAllText(Path.Combine(stagingRuntimeDir, FirmwareBootManifest.FileName), bootText);
+
+            // Block entry PCs are the artifact's static (ROM) blocks only: RAM-placed versions are selected by their
+            // guard, and the fallback relies on a loaded PC NOT being listed (ArtifactFallbackSession).
+            var blockEntryPcs = plan.Program.Blocks.Select(static b => b.EntryPc).Order().Distinct().ToArray();
+            var host = new RuntimeHostManifest(
+                RuntimeHostManifest.CurrentSchemaVersion,
+                RuntimeHostLayout.ManifestRelativeArtifactPath(artifactName, windows),
+                GuestFirmware: true,
+                MixedFallback: request.MixedFallback,
+                FallbackSegmentInstructionBudget: request.MixedFallback ? request.FallbackSegmentInstructionBudget : 0u,
+                FallbackMaxTransitions: request.MixedFallback ? request.FallbackMaxTransitions : 0u,
+                ImageLoadAddress: OpenBiosFirmware.ResetVector,
+                Image: RuntimeHostLayout.ImageFileName,
+                BlockEntryPcs: blockEntryPcs,
+                ProgramEnd: OpenBiosFirmware.ResetVector + (uint)OpenBiosFirmware.ImageSize,
+                ResultRegister: null,
+                RunTimeoutMs: request.RunTimeoutMs,
+                EntryPc: OpenBiosFirmware.ResetVector);
+            var hostText = RuntimeHostManifestJson.Serialize(host);
+            _ = RuntimeHostManifestJson.Parse(hostText);
+            File.WriteAllText(Path.Combine(stagingRuntimeDir, RuntimeHostLayout.ManifestFileName), hostText);
+
+            File.WriteAllText(Path.Combine(staging, RuntimeHostLayout.ReadmeFileName), Readme(binaryName));
+
+            // Only a fully built distribution is committed into place.
+            CommitStaging(staging, outputDir);
+            return Path.Combine(outputDir, Path.GetFileName(build.Artifact!.BinaryPath));
         }
-        catch (RuntimeHostBuildService.RuntimeHostProvisionFailed exception)
+        catch
         {
-            throw new InvalidOperationException(exception.Message, exception);
+            TryDeleteDirectory(staging);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Creates a sibling staging directory on the same volume as <paramref name="outputDir"/>, so the final
+    /// commit is a directory rename rather than a cross-volume copy.
+    /// </summary>
+    private static string StagingDirectoryFor(string outputDir, string artifactName)
+    {
+        var parent = Path.GetDirectoryName(outputDir);
+        if (string.IsNullOrEmpty(parent))
+        {
+            throw new InvalidDataException($"The output directory has no parent directory: {outputDir}");
         }
 
-        // AOT inputs (P1-3): contain, hash and copy every file the loaded-code build reads, preserving the
-        // manifest-relative layout under runtime/firmware/ so images.txt's relative references resolve there.
-        var (aotInputs, aotFiles) = FirmwareAotBundle.Collect(aotDir);
+        Directory.CreateDirectory(parent);
+        return Path.Combine(parent, $".{artifactName}.staging-{Guid.NewGuid():N}");
+    }
 
-        // Sidecars. The ROM is the program image the host's interpreter fallback and device RAM read.
-        File.WriteAllBytes(Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName), rom);
-        var firmwareDir = Directory.CreateDirectory(Path.Combine(runtimeDir, FirmwareBootManifest.FirmwareDirectory));
-        FirmwareAotBundle.CopyInto(aotFiles, firmwareDir.FullName);
+    /// <summary>
+    /// Swaps a fully built <paramref name="staging"/> directory into <paramref name="outputDir"/>. A pre-existing
+    /// output is moved aside first and restored if the swap fails, so a failed build never destroys a good
+    /// previous distribution.
+    /// </summary>
+    private static void CommitStaging(string staging, string outputDir)
+    {
+        string? backup = null;
+        if (Directory.Exists(outputDir))
+        {
+            backup = outputDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + ".backup-" + Guid.NewGuid().ToString("N");
+            Directory.Move(outputDir, backup);
+        }
 
-        var discLeaf = Path.GetExtension(request.DiscPath).Equals(".chd", StringComparison.OrdinalIgnoreCase) ? "disc.chd" : "disc.bin";
-        var discDir = Directory.CreateDirectory(Path.Combine(runtimeDir, FirmwareBootManifest.DiscDirectory));
-        File.Copy(request.DiscPath, Path.Combine(discDir.FullName, discLeaf), overwrite: true);
+        try
+        {
+            Directory.Move(staging, outputDir);
+        }
+        catch
+        {
+            if (backup is not null && !Directory.Exists(outputDir))
+            {
+                Directory.Move(backup, outputDir);
+            }
 
-        var boot = new FirmwareBootManifest(
-            FirmwareBootManifest.CurrentSchemaVersion,
-            BiosBackendSelection.NameOf(BiosBackendKind.OpenBios),
-            romHash,
-            request.CodeBytes,
-            $"{FirmwareBootManifest.FirmwareDirectory}/rom.roots",
-            $"{FirmwareBootManifest.FirmwareDirectory}/images.txt",
-            $"{FirmwareBootManifest.DiscDirectory}/{discLeaf}",
-            OpenBiosRomInput.Sha256HexOfFile(request.DiscPath),
-            aotInputs);
-        var bootText = FirmwareBootManifestJson.Serialize(boot);
-        _ = FirmwareBootManifestJson.Parse(bootText);
-        File.WriteAllText(Path.Combine(runtimeDir, FirmwareBootManifest.FileName), bootText);
+            throw;
+        }
 
-        // Block entry PCs are the artifact's static (ROM) blocks only: RAM-placed versions are selected by their
-        // guard, and the fallback relies on a loaded PC NOT being listed (ArtifactFallbackSession).
-        var blockEntryPcs = plan.Program.Blocks.Select(static b => b.EntryPc).Order().Distinct().ToArray();
-        var host = new RuntimeHostManifest(
-            RuntimeHostManifest.CurrentSchemaVersion,
-            RuntimeHostLayout.ManifestRelativeArtifactPath(artifactName, windows),
-            GuestFirmware: true,
-            MixedFallback: request.MixedFallback,
-            FallbackSegmentInstructionBudget: request.MixedFallback ? request.FallbackSegmentInstructionBudget : 0u,
-            FallbackMaxTransitions: request.MixedFallback ? request.FallbackMaxTransitions : 0u,
-            ImageLoadAddress: OpenBiosFirmware.ResetVector,
-            Image: RuntimeHostLayout.ImageFileName,
-            BlockEntryPcs: blockEntryPcs,
-            ProgramEnd: OpenBiosFirmware.ResetVector + (uint)OpenBiosFirmware.ImageSize,
-            ResultRegister: null,
-            RunTimeoutMs: request.RunTimeoutMs,
-            EntryPc: OpenBiosFirmware.ResetVector);
-        var hostText = RuntimeHostManifestJson.Serialize(host);
-        _ = RuntimeHostManifestJson.Parse(hostText);
-        File.WriteAllText(Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName), hostText);
+        TryDeleteDirectory(backup);
+    }
 
-        File.WriteAllText(Path.Combine(outputDir, RuntimeHostLayout.ReadmeFileName), Readme(binaryName));
-        return build.Artifact!.BinaryPath;
+    // Best-effort cleanup: a leftover staging/backup directory must never mask the build's real result.
+    private static void TryDeleteDirectory(string? directory)
+    {
+        if (directory is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     private static string Readme(string binaryName) => string.Join('\n',

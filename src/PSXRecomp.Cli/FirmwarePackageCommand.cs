@@ -53,7 +53,7 @@ internal static class FirmwarePackageCommand
         }
         catch (Exception ex) when (
             ex is BiosBackendNotImplementedException or ArgumentException or IOException or UnauthorizedAccessException
-                or InvalidDataException or InvalidOperationException)
+                or InvalidDataException or InvalidOperationException or FormatException)
         {
             standardError.WriteLine($"psxrecomp package: {ex.Message}");
             return 1;
