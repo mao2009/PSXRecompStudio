@@ -166,6 +166,31 @@ public sealed class OpenBiosStandaloneSelectionTests
         error.ToString().Should().Contain("only valid for 'package'");
     }
 
+    /// <summary>
+    /// Issue #732 review P2: a malformed AOT <c>rom.roots</c> must be a stable, classified tooling failure (exit 1
+    /// with a diagnostic), never an unhandled <see cref="FormatException"/>, and it must not leave a partial
+    /// distribution or a staging directory behind.
+    /// </summary>
+    [Fact]
+    public void Cli_PackageWithMalformedRoots_FailsWithExitOne_AndLeavesNoPartialOutput()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("rom.bin", new byte[OpenBiosFirmware.ImageSize]);
+        var disc = dir.WriteFile("d.bin", new byte[2352]);
+        var aot = dir.CreateSubdirectory("aot");
+        dir.WriteFile("aot/rom.roots", System.Text.Encoding.ASCII.GetBytes("not-hex\n"));
+        dir.WriteFile("aot/images.txt", System.Text.Encoding.ASCII.GetBytes("# none\n"));
+        var output = dir.Combine("out");
+
+        var (exit, error) = Package(
+            disc, "--bios", "openbios", "--bios-rom", rom, "--aot-dir", aot, "--output", output);
+
+        exit.Should().Be(1, "a malformed roots file is a classified tooling failure: " + error);
+        error.Should().Contain("not a hexadecimal number");
+        Directory.Exists(output).Should().BeFalse("no partial distribution is committed");
+        Directory.GetDirectories(dir.FullPath, ".out.staging-*").Should().BeEmpty("no staging directory is left behind");
+    }
+
     [Fact]
     public void Launcher_RefusesATamperedRomOrDisc_BeforeRunningAnything()
     {

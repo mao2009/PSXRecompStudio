@@ -89,4 +89,48 @@ public sealed class FirmwareAotPlanTests
         ram[0] ^= 0xFFFF_FFFFu; // the guest overwrote the entry word: the compiled version is stale
         plan.LoadedCode.Match(GameEntry, Read).Should().BeNull("a stale version must never run over different RAM code");
     }
+
+    /// <summary>
+    /// Issue #732 review P2: the distribution's <c>rom.roots</c> reader must be the manifest's own roots parser, so
+    /// comments, blank lines and an optional <c>0x</c> prefix are accepted, and a malformed line is an
+    /// <see cref="InvalidDataException"/> the CLI classifies rather than a <see cref="FormatException"/> that
+    /// escapes it.
+    /// </summary>
+    [Fact]
+    public void RootsFile_AcceptsCommentsBlankLinesAndHexPrefix()
+    {
+        using var dir = new TempDirectory();
+        var rom = SyntheticRom();
+        dir.WriteFile("rom.bin", rom);
+        dir.WriteFile("aot/rom.roots", Text("# reset vector\n\n0xBFC00000  # the reset PC\n"));
+        dir.WriteFile("aot/images.txt", Text("# no images\n"));
+
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom),
+            dir.Combine("aot", "rom.roots"),
+            codeBytes: 64,
+            dir.Combine("aot", "images.txt"),
+            new RawCdSectorSource(new byte[2352]));
+
+        plan.Program.Blocks.Should().NotBeEmpty("the commented roots file still roots the ROM at the reset vector");
+    }
+
+    [Fact]
+    public void RootsFile_RejectsAnInvalidLineAsInvalidData()
+    {
+        using var dir = new TempDirectory();
+        var rom = SyntheticRom();
+        dir.WriteFile("rom.bin", rom);
+        dir.WriteFile("aot/rom.roots", Text("0xBFC00000\nnot-hex\n"));
+        dir.WriteFile("aot/images.txt", Text("# no images\n"));
+
+        var act = () => FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom),
+            dir.Combine("aot", "rom.roots"),
+            codeBytes: 64,
+            dir.Combine("aot", "images.txt"),
+            new RawCdSectorSource(new byte[2352]));
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*hexadecimal*");
+    }
 }

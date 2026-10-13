@@ -244,9 +244,24 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     private static string Resolve(string path, string? baseDirectory) =>
         Path.IsPathRooted(path) || baseDirectory is null ? path : Path.Combine(baseDirectory, path);
 
+    /// <summary>
+    /// Reads a roots file: one hexadecimal PC per line, with blank lines and <c>#</c> comments ignored, an
+    /// optional <c>0x</c> prefix accepted and invalid lines rejected with <see cref="InvalidDataException"/>.
+    /// Shared by the manifest's <c>image</c>/<c>exe</c> roots files and the firmware AOT plan's <c>rom.roots</c>,
+    /// so the two readers accept exactly the same syntax (Issue #732 review: no <see cref="FormatException"/> may
+    /// escape a malformed roots file).
+    /// </summary>
+    public static uint[] ReadRootsFile(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return ParseRoots(File.ReadAllLines(path));
+    }
+
     private static uint[] ReadRoots(string path, string? baseDirectory) =>
-        File.ReadAllLines(Resolve(path, baseDirectory))
-            .Select(static line => line.Split('#')[0].Trim())
+        ParseRoots(File.ReadAllLines(Resolve(path, baseDirectory)));
+
+    private static uint[] ParseRoots(IEnumerable<string> lines) =>
+        lines.Select(static line => line.Split('#')[0].Trim())
             .Where(static line => line.Length != 0)
             .Select(ParseUint)
             .Distinct()
