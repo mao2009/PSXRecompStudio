@@ -97,7 +97,14 @@ public sealed record RuntimeHostDiagnostic(
         ArgumentNullException.ThrowIfNull(execution);
 
         var finalPc = execution.FinalSnapshot?.PC;
-        var transferTargetPc = declinedTransfer?.TargetPc
+        // A declined end marker (for example pc 0) may be followed by Completed.
+        // Attribute a decline only to the terminal unsupported transfer it actually describes.
+        var relevantDecline = execution.State == TitleExecutionState.UnsupportedTransfer
+            && declinedTransfer is { } candidate
+            && candidate.TargetPc == finalPc
+                ? declinedTransfer
+                : null;
+        var transferTargetPc = relevantDecline?.TargetPc
             ?? (execution.State == TitleExecutionState.UnsupportedTransfer ? finalPc : null);
 
         return new RuntimeHostDiagnostic(
@@ -113,9 +120,9 @@ public sealed record RuntimeHostDiagnostic(
                 ? t >= manifest.ImageLoadAddress && t < manifest.ProgramEnd
                 : null,
             FallbackEnabled: manifest.MixedFallback,
-            FallbackAttempted: declinedTransfer?.FallbackAttempted,
-            FallbackOutcome: declinedTransfer is not null ? IneligibleOutcome : null,
-            FallbackRejectReason: declinedTransfer?.RejectReason,
+            FallbackAttempted: relevantDecline?.FallbackAttempted,
+            FallbackOutcome: relevantDecline is not null ? IneligibleOutcome : null,
+            FallbackRejectReason: relevantDecline?.RejectReason,
             AotRetiredInstructions: aotRetiredInstructions,
             FallbackRetiredInstructions: fallbackRetiredInstructions,
             FallbackTransitionCount: fallbackTransitionCount,
