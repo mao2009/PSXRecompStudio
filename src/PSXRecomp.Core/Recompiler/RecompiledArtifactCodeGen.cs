@@ -760,7 +760,7 @@ int main(int argc, char** argv) {
         }
         wchar_t cmd_line[PATH_MAX * 2 + 16];
         /* Quote both paths to handle spaces and special characters safely. */
-        int cmd_len = swprintf(cmd_line, PATH_MAX * 2 + 16, L""\""%s\"" \""%s\"""", host_w, manifest_w);
+        int cmd_len = swprintf(cmd_line, PATH_MAX * 2 + 16, L""\""%ls\"" \""%ls\"""", host_w, manifest_w);
         if (cmd_len < 0) {
             fprintf(stderr, ""error: cannot build command line\n"");
             return MissingRuntimeHostExitCode;

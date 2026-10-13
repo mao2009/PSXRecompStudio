@@ -31,19 +31,22 @@ that:
    - **Guest firmware mode:** If `manifest.GuestFirmware` is true (detected by
      load address 0x1FC00000), the bridge is not attached; the artifact runs
      natively with no HLE service.
-   - **HLE mode:** If `manifest.GuestFirmware` is false (or `manifest.MixedFallback`
-     is true), the `BiosHleRuntime` bridge is attached; BIOS service calls and
-     mixed fallback transfers are serviced through the device graph.
+   - **HLE mode:** If `manifest.GuestFirmware` is false, the `BiosHleRuntime`
+     bridge is attached; BIOS service calls and mixed fallback transfers are
+     serviced through the device graph.
+   - **Mixed fallback** (`manifest.MixedFallback`) is honored in both modes.
 5. Passes `ProgramEndHandoff(manifest.ProgramEnd)` to the execution orchestrator
    for natural program end detection.
 6. Collects console output and forwards it to stdout (for native runs) or TTY
    through the sink (for HLE-routed runs).
 7. Returns an exit code:
    - **0:** Successful completion
-   - **1:** Tooling failure (invalid input, parsing error, host setup failure, bad argument count)
+   - **1:** Tooling failure (no arguments or `--help`)
    - **2:** Explicit runtime stop (guest-initiated termination during the run)
-   - **78:** Missing manifest, missing manifest directory, missing bundled
-     Runtime host binary, or bad argument count (launcher exit code; host itself does not return 78).
+   - **78:** The host could not be set up: wrong argument count, missing
+     manifest or manifest directory, invalid manifest, or a failure while
+     building the runtime. The native launcher also returns 78 when it cannot
+     locate or start the host binary (see [Exit Code 78 Contract](#exit-code-78-contract)).
 
 ### Manifest Contract
 
@@ -174,9 +177,10 @@ psxrecomp package <input.exe|input.chd> --output <dir> ... [--self-contained] [-
 
 ### Exit Code 78 Contract
 
-Exit code 78 is **not returned by the Runtime host itself** — it is returned by
-the **native launcher** when it cannot locate or start the bundled Runtime host.
-The host returns 0, 1, or 2 for its own internal errors.
+Exit code 78 means "the packaged runtime cannot be set up". The **native
+launcher** returns it when it cannot locate or start the bundled Runtime host;
+the **Runtime host** returns it when its own manifest, image or runtime setup
+fails. Once a run starts, the host returns 0, 1, or 2 for the classified result.
 
 The launcher performs these checks before returning 78:
 
@@ -239,5 +243,5 @@ Step C fixtures added:
 
 - [ADR-027: Standalone artifact — shared Runtime integration](../adr/027-standalone-artifact-runtime-integration.md)
 - [ADR-014: BIOS HLE runtime contract](../adr/014-bios-hle-runtime-contract.md)
-- [ADR-025: IR observable effect semantics](../adr/025-ir-observable-effect-semantics.md)
+- [ADR-020: IR observable effect semantics](../adr/020-ir-observable-effect-semantics.md)
 - [Issue #739: Standalone artifact generation and distributed Runtime provision](https://github.com/mao2009/PSXRecompStudio/issues/739)

@@ -238,6 +238,68 @@ public sealed class RuntimeHostPublishE2E : IDisposable
             "stderr must mention missing runtime host");
     }
 
+    /// <summary>
+    /// Verify the shipped path end to end: the packaged artifact, launched from a
+    /// copy of the distribution in a directory whose name contains a space,
+    /// delegates to the bundled Runtime host and propagates its success exit code.
+    /// </summary>
+    [Fact]
+    public async Task PackagedArtifactLaunchesFromCopiedDistributionDirectory()
+    {
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.BuildExe(new uint[] { 0x34020042u }));
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed: error='{error}', output='{output}'");
+
+#pragma warning disable AARC003 // Test-layer I/O: relocate the distribution to prove it has no dependency on its build location
+        var copiedDir = _tempDir.CreateSubdirectory("copied dist");
+        CopyDirectory(outputDir, copiedDir);
+        var artifact = Path.Combine(copiedDir, "test-game" + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ".exe" : ""));
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            File.SetUnixFileMode(artifact, File.GetUnixFileMode(artifact) | UnixFileMode.UserExecute);
+        }
+
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = artifact,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        })!;
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(60000))
+        {
+            TryKillTree(process);
+            throw new TimeoutException("Packaged artifact launch timed out");
+        }
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        var exitCode = process.ExitCode;
+#pragma warning restore AARC003
+
+        exitCode.Should().Be(0, $"launcher must propagate the host's success\nstdout: {stdout}\nstderr: {stderr}");
+        stderr.Should().Contain("classified as Success", "the run must have gone through the bundled Runtime host");
+    }
+
+#pragma warning disable AARC003 // Test-layer I/O helper
+    private static void CopyDirectory(string source, string destination)
+    {
+        foreach (var dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
+        }
+
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), true);
+        }
+    }
+#pragma warning restore AARC003
+
     private static void TryKillTree(Process process)
     {
 #pragma warning disable AARC003 // Process control is Infrastructure responsibility; this test helper cleans up test processes
