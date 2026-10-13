@@ -267,20 +267,17 @@ public static class FirmwareRuntimeLauncher
                 Path.Combine(runtimeDirectory, boot.LoadImagesFile),
                 disc.Source);
 
-            using var engine = new RecompiledHostExecutionEngine(
-                program: new RecompilerIrProgram([]),
-                imageWords: firmware.Words,
-                imageLoadAddress: host.ImageLoadAddress,
-                buildService: null!,
-                outputDirectory: "",
+            using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+                artifactPath,
+                host.BlockEntryPcs.ToHashSet(),
                 guestFirmware: true,
                 mixedFallback: new MixedFallbackOptions(host.FallbackSegmentInstructionBudget, host.FallbackMaxTransitions),
                 runTimeout: TimeSpan.FromMilliseconds(host.RunTimeoutMs),
-                disc: disc.Source,
                 loadedCode: plan.LoadedCode,
-                blockEntryPcs: host.BlockEntryPcs.ToHashSet(),
-                prebuiltArtifactPath: artifactPath,
-                launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost);
+                imageWords: firmware.Words,
+                imageLoadAddress: host.ImageLoadAddress,
+                launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost,
+                disc: disc.Source);
 
             var result = new ExecutionOrchestrator().Execute(
                 engine,

@@ -104,6 +104,12 @@ public static class Program
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
+                if (diagnosticsPath is not null)
+                {
+                    Console.Error.WriteLine("runtime host: --diagnostics is not supported for firmware distributions.");
+                    return 78;
+                }
+
                 return FirmwareRuntimeLauncher.Run(manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error);
             }
 

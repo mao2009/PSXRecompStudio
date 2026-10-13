@@ -429,8 +429,7 @@ Unknown or changed RAM code is the explicit, counted, bounded fallback (ADR-025/
 | Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`), selects the firmware run in the shared RuntimeHost |
 | Run settings | `runtime/runtime-host.json` (`guestFirmware:true`, mixed fallback on) |
 
-`FirmwareRuntimeLauncher` builds the engine through the engine's public prebuilt constructor with the disc and the
-loaded-code table; a tampered ROM, disc, backend or manifest path stops the run with exit 78 before anything executes.
+`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend or manifest path stops the run with exit 78 before anything executes.
 The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts.
 
 **Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
@@ -454,10 +453,9 @@ The Persona gap is the game's own AOT roots (derive them with the existing reach
 an `exe`/roots entry instead of the entry-only `boot-exe`) and the mixed-fallback transfer protocol of #764; both
 precede any Persona claim.
 
-**Dependency on PR #764.** The only edit in a file #764 also changes is the three-line hook in
-`PSXRecomp.RuntimeHost/Program.cs`; the engine is not edited (the public constructor is used). After #764 merges,
-`ForPrebuiltArtifact` should gain a `disc` parameter and the launcher switch to it, and a Persona run must be repeated
-on the merged main (the mixed-fallback `J`/host-resolved-resume protocol is part of #764).
+**Relation to #764.** #764 (host-resolved indirect resume, the `J` protocol, `--diagnostics`) is merged and this
+branch builds on it. `RuntimeHost` rejects `--diagnostics` for a firmware distribution (its report is the
+`firmware-run` line) rather than ignoring it. `ForPrebuiltArtifact` now takes the `disc`.
 
 ### Remaining acceptance gates
 

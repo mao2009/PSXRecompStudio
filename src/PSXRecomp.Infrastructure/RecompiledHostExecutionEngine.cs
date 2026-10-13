@@ -398,6 +398,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// keeps the default (empty); used by the bridge when it is attached.
     /// </param>
     /// <param name="imageLoadAddress">Guest address where <paramref name="imageWords"/> load; used by the bridge when attached.</param>
+    /// <param name="disc">The disc in the CD-ROM drive (a guest firmware reads it through the shared device graph); null is an empty drive.</param>
     public static RecompiledHostExecutionEngine ForPrebuiltArtifact(
         string prebuiltArtifactPath,
         IReadOnlySet<uint> blockEntryPcs,
@@ -408,7 +409,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         LoadedCodeTable? loadedCode = null,
         IReadOnlyList<uint>? imageWords = null,
         uint? imageLoadAddress = null,
-        PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer)
+        PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer,
+        ICdSectorSource? disc = null)
     {
         if (string.IsNullOrWhiteSpace(prebuiltArtifactPath))
         {
@@ -457,6 +459,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             biosRuntimeFactory: biosRuntimeFactory,
             guestFirmware: guestFirmware,
             runTimeout: runTimeout,
+            disc: disc,
             loadedCode: loadedCode,
             blockEntryPcs: blockEntryPcs,
             prebuiltArtifactPath: prebuiltArtifactPath,
