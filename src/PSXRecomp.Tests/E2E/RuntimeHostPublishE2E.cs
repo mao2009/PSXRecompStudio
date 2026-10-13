@@ -138,7 +138,7 @@ public sealed class RuntimeHostPublishE2E : IDisposable
 #pragma warning disable AARC003 // Test-layer probe of the host toolchain: CI must fail, not skip, without it
     private static readonly Lazy<bool> GccAvailable = new(ProbeGcc);
 
-    private static void RequireGcc()
+    internal static void RequireGcc()
     {
         var available = GccAvailable.Value;
         if (!available && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")

@@ -160,6 +160,8 @@ The `psxrecomp package` command orchestrates the provisioning and layout:
 
 ```
 psxrecomp package <input.exe|input.chd> --output <dir> ... [--self-contained] [--json]
+# OpenBIOS-booted variant (real BIOS ROM + disc in one guest state; see openbios-firmware-backend.md):
+psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir>
 ```
 
 **Arguments:**
