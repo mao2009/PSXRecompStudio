@@ -83,10 +83,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public (ulong MmioAccesses, ulong TimeReports)? HostRoundTrips =>
         _bridge is null ? null : (_bridge.MmioAccesses, _bridge.TimeReports);
 
+    /// <summary>
+    /// The last control transfer the last run's host bridge declined to claim, or null without the bridge (Issue #763).
+    /// </summary>
+    public FallbackDeclinedTransfer? LastDeclinedTransfer => _bridge?.LastDeclinedTransfer;
+
     private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
     public const string ExceptionVectorUnhandledDiagnosticCode = "ARTIFACT_EXCEPTION_VECTOR_UNHANDLED";
+
+    /// <summary>Reported when the runnable artifact exceeds the run timeout (Issue #763 diagnostics).</summary>
+    public const string TimeoutDiagnosticCode = "ARTIFACT_TIMEOUT";
 
     private const int RunTimeoutMs = 30000;
     private const int PumpDrainTimeoutMs = 5000;
@@ -594,7 +602,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         if (timedOut)
         {
             return RecompilerExecutionResult.Failed(
-                RecompilerExecutionStatus.TimedOut, "ARTIFACT_TIMEOUT", "The runnable artifact exceeded its bounded execution timeout.");
+                RecompilerExecutionStatus.TimedOut, TimeoutDiagnosticCode, "The runnable artifact exceeded its bounded execution timeout.");
         }
 
         if (bridge?.MmioFailureCode is { } mmioFailureCode)
@@ -951,6 +959,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public string? DiagnosticCode { get; private set; }
         public string? DiagnosticMessage { get; private set; }
 
+        /// <summary>
+        /// The last control transfer the host declined to claim, with whether the fallback was consulted and why it
+        /// declined (Issue #763). The artifact treats a decline as an unsupported transfer, so this names the transfer
+        /// that ends the run when it stops there.
+        /// </summary>
+        public FallbackDeclinedTransfer? LastDeclinedTransfer { get; private set; }
+
         /// <summary>The R3000A general exception vector, SR.BEV = 0 (RAM) and BEV = 1 (BIOS ROM), docs/cpu/exceptions.md.</summary>
         public const uint GeneralExceptionVectorBev0 = 0x80000080u;
         public const uint GeneralExceptionVectorBev1 = 0xBFC00180u;
@@ -1161,6 +1176,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     }
                 }
 
+                LastDeclinedTransfer = new FallbackDeclinedTransfer(pc, _fallback is not null, _fallback?.RejectReason);
                 Decline();
                 return;
             }
@@ -1228,10 +1244,33 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 ApplyCpuState(gpr, cpuState);
             }
 
-            Send(string.Create(
-                CultureInfo.InvariantCulture,
-                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
-                $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"));
+            // Issue #763: only the plain HLE return (NextPc == $ra) is the host's own `jr ra`, a runtime-discovered target.
+            // A patched jump-table target and a replaced CPU state (B0:17) keep their fail-closed provenance.
+            SendResume(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
+                    $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"),
+                indirect: !outcome.IsPatchedTarget && outcome.CpuState is null);
+        }
+
+        /// <summary>
+        /// Sends a successful resume decision. An <paramref name="indirect"/> one is the host's own register-indirect jump
+        /// (a plain HLE <c>jr ra</c>, or the kernel exception handler's <c>jr k0</c>): it is marked with <c>J</c>. The artifact
+        /// accepts nothing between J and its decision, so the time credit (which <see cref="Send"/> would put before the
+        /// decision) goes first and J and the decision are then written back to back (Issue #763).
+        /// </summary>
+        private void SendResume(string decision, bool indirect)
+        {
+            if (!indirect)
+            {
+                Send(decision);
+                return;
+            }
+
+            if (_scheduler is not null) SendTimeCredit();
+            WriteLine(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+            WriteLine(decision);
         }
 
         private void HandleFirmwareTransfer(uint pc, uint[] gpr)
@@ -1246,6 +1285,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                     return;
                 default:
+                    LastDeclinedTransfer = new FallbackDeclinedTransfer(pc, _fallback is not null, _fallback?.RejectReason);
                     Decline();
                     return;
             }
@@ -1307,9 +1347,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             ApplyCpuState(gpr, outcome.CpuState);
 
-            Send(string.Create(
-                CultureInfo.InvariantCulture,
-                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"));
+            // The handler's return to EPC is the real kernel's `jr k0; rfe`: a runtime-resolved target, so the fallback may take it.
+            SendResume(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"),
+                indirect: true);
         }
 
         /// <summary>
@@ -1652,8 +1695,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         {
             if (_scheduler is not null && (line == RecompiledArtifactCodeGen.ProtocolDeclineReply || line.StartsWith(RecompiledArtifactCodeGen.ProtocolDecisionPrefix, StringComparison.Ordinal)))
                 SendTimeCredit();
-            (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
+            WriteLine(line);
         }
+
+        private void WriteLine(string line) =>
+            (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
 
         private static uint ParseUInt(string value) => uint.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
 
