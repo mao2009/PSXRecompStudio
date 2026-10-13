@@ -209,7 +209,7 @@ public static class FirmwareDistributionBuilder
     private static string Readme(string binaryName) => string.Join('\n',
         "# Standalone OpenBIOS game distribution",
         "",
-        $"Launch: {binaryName} (Windows: {binaryName}.exe is the same file name with the extension).",
+        $"Launch: {binaryName}",
         "",
         "The native artifact is the OpenBIOS ROM compiled ahead of time. OpenBIOS runs its real MIPS code and loads the",
         "game from runtime/disc/ through its own CD driver; BIOS calls are never answered by the host.",
