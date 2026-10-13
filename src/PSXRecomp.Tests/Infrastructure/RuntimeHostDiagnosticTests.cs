@@ -95,6 +95,54 @@ public sealed class RuntimeHostDiagnosticTests
     }
 
     [Fact]
+    public void CompletedAfterDeclinedEndMarker_DoesNotReportAnIneligibleTransfer()
+    {
+        // The program-end handoff may complete after the artifact offered and the host declined PC 0.
+        // That decline is not an UnsupportedTransfer stop and must not pollute the completed-run JSON.
+        var completed = Stop(0u, null, RecompilerIrTerminationReason.Success)
+            with { State = TitleExecutionState.Completed };
+        var diagnostic = RuntimeHostDiagnostic.From(
+            Manifest([Load]),
+            completed,
+            exitCode: 0,
+            aotRetiredInstructions: 10,
+            fallbackRetiredInstructions: 2,
+            fallbackTransitionCount: 1,
+            declinedTransfer: new FallbackDeclinedTransfer(0u, true, MixedFallbackDiagnostics.IneligibleOutOfImage));
+
+        diagnostic.FinalPc.Should().Be(0u);
+        diagnostic.OrchestratorState.Should().Be(nameof(TitleExecutionState.Completed));
+        diagnostic.TransferTargetPc.Should().BeNull();
+        diagnostic.TargetInsideImage.Should().BeNull();
+        diagnostic.TargetHasCompiledBlock.Should().BeNull();
+        diagnostic.FallbackAttempted.Should().BeNull();
+        diagnostic.FallbackOutcome.Should().BeNull();
+        diagnostic.FallbackRejectReason.Should().BeNull();
+        diagnostic.AotRetiredInstructions.Should().Be(10);
+        diagnostic.FallbackRetiredInstructions.Should().Be(2);
+    }
+
+    [Fact]
+    public void UnsupportedTransfer_WithStaleDecline_UsesFinalPcWithoutInventingRejectReason()
+    {
+        const uint stoppedPc = 0x800256E0u;
+        var diagnostic = RuntimeHostDiagnostic.From(
+            Manifest([Load]),
+            Stop(stoppedPc, "UNRESOLVED_TRANSFER_IN_IMAGE", RecompilerIrTerminationReason.Success),
+            exitCode: 2,
+            aotRetiredInstructions: 123,
+            fallbackRetiredInstructions: 5,
+            fallbackTransitionCount: 1,
+            declinedTransfer: new FallbackDeclinedTransfer(0x80020000u, true, MixedFallbackDiagnostics.IneligibleNotIndirect));
+
+        diagnostic.TransferTargetPc.Should().Be(stoppedPc);
+        diagnostic.TargetInsideImage.Should().BeTrue();
+        diagnostic.FallbackAttempted.Should().BeNull();
+        diagnostic.FallbackOutcome.Should().BeNull();
+        diagnostic.FallbackRejectReason.Should().BeNull();
+    }
+
+    [Fact]
     public void Timeout_IsFlagged()
     {
         var diagnostic = RuntimeHostDiagnostic.From(
