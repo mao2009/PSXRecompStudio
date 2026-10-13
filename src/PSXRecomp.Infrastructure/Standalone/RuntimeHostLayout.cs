@@ -79,4 +79,101 @@ public static class RuntimeHostLayout
     /// <summary>The host path relative to the distribution root for the given platform.</summary>
     public static string HostRelativePathFor(bool windows) =>
         RuntimeDirectoryName + "/" + HostFileName(windows);
+
+    private const string ArtifactPrefix = "../";
+
+    private static readonly string[] ReservedDeviceNames =
+        ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+
+    /// <summary>
+    /// Syntactic rule for a manifest's <c>Artifact</c>: exactly <c>../&lt;leaf&gt;</c> with forward slashes, the
+    /// form <see cref="ManifestRelativeArtifactPath"/> writes. No backslash, drive, UNC, device or further
+    /// <c>..</c> component can be expressed, whatever the host OS's path grammar. Throws <see cref="InvalidDataException"/>.
+    /// </summary>
+    public static void ValidateManifestArtifactPath(string? artifact)
+    {
+        if (artifact is null || !artifact.StartsWith(ArtifactPrefix, StringComparison.Ordinal)
+            || !IsPlainLeafName(artifact[ArtifactPrefix.Length..]))
+        {
+            throw new InvalidDataException(
+                $"The manifest's artifact path must be '{ArtifactPrefix}<file name>' (one level above runtime/); got '{artifact}'.");
+        }
+    }
+
+    /// <summary>Syntactic rule for a manifest's <c>Image</c>: exactly <see cref="ImageFileName"/>. Throws <see cref="InvalidDataException"/>.</summary>
+    public static void ValidateManifestImagePath(string? image)
+    {
+        if (!string.Equals(image, ImageFileName, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"The manifest's image path must be '{ImageFileName}'; got '{image}'.");
+        }
+    }
+
+    /// <summary>
+    /// Resolves the artifact the manifest names and confirms it is a regular file sitting directly in the
+    /// distribution root (the parent of <paramref name="manifestDirectory"/>).
+    /// </summary>
+    public static string ResolveArtifactPath(string manifestDirectory, string artifact)
+    {
+        ValidateManifestArtifactPath(artifact);
+        var runtimeDirectory = Path.GetFullPath(manifestDirectory);
+        var root = Path.GetDirectoryName(runtimeDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            ?? throw new InvalidDataException("The manifest directory has no parent distribution root.");
+        return ConfineRegularFile(Path.GetFullPath(Path.Combine(runtimeDirectory, artifact)), root, "artifact");
+    }
+
+    /// <summary>Resolves the image the manifest names and confirms it is a regular file directly inside the manifest's directory.</summary>
+    public static string ResolveImagePath(string manifestDirectory, string image)
+    {
+        ValidateManifestImagePath(image);
+        var runtimeDirectory = Path.GetFullPath(manifestDirectory);
+        return ConfineRegularFile(Path.GetFullPath(Path.Combine(runtimeDirectory, image)), runtimeDirectory, "image");
+    }
+
+    // Policy: the named file must exist directly in `container` (parent compared as whole normalised paths,
+    // never by string prefix) and must not itself be a symbolic link / reparse point, so a link planted at
+    // the artifact or image name cannot lead out of the distribution. Directories above the distribution are
+    // not inspected (a relocated or symlinked install is legitimate). A swap between this check and the
+    // later open/launch (TOCTOU) is not prevented: the distribution directory is trusted to be unwritable
+    // by an attacker, the manifest is not.
+    private static string ConfineRegularFile(string fullPath, string container, string what)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var parent = Path.GetDirectoryName(fullPath);
+        if (parent is null || !string.Equals(
+                parent.TrimEnd(Path.DirectorySeparatorChar), container.TrimEnd(Path.DirectorySeparatorChar), comparison))
+        {
+            throw new InvalidDataException($"The manifest's {what} path resolves outside its permitted directory.");
+        }
+
+        var info = new FileInfo(fullPath);
+        if (!info.Exists)
+        {
+            throw new InvalidDataException($"The manifest's {what} file was not found: {fullPath}");
+        }
+
+        if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidDataException($"The manifest's {what} file must not be a symbolic link or reparse point.");
+        }
+
+        return fullPath;
+    }
+
+    private static bool IsPlainLeafName(string name)
+    {
+        if (name.Length == 0 || name is "." or ".." || name.EndsWith(' ') || name.EndsWith('.'))
+        {
+            return false;
+        }
+
+        if (name.Any(c => c < ' ' || c is '/' or '\\' or ':' or '*' or '?' or '"' or '<' or '>' or '|'))
+        {
+            return false;
+        }
+
+        var stem = name.Split('.')[0].TrimEnd();
+        return !ReservedDeviceNames.Contains(stem, StringComparer.OrdinalIgnoreCase);
+    }
 }

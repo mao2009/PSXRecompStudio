@@ -128,6 +128,84 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     }
 
     /// <summary>
+    /// The artifact compilation these tests need requires gcc. Where the environment is allowed to lack it the
+    /// test is reported as skipped (never a silent pass); on CI (GITHUB_ACTIONS) a missing compiler is a failure.
+    /// </summary>
+#pragma warning disable AARC003 // Test-layer probe of the host toolchain: CI must fail, not skip, without it
+    private static void RequireGcc()
+    {
+        var available = false;
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("gcc", "--version")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            })!;
+            // Drain the pipes so a chatty compiler cannot block on a full buffer, then bound the wait.
+            process.StandardOutput.ReadToEndAsync();
+            process.StandardError.ReadToEndAsync();
+            if (process.WaitForExit(10_000))
+            {
+                available = process.ExitCode == 0;
+            }
+            else
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            // gcc is not on PATH.
+        }
+
+        if (!available && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+        {
+            throw new Xunit.Sdk.XunitException("gcc is required on CI to compile the artifact but could not be run.");
+        }
+
+        Skip.IfNot(available, "gcc is not available; the generated artifact cannot be compiled here.");
+    }
+#pragma warning restore AARC003
+
+    /// <summary>
+    /// Fail closed on a tampered manifest: an artifact path that escapes the distribution is rejected by the
+    /// Runtime host (exit 78, validation message) before any process is started.
+    /// </summary>
+    [SkippableFact]
+    public void RuntimeHostRejectsTamperedManifestWithoutLaunchingAnything()
+    {
+        RequireGcc();
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.GuestFirmwareOpenbios.Generate());
+        var outputDir = _tempDir.CreateSubdirectory("test game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc);
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package must succeed: error='{error}', output='{output}'");
+
+        var runtimeHostPath = Path.Join(
+            outputDir,
+            RuntimeHostLayout.HostRelativePathFor(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
+        var manifestPath = Path.Join(outputDir, RuntimeHostLayout.ManifestRelativePath);
+#pragma warning disable AARC003 // Test-layer I/O for tampering with the manifest
+        var original = File.ReadAllText(manifestPath);
+        var artifact = RuntimeHostManifestJson.Parse(original).Artifact;
+        original.Should().Contain(artifact);
+
+        foreach (var tampered in new[] { "../../escaped", "/etc/escaped", "C:/escaped.exe", @"..\..\escaped.exe" })
+        {
+            File.WriteAllText(manifestPath, original.Replace(
+                JsonSerializer.Serialize(artifact), JsonSerializer.Serialize(tampered)));
+
+            var result = RuntimeHostBuildService.RunRuntimeHost(runtimeHostPath, manifestPath);
+
+            result.ExitCode.Should().Be(78, $"'{tampered}': {result.Stderr}");
+            result.Stderr.Should().Contain("artifact path", $"'{tampered}' must be rejected by manifest validation, not by a failed launch");
+        }
+#pragma warning restore AARC003
+    }
+
+    /// <summary>
     /// Verify that the Runtime host path resolution (Linux/Windows) is correct.
     /// </summary>
     [Fact]
@@ -148,30 +226,10 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// Verify that the packaged artifact correctly returns exit code 78 when the runtime host is missing.
     /// The native launcher checks for the host at runtime; if missing it exits 78.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void NativeLauncherReturnsExit78WhenRuntimeHostMissing()
     {
-        // Skip if gcc is not available (required for artifact compilation)
-        var gccCheck = new ProcessStartInfo("gcc", "--version")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        try
-        {
-            using var gccProcess = Process.Start(gccCheck)!;
-            gccProcess.WaitForExit(5000);
-            if (gccProcess.ExitCode != 0)
-            {
-                return; // Skip test
-            }
-        }
-        catch
-        {
-            return; // Skip test
-        }
+        RequireGcc();
 
         // Package the distribution with RuntimeHost provisioned initially
         var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.GuestFirmwareOpenbios.Generate());

@@ -111,10 +111,8 @@ public static class RuntimeHostManifestJson
                 $"Unsupported runtime host manifest schema {manifest.SchemaVersion}; this host understands {RuntimeHostManifest.CurrentSchemaVersion}.");
         }
 
-        if (string.IsNullOrWhiteSpace(manifest.Artifact) || Path.IsPathRooted(manifest.Artifact))
-        {
-            throw new InvalidDataException("The manifest's artifact path must be a non-empty relative path.");
-        }
+        RuntimeHostLayout.ValidateManifestArtifactPath(manifest.Artifact);
+        RuntimeHostLayout.ValidateManifestImagePath(manifest.Image);
 
         if (manifest.BlockEntryPcs is not null)
         {
@@ -157,9 +155,8 @@ public static class RuntimeHostManifestJson
             throw new InvalidDataException("Mixed fallback requires positive segment and transition budgets.");
         }
 
-        // Sanity check: a runtime host is launched by a packaged distribution and the
-        // paths in the manifest must be reachable from the manifest's own directory.
-        // The manifest itself carries no absolute paths, so these are checked at
-        // runtime rather than at parse time.
+        // Path syntax is checked above; that the named files exist and stay inside the
+        // distribution is checked at run time by RuntimeHostLayout.ResolveArtifactPath /
+        // ResolveImagePath, because only the host knows where the manifest was found.
     }
 }

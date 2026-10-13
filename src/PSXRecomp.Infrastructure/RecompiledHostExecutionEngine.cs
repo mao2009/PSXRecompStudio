@@ -53,8 +53,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// How a prebuilt artifact (see <see cref="ForPrebuiltArtifact"/>) is launched
     /// by the runtime host. <see cref="HostTransfer"/> relaunches the artifact with
     /// <c>--host-transfer</c> and pumps the shared host-transfer bridge;
-    /// <see cref="RuntimeHost"/> relaunches it with <c>--runtime-host</c>, running
-    /// it standalone with no bridge (native firmware / openBIOS).
+    /// <see cref="RuntimeHost"/> relaunches it with <c>--runtime-host</c> (no launcher
+    /// re-delegation, no BIOS HLE Runtime: native firmware / openBIOS). Guest firmware still
+    /// gets the device-MMIO bridge, so its launch also carries <c>--host-transfer</c>.
     /// </summary>
     public enum PrebuiltArtifactLaunchMode
     {
@@ -380,7 +381,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// How the prebuilt artifact is launched: <c>HostTransfer</c> relaunches it
     /// with <c>--host-transfer</c> and pumps the shared host-transfer bridge
     /// (HLE games); <c>RuntimeHost</c> relaunches it with <c>--runtime-host</c>,
-    /// running it standalone with no bridge (native firmware / openBIOS).
+    /// without the BIOS HLE Runtime (native firmware / openBIOS); guest firmware still gets the
+    /// device-MMIO bridge, so that launch also passes <c>--host-transfer</c>.
     /// </param>
     /// <param name="imageWords">
     /// The program image words for the host-transfer bridge / interpreter fallback

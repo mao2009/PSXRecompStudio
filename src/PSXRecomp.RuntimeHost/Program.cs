@@ -72,10 +72,14 @@ public static class Program
                 return 78;
             }
 
+            // Resolve and confine both manifest paths before anything is read or launched
+            // (fail closed: an out-of-distribution or linked path never reaches Process.Start).
+            var prebuiltArtifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
+            var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
+
             // Read the program image for the host-transfer bridge / interpreter fallback
             // (for a prebuilt artifact this is the same image the artifact embeds).
-            var imageBytes = File.ReadAllBytes(Path.GetFullPath(
-                Path.Combine(manifestDirectory, manifest.Image)));
+            var imageBytes = File.ReadAllBytes(imagePath);
 
             var imageWords = new uint[imageBytes.Length / 4];
             for (var i = 0; i < imageWords.Length; i++)
@@ -83,10 +87,6 @@ public static class Program
                 imageWords[i] = BinaryPrimitives.ReadUInt32LittleEndian(
                     imageBytes.AsSpan(i * 4));
             }
-
-            // Resolve the prebuilt artifact path relative to the manifest directory.
-            var prebuiltArtifactPath = Path.GetFullPath(
-                Path.Combine(manifestDirectory, manifest.Artifact));
 
             // Choose the launch mode:
             // - Guest firmware (OpenBIOS) runs natively with no BIOS HLE Runtime (the

@@ -29,8 +29,13 @@ that:
 4. Uses `RecompiledHostExecutionEngine.ForPrebuiltArtifact` to execute the
    guest over the shared Runtime:
    - **Guest firmware mode:** If `manifest.GuestFirmware` is true (detected by
-     load address 0x1FC00000), the bridge is not attached; the artifact runs
-     natively with no HLE service.
+     load address 0x1FC00000), no BIOS HLE Runtime is attached, but the
+     device-MMIO `HostTransferBridge` is. The artifact is launched with
+     `--runtime-host` (stops the launcher re-delegating to the host),
+     `--host-transfer` (attaches the MMIO bridge; without it a guest MMIO
+     access exits 96), `--exact-device-time` (device-time sync) and
+     `--guest-exceptions` (the firmware owns its exception vectors). Mixed
+     fallback follows the manifest's `mixedFallback` setting.
    - **HLE mode:** If `manifest.GuestFirmware` is false, the `BiosHleRuntime`
      bridge is attached; BIOS service calls and mixed fallback transfers are
      serviced through the device graph.
