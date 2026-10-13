@@ -1371,6 +1371,9 @@ static int32_t artifact_host_serve(RecompilerState* state) {
         char cmd[8];
         unsigned long a, v, t, np, has_v0;
         if (scanf(""%7s"", cmd) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+        /* `J` marks only the decision that immediately follows it: any other command between them (a second J, N, a
+           query, a write, ...) is a protocol violation, so the mark can never reach a later or unrelated transfer. */
+        if (host_indirect_resume && strcmp(cmd, ""D"") != 0) exit(@EXIT_RETIRED_PROTOCOL@);
         if (strcmp(cmd, ""T"") == 0) {
             unsigned long long credit;
             if (time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);

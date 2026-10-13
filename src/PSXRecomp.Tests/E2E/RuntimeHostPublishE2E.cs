@@ -175,6 +175,77 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     // lui t0,0x8000 / ori t0,t0,0x3000 / jr t0 / nop: a register-indirect jump outside the image.
     private static readonly uint[] JumpOutOfImage = [0x3C088000u, 0x35083000u, 0x01000008u, 0u];
 
+    private const string BlockingStubSource = """
+        #include <stdio.h>
+        #include <string.h>
+        #include <unistd.h>
+        int main(int argc, char** argv) {
+          char path[4096]; FILE* f;
+          if (argc < 1 || strlen(argv[0]) + 5 > sizeof path) return 2;
+          strcpy(path, argv[0]); strcat(path, ".pid");
+          f = fopen(path, "w"); if (!f) return 3; fprintf(f, "%d", (int)getpid()); fclose(f);
+          for (;;) { if (getchar() == EOF) sleep(1); }
+        }
+        """;
+
+    /// <summary>Compiles the blocking stub over the packaged artifact (same path, so the manifest stays valid); returns its pid file.</summary>
+    private static string ReplaceArtifactWithBlockingStub(string manifestPath, string distDir)
+    {
+#pragma warning disable AARC003 // Test-layer synthetic fixture: a process that never terminates on its own
+        // The manifest's artifact path is relative to the manifest's own (runtime/) directory.
+        var artifact = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(manifestPath)!, RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath)).Artifact));
+        var source = Path.Join(distDir, "blocking-stub.c");
+        File.WriteAllText(source, BlockingStubSource);
+        File.Delete(artifact);
+        using var gcc = Process.Start(new ProcessStartInfo("gcc", ["-O0", "-o", artifact, source])
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })!;
+        var gccOut = gcc.StandardError.ReadToEndAsync();
+        gcc.StandardOutput.ReadToEndAsync();
+        if (!gcc.WaitForExit(60_000))
+        {
+            TryKillTree(gcc);
+            throw new TimeoutException("gcc did not finish compiling the blocking stub");
+        }
+
+        gcc.ExitCode.Should().Be(0, gccOut.Result);
+        File.Delete(source);
+        return artifact + ".pid";
+#pragma warning restore AARC003
+    }
+
+    /// <summary>The timed-out stub must have been killed by the host: its pid is gone (polled, bounded) once the host returned.</summary>
+    private static void AssertStubReaped(string pidFile)
+    {
+#pragma warning disable AARC003 // Test-layer process inspection
+        File.Exists(pidFile).Should().BeTrue("the stub must have been started by the host");
+        var pid = int.Parse(File.ReadAllText(pidFile), System.Globalization.CultureInfo.InvariantCulture);
+        var gone = false;
+        for (var i = 0; i < 50 && !gone; i++)
+        {
+            try
+            {
+                using var stub = Process.GetProcessById(pid);
+                if (stub.HasExited) gone = true;
+                else Thread.Sleep(100);
+            }
+            catch (ArgumentException)
+            {
+                gone = true;
+            }
+        }
+
+        gone.Should().BeTrue("the timed-out artifact child must be terminated and collected");
+#pragma warning restore AARC003
+    }
+
+    private static readonly TimeSpan HostOuterTimeout = TimeSpan.FromSeconds(60);
+
     /// <summary>Packages <paramref name="words"/> and returns the host and manifest paths (the run timeout optionally overridden).</summary>
     private (string Host, string Manifest, string Dir) PackageProgram(uint[] words, int? runTimeoutMs = null)
     {
@@ -215,12 +286,18 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     public void TimedOutRunWithoutSnapshot_KeepsItsExitCode_AndWritesADiagnosticWithUnknownValuesNull()
     {
         RequireGcc();
-        // The 1 ms bound expires before the artifact process can even start.
-        var (host, manifest, dir) = PackageProgram([0x34020042u], runTimeoutMs: 1);
+        // The packaged artifact is replaced by a stub that records its pid and then blocks on stdin forever, so the
+        // bound can only expire (no guest program, however fast the machine, finishes or exhausts its budget first).
+        // The generous outer wait only guards against a hung host.
+        var (host, manifest, dir) = PackageProgram([0x34020042u], runTimeoutMs: 2000);
+        var pidFile = ReplaceArtifactWithBlockingStub(manifest, dir);
         var diagnosticsPath = Path.Join(dir, "timeout-diagnostic.json");
 
-        var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, extraArguments: ["--diagnostics", diagnosticsPath]);
-        var withoutDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest);
+        var withoutDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout);
+#pragma warning disable AARC003 // Test-layer check that a run without --diagnostics writes no JSON
+        Directory.GetFiles(dir, "*diagnostic*.json").Should().BeEmpty("diagnostics off writes no JSON");
+#pragma warning restore AARC003
+        var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout, ["--diagnostics", diagnosticsPath]);
 
         withDiagnostics.ExitCode.Should().Be(RecompiledArtifactExitCode.Failure, $"stderr: {withDiagnostics.Stderr}");
         withDiagnostics.Stderr.Should().Contain("guest pc unknown").And.NotContain("NullReferenceException");
@@ -232,6 +309,9 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         root.GetProperty("finalPc").ValueKind.Should().Be(JsonValueKind.Null, "a run with no snapshot has no known pc");
         root.GetProperty("transferTargetPc").ValueKind.Should().Be(JsonValueKind.Null);
         root.GetProperty("classifiedExitCode").GetInt32().Should().Be(RecompiledArtifactExitCode.Failure);
+        AssertStubReaped(pidFile);
+        root.GetProperty("orchestratorState").GetString().Should().Be("RuntimeFailure");
+        root.GetProperty("orchestratorDiagnosticCode").GetString().Should().Be("ARTIFACT_TIMEOUT");
     }
 
     /// <summary>Issue #763: an UnsupportedTransfer with a snapshot is diagnosed; the exit code matches the diagnostics-off run.</summary>

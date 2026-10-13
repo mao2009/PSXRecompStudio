@@ -402,6 +402,52 @@ public sealed class MixedFallbackProtocolTests
         session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
     }
 
+    [Theory]
+    [InlineData("J", "a second mark before any decision")]
+    [InlineData("N", "a decline between the mark and the decision")]
+    [InlineData("F 1", "a fallback query between the mark and the decision")]
+    [InlineData("R 0", "a RAM read between the mark and the decision")]
+    [InlineData("Y", "a page request between the mark and the decision")]
+    public void IndirectResumeMark_FollowedByAnythingButADecision_IsFatal(string command, string why)
+    {
+        // Issue #763: J applies to the single D that follows it; anything else in between is a protocol violation.
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.SendExpectingDeath(command);
+
+        session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode, why);
+    }
+
+    [Fact]
+    public void IndirectResumeMark_ThenEof_IsFatal_NeverWaitsForever()
+    {
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+
+        session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
+    }
+
+    [Fact]
+    public void IndirectResumeMark_ThenAFailedDecision_DoesNotMarkAnythingIndirect()
+    {
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+
+        // The failure ends the run as an ordinary termination, not as a protocol error, and offers no further transfer.
+        session.WaitForFatalExit().Should().NotBe(RecompiledArtifactCodeGen.RetiredProtocolExitCode)
+            .And.NotBe(int.MinValue, "the artifact ends by itself");
+    }
+
     [Fact]
     public void StagedPages_MustAscend_ADuplicateOrDescendingIndexIsFatal()
     {

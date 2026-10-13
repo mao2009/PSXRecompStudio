@@ -1246,15 +1246,31 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             // Issue #763: only the plain HLE return (NextPc == $ra) is the host's own `jr ra`, a runtime-discovered target.
             // A patched jump-table target and a replaced CPU state (B0:17) keep their fail-closed provenance.
-            if (!outcome.IsPatchedTarget && outcome.CpuState is null)
+            SendResume(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
+                    $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"),
+                indirect: !outcome.IsPatchedTarget && outcome.CpuState is null);
+        }
+
+        /// <summary>
+        /// Sends a successful resume decision. An <paramref name="indirect"/> one is the host's own register-indirect jump
+        /// (a plain HLE <c>jr ra</c>, or the kernel exception handler's <c>jr k0</c>): it is marked with <c>J</c>. The artifact
+        /// accepts nothing between J and its decision, so the time credit (which <see cref="Send"/> would put before the
+        /// decision) goes first and J and the decision are then written back to back (Issue #763).
+        /// </summary>
+        private void SendResume(string decision, bool indirect)
+        {
+            if (!indirect)
             {
-                Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+                Send(decision);
+                return;
             }
 
-            Send(string.Create(
-                CultureInfo.InvariantCulture,
-                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +
-                $"{(outcome.ReturnValue is null ? 0 : 1)} {outcome.ReturnValue ?? 0}"));
+            if (_scheduler is not null) SendTimeCredit();
+            WriteLine(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+            WriteLine(decision);
         }
 
         private void HandleFirmwareTransfer(uint pc, uint[] gpr)
@@ -1331,9 +1347,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             ApplyCpuState(gpr, outcome.CpuState);
 
-            Send(string.Create(
-                CultureInfo.InvariantCulture,
-                $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"));
+            // The handler's return to EPC is the real kernel's `jr k0; rfe`: a runtime-resolved target, so the fallback may take it.
+            SendResume(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} 0 0"),
+                indirect: true);
         }
 
         /// <summary>
@@ -1676,8 +1695,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         {
             if (_scheduler is not null && (line == RecompiledArtifactCodeGen.ProtocolDeclineReply || line.StartsWith(RecompiledArtifactCodeGen.ProtocolDecisionPrefix, StringComparison.Ordinal)))
                 SendTimeCredit();
-            (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
+            WriteLine(line);
         }
+
+        private void WriteLine(string line) =>
+            (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
 
         private static uint ParseUInt(string value) => uint.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
 
