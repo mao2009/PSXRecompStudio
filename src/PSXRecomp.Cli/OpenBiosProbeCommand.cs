@@ -8,6 +8,7 @@ using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime.CdRom;
+using PSXRecomp.Infrastructure.Standalone;
 
 namespace PSXRecomp.Infrastructure.Cli;
 
@@ -659,34 +660,7 @@ internal static class OpenBiosProbeCommand
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
-    /// <summary>A CHD image (by its "MComprHD" magic) or a raw single-track image of 2352-byte sectors.</summary>
-    private static OpenedDisc OpenDisc(string path)
-    {
-        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        try
-        {
-            var magic = new byte[8];
-            if (stream.Read(magic) == magic.Length && System.Text.Encoding.ASCII.GetString(magic) == "MComprHD")
-            {
-                stream.Position = 0;
-                return new OpenedDisc(new ChdCdSectorSource(ChdReader.Open(stream)), stream);
-            }
-        }
-        catch
-        {
-            stream.Dispose();
-            throw;
-        }
-
-        stream.Dispose();
-        // ponytail: a raw image is read whole into memory; stream it when full-size .bin dumps are probed.
-        return new OpenedDisc(new RawCdSectorSource(File.ReadAllBytes(path)), null);
-    }
-
-    private sealed record OpenedDisc(ICdSectorSource Source, Stream? Stream) : IDisposable
-    {
-        public void Dispose() => Stream?.Dispose();
-    }
+    private static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
 
     private static object BuildStop(InterpreterTitleExecutionEngine engine, RecompilerStateSnapshot? snapshot)
     {

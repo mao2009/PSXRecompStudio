@@ -397,6 +397,56 @@ all required hardware and generated-host transitions. **Do not change the defaul
 by making an unverified OpenBIOS path appear to pass.** The purpose here is an
 executable full-ROM integration base, not another one-at-a-time HLE function.
 
+### Standalone OpenBIOS distribution (`package --bios openbios`)
+
+Issue #732 / #739. `psxrecomp package <game.exe|game.chd>` (no `--bios`) still builds the legacy HLE-bridge
+distribution. The OpenBIOS-booted distribution is selected only by the explicit `--bios` family, because the
+default must not change until the real-game gate below passes:
+
+```bash
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800]
+./persona/persona          # persona.exe on Windows
+```
+
+`--bios` is `openbios` (default when any firmware option is given), `custom-hle` or `genuine`. The last two are
+reserved names: they stop with `BIOS backend '<name>' is not implemented` and nothing is produced or substituted
+(`BiosBackendSelection`).
+
+**Execution structure (one guest state).** The native artifact *is* the OpenBIOS ROM compiled ahead of time
+(`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions (`LoadedCodeTable`: kernel data,
+vectors, shell and the disc's `boot-exe`, ADR-026). The game is never a second CPU session: OpenBIOS starts at the
+reset vector, its own CD driver reads the disc through the Runtime host's `CdRomDevice`/DMA3/IRQ graph, and `exec`
+jumps into the game in the same RAM, COP0 and device state. The game's calls back into A0/B0/C0 reach OpenBIOS code
+(native if it has a block, counted interpreter fallback otherwise); no `IBiosRuntime` is attached to a guest firmware.
+Unknown or changed RAM code is the explicit, counted, bounded fallback (ADR-025/026); it is reported, never silent.
+
+| Item | Where |
+|---|---|
+| BIOS ROM | user-supplied `--bios-rom`, exactly 512 KiB; copied to `runtime/artifact-image.bin`; SHA-256 re-verified on every run |
+| Disc (CD sector source) | user-supplied, copied to `runtime/disc/disc.{chd,bin}`; SHA-256 re-verified on every run |
+| AOT inputs | `--aot-dir` files copied to `runtime/firmware/`; the host rebuilds the identical `LoadedCodeTable` (analysis only, no code generation) |
+| Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`), selects the firmware run in the shared RuntimeHost |
+| Run settings | `runtime/runtime-host.json` (`guestFirmware:true`, mixed fallback on) |
+
+`FirmwareRuntimeLauncher` builds the engine through the engine's public prebuilt constructor with the disc and the
+loaded-code table; a tampered ROM, disc, backend or manifest path stops the run with exit 78 before anything executes.
+The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts.
+
+**Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
+commercial game or genuine BIOS is bundled. Redistributing OpenBIOS (even the compiled artifact embeds the ROM) waits
+for the #730 file-by-file license audit; the generated `README.txt` says so. This is a technical verification path,
+not distribution approval.
+
+**Tests.** `OpenBiosStandaloneSelectionTests` (selection, manifest, ROM/disc rejection, CLI fail-closed),
+`FirmwareGameRoundTripTests` (ROM code → RAM game → ROM routine → game → ROM, COP0/RAM preserved, interpreter parity,
+native vs counted-fallback) and the existing `FirmwareStandaloneHandoffTests`.
+
+**Dependency on PR #764.** The only edit in a file #764 also changes is the three-line hook in
+`PSXRecomp.RuntimeHost/Program.cs`; the engine is not edited (the public constructor is used). After #764 merges,
+`ForPrebuiltArtifact` should gain a `disc` parameter and the launcher switch to it, and a Persona run must be repeated
+on the merged main (the mixed-fallback `J`/host-resolved-resume protocol is part of #764).
+
 ### Remaining acceptance gates
 
 1. Run this against the audited pinned Nugget build on Windows/Linux/macOS.

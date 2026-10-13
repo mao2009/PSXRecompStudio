@@ -77,6 +77,13 @@ public static class Program
             var prebuiltArtifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
             var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
 
+            // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
+            // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
+            if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
+            {
+                return FirmwareRuntimeLauncher.Run(manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error);
+            }
+
             // Read the program image for the host-transfer bridge / interpreter fallback
             // (for a prebuilt artifact this is the same image the artifact embeds).
             var imageBytes = File.ReadAllBytes(imagePath);
