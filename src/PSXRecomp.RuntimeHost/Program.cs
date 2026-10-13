@@ -23,9 +23,10 @@ public static class Program
 {
     /// <summary>
     /// Entry point for the runtime host. Invocation:
-    /// <c>PSXRecomp.RuntimeHost [ runtime-host.json | --help | -h ]</c>.
-    /// Returns the classified run result code (0 success, 1 tooling/failure,
-    /// 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
+    /// <c>PSXRecomp.RuntimeHost [--diagnostics &lt;path&gt;] [ runtime-host.json | --help | -h ]</c>.
+    /// <c>--diagnostics</c> writes the Issue #763 stop diagnostic (best-effort, off by default, exit code
+    /// unchanged) for HLE and firmware distributions alike. Returns the classified run result code
+    /// (0 success, 1 tooling/failure, 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
     /// </summary>
     public static int Main(string[] args)
     {
@@ -102,15 +103,11 @@ public static class Program
 
             // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
+            // --diagnostics is honored here too (Issue #732 P2-1): the same stop diagnostic the HLE path writes.
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
-                if (diagnosticsPath is not null)
-                {
-                    Console.Error.WriteLine("runtime host: --diagnostics is not supported for firmware distributions.");
-                    return 78;
-                }
-
-                return FirmwareRuntimeLauncher.Run(manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error);
+                return FirmwareRuntimeLauncher.Run(
+                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath);
             }
 
             // Read the program image for the host-transfer bridge / interpreter fallback
