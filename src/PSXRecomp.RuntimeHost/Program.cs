@@ -89,7 +89,8 @@ public static class Program
                 Path.Combine(manifestDirectory, manifest.Artifact));
 
             // Choose the launch mode:
-            // - Guest firmware (OpenBIOS) runs natively with no HLE bridge.
+            // - Guest firmware (OpenBIOS) runs natively with no BIOS HLE Runtime (the
+            //   device-MMIO bridge is still attached by the engine).
             //   Mixed fallback IS supported for guest firmware to handle unresolved
             //   transfers via the interpreter (the firmware owns its kernel/vectors).
             // - HLE games use the bridge for BIOS service calls and mixed-fallback

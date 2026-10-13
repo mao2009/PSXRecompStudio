@@ -161,8 +161,10 @@ Studio, no CLI, and no .NET SDK at runtime.
 
 **Key behavior:**
 - Guest firmware (OpenBIOS) is auto-detected by load address 0x1FC00000 (or size 0x80000).
-  When `GuestFirmware` is true, the host bypasses the HLE bridge and runs the
-  artifact natively (no bridge, no mixed fallback).
+  When `GuestFirmware` is true, the host attaches no BIOS HLE Runtime and launches the
+  artifact in `--runtime-host` mode; the device-graph MMIO bridge is still attached
+  (`--host-transfer`, `--exact-device-time`, `--guest-exceptions`) because it is the
+  artifact's only MMIO path (without it a guest MMIO access exits 96).
 - Mixed fallback requires a bridge; the manifest carries `BlockEntryPcs` and
   `EntryPc` for a direct-launch engine that does not emit code.
 - The launcher (`GenerateStandalone(..., directLaunchHostRelativePath)`) generates

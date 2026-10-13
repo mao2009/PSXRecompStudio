@@ -529,29 +529,20 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
         _bridge = bridge;
 
-        // Build the launch arguments. For a prebuilt artifact the mode decides:
-        // RuntimeHost (native firmware / openBIOS) runs the artifact standalone,
-        // while HostTransfer (HLE games) relaunches it with the bridge flags.
-        // Otherwise the ordinary build path supplies the input files.
-        var arguments = new List<string>(4);
+        // Build the launch arguments. A prebuilt artifact in RuntimeHost mode gets
+        // --runtime-host (suppresses the launcher's re-delegation to the runtime
+        // host); a HostTransfer one needs no mode flag. Otherwise the ordinary
+        // build path supplies the input files. Whenever a bridge exists the artifact
+        // must be told to attach it (--host-transfer): attaching is the only thing
+        // that enables its MMIO bridge, so guest firmware launched in RuntimeHost
+        // mode would otherwise exit with the MMIO-unavailable code. With no bridge
+        // none of the bridge flags are passed.
+        var arguments = new List<string>(5);
         if (_prebuilt)
         {
             if (_launchMode == PrebuiltArtifactLaunchMode.RuntimeHost)
             {
                 arguments.Add(RecompiledArtifactCodeGen.RuntimeHostModeFlag);
-            }
-            else
-            {
-                if (bridge is not null)
-                {
-                    arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
-                    arguments.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
-                }
-
-                if (_guestFirmware)
-                {
-                    arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
-                }
             }
         }
         else if (!_embedImage)
@@ -560,13 +551,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             arguments.Add(_imagePath);
         }
 
-        if (!_prebuilt && bridge is not null)
+        if (bridge is not null)
         {
             arguments.Add(RecompiledArtifactCodeGen.HostTransferFlag);
             arguments.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
         }
 
-        if (!_prebuilt && _guestFirmware)
+        if (_guestFirmware)
         {
             arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
         }

@@ -60,7 +60,7 @@ the following required fields (schema version 1):
 | `schemaVersion` | `int` | Must equal `RuntimeHostManifest.CurrentSchemaVersion` (1) |
 | `artifact` | `string` | Relative path from manifest directory to the native game executable (`../game` on Linux, `../game.exe` on Windows) |
 | `guestFirmware` | `bool` | True when the image is guest firmware (OpenBIOS) that owns its kernel; false for HLE-bridged games |
-| `mixedFallback` | `bool` | True when the artifact uses the mixed execution fallback (requires bridge for HLE games; for guest firmware, mixed fallback runs without a bridge) |
+| `mixedFallback` | `bool` | True when the artifact uses the mixed execution fallback (requires bridge for HLE games; for guest firmware, mixed fallback runs with the device-MMIO bridge only, no BIOS HLE Runtime) |
 | `fallbackSegmentInstructionBudget` | `uint` | Per-segment instruction cap for interpreter fallback (used only when `mixedFallback=true`) |
 | `fallbackMaxTransitions` | `uint` | Maximum number of handoffs from artifact to interpreter (used only when `mixedFallback=true`) |
 | `imageLoadAddress` | `uint` | Guest address where the program image is loaded (e.g., 0x80010000 for games, 0x1FC00000 for OpenBIOS) |
@@ -223,7 +223,7 @@ Step C fixtures added:
 - **NaturalEndWithTransitions:** Natural-end program with regular JAL transitions
   before exit (cross-platform sanity).
 - **GuestFirmwareOpenbios:** Guest firmware (OpenBIOS at 0x1FC00000) with
-  native execution, no HLE bridge.
+  native execution, no BIOS HLE Runtime (device MMIO bridge only).
 
 ## Future Work
 
