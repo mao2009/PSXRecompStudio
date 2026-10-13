@@ -441,23 +441,31 @@ commercial game or genuine BIOS is bundled. Redistributing OpenBIOS (even the co
 for the #730 file-by-file license audit; the generated `README.txt` says so. This is a technical verification path,
 not distribution approval.
 
-**Tests.** `OpenBiosStandaloneSelectionTests` (selection, manifest, ROM/disc rejection, CLI fail-closed),
+**Tests.** `OpenBiosStandaloneSelectionTests` (selection, manifest, ROM/disc rejection, CLI fail-closed — including a malformed `rom.roots` returning exit 1 with no partial output),
 `FirmwareGameRoundTripTests` (ROM code → RAM game → ROM routine → game → ROM, COP0/RAM preserved, interpreter parity,
 native vs counted-fallback), `FirmwareAotPlanTests` (the game entry is compiled to a guarded native block whose
-flipped RAM word voids the match; the exception vectors stay observed), `FirmwareAotBundleTests` (input containment,
-copy layout, digest pinning and tamper/missing/escape/link rejection, schema-2 manifest negatives),
-`FirmwareRuntimeLauncherTests`/`FirmwareRuntimeLauncherDiagnosticsTests` (fallback-policy propagation and
-`--diagnostics` honoring) and the packaging E2E `OpenBiosStandalonePackageE2E` (a bootable disc's `boot-exe` runs
-through the Runtime host with zero fallback instructions and ROM → game → ROM register continuity; the explicit
-fallback budgets reach the packaged manifest and the host writes the diagnostics document) plus the existing
-`FirmwareStandaloneHandoffTests`.
+flipped RAM word voids the match; the exception vectors stay observed; the shared roots parser accepts comments/blank
+lines and rejects invalid lines as `InvalidDataException`), `FirmwareAotBundleTests` (input containment,
+copy layout, digest pinning and tamper/missing/escape/link rejection — including a linked `rom.roots`/`images.txt` or
+a linked AOT root — schema-2 manifest negatives), `FirmwareDistributionBuilderTests` (a build whose AOT input
+escapes the root or has a malformed roots file fails before any output, preserves a pre-existing distribution and
+leaves no staging directory), `FirmwareRuntimeLauncherTests`/`FirmwareRuntimeLauncherDiagnosticsTests` (fallback-policy propagation and
+`--diagnostics` honoring) and the packaging E2E `OpenBiosStandalonePackageE2E` (a `boot-exe` AOT image runs in the
+one packaged guest state with zero fallback instructions and ROM → game → ROM register continuity). **The packaging
+E2E uses a synthetic ROM that stores the game's words into RAM itself; it proves packaging → guarded game AOT → ROM
+continuity, not OpenBIOS's run-time CD-sector load.** The latter is the separate runtime disc-load gate, verified by
+real OpenBIOS over the shared device graph with the synthetic Mode 2 disc (see "Disc in the drive" above and the
+measured table below) and by the real Persona runs. The game block's own contribution is attributed inside the
+aggregate native count by the game-only final register (`$t0`) plus zero fallback instructions, never by the BIOS's
+native count alone. The same E2E asserts the explicit fallback budgets reach the packaged manifest and that the host
+writes the diagnostics document; the existing `FirmwareStandaloneHandoffTests` cover the pre-packaged handoff.
 
 **Measured (pinned OpenBIOS build, `--instruction-budget`/timeout bounded, local only).**
 
 | Run | Result |
 |---|---|
 | Synthetic Mode 2 disc, `openbios-probe --standalone --stop-at 0x80010014` | `bootVerified`; 195,060,431 native / 2,338 fallback instructions; 327 transitions |
-| Same disc, packaged, `./synth` launched directly (200M budget) | OpenBIOS loads the synthetic EXE and reaches its `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
+| Same disc, packaged, `./synth` launched directly (200M budget) | **Runtime disc load proven by real OpenBIOS's own CD driver** (separate gate, synthetic disc + probe above) **not by this packaging E2E**: the packaging E2E's synthetic ROM stores the EXE words into RAM itself. The packaged direct launch (200M budget) reached the synthetic EXE's `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
 | Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
 
 Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel
