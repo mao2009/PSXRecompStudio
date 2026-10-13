@@ -152,7 +152,8 @@ internal static class MixedFallbackTestSupport
     public sealed record MixedRun(
         TitleExecutionResult Result,
         MixedFallbackEvidence? Evidence,
-        MixedFallbackTimings? Timings);
+        MixedFallbackTimings? Timings,
+        FallbackDeclinedTransfer? DeclinedTransfer = null);
 
     /// <summary>Builds the artifact for <paramref name="words"/> with the static roots only and runs it to its end.</summary>
     public static MixedRun RunArtifact(
@@ -168,7 +169,7 @@ internal static class MixedFallbackTestSupport
             (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer),
             mixedFallback: mixedFallback);
         var result = new ExecutionOrchestrator().Execute(engine, new ExitAtZeroHandoff(), Request(segmentBudget));
-        return new MixedRun(result, engine.FallbackEvidence, engine.FallbackTimings);
+        return new MixedRun(result, engine.FallbackEvidence, engine.FallbackTimings, engine.LastDeclinedTransfer);
     }
 
     /// <summary>The pure-interpreter reference: the same words, no artifact, the same end rule.</summary>

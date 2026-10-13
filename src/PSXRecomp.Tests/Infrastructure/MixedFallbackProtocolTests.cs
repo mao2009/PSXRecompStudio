@@ -190,6 +190,63 @@ public sealed class MixedFallbackProtocolTests
         second.Should().Equal(first, "a query changes no artifact state");
     }
 
+    private static string Decision(uint resume) =>
+        $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {resume} 0 0";
+
+    [Fact]
+    public void Query_ReportsAMarkedHostResolvedResumeAsIndirect_WhenItLandsOnUncompiledCode()
+    {
+        // Issue #763: a host-handled BIOS call returns to ra (the host's own `jr ra`), which the host marks with J. When ra
+        // lies in code the build never compiled, the artifact offers it again; the fallback must see a runtime target.
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer().Should().Be(Target);
+        QueryHeader(session)[2].Should().Be("1", "the first transfer is the target of the artifact's own JALR");
+
+        var resume = Target + 0x40u;
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.Send(Decision(resume));
+
+        session.AwaitTransfer().Should().Be(resume, "the resume pc has no block, so the artifact offers it");
+        QueryHeader(session)[2].Should().Be("1", "a host-resolved `jr ra` resume is a runtime target like a register-indirect jump");
+    }
+
+    [Fact]
+    public void Query_DoesNotReportAnUnmarkedHostResolvedResumeAsIndirect()
+    {
+        // Issue #763: a patched jump-table target, a SYSCALL/exception resume, B0:17 or a pending wait is resolved by the host
+        // but is not its `jr ra`; without J the artifact keeps the provenance its own jump set, so the query stays fail-closed.
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer().Should().Be(Target);
+
+        var resume = Target + 0x40u;
+        session.Send(Decision(resume));
+
+        session.AwaitTransfer().Should().Be(resume);
+        QueryHeader(session)[2].Should().Be("0", "an unmarked resume must not become an indirect target");
+    }
+
+    [Fact]
+    public void Query_AMarkedResumeDoesNotMarkTheNextDecision()
+    {
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer().Should().Be(Target);
+
+        var first = Target + 0x40u;
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.Send(Decision(first));
+        session.AwaitTransfer().Should().Be(first);
+        QueryHeader(session)[2].Should().Be("1");
+
+        var second = Target + 0x80u;
+        session.Send(Decision(second));
+        session.AwaitTransfer().Should().Be(second);
+        QueryHeader(session)[2].Should().Be("0", "the J mark belonged to the previous decision only");
+    }
+
+
     [Fact]
     public void Query_AnUnknownVersionIsRefused_AndChangesNothing()
     {
@@ -330,6 +387,65 @@ public sealed class MixedFallbackProtocolTests
         session.SendExpectingDeath(command);
 
         session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.FallbackProtocolExitCode, why);
+    }
+
+    [Fact]
+    public void IndirectResumeMark_WithAnOperand_IsFatal_NeverIgnored()
+    {
+        // J is a bare mark: an operand would be read as the next command, which does not exist (Issue #763).
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.SendExpectingDeath($"{RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand} 1");
+
+        session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
+    }
+
+    [Theory]
+    [InlineData("J", "a second mark before any decision")]
+    [InlineData("N", "a decline between the mark and the decision")]
+    [InlineData("F 1", "a fallback query between the mark and the decision")]
+    [InlineData("R 0", "a RAM read between the mark and the decision")]
+    [InlineData("Y", "a page request between the mark and the decision")]
+    public void IndirectResumeMark_FollowedByAnythingButADecision_IsFatal(string command, string why)
+    {
+        // Issue #763: J applies to the single D that follows it; anything else in between is a protocol violation.
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.SendExpectingDeath(command);
+
+        session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode, why);
+    }
+
+    [Fact]
+    public void IndirectResumeMark_ThenEof_IsFatal_NeverWaitsForever()
+    {
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+
+        session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
+    }
+
+    [Fact]
+    public void IndirectResumeMark_ThenAFailedDecision_DoesNotMarkAnythingIndirect()
+    {
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
+
+        // The failure ends the run as an ordinary termination, not as a protocol error, and offers no further transfer.
+        session.WaitForFatalExit().Should().NotBe(RecompiledArtifactCodeGen.RetiredProtocolExitCode)
+            .And.NotBe(int.MinValue, "the artifact ends by itself");
     }
 
     [Fact]

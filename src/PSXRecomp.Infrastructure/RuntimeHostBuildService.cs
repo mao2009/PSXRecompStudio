@@ -306,11 +306,13 @@ public static class RuntimeHostBuildService
     /// <param name="hostPath">Absolute path to the Runtime host executable.</param>
     /// <param name="manifestPath">Absolute path to the runtime-host.json manifest.</param>
     /// <param name="timeout">Optional timeout for the host execution.</param>
+    /// <param name="extraArguments">Optional extra arguments passed to the host (for example <c>--diagnostics</c>).</param>
     /// <returns>The run result with exit code, stdout, and stderr.</returns>
     public static RuntimeHostRunResult RunRuntimeHost(
         string hostPath,
         string manifestPath,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        IReadOnlyList<string>? extraArguments = null)
     {
         if (string.IsNullOrWhiteSpace(hostPath) || !File.Exists(hostPath))
         {
@@ -332,6 +334,10 @@ public static class RuntimeHostBuildService
             CreateNoWindow = true,
         };
         psi.ArgumentList.Add(manifestPath);
+        if (extraArguments is not null)
+        {
+            foreach (var argument in extraArguments) psi.ArgumentList.Add(argument);
+        }
 
         Process process;
         try

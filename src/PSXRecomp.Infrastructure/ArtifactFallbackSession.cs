@@ -150,6 +150,12 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
     public string? StopMessage { get; private set; }
 
+    /// <summary>
+    /// Why the last <see cref="Handle"/> call declined the transfer (<see cref="Decision.Ineligible"/>), one of
+    /// <see cref="MixedFallbackDiagnostics"/>'s "ineligible" codes; null when it did not decline (Issue #763).
+    /// </summary>
+    public string? RejectReason { get; private set; }
+
     public MixedFallbackEvidence Evidence => new(
         _transitions,
         _returns,
@@ -173,6 +179,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
     {
         StopCode = null;
         StopMessage = null;
+        RejectReason = null;
 
         // Static eligibility: an aligned PC inside the PS-X EXE text image. The image is the only executable region a
         // fallback ever runs; RAM-generated code, out-of-image PCs and every vector stay with the existing fail-closed path.
@@ -181,8 +188,21 @@ internal sealed class ArtifactFallbackSession : IDisposable
         var imageEnd = (ulong)_imageLoadAddress + (ulong)_imageWords.Count * 4UL;
         var inImage = pc >= _imageLoadAddress && pc < imageEnd;
         // RAM-placed code is never in _blockEntryPcs: the artifact offers it only when no version matched (Issue #732).
-        if ((pc & 3u) != 0 || (!inImage && !_guestFirmware) || _blockEntryPcs.Contains(pc))
+        if ((pc & 3u) != 0)
         {
+            RejectReason = MixedFallbackDiagnostics.IneligibleUnaligned;
+            return Decision.Ineligible;
+        }
+
+        if (!inImage && !_guestFirmware)
+        {
+            RejectReason = MixedFallbackDiagnostics.IneligibleOutOfImage;
+            return Decision.Ineligible;
+        }
+
+        if (_blockEntryPcs.Contains(pc))
+        {
+            RejectReason = MixedFallbackDiagnostics.IneligibleHasBlock;
             return Decision.Ineligible;
         }
 
@@ -194,6 +214,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
             if (header is null || (!header.Value.Indirect && !_guestFirmware))
             {
                 // A refusal, or a transfer that did not come from JR/JALR: not a runtime-discovered target.
+                RejectReason = header is null
+                    ? MixedFallbackDiagnostics.IneligibleQueryRefused
+                    : MixedFallbackDiagnostics.IneligibleNotIndirect;
                 return Decision.Ineligible;
             }
 

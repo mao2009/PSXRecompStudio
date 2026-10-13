@@ -37,19 +37,41 @@ public static class Program
             return 1;
         }
 
-        if (args.Length == 1 && (args[0] == "--help" || args[0] == "-h"))
+        // Optional diagnostics sink (Issue #763): everything that is not it is the
+        // manifest path. Off by default, so the run's exit code and output are unchanged.
+        string? diagnosticsPath = null;
+        var positionals = new List<string>(args.Length);
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--diagnostics")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("runtime host: --diagnostics requires a path.");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
+                diagnosticsPath = Path.GetFullPath(args[++i]);
+                continue;
+            }
+
+            positionals.Add(args[i]);
+        }
+
+        if (positionals.Count == 1 && (positionals[0] == "--help" || positionals[0] == "-h"))
         {
             WriteUsage(Console.Error);
             return 1;
         }
 
-        if (args.Length != 1)
+        if (positionals.Count != 1)
         {
             WriteUsage(Console.Error);
             return 78;
         }
 
-        var manifestPath = Path.GetFullPath(args[0]);
+        var manifestPath = Path.GetFullPath(positionals[0]);
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
@@ -61,9 +83,10 @@ public static class Program
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
 
+        RuntimeHostManifest? manifest = null;
         try
         {
-            var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
 
             if (!Directory.Exists(manifestDirectory))
             {
@@ -159,8 +182,26 @@ public static class Program
                 Console.Write(consoleOutput);
             }
 
+            // A timeout or an engine failure ends the run with no snapshot: the guest pc is then unknown, not guessed.
+            var guestPc = execution.FinalSnapshot is { } snapshot ? $"0x{snapshot.PC:X8}" : "unknown";
             Console.Error.WriteLine($"runtime host: classified as {result.Outcome} (state {execution.State});" +
-                $" guest pc 0x{execution.FinalSnapshot.PC:X8}, exit {result.ExitCode}");
+                $" guest pc {guestPc}, exit {result.ExitCode}");
+
+            if (diagnosticsPath is not null)
+            {
+                WriteDiagnostics(
+                    diagnosticsPath,
+                    () => RuntimeHostDiagnostic.From(
+                        manifest,
+                        execution,
+                        result.ExitCode,
+                        engine.NativeRetiredInstructions,
+                        engine.FallbackEvidence?.FallbackInstructions,
+                        engine.FallbackEvidence?.Transitions,
+                        engine.LastDeclinedTransfer,
+                        engine.FallbackEvidence?.Targets));
+            }
+
             return RecompiledArtifactExitCode.ExitCodeFor(execution.State);
         }
         catch (Exception ex)
@@ -173,17 +214,41 @@ public static class Program
                     $"runtime host: inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
             }
 
+            // Only the manifest's static facts exist once the run itself threw.
+            if (diagnosticsPath is not null && manifest is not null)
+            {
+                WriteDiagnostics(diagnosticsPath, () => RuntimeHostDiagnostic.FromFailure(manifest, 78, ex));
+            }
+
             return 78;
         }
     }
 
     private static void WriteUsage(TextWriter error)
     {
-        error.WriteLine("usage: PSXRecomp.RuntimeHost <runtime-host.json>");
+        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] <runtime-host.json>");
         error.WriteLine("  Executes the packaged game distribution described by the manifest.");
+        error.WriteLine("  --diagnostics writes a machine-readable stop diagnostic (off by default).");
         error.WriteLine("  Returns 0 on a completed run, 1 for tooling failure, 2 for an " +
             "explicit runtime stop, and 78 when the manifest, the runtime host,");
         error.WriteLine("  or the prebuilt artifact cannot be set up.");
+    }
+
+    /// <summary>
+    /// Writes the Issue #763 stop diagnostic. Best-effort: a diagnostics write failure is
+    /// reported on stderr but never changes the run's classified exit code.
+    /// </summary>
+    private static void WriteDiagnostics(string path, Func<RuntimeHostDiagnostic> build)
+    {
+        try
+        {
+            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
+        }
+        catch (Exception ex)
+        {
+            // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
+            Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
+        }
     }
 
     /// <summary>

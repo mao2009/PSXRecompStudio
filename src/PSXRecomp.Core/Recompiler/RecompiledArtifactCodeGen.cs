@@ -115,6 +115,14 @@ public static class RecompiledArtifactCodeGen
     /// <summary>The parent's request that the artifact's CPU perform RFE (pop the SR KU/IE stack): <c>P</c> (Issue #662).</summary>
     public const string ProtocolRfeCommand = "P";
 
+    /// <summary>
+    /// The parent's mark that the very next decision (<see cref="ProtocolDecisionPrefix"/>) is its register-indirect
+    /// jump (an HLE <c>jr ra</c> or the kernel exception handler's <c>jr k0; rfe</c> to EPC/hook pc): <c>J</c> (Issue #763).
+    /// Nothing may be sent between <c>J</c> and its decision. Only that decision's <c>next_pc</c> becomes the artifact's <c>indirect_target</c>,
+    /// so the mixed-fallback query reports it as a runtime-discovered target. Unmarked decisions never touch it.
+    /// </summary>
+    public const string ProtocolIndirectResumeCommand = "J";
+
     /// <summary>Prefix of the parent's decision reply: <c>D termination next_pc has_v0 v0</c>.</summary>
     public const string ProtocolDecisionPrefix = "D ";
 
@@ -1359,10 +1367,14 @@ static void fallback_send_pages(void) {
 
 static int32_t artifact_host_serve(RecompilerState* state) {
     int time_credit_seen = 0;
+    int host_indirect_resume = 0;
     for (;;) {
         char cmd[8];
         unsigned long a, v, t, np, has_v0;
         if (scanf(""%7s"", cmd) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
+        /* `J` marks only the decision that immediately follows it: any other command between them (a second J, N, a
+           query, a write, ...) is a protocol violation, so the mark can never reach a later or unrelated transfer. */
+        if (host_indirect_resume && strcmp(cmd, ""D"") != 0) exit(@EXIT_RETIRED_PROTOCOL@);
         if (strcmp(cmd, ""T"") == 0) {
             unsigned long long credit;
             if (time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
@@ -1452,11 +1464,18 @@ static int32_t artifact_host_serve(RecompilerState* state) {
             state->cop0_cause = (state->cop0_cause & ~0x400u) | (state->irq_line ? 0x400u : 0u);
         } else if (strcmp(cmd, ""P"") == 0) {
             state->cop0_sr = (state->cop0_sr & ~0xFu) | ((state->cop0_sr >> 2) & 0xFu);
+        } else if (strcmp(cmd, ""J"") == 0) {
+            host_indirect_resume = 1; /* scoped to this serve call, so it can never mark a later decision */
         } else if (strcmp(cmd, ""D"") == 0) {
             if (artifact_exact_time && !time_credit_seen) exit(@EXIT_RETIRED_PROTOCOL@);
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;
             state->next_pc = (uint32_t)np;
+            /* Only a resume the host marked with `J` just before this decision is its register-indirect jump (an HLE
+               BIOS `jr ra`, or the kernel exception handler's `jr k0; rfe`): the next pc is then a runtime target the mixed-fallback query may see as indirect.
+               Every other success (patched jump table, SYSCALL resume, B0:17, fallback return) leaves
+               indirect_target as the artifact's own JR/JALR set it (Issue #763). */
+            if (t == 0ul && host_indirect_resume) state->indirect_target = (uint32_t)np;
             if (has_v0 != 0ul) state->gpr[PSX_REG_V0] = (uint32_t)v;
             return 0;
         } else if (strcmp(cmd, ""N"") == 0) {
