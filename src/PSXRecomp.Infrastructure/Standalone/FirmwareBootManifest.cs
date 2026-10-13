@@ -20,6 +20,11 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// <param name="LoadImagesFile">The RAM-placed code manifest (ADR-026), <c>firmware/&lt;leaf&gt;</c> inside <c>runtime/</c>.</param>
 /// <param name="DiscFile">The disc image the artifact was compiled against, <c>disc/&lt;leaf&gt;</c> inside <c>runtime/</c>.</param>
 /// <param name="DiscSha256">Lowercase SHA-256 of the disc image; verified before every run (loaded code is derived from it).</param>
+/// <param name="AotInputs">
+/// The AOT input files (<c>firmware/&lt;relative path&gt;</c> + SHA-256 each) the loaded-code build read:
+/// <c>rom.roots</c>, <c>images.txt</c> and every file those directives reference (Issue #732 P1-3). The run
+/// re-verifies each before rebuilding the plan. Must be present and non-empty.
+/// </param>
 [Infrastructure]
 public sealed record FirmwareBootManifest(
     int SchemaVersion,
@@ -29,9 +34,10 @@ public sealed record FirmwareBootManifest(
     string RootsFile,
     string LoadImagesFile,
     string DiscFile,
-    string DiscSha256)
+    string DiscSha256,
+    IReadOnlyList<FirmwareAotInput> AotInputs)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>The manifest file name, inside <c>runtime/</c>; its presence selects the firmware-boot run.</summary>
     public const string FileName = "firmware-boot.json";
@@ -116,6 +122,32 @@ public static class FirmwareBootManifestJson
         RequireConfined(m.RootsFile, FirmwareBootManifest.FirmwareDirectory);
         RequireConfined(m.LoadImagesFile, FirmwareBootManifest.FirmwareDirectory);
         RequireConfined(m.DiscFile, FirmwareBootManifest.DiscDirectory);
+
+        if (m.AotInputs is not { Count: > 0 })
+        {
+            throw new InvalidDataException("The firmware boot manifest must list its AOT inputs ('aotInputs').");
+        }
+
+        var aotPaths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var input in m.AotInputs)
+        {
+            if (input is null)
+            {
+                throw new InvalidDataException("The firmware boot manifest has a null AOT input entry.");
+            }
+
+            RequireConfinedRelative(input.Path, FirmwareBootManifest.FirmwareDirectory);
+            RequireSha256(input.Sha256, $"aotInputs['{input.Path}']");
+            if (!aotPaths.Add(input.Path))
+            {
+                throw new InvalidDataException($"The firmware boot manifest lists the AOT input '{input.Path}' more than once.");
+            }
+        }
+
+        if (!aotPaths.Contains(m.RootsFile) || !aotPaths.Contains(m.LoadImagesFile))
+        {
+            throw new InvalidDataException("The firmware boot manifest's roots and images files must both appear in its AOT inputs.");
+        }
     }
 
     private static void RequireSha256(string? value, string name)
@@ -136,6 +168,30 @@ public static class FirmwareBootManifestJson
             || leaf.EndsWith(' ') || leaf.EndsWith('.'))
         {
             throw new InvalidDataException($"The firmware boot manifest path must be '{prefix}<file name>'; got '{path}'.");
+        }
+    }
+
+    /// <summary>
+    /// Exactly <c>&lt;directory&gt;/&lt;relative path&gt;</c>: a forward-slash relative path whose every component is
+    /// a plain, non-empty file name (no backslash, drive, device, <c>.</c> or <c>..</c>).
+    /// </summary>
+    private static void RequireConfinedRelative(string? path, string directory)
+    {
+        var prefix = directory + "/";
+        var relative = path is not null && path.StartsWith(prefix, StringComparison.Ordinal) ? path[prefix.Length..] : null;
+        if (relative is null or "" || relative.EndsWith('/'))
+        {
+            throw new InvalidDataException($"The firmware boot manifest path must be '{prefix}<relative file name>'; got '{path}'.");
+        }
+
+        foreach (var component in relative.Split('/'))
+        {
+            if (component.Length == 0 || component is "." or ".."
+                || component.Any(static c => c < ' ' || c is '\\' or ':' or '*' or '?' or '"' or '<' or '>' or '|')
+                || component.EndsWith(' ') || component.EndsWith('.'))
+            {
+                throw new InvalidDataException($"The firmware boot manifest path must be '{prefix}<relative file name>'; got '{path}'.");
+            }
         }
     }
 }

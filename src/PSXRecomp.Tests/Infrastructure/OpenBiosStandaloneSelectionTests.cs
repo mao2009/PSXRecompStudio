@@ -19,10 +19,13 @@ public sealed class OpenBiosStandaloneSelectionTests
 {
     private static readonly string Sha = new('a', 64);
 
+    private static IReadOnlyList<FirmwareAotInput> Aot(string roots = "firmware/rom.roots", string images = "firmware/images.txt") =>
+        [new(roots, Sha), new(images, Sha)];
+
     private static FirmwareBootManifest Manifest(
         string backend = "openbios", string rom = "", string roots = "firmware/rom.roots",
         string images = "firmware/images.txt", string disc = "disc/disc.chd", uint codeBytes = 37160) =>
-        new(FirmwareBootManifest.CurrentSchemaVersion, backend, rom.Length == 0 ? Sha : rom, codeBytes, roots, images, disc, Sha);
+        new(FirmwareBootManifest.CurrentSchemaVersion, backend, rom.Length == 0 ? Sha : rom, codeBytes, roots, images, disc, Sha, Aot(roots, images));
 
     [Fact]
     public void Default_IsOpenBios_AndNamesRoundTrip()
@@ -50,7 +53,7 @@ public sealed class OpenBiosStandaloneSelectionTests
     public void FirmwareManifest_RoundTrips()
     {
         var parsed = FirmwareBootManifestJson.Parse(FirmwareBootManifestJson.Serialize(Manifest()));
-        parsed.Should().Be(Manifest());
+        parsed.Should().BeEquivalentTo(Manifest());
     }
 
     [Fact]
@@ -173,8 +176,9 @@ public sealed class OpenBiosStandaloneSelectionTests
         var romPath = Path.Combine(runtime, "artifact-image.bin");
         File.WriteAllBytes(romPath, rom);
         File.WriteAllBytes(Path.Combine(runtime, "disc", "disc.bin"), [1, 2, 3]);
-        var boot = new FirmwareBootManifest(1, "openbios", OpenBiosRomInput.Sha256Hex(rom), 64, "firmware/rom.roots", "firmware/images.txt",
-            "disc/disc.bin", OpenBiosRomInput.Sha256Hex([1, 2, 3]));
+        var boot = new FirmwareBootManifest(FirmwareBootManifest.CurrentSchemaVersion, "openbios", OpenBiosRomInput.Sha256Hex(rom), 64,
+            "firmware/rom.roots", "firmware/images.txt", "disc/disc.bin", OpenBiosRomInput.Sha256Hex([1, 2, 3]),
+            [new("firmware/rom.roots", Sha), new("firmware/images.txt", Sha)]);
         File.WriteAllText(Path.Combine(runtime, FirmwareBootManifest.FileName), FirmwareBootManifestJson.Serialize(boot));
         FirmwareRuntimeLauncher.IsFirmwareDistribution(runtime).Should().BeTrue();
 

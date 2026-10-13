@@ -47,15 +47,8 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         var interpreted = new HashSet<uint>();
         Iso9660Reader? iso = null;
 
-        foreach (var raw in File.ReadAllLines(path))
+        foreach (var (line, fields) in Directives(path))
         {
-            var line = raw.Split('#')[0].Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
-
-            var fields = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             switch (fields[0])
             {
                 case "image":
@@ -89,6 +82,77 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         return new LoadImageManifest(images, interpreted);
+    }
+
+    /// <summary>
+    /// The file paths a manifest's directives reference, exactly as written (Issue #732 P1-3): <c>image</c>'s
+    /// optional roots file and both the executable and optional roots file of <c>exe</c>. <c>boot-exe</c> and
+    /// <c>interpret</c> reference no file of their own (the disc is hashed separately). Malformed or unknown
+    /// directives are rejected exactly as <see cref="Read"/> rejects them. Packaging resolves, contains and hashes
+    /// these; the run re-verifies them.
+    /// </summary>
+    public static IReadOnlyList<string> ReadReferencedPaths(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var referenced = new List<string>();
+        foreach (var (line, fields) in Directives(path))
+        {
+            switch (fields[0])
+            {
+                case "image":
+                    if (fields.Length is < 6 or > 7 || fields[3] != "rom")
+                    {
+                        throw new InvalidDataException("manifest: 'image' is 'image <name> <dest> rom <addr> <size> [roots-file]'.");
+                    }
+                    if (fields.Length == 7)
+                    {
+                        referenced.Add(fields[6]);
+                    }
+                    break;
+                case "exe":
+                    if (fields.Length is < 3 or > 4)
+                    {
+                        throw new InvalidDataException("manifest: 'exe' is 'exe <name> <path> [roots-file]'.");
+                    }
+                    referenced.Add(fields[2]);
+                    if (fields.Length == 4)
+                    {
+                        referenced.Add(fields[3]);
+                    }
+                    break;
+                case "boot-exe":
+                    if (fields.Length != 2)
+                    {
+                        throw new InvalidDataException($"manifest: 'boot-exe' takes exactly one name; got '{line}'.");
+                    }
+                    break;
+                case "interpret":
+                    if (fields.Length != 2)
+                    {
+                        throw new InvalidDataException($"manifest: 'interpret' takes exactly one address; got '{line}'.");
+                    }
+                    break;
+                default:
+                    throw new InvalidDataException($"manifest: unknown directive '{fields[0]}'.");
+            }
+        }
+
+        return referenced;
+    }
+
+    /// <summary>Non-blank, comment-stripped directive lines with their whitespace-separated fields.</summary>
+    private static IEnumerable<(string Line, string[] Fields)> Directives(string path)
+    {
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            var line = raw.Split('#')[0].Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            yield return (line, line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        }
     }
 
     private static LoadedImageSpec ParseRomImage(IReadOnlyList<string> fields, OpenBiosFirmware firmware, string? baseDirectory)

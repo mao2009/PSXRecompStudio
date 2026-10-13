@@ -21,10 +21,18 @@ public sealed record FirmwareAotPlan(
     IReadOnlySet<uint> ObservationPcs)
 {
     /// <summary>
-    /// Entries kept interpreted so the milestones and exception path stay observable. They match the
-    /// <c>openbios-probe</c> run the generated-host parity was measured with.
+    /// The only PCs a firmware distribution keeps interpreted: the exception entry points, whose vectors the
+    /// firmware's own exception path must stay able to observe (they match the vector images in <c>images.txt</c>,
+    /// written by <c>scripts/openbios/prepare-aot.py</c>).
     /// </summary>
-    private static readonly uint[] FixedObservationPcs = [OpenBiosBootMonitor.ShellLoadAddress, 0x80010000u, 0x80000080u, 0x000026A4u];
+    /// <remarks>
+    /// The milestone PCs the <c>openbios-probe</c> parity runs stop at (<c>0x80030000</c> shell load and
+    /// <c>0x80010000</c> executable boundary) are deliberately NOT excluded here. Probe observation belongs to the
+    /// probe (its own run unions them in); a distribution must instead compile those entries, so a game whose entry
+    /// is exactly <c>0x80010000</c> runs from a guarded native block rather than the interpreter fallback
+    /// (Issue #732 P1-2).
+    /// </remarks>
+    private static readonly uint[] FixedExceptionObservationPcs = [0x80000080u, 0x000026A4u];
 
     public static FirmwareAotPlan Build(
         OpenBiosFirmware firmware, string rootsFile, uint codeBytes, string loadImagesFile, ICdSectorSource disc)
@@ -41,7 +49,7 @@ public sealed record FirmwareAotPlan(
         var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, code, OpenBiosFirmware.ResetVector, roots);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
         var observed = new HashSet<uint>(manifest.Interpreted);
-        observed.UnionWith(FixedObservationPcs);
+        observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed)));
         return new FirmwareAotPlan(image.Program, loaded, observed);
@@ -84,7 +92,178 @@ public static class OpenBiosRomInput
     }
 }
 
+/// <summary>
+/// One AOT input file a firmware distribution ships and pins (Issue #732 P1-3): <see cref="Path"/> is the file's
+/// location relative to <c>runtime/</c> (always under <c>firmware/</c>), <see cref="Sha256"/> its lowercase digest.
+/// </summary>
+[Infrastructure]
+public sealed record FirmwareAotInput(string Path, string Sha256);
+
+/// <summary>
+/// Enumerates, contains and hashes the files a firmware distribution's AOT build depends on (Issue #732 P1-3):
+/// <c>rom.roots</c>, <c>images.txt</c> and every <c>exe</c>/<c>image</c> file those directives reference. Packaging
+/// copies them under <c>runtime/firmware/</c> preserving their manifest-relative layout and records each digest in
+/// <see cref="FirmwareBootManifest.AotInputs"/>; the run re-verifies every digest (and the confined, link-free
+/// layout) before rebuilding the loaded-code table, so a missing, escaping, linked or tampered input fails closed
+/// instead of silently rebuilding a different table. Absolute references, <c>..</c> escapes, missing files and
+/// symbolic links (the file or any directory below the AOT root) are rejected at packaging time.
+/// </summary>
+[Infrastructure]
+public static class FirmwareAotBundle
+{
+    public const string RootsFileName = "rom.roots";
+    public const string ImagesFileName = "images.txt";
+
+    /// <summary>
+    /// Collects the AOT inputs under <paramref name="aotDirectory"/>. Throws <see cref="InvalidDataException"/>
+    /// (escaping/absolute/linked/malformed reference) or <see cref="FileNotFoundException"/> (missing file).
+    /// </summary>
+    public static (IReadOnlyList<FirmwareAotInput> Inputs, IReadOnlyList<(string Relative, string Source)> Files) Collect(string aotDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(aotDirectory);
+        var root = Path.GetFullPath(aotDirectory);
+        var roots = Path.Combine(root, RootsFileName);
+        var images = Path.Combine(root, ImagesFileName);
+        if (!File.Exists(roots) || !File.Exists(images))
+        {
+            throw new FileNotFoundException(
+                $"The AOT directory must hold {RootsFileName} and {ImagesFileName} (see scripts/openbios/prepare-aot.py): {root}");
+        }
+
+        // A dependency is any manifest-referenced file plus the roots and images files themselves. Every one is
+        // resolved against the AOT root (the images.txt directory), confined to it and checked for links.
+        var sources = new SortedSet<string>(StringComparer.Ordinal) { roots, images };
+        foreach (var reference in LoadImageManifest.ReadReferencedPaths(images))
+        {
+            sources.Add(ResolveContained(root, reference));
+        }
+
+        var inputs = new List<FirmwareAotInput>();
+        var files = new List<(string Relative, string Source)>();
+        foreach (var source in sources)
+        {
+            var relative = RelativeWithin(root, source);
+            inputs.Add(new FirmwareAotInput($"{FirmwareBootManifest.FirmwareDirectory}/{relative}", OpenBiosRomInput.Sha256HexOfFile(source)));
+            files.Add((relative, source));
+        }
+
+        return (inputs, files);
+    }
+
+    /// <summary>Copies the collected files under <paramref name="firmwareDirectory"/>, preserving the relative layout.</summary>
+    public static void CopyInto(IReadOnlyList<(string Relative, string Source)> files, string firmwareDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        ArgumentException.ThrowIfNullOrWhiteSpace(firmwareDirectory);
+        foreach (var (relative, source) in files)
+        {
+            var destination = Path.Combine(firmwareDirectory, relative.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)
+                ?? throw new InvalidDataException($"The AOT input '{relative}' has no file name."));
+            File.Copy(source, destination, overwrite: true);
+        }
+    }
+
+    /// <summary>
+    /// Verifies every pinned input under a running distribution's <paramref name="runtimeDirectory"/>. Fails closed
+    /// with <see cref="InvalidDataException"/> when an input is missing, outside <c>firmware/</c>, a symbolic link or
+    /// does not match its recorded SHA-256.
+    /// </summary>
+    public static void Verify(string runtimeDirectory, IReadOnlyList<FirmwareAotInput> inputs)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runtimeDirectory);
+        ArgumentNullException.ThrowIfNull(inputs);
+        var firmwareDirectory = Path.GetFullPath(Path.Combine(runtimeDirectory, FirmwareBootManifest.FirmwareDirectory));
+        foreach (var input in inputs)
+        {
+            var full = Path.GetFullPath(Path.Combine(runtimeDirectory, input.Path.Replace('/', Path.DirectorySeparatorChar)));
+            RequireWithin(firmwareDirectory, full, input.Path);
+            if (!File.Exists(full))
+            {
+                throw new InvalidDataException($"The firmware AOT input was not found: {input.Path}");
+            }
+
+            EnsureLinkFree(firmwareDirectory, full, input.Path);
+            var actual = OpenBiosRomInput.Sha256HexOfFile(full);
+            if (!string.Equals(actual, input.Sha256, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"The firmware AOT input '{input.Path}' does not match the one this distribution was built for (SHA-256).");
+            }
+        }
+    }
+
+    private static string ResolveContained(string root, string reference)
+    {
+        if (Path.IsPathRooted(reference))
+        {
+            throw new InvalidDataException($"The AOT manifest references the absolute path '{reference}'; AOT inputs must be relative to the AOT directory.");
+        }
+
+        var full = Path.GetFullPath(Path.Combine(root, reference));
+        RequireWithin(root, full, reference);
+        if (!File.Exists(full))
+        {
+            throw new FileNotFoundException($"The AOT manifest references a file that does not exist: {reference}");
+        }
+
+        EnsureLinkFree(root, full, reference);
+        return full;
+    }
+
+    private static string RelativeWithin(string root, string full)
+    {
+        var relative = Path.GetRelativePath(root, full);
+        return relative.Replace('\\', '/');
+    }
+
+    private static void RequireWithin(string container, string candidate, string what)
+    {
+        var relative = Path.GetRelativePath(container, candidate);
+        if (relative.Length == 0 || relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        {
+            throw new InvalidDataException($"The AOT input '{what}' resolves outside the AOT directory.");
+        }
+    }
+
+    // The file and every directory between the AOT root and it must be real: a linked component could resolve the
+    // name to a file outside the directory the containment check normalised against.
+    private static void EnsureLinkFree(string root, string full, string what)
+    {
+        var directory = Path.GetDirectoryName(full);
+        if (directory is not null)
+        {
+            var current = root;
+            foreach (var part in Path.GetRelativePath(root, directory).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                if (part.Length == 0 || part == ".")
+                {
+                    continue;
+                }
+
+                current = Path.Combine(current, part);
+                var info = new DirectoryInfo(current);
+                if (info.Exists && (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint)))
+                {
+                    throw new InvalidDataException($"The AOT input '{what}' passes through the symbolic link or reparse point '{part}'.");
+                }
+            }
+        }
+
+        var file = new FileInfo(full);
+        if (file.LinkTarget is not null || file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidDataException($"The AOT input '{what}' must not be a symbolic link or reparse point.");
+        }
+    }
+}
+
 /// <summary>Packaging inputs for a firmware-booted distribution.</summary>
+/// <param name="MixedFallback">
+/// Whether an unresolved in-image indirect transfer may run on the interpreter fallback. Defaults to true (the
+/// pre-existing distribution behavior); <c>--no-mixed-fallback</c> carries false through to the runtime manifest.
+/// </param>
+/// <param name="FallbackSegmentInstructionBudget">The per-segment interpreter fallback instruction cap (only meaningful while <paramref name="MixedFallback"/>).</param>
+/// <param name="FallbackMaxTransitions">The artifact-to-interpreter handoff cap (only meaningful while <paramref name="MixedFallback"/>).</param>
 [Infrastructure]
 public sealed record FirmwareDistributionRequest(
     string RomPath,
@@ -95,7 +274,10 @@ public sealed record FirmwareDistributionRequest(
     int RunTimeoutMs,
     bool SelfContained,
     string? ExpectedRomSha256 = null,
-    uint InstructionBudget = uint.MaxValue);
+    uint InstructionBudget = uint.MaxValue,
+    bool MixedFallback = true,
+    uint FallbackSegmentInstructionBudget = uint.MaxValue,
+    uint FallbackMaxTransitions = uint.MaxValue);
 
 /// <summary>
 /// <c>psxrecomp package --bios openbios</c>: builds a standalone distribution whose native artifact IS the BIOS
@@ -158,13 +340,14 @@ public static class FirmwareDistributionBuilder
             throw new InvalidOperationException(exception.Message, exception);
         }
 
+        // AOT inputs (P1-3): contain, hash and copy every file the loaded-code build reads, preserving the
+        // manifest-relative layout under runtime/firmware/ so images.txt's relative references resolve there.
+        var (aotInputs, aotFiles) = FirmwareAotBundle.Collect(aotDir);
+
         // Sidecars. The ROM is the program image the host's interpreter fallback and device RAM read.
         File.WriteAllBytes(Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName), rom);
         var firmwareDir = Directory.CreateDirectory(Path.Combine(runtimeDir, FirmwareBootManifest.FirmwareDirectory));
-        foreach (var file in Directory.EnumerateFiles(aotDir).Where(static f => new FileInfo(f).LinkTarget is null))
-        {
-            File.Copy(file, Path.Combine(firmwareDir.FullName, Path.GetFileName(file)), overwrite: true);
-        }
+        FirmwareAotBundle.CopyInto(aotFiles, firmwareDir.FullName);
 
         var discLeaf = Path.GetExtension(request.DiscPath).Equals(".chd", StringComparison.OrdinalIgnoreCase) ? "disc.chd" : "disc.bin";
         var discDir = Directory.CreateDirectory(Path.Combine(runtimeDir, FirmwareBootManifest.DiscDirectory));
@@ -178,19 +361,22 @@ public static class FirmwareDistributionBuilder
             $"{FirmwareBootManifest.FirmwareDirectory}/rom.roots",
             $"{FirmwareBootManifest.FirmwareDirectory}/images.txt",
             $"{FirmwareBootManifest.DiscDirectory}/{discLeaf}",
-            OpenBiosRomInput.Sha256HexOfFile(request.DiscPath));
+            OpenBiosRomInput.Sha256HexOfFile(request.DiscPath),
+            aotInputs);
         var bootText = FirmwareBootManifestJson.Serialize(boot);
         _ = FirmwareBootManifestJson.Parse(bootText);
         File.WriteAllText(Path.Combine(runtimeDir, FirmwareBootManifest.FileName), bootText);
 
+        // Block entry PCs are the artifact's static (ROM) blocks only: RAM-placed versions are selected by their
+        // guard, and the fallback relies on a loaded PC NOT being listed (ArtifactFallbackSession).
         var blockEntryPcs = plan.Program.Blocks.Select(static b => b.EntryPc).Order().Distinct().ToArray();
         var host = new RuntimeHostManifest(
             RuntimeHostManifest.CurrentSchemaVersion,
             RuntimeHostLayout.ManifestRelativeArtifactPath(artifactName, windows),
             GuestFirmware: true,
-            MixedFallback: true,
-            FallbackSegmentInstructionBudget: uint.MaxValue,
-            FallbackMaxTransitions: uint.MaxValue,
+            MixedFallback: request.MixedFallback,
+            FallbackSegmentInstructionBudget: request.MixedFallback ? request.FallbackSegmentInstructionBudget : 0u,
+            FallbackMaxTransitions: request.MixedFallback ? request.FallbackMaxTransitions : 0u,
             ImageLoadAddress: OpenBiosFirmware.ResetVector,
             Image: RuntimeHostLayout.ImageFileName,
             BlockEntryPcs: blockEntryPcs,
@@ -223,9 +409,13 @@ public static class FirmwareDistributionBuilder
 }
 
 /// <summary>
-/// The Runtime-host side of a firmware-booted distribution: verifies the ROM and disc identities, supplies the
-/// disc to the shared device graph, and drives the prebuilt artifact in guest-firmware mode. No BIOS HLE Runtime
-/// is ever attached, and an unverified ROM, disc or backend stops the run before anything executes.
+/// The Runtime-host side of a firmware-booted distribution: verifies the ROM, disc and AOT-input identities,
+/// supplies the disc to the shared device graph, and drives the prebuilt artifact in guest-firmware mode. No BIOS
+/// HLE Runtime is ever attached, and an unverified ROM, disc, AOT input or backend stops the run before anything
+/// executes. The runtime manifest's <c>mixedFallback</c> is honored exactly: when it is off, an unresolved in-image
+/// transfer stops the run instead of reaching the interpreter (Issue #732 P1-1). When
+/// <paramref name="diagnosticsPath"/> is given the host also writes the same Issue #763 stop diagnostic the HLE
+/// path writes; the <c>firmware-run</c> JSON line remains the firmware run's own summary (Issue #732 P2-1).
 /// </summary>
 [Infrastructure]
 public static class FirmwareRuntimeLauncher
@@ -235,8 +425,25 @@ public static class FirmwareRuntimeLauncher
     public static bool IsFirmwareDistribution(string runtimeDirectory) =>
         File.Exists(Path.Combine(runtimeDirectory, FirmwareBootManifest.FileName));
 
+    /// <summary>
+    /// The interpreter-fallback options a runtime manifest asks for, or null when mixed fallback is off (Issue #732
+    /// P1-1): the engine then stops an unresolved in-image transfer instead of handing it to the interpreter.
+    /// </summary>
+    public static MixedFallbackOptions? FallbackOptionsFor(RuntimeHostManifest host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        return host.MixedFallback
+            ? new MixedFallbackOptions(host.FallbackSegmentInstructionBudget, host.FallbackMaxTransitions)
+            : null;
+    }
+
     public static int Run(
-        RuntimeHostManifest host, string runtimeDirectory, string artifactPath, string imagePath, TextWriter error)
+        RuntimeHostManifest host,
+        string runtimeDirectory,
+        string artifactPath,
+        string imagePath,
+        TextWriter error,
+        string? diagnosticsPath = null)
     {
         try
         {
@@ -259,6 +466,12 @@ public static class FirmwareRuntimeLauncher
                 throw new InvalidDataException("The disc image does not match the one this distribution was built for (SHA-256).");
             }
 
+            // P1-3: every AOT input is re-verified against the digest recorded at packaging time before the plan is
+            // rebuilt from it, so a missing, escaping, linked or tampered input fails closed here.
+            FirmwareAotBundle.Verify(runtimeDirectory, boot.AotInputs!);
+
+            var mixedFallback = FallbackOptionsFor(host);
+
             using var disc = DiscSectorSourceOpener.Open(discPath);
             var plan = FirmwareAotPlan.Build(
                 firmware,
@@ -271,7 +484,7 @@ public static class FirmwareRuntimeLauncher
                 artifactPath,
                 host.BlockEntryPcs.ToHashSet(),
                 guestFirmware: true,
-                mixedFallback: new MixedFallbackOptions(host.FallbackSegmentInstructionBudget, host.FallbackMaxTransitions),
+                mixedFallback: mixedFallback,
                 runTimeout: TimeSpan.FromMilliseconds(host.RunTimeoutMs),
                 loadedCode: plan.LoadedCode,
                 imageWords: firmware.Words,
@@ -286,6 +499,19 @@ public static class FirmwareRuntimeLauncher
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
 
             var evidence = engine.FallbackEvidence;
+            var exitCode = RecompiledArtifactExitCode.ExitCodeFor(result.State);
+            WriteDiagnostics(
+                diagnosticsPath,
+                () => RuntimeHostDiagnostic.From(
+                    host,
+                    result,
+                    exitCode,
+                    engine.NativeRetiredInstructions,
+                    evidence?.FallbackInstructions,
+                    evidence?.Transitions,
+                    engine.LastDeclinedTransfer,
+                    evidence?.Targets),
+                error);
             error.WriteLine(JsonSerializer.Serialize(new
             {
                 kind = "firmware-run",
@@ -294,18 +520,46 @@ public static class FirmwareRuntimeLauncher
                 state = result.State.ToString(),
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
                 diagnosticCode = result.DiagnosticCode,
+                mixedFallback = host.MixedFallback,
+                fallbackSegmentInstructionBudget = host.MixedFallback ? host.FallbackSegmentInstructionBudget : (uint?)null,
+                fallbackMaxTransitions = host.MixedFallback ? host.FallbackMaxTransitions : (uint?)null,
                 nativeInstructions = engine.NativeRetiredInstructions,
                 fallbackInstructions = evidence?.FallbackInstructions,
                 fallbackTransitions = evidence?.Transitions,
+                // The final register file lets a caller verify ROM -> game -> ROM control/data continuity from the
+                // run's own output without a second engine.
+                finalGpr = result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray(),
             }));
-            return RecompiledArtifactExitCode.ExitCodeFor(result.State);
+            return exitCode;
         }
         catch (Exception exception) when (
             exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 or InvalidOperationException or FormatException)
         {
             error.WriteLine($"runtime host: firmware distribution: {exception.GetType().Name}: {exception.Message}");
+            WriteDiagnostics(diagnosticsPath, () => RuntimeHostDiagnostic.FromFailure(host, SetupFailureExitCode, exception), error);
             return SetupFailureExitCode;
+        }
+    }
+
+    /// <summary>
+    /// Writes the Issue #763 stop diagnostic for a firmware run. Best-effort: a write failure is reported on stderr
+    /// but never changes the run's classified exit code.
+    /// </summary>
+    private static void WriteDiagnostics(string? path, Func<RuntimeHostDiagnostic> build, TextWriter error)
+    {
+        if (path is null)
+        {
+            return;
+        }
+
+        try
+        {
+            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
+        }
+        catch (Exception exception)
+        {
+            error.WriteLine($"runtime host: could not write diagnostics to {path}: {exception.Message}");
         }
     }
 }
