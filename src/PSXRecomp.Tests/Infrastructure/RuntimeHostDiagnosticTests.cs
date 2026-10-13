@@ -62,7 +62,7 @@ public sealed class RuntimeHostDiagnosticTests
         diagnostic.AotRetiredInstructions.Should().Be(1234);
         diagnostic.FallbackRetiredInstructions.Should().Be(56);
         diagnostic.FallbackTransitionCount.Should().Be(7);
-        diagnostic.NativeExitCode.Should().Be(2);
+        diagnostic.ClassifiedExitCode.Should().Be(2);
         diagnostic.NativeTerminationReason.Should().Be(nameof(RecompilerIrTerminationReason.Success));
         diagnostic.OrchestratorState.Should().Be(nameof(TitleExecutionState.UnsupportedTransfer));
         diagnostic.OrchestratorDiagnosticCode.Should().Be("UNRESOLVED_TRANSFER_IN_IMAGE");
@@ -107,6 +107,58 @@ public sealed class RuntimeHostDiagnosticTests
             declinedTransfer: null);
 
         diagnostic.TimedOut.Should().BeTrue();
+        diagnostic.AotRetiredInstructions.Should().BeNull();
+    }
+
+    [Fact]
+    public void TimeoutWithoutSnapshot_LeavesUnknownValuesNull_NeverZero()
+    {
+        var timedOut = new TitleExecutionResult(
+            TitleExecutionState.RuntimeFailure, null, 0, "engine", RecompiledHostExecutionEngine.TimeoutDiagnosticCode, "timed out");
+
+        var diagnostic = RuntimeHostDiagnostic.From(
+            Manifest([Load]),
+            timedOut,
+            exitCode: 1,
+            aotRetiredInstructions: null,
+            fallbackRetiredInstructions: null,
+            fallbackTransitionCount: null,
+            declinedTransfer: null);
+
+        diagnostic.TimedOut.Should().BeTrue();
+        diagnostic.FinalPc.Should().BeNull("a run with no snapshot has no known pc");
+        diagnostic.TransferTargetPc.Should().BeNull();
+        diagnostic.NativeTerminationReason.Should().BeNull();
+        diagnostic.AotRetiredInstructions.Should().BeNull();
+        diagnostic.FallbackRetiredInstructions.Should().BeNull();
+        diagnostic.ClassifiedExitCode.Should().Be(1);
+        diagnostic.OrchestratorState.Should().Be(nameof(TitleExecutionState.RuntimeFailure));
+    }
+
+    [Fact]
+    public void RuntimeFailureWithoutSnapshot_KeepsTheClassification()
+    {
+        var failed = new TitleExecutionResult(
+            TitleExecutionState.RuntimeFailure, null, 0, "engine", "ARTIFACT_HOST_PROTOCOL_FAILED", "protocol");
+
+        var diagnostic = RuntimeHostDiagnostic.From(
+            Manifest([Load]), failed, exitCode: 1, null, null, null, declinedTransfer: null);
+
+        diagnostic.FinalPc.Should().BeNull();
+        diagnostic.TimedOut.Should().BeFalse();
+        diagnostic.OrchestratorDiagnosticCode.Should().Be("ARTIFACT_HOST_PROTOCOL_FAILED");
+    }
+
+    [Fact]
+    public void FromFailure_CarriesOnlyTheManifestFactsAndTheExceptionType()
+    {
+        var diagnostic = RuntimeHostDiagnostic.FromFailure(Manifest([Load]), 78, new InvalidOperationException("boom"));
+
+        diagnostic.ClassifiedExitCode.Should().Be(78);
+        diagnostic.FailureExceptionType.Should().Be(typeof(InvalidOperationException).FullName);
+        diagnostic.FallbackEnabled.Should().BeTrue();
+        diagnostic.OrchestratorState.Should().BeNull("no orchestration result existed");
+        diagnostic.FinalPc.Should().BeNull();
         diagnostic.AotRetiredInstructions.Should().BeNull();
     }
 

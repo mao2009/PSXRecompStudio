@@ -14,7 +14,11 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// exit code, handoff or snapshot. Fields the host genuinely measured carry values; fields it
 /// cannot measure from outside the artifact are <c>null</c> rather than guessed
 /// (<see cref="TransferSourcePc"/>, <see cref="TransferOpcode"/>, <see cref="LastAotBlockPc"/>),
-/// because the artifact's wire protocol carries only the transfer's target.
+/// because the artifact's wire protocol carries only the transfer's target. A run that produced no
+/// snapshot (a timeout, an engine failure) leaves <see cref="FinalPc"/> and the counts it never
+/// obtained <c>null</c> rather than 0. <see cref="ClassifiedExitCode"/> is the host's classified result
+/// code (<c>RecompiledArtifactResult.ExitCode</c>), not the artifact process's own exit code, which
+/// the host does not expose.
 /// </remarks>
 [Infrastructure]
 public sealed record RuntimeHostDiagnostic(
@@ -32,13 +36,46 @@ public sealed record RuntimeHostDiagnostic(
     ulong? AotRetiredInstructions,
     ulong? FallbackRetiredInstructions,
     uint? FallbackTransitionCount,
-    int NativeExitCode,
+    int ClassifiedExitCode,
     string? NativeTerminationReason,
-    string OrchestratorState,
+    string? OrchestratorState,
     string? OrchestratorDiagnosticCode,
     bool TimedOut,
-    IReadOnlyList<MixedFallbackTarget>? FallbackTargets = null)
+    IReadOnlyList<MixedFallbackTarget>? FallbackTargets = null,
+    string? FailureExceptionType = null)
 {
+    /// <summary>
+    /// The diagnostic for a run that ended in an exception before any orchestration result existed: only the manifest's
+    /// static facts and the classified exit code are known; every measured field stays <c>null</c>.
+    /// </summary>
+    public static RuntimeHostDiagnostic FromFailure(RuntimeHostManifest manifest, int exitCode, Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(exception);
+
+        return new RuntimeHostDiagnostic(
+            FinalPc: null,
+            LastAotBlockPc: null,
+            TransferSourcePc: null,
+            TransferTargetPc: null,
+            TransferOpcode: null,
+            TargetHasCompiledBlock: null,
+            TargetInsideImage: null,
+            FallbackEnabled: manifest.MixedFallback,
+            FallbackAttempted: null,
+            FallbackOutcome: null,
+            FallbackRejectReason: null,
+            AotRetiredInstructions: null,
+            FallbackRetiredInstructions: null,
+            FallbackTransitionCount: null,
+            ClassifiedExitCode: exitCode,
+            NativeTerminationReason: null,
+            OrchestratorState: null,
+            OrchestratorDiagnosticCode: null,
+            TimedOut: false,
+            FailureExceptionType: exception.GetType().FullName);
+    }
+
     /// <summary>The <see cref="FallbackOutcome"/> recorded when a transfer reached a fallback that declined it.</summary>
     public const string IneligibleOutcome = "ineligible";
 
@@ -82,7 +119,7 @@ public sealed record RuntimeHostDiagnostic(
             AotRetiredInstructions: aotRetiredInstructions,
             FallbackRetiredInstructions: fallbackRetiredInstructions,
             FallbackTransitionCount: fallbackTransitionCount,
-            NativeExitCode: exitCode,
+            ClassifiedExitCode: exitCode,
             NativeTerminationReason: execution.FinalSnapshot?.Termination.ToString(),
             OrchestratorState: execution.State.ToString(),
             OrchestratorDiagnosticCode: execution.DiagnosticCode,

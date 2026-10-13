@@ -83,9 +83,10 @@ public static class Program
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
 
+        RuntimeHostManifest? manifest = null;
         try
         {
-            var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
 
             if (!Directory.Exists(manifestDirectory))
             {
@@ -181,12 +182,24 @@ public static class Program
                 Console.Write(consoleOutput);
             }
 
+            // A timeout or an engine failure ends the run with no snapshot: the guest pc is then unknown, not guessed.
+            var guestPc = execution.FinalSnapshot is { } snapshot ? $"0x{snapshot.PC:X8}" : "unknown";
             Console.Error.WriteLine($"runtime host: classified as {result.Outcome} (state {execution.State});" +
-                $" guest pc 0x{execution.FinalSnapshot.PC:X8}, exit {result.ExitCode}");
+                $" guest pc {guestPc}, exit {result.ExitCode}");
 
             if (diagnosticsPath is not null)
             {
-                WriteDiagnostics(diagnosticsPath, manifest, execution, result.ExitCode, engine);
+                WriteDiagnostics(
+                    diagnosticsPath,
+                    () => RuntimeHostDiagnostic.From(
+                        manifest,
+                        execution,
+                        result.ExitCode,
+                        engine.NativeRetiredInstructions,
+                        engine.FallbackEvidence?.FallbackInstructions,
+                        engine.FallbackEvidence?.Transitions,
+                        engine.LastDeclinedTransfer,
+                        engine.FallbackEvidence?.Targets));
             }
 
             return RecompiledArtifactExitCode.ExitCodeFor(execution.State);
@@ -199,6 +212,12 @@ public static class Program
             {
                 Console.Error.WriteLine(
                     $"runtime host: inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+            }
+
+            // Only the manifest's static facts exist once the run itself threw.
+            if (diagnosticsPath is not null && manifest is not null)
+            {
+                WriteDiagnostics(diagnosticsPath, () => RuntimeHostDiagnostic.FromFailure(manifest, 78, ex));
             }
 
             return 78;
@@ -219,28 +238,15 @@ public static class Program
     /// Writes the Issue #763 stop diagnostic. Best-effort: a diagnostics write failure is
     /// reported on stderr but never changes the run's classified exit code.
     /// </summary>
-    private static void WriteDiagnostics(
-        string path,
-        RuntimeHostManifest manifest,
-        TitleExecutionResult execution,
-        int exitCode,
-        RecompiledHostExecutionEngine engine)
+    private static void WriteDiagnostics(string path, Func<RuntimeHostDiagnostic> build)
     {
         try
         {
-            var diagnostic = RuntimeHostDiagnostic.From(
-                manifest,
-                execution,
-                exitCode,
-                engine.NativeRetiredInstructions,
-                engine.FallbackEvidence?.FallbackInstructions,
-                engine.FallbackEvidence?.Transitions,
-                engine.LastDeclinedTransfer,
-                engine.FallbackEvidence?.Targets);
-            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(diagnostic));
+            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        catch (Exception ex)
         {
+            // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
             Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
         }
     }

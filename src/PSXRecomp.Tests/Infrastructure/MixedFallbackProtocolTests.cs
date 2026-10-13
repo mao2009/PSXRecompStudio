@@ -190,22 +190,62 @@ public sealed class MixedFallbackProtocolTests
         second.Should().Equal(first, "a query changes no artifact state");
     }
 
+    private static string Decision(uint resume) =>
+        $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {resume} 0 0";
+
     [Fact]
-    public void Query_ReportsAHostResolvedResumeAsIndirect_WhenItLandsOnUncompiledCode()
+    public void Query_ReportsAMarkedHostResolvedResumeAsIndirect_WhenItLandsOnUncompiledCode()
     {
-        // Issue #763: a host-handled BIOS call returns to ra (the host's own `jr ra`). When ra lies in code the build never
-        // compiled, the artifact offers it again; the fallback must see a runtime target, not a "static" transfer.
+        // Issue #763: a host-handled BIOS call returns to ra (the host's own `jr ra`), which the host marks with J. When ra
+        // lies in code the build never compiled, the artifact offers it again; the fallback must see a runtime target.
         using var dir = BuildStoreAndJump();
         using var session = new Session(dir);
         session.AwaitTransfer().Should().Be(Target);
         QueryHeader(session)[2].Should().Be("1", "the first transfer is the target of the artifact's own JALR");
 
         var resume = Target + 0x40u;
-        session.Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {resume} 0 0");
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.Send(Decision(resume));
 
         session.AwaitTransfer().Should().Be(resume, "the resume pc has no block, so the artifact offers it");
-        QueryHeader(session)[2].Should().Be("1", "a host-resolved resume is a runtime target like a register-indirect jump");
+        QueryHeader(session)[2].Should().Be("1", "a host-resolved `jr ra` resume is a runtime target like a register-indirect jump");
     }
+
+    [Fact]
+    public void Query_DoesNotReportAnUnmarkedHostResolvedResumeAsIndirect()
+    {
+        // Issue #763: a patched jump-table target, a SYSCALL/exception resume, B0:17 or a pending wait is resolved by the host
+        // but is not its `jr ra`; without J the artifact keeps the provenance its own jump set, so the query stays fail-closed.
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer().Should().Be(Target);
+
+        var resume = Target + 0x40u;
+        session.Send(Decision(resume));
+
+        session.AwaitTransfer().Should().Be(resume);
+        QueryHeader(session)[2].Should().Be("0", "an unmarked resume must not become an indirect target");
+    }
+
+    [Fact]
+    public void Query_AMarkedResumeDoesNotMarkTheNextDecision()
+    {
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer().Should().Be(Target);
+
+        var first = Target + 0x40u;
+        session.Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+        session.Send(Decision(first));
+        session.AwaitTransfer().Should().Be(first);
+        QueryHeader(session)[2].Should().Be("1");
+
+        var second = Target + 0x80u;
+        session.Send(Decision(second));
+        session.AwaitTransfer().Should().Be(second);
+        QueryHeader(session)[2].Should().Be("0", "the J mark belonged to the previous decision only");
+    }
+
 
     [Fact]
     public void Query_AnUnknownVersionIsRefused_AndChangesNothing()
@@ -347,6 +387,19 @@ public sealed class MixedFallbackProtocolTests
         session.SendExpectingDeath(command);
 
         session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.FallbackProtocolExitCode, why);
+    }
+
+    [Fact]
+    public void IndirectResumeMark_WithAnOperand_IsFatal_NeverIgnored()
+    {
+        // J is a bare mark: an operand would be read as the next command, which does not exist (Issue #763).
+        using var dir = BuildStoreAndJump();
+        using var session = new Session(dir);
+        session.AwaitTransfer();
+
+        session.SendExpectingDeath($"{RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand} 1");
+
+        session.WaitForFatalExit().Should().Be(RecompiledArtifactCodeGen.RetiredProtocolExitCode);
     }
 
     [Fact]

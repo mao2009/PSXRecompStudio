@@ -256,6 +256,58 @@ public sealed class MixedFallbackTests
     }
 
     [Fact]
+    public void HleBiosReturn_ToUncompiledImageCode_IsRunByTheFallback_LikeTheInterpreter()
+    {
+        // Issue #763: A0:putchar returns to $ra through the host, and $ra lies in image code the static build never
+        // reached. That return is the host's own `jr ra`, a runtime target, so the fallback must run it.
+        const uint done = Target + 0x100u;
+        var main = new Block(Entry);
+        main.Emit(Li(Ra, Target), Li(T1, BiosHleRuntime.PutCharFunction), Li(A0, 0x41u), Li(T0, BiosJumpTables.A0VectorAddress));
+        // A never-taken branch makes `done` a statically compiled block, the clean entry the fallback returns to.
+        main.Emit(MipsEncoding.Branch(0x05, 0, 0, main.Here, done), Nop);
+        main.Emit(Jr(T0), Nop);
+        var tail = new Block(Target);
+        tail.Emit(Ori(S1, Zero, 0x77), MipsEncoding.Jump(done), Nop);
+        var doneBlock = new Block(done);
+        doneBlock.Emit(End());
+        var words = Image(main, tail, doneBlock);
+        using var dir = new TempDirectory();
+
+        var run = RunArtifact(words, dir, On);
+
+        run.Result.State.Should().Be(TitleExecutionState.Completed, run.Result.DiagnosticMessage);
+        Gpr(run.Result, S1).Should().Be(0x77u, "the uncompiled return point ran");
+        run.Evidence!.Transitions.Should().Be(1, "the return point was handed to the interpreter once");
+        run.DeclinedTransfer!.TargetPc.Should().Be(0u, "the only declined transfer is the program's own end marker");
+        AssertSameCpuAsInterpreter(run.Result, RunInterpreter(words));
+    }
+
+    [Fact]
+    public void PatchedBiosTarget_ToUncompiledImageCode_StaysFailClosed()
+    {
+        // Issue #763: a guest-patched A0 jump-table entry is host-resolved but is not the host's `jr ra`; the artifact has no
+        // block there and the fallback must not claim it, exactly as before the host-resume marker existed.
+        const byte Unregistered = 0x10;
+        var main = new Block(Entry);
+        main.Emit(Li(T2, BiosJumpTables.EntryAddress(BiosCallFamily.A0, Unregistered)), Li(T3, Target));
+        main.Emit(Sw(T3, T2, 0));
+        main.Emit(Li(Ra, Entry), Li(T1, Unregistered), Li(T0, BiosJumpTables.A0VectorAddress));
+        main.Emit(Jr(T0), Nop);
+        var tail = new Block(Target);
+        tail.Emit(Ori(S1, Zero, 0x77));
+        tail.Emit(End());
+        using var dir = new TempDirectory();
+
+        var run = RunArtifact(Image(main, tail), dir, On);
+
+        run.Result.State.Should().Be(TitleExecutionState.UnsupportedTransfer);
+        run.Result.FinalSnapshot!.PC.Should().Be(Target);
+        run.Evidence!.Transitions.Should().Be(0, "nothing was handed to the interpreter");
+        run.DeclinedTransfer.Should().NotBeNull();
+        run.DeclinedTransfer!.RejectReason.Should().Be(MixedFallbackDiagnostics.IneligibleNotIndirect);
+    }
+
+    [Fact]
     public void RamGeneratedCode_IsNotExecutedByTheFallback()
     {
         // The guest builds a "JR $ra" in RAM and jumps to it: arbitrary RAM execution is not a fallback case.

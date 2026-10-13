@@ -1244,6 +1244,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 ApplyCpuState(gpr, cpuState);
             }
 
+            // Issue #763: only the plain HLE return (NextPc == $ra) is the host's own `jr ra`, a runtime-discovered target.
+            // A patched jump-table target and a replaced CPU state (B0:17) keep their fail-closed provenance.
+            if (!outcome.IsPatchedTarget && outcome.CpuState is null)
+            {
+                Send(RecompiledArtifactCodeGen.ProtocolIndirectResumeCommand);
+            }
+
             Send(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {outcome.NextPc} " +

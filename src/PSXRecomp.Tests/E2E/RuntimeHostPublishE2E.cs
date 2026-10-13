@@ -167,8 +167,106 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         using var document = System.Text.Json.JsonDocument.Parse(json);
         var root = document.RootElement;
         root.GetProperty("orchestratorState").GetString().Should().Be("Completed");
-        root.GetProperty("nativeExitCode").GetInt32().Should().Be(0);
+        root.GetProperty("classifiedExitCode").GetInt32().Should().Be(0);
+        root.TryGetProperty("nativeExitCode", out _).Should().BeFalse("the field was renamed: it never held a native process exit code");
         root.GetProperty("fallbackEnabled").GetBoolean().Should().BeTrue();
+    }
+
+    // lui t0,0x8000 / ori t0,t0,0x3000 / jr t0 / nop: a register-indirect jump outside the image.
+    private static readonly uint[] JumpOutOfImage = [0x3C088000u, 0x35083000u, 0x01000008u, 0u];
+
+    /// <summary>Packages <paramref name="words"/> and returns the host and manifest paths (the run timeout optionally overridden).</summary>
+    private (string Host, string Manifest, string Dir) PackageProgram(uint[] words, int? runTimeoutMs = null)
+    {
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.BuildExe(words));
+        var outputDir = _tempDir.CreateSubdirectory("test-game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback");
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package command must succeed: error='{error}', output='{output}'");
+
+        var host = Path.Join(outputDir, RuntimeHostLayout.HostRelativePathFor(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
+        var manifest = Path.Join(outputDir, RuntimeHostLayout.ManifestRelativePath);
+#pragma warning disable AARC003 // Test-layer rewrite of the packaged manifest's timeout
+        if (runTimeoutMs is { } timeout)
+        {
+            var json = File.ReadAllText(manifest);
+            var rewritten = System.Text.RegularExpressions.Regex.Replace(
+                json, "\"runTimeoutMs\"\\s*:\\s*\\d+", $"\"runTimeoutMs\": {timeout}");
+            rewritten.Should().NotBe(json, "the manifest carries a runTimeoutMs to override");
+            File.WriteAllText(manifest, rewritten);
+        }
+#pragma warning restore AARC003
+
+        return (host, manifest, outputDir);
+    }
+
+    private static JsonElement ReadDiagnostic(string path)
+    {
+#pragma warning disable AARC003 // Test-layer verification of the diagnostic artifact
+        File.Exists(path).Should().BeTrue("--diagnostics must write the stop diagnostic");
+        return JsonDocument.Parse(File.ReadAllText(path)).RootElement.Clone();
+#pragma warning restore AARC003
+    }
+
+    /// <summary>
+    /// Issue #763: a timed-out run has no final snapshot. The host must not crash formatting the pc: it keeps the
+    /// run's own classified exit code, says the pc is unknown, and still writes a diagnostic with nothing invented.
+    /// </summary>
+    [SkippableFact]
+    public void TimedOutRunWithoutSnapshot_KeepsItsExitCode_AndWritesADiagnosticWithUnknownValuesNull()
+    {
+        RequireGcc();
+        // The 1 ms bound expires before the artifact process can even start.
+        var (host, manifest, dir) = PackageProgram([0x34020042u], runTimeoutMs: 1);
+        var diagnosticsPath = Path.Join(dir, "timeout-diagnostic.json");
+
+        var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, extraArguments: ["--diagnostics", diagnosticsPath]);
+        var withoutDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest);
+
+        withDiagnostics.ExitCode.Should().Be(RecompiledArtifactExitCode.Failure, $"stderr: {withDiagnostics.Stderr}");
+        withDiagnostics.Stderr.Should().Contain("guest pc unknown").And.NotContain("NullReferenceException");
+        withoutDiagnostics.ExitCode.Should().Be(withDiagnostics.ExitCode, "diagnostics never change the classified exit code");
+        withoutDiagnostics.Stderr.Should().Contain("guest pc unknown");
+
+        var root = ReadDiagnostic(diagnosticsPath);
+        root.GetProperty("timedOut").GetBoolean().Should().BeTrue();
+        root.GetProperty("finalPc").ValueKind.Should().Be(JsonValueKind.Null, "a run with no snapshot has no known pc");
+        root.GetProperty("transferTargetPc").ValueKind.Should().Be(JsonValueKind.Null);
+        root.GetProperty("classifiedExitCode").GetInt32().Should().Be(RecompiledArtifactExitCode.Failure);
+    }
+
+    /// <summary>Issue #763: an UnsupportedTransfer with a snapshot is diagnosed; the exit code matches the diagnostics-off run.</summary>
+    [SkippableFact]
+    public void UnsupportedTransferWithSnapshot_ReportsPcAndRejectReason_AndMatchesTheDiagnosticsOffRun()
+    {
+        RequireGcc();
+        var (host, manifest, dir) = PackageProgram(JumpOutOfImage);
+        var diagnosticsPath = Path.Join(dir, "transfer-diagnostic.json");
+
+        var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, extraArguments: ["--diagnostics", diagnosticsPath]);
+        var withoutDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest);
+
+        withDiagnostics.ExitCode.Should().Be(RecompiledArtifactExitCode.Blocked, $"stderr: {withDiagnostics.Stderr}");
+        withoutDiagnostics.ExitCode.Should().Be(withDiagnostics.ExitCode);
+        withoutDiagnostics.Stderr.Should().Be(withDiagnostics.Stderr, "the console report is identical with diagnostics on and off");
+
+        var root = ReadDiagnostic(diagnosticsPath);
+        root.GetProperty("orchestratorState").GetString().Should().Be("UnsupportedTransfer");
+        root.GetProperty("finalPc").GetUInt32().Should().Be(0x80003000u);
+        root.GetProperty("fallbackRejectReason").GetString().Should().Be(MixedFallbackDiagnostics.IneligibleOutOfImage);
+    }
+
+    /// <summary>Issue #763: a diagnostics path that cannot be written never changes the run's result.</summary>
+    [SkippableFact]
+    public void UnwritableDiagnosticsPath_DoesNotChangeTheExitCode()
+    {
+        RequireGcc();
+        var (host, manifest, dir) = PackageProgram([0x34020042u]);
+        var unwritable = Path.Join(dir, "no-such-directory", "diagnostic.json");
+
+        var result = RuntimeHostBuildService.RunRuntimeHost(host, manifest, extraArguments: ["--diagnostics", unwritable]);
+
+        result.ExitCode.Should().Be(RecompiledArtifactExitCode.Success, $"stderr: {result.Stderr}");
+        result.Stderr.Should().Contain("could not write diagnostics").And.Contain("classified as Success");
     }
 
     /// <summary>
