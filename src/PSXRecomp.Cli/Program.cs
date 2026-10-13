@@ -28,6 +28,7 @@ public static class Program
     private const string UsageDoctor = "usage: psxrecomp doctor [--json]";
     private const string UsageOpenBiosProbe = OpenBiosProbeCommand.Usage;
     private const string UsageRun = "usage: psxrecomp run <input.exe|input.chd> [--output <dir>] [--segment-budget <n>] [--entry-root <0xPC>]... [--standalone] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--report] [--frame-evidence] [--json]";
+    private const string UsagePackage = "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--self-contained] [--json]";
     private const string UsageScreenshot = ScreenshotCommand.Usage;
 
     public static int Main(string[] args) => Execute(args, Console.Out, Console.Error);
@@ -51,8 +52,9 @@ public static class Program
         var rest = args[1..];
         return command switch
         {
-            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, standardOutput, standardError),
-            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, standardOutput, standardError),
+            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowMixedFallback: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
+            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowMixedFallback: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
+            "package" => Dispatch("package", rest, allowSegmentBudget: false, allowMixedFallback: true, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: true, allowGuestFirmware: true, standardOutput, standardError),
             "screenshot" => ScreenshotCommand.Run(rest, standardOutput, standardError),
             "doctor" => Doctor(rest, standardOutput, standardError),
             "openbios-probe" => OpenBiosProbeCommand.Run(rest, standardOutput, standardError),
@@ -65,13 +67,16 @@ public static class Program
         string command,
         IReadOnlyList<string> arguments,
         bool allowSegmentBudget,
+        bool allowMixedFallback,
         bool allowReport,
         bool allowFrameEvidence,
         bool requireOutput,
+        bool allowSelfContained,
+        bool allowGuestFirmware,
         TextWriter standardOutput,
         TextWriter standardError)
     {
-        if (!TryParse(arguments, allowSegmentBudget, allowReport, allowFrameEvidence, requireOutput, out var parsed, out var error))
+        if (!TryParse(arguments, allowSegmentBudget, allowMixedFallback, allowReport, allowFrameEvidence, requireOutput, allowSelfContained, allowGuestFirmware, out var parsed, out var error))
         {
             standardError.WriteLine($"psxrecomp {command}: {error}");
             WriteCommandUsage(command, standardError);
@@ -84,9 +89,13 @@ public static class Program
             return RecompiledArtifactExitCode.Success;
         }
 
-        return command == "recompile"
-            ? RecompileCommand.Run(parsed, standardOutput, standardError)
-            : RunCommand.Run(parsed, standardOutput, standardError);
+        return command switch
+        {
+            "recompile" => RecompileCommand.Run(parsed, standardOutput, standardError),
+            "run" => RunCommand.Run(parsed, standardOutput, standardError),
+            "package" => PackageCommand.Run(parsed, standardOutput, standardError),
+            _ => RecompiledArtifactExitCode.Failure,
+        };
     }
 
     /// <summary>
@@ -97,9 +106,12 @@ public static class Program
     private static bool TryParse(
         IReadOnlyList<string> arguments,
         bool allowSegmentBudget,
+        bool allowMixedFallback,
         bool allowReport,
         bool allowFrameEvidence,
         bool requireOutput,
+        bool allowSelfContained,
+        bool allowGuestFirmware,
         out ParsedArguments parsed,
         out string? error)
     {
@@ -119,6 +131,8 @@ public static class Program
         uint? fallbackMaxTransitions = null;
         var entryRoots = new SortedSet<uint>();
         var help = false;
+        bool selfContained = false;
+        bool? guestFirmware = null;
 
         for (var i = 0; i < arguments.Count; i++)
         {
@@ -160,10 +174,10 @@ public static class Program
                     segmentBudget = budget;
                     break;
                 case "--mixed-fallback":
-                    if (!allowSegmentBudget)
+                    if (!allowMixedFallback)
                     {
                         parsed = default;
-                        error = $"'{token}' is only valid for 'run'.";
+                        error = $"'{token}' is only valid for 'run' or 'package'.";
                         return false;
                     }
                     if (explicitMixedFallback == false)
@@ -175,10 +189,10 @@ public static class Program
                     explicitMixedFallback = true;
                     break;
                 case "--no-mixed-fallback":
-                    if (!allowSegmentBudget)
+                    if (!allowMixedFallback)
                     {
                         parsed = default;
-                        error = $"'{token}' is only valid for 'run'.";
+                        error = $"'{token}' is only valid for 'run' or 'package'.";
                         return false;
                     }
                     if (explicitMixedFallback == true)
@@ -190,10 +204,10 @@ public static class Program
                     explicitMixedFallback = false;
                     break;
                 case "--fallback-segment-budget" or "--fallback-max-transitions":
-                    if (!allowSegmentBudget)
+                    if (!allowMixedFallback)
                     {
                         parsed = default;
-                        error = $"'{token}' is only valid for 'run'.";
+                        error = $"'{token}' is only valid for 'run' or 'package'.";
                         return false;
                     }
                     if (i + 1 >= arguments.Count)
@@ -258,6 +272,37 @@ public static class Program
                 case "--standalone":
                     standalone = true;
                     break;
+                case "--self-contained":
+                    if (!allowSelfContained)
+                    {
+                        parsed = default;
+                        error = "'--self-contained' is only valid for 'package'.";
+                        return false;
+                    }
+                    selfContained = true;
+                    break;
+                case "--guest-firmware" or "--no-guest-firmware":
+                    if (!allowGuestFirmware)
+                    {
+                        parsed = default;
+                        error = "'--guest-firmware'/'--no-guest-firmware' is only valid for 'package'.";
+                        return false;
+                    }
+                    if (token == "--no-guest-firmware")
+                    {
+                        guestFirmware = false;
+                    }
+                    else
+                    {
+                        if (guestFirmware == true)
+                        {
+                            parsed = default;
+                            error = "'--guest-firmware' and '--no-guest-firmware' cannot be used together.";
+                            return false;
+                        }
+                        guestFirmware = true;
+                    }
+                    break;
                 default:
                     if (token.StartsWith("--", StringComparison.Ordinal))
                     {
@@ -276,7 +321,7 @@ public static class Program
             }
         }
 
-        var mixedFallback = explicitMixedFallback ?? allowSegmentBudget;
+        var mixedFallback = explicitMixedFallback ?? allowMixedFallback;
 
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {
@@ -287,7 +332,7 @@ public static class Program
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware);
             error = null;
             return true;
         }
@@ -306,7 +351,7 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware);
         error = null;
         return true;
     }
@@ -362,6 +407,7 @@ public static class Program
         writer.WriteLine("usage: psxrecomp <command> [options]");
         writer.WriteLine();
         writer.WriteLine("commands:");
+        writer.WriteLine("  package      build a standalone distribution that launches directly on Windows/Linux");
         writer.WriteLine("  recompile      build a runnable recompiled host artifact from a PS-X EXE or CHD");
         writer.WriteLine("  run            build and run a recompiled artifact from a PS-X EXE or CHD");
         writer.WriteLine("  screenshot     run a title headless and capture PNG screenshots at VBlank intervals");
@@ -379,7 +425,13 @@ public static class Program
 
     private static void WriteCommandUsage(string command, TextWriter writer)
     {
-        writer.WriteLine(command == "recompile" ? UsageRecompile : UsageRun);
+        writer.WriteLine(command switch
+        {
+            "recompile" => UsageRecompile,
+            "run" => UsageRun,
+            "package" => UsagePackage,
+            _ => UsageRun,
+        });
         WriteExitCodes(writer);
     }
 
@@ -392,8 +444,9 @@ public static class Program
 }
 
 /// <summary>
-/// The parsed, validated surface of one command invocation. Shared by both
-/// commands; the run-only <c>--segment-budget</c> and <c>--report</c> options are gated during parsing.
+/// The parsed, validated surface of one command invocation. Shared by all commands;
+/// run-only <c>--segment-budget</c>/<c>--report</c> options are gated during parsing,
+/// and <c>--self-contained</c>/<c>--guest-firmware</c> are package-only.
 /// </summary>
 [Infrastructure]
 internal sealed record ParsedArguments(
@@ -408,4 +461,6 @@ internal sealed record ParsedArguments(
     bool Help,
     bool MixedFallback = false,
     uint? FallbackSegmentBudget = null,
-    uint? FallbackMaxTransitions = null);
+    uint? FallbackMaxTransitions = null,
+    bool SelfContained = false,
+    bool? GuestFirmware = null);

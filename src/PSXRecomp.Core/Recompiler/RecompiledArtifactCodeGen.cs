@@ -56,6 +56,12 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Require deadline credits from the host in every synchronization reply.</summary>
     public const string ExactDeviceTimeFlag = "--exact-device-time";
 
+    /// <summary>Supplied by the runtime host to a packaged artifact to tell it to run the
+    /// embedded image standalone, without the launcher's delegation to the bundled
+    /// Runtime host (Phase 2 Step C, Issue #739, ADR-027).
+    /// </summary>
+    public const string RuntimeHostModeFlag = "--runtime-host";
+
     /// <summary>The child's handshake line, sent once before the first guest instruction runs.</summary>
     public const string ProtocolInitLine = "RHOST_INIT";
 
@@ -298,7 +304,8 @@ public static class RecompiledArtifactCodeGen
         IReadOnlyList<(uint Address, uint Value)> initialMemory,
         uint imageLoadAddress,
         IReadOnlyList<byte> programImage,
-        bool hostBridge = false)
+        bool hostBridge = false,
+        string? directLaunchHostRelativePath = null)
     {
         ArgumentNullException.ThrowIfNull(generatedDispatch);
         ArgumentNullException.ThrowIfNull(initialGpr);
@@ -345,7 +352,8 @@ public static class RecompiledArtifactCodeGen
             initialMemory,
             imageLoadAddress,
             programImage,
-            hostBridge);
+            hostBridge,
+            directLaunchHostRelativePath);
 
         if (!standaloneSource.Success)
         {
@@ -374,7 +382,8 @@ public static class RecompiledArtifactCodeGen
         IReadOnlyList<(uint Address, uint Value)> initialMemory,
         uint imageLoadAddress,
         IReadOnlyList<byte> programImage,
-        bool hostBridge = false)
+        bool hostBridge = false,
+        string? directLaunchHostRelativePath = null)
     {
         var sb = new System.Text.StringBuilder();
 
@@ -520,8 +529,24 @@ public static class RecompiledArtifactCodeGen
         // comment that sits exactly where the old main began, not on the signature
         // text itself (fragile). The old main body immediately follows the marker, so
         // we replace the whole [marker .. old main closing brace] region at once.
-        var standaloneMain = BuildStandaloneMain(hostBridge);
+        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath);
         const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
+
+        // Split the launcher prologue into a file-scope header (preprocessor directives
+        // needed for POSIX declarations before the dispatch source includes) and a runtime
+        // block (run_via_runtime_host + delegation check, placed just before the main
+        // marker). This avoids defining run_via_runtime_host twice.
+        string prologueHeader = "";
+        string prologueRuntime = launcherPrologue ?? "";
+        if (prologueRuntime.Length > 0)
+        {
+            int split = prologueRuntime.IndexOf("    static int run_via_runtime_host(void)",
+                                                StringComparison.Ordinal);
+            // The runtime block marker is always present inside a launcher prologue.
+            System.Diagnostics.Debug.Assert(split > 0, "launcher prologue runtime block not found");
+            prologueHeader = prologueRuntime.Substring(0, split);
+            prologueRuntime = prologueRuntime.Substring(split);
+        }
         var mainStart = fullDriver.IndexOf(mainMarker, StringComparison.Ordinal);
         if (mainStart < 0)
         {
@@ -557,7 +582,14 @@ public static class RecompiledArtifactCodeGen
                 "The driver template's main marker and its closing brace are in an unexpected order.");
         }
 
-        fullDriver = fullDriver.Substring(0, mainStart) + standaloneMain + fullDriver.Substring(mainEnd + 1);
+                if (prologueRuntime.Length > 0)
+        {
+            fullDriver = prologueRuntime + fullDriver.Substring(0, mainStart) + standaloneMain + fullDriver.Substring(mainEnd + 1);
+        }
+        else
+        {
+            fullDriver = fullDriver.Substring(0, mainStart) + standaloneMain + fullDriver.Substring(mainEnd + 1);
+        }
 
         // Validate that the standalone main was inserted and that no file-reading
         // helper from the original driver leaked into the source (the artifact must be
@@ -573,10 +605,11 @@ public static class RecompiledArtifactCodeGen
         }
 
         return new RecompiledArtifactCodeGenResult(
-            true, standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
+            true, prologueHeader + standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
     }
 
-    private static string BuildStandaloneMain(bool hostBridge)
+    private static (string? LauncherPrologue, string Main) BuildStandaloneMain(
+        bool hostBridge, string? directLaunchHostRelativePath)
     {
         // Phase 2 (Issue #757): the embedded-image artifact may attach the shared
         // Runtime host bridge when the caller opts in (--host-transfer), so it runs
@@ -624,7 +657,162 @@ int main(int argc, char** argv) {
     artifact_mmio_bridge = 0;
 ";
 
-        return bridgePrologue + @"    RecompilerState state;
+        var launcherPrologue = directLaunchHostRelativePath is not null
+            ? @"
+    /* Bundled Runtime host discovery for direct launch (Issue #739 Phase 2 Step C,
+       ADR-027 Option B): the runtime host and its manifest live in a <runtime>
+       subdirectory next to this executable, and the names are fixed so a generated
+       artifact never needs an absolute path or an environment variable. */
+#if defined(_WIN32)
+#include <windows.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <wchar.h>
+#define RUNTIME_HOST_BINARY ""PSXRecomp.RuntimeHost.exe""
+#if !defined(PATH_MAX)
+#define PATH_MAX MAX_PATH
+#endif
+#else
+/* macOS: dyld API for executable path resolution (see below); Linux and
+   other Unix: /proc/self/exe. Enable POSIX declarations under strict
+   -std=c11. */
+#define _POSIX_C_SOURCE 200809L
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <limits.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+#define RUNTIME_HOST_BINARY ""PSXRecomp.RuntimeHost""
+#endif
+#if !defined(PATH_MAX)
+#define PATH_MAX 1024
+#endif
+#define RUNTIME_HOST_REL_PATH ""runtime/"" RUNTIME_HOST_BINARY
+#define RUNTIME_HOST_MANIFEST ""runtime/runtime-host.json""
+#define MissingRuntimeHostExitCode 78
+
+    /* Launch the bundled Runtime host with the manifest path so it can run the
+       embedded artifact (direct launch, Issue #739 Phase 2 Step C, ADR-027). On
+       success the runtime host replaces this process; on failure it returns
+       MissingRuntimeHostExitCode (78) with a diagnostic. */
+    static int run_via_runtime_host(void) {
+        char exe_dir[PATH_MAX];
+#ifdef _WIN32
+        wchar_t exe_w[MAX_PATH];
+        DWORD n = GetModuleFileNameW(NULL, exe_w, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) {
+            fprintf(stderr, ""error: cannot resolve this executable path (error %lu)\n"", (unsigned long)GetLastError());
+            return MissingRuntimeHostExitCode;
+        }
+        wchar_t* slash = wcsrchr(exe_w, L'\\');
+        if (slash) *slash = L'\0';
+        else { exe_w[0] = L'.'; exe_w[1] = L'\0'; }
+        int len = WideCharToMultiByte(CP_UTF8, 0, exe_w, -1, NULL, 0, NULL, NULL);
+        char* utf8 = malloc(len);
+        if (!utf8) return MissingRuntimeHostExitCode;
+        WideCharToMultiByte(CP_UTF8, 0, exe_w, -1, utf8, len, NULL, NULL);
+        snprintf(exe_dir, sizeof(exe_dir), ""%s"", utf8);
+        free(utf8);
+#else
+#if defined(__APPLE__)
+        /* macOS: resolve executable path via dyld. */
+        char exe_path[PATH_MAX * 2];
+        uint32_t len = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &len) != 0) {
+            fprintf(stderr, ""error: cannot resolve executable path\n"");
+            return MissingRuntimeHostExitCode;
+        }
+        strncpy(exe_dir, exe_path, sizeof(exe_dir) - 1);
+        exe_dir[sizeof(exe_dir) - 1] = '\0';
+        char* slash = strrchr(exe_dir, '/');
+        if (slash) *slash = '\0';
+#else
+        /* Linux and other Unix systems: resolve executable path via /proc/self/exe. */
+        ssize_t r = readlink(""/proc/self/exe"", exe_dir, sizeof(exe_dir) - 1);
+        if (r <= 0) {
+            fprintf(stderr, ""error: cannot resolve this executable path: %s\n"", strerror(errno));
+            return MissingRuntimeHostExitCode;
+        }
+        exe_dir[r] = '\0';
+        char* slash = strrchr(exe_dir, '/');
+        if (slash) *slash = '\0';
+#endif
+#endif
+
+        char host_path[PATH_MAX + 64];
+        char manifest_path[PATH_MAX + 64];
+        snprintf(host_path, sizeof(host_path), ""%s/%s"", exe_dir, RUNTIME_HOST_REL_PATH);
+        snprintf(manifest_path, sizeof(manifest_path), ""%s/%s"", exe_dir, RUNTIME_HOST_MANIFEST);
+
+#ifdef _WIN32
+        wchar_t host_w[PATH_MAX];
+        wchar_t manifest_w[PATH_MAX];
+        int hl = MultiByteToWideChar(CP_UTF8, 0, host_path, -1, host_w, PATH_MAX);
+        int ml = MultiByteToWideChar(CP_UTF8, 0, manifest_path, -1, manifest_w, PATH_MAX);
+        if (hl == 0 || ml == 0) {
+            fprintf(stderr, ""error: cannot encode runtime host paths (error %lu)\n"", (unsigned long)GetLastError());
+            return MissingRuntimeHostExitCode;
+        }
+        wchar_t cmd_line[PATH_MAX * 2 + 16];
+        /* Quote both paths to handle spaces and special characters safely. */
+        int cmd_len = swprintf(cmd_line, PATH_MAX * 2 + 16, L""\""%ls\"" \""%ls\"""", host_w, manifest_w);
+        if (cmd_len < 0) {
+            fprintf(stderr, ""error: cannot build command line\n"");
+            return MissingRuntimeHostExitCode;
+        }
+
+        STARTUPINFOW si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
+        if (!CreateProcessW(NULL, cmd_line, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+            fprintf(stderr, ""error: could not start the runtime host (error %lu)\n"", (unsigned long)GetLastError());
+            return MissingRuntimeHostExitCode;
+        }
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD exit_code = 0;
+        GetExitCodeProcess(pi.hProcess, &exit_code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return (int)exit_code;
+#else
+        if (access(host_path, F_OK) != 0) {
+            fprintf(stderr, ""error: runtime host not found: %s\n"", host_path);
+            return MissingRuntimeHostExitCode;
+        }
+        execl(host_path, host_path, manifest_path, NULL);
+        fprintf(stderr, ""error: could not launch the runtime host: %s\n"", strerror(errno));
+        return MissingRuntimeHostExitCode;
+#endif
+    }
+"
+            : null;
+
+        string delegationCheck = launcherPrologue is not null
+            ? @"
+    /* Direct launch (Issue #739 Phase 2 Step C, ADR-027 Option B): delegate to
+       the bundled Runtime host so the packaged distribution can launch with no
+       Studio, CLI or development repository present. Re-launched by the runtime
+       host with --host-transfer or --runtime-host, which suppresses this delegation. */
+    {
+        int skip = 0;
+        for (int argi = 1; argi < argc; argi++) {
+            if (strcmp(argv[argi], ""--host-transfer"") == 0) skip = 1;
+            if (strcmp(argv[argi], ""--runtime-host"") == 0) skip = 1;
+        }
+        if (!skip) {
+            int ret = run_via_runtime_host();
+            return ret;
+        }
+    }
+"
+            : @"";
+
+        return (launcherPrologue, bridgePrologue + delegationCheck + @"    RecompilerState state;
+
     memset(&state, 0, sizeof(state));
 
     // Copy embedded initial GPRs
@@ -682,7 +870,7 @@ int main(int argc, char** argv) {
 
     return (int)state.termination_reason;
 }
-";
+");
     }
 
     /// <summary>Artifact exit code: the program image file named by <c>argv[2]</c> could not be opened.</summary>

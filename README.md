@@ -71,6 +71,8 @@ No input to hand? Run the [synthetic demo](docs/development/showcase-demo.md), w
 
 ![Synthetic demo: pipeline and terminal output](docs/assets/demo/synthetic-demo.svg)
 
+**Packaged distribution (`psxrecomp package`):** creates a standalone game directory that launches directly on Windows or Linux — no Studio, no CLI, and no .NET SDK at runtime (when using `--self-contained`). See the [Runtime host documentation](docs/runtime/runtime-host.md) and [headless CLI reference](docs/development/headless-cli.md) for usage, layout, and exit codes.
+
 See the [headless CLI reference](docs/development/headless-cli.md) for JSON output, exit codes, report contents, and input behavior.
 
 ## Architecture

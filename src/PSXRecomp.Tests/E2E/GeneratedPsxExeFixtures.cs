@@ -123,8 +123,84 @@ public static class GeneratedPsxExeFixtures
         expectedGuestPc: UnresolvedJumpTarget,
         expectedDiagnosticCode: "UNRESOLVED_TRANSFER");
 
+    /// <summary>
+    /// Synthetic PS-X EXE fixture for Phase 2 Step C (Issue #739, ADR-027 Step C Option B).
+    /// Natural-end program that registers V0=0x5678 and immediately falls off the end of its text image
+    /// (into the ProgramEndHandoff). This is used to test the RuntimeHost-managed packaged distribution
+    /// launch flow, including missing-runtime exit code 78 validation.
+    /// </summary>
+    public static GeneratedPsxExeFixture NaturalEndWithV0 { get; } = new(
+        id: "natural-end-v0",
+        description: "RuntimeHost-managed natural-end flow: loads V0=0x5678 and falls off the end, ProgramEndHandoff triggers.",
+        instructionWords: new uint[]
+        {
+            // ori v0, $zero, 0x5678  (special-purpose V0 value 0x5678 for runtime-host testing)
+            Immediate(OriOpcode, R3000aRegister.V0, 0x5678u),
+            // Natural fall-through: no jump, PC reaches ProgramEndHandoff after this instruction
+        },
+        expectedSha256: "77bcfb726e70ed2f4a11ce9f2bd59b043ac846bc4abf4ab4ccacebebcbeb2d40",
+        expectedOutcome: RecompiledArtifactOutcome.Success,
+        expectedState: TitleExecutionState.Completed,
+        resultRegister: R3000aRegister.V0,
+        expectedResultValue: 0x5678u,
+        expectedGuestPc: EntryPc + 4,
+        expectedOutputByte: null,
+        expectedDiagnosticCode: null);
+
+    /// <summary>
+    /// Natural-end program with actual finite transitions before the natural exit.
+    /// Regular exit logic: JAL to a helper function within the image and fall off the end.
+    /// This is used for cross-platform sanity verification that the bridge mode works
+    /// for non-guest-firmware cases (Phase 2 Step C Option B).
+    /// </summary>
+    public static GeneratedPsxExeFixture NaturalEndWithTransitions { get; } = new(
+        id: "natural-end-transitions",
+        description: "Natural-end program with regular JAL transition to helper function then falls off the end.",
+        instructionWords: new uint[]
+        {
+            // ori v0, $zero, 0x42
+            Immediate(OriOpcode, R3000aRegister.V0, 0x42u),
+            // jal helper_func (at 0x80010008, within image)
+            Jump(JalOpcode, EntryPc + 8),
+            // delay slot: ori v1, $zero, 0x1 (executed before jump)
+            Immediate(OriOpcode, R3000aRegister.V1, 0x1u),
+            // helper_func: jr ra (return to delay slot PC + 4, which falls off end)
+            0x03e00008u, // jr ra
+        },
+        expectedSha256: "90b5e06a289dd4f5b8aa0904aaa8ecd64f68d9dd2d12cc76e8070cc253dbe180",
+        expectedOutcome: RecompiledArtifactOutcome.Success,
+        expectedState: TitleExecutionState.Completed,
+        resultRegister: R3000aRegister.V0,
+        expectedResultValue: 0x42u,
+        expectedGuestPc: EntryPc + 16,
+        expectedDiagnosticCode: null);
+
+    /// <summary>
+    /// Guest firmware auto-detection marker: OpenBIOS at load address 0x1FC00000.
+    /// This fixture verifies that the Runtime host does not HLE when GuestFirmware=true
+    /// (Phase 2 Step C Option B, BIOS-less installation). It falls off the end immediately.
+    /// </summary>
+    public static GeneratedPsxExeFixture GuestFirmwareOpenbios { get; } = new(
+        id: "guest-firmware-openbios",
+        description: "Guest firmware (OpenBIOS) at 0x1FC00000: native code execution, no HLE bridge. Falls off text immediately.",
+        instructionWords: new uint[]
+        {
+            // Diag: V0=0xDEADBEEF
+            Immediate(OriOpcode, R3000aRegister.V0, 0xDEADBEEFu),
+            // jal <nowhere>
+            Jump(JalOpcode, uint.MaxValue - 8u),
+            0u,
+        },
+        expectedSha256: "4a5764c64610a1ad9bd347c1735604296d9d3d61d36d8acfe7ee4168a43b5503",
+        expectedOutcome: RecompiledArtifactOutcome.Success,
+        expectedState: TitleExecutionState.Completed,
+        resultRegister: R3000aRegister.V0,
+        expectedResultValue: 0xDEADBEEFu,
+        expectedGuestPc: UnresolvedJumpTarget,
+        expectedDiagnosticCode: null);
+
     public static IReadOnlyList<GeneratedPsxExeFixture> All { get; } =
-        Array.AsReadOnly(new[] { BiosPutCharMarker, UnresolvedJump });
+        Array.AsReadOnly(new[] { BiosPutCharMarker, UnresolvedJump, NaturalEndWithV0, NaturalEndWithTransitions, GuestFirmwareOpenbios });
 
     /// <summary>
     /// Deterministically generates a minimal PS-X EXE in memory. All integers

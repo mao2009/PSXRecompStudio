@@ -49,6 +49,20 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 {
     public const string EngineName = "recompiled-host-artifact";
 
+    /// <summary>
+    /// How a prebuilt artifact (see <see cref="ForPrebuiltArtifact"/>) is launched
+    /// by the runtime host. <see cref="HostTransfer"/> relaunches the artifact with
+    /// <c>--host-transfer</c> and pumps the shared host-transfer bridge;
+    /// <see cref="RuntimeHost"/> relaunches it with <c>--runtime-host</c> (no launcher
+    /// re-delegation, no BIOS HLE Runtime: native firmware / openBIOS). Guest firmware still
+    /// gets the device-MMIO bridge, so its launch also carries <c>--host-transfer</c>.
+    /// </summary>
+    public enum PrebuiltArtifactLaunchMode
+    {
+        HostTransfer,
+        RuntimeHost,
+    }
+
     /// <summary>Mixed-execution evidence of the last run, or null when mixed execution was not enabled (Issue #693).</summary>
     public MixedFallbackEvidence? FallbackEvidence { get; private set; }
 
@@ -96,6 +110,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly string _outputDirectory;
     private readonly IGeneratedHostBuildService _buildService;
     private readonly bool _embedImage;
+    private readonly bool _prebuilt;
+    private string _prebuiltArtifactPath = string.Empty;
+    private PrebuiltArtifactLaunchMode _launchMode;
+    private string? _consoleOutput;
+
+    /// <summary>
+    /// Console output captured from a prebuilt runtime-host run (the guest's C
+    /// stdout up to the engine's RSNAPSHOT diagnostic block). The runtime host
+    /// forwards this to its own stdout so boot/TTY messages are visible.
+    /// </summary>
+    public string? ConsoleOutput => _consoleOutput;
 
     /// <summary>
     /// Called with the mixed-execution interpreter and the PC of every instruction it is about to fetch (diagnostic
@@ -196,16 +221,39 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         TimeSpan? runTimeout = null,
         ICdSectorSource? disc = null,
         LoadedCodeTable? loadedCode = null,
+        IReadOnlySet<uint>? blockEntryPcs = null,
+        string? prebuiltArtifactPath = null,
+        PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer,
         bool embedImage = false)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
-        ArgumentNullException.ThrowIfNull(buildService);
-        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
-        if (imageWords.Count == 0)
+
+        // Prebuilt artifact: no build service or output directory needed; they are ignored.
+        // Validate prebuilt-specific parameters first to allow null buildService/empty outputDirectory.
+        var prebuilt = prebuiltArtifactPath is not null;
+        if (prebuilt)
         {
-            // Mirrors InterpreterTitleExecutionEngine: no program image, nothing to run.
-            throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+            if (buildService is not null || !string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                throw new InvalidOperationException(
+                    "A prebuilt artifact is supplied directly; buildService and outputDirectory are ignored.");
+            }
+            // For prebuilt artifacts, we still need a non-empty program image.
+            if (imageWords.Count == 0)
+            {
+                throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+            }
+        }
+        else
+        {
+            ArgumentNullException.ThrowIfNull(buildService);
+            ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+            if (imageWords.Count == 0)
+            {
+                // Mirrors InterpreterTitleExecutionEngine: no program image, nothing to run.
+                throw new ArgumentException("The artifact needs a non-empty program image.", nameof(imageWords));
+            }
         }
 
         if (guestFirmware && biosRuntimeFactory is not null)
@@ -226,7 +274,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         _mixedFallback = mixedFallback;
         _exceptionChain = exceptionChain;
-        _blockEntryPcs = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
+        _blockEntryPcs = blockEntryPcs ?? program.Blocks.Select(static block => block.EntryPc).ToHashSet();
         _inputPath = Path.Combine(outputDirectory, "artifact-input.txt");
         _imagePath = Path.Combine(outputDirectory, "artifact-image.bin");
         _imageLoadAddress = imageLoadAddress;
@@ -237,6 +285,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         _outputDirectory = outputDirectory;
         _buildService = buildService;
         _embedImage = embedImage;
+        _prebuilt = prebuiltArtifactPath is not null;
+        _prebuiltArtifactPath = prebuiltArtifactPath ?? string.Empty;
+        _launchMode = launchMode;
+
+        if (_prebuilt)
+        {
+            // A prebuilt artifact is supplied by the caller: no code generation,
+            // no build, no input files. The artifact embeds its own initial state
+            // and program image, so RunSegment merely launches it with the chosen
+            // launch mode and pumps its host-transfer bridge when requested.
+            if (buildService is not null || !string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                throw new InvalidOperationException(
+                    "A prebuilt artifact is supplied directly; buildService and outputDirectory are ignored.");
+            }
+            _binaryPath = _prebuiltArtifactPath;
+            return;
+        }
 
         if (embedImage)
         {
@@ -269,6 +335,125 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         }
 
         _binaryPath = build.Artifact!.BinaryPath;
+    }
+
+    /// <summary>
+    /// Wraps an existing native artifact built by the CLI's packaging flow
+    /// (Issue #739 Phase 2 Step C, ADR-027 Option B). No code generation or
+    /// build happens: the artifact's own embedded initial state and program
+    /// image are used, and the engine becomes the orchestration/bridge layer
+    /// — shared <see cref="ExecutionOrchestrator"/>, classification via
+    /// <see cref="Core.Execution.RecompiledArtifactResult"/>, and mixed-execution
+    /// fallback accounting. The caller owns the artifact's lifecycle (it is
+    /// launched as a separate process from <see cref="RunSegment"/>).
+    /// </summary>
+    /// <param name="prebuiltArtifactPath">
+    /// The prebuilt artifact to launch. It must exist and be runnable; the
+    /// engine never rebuilds or regenerates it.
+    /// </param>
+    /// <param name="blockEntryPcs">
+    /// Every compiled block entry PC the artifact has (from the manifest),
+    /// so the host-transfer bridge can distinguish a patched transfer from an
+    /// actual compiled block. Null block PCs mean no bridge is useful: the host
+    /// must run in <see cref="PrebuiltArtifactLaunchMode.RuntimeHost"/> mode
+    /// (no bridge at all).
+    /// </param>
+    /// <param name="guestFirmware">True when the image is a firmware image
+    /// (for example OpenBIOS) that owns its kernel and vectors. A guest
+    /// firmware never has a BIOS HLE Runtime attached.</param>
+    /// <param name="biosRuntimeFactory">
+    /// Builds the HLE Runtime the artifact is relayed to when a bridge is
+    /// requested. Required for <see cref="PrebuiltArtifactLaunchMode.HostTransfer"/>;
+    /// forbidden for guest firmware.
+    /// </param>
+    /// <param name="mixedFallback">
+    /// Opt-in mixed execution: when set, an unresolved in-image indirect
+    /// transfer runs on the interpreter fallback and returns to the artifact
+    /// at a clean block entry, with fallback instructions counted. Null keeps
+    /// the pre-existing stop. For guest firmware this must be null.
+    /// </param>
+    /// <param name="runTimeout">The bound on one artifact run; null is 30 seconds.</param>
+    /// <param name="loadedCode">
+    /// The pre-generated (ahead-of-time) versions of code the guest places in
+    /// RAM; null: no RAM-placed code. For guest firmware this must be null.
+    /// </param>
+    /// <param name="launchMode">
+    /// How the prebuilt artifact is launched: <c>HostTransfer</c> relaunches it
+    /// with <c>--host-transfer</c> and pumps the shared host-transfer bridge
+    /// (HLE games); <c>RuntimeHost</c> relaunches it with <c>--runtime-host</c>,
+    /// without the BIOS HLE Runtime (native firmware / openBIOS); guest firmware still gets the
+    /// device-MMIO bridge, so that launch also passes <c>--host-transfer</c>.
+    /// </param>
+    /// <param name="imageWords">
+    /// The program image words for the host-transfer bridge / interpreter fallback
+    /// (for a prebuilt artifact this is the same image the artifact embeds). Null
+    /// keeps the default (empty); used by the bridge when it is attached.
+    /// </param>
+    /// <param name="imageLoadAddress">Guest address where <paramref name="imageWords"/> load; used by the bridge when attached.</param>
+    public static RecompiledHostExecutionEngine ForPrebuiltArtifact(
+        string prebuiltArtifactPath,
+        IReadOnlySet<uint> blockEntryPcs,
+        bool guestFirmware = false,
+        Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? biosRuntimeFactory = null,
+        MixedFallbackOptions? mixedFallback = null,
+        TimeSpan? runTimeout = null,
+        LoadedCodeTable? loadedCode = null,
+        IReadOnlyList<uint>? imageWords = null,
+        uint? imageLoadAddress = null,
+        PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer)
+    {
+        if (string.IsNullOrWhiteSpace(prebuiltArtifactPath))
+        {
+            throw new ArgumentException("The prebuilt artifact path must be non-empty.", nameof(prebuiltArtifactPath));
+        }
+
+        if (!File.Exists(prebuiltArtifactPath))
+        {
+            throw new FileNotFoundException("The prebuilt artifact was not found.", prebuiltArtifactPath);
+        }
+
+        if (blockEntryPcs is null)
+        {
+            throw new ArgumentNullException(nameof(blockEntryPcs));
+        }
+
+        if (biosRuntimeFactory is not null && guestFirmware)
+        {
+            throw new ArgumentException(
+                "A guest firmware owns its kernel: no BIOS HLE Runtime may be attached.", nameof(biosRuntimeFactory));
+        }
+
+        if (guestFirmware && biosRuntimeFactory is not null)
+        {
+            throw new ArgumentException(
+                "A guest firmware owns its kernel: no BIOS HLE Runtime may be attached.", nameof(biosRuntimeFactory));
+        }
+
+        if (guestFirmware && mixedFallback is not null && launchMode == PrebuiltArtifactLaunchMode.HostTransfer)
+        {
+            // Guest firmware with HostTransfer launch mode and mixed fallback is not a supported combination:
+            // the firmware owns its kernel and vectors, so HLE bridge + fallback doesn't apply.
+            // For RuntimeHost launch mode (native firmware), mixed fallback is allowed for the
+            // interpreter to handle RAM-resident code the firmware places.
+            throw new ArgumentException(
+                "Guest firmware with HostTransfer launch mode does not support mixed fallback.",
+                nameof(mixedFallback));
+        }
+
+        return new RecompiledHostExecutionEngine(
+            program: new RecompilerIrProgram([]),
+            imageWords: imageWords ?? Array.Empty<uint>(),
+            imageLoadAddress: imageLoadAddress ?? 0u,
+            buildService: null!,
+            outputDirectory: "",
+            biosRuntimeFactory: biosRuntimeFactory,
+            guestFirmware: guestFirmware,
+            runTimeout: runTimeout,
+            loadedCode: loadedCode,
+            blockEntryPcs: blockEntryPcs,
+            prebuiltArtifactPath: prebuiltArtifactPath,
+            launchMode: launchMode,
+            mixedFallback: mixedFallback);
     }
 
     public string Name => EngineName;
@@ -323,8 +508,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // sole input a TitleExecutionSegmentRequest carries no field for: it is
         // retained from Load and re-applied to this rewrite. The embedded-image
         // artifact (Phase 2, Issue #757) instead embeds exactly this state and
-        // needs no input files.
-        if (_embedImage)
+        // needs no input files. A prebuilt artifact (Issue #739 Step C) embeds its
+        // own state and image and is never rebuilt: its initial state is whatever
+        // the packaging flow compiled into it, so RunSegment never touches the
+        // request's state fields for launch.
+        if (_prebuilt)
+        {
+            // No input files are written for a prebuilt artifact: the artifact
+            // embeds its own initial state and program image.
+        }
+        else if (_embedImage)
         {
             BuildEmbeddedArtifact(segmentRequest.Pc, segmentRequest.Gpr, segmentRequest.Hi, segmentRequest.Lo, _initialMemory, segmentRequest.Budget);
         }
@@ -337,8 +530,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             ? null
             : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
         _bridge = bridge;
-        var arguments = new List<string>(4);
-        if (!_embedImage)
+
+        // Build the launch arguments. A prebuilt artifact in RuntimeHost mode gets
+        // --runtime-host (suppresses the launcher's re-delegation to the runtime
+        // host); a HostTransfer one needs no mode flag. Otherwise the ordinary
+        // build path supplies the input files. Whenever a bridge exists the artifact
+        // must be told to attach it (--host-transfer): attaching is the only thing
+        // that enables its MMIO bridge, so guest firmware launched in RuntimeHost
+        // mode would otherwise exit with the MMIO-unavailable code. With no bridge
+        // none of the bridge flags are passed.
+        var arguments = new List<string>(5);
+        if (_prebuilt)
+        {
+            if (_launchMode == PrebuiltArtifactLaunchMode.RuntimeHost)
+            {
+                arguments.Add(RecompiledArtifactCodeGen.RuntimeHostModeFlag);
+            }
+        }
+        else if (!_embedImage)
         {
             arguments.Add(_inputPath);
             arguments.Add(_imagePath);
@@ -356,6 +565,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         }
 
         var (exit, stdout, _, hostProtocolFaulted) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge);
+
+        // Capture the no-bridge run's stdout so a runtime host can forward the
+        // guest's console output (the boot/TTY text before the engine's
+        // RSNAPSHOT diagnostic block). Bridge runs surface TTY through the bridge's
+        // runtime sink instead and must not be double-buffered here.
+        if (_prebuilt && _launchMode == PrebuiltArtifactLaunchMode.RuntimeHost)
+        {
+            _consoleOutput = stdout;
+        }
 
         // Mixed-execution evidence is captured before any early return below: a handoff that happened is reported
         // even when the run then ends on a protocol fault, a timeout, or an MMIO or guest-time failure (Issue #693).
