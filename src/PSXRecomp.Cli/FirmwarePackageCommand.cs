@@ -41,7 +41,10 @@ internal static class FirmwarePackageCommand
                     options.CodeBytes ?? DefaultCodeBytes,
                     checked((options.RunTimeoutSeconds ?? DefaultRunTimeoutSeconds) * 1000),
                     arguments.SelfContained,
-                    InstructionBudget: options.InstructionBudget ?? uint.MaxValue),
+                    InstructionBudget: options.InstructionBudget ?? uint.MaxValue,
+                    MixedFallback: arguments.MixedFallback,
+                    FallbackSegmentInstructionBudget: arguments.FallbackSegmentBudget ?? uint.MaxValue,
+                    FallbackMaxTransitions: arguments.FallbackMaxTransitions ?? uint.MaxValue),
                 RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             standardOutput.WriteLine($"Firmware distribution packaged: {Path.GetFullPath(arguments.OutputDirectory!)}");
             standardOutput.WriteLine($"  bios:       {BiosBackendSelection.NameOf(BiosBackendKind.OpenBios)} (real MIPS ROM; no BIOS HLE)");
