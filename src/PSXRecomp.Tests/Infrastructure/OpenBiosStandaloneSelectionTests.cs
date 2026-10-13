@@ -167,6 +167,31 @@ public sealed class OpenBiosStandaloneSelectionTests
     }
 
     /// <summary>
+    /// <c>--build-timeout-seconds</c> is the per-step host-toolchain bound for a firmware package build. It is a
+    /// package-only option, independent of <c>--run-timeout-seconds</c>, and must be a bounded positive integer:
+    /// zero, negative, non-numeric and over-the-cap values fail closed at parse time, before any file is touched.
+    /// </summary>
+    [Fact]
+    public void Cli_BuildTimeoutOption_IsNotAcceptedByRun()
+    {
+        var error = new StringWriter();
+        PSXRecomp.Infrastructure.Cli.Program.Execute(["run", "x.exe", "--build-timeout-seconds", "60"], new StringWriter(), error).Should().NotBe(0);
+        error.ToString().Should().Contain("only valid for 'package'");
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("abc")]
+    [InlineData("86401")]
+    public void Cli_Package_RejectsAnInvalidBuildTimeout(string value)
+    {
+        var (exit, error) = Package("d.chd", "--bios", "openbios", "--build-timeout-seconds", value, "--output", "out");
+        exit.Should().Be(1, "a bounded positive integer is required: " + error);
+        error.Should().Contain("--build-timeout-seconds");
+    }
+
+    /// <summary>
     /// Issue #732 review P2: a malformed AOT <c>rom.roots</c> must be a stable, classified tooling failure (exit 1
     /// with a diagnostic), never an unhandled <see cref="FormatException"/>, and it must not leave a partial
     /// distribution or a staging directory behind.

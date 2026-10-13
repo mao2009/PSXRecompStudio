@@ -202,7 +202,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var error = new StringWriter();
         var exit = Program.Execute(
             ["package", discPath, "--bios", "openbios", "--bios-rom", romPath, "--aot-dir", aot, "--code-bytes", "256",
-             "--instruction-budget", "2000", "--run-timeout-seconds", "120",
+             "--instruction-budget", "2000", "--run-timeout-seconds", "120", "--build-timeout-seconds", "180",
              "--fallback-segment-budget", "5000", "--fallback-max-transitions", "40", "--output", output],
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());

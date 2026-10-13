@@ -283,6 +283,12 @@ public static class FirmwareAotBundle
 /// </param>
 /// <param name="FallbackSegmentInstructionBudget">The per-segment interpreter fallback instruction cap (only meaningful while <paramref name="MixedFallback"/>).</param>
 /// <param name="FallbackMaxTransitions">The artifact-to-interpreter handoff cap (only meaningful while <paramref name="MixedFallback"/>).</param>
+/// <param name="BuildTimeout">
+/// The bounded per-step host-toolchain (compiler/linker) timeout for this distribution's native artifact build,
+/// or null to use <see cref="FirmwareDistributionBuilder.DefaultBuildTimeout"/>. It bounds only the compile/link
+/// steps — never the guest run (that is <paramref name="RunTimeoutMs"/>) — so a slow build host can be given a
+/// longer budget without changing the game's run time.
+/// </param>
 [Infrastructure]
 public sealed record FirmwareDistributionRequest(
     string RomPath,
@@ -296,7 +302,8 @@ public sealed record FirmwareDistributionRequest(
     uint InstructionBudget = uint.MaxValue,
     bool MixedFallback = true,
     uint FallbackSegmentInstructionBudget = uint.MaxValue,
-    uint FallbackMaxTransitions = uint.MaxValue);
+    uint FallbackMaxTransitions = uint.MaxValue,
+    TimeSpan? BuildTimeout = null);
 
 /// <summary>
 /// <c>psxrecomp package --bios openbios</c>: builds a standalone distribution whose native artifact IS the BIOS
@@ -308,6 +315,14 @@ public sealed record FirmwareDistributionRequest(
 [Infrastructure]
 public static class FirmwareDistributionBuilder
 {
+    /// <summary>
+    /// The bounded per-step native-toolchain timeout a firmware distribution build uses unless the request
+    /// overrides it (<c>--build-timeout-seconds</c>). The ROM + RAM-image dispatch is far larger than an
+    /// ordinary generated artifact, so it gets three minutes per compiler step instead of the 30-second
+    /// default; it stays a finite bound (never an unbounded wait).
+    /// </summary>
+    public static readonly TimeSpan DefaultBuildTimeout = TimeSpan.FromMinutes(3);
+
     public static string Build(FirmwareDistributionRequest request, bool windows)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -380,8 +395,9 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
             }
 
-            // The ROM + RAM-image dispatch is large; the probe allows the same bounded three minutes per compiler step.
-            var build = new GeneratedHostBuildService(TimeSpan.FromMinutes(3)).Build(
+            // The ROM + RAM-image dispatch is large; the build gets the request's per-step toolchain timeout
+            // (--build-timeout-seconds), or the same bounded three minutes the probe uses by default.
+            var build = new GeneratedHostBuildService(request.BuildTimeout ?? DefaultBuildTimeout).Build(
                 new GeneratedHostBuildRequest(source.Source!, staging, binaryName));
             if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {

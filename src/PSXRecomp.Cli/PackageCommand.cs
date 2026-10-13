@@ -47,7 +47,7 @@ public static class PackageCommand
         "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... " +
         "[--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] " +
         "[--fallback-max-transitions <n>] [--self-contained] [--json]\n" +
-        "       psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--self-contained]";
+        "       psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--build-timeout-seconds <n>] [--self-contained]";
 
     internal static int Run(
         ParsedArguments arguments, TextWriter standardOutput, TextWriter standardError)

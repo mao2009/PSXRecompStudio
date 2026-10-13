@@ -405,13 +405,20 @@ default must not change until the real-game gate below passes:
 
 ```bash
 python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
-psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]
+psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800] [--build-timeout-seconds <n>] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]
 ./persona/persona          # persona.exe on Windows
 ```
 
 `--bios` is `openbios` (default when any firmware option is given), `custom-hle` or `genuine`. The last two are
 reserved names: they stop with `BIOS backend '<name>' is not implemented` and nothing is produced or substituted
 (`BiosBackendSelection`).
+
+`--build-timeout-seconds <n>` sets the bounded per-step native-toolchain (compile/link) timeout for the firmware
+artifact build; it is independent of `--run-timeout-seconds` (the guest run bound). Omit it to keep the historical
+three-minute per-step default (`FirmwareDistributionBuilder.DefaultBuildTimeout`); it is validated to `1..86400` and
+is never unbounded. A slower build host (for example the ~515,783-line ROM + AOT dispatch on a low-core CPU) can be
+given a longer compile budget without extending the game's own run time. The `openbios-probe` generated-host build
+keeps its own fixed three-minute per-step cap.
 
 **Execution structure (one guest state).** The native artifact *is* the OpenBIOS ROM compiled ahead of time
 (`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions (`LoadedCodeTable`: kernel data,

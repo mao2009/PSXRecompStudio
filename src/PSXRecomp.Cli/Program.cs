@@ -136,6 +136,7 @@ public static class Program
         string? bios = null, biosRom = null, aotDir = null;
         uint? codeBytes = null, instructionBudget = null;
         int? runTimeoutSeconds = null;
+        int? buildTimeoutSeconds = null;
 
         for (var i = 0; i < arguments.Count; i++)
         {
@@ -306,7 +307,7 @@ public static class Program
                         guestFirmware = true;
                     }
                     break;
-                case "--bios" or "--bios-rom" or "--aot-dir" or "--code-bytes" or "--instruction-budget" or "--run-timeout-seconds":
+                case "--bios" or "--bios-rom" or "--aot-dir" or "--code-bytes" or "--instruction-budget" or "--run-timeout-seconds" or "--build-timeout-seconds":
                     if (!allowGuestFirmware)
                     {
                         parsed = default;
@@ -326,6 +327,7 @@ public static class Program
                     else if (token == "--code-bytes" && uint.TryParse(optionText, out var parsedCodeBytes) && parsedCodeBytes != 0) codeBytes = parsedCodeBytes;
                     else if (token == "--instruction-budget" && uint.TryParse(optionText, out var parsedBudget) && parsedBudget != 0) instructionBudget = parsedBudget;
                     else if (token == "--run-timeout-seconds" && int.TryParse(optionText, out var parsedTimeout) && parsedTimeout is > 0 and <= 86400) runTimeoutSeconds = parsedTimeout;
+                    else if (token == "--build-timeout-seconds" && int.TryParse(optionText, out var parsedBuildTimeout) && parsedBuildTimeout is > 0 and <= 86400) buildTimeoutSeconds = parsedBuildTimeout;
                     else
                     {
                         parsed = default;
@@ -352,9 +354,9 @@ public static class Program
         }
 
         var mixedFallback = explicitMixedFallback ?? allowMixedFallback;
-        var firmware = bios is null && biosRom is null && aotDir is null && codeBytes is null && instructionBudget is null && runTimeoutSeconds is null
+        var firmware = bios is null && biosRom is null && aotDir is null && codeBytes is null && instructionBudget is null && runTimeoutSeconds is null && buildTimeoutSeconds is null
             ? null
-            : new FirmwareOptions(bios, biosRom, aotDir, codeBytes, runTimeoutSeconds, instructionBudget);
+            : new FirmwareOptions(bios, biosRom, aotDir, codeBytes, runTimeoutSeconds, instructionBudget, buildTimeoutSeconds);
 
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {
@@ -500,5 +502,11 @@ internal sealed record ParsedArguments(
     FirmwareOptions? Firmware = null);
 
 /// <summary>The <c>package --bios</c> family (Issue #732). Present only when at least one of the options was given.</summary>
+/// <param name="BuildTimeoutSeconds">
+/// <c>--build-timeout-seconds</c>: the bounded per-step native-toolchain (compiler/linker) timeout for the
+/// firmware artifact build, or null to use <c>FirmwareDistributionBuilder.DefaultBuildTimeout</c>. It is
+/// independent of <paramref name="RunTimeoutSeconds"/> (the guest run bound): a slow host CPU can need a
+/// longer compile without extending the game's own run time.
+/// </param>
 [Infrastructure]
-internal sealed record FirmwareOptions(string? Bios, string? BiosRom, string? AotDir, uint? CodeBytes, int? RunTimeoutSeconds, uint? InstructionBudget = null);
+internal sealed record FirmwareOptions(string? Bios, string? BiosRom, string? AotDir, uint? CodeBytes, int? RunTimeoutSeconds, uint? InstructionBudget = null, int? BuildTimeoutSeconds = null);
