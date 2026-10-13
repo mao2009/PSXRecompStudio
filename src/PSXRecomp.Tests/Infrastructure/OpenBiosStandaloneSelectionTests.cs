@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Cli;
@@ -50,6 +51,25 @@ public sealed class OpenBiosStandaloneSelectionTests
     {
         var parsed = FirmwareBootManifestJson.Parse(FirmwareBootManifestJson.Serialize(Manifest()));
         parsed.Should().Be(Manifest());
+    }
+
+    [Fact]
+    public void FirmwareManifest_RejectsMissingBackendInsteadOfDefaultingToOpenBios()
+    {
+        var json = JsonNode.Parse(FirmwareBootManifestJson.Serialize(Manifest()))!.AsObject();
+        json.Remove("biosBackend").Should().BeTrue();
+        Action parse = () => FirmwareBootManifestJson.Parse(json.ToJsonString());
+        parse.Should().Throw<InvalidDataException>().WithMessage("*biosBackend*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void FirmwareManifest_RejectsBlankBackend(string backend)
+    {
+        var json = FirmwareBootManifestJson.Serialize(Manifest() with { BiosBackend = backend });
+        Action parse = () => FirmwareBootManifestJson.Parse(json);
+        parse.Should().Throw<InvalidDataException>().WithMessage("*biosBackend*");
     }
 
     [Theory]
