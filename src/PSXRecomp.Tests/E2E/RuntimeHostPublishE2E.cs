@@ -42,9 +42,11 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// Verify that <c>psxrecomp package</c> successfully provisions the Runtime host into the distribution.
     /// This test checks the layout, manifest validity, and that all required files exist.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void PackageProvisionsRuntimeHost()
     {
+        RequireGcc();
+
         var fixture = GeneratedPsxExeFixtures.NaturalEndWithV0;
         var testExePath = _tempDir.WriteFile("input.exe", fixture.Generate());
 
@@ -93,9 +95,11 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// Verify that a packaged distribution can launch through the bundled RuntimeHost.
     /// The test uses a simple natural-end program with no control transfers.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void RuntimeHostCanLaunchBundledArtifactViaHost()
     {
+        RequireGcc();
+
         // Simple natural-end program: ori v0, $zero, 0x42 then fall off
         var simpleFixtureWords = new uint[]
         {
@@ -132,7 +136,21 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// test is reported as skipped (never a silent pass); on CI (GITHUB_ACTIONS) a missing compiler is a failure.
     /// </summary>
 #pragma warning disable AARC003 // Test-layer probe of the host toolchain: CI must fail, not skip, without it
+    private static readonly Lazy<bool> GccAvailable = new(ProbeGcc);
+
     private static void RequireGcc()
+    {
+        var available = GccAvailable.Value;
+        if (!available && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+        {
+            throw new Xunit.Sdk.XunitException("gcc is required on CI to compile the artifact but could not be run.");
+        }
+
+        Skip.IfNot(available, "gcc is not available; the generated artifact cannot be compiled here.");
+    }
+
+    // The same compiler GeneratedHostBuildService uses by default (DefaultCompiler = "gcc").
+    private static bool ProbeGcc()
     {
         var available = false;
         try
@@ -161,12 +179,7 @@ public sealed class RuntimeHostPublishE2E : IDisposable
             // gcc is not on PATH.
         }
 
-        if (!available && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
-        {
-            throw new Xunit.Sdk.XunitException("gcc is required on CI to compile the artifact but could not be run.");
-        }
-
-        Skip.IfNot(available, "gcc is not available; the generated artifact cannot be compiled here.");
+        return available;
     }
 #pragma warning restore AARC003
 
@@ -208,6 +221,32 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// <summary>
     /// Verify that the Runtime host path resolution (Linux/Windows) is correct.
     /// </summary>
+    /// <summary>
+    /// The host is started with a manifest path that goes through a link to runtime/: it must reject it (exit 78)
+    /// rather than resolve the image/artifact through the link.
+    /// </summary>
+    [SkippableFact]
+    public void RuntimeHostRejectsManifestReachedThroughALinkedRuntimeDirectory()
+    {
+        RequireGcc();
+        var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.GuestFirmwareOpenbios.Generate());
+        var outputDir = _tempDir.CreateSubdirectory("linked game");
+        var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc);
+        exit.Should().Be(RecompiledArtifactExitCode.Success, $"package must succeed: error='{error}', output='{output}'");
+
+        var runtimeDir = Path.Combine(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
+        var link = Path.Combine(outputDir, "runtime-link");
+        PSXRecomp.Tests.Infrastructure.RuntimeHostManifestPathTests.CreateDirectoryLinkOrSkip(link, runtimeDir);
+
+        var hostPath = Path.Join(
+            runtimeDir,
+            RuntimeHostLayout.HostFileName(RuntimeInformation.IsOSPlatform(OSPlatform.Windows)));
+        var result = RuntimeHostBuildService.RunRuntimeHost(hostPath, Path.Combine(link, RuntimeHostLayout.ManifestFileName));
+
+        result.ExitCode.Should().Be(78, result.Stderr);
+        result.Stderr.Should().Contain("must not be a symbolic link", "rejected by path confinement, before any image read or launch");
+    }
+
     [Fact]
     public void RuntimeHostRuntimeHostPathResolution()
     {
@@ -301,9 +340,11 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// copy of the distribution in a directory whose name contains a space,
     /// delegates to the bundled Runtime host and propagates its success exit code.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task PackagedArtifactLaunchesFromCopiedDistributionDirectory()
     {
+        RequireGcc();
+
         var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.BuildExe(new uint[] { 0x34020042u }));
         var outputDir = _tempDir.CreateSubdirectory("test-game");
         var (exit, output, error) = Invoke("package", testExePath, "--output", outputDir, "--entry-root", TestStepCEntryPc, "--mixed-fallback");
@@ -369,9 +410,11 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     /// Verify that a packaged distribution works correctly with self-contained publishing
     /// (single-file host binary, no end-user .NET runtime needed).
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void PackageProvisionsSelfContainedRuntimeHost()
     {
+        RequireGcc();
+
         var testExePath = _tempDir.WriteFile("input.exe", GeneratedPsxExeFixtures.NaturalEndWithV0.Generate());
 
         var outputDir = _tempDir.CreateSubdirectory("test-game");

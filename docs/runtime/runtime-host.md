@@ -72,7 +72,7 @@ the following required fields (schema version 1):
 | `image` | `string` | Relative path to the guest program image sidecar (`artifact-image.bin`) |
 | `blockEntryPcs` | `uint[]` | Sorted, unique list of PCs that have compiled blocks (required for bridge/HLE mode; optional for guest firmware without mixed fallback) |
 | `programEnd` | `uint` | Guest PC one past the image (natural program end boundary) |
-| `resultRegister` | `int?` | GPR index used for result abstraction (0 for V0, null for none) |
+| `resultRegister` | `int?` | GPR index used for result abstraction (2 for V0, null for none) |
 | `runTimeoutMs` | `int` | Bounded per-run timeout in milliseconds (default 60000) |
 | `entryPc` | `uint` | Guest PC at which the program begins (PS-X EXE entry point or firmware load address) |
 
@@ -130,7 +130,7 @@ Key constants:
 | `ImageFileName` | `"artifact-image.bin"` | Image sidecar filename |
 | `HostRelativePath` | `"runtime/PSXRecomp.RuntimeHost"` | Host path relative to game artifact (uses forward slashes) |
 | `ManifestRelativePath` | `"runtime/runtime-host.json"` | Manifest path relative to game artifact |
-| `ManifestRelativeArtifactPath(artifact, windows)` | `"../artifact"` | Artifact path relative to manifest directory |
+| `ManifestRelativeArtifactPath(artifact, windows)` | `"../artifact"` (`"../artifact.exe"` on Windows) | Artifact path relative to manifest directory |
 | `MissingRuntimeHostExitCode` | `78` | Exit code returned when host cannot be located by launcher |
 
 The launcher in the generated artifact uses `HostRelativePath` to locate the
@@ -179,6 +179,19 @@ psxrecomp package <input.exe|input.chd> --output <dir> ... [--self-contained] [-
 |:--- |:--- |
 | 0 | Distribution successfully packaged |
 | 1 | Build, provision, or package error |
+
+### Manifest path confinement
+
+The manifest is untrusted input. `Artifact` must be exactly `../<file name>` and
+`Image` exactly `artifact-image.bin`; both are resolved by `RuntimeHostLayout` to
+whole normalised paths and must be regular files directly inside the distribution
+root / `runtime/`. The files themselves and the `runtime/` directory must not be
+symbolic links, junctions or other reparse points. Ancestors of the distribution
+are not inspected, so a relocated or symlinked install location still works. All
+checks finish before the image is read or anything is launched; a violation exits 78.
+Residual risk: a link swapped in between the check and the later open/launch
+(TOCTOU) is not prevented; the distribution directory is trusted to be writable
+only by its owner.
 
 ### Exit Code 78 Contract
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FluentAssertions;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
@@ -172,5 +173,96 @@ public sealed class RuntimeHostManifestPathTests
         artifact.Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
         var image = () => RuntimeHostLayout.ResolveImagePath(runtime, RuntimeHostLayout.ImageFileName);
         image.Should().Throw<InvalidDataException>().WithMessage("*symbolic link*");
+    }
+
+    /// <summary>
+    /// Creates a directory link: a junction on Windows (needs no privilege) or a symbolic link elsewhere.
+    /// Skips the test visibly when the environment does not allow it.
+    /// </summary>
+    internal static void CreateDirectoryLinkOrSkip(string link, string target)
+    {
+#pragma warning disable AARC003 // Test-layer I/O / process use to build link fixtures
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                using var process = Process.Start(new ProcessStartInfo("cmd.exe")
+                {
+                    ArgumentList = { "/c", "mklink", "/J", link, target },
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                })!;
+                process.StandardOutput.ReadToEnd();
+                process.StandardError.ReadToEnd();
+                process.WaitForExit(10_000).Should().BeTrue();
+                if (process.ExitCode != 0 || !Directory.Exists(link))
+                {
+                    throw new IOException("mklink /J failed");
+                }
+            }
+            else
+            {
+                Directory.CreateSymbolicLink(link, target);
+            }
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            Skip.If(true, $"directory links cannot be created in this environment: {e.Message}");
+        }
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void LinkedRuntimeDirectory_PointingOutsideTheDistribution_IsRejected_AndOutsideImageIsNotUsed()
+    {
+        using var dir = new TempDirectory();
+        var (root, _) = Distribution(dir);
+        var outsideRuntime = dir.CreateSubdirectory("elsewhere");
+#pragma warning disable AARC003 // Test-layer I/O for fixture construction
+        File.WriteAllText(Path.Combine(outsideRuntime, RuntimeHostLayout.ImageFileName), "outside");
+#pragma warning restore AARC003
+        var link = Path.Combine(root, "runtime-link");
+        CreateDirectoryLinkOrSkip(link, outsideRuntime);
+
+        var image = () => RuntimeHostLayout.ResolveImagePath(link, RuntimeHostLayout.ImageFileName);
+        image.Should().Throw<InvalidDataException>().WithMessage("*must not be a symbolic link*");
+        var artifact = () => RuntimeHostLayout.ResolveArtifactPath(link, "../game");
+        artifact.Should().Throw<InvalidDataException>().WithMessage("*must not be a symbolic link*");
+    }
+
+    [SkippableFact]
+    public void LinkedRuntimeDirectory_PointingInsideTheDistribution_IsAlsoRejected()
+    {
+        using var dir = new TempDirectory();
+        var (root, runtime) = Distribution(dir);
+        var link = Path.Combine(root, "runtime-alias");
+        CreateDirectoryLinkOrSkip(link, runtime);
+
+        var image = () => RuntimeHostLayout.ResolveImagePath(link, RuntimeHostLayout.ImageFileName);
+        image.Should().Throw<InvalidDataException>().WithMessage("*must not be a symbolic link*");
+    }
+
+    [SkippableFact]
+    public void LinkedAncestorOfTheDistribution_StillResolves()
+    {
+        using var dir = new TempDirectory();
+        var (root, _) = Distribution(dir);
+        var alias = Path.Combine(dir.FullPath, "alias to dist");
+        CreateDirectoryLinkOrSkip(alias, root);
+
+        var runtime = Path.Combine(alias, RuntimeHostLayout.RuntimeDirectoryName);
+        RuntimeHostLayout.ResolveArtifactPath(runtime, "../game.exe").Should().Be(Path.Combine(alias, "game.exe"));
+        RuntimeHostLayout.ResolveImagePath(runtime, RuntimeHostLayout.ImageFileName)
+            .Should().Be(Path.Combine(runtime, RuntimeHostLayout.ImageFileName));
+    }
+
+    [Fact]
+    public void MissingRuntimeDirectory_IsRejected()
+    {
+        using var dir = new TempDirectory();
+        var act = () => RuntimeHostLayout.ResolveImagePath(Path.Combine(dir.FullPath, "absent"), RuntimeHostLayout.ImageFileName);
+        act.Should().Throw<InvalidDataException>().WithMessage("*not found*");
     }
 }

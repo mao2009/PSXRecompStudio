@@ -89,10 +89,14 @@ public static class Program
             }
 
             // Choose the launch mode:
-            // - Guest firmware (OpenBIOS) runs natively with no BIOS HLE Runtime (the
-            //   device-MMIO bridge is still attached by the engine).
-            //   Mixed fallback IS supported for guest firmware to handle unresolved
-            //   transfers via the interpreter (the firmware owns its kernel/vectors).
+            // - Guest firmware (OpenBIOS) gets NO BIOS HLE Runtime (it owns its kernel
+            //   and vectors), but it does get the device-MMIO HostTransferBridge: the
+            //   engine launches the artifact with --runtime-host (stops the launcher
+            //   re-delegating to this host), --host-transfer (the only thing that
+            //   enables the artifact's MMIO bridge; without it guest MMIO exits 96),
+            //   --exact-device-time (device-time sync) and --guest-exceptions (the
+            //   firmware's own exception handling). Mixed fallback follows the
+            //   manifest (unresolved transfers may reach the interpreter fallback).
             // - HLE games use the bridge for BIOS service calls and mixed-fallback
             //   transfers.
             var needsBridge = !manifest.GuestFirmware;

@@ -118,6 +118,7 @@ public static class RuntimeHostLayout
     {
         ValidateManifestArtifactPath(artifact);
         var runtimeDirectory = Path.GetFullPath(manifestDirectory);
+        EnsureRealDirectory(runtimeDirectory);
         var root = Path.GetDirectoryName(runtimeDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
             ?? throw new InvalidDataException("The manifest directory has no parent distribution root.");
         return ConfineRegularFile(Path.GetFullPath(Path.Combine(runtimeDirectory, artifact)), root, "artifact");
@@ -128,7 +129,28 @@ public static class RuntimeHostLayout
     {
         ValidateManifestImagePath(image);
         var runtimeDirectory = Path.GetFullPath(manifestDirectory);
+        EnsureRealDirectory(runtimeDirectory);
         return ConfineRegularFile(Path.GetFullPath(Path.Combine(runtimeDirectory, image)), runtimeDirectory, "image");
+    }
+
+    // The manifest's own directory (runtime/) is part of the distribution: if it were a link, the image and
+    // artifact names would resolve through it to wherever it points. It must be a real directory. Its
+    // ancestors are deliberately not inspected (a relocated or symlinked install location is legitimate).
+    // DirectoryInfo.LinkTarget covers POSIX symlinks and Windows symlinks/junctions; the attribute check
+    // covers any other reparse point.
+    private static void EnsureRealDirectory(string runtimeDirectory)
+    {
+        var info = new DirectoryInfo(runtimeDirectory);
+        if (!info.Exists)
+        {
+            throw new InvalidDataException($"The manifest directory was not found: {runtimeDirectory}");
+        }
+
+        if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidDataException(
+                "The manifest directory (runtime/) must not be a symbolic link, junction or reparse point.");
+        }
     }
 
     // Policy: the named file must exist directly in `container` (parent compared as whole normalised paths,
@@ -136,7 +158,8 @@ public static class RuntimeHostLayout
     // the artifact or image name cannot lead out of the distribution. Directories above the distribution are
     // not inspected (a relocated or symlinked install is legitimate). A swap between this check and the
     // later open/launch (TOCTOU) is not prevented: the distribution directory is trusted to be unwritable
-    // by an attacker, the manifest is not.
+    // by an attacker, the manifest is not. Trust boundary: the distribution directory (root and runtime/) is
+    // trusted; the manifest contents and anything it names are validated here.
     private static string ConfineRegularFile(string fullPath, string container, string what)
     {
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;

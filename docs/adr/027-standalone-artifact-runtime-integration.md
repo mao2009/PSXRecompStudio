@@ -177,9 +177,17 @@ Studio, no CLI, and no .NET SDK at runtime.
 - Exit codes: 0 = success, 2 = blocked transfer, 1 = tooling failure, 78 = missing host.
 
 **Exit code 78 contract:**
-- Exit 78 is returned by the **launcher** when it cannot locate or start the
-  bundled Runtime host. The Runtime host itself does not return 78 (it returns
-  0, 1, or 2 on its own internal errors).
+- Exit 78 means "the packaged runtime cannot be set up" and is returned by two
+  different programs for their own setup failures:
+  - the generated artifact's **launcher**, when it cannot locate or start the
+    bundled Runtime host;
+  - the **Runtime host** (`PSXRecomp.RuntimeHost`), for a wrong argument count, a
+    missing manifest or manifest directory, or an invalid / out-of-distribution /
+    linked manifest path (fail closed, before anything is launched).
+- Once the Runtime host has started a run it returns 0 (completed) or 2 (blocked /
+  unsupported transfer, explicit runtime stop); 1 is a tooling failure. The
+  generated artifact's own termination codes (0..7, 90..98) are distinct from
+  these, and `psxrecomp package` uses only 0 (packaged) and 1 (failure).
 - The launcher checks for `RuntimeHostLayout.HostRelativePathFor(platform)`;
   if the directory or binary is missing, it exits 78 and emits a missing-host
   diagnostic.
