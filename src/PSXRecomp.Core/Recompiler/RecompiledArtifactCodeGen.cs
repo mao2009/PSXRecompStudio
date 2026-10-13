@@ -117,7 +117,8 @@ public static class RecompiledArtifactCodeGen
 
     /// <summary>
     /// The parent's mark that the very next decision (<see cref="ProtocolDecisionPrefix"/>) is its register-indirect
-    /// <c>jr ra</c>: <c>J</c> (Issue #763). Only that decision's <c>next_pc</c> becomes the artifact's <c>indirect_target</c>,
+    /// jump (an HLE <c>jr ra</c> or the kernel exception handler's <c>jr k0; rfe</c> to EPC/hook pc): <c>J</c> (Issue #763).
+    /// Nothing may be sent between <c>J</c> and its decision. Only that decision's <c>next_pc</c> becomes the artifact's <c>indirect_target</c>,
     /// so the mixed-fallback query reports it as a runtime-discovered target. Unmarked decisions never touch it.
     /// </summary>
     public const string ProtocolIndirectResumeCommand = "J";
@@ -1470,9 +1471,9 @@ static int32_t artifact_host_serve(RecompilerState* state) {
             if (scanf(""%lu %lu %lu %lu"", &t, &np, &has_v0, &v) != 4) return 1;
             state->termination_reason = (int32_t)t;
             state->next_pc = (uint32_t)np;
-            /* Only a resume the host marked with `J` just before this decision is its register-indirect `jr ra` (an HLE
-               BIOS call returning to ra): the next pc is then a runtime target the mixed-fallback query may see as indirect.
-               Every other success (patched jump table, SYSCALL/exception resume, B0:17, fallback return) leaves
+            /* Only a resume the host marked with `J` just before this decision is its register-indirect jump (an HLE
+               BIOS `jr ra`, or the kernel exception handler's `jr k0; rfe`): the next pc is then a runtime target the mixed-fallback query may see as indirect.
+               Every other success (patched jump table, SYSCALL resume, B0:17, fallback return) leaves
                indirect_target as the artifact's own JR/JALR set it (Issue #763). */
             if (t == 0ul && host_indirect_resume) state->indirect_target = (uint32_t)np;
             if (has_v0 != 0ul) state->gpr[PSX_REG_V0] = (uint32_t)v;
