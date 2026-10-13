@@ -449,9 +449,14 @@ native vs counted-fallback) and the existing `FirmwareStandaloneHandoffTests`.
 | Same disc, packaged, `./synth` launched directly (200M budget) | OpenBIOS loads the synthetic EXE and reaches its `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
 | Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
 
-The Persona gap is the game's own AOT roots (derive them with the existing reachable-program analysis and pass them as
-an `exe`/roots entry instead of the entry-only `boot-exe`) and the mixed-fallback transfer protocol of #764; both
-precede any Persona claim.
+Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel
+booted and `titleStarted:true`, but 275,017,697 native vs 11,066,526,413 fallback instructions, 9,118 transitions,
+`ARTIFACT_TIMEOUT`. 99.9% of the fallback is `user-ram`/`ps-x-exe` code classified `unknown-code` (in no AOT image):
+entry `0x8008A484` (1,127 entries, 10.9 G instructions) spinning in the loop `0x8008AECC..0x8008AF04` (about 154 M
+iterations per PC), with the stream code at `0x80081BC8..0x80081C18` next. The disc's boot EXE does not cover this
+code (it is loaded or placed at run time), so the fix is more game AOT images supplied through `--aot-dir`
+(`exe`/`image` lines, no title constants in the tool) and, separately, finding out why that wait never completes
+under the generated host. Until then Persona is **not** verified on this path.
 
 **Relation to #764.** #764 (host-resolved indirect resume, the `J` protocol, `--diagnostics`) is merged and this
 branch builds on it. `RuntimeHost` rejects `--diagnostics` for a firmware distribution (its report is the
