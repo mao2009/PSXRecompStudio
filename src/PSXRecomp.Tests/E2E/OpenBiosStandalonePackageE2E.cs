@@ -15,10 +15,20 @@ using static PSXRecomp.Tests.Infrastructure.MixedFallbackTestSupport;
 namespace PSXRecomp.Tests.E2E;
 
 /// <summary>
-/// Issue #732: <c>package --bios openbios</c> end to end with a synthetic 512 KiB ROM, a blank raw disc and no AOT
-/// images (no OpenBIOS, no commercial data). The produced game executable is launched directly; it must reach the
-/// Runtime host, boot the ROM as guest firmware with the disc attached, run the ROM natively and stop at the
-/// bounded budget with the ROM verified and no BIOS HLE. Real OpenBIOS / Persona runs are separate local gates.
+/// Issue #732: <c>package --bios openbios</c> end to end with synthetic 512 KiB ROMs, raw discs and no commercial
+/// data. The produced game executable is launched directly; it must reach the Runtime host, boot the ROM as guest
+/// firmware with the disc attached, run the ROM natively and stop at the bounded budget with the ROM verified and
+/// no BIOS HLE.
+///
+/// Scope (Issue #732 review P2-2): the packaged E2E here verifies the <em>packaging + AOT-mapping</em> path — the
+/// built artifact, the guarded game block the <c>boot-exe</c> AOT image contributes, zero-fallback native
+/// execution and ROM → game → ROM control/data continuity in the one guest state. The ROMs below are synthetic:
+/// <see cref="RomWithGame"/> embeds the game's words as MIPS immediates and stores them into RAM itself, so the
+/// run-time disc path (OpenBIOS's own CD driver reading raw sectors from the disc into RAM and then
+/// <c>exec</c>-ing the EXE) is <b>not</b> exercised here. That runtime disc load is a separate gate, verified by
+/// real OpenBIOS over the shared device graph with the synthetic Mode 2 disc (see
+/// docs/runtime/openbios-firmware-backend.md, "Disc in the drive" and the measured table). Real OpenBIOS / Persona
+/// runs are separate local gates.
 /// </summary>
 [Test]
 public sealed class OpenBiosStandalonePackageE2E : IDisposable
@@ -35,9 +45,14 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     private static byte[] Text(string value) => Encoding.ASCII.GetBytes(value);
 
     /// <summary>
-    /// A ROM whose "CD driver" is its own code: it copies the disc executable's words into RAM, calls the entry
-    /// (the <c>boot-exe</c> AOT image), and only then records the post-game markers that prove control and data
-    /// continuity (S1/S3/S4/S6), in the same one guest state the firmware owns.
+    /// A synthetic ROM whose "CD driver" <em>is its own code</em>: it stores the disc executable's words into RAM
+    /// (the <c>boot-exe</c> AOT image's destination), calls the entry, and only then records the post-game markers
+    /// that prove control and data continuity (S1/S3/S4/S6), in the same one guest state the firmware owns.
+    ///
+    /// This models the <em>outcome</em> of a disc load — the game's words present in RAM at the entry — deliberately
+    /// bypassing the guest CD driver, so packaging → guarded game AOT → ROM continuity can be verified without a
+    /// synthetic CD driver. It is not evidence that OpenBIOS's own CD driver reads the disc at run time; that is the
+    /// separate runtime disc-load gate (see the class docstring).
     /// </summary>
     private static byte[] RomWithGame(uint[] gameWords)
     {
@@ -93,6 +108,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
 
+#pragma warning disable AARC003 // Test-layer inspection of the produced distribution layout
+        Directory.GetDirectories(_dir.FullPath, ".game.staging-*").Should().BeEmpty(
+            "a successful build commits from staging and leaves no staging directory behind");
+#pragma warning restore AARC003
+
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         var runtime = Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName);
         var artifact = Path.Combine(output, "game" + (windows ? ".exe" : ""));
@@ -147,15 +167,21 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     }
 
     /// <summary>
-    /// The P2-2 gate: a distributable disc whose SYSTEM.CNF boots a real PS-X EXE (Issue #732 P2-2). Packaging
-    /// compiles the boot executable ahead of time (the <c>boot-exe</c> image), the ROM calls it once its words are
-    /// in RAM, and the whole run — ROM blocks and the guarded game block — executes natively with zero fallback
-    /// instructions. The final register file proves ROM → game → ROM control/data continuity from the run's own
-    /// output; the explicit fallback budgets prove P1-1's CLI → manifest propagation; and the direct host run with
-    /// <c>--diagnostics</c> proves P2-1's Issue #763 stop diagnostic is written for a firmware run.
+    /// The P2-2 packaging gate, scoped to what a packaged, directly-launched executable can prove (Issue #732
+    /// review P2-2): a distributable disc whose SYSTEM.CNF names a real PS-X EXE. Packaging compiles the boot
+    /// executable ahead of time (the <c>boot-exe</c> image and its <c>rom.roots</c>/<c>images.txt</c> are pinned as
+    /// AOT inputs), and the synthetic ROM stores those exact words into RAM and calls the entry, so the whole run —
+    /// ROM blocks and the guarded game block — executes natively. The final register file proves ROM → game → ROM
+    /// control/data continuity <em>from the run's own output</em>; the game's own <c>$t0</c> (written only by the
+    /// game's final instruction, never by the post-game ROM code) is the game-block attribution inside the
+    /// aggregate native count, and <c>fallbackInstructions=0</c> shows nothing reached the interpreter. The runtime
+    /// disc-sector load (OpenBIOS's CD driver reading the disc and <c>exec</c>-ing the EXE) is <b>not</b> part of
+    /// this test: it is the separate gate recorded by the real-OpenBIOS probe. The explicit fallback budgets prove
+    /// P1-1's CLI → manifest propagation; the direct host run with <c>--diagnostics</c> proves P2-1's Issue #763
+    /// stop diagnostic is written for a firmware run.
     /// </summary>
     [SkippableFact]
-    public void BootableDiscGame_RunsNatively_AndReportsControlContinuity()
+    public void BootExeAotImage_RunsNativelyInTheOneGuestState_AndReportsControlContinuity()
     {
         RuntimeHostPublishE2E.RequireGcc();
 
@@ -180,6 +206,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
              "--fallback-segment-budget", "5000", "--fallback-max-transitions", "40", "--output", output],
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
+
+#pragma warning disable AARC003 // Test-layer inspection of the produced distribution layout
+        Directory.GetDirectories(_dir.FullPath, ".game.staging-*").Should().BeEmpty(
+            "a successful build commits from staging and leaves no staging directory behind");
+#pragma warning restore AARC003
 
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         var runtime = Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName);
