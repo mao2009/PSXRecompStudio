@@ -85,6 +85,13 @@ public static class FirmwareBootManifestJson
                 $"Unsupported firmware boot manifest schema {m.SchemaVersion}; this host understands {FirmwareBootManifest.CurrentSchemaVersion}.");
         }
 
+        // Unlike the package CLI, a persisted manifest must explicitly name its backend.
+        // An absent field must never silently select the default backend.
+        if (string.IsNullOrWhiteSpace(m.BiosBackend))
+        {
+            throw new InvalidDataException("The firmware boot manifest must specify 'biosBackend'.");
+        }
+
         // Unknown or unimplemented backends stop here: never a silent OpenBIOS/HLE substitution.
         try
         {
