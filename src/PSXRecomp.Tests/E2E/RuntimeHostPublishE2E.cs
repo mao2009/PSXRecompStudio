@@ -178,13 +178,22 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     private const string BlockingStubSource = """
         #include <stdio.h>
         #include <string.h>
+        #if defined(_WIN32)
+        #include <windows.h>
+        #include <process.h>
+        static int stub_pid(void) { return _getpid(); }
+        static void stub_sleep(void) { Sleep(1000); }
+        #else
         #include <unistd.h>
+        static int stub_pid(void) { return (int)getpid(); }
+        static void stub_sleep(void) { sleep(1); }
+        #endif
         int main(int argc, char** argv) {
           char path[4096]; FILE* f;
           if (argc < 1 || strlen(argv[0]) + 5 > sizeof path) return 2;
           strcpy(path, argv[0]); strcat(path, ".pid");
-          f = fopen(path, "w"); if (!f) return 3; fprintf(f, "%d", (int)getpid()); fclose(f);
-          for (;;) { if (getchar() == EOF) sleep(1); }
+          f = fopen(path, "w"); if (!f) return 3; fprintf(f, "%d", stub_pid()); fclose(f);
+          for (;;) { if (getchar() == EOF) stub_sleep(); }
         }
         """;
 
