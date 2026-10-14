@@ -1,8 +1,9 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
+  # Run the same required checks for stacked PRs targeting integration branches.
+  # Restrict pushes to main; pull_request events need no base-branch filter.
+  pull_request: {}
   push:
     branches: [main]
 
