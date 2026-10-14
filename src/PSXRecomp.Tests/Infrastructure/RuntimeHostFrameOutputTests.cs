@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO;
 using System.Text;
 using FluentAssertions;
@@ -85,6 +86,12 @@ public sealed class RuntimeHostFrameOutputTests
         bytes[5].Should().Be(0x0A);
         bytes[6].Should().Be(0x1A);
         bytes[7].Should().Be(0x0A);
+        bytes.Length.Should().BeGreaterThan(33);
+        Encoding.ASCII.GetString(bytes, 12, 4).Should().Be("IHDR");
+        BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(16, 4)).Should().Be(16u);
+        BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(20, 4)).Should().Be(16u);
+        bytes[24].Should().Be(8); // Bit depth
+        bytes[25].Should().Be(6); // RGBA
 
         error.ToString().Should().Contain("16x16");
         error.ToString().Should().Contain("written");
