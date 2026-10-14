@@ -274,9 +274,12 @@ public sealed class ScreenshotCapture : IDisposable
         // Get display region from GPU state
         int startX = (int)(gpuState.DisplayVramStart & 0x3FF);
         int startY = (int)((gpuState.DisplayVramStart >> 10) & 0x1FF);
-        var resolution = gpuDevice.GetDisplayResolution();
-        int width = Math.Max(0, Math.Min((int)resolution.Width, GpuVram.Width - startX));
-        int height = Math.Max(0, Math.Min((int)resolution.Height, GpuVram.Height - startY));
+        // FrameSnapshot already applies mode-aware scanline clipping (15-bit vs 24-bit).
+        // Keep the PNG dimensions identical to the captured frame and never read
+        // three-byte RGB pixels across the 2048-byte VRAM row boundary.
+        int maxWidthInRow = ((GpuVram.Width - startX) * sizeof(ushort)) / 3;
+        int width = Math.Min(frame.Width, maxWidthInRow);
+        int height = Math.Min(frame.Height, GpuVram.Height - startY);
 
         if (width <= 0 || height <= 0)
             return [];
