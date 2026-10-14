@@ -136,8 +136,9 @@ public sealed class LoadImageManifestTests
             dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(), new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
 
         // Ordinal path order, one image per executable, the movie (no PS-X EXE header) is not an image.
-        // Names now use the full versioned path to ensure uniqueness across versioned directories.
-        manifest.Images.Select(static i => i.Name).Should().Equal("game:" + SyntheticChdBuilder.ExeIsoName, "game:STAGE2.EXE;1");
+        // A collision-free name stays the normalized path (no version suffix), so names stay backward compatible.
+        manifest.Images.Select(static i => i.Name).Should()
+            .Equal("game:" + SyntheticChdBuilder.ExeIsoName.Split(';')[0], "game:STAGE2.EXE");
         manifest.Images[1].LoadAddress.Should().Be(0x80080000u);
         manifest.Images[1].Words.Should().HaveCount(5);
         manifest.Images[1].Roots.Should().Equal(0x80080000u);
@@ -170,6 +171,59 @@ public sealed class LoadImageManifestTests
         second.LoadAddress.Should().Be(0x80080000u);
         second.Words.Should().HaveCount(5);
         second.Roots.Should().Equal(0x80080000u);
+    }
+
+    [Fact]
+    public void DiscExes_KeepsUniqueImagesAcrossVersionedDirectories()
+    {
+        // DIR;1/GAME.EXE;1 and DIR;2/GAME.EXE;1 share one normalized path (DIR/GAME.EXE), so each image
+        // must keep its full versioned path to stay unique and read its own extent.
+        var firstExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var secondExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("DIR;1/GAME.EXE;1", firstExe)
+            .AddFile("DIR;2/GAME.EXE;1", secondExe)
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(),
+            new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        manifest.Images.Select(static image => image.Name).Should().OnlyHaveUniqueItems();
+        manifest.Images.Select(static image => image.Name).Should()
+            .BeEquivalentTo(new[] { "game:DIR;1/GAME.EXE;1", "game:DIR;2/GAME.EXE;1" });
+
+        var first = manifest.Images.Single(static image => image.Name == "game:DIR;1/GAME.EXE;1");
+        first.LoadAddress.Should().Be(0x80010000u);
+        first.Words.Should().HaveCount(3);
+
+        var second = manifest.Images.Single(static image => image.Name == "game:DIR;2/GAME.EXE;1");
+        second.LoadAddress.Should().Be(0x80080000u);
+        second.Words.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public void BootExe_SelectsTheVersionNamedInSystemCnf()
+    {
+        // SYSTEM.CNF's "BOOT = cdrom:\GAME.EXE;2" must resolve to GAME.EXE;2, not GAME.EXE;1.
+        var firstExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var secondExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddSystemCnf(@"cdrom:\GAME.EXE;2")
+            .AddFile("GAME.EXE;1", firstExe)
+            .AddFile("GAME.EXE;2", secondExe)
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("boot-exe game\n")), Firmware(),
+            new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        var image = manifest.Images.Should().ContainSingle().Subject;
+        image.Name.Should().Be("game");
+        image.LoadAddress.Should().Be(0x80080000u);
+        image.Words.Should().HaveCount(5);
     }
 
     [Fact]

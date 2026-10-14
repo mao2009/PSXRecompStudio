@@ -133,22 +133,4 @@ public sealed class OpenBiosProbeValidationTests
         exit.Should().Be(1);
         error.Should().Contain("--list-disc requires --disc");
     }
-
-    // ===== m4: 24-bit VRAM offset calculation (Issue #772) =====
-
-    [Theory]
-    [InlineData(0, 0, 0)] // startX=0, x=0 -> byte offset = 0
-    [InlineData(0, 1, 3)] // startX=0, x=1 -> byte offset = 3
-    [InlineData(1, 0, 2)] // startX=1 (halfword), x=0 -> byte offset = 2
-    [InlineData(1, 1, 5)] // startX=1, x=1 -> byte offset = 5
-    [InlineData(3, 0, 6)] // startX=3 (not multiple of 3), x=0 -> byte offset = 6
-    [InlineData(3, 1, 9)] // startX=3, x=1 -> byte offset = 9
-    public void VramOffset_Calculation_WithVariousStartX(int startXHalfwords, int x, int expectedByteOffset)
-    {
-        // In 24-bit mode: byte offset = startX * 2 + x * 3 (ignoring row offset for this unit test)
-        // This tests the corrected formula: rowOffset + startX * 2 + x * 3
-        var calculatedOffset = startXHalfwords * 2 + x * 3;
-        
-        calculatedOffset.Should().Be(expectedByteOffset);
-    }
 }

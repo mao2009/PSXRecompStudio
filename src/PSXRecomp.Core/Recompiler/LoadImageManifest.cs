@@ -240,12 +240,24 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     /// Every PS-X EXE file on the disc (a file whose header carries the <c>PS-X EXE</c> magic), as one image each named
     /// <c>prefix:ISO/PATH</c>. A game's later stages are such files, staged into RAM by its boot program; overlays may share a
     /// load address, which the loaded-code guard resolves by comparing the code actually in RAM. Files too large to be an
-    /// executable (movies, archives) are not read. Distinct files with the same normalized ISO path are read from
-    /// their own directory records and keep their full versioned path in the image name. Nothing is title-specific.
+    /// executable (movies, archives) are not read.
+    ///
+    /// The image name is the normalized ISO path, which keeps the names of collision-free images stable. Only when several
+    /// files share a normalized path (for example <c>DIR;1/GAME.EXE;1</c> and <c>DIR;2/GAME.EXE;1</c>, or two file versions
+    /// in one directory) does each keep its full versioned path, so those names stay unique. Distinct files are always read
+    /// from their own directory records. Nothing is title-specific.
     /// </summary>
     private static IEnumerable<LoadedImageSpec> DiscExecutables(Iso9660Reader iso, string prefix)
     {
         var files = iso.EnumerateFiles();
+
+        // Grouping is case-insensitive because ISO 9660 is: two entries that differ only by case would otherwise
+        // both keep a normalized name that collides when compared case-insensitively.
+        var ambiguousPaths = files
+            .GroupBy(static file => file.NormalizedPath, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in files)
         {
@@ -258,9 +270,8 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             var bytes = iso.ReadEnumeratedFile(file.Entry);
             if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
             {
-                // Use the full versioned path for the image name to guarantee uniqueness across
-                // versioned directories (e.g., DIR;1/GAME.EXE;1 vs DIR;2/GAME.EXE;1).
-                yield return FromExeBytes($"{prefix}:{file.VersionedPath}", bytes, []);
+                var imagePath = ambiguousPaths.Contains(file.NormalizedPath) ? file.VersionedPath : file.NormalizedPath;
+                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, []);
             }
         }
     }

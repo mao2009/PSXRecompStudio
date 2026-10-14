@@ -127,7 +127,7 @@ public sealed class Iso9660ReaderTests
         foreach (var file in exeFiles)
         {
             var exeBytes = reader.ReadFile(file.NormalizedPath);
-            exeBytes.Should().NotBeEmpty($"ReadFile should work for normalized path '{path}' from EnumerateFiles");
+            exeBytes.Should().NotBeEmpty($"ReadFile should work for normalized path '{file.NormalizedPath}' from EnumerateFiles");
         }
     }
 
@@ -250,20 +250,67 @@ public sealed class Iso9660ReaderTests
     [Fact]
     public void EnumerateFiles_TraversesMultipleDirectoriesWithSameNormalizedName()
     {
-        // This test would require a more sophisticated ISO builder that supports
-        // subdirectories. The current SyntheticIsoImageBuilder only supports flat structure.
-        // This is a placeholder for when subdirectory support is added.
-        // For now, we verify the EnumerateFiles logic doesn't crash and handles
-        // the visited set correctly for root-level entries.
-        var disc = BuildVersionedIso();
-        var reader = CreateReader(disc);
+        // Two versioned directories that normalize to the same name (DIR;1 and DIR;2) must both be
+        // traversed, and their same-named executables read from their own extents.
+        var exe1 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var exe2 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddSystemCnf(SyntheticChdBuilder.BootValue)
+            .AddFile("DIR;1/GAME.EXE;1", exe1)
+            .AddFile("DIR;2/GAME.EXE;1", exe2)
+            .Build();
+        var reader = CreateReader(SyntheticDiscBuilder.Mode2Form1(iso));
         reader.Initialize();
 
         var files = reader.EnumerateFiles();
-        files.Should().NotBeEmpty();
-        
-        // No duplicate paths should exist in the output
-        files.Select(f => f.NormalizedPath).Should().OnlyHaveUniqueItems();
+
+        // Both directories are traversed and both executables enumerated...
+        var games = files.Where(f => f.NormalizedPath == "DIR/GAME.EXE").ToList();
+        games.Should().HaveCount(2, "both versioned directories must be traversed");
+        games.Should().OnlyContain(f => f.NormalizedPath == "DIR/GAME.EXE");
+
+        // ...with distinct versioned paths.
+        games.Select(f => f.VersionedPath).Should()
+            .BeEquivalentTo(new[] { "DIR;1/GAME.EXE;1", "DIR;2/GAME.EXE;1" });
+
+        // ReadEnumeratedFile reads each version's own extent, preserving load address and code.
+        var byVersion = games.ToDictionary(f => f.VersionedPath, f => reader.ReadEnumeratedFile(f.Entry));
+        byVersion["DIR;1/GAME.EXE;1"].Should().Equal(exe1);
+        byVersion["DIR;2/GAME.EXE;1"].Should().Equal(exe2);
+
+        var loaded1 = PsxExe.Load(byVersion["DIR;1/GAME.EXE;1"], "GAME.EXE");
+        loaded1.Header.TextStart.Should().Be(0x80010000u);
+        loaded1.Header.TextSize.Should().Be((uint)exe1.Length - PsxExeHeader.HeaderSize);
+        var loaded2 = PsxExe.Load(byVersion["DIR;2/GAME.EXE;1"], "GAME.EXE");
+        loaded2.Header.TextStart.Should().Be(0x80080000u);
+        loaded2.Header.TextSize.Should().Be((uint)exe2.Length - PsxExeHeader.HeaderSize);
+
+        // Enumerating the same image again yields the same order (deterministic).
+        reader.EnumerateFiles().Select(f => f.VersionedPath).Should()
+            .Equal(files.Select(f => f.VersionedPath));
+    }
+
+    [Fact]
+    public void ListDirectory_WithVersionedSegment_ReadsThatDirectorysExtent()
+    {
+        var exe1 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var exe2 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("DIR;1/GAME.EXE;1", exe1)
+            .AddFile("DIR;2/GAME.EXE;1", exe2)
+            .Build();
+        var reader = CreateReader(SyntheticDiscBuilder.Mode2Form1(iso));
+        reader.Initialize();
+
+        // An explicit version selects that directory's own extent.
+        var first = reader.ListDirectory("DIR;1").Single(e => e.FileName == "GAME.EXE;1");
+        var second = reader.ListDirectory("DIR;2").Single(e => e.FileName == "GAME.EXE;1");
+        first.Size.Should().Be((uint)exe1.Length);
+        second.Size.Should().Be((uint)exe2.Length);
+
+        // An unversioned lookup resolves the first matching directory.
+        reader.ListDirectory("DIR").Single(e => e.FileName == "GAME.EXE;1").Size
+            .Should().Be((uint)exe1.Length);
     }
 
     [Fact]
@@ -296,20 +343,62 @@ public sealed class Iso9660ReaderTests
         exeObj2.Header.TextSize.Should().Be((uint)exe2.Length - PsxExeHeader.HeaderSize);
     }
 
-    // ===== m5: Invalid child directory safe skip (Issue #772) =====
+    // ===== m5: Malformed directory recovery (Issue #772) =====
 
     [Fact]
     public void EnumerateFiles_SkipsInvalidChildDirectory_ContinuesWithSiblings()
     {
-        // We can't easily create an invalid directory with the synthetic builder,
-        // but we can verify the exception handling logic doesn't crash the whole enumeration
-        // by checking that valid directories still work
-        var disc = BuildVersionedIso();
-        var reader = CreateReader(disc);
+        // Case A: a corrupt child extent (a declared size far beyond any real medium) is skipped,
+        // while a valid sibling directory is still enumerated.
+        var exe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("GOOD;1/GAME.EXE;1", exe)
+            .AddFile("BAD;1/GAME.EXE;1", exe)
+            .CorruptDirectoryExtent("BAD;1", location: 0, size: 0x4000_0001)
+            .Build();
+        var reader = CreateReader(SyntheticDiscBuilder.Mode2Form1(iso));
         reader.Initialize();
 
-        // Should not throw
         var files = reader.EnumerateFiles();
-        files.Should().NotBeEmpty();
+
+        files.Select(f => f.VersionedPath).Should().ContainSingle("GOOD;1/GAME.EXE;1");
+        files.Should().NotContain(f => f.VersionedPath.StartsWith("BAD;1/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void EnumerateFiles_PropagatesRootDirectoryFailure()
+    {
+        // Case B: a corrupt root must fail loudly rather than look like an empty disc.
+        var exe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("GAME.EXE;1", exe)
+            .CorruptRootDirectoryExtent(location: 18, size: 0x4000_0001)
+            .Build();
+        var reader = CreateReader(SyntheticDiscBuilder.Mode2Form1(iso));
+        reader.Initialize();
+
+        var act = () => reader.EnumerateFiles();
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*not addressable*");
+    }
+
+    [Fact]
+    public void EnumerateFiles_TerminatesOnCyclicDirectoryReference()
+    {
+        // Case C: a directory record that points back at an ancestor must not recurse forever.
+        var exe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("ROOT.EXE;1", exe)
+            .AddFile("LOOP;1/INNER.EXE;1", exe)
+            // LOOP;1's record points back at the root directory (sector 18).
+            .CorruptDirectoryExtent("LOOP;1", location: 18, size: Iso9660Reader.SectorSize)
+            .Build();
+        var reader = CreateReader(SyntheticDiscBuilder.Mode2Form1(iso));
+        reader.Initialize();
+
+        // Without the visited-directory guard this would recurse until the stack overflows.
+        var files = reader.EnumerateFiles();
+
+        files.Should().Contain(f => f.NormalizedPath == "ROOT.EXE");
     }
 }
