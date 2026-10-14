@@ -67,7 +67,9 @@ public static class Program
                     return 78;
                 }
 
-                // Defer path resolution to the best-effort frame writer so an invalid optional\n                // output path cannot prevent the guest from executing.\n                frameOutPath = args[++i];
+                // Defer path resolution to the best-effort frame writer so an invalid optional
+                // output path cannot prevent the guest from executing.
+                frameOutPath = args[++i];
                 continue;
             }
 

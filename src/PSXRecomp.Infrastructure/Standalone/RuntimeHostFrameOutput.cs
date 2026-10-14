@@ -25,6 +25,8 @@ public static class RuntimeHostFrameOutput
         try
         {
             // Frame output is best-effort: invalid paths must not change the guest's exit code.
+            // Path normalization (and every validation it performs) happens here, on the
+            // observation-only side, never before the guest runs (Issue #762).
             ArgumentException.ThrowIfNullOrWhiteSpace(path);
             var fullPath = Path.GetFullPath(path);
             if (engine.LastFrameBgra32 is not { } frame)
@@ -37,9 +39,10 @@ public static class RuntimeHostFrameOutput
             error.WriteLine($"runtime host: frame {frame.Width}x{frame.Height} written to {fullPath}");
             return true;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
         {
-            // Best-effort observation: a frame-write failure must not change the run's classified result.
+            // Best-effort observation: an invalid path or a frame-write failure must not change
+            // the run's classified result or its exit code.
             error.WriteLine($"runtime host: could not write the frame to {path}: {exception.Message}");
             return false;
         }
