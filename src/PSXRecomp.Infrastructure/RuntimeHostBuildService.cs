@@ -1,6 +1,6 @@
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using PSXRecomp.Architecture;
@@ -111,76 +111,83 @@ public static class RuntimeHostBuildService
         Directory.CreateDirectory(artifactsRoot);
         var artifactsPath = Path.Combine(artifactsRoot, "artifacts");
 
-        // Restore the project for the target RID to ensure assets are available.
-        var restoreArgs = new List<string>
+        // The isolated artifacts directory is scratch space: it must be removed on every
+        // exit path, including a throw from restore, publish, or layout validation. A
+        // cleanup failure must never mask the real outcome, so TryDeleteDirectory swallows
+        // removal errors and this finally never throws.
+        try
         {
-            "restore",
-            hostProject,
-            "-r",
-            rid,
-            "-p:UseArtifactsOutput=true",
-            $"-p:ArtifactsPath={artifactsPath}",
-        };
-        var restoreResult = RunToolchain("dotnet", restoreArgs, timeout);
-        if (restoreResult.Outcome != ToolchainOutcome.Success)
+            // Restore the project for the target RID to ensure assets are available.
+            var restoreArgs = new List<string>
+            {
+                "restore",
+                hostProject,
+                "-r",
+                rid,
+                "-p:UseArtifactsOutput=true",
+                $"-p:ArtifactsPath={artifactsPath}",
+            };
+            var restoreResult = RunToolchain("dotnet", restoreArgs, timeout);
+            if (restoreResult.Outcome != ToolchainOutcome.Success)
+            {
+                throw new RuntimeHostProvisionFailed(
+                    restoreResult.Outcome + " while restoring the runtime host (" + string.Join(" ", restoreArgs) + "):\n" + restoreResult.Stderr,
+                    MapProvisionFailure(restoreResult.Outcome));
+            }
+
+            var args = new List<string>
+            {
+                "publish",
+                hostProject,
+                "-c",
+                "Release",
+                "-r",
+                rid,
+                "-o",
+                Path.GetFullPath(targetDirectory),
+                "-p:UseArtifactsOutput=true",
+                $"-p:ArtifactsPath={artifactsPath}",
+                // Restore is done explicitly above; --no-restore avoids duplicate work.
+                "--no-restore",
+            };
+
+            if (selfContained)
+            {
+                args.Add("-p:SelfContained=true");
+                args.Add("-p:PublishSingleFile=true");
+            }
+            else
+            {
+                // Framework-dependent deploy: bundle the apphost + app + runtime files.
+                // The end-user host must have the matching .NET runtime installed.
+                args.Add("-p:SelfContained=false");
+            }
+
+            var result = RunToolchain("dotnet", args, timeout);
+            if (result.Outcome != ToolchainOutcome.Success)
+            {
+                throw new RuntimeHostProvisionFailed(
+                    result.Outcome + " while provisioning the runtime host (" + string.Join(" ", args) + "):\n" + result.Stderr,
+                    MapProvisionFailure(result.Outcome));
+            }
+
+            // Validate the published layout: the launcher execs the host at the layout's
+            // canonical name relative to the distribution root.
+            var hostName = RuntimeHostLayout.HostFileName(rid.StartsWith("win"));
+            var hostPath = Path.Combine(targetDirectory, hostName);
+            if (!File.Exists(hostPath))
+            {
+                throw new RuntimeHostProvisionFailed(
+                    $"Published runtime host directory does not contain the host binary at {hostPath}.",
+                    "RUNTIME_HOST_MISSING");
+            }
+
+            return RuntimeHostProvisionResult.Succeeded(Path.GetFullPath(targetDirectory));
+        }
+        finally
         {
             TryDeleteDirectory(artifactsRoot);
-            throw new RuntimeHostProvisionFailed(
-                restoreResult.Outcome + " while restoring the runtime host (" + string.Join(" ", restoreArgs) + "):\n" + restoreResult.Stderr,
-                MapProvisionFailure(restoreResult.Outcome));
         }
-
-        var args = new List<string>
-        {
-            "publish",
-            hostProject,
-            "-c",
-            "Release",
-            "-r",
-            rid,
-            "-o",
-            Path.GetFullPath(targetDirectory),
-            "-p:UseArtifactsOutput=true",
-            $"-p:ArtifactsPath={artifactsPath}",
-            // Restore is done explicitly above; --no-restore avoids duplicate work.
-            "--no-restore",
-        };
-
-        if (selfContained)
-        {
-            args.Add("-p:SelfContained=true");
-            args.Add("-p:PublishSingleFile=true");
-        }
-        else
-        {
-            // Framework-dependent deploy: bundle the apphost + app + runtime files.
-            // The end-user host must have the matching .NET runtime installed.
-            args.Add("-p:SelfContained=false");
-        }
-
-        var result = RunToolchain("dotnet", args, timeout);
-        if (result.Outcome != ToolchainOutcome.Success)
-        {
-            TryDeleteDirectory(artifactsRoot);
-            throw new RuntimeHostProvisionFailed(
-                result.Outcome + " while provisioning the runtime host (" + string.Join(" ", args) + "):\n" + result.Stderr,
-                MapProvisionFailure(result.Outcome));
-        }
-
-        TryDeleteDirectory(artifactsRoot);
-
-        // Validate the published layout: the launcher execs the host at the layout's
-        // canonical name relative to the distribution root.
-        var hostName = RuntimeHostLayout.HostFileName(rid.StartsWith("win"));
-        var hostPath = Path.Combine(targetDirectory, hostName);
-        if (!File.Exists(hostPath))
-        {
-            throw new RuntimeHostProvisionFailed(
-                $"Published runtime host directory does not contain the host binary at {hostPath}.",
-                "RUNTIME_HOST_MISSING");
-        }
-
-        return RuntimeHostProvisionResult.Succeeded(Path.GetFullPath(targetDirectory));
     }
 
     private static string? LocateRuntimeHostProject()
@@ -391,7 +398,7 @@ public static class RuntimeHostBuildService
 
     internal readonly record struct ToolchainResult(ToolchainOutcome Outcome, int ExitCode, string Stderr);
 
-    private static void TryDeleteDirectory(string? directory)
+    internal static void TryDeleteDirectory(string? directory)
     {
         if (directory is null)
         {
