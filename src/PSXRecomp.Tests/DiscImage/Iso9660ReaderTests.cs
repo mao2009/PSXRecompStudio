@@ -58,16 +58,16 @@ public sealed class Iso9660ReaderTests
         var files = reader.EnumerateFiles();
 
         // Paths should not contain version numbers
-        files.Select(f => f.Path).Should().NotContain(p => p.Contains(";"));
+        files.Select(f => f.NormalizedPath).Should().NotContain(p => p.Contains(";"));
         
         // Should find the EXE files with normalized names
-        files.Select(f => f.Path).Should().Contain("ATLUS.EXE");
-        files.Select(f => f.Path).Should().Contain("OPEN.EXE");
-        files.Select(f => f.Path).Should().Contain("STAGE2.EXE");
+        files.Select(f => f.NormalizedPath).Should().Contain("ATLUS.EXE");
+        files.Select(f => f.NormalizedPath).Should().Contain("OPEN.EXE");
+        files.Select(f => f.NormalizedPath).Should().Contain("STAGE2.EXE");
         
         // Non-EXE files should be enumerated too (but not filtered by disc-exes)
-        files.Select(f => f.Path).Should().Contain("MOVIE.STR");
-        files.Select(f => f.Path).Should().Contain("SYSTEM.CNF");
+        files.Select(f => f.NormalizedPath).Should().Contain("MOVIE.STR");
+        files.Select(f => f.NormalizedPath).Should().Contain("SYSTEM.CNF");
     }
 
     [Fact]
@@ -121,12 +121,12 @@ public sealed class Iso9660ReaderTests
         reader.Initialize();
 
         var files = reader.EnumerateFiles();
-        var exeFiles = files.Where(f => f.Path.EndsWith(".EXE")).ToList();
+        var exeFiles = files.Where(f => f.NormalizedPath.EndsWith(".EXE")).ToList();
         
         // Each file found by EnumerateFiles should be readable by ReadFile using the normalized path
-        foreach (var (path, _) in exeFiles)
+        foreach (var file in exeFiles)
         {
-            var exeBytes = reader.ReadFile(path);
+            var exeBytes = reader.ReadFile(file.NormalizedPath);
             exeBytes.Should().NotBeEmpty($"ReadFile should work for normalized path '{path}' from EnumerateFiles");
         }
     }
@@ -144,7 +144,7 @@ public sealed class Iso9660ReaderTests
         reader.Initialize();
 
         var files = reader.EnumerateFiles();
-        files.Select(f => f.Path).Should().Contain("atlas.EXE");
+        files.Select(f => f.NormalizedPath).Should().Contain("atlas.EXE");
         
         // Case-insensitive lookup should work
         var exeBytes = reader.ReadFile("ATLAS.EXE");  // different case
@@ -169,7 +169,7 @@ public sealed class Iso9660ReaderTests
 
         var files = reader.EnumerateFiles();
         // Both should appear but with the same normalized name - this is a conflict
-        var gameFiles = files.Where(f => f.Path == "GAME.EXE").ToList();
+        var gameFiles = files.Where(f => f.NormalizedPath == "GAME.EXE").ToList();
         gameFiles.Should().HaveCount(2, "Both versions should be enumerated");
         reader.ReadFile("GAME.EXE;1").Should().Equal(exe1);
         reader.ReadFile("GAME.EXE;2").Should().Equal(exe2);
@@ -263,7 +263,7 @@ public sealed class Iso9660ReaderTests
         files.Should().NotBeEmpty();
         
         // No duplicate paths should exist in the output
-        files.Select(f => f.Path).Should().OnlyHaveUniqueItems();
+        files.Select(f => f.NormalizedPath).Should().OnlyHaveUniqueItems();
     }
 
     [Fact]
@@ -281,7 +281,7 @@ public sealed class Iso9660ReaderTests
         reader.Initialize();
 
         var files = reader.EnumerateFiles();
-        var gameFiles = files.Where(f => f.Path == "GAME.EXE").ToList();
+        var gameFiles = files.Where(f => f.NormalizedPath == "GAME.EXE").ToList();
         gameFiles.Should().HaveCount(2);
 
         // Read using the directory entry directly to get exact version

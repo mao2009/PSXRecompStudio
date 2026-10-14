@@ -189,18 +189,18 @@ internal static class OpenBiosProbeCommand
     {
         var iso = PSXRecomp.Core.Recompiler.LoadImageManifest.OpenIso(disc);
         var rows = new List<object>();
-        foreach (var (full, entry) in iso.EnumerateFiles())
+        foreach (var file in iso.EnumerateFiles())
         {
             object? exe = null;
             // Use the directory entry directly to read the exact file version,
             // avoiding normalized path ambiguity when multiple versions exist (e.g., GAME.EXE;1 vs GAME.EXE;2)
-            var data = iso.ReadFile(entry);
+            var data = iso.ReadFile(file.Entry);
             if (data.Length >= 0x800)
             {
                 // Use PsxExe.Load for proper header validation to avoid misidentifying invalid headers
                 try
                 {
-                    var exeObj = PsxExe.Load(data, entry.FileName);
+                    var exeObj = PsxExe.Load(data, file.Entry.FileName);
                     exe = new
                     {
                         entry = $"0x{exeObj.Header.EntryPoint:X8}",
@@ -218,7 +218,8 @@ internal static class OpenBiosProbeCommand
             }
 
             // Include the original on-disc filename (with version) for disambiguation
-            rows.Add(new { path = full, originalName = entry.FileName, size = entry.Size, exe });
+            // Use VersionedPath which preserves all directory and file version numbers
+            rows.Add(new { path = file.VersionedPath, originalName = file.Entry.FileName, size = file.Entry.Size, exe });
         }
 
         File.WriteAllText(path, JsonSerializer.Serialize(rows, new JsonSerializerOptions { WriteIndented = true }));

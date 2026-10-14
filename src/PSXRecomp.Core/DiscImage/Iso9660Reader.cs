@@ -189,16 +189,32 @@ public sealed class Iso9660Reader
     public byte[] ReadFile(Iso9660DirectoryEntry entry) => ReadEnumeratedFile(entry);
 
     /// <summary>
-    /// Every regular file of the volume, depth first, as an ISO path (no version suffix) and its directory record, in ordinal
+    /// Represents an enumerated file with both its normalized path (for compatibility) and its full versioned path
+    /// (for unique identification across versioned directories).
+    /// </summary>
+    public sealed record EnumeratedFile
+    {
+        /// <summary>Normalized path without version numbers (e.g., "DIR/GAME.EXE"). Compatible with ReadFile/ListDirectory.</summary>
+        public required string NormalizedPath { get; init; }
+
+        /// <summary>Full versioned path preserving all directory and file version numbers (e.g., "DIR;1/GAME.EXE;1").</summary>
+        public required string VersionedPath { get; init; }
+
+        /// <summary>The original directory entry with on-disc identifiers intact.</summary>
+        public required Iso9660DirectoryEntry Entry { get; init; }
+    }
+
+    /// <summary>
+    /// Every regular file of the volume, depth first, with both normalized and versioned paths, in ordinal
     /// path order so the result is deterministic. Each directory is entered by its unique on-disc location, so multiple
     /// directories with the same normalized name (e.g., DIR;1 and DIR;2) are all traversed.
     /// </summary>
-    public IReadOnlyList<(string Path, Iso9660DirectoryEntry Entry)> EnumerateFiles()
+    public IReadOnlyList<EnumeratedFile> EnumerateFiles()
     {
-        var files = new List<(string, Iso9660DirectoryEntry)>();
+        var files = new List<EnumeratedFile>();
         var visited = new HashSet<uint>();
 
-        void Walk(string directory, Iso9660DirectoryEntry dirRecord)
+        void Walk(string normalizedDirectory, string versionedDirectory, Iso9660DirectoryEntry dirRecord, bool isRoot)
         {
             List<Iso9660DirectoryEntry> entries;
             try
@@ -207,26 +223,38 @@ public sealed class Iso9660Reader
             }
             catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidDataException or IndexOutOfRangeException)
             {
+                if (isRoot)
+                {
+                    // Root directory failure must propagate - cannot treat a broken root as an empty disc.
+                    throw;
+                }
                 // Skip invalid child directory; continue with siblings
                 return;
             }
 
             foreach (var entry in entries)
             {
-                var name = NormalizeIdentifier(entry.FileName);
-                if (entry.FileName is "\0" or ".." || name.Length == 0)
+                var normalizedName = NormalizeIdentifier(entry.FileName);
+                if (entry.FileName is "\0" or ".." || normalizedName.Length == 0)
                 {
                     continue;
                 }
 
-                var path = directory.Length == 0 ? name : directory + "/" + name;
+                var normalizedPath = normalizedDirectory.Length == 0 ? normalizedName : normalizedDirectory + "/" + normalizedName;
+                var versionedPath = versionedDirectory.Length == 0 ? entry.FileName : versionedDirectory + "/" + entry.FileName;
+
                 if (!entry.IsDirectory)
                 {
-                    files.Add((path, entry));
+                    files.Add(new EnumeratedFile
+                    {
+                        NormalizedPath = normalizedPath,
+                        VersionedPath = versionedPath,
+                        Entry = entry
+                    });
                 }
                 else if (visited.Add(entry.Location))
                 {
-                    Walk(path, entry);
+                    Walk(normalizedPath, versionedPath, entry, false);
                 }
             }
         }
@@ -239,8 +267,8 @@ public sealed class Iso9660Reader
             FileNameLength = 1,
             FileName = "\0",
         };
-        Walk("", rootRecord);
-        files.Sort(static (a, b) => string.CompareOrdinal(a.Item1, b.Item1));
+        Walk("", "", rootRecord, true);
+        files.Sort(static (a, b) => string.CompareOrdinal(a.NormalizedPath, b.NormalizedPath));
         return files;
     }
 

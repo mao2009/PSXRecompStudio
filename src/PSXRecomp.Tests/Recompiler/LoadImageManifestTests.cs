@@ -136,7 +136,8 @@ public sealed class LoadImageManifestTests
             dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(), new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
 
         // Ordinal path order, one image per executable, the movie (no PS-X EXE header) is not an image.
-        manifest.Images.Select(static i => i.Name).Should().Equal("game:" + SyntheticChdBuilder.ExeIsoName.Split(';')[0], "game:STAGE2.EXE");
+        // Names now use the full versioned path to ensure uniqueness across versioned directories.
+        manifest.Images.Select(static i => i.Name).Should().Equal("game:" + SyntheticChdBuilder.ExeIsoName, "game:STAGE2.EXE;1");
         manifest.Images[1].LoadAddress.Should().Be(0x80080000u);
         manifest.Images[1].Words.Should().HaveCount(5);
         manifest.Images[1].Roots.Should().Equal(0x80080000u);

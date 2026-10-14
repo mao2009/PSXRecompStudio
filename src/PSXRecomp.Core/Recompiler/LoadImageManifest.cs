@@ -241,31 +241,26 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     /// <c>prefix:ISO/PATH</c>. A game's later stages are such files, staged into RAM by its boot program; overlays may share a
     /// load address, which the loaded-code guard resolves by comparing the code actually in RAM. Files too large to be an
     /// executable (movies, archives) are not read. Distinct files with the same normalized ISO path are read from
-    /// their own directory records and keep their version suffix in the image name. Nothing is title-specific.
+    /// their own directory records and keep their full versioned path in the image name. Nothing is title-specific.
     /// </summary>
     private static IEnumerable<LoadedImageSpec> DiscExecutables(Iso9660Reader iso, string prefix)
     {
         var files = iso.EnumerateFiles();
-        var ambiguousPaths = files.GroupBy(static file => file.Path, StringComparer.OrdinalIgnoreCase)
-            .Where(static group => group.Count() > 1)
-            .Select(static group => group.Key)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var (path, entry) in files)
+        foreach (var file in files)
         {
-            if (entry.Size is < 0x800 or > MaxExecutableFileBytes)
+            if (file.Entry.Size is < 0x800 or > MaxExecutableFileBytes)
             {
                 continue;
             }
 
             // A normalized path can refer to several file versions; read the exact extent.
-            var bytes = iso.ReadEnumeratedFile(entry);
+            var bytes = iso.ReadEnumeratedFile(file.Entry);
             if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
             {
-                var imagePath = ambiguousPaths.Contains(path)
-                    ? path[..(path.LastIndexOf('/') + 1)] + entry.FileName
-                    : path;
-                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, []);
+                // Use the full versioned path for the image name to guarantee uniqueness across
+                // versioned directories (e.g., DIR;1/GAME.EXE;1 vs DIR;2/GAME.EXE;1).
+                yield return FromExeBytes($"{prefix}:{file.VersionedPath}", bytes, []);
             }
         }
     }
