@@ -143,10 +143,9 @@ public sealed class LoadedCodeTableOverlayTests
     }
 
     [Fact]
-    public void Overlay_VerifyCpuRamStatePreservedAcrossAotFallbackTransitions()
+    public void Overlay_RepeatedGuardMatching_DoesNotModifyRam()
     {
-        // This test verifies the guard mechanism doesn't corrupt CPU state
-        // when transitioning between AOT and fallback (the guard only reads RAM)
+        // This tests read-only guard matching, not an end-to-end AOT/fallback transition.
         var exe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 6, textStart: 0x80080000u);
 
         const uint LoadAddress = 0x80080000u;
