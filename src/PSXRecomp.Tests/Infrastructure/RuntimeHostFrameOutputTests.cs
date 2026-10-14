@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 using FluentAssertions;
 using PSXRecomp.Core.Runtime.Gpu;
@@ -93,6 +94,21 @@ public sealed class RuntimeHostFrameOutputTests
         bytes[24].Should().Be(8); // Bit depth
         bytes[25].Should().Be(6); // RGBA
 
+        // Decode the first PNG scanline and confirm pixel content, not just its header.
+        // This catches regressions where a valid PNG contains incorrect color channels.
+        var idatLength = checked((int)BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(33, 4)));
+        Encoding.ASCII.GetString(bytes, 37, 4).Should().Be("IDAT");
+        using (var idat = new MemoryStream(bytes, 41, idatLength, writable: false))
+        using (var inflater = new ZLibStream(idat, CompressionMode.Decompress))
+        {
+            var firstScanline = new byte[1 + 16 * 4];
+            inflater.ReadExactly(firstScanline);
+            firstScanline[0].Should().Be(0); // PNG filter: none
+            firstScanline.AsSpan(1, 8).ToArray().Should().Equal(
+                0x30, 0x20, 0x10, 0xFF,
+                0x60, 0x50, 0x40, 0xFF);
+        }
+
         error.ToString().Should().Contain("16x16");
         error.ToString().Should().Contain("written");
     }
@@ -115,6 +131,23 @@ public sealed class RuntimeHostFrameOutputTests
 
         // This should not throw, should return false, and report the error
         RuntimeHostFrameOutput.TryWrite(engine, invalidOutput, error).Should().BeFalse();
+
+        error.ToString().Should().Contain("could not write");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("invalid\\0frame.png")]
+    public void TryWrite_InvalidOptionalPath_DoesNotThrow(string invalidPath)
+    {
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        SetLastFrameBgra32(engine, CreateTestFrame(16, 16));
+        var error = new StringWriter();
+
+        RuntimeHostFrameOutput.TryWrite(engine, invalidPath, error).Should().BeFalse();
 
         error.ToString().Should().Contain("could not write");
     }
@@ -157,9 +190,9 @@ public sealed class RuntimeHostFrameOutputTests
         var bgra = new byte[width * height * 4];
         for (int i = 0; i < bgra.Length; i += 4)
         {
-            bgra[i] = 0x80;     // B
-            bgra[i + 1] = 0x80; // G
-            bgra[i + 2] = 0x80; // R
+            bgra[i] = i == 0 ? (byte)0x10 : i == 4 ? (byte)0x40 : (byte)0x80;     // B
+            bgra[i + 1] = i == 0 ? (byte)0x20 : i == 4 ? (byte)0x50 : (byte)0x80; // G
+            bgra[i + 2] = i == 0 ? (byte)0x30 : i == 4 ? (byte)0x60 : (byte)0x80; // R
             bgra[i + 3] = 0xFF; // A
         }
         return (bgra, width, height);
