@@ -20,19 +20,21 @@ public static class RuntimeHostFrameOutput
     public static bool TryWrite(RecompiledHostExecutionEngine engine, string path, TextWriter error)
     {
         ArgumentNullException.ThrowIfNull(engine);
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(error);
 
         try
         {
+            // Frame output is best-effort: invalid paths must not change the guest's exit code.
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            var fullPath = Path.GetFullPath(path);
             if (engine.LastFrameBgra32 is not { } frame)
             {
                 error.WriteLine("runtime host: no frame (the guest drew nothing to the display); nothing written.");
                 return false;
             }
 
-            PngWriter.Save(path, frame.Bgra, frame.Width, frame.Height);
-            error.WriteLine($"runtime host: frame {frame.Width}x{frame.Height} written to {path}");
+            PngWriter.Save(fullPath, frame.Bgra, frame.Width, frame.Height);
+            error.WriteLine($"runtime host: frame {frame.Width}x{frame.Height} written to {fullPath}");
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
