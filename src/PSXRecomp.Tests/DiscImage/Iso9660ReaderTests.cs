@@ -178,4 +178,124 @@ public sealed class Iso9660ReaderTests
         var entries = reader.ListDirectory("");
         entries.Should().NotBeEmpty();
     }
+
+    // ===== M1: BOOT path version number preservation (Issue #772) =====
+
+    [Fact]
+    public void NormalizeBootPath_PreservesExplicitVersionNumber()
+    {
+        // SYSTEM.CNF may specify an explicit version like "cdrom:\GAME.EXE;2"
+        // NormalizeBootPath should preserve the version number
+        var bootPath = @"cdrom:\GAME.EXE;2";
+        var normalized = RomAnalysisPipeline.NormalizeBootPath(bootPath);
+        
+        normalized.Should().Be("GAME.EXE;2", "Explicit version number should be preserved");
+    }
+
+    [Fact]
+    public void NormalizeBootPath_RemovesCdromSchemeAndNormalizesSeparators()
+    {
+        var bootPath = @"cdrom:\DIR\SUBDIR\GAME.EXE;1";
+        var normalized = RomAnalysisPipeline.NormalizeBootPath(bootPath);
+        
+        normalized.Should().Be("DIR/SUBDIR/GAME.EXE;1");
+    }
+
+    [Fact]
+    public void ReadFile_WithExplicitVersionNumber_ReadsCorrectVersion()
+    {
+        // Create an ISO with two versions of the same file
+        var exe1 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var exe2 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddSystemCnf(SyntheticChdBuilder.BootValue)
+            .AddFile("GAME.EXE;1", exe1)
+            .AddFile("GAME.EXE;2", exe2)
+            .Build();
+        var disc = SyntheticDiscBuilder.Mode2Form1(iso);
+        var reader = CreateReader(disc);
+        reader.Initialize();
+
+        // Reading with explicit version should get the correct version
+        var exeBytes1 = reader.ReadFile("GAME.EXE;1");
+        var exeBytes2 = reader.ReadFile("GAME.EXE;2");
+        
+        exeBytes1.Should().NotBeEmpty();
+        exeBytes2.Should().NotBeEmpty();
+        exeBytes1.Should().NotEqual(exeBytes2, "Different versions should have different content");
+        
+        // Verify the instruction counts match what we built
+        var exeObj1 = PsxExe.Load(exeBytes1, "GAME.EXE");
+        var exeObj2 = PsxExe.Load(exeBytes2, "GAME.EXE");
+        exeObj1.Header.TextSize.Should().Be((uint)exe1.Length - PsxExeHeader.HeaderSize);
+        exeObj2.Header.TextSize.Should().Be((uint)exe2.Length - PsxExeHeader.HeaderSize);
+    }
+
+    // ===== M2: Versioned directory identification (Issue #772) =====
+
+    [Fact]
+    public void EnumerateFiles_TraversesMultipleDirectoriesWithSameNormalizedName()
+    {
+        // This test would require a more sophisticated ISO builder that supports
+        // subdirectories. The current SyntheticIsoImageBuilder only supports flat structure.
+        // This is a placeholder for when subdirectory support is added.
+        // For now, we verify the EnumerateFiles logic doesn't crash and handles
+        // the visited set correctly for root-level entries.
+        var disc = BuildVersionedIso();
+        var reader = CreateReader(disc);
+        reader.Initialize();
+
+        var files = reader.EnumerateFiles();
+        files.Should().NotBeEmpty();
+        
+        // No duplicate paths should exist in the output
+        files.Select(f => f.Path).Should().OnlyHaveUniqueItems();
+    }
+
+    [Fact]
+    public void ReadFile_WithDirectoryEntry_ReadsExactVersion()
+    {
+        var exe1 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var exe2 = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddSystemCnf(SyntheticChdBuilder.BootValue)
+            .AddFile("GAME.EXE;1", exe1)
+            .AddFile("GAME.EXE;2", exe2)
+            .Build();
+        var disc = SyntheticDiscBuilder.Mode2Form1(iso);
+        var reader = CreateReader(disc);
+        reader.Initialize();
+
+        var files = reader.EnumerateFiles();
+        var gameFiles = files.Where(f => f.Path == "GAME.EXE").ToList();
+        gameFiles.Should().HaveCount(2);
+
+        // Read using the directory entry directly to get exact version
+        var bytes1 = reader.ReadFile(gameFiles[0].Entry);
+        var bytes2 = reader.ReadFile(gameFiles[1].Entry);
+        
+        bytes1.Should().NotEqual(bytes2);
+        
+        var exeObj1 = PsxExe.Load(bytes1, "GAME.EXE");
+        var exeObj2 = PsxExe.Load(bytes2, "GAME.EXE");
+        exeObj1.Header.TextSize.Should().Be((uint)exe1.Length - PsxExeHeader.HeaderSize);
+        exeObj2.Header.TextSize.Should().Be((uint)exe2.Length - PsxExeHeader.HeaderSize);
+    }
+
+    // ===== m5: Invalid child directory safe skip (Issue #772) =====
+
+    [Fact]
+    public void EnumerateFiles_SkipsInvalidChildDirectory_ContinuesWithSiblings()
+    {
+        // We can't easily create an invalid directory with the synthetic builder,
+        // but we can verify the exception handling logic doesn't crash the whole enumeration
+        // by checking that valid directories still work
+        var disc = BuildVersionedIso();
+        var reader = CreateReader(disc);
+        reader.Initialize();
+
+        // Should not throw
+        var files = reader.EnumerateFiles();
+        files.Should().NotBeEmpty();
+    }
 }

@@ -142,10 +142,26 @@ public sealed class Iso9660Reader
         {
             var entries = ReadDirectory(currentDirRecord);
             var found = false;
+            var pathPart = pathParts[i];
+            var pathPartNormalized = NormalizeIdentifier(pathPart);
+            var pathPartHasVersion = pathPart != pathPartNormalized;
+
             foreach (var entry in entries)
             {
                 var normalizedEntryName = NormalizeIdentifier(entry.FileName);
-                if (string.Equals(normalizedEntryName, pathParts[i], StringComparison.OrdinalIgnoreCase))
+                bool matches;
+                if (pathPartHasVersion)
+                {
+                    // Explicit version in path: match the full identifier including version
+                    matches = string.Equals(entry.FileName, pathPart, StringComparison.OrdinalIgnoreCase);
+                }
+                else
+                {
+                    // No version in path: match normalized name (gets first match, typically ;1)
+                    matches = string.Equals(normalizedEntryName, pathPartNormalized, StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (matches)
                 {
                     if (i == pathParts.Length - 1)
                     {
@@ -168,17 +184,39 @@ public sealed class Iso9660Reader
     }
 
     /// <summary>
+    /// Reads a file directly from its directory entry, preserving the exact version.
+    /// Use this when the entry comes from <see cref="EnumerateFiles"/> or <see cref="ListDirectory"/>
+    /// to avoid normalized path ambiguity with multiple file versions.
+    /// </summary>
+    public byte[] ReadFile(Iso9660DirectoryEntry entry)
+    {
+        return ReadRawFile(entry);
+    }
+
+    /// <summary>
     /// Every regular file of the volume, depth first, as an ISO path (no version suffix) and its directory record, in ordinal
-    /// path order so the result is deterministic. A directory is never entered twice, so a looped image cannot recurse forever.
+    /// path order so the result is deterministic. Each directory is entered by its unique on-disc location, so multiple
+    /// directories with the same normalized name (e.g., DIR;1 and DIR;2) are all traversed.
     /// </summary>
     public IReadOnlyList<(string Path, Iso9660DirectoryEntry Entry)> EnumerateFiles()
     {
         var files = new List<(string, Iso9660DirectoryEntry)>();
         var visited = new HashSet<uint>();
 
-        void Walk(string directory)
+        void Walk(string directory, Iso9660DirectoryEntry dirRecord)
         {
-            foreach (var entry in ListDirectory(directory))
+            List<Iso9660DirectoryEntry> entries;
+            try
+            {
+                entries = ReadDirectory(dirRecord);
+            }
+            catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidDataException or IndexOutOfRangeException)
+            {
+                // Skip invalid child directory; continue with siblings
+                return;
+            }
+
+            foreach (var entry in entries)
             {
                 var name = NormalizeIdentifier(entry.FileName);
                 if (entry.FileName is "\0" or ".." || name.Length == 0)
@@ -193,12 +231,20 @@ public sealed class Iso9660Reader
                 }
                 else if (visited.Add(entry.Location))
                 {
-                    Walk(path);
+                    Walk(path, entry);
                 }
             }
         }
 
-        Walk("");
+        var rootRecord = new Iso9660DirectoryEntry
+        {
+            Location = RootDirectoryLocation,
+            Size = RootDirectorySize,
+            Flags = 0x02,
+            FileNameLength = 1,
+            FileName = "\0",
+        };
+        Walk("", rootRecord);
         files.Sort(static (a, b) => string.CompareOrdinal(a.Item1, b.Item1));
         return files;
     }

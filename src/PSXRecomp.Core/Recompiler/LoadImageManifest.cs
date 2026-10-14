@@ -251,7 +251,9 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                 continue;
             }
 
-            var bytes = iso.ReadFile(path);
+            // Use the directory entry directly to read the exact file version, avoiding
+            // normalized path ambiguity when multiple versions exist (e.g., GAME.EXE;1 vs GAME.EXE;2)
+            var bytes = iso.ReadFile(entry);
             if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
             {
                 yield return FromExeBytes($"{prefix}:{path}", bytes, []);

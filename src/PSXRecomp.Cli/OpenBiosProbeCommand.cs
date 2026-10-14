@@ -105,6 +105,38 @@ internal static class OpenBiosProbeCommand
             else segmentBudget = number;
         }
 
+        // Validate incompatible option combinations (Issue #772 m1)
+        if (engineKind == "generated-host" && dumpRamPath is not null)
+        {
+            error.WriteLine("openbios-probe: --dump-ram is not supported with --engine generated-host (use --engine interpreter for RAM capture)");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        if (engineKind == "generated-host" && dumpFramePath is not null)
+        {
+            error.WriteLine("openbios-probe: --dump-frame is not supported with --engine generated-host (use --engine interpreter for frame capture)");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        if (engineKind == "generated-host" && histogramPath is not null)
+        {
+            error.WriteLine("openbios-probe: --pc-histogram is not supported with --engine generated-host (use --engine interpreter for PC histogram)");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        if (dumpRamPath is not null && capturePc is null)
+        {
+            error.WriteLine("openbios-probe: --dump-ram requires --capture-at to specify the PC at which to capture RAM");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        if (listDiscPath is not null && discPath is null)
+        {
+            error.WriteLine("openbios-probe: --list-disc requires --disc to specify the disc image to list");
+            error.WriteLine(Usage);
+            return 1;
+        }
+
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
             || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null || rootsPath is not null || standalone || seen.Contains("--code-bytes")))
             || (engineKind == "generated-host" && capturePc is not null)
@@ -160,21 +192,33 @@ internal static class OpenBiosProbeCommand
         foreach (var (full, entry) in iso.EnumerateFiles())
         {
             object? exe = null;
-            if (entry.Size is >= 2048 and <= 4 * 1024 * 1024)
+            // Use the directory entry directly to read the exact file version,
+            // avoiding normalized path ambiguity when multiple versions exist (e.g., GAME.EXE;1 vs GAME.EXE;2)
+            var data = iso.ReadFile(entry);
+            if (data.Length >= 0x800)
             {
-                var data = iso.ReadFile(full);
-                if (data.Length >= 0x1800 && System.Text.Encoding.ASCII.GetString(data, 0, 8) == "PS-X EXE")
+                // Use PsxExe.Load for proper header validation to avoid misidentifying invalid headers
+                try
                 {
+                    var exeObj = PsxExe.Load(data, entry.FileName);
                     exe = new
                     {
-                        entry = $"0x{BitConverter.ToUInt32(data, 0x10):X8}", loadAddress = $"0x{BitConverter.ToUInt32(data, 0x18):X8}",
-                        textSize = BitConverter.ToUInt32(data, 0x1C),
-                        head4KSha256 = Convert.ToHexString(SHA256.HashData(data.AsSpan(0x800, 0x1000))).ToLowerInvariant(),
+                        entry = $"0x{exeObj.Header.EntryPoint:X8}",
+                        loadAddress = $"0x{exeObj.Header.TextStart:X8}",
+                        textSize = exeObj.Header.TextSize,
+                        head4KSha256 = data.Length >= 0x1800
+                            ? Convert.ToHexString(SHA256.HashData(data.AsSpan(0x800, 0x1000))).ToLowerInvariant()
+                            : null,
                     };
+                }
+                catch
+                {
+                    // Not a valid PS-X EXE, ignore
                 }
             }
 
-            rows.Add(new { path = full, size = entry.Size, exe });
+            // Include the original on-disc filename (with version) for disambiguation
+            rows.Add(new { path = full, originalName = entry.FileName, size = entry.Size, exe });
         }
 
         File.WriteAllText(path, JsonSerializer.Serialize(rows, new JsonSerializerOptions { WriteIndented = true }));
@@ -250,12 +294,15 @@ internal static class OpenBiosProbeCommand
             if ((state.DisplayMode & 0x10) != 0)
             {
                 var vram = gpu.GetVramBytes();
-                var startX = (int)(state.DisplayVramStart & 0x3FF);
+                var startX = (int)(state.DisplayVramStart & 0x3FF); // halfword (16-bit) units
                 var startY = (int)((state.DisplayVramStart >> 10) & 0x1FF);
                 for (var y = 0; y < height; y++)
                     for (var x = 0; x < width; x++)
                     {
-                        var offset = (((startY + y) & 0x1FF) * 2048) + (((startX * 2 / 3) + x) * 3);
+                        // 24-bit mode: 3 bytes per pixel. VRAM row stride is 2048 bytes (1024 halfwords).
+                        // startX is in halfwords, so byte offset = startX * 2. Each pixel advances by 3 bytes.
+                        var rowOffset = ((startY + y) & 0x1FF) * 2048;
+                        var offset = rowOffset + startX * 2 + x * 3;
                         if (offset + 2 < vram.Length) { rgb.Add(vram[offset]); rgb.Add(vram[offset + 1]); rgb.Add(vram[offset + 2]); }
                         else { rgb.Add(0); rgb.Add(0); rgb.Add(0); }
                     }
