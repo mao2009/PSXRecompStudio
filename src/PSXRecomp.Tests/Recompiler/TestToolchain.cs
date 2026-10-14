@@ -77,12 +77,23 @@ internal static class TestToolchain
 
     /// <summary>
     /// Runs a tool with an explicit time budget, draining stdout and stderr
-    /// asynchronously. On timeout the whole process tree is killed and reaped and
-    /// a <see cref="TimeoutException"/> is thrown. <paramref name="onStarted"/>
-    /// receives the child's process id so callers can verify it was terminated.
+    /// asynchronously. Every wait is bounded: the run itself (<paramref name="timeoutMs"/>),
+    /// the wait for the child to exit after it is killed (<paramref name="reapTimeoutMs"/>)
+    /// and the wait for the output streams to close (<paramref name="drainTimeoutMs"/>).
+    /// A timeout, a kill failure, an exit that cannot be confirmed or output streams
+    /// that stay open (a descendant still holds the pipe) all throw
+    /// <see cref="TimeoutException"/> with the cause, never a normal result.
+    /// <paramref name="onStarted"/> receives the child's process id; <paramref name="kill"/>
+    /// replaces the default tree kill (a seam for the failure-path tests).
     /// </summary>
+    /// <remarks>
+    /// Only the child's own exit can be confirmed (<c>HasExited</c>). The
+    /// <c>entireProcessTree</c> kill is best-effort for descendants: its outcome is
+    /// reported in the diagnostics but not independently verified.
+    /// </remarks>
     public static (int ExitCode, string Stdout, string Stderr) RunBounded(
-        string fileName, string arguments, int timeoutMs, Action<int>? onStarted = null)
+        string fileName, string arguments, int timeoutMs, Action<int>? onStarted = null,
+        int reapTimeoutMs = 5000, int drainTimeoutMs = 2000, Action<Process>? kill = null)
     {
         var startInfo = new ProcessStartInfo(fileName, arguments)
         {
@@ -95,16 +106,58 @@ internal static class TestToolchain
         onStarted?.Invoke(process.Id);
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
+        var command = $"'{fileName} {arguments}'";
+
         if (!process.WaitForExit(timeoutMs))
         {
-            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-            process.WaitForExit();
-            try { Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromMilliseconds(500)); } catch { }
-            throw new TimeoutException($"'{fileName} {arguments}' did not finish within {timeoutMs} ms");
+            string killNote;
+            try
+            {
+                (kill ?? (p => p.Kill(entireProcessTree: true)))(process);
+                killNote = "process tree kill issued (descendant termination is not verified)";
+            }
+            catch (InvalidOperationException)
+            {
+                killNote = "kill skipped: the process had already exited";
+            }
+            catch (Exception ex)
+            {
+                killNote = $"process tree kill FAILED ({ex.GetType().Name}: {ex.Message})";
+            }
+
+            if (!process.WaitForExit(reapTimeoutMs))
+            {
+                throw new TimeoutException(
+                    $"{command} exceeded {timeoutMs} ms and its exit could not be confirmed within {reapTimeoutMs} ms of the kill; {killNote}");
+            }
+
+            WaitForStreams(stdout, stderr, drainTimeoutMs, out var drained);
+            throw new TimeoutException(
+                $"{command} did not finish within {timeoutMs} ms; child exit confirmed; {killNote}"
+                + (drained ? string.Empty : $"; output streams still open after {drainTimeoutMs} ms"));
         }
 
-        process.WaitForExit();
+        // Parameterless WaitForExit() would also wait for stream EOF without a limit.
+        if (!WaitForStreams(stdout, stderr, drainTimeoutMs, out _))
+        {
+            throw new TimeoutException(
+                $"{command} exited but its output streams stayed open for {drainTimeoutMs} ms (a descendant process likely holds the pipe)");
+        }
+
         return (process.ExitCode, stdout.Result, stderr.Result);
+    }
+
+    private static bool WaitForStreams(Task<string> stdout, Task<string> stderr, int timeoutMs, out bool drained)
+    {
+        try
+        {
+            drained = Task.WhenAll(stdout, stderr).Wait(timeoutMs);
+        }
+        catch (AggregateException)
+        {
+            drained = true; // a faulted read has finished; the stream is no longer pending
+        }
+        return drained;
     }
 
     /// <summary>
