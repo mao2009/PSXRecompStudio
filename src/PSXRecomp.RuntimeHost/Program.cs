@@ -41,6 +41,7 @@ public static class Program
         // Optional diagnostics sink (Issue #763): everything that is not it is the
         // manifest path. Off by default, so the run's exit code and output are unchanged.
         string? diagnosticsPath = null;
+        string? frameOutPath = null;
         var positionals = new List<string>(args.Length);
         for (var i = 0; i < args.Length; i++)
         {
@@ -54,6 +55,19 @@ public static class Program
                 }
 
                 diagnosticsPath = Path.GetFullPath(args[++i]);
+                continue;
+            }
+
+            if (args[i] == "--frame-out")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("runtime host: --frame-out requires a path.");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
+                frameOutPath = Path.GetFullPath(args[++i]);
                 continue;
             }
 
@@ -107,7 +121,7 @@ public static class Program
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
                 return FirmwareRuntimeLauncher.Run(
-                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath);
+                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath);
             }
 
             // Read the program image for the host-transfer bridge / interpreter fallback
@@ -194,6 +208,11 @@ public static class Program
                 Console.Write(consoleOutput);
             }
 
+            if (frameOutPath is not null)
+            {
+                RuntimeHostFrameOutput.TryWrite(engine, frameOutPath, Console.Error);
+            }
+
             // A timeout or an engine failure ends the run with no snapshot: the guest pc is then unknown, not guessed.
             var guestPc = execution.FinalSnapshot is { } snapshot ? $"0x{snapshot.PC:X8}" : "unknown";
             Console.Error.WriteLine($"runtime host: classified as {result.Outcome} (state {execution.State});" +
@@ -240,9 +259,10 @@ public static class Program
 
     private static void WriteUsage(TextWriter error)
     {
-        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] <runtime-host.json>");
+        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] [--frame-out <path.png>] <runtime-host.json>");
         error.WriteLine("  Executes the packaged game distribution described by the manifest.");
         error.WriteLine("  --diagnostics writes a machine-readable stop diagnostic (off by default).");
+        error.WriteLine("  --frame-out writes the display the guest left in VRAM at the end of the run as a PNG (off by default).");
         error.WriteLine("  Returns 0 on a completed run, 1 for tooling failure, 2 for an " +
             "explicit runtime stop, and 78 when the manifest, the runtime host,");
         error.WriteLine("  or the prebuilt artifact cannot be set up.");

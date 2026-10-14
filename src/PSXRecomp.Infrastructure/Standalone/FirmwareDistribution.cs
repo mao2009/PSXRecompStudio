@@ -583,7 +583,8 @@ public static class FirmwareRuntimeLauncher
         string artifactPath,
         string imagePath,
         TextWriter error,
-        string? diagnosticsPath = null)
+        string? diagnosticsPath = null,
+        string? frameOutPath = null)
     {
         try
         {
@@ -639,6 +640,11 @@ public static class FirmwareRuntimeLauncher
                 new TitleExecutionRequest(
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
             wall.Stop();
+
+            if (frameOutPath is not null)
+            {
+                RuntimeHostFrameOutput.TryWrite(engine, frameOutPath, error);
+            }
 
             var evidence = engine.FallbackEvidence;
             var exitCode = RecompiledArtifactExitCode.ExitCodeFor(result.State);

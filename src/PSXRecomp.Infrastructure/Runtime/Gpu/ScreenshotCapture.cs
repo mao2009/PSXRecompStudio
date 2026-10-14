@@ -212,17 +212,25 @@ public sealed class ScreenshotCapture : IDisposable
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
     /// Handles both 15-bit (5-5-5) and 24-bit (8-8-8) display modes.
     /// </summary>
-    private byte[] ConvertToBgra32(FrameSnapshot frame)
+    private byte[] ConvertToBgra32(FrameSnapshot frame) => ToBgra32(frame, _gpuDevice);
+
+    /// <summary>
+    /// Converts <paramref name="frame"/>, captured from <paramref name="gpuDevice"/>, to BGRA32 in whichever display colour
+    /// depth the GPU is currently in. Shared by the headless screenshot service and the standalone Runtime host (Issue #762).
+    /// </summary>
+    public static byte[] ToBgra32(FrameSnapshot frame, GpuDevice gpuDevice)
     {
+        ArgumentNullException.ThrowIfNull(frame);
+        ArgumentNullException.ThrowIfNull(gpuDevice);
         if (frame.Width <= 0 || frame.Height <= 0)
             return [];
 
-        var gpuState = _gpuDevice.GetState();
+        var gpuState = gpuDevice.GetState();
         bool is24BitMode = (gpuState.DisplayMode & 0x10) != 0; // Bit 4: 24-bit color depth
 
         if (is24BitMode)
         {
-            return Convert24BitToBgra32(frame, gpuState);
+            return Convert24BitToBgra32(frame, gpuState, gpuDevice);
         }
         else
         {
@@ -257,7 +265,7 @@ public sealed class ScreenshotCapture : IDisposable
     /// In 24-bit mode, VRAM stores 24-bit pixels as 3 bytes per pixel (R, G, B).
     /// VRAM is byte-addressed in 24-bit mode with stride of 1024 * 2 = 2048 bytes (same halfword layout, read as bytes).
     /// </summary>
-    private byte[] Convert24BitToBgra32(FrameSnapshot frame, GpuState gpuState)
+    private static byte[] Convert24BitToBgra32(FrameSnapshot frame, GpuState gpuState, GpuDevice gpuDevice)
     {
         if (frame.Width <= 0 || frame.Height <= 0)
             return [];
@@ -265,7 +273,7 @@ public sealed class ScreenshotCapture : IDisposable
         // Get display region from GPU state
         int startX = (int)(gpuState.DisplayVramStart & 0x3FF);
         int startY = (int)((gpuState.DisplayVramStart >> 10) & 0x1FF);
-        var resolution = _gpuDevice.GetDisplayResolution();
+        var resolution = gpuDevice.GetDisplayResolution();
         int width = Math.Max(0, Math.Min((int)resolution.Width, GpuVram.Width - startX));
         int height = Math.Max(0, Math.Min((int)resolution.Height, GpuVram.Height - startY));
 
@@ -279,7 +287,7 @@ public sealed class ScreenshotCapture : IDisposable
         // Each pixel = 3 bytes, so effective pixels per row = 2048 / 3 = 682
         const int VRAM_STRIDE_24BIT = GpuVram.Width * 2; // 2048 bytes per row
 
-        var vramBytes = _gpuDevice.GetVramBytes();
+        var vramBytes = gpuDevice.GetVramBytes();
 
         for (int y = 0; y < height; y++)
         {

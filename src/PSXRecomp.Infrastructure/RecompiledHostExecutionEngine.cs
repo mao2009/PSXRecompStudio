@@ -88,6 +88,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public FallbackDeclinedTransfer? LastDeclinedTransfer => _bridge?.LastDeclinedTransfer;
 
+    /// <summary>
+    /// The display the last run's guest left in the shared GPU/VRAM state as BGRA32, or null when the guest drew nothing
+    /// or there is no bridge (Issue #762). Call it only after the run has ended: the bridge's device graph is owned by the
+    /// pump thread while the artifact runs.
+    /// </summary>
+    public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32() => _bridge?.CaptureFrameBgra32();
+
     /// <summary>The guest MMIO access the last run's host bridge relayed most recently, or null (Issue #763, measurement only).</summary>
     public HostMmioAccess? LastMmioAccess => _bridge?.LastMmioAccess;
 
@@ -993,6 +1000,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         {
             _fallback?.Dispose();
             _devices?.Dispose();
+        }
+
+        /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
+        public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
+        {
+            if (_devices?.GpuDevice is not { HasFrameEvidence: true } gpu)
+            {
+                return null;
+            }
+
+            var frame = gpu.CaptureFrame();
+            var bgra = PSXRecomp.Infrastructure.Runtime.Gpu.ScreenshotCapture.ToBgra32(frame, gpu);
+            return bgra.Length == 0 ? null : (bgra, frame.Width, frame.Height);
         }
 
         public HostTransferBridge(
