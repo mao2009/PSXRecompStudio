@@ -118,6 +118,33 @@ public sealed class OpenBiosProbeValidationTests
         error.Should().Contain("--dump-ram requires --capture-at");
     }
 
+    [Theory]
+    [InlineData("--dump-ram")]
+    [InlineData("--dump-frame")]
+    [InlineData("--pc-histogram")]
+    public void Run_ListDiscWithInterpreterOutput_Rejected(string outputOption)
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        var args = new List<string>
+        {
+            rom, "--engine", "interpreter",
+            "--disc", GetTempPath(dir, "unused.chd"),
+            "--list-disc", GetTempPath(dir, "list.json"),
+            outputOption, GetTempPath(dir, "output.bin")
+        };
+        if (outputOption == "--dump-ram")
+        {
+            args.Add("--capture-at");
+            args.Add("80010000");
+        }
+
+        var exit = RunProbe(args.ToArray(), out _, out var error);
+
+        exit.Should().Be(1);
+        error.Should().Contain("--list-disc cannot be combined");
+    }
+
     [Fact]
     public void Run_ListDiscWithoutDisc_Rejected()
     {

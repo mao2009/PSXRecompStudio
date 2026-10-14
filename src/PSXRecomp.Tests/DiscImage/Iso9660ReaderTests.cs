@@ -19,8 +19,7 @@ public sealed class Iso9660ReaderTests
 
     /// <summary>
     /// Builds a synthetic ISO image with versioned file names (flat structure) to test normalization.
-    /// The SyntheticIsoImageBuilder creates a flat root directory; subdirectory tests require
-    /// a more complete ISO 9660 implementation with path tables and parent directory records.
+    /// The SyntheticIsoImageBuilder also supports nested directories in dedicated tests.
     /// </summary>
     private static byte[] BuildVersionedIso()
     {
@@ -361,7 +360,7 @@ public sealed class Iso9660ReaderTests
 
         var files = reader.EnumerateFiles();
 
-        files.Select(f => f.VersionedPath).Should().ContainSingle("GOOD;1/GAME.EXE;1");
+        files.Select(f => f.VersionedPath).Should().ContainSingle(p => p == "GOOD;1/GAME.EXE;1");
         files.Should().NotContain(f => f.VersionedPath.StartsWith("BAD;1/", StringComparison.Ordinal));
     }
 
@@ -399,6 +398,41 @@ public sealed class Iso9660ReaderTests
         // Without the visited-directory guard this would recurse until the stack overflows.
         var files = reader.EnumerateFiles();
 
-        files.Should().Contain(f => f.NormalizedPath == "ROOT.EXE");
+        files.Select(f => f.VersionedPath).Should().Equal(new[] { "ROOT.EXE;1" });
+    }
+
+    [Fact]
+    public void ReadEnumeratedFilePrefix_OnlyFetchesRequestedSectors()
+    {
+        var sectorsRead = new List<int>();
+        var reader = new Iso9660Reader(lba =>
+        {
+            sectorsRead.Add(lba);
+            if (lba < 3 || lba > 5)
+            {
+                throw new InvalidOperationException($"Unexpected sector read: {lba}");
+            }
+
+            return Enumerable.Repeat((byte)(lba - 2), Iso9660Reader.SectorSize).ToArray();
+        });
+        var entry = new Iso9660DirectoryEntry
+        {
+            Location = 3,
+            Size = 0x5000_0000,
+            Flags = 0,
+            FileNameLength = 11,
+            FileName = "LARGE.BIN;1"
+        };
+
+        var prefix = reader.ReadEnumeratedFilePrefix(entry, 0x1800);
+
+        prefix.Should().HaveCount(0x1800);
+        prefix[0].Should().Be(1);
+        prefix[0x800].Should().Be(2);
+        prefix[0x1000].Should().Be(3);
+        sectorsRead.Should().OnlyContain(lba => lba >= 3 && lba <= 5);
+        sectorsRead.Should().Contain(3);
+        sectorsRead.Should().Contain(4);
+        sectorsRead.Should().Contain(5);
     }
 }

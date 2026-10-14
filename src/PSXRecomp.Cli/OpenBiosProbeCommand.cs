@@ -124,6 +124,12 @@ internal static class OpenBiosProbeCommand
             error.WriteLine(Usage);
             return 1;
         }
+        if (listDiscPath is not null && (dumpRamPath is not null || dumpFramePath is not null || histogramPath is not null))
+        {
+            error.WriteLine("openbios-probe: --list-disc cannot be combined with --dump-ram, --dump-frame, or --pc-histogram");
+            error.WriteLine(Usage);
+            return 1;
+        }
         if (dumpRamPath is not null && capturePc is null)
         {
             error.WriteLine("openbios-probe: --dump-ram requires --capture-at to specify the PC at which to capture RAM");
@@ -194,18 +200,19 @@ internal static class OpenBiosProbeCommand
             object? exe = null;
             // Use the directory entry directly to read the exact file version,
             // avoiding normalized path ambiguity when multiple versions exist (e.g., GAME.EXE;1 vs GAME.EXE;2)
-            var data = iso.ReadFile(file.Entry);
+            // Only the 0x800-byte header and next 0x1000 bytes are needed for metadata and hash.
+            var data = iso.ReadEnumeratedFilePrefix(file.Entry, 0x1800);
             if (data.Length >= 0x800)
             {
-                // Use PsxExe.Load for proper header validation to avoid misidentifying invalid headers
+                // Validate the PS-X EXE header without loading its complete text segment.
                 try
                 {
-                    var exeObj = PsxExe.Load(data, file.Entry.FileName);
+                    var header = PsxExeHeader.Parse(data);
                     exe = new
                     {
-                        entry = $"0x{exeObj.Header.EntryPoint:X8}",
-                        loadAddress = $"0x{exeObj.Header.TextStart:X8}",
-                        textSize = exeObj.Header.TextSize,
+                        entry = $"0x{header.EntryPoint:X8}",
+                        loadAddress = $"0x{header.TextStart:X8}",
+                        textSize = header.TextSize,
                         head4KSha256 = data.Length >= 0x1800
                             ? Convert.ToHexString(SHA256.HashData(data.AsSpan(0x800, 0x1000))).ToLowerInvariant()
                             : null,

@@ -189,6 +189,23 @@ public sealed class Iso9660Reader
     public byte[] ReadFile(Iso9660DirectoryEntry entry) => ReadEnumeratedFile(entry);
 
     /// <summary>
+    /// Reads at most <paramref name="maxBytes"/> bytes from an enumerated file.
+    /// Used by diagnostic listings that need only the PS-X EXE header and a small code prefix.
+    /// The actual ISO file size remains available in <paramref name="entry"/>.
+    /// </summary>
+    public byte[] ReadEnumeratedFilePrefix(Iso9660DirectoryEntry entry, int maxBytes)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.IsDirectory)
+        {
+            throw new InvalidDataException("ISO 9660: A directory cannot be read as an enumerated file.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(maxBytes);
+        return ReadRawFile(entry, maxBytes: maxBytes);
+    }
+
+    /// <summary>
     /// Represents an enumerated file with both its normalized path (for compatibility) and its full versioned path
     /// (for unique identification across versioned directories).
     /// </summary>
@@ -267,6 +284,7 @@ public sealed class Iso9660Reader
             FileNameLength = 1,
             FileName = "\0",
         };
+        visited.Add(rootRecord.Location);
         Walk("", "", rootRecord, true);
         files.Sort(static (a, b) => string.CompareOrdinal(a.NormalizedPath, b.NormalizedPath));
         return files;
@@ -457,12 +475,14 @@ public sealed class Iso9660Reader
         return entries;
     }
 
-    private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false)
+    private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false, int? maxBytes = null)
     {
         // entry.Size and entry.Location come straight from an on-disc directory record
         // and are untrusted. Everything below is computed in long so nothing wraps, and
-        // the extent is proven to exist in the container before a byte is allocated.
-        long totalSectors = ((long)entry.Size + SectorSize - 1) / SectorSize;
+        // the requested extent is checked before allocating. Prefix reads never allocate
+        // or fetch the remainder of a large ISO file.
+        long bytesToRead = maxBytes.HasValue ? Math.Min((long)entry.Size, maxBytes.Value) : entry.Size;
+        long totalSectors = (bytesToRead + SectorSize - 1) / SectorSize;
         long totalBytes = totalSectors * SectorSize;
         long lastSector = (long)entry.Location + totalSectors - 1;
 
@@ -496,14 +516,13 @@ public sealed class Iso9660Reader
             Buffer.BlockCopy(sector, 0, data, i * SectorSize, SectorSize);
         }
 
-        if (padToSectorSize || data.Length == entry.Size)
+        if (padToSectorSize || data.Length == bytesToRead)
         {
             return data;
         }
 
-        // File data is exactly entry.Size bytes; trim the sector-rounded padding so
-        // hash/size and parsed content match the bytes stored on the disc.
-        Array.Resize(ref data, (int)entry.Size);
+        // Trim sector padding to exactly the requested file bytes (or prefix).
+        Array.Resize(ref data, (int)bytesToRead);
         return data;
     }
 }
