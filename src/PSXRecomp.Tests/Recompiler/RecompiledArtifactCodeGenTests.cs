@@ -377,10 +377,10 @@ public sealed class RecompiledArtifactCodeGenTests
         // and assert the stop reason is the unsupported-transfer boundary rather than
         // success. Skips only if no C compiler is present; the source-level assertions
         // above still hold without it.
-        var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
-        if (!File.Exists(gccPath))
+        var gccPath = TestToolchain.FindCCompiler();
+        if (gccPath is null)
         {
-            Skip.If(true, "no C compiler available on this host");
+            Skip.If(true, "no C compiler (gcc, cc or clang) found on PATH");
         }
 
         var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
@@ -442,10 +442,10 @@ public sealed class RecompiledArtifactCodeGenTests
         // and must never block on a handshake — if it did, RunProcess's bounded
         // timeout would throw and fail this test. The optional flags must also
         // produce identical results in either order.
-        var gccPath = File.Exists("/usr/bin/gcc") ? "/usr/bin/gcc" : "/usr/bin/cc";
-        if (!File.Exists(gccPath))
+        var gccPath = TestToolchain.FindCCompiler();
+        if (gccPath is null)
         {
-            Skip.If(true, "no C compiler available on this host");
+            Skip.If(true, "no C compiler (gcc, cc or clang) found on PATH");
         }
 
         var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
@@ -741,15 +741,11 @@ public sealed class RecompiledArtifactCodeGenTests
     {
         // Compile a self-contained C program that flushes several megabytes to
         // stdout and stderr independently — this exercises the async drains.
-        var gccPath = File.Exists("/usr/bin/gcc")
-            ? "/usr/bin/gcc"
-            : File.Exists("/usr/bin/cc")
-                ? "/usr/bin/cc"
-                : null;
+        var gccPath = TestToolchain.FindCCompiler();
         if (gccPath is null)
         {
             Skip.If(true,
-                "no C compiler (gcc or cc) available on this host; large-output test skipped");
+                "no C compiler (gcc, cc or clang) found on PATH; large-output test skipped");
         }
 
         var tempDir = Path.Combine(Path.GetTempPath(), "psxrecomp-standalone-tests", Path.GetRandomFileName());
@@ -757,7 +753,7 @@ public sealed class RecompiledArtifactCodeGenTests
         try
         {
             var cPath = Path.Combine(tempDir, "flood.c");
-            var exePath = Path.Combine(tempDir, "flood");
+            var exePath = Path.Combine(tempDir, TestToolchain.ExeName("flood"));
             // Write ~3 MiB to stdout, ~0.5 MiB to stderr, then exit 0.
             var program =
                 "#include <stdio.h>\n" +
@@ -797,20 +793,16 @@ public sealed class RecompiledArtifactCodeGenTests
         // RunProcessVerbose is designed to terminate the process tree on timeout and
         // surface the timeout as an exception (the companion RecompilerHostExecutor
         // runner instead returns int.MinValue with timedOut = true).
-        // sleep is a POSIX utility, so this verification runs only on platforms that
-        // provide it.
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-        {
-            Skip.If(true,
-                "the sleep utility is unavailable on this platform; timeout/tree-kill verification skipped");
-        }
-
         // ThreadLocal tracks the exact child this runner started on this thread, so
         // the verification targets this test's process tree rather than scanning the
         // whole machine for processes named "sleep" (which could match unrelated
         // sleep invocations on the host).
         Assert.Throws<TimeoutException>(
-            () => RunProcessVerbose("sleep", "999", 1000));
+            () =>
+            {
+                var (sleepExe, sleepArgs) = TestToolchain.LongSleep(999);
+                RunProcessVerbose(sleepExe, sleepArgs, 1000);
+            });
 
         var pid = s_lastSpawnedProcessId.Value;
         pid.Should().BeGreaterThan(0,
@@ -827,17 +819,13 @@ public sealed class RecompiledArtifactCodeGenTests
         try
         {
             var cPath = Path.Combine(tempDir, "bad.c");
-            var exePath = Path.Combine(tempDir, "bad");
+            var exePath = Path.Combine(tempDir, TestToolchain.ExeName("bad"));
             File.WriteAllText(cPath, "int main(void) { return broken_undefined_identifier; }\n");
-            var gccPath = File.Exists("/usr/bin/gcc")
-                ? "/usr/bin/gcc"
-                : File.Exists("/usr/bin/cc")
-                    ? "/usr/bin/cc"
-                    : null;
+            var gccPath = TestToolchain.FindCCompiler();
             if (gccPath is null)
             {
                 Skip.If(true,
-                    "no C compiler (gcc or cc) available on this host; compiler-diagnostics test skipped");
+                    "no C compiler (gcc, cc or clang) found on PATH; compiler-diagnostics test skipped");
             }
             Assert.Throws<InvalidOperationException>(
                 () => RunCompiler(gccPath, cPath, exePath));
@@ -916,17 +904,12 @@ public sealed class RecompiledArtifactCodeGenTests
     public void GenerateStandalone_WindowsPE32Plus_BuiltAndExecuted()
     {
         // Windows x64 (PE32+) verification for Issue #757.
-        const string gcc64Name = "x86_64-w64-mingw32-gcc";
-        // Resolve from PATH the same way the existing ELF E2E resolves gcc.
-        var gcc64Path = File.Exists(Path.Combine("/usr/bin", gcc64Name))
-            ? Path.Combine("/usr/bin", gcc64Name)
-            : File.Exists(gcc64Name)
-                ? gcc64Name
-                : (File.Exists("/bin/" + gcc64Name) ? "/bin/" + gcc64Name : null);
-        if (gcc64Path is null)
+        var pe = TestToolchain.FindWindowsX64Pe();
+        if (pe is null)
         {
-            Skip.If(true, "x86_64-w64-mingw32-gcc not available on this host; x64 PE32+ build unverified.");
+            Skip.If(true, "no x86-64 MinGW gcc (native on Windows, x86_64-w64-mingw32-gcc elsewhere) on PATH; x64 PE32+ build unverified.");
         }
+        var (gcc64Path, runner) = pe.Value;
 
         var instr = R3000aDecoder.Decode(0x0C00048Du); // jal 0x80001234 from 0x80001000
         var delaySlot = R3000aDecoder.Decode(0x00000000u); // nop — a jal's delay slot always retires
@@ -970,17 +953,14 @@ public sealed class RecompiledArtifactCodeGenTests
             var optMagic = BitConverter.ToUInt16(peBytes.AsSpan(eLfanew + 0x18).ToArray(), 0);
             optMagic.Should().Be(0x020B, "the artifact must be PE32+ (64-bit optional header)");
 
-            // Execution is possible only when wine can run 64-bit PE on this x86_64 host.
-            var winePath = File.Exists("/usr/bin/wine")
-                ? "/usr/bin/wine"
-                : File.Exists("wine")
-                    ? "wine"
-                    : null;
-            if (winePath is null)
+            // A Windows host runs the PE natively; any other host needs wine for 64-bit PE.
+            if (!OperatingSystem.IsWindows() && runner is null)
             {
                 Skip.If(true, "wine not available; PE32+ x86-64 build verified but execution NOT RUN.");
             }
-            var (runExit, runOut, runErr) = RunProcessVerbose(winePath, exePath, 60000);
+            var (runExit, runOut, runErr) = OperatingSystem.IsWindows()
+                ? RunProcessVerbose(exePath, "", 60000)
+                : RunProcessVerbose(runner!, exePath, 60000);
             runExit.Should().Be(5, "the PE exit code must equal the unsupported-transfer reason (5)");
             runOut.Should().Contain("termination=5");
             runOut.Should().Contain("RSNAPSHOT_BEGIN");
