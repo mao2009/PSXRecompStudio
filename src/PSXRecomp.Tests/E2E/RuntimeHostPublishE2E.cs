@@ -359,6 +359,40 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     }
 
     /// <summary>
+    /// Issue #762: <c>--frame-out &lt;path&gt;</c> is parsed and routed to the best-effort frame writer. A program
+    /// that drew nothing reports the absence (which only happens once the option was parsed and the writer called)
+    /// and the run still succeeds.
+    /// </summary>
+    [SkippableFact]
+    public void FrameOut_IsParsed_AndReportsNoFrame_WithoutChangingTheExitCode()
+    {
+        RequireGcc();
+        var (host, manifest, dir) = PackageProgram([0x34020042u]);
+        var framePath = Path.Join(dir, "frame.png");
+
+        var result = RuntimeHostBuildService.RunRuntimeHost(host, manifest, extraArguments: ["--frame-out", framePath]);
+
+        result.ExitCode.Should().Be(RecompiledArtifactExitCode.Success, $"stderr: {result.Stderr}");
+        result.Stderr.Should().Contain("no frame").And.Contain("classified as Success");
+    }
+
+    /// <summary>
+    /// Issue #762: an invalid <c>--frame-out</c> path is a best-effort observation failure. It must not abort the
+    /// guest: the run keeps its classified exit code and only reports the write error.
+    /// </summary>
+    [SkippableFact]
+    public void InvalidFrameOutPath_DoesNotChangeTheExitCode()
+    {
+        RequireGcc();
+        var (host, manifest, _) = PackageProgram([0x34020042u]);
+
+        var result = RuntimeHostBuildService.RunRuntimeHost(host, manifest, extraArguments: ["--frame-out", ""]);
+
+        result.ExitCode.Should().Be(RecompiledArtifactExitCode.Success, $"stderr: {result.Stderr}");
+        result.Stderr.Should().Contain("could not write").And.Contain("classified as Success");
+    }
+
+    /// <summary>
     /// The artifact compilation these tests need requires gcc. Where the environment is allowed to lack it the
     /// test is reported as skipped (never a silent pass); on CI (GITHUB_ACTIONS) a missing compiler is a failure.
     /// </summary>
