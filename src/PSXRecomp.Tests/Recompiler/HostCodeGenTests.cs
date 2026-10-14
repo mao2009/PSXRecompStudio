@@ -1265,16 +1265,14 @@ int main() {
     [SkippableFact]
     public void RunHostProcess_TimesOut_When_Process_Exceeds_Budget()
     {
-        // sleep is a POSIX utility, so this timeout + tree-kill verification runs
-        // only on Linux/macOS.
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        var sleep = TestToolchain.LongSleep(30);
+        if (sleep is null)
         {
-            Skip.If(true,
-                "the sleep utility is unavailable on this platform; timeout/tree-kill verification skipped");
+            Skip.If(true, "no long-running utility (ping on Windows, sleep elsewhere) found; timeout/tree-kill verification skipped");
         }
 
         #pragma warning disable AARC003
-        Action act = () => RunHostProcess("sleep", "30", 500);
+        Action act = () => RunHostProcess(sleep!.Value.FileName, sleep.Value.Arguments, 500);
         #pragma warning restore AARC003
         act.Should().Throw<TimeoutException>();
 
