@@ -158,7 +158,7 @@ public sealed class LoadImageManifestTests
             new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
 
         manifest.Images.Select(static image => image.Name).Should()
-            .BeEquivalentTo(["game:GAME.EXE;1", "game:GAME.EXE;2"]);
+            .BeEquivalentTo(new[] { "game:GAME.EXE;1", "game:GAME.EXE;2" });
 
         var first = manifest.Images.Single(static image => image.Name == "game:GAME.EXE;1");
         first.LoadAddress.Should().Be(0x80010000u);
