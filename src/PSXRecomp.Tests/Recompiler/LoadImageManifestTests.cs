@@ -143,6 +143,35 @@ public sealed class LoadImageManifestTests
     }
 
     [Fact]
+    public void DiscExes_ImportsDistinctVersionsWithTheSameNormalizedPath()
+    {
+        var firstExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var secondExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("GAME.EXE;1", firstExe)
+            .AddFile("GAME.EXE;2", secondExe)
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(),
+            new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        manifest.Images.Select(static image => image.Name).Should()
+            .BeEquivalentTo(new[] { "game:GAME.EXE;1", "game:GAME.EXE;2" });
+
+        var first = manifest.Images.Single(static image => image.Name == "game:GAME.EXE;1");
+        first.LoadAddress.Should().Be(0x80010000u);
+        first.Words.Should().HaveCount(3);
+        first.Roots.Should().Equal(0x80010000u);
+
+        var second = manifest.Images.Single(static image => image.Name == "game:GAME.EXE;2");
+        second.LoadAddress.Should().Be(0x80080000u);
+        second.Words.Should().HaveCount(5);
+        second.Roots.Should().Equal(0x80080000u);
+    }
+
+    [Fact]
     public void DiscExes_NeedsADisc_AndExactlyOneName()
     {
         using var dir = new TempDirectory();

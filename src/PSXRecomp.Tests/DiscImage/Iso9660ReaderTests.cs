@@ -103,6 +103,17 @@ public sealed class Iso9660ReaderTests
     }
 
     [Fact]
+    public void ReadFile_WorksWithOriginalPath_IncludingVersionNumbers()
+    {
+        var reader = CreateReader(BuildVersionedIso());
+        reader.Initialize();
+
+        reader.ReadFile("ATLUS.EXE;1").Should().Equal(reader.ReadFile("ATLUS.EXE"));
+        reader.ReadFile("atlus.exe;1").Should().Equal(reader.ReadFile("ATLUS.EXE"));
+        reader.FileExists("ATLUS.EXE;2").Should().BeFalse();
+    }
+
+    [Fact]
     public void EnumerateFilesAndReadFile_UseConsistentNormalization()
     {
         var disc = BuildVersionedIso();
@@ -160,13 +171,16 @@ public sealed class Iso9660ReaderTests
         // Both should appear but with the same normalized name - this is a conflict
         var gameFiles = files.Where(f => f.Path == "GAME.EXE").ToList();
         gameFiles.Should().HaveCount(2, "Both versions should be enumerated");
+        reader.ReadFile("GAME.EXE;1").Should().Equal(exe1);
+        reader.ReadFile("GAME.EXE;2").Should().Equal(exe2);
+        reader.ReadFile("GAME.EXE").Should().Equal(exe1, "unversioned lookup uses the first matching entry");
+        reader.FileExists("GAME.EXE;3").Should().BeFalse();
     }
 
     [Fact]
-    public void InvalidDirectoryEntries_AreSkippedGracefully()
+    public void ValidDirectoryEntries_AreEnumeratedWithoutError()
     {
-        // This test verifies the reader doesn't crash on malformed entries
-        // The synthetic builder creates valid entries, so this is more of a smoke test
+        // Smoke test for well-formed entries only; malformed entry handling requires a separate fixture.
         var disc = BuildVersionedIso();
         var reader = CreateReader(disc);
         reader.Initialize();

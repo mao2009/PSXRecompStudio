@@ -240,23 +240,32 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     /// Every PS-X EXE file on the disc (a file whose header carries the <c>PS-X EXE</c> magic), as one image each named
     /// <c>prefix:ISO/PATH</c>. A game's later stages are such files, staged into RAM by its boot program; overlays may share a
     /// load address, which the loaded-code guard resolves by comparing the code actually in RAM. Files too large to be an
-    /// executable (movies, archives) are not read. Nothing is title-specific.
+    /// executable (movies, archives) are not read. Distinct files with the same normalized ISO path are read from
+    /// their own directory records and keep their version suffix in the image name. Nothing is title-specific.
     /// </summary>
     private static IEnumerable<LoadedImageSpec> DiscExecutables(Iso9660Reader iso, string prefix)
     {
-        foreach (var (path, entry) in iso.EnumerateFiles())
+        var files = iso.EnumerateFiles();
+        var ambiguousPaths = files.GroupBy(static file => file.Path, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (path, entry) in files)
         {
             if (entry.Size is < 0x800 or > MaxExecutableFileBytes)
             {
                 continue;
             }
 
-            // Use the directory entry directly to read the exact file version, avoiding
-            // normalized path ambiguity when multiple versions exist (e.g., GAME.EXE;1 vs GAME.EXE;2)
-            var bytes = iso.ReadFile(entry);
+            // A normalized path can refer to several file versions; read the exact extent.
+            var bytes = iso.ReadEnumeratedFile(entry);
             if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
             {
-                yield return FromExeBytes($"{prefix}:{path}", bytes, []);
+                var imagePath = ambiguousPaths.Contains(path)
+                    ? path[..(path.LastIndexOf('/') + 1)] + entry.FileName
+                    : path;
+                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, []);
             }
         }
     }
