@@ -141,30 +141,44 @@ public sealed class Iso9660Reader
         for (int i = 0; i < pathParts.Length; i++)
         {
             var entries = ReadDirectory(currentDirRecord);
-            var found = false;
-            foreach (var entry in entries)
-            {
-                var normalizedEntryName = NormalizeIdentifier(entry.FileName);
-                if (string.Equals(normalizedEntryName, pathParts[i], StringComparison.OrdinalIgnoreCase))
-                {
-                    if (i == pathParts.Length - 1)
-                    {
-                        return ReadRawFile(entry);
-                    }
+            var part = pathParts[i];
 
-                    currentDirRecord = entry;
-                    found = true;
-                    break;
-                }
+            // Prefer an exact on-disc identifier (including ;1 or ;2) when specified.
+            // An unversioned path remains compatible with versioned ISO file names.
+            var entry = entries.FirstOrDefault(candidate =>
+                string.Equals(candidate.FileName, part, StringComparison.OrdinalIgnoreCase))
+                ?? entries.FirstOrDefault(candidate =>
+                    string.Equals(NormalizeIdentifier(candidate.FileName), part, StringComparison.OrdinalIgnoreCase));
+
+            if (entry is null)
+            {
+                throw new FileNotFoundException($"ISO 9660: Path component '{part}' not found.");
             }
 
-            if (!found)
+            if (i == pathParts.Length - 1)
             {
-                throw new FileNotFoundException($"ISO 9660: Path component '{pathParts[i]}' not found.");
+                return ReadRawFile(entry);
             }
+
+            currentDirRecord = entry;
         }
 
         throw new FileNotFoundException($"ISO 9660: File '{isoPath}' not found.");
+    }
+
+    /// <summary>
+    /// Reads an enumerated file by its exact directory record, avoiding ambiguity between
+    /// distinct ISO versions that share the same normalized path.
+    /// </summary>
+    internal byte[] ReadEnumeratedFile(Iso9660DirectoryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.IsDirectory)
+        {
+            throw new InvalidDataException("ISO 9660: A directory cannot be read as an enumerated file.");
+        }
+
+        return ReadRawFile(entry);
     }
 
     /// <summary>
@@ -231,22 +245,17 @@ public sealed class Iso9660Reader
         foreach (var part in pathParts)
         {
             var entries = ReadDirectory(currentDirRecord);
-            bool found = false;
-            foreach (var entry in entries)
-            {
-                if (entry.IsDirectory &&
-                    string.Equals(NormalizeIdentifier(entry.FileName), part, StringComparison.OrdinalIgnoreCase))
-                {
-                    currentDirRecord = entry;
-                    found = true;
-                    break;
-                }
-            }
+            var directory = entries.FirstOrDefault(entry => entry.IsDirectory &&
+                string.Equals(entry.FileName, part, StringComparison.OrdinalIgnoreCase))
+                ?? entries.FirstOrDefault(entry => entry.IsDirectory &&
+                    string.Equals(NormalizeIdentifier(entry.FileName), part, StringComparison.OrdinalIgnoreCase));
 
-            if (!found)
+            if (directory is null)
             {
                 throw new DirectoryNotFoundException($"ISO 9660: Directory '{isoPath}' not found.");
             }
+
+            currentDirRecord = directory;
         }
 
         return ReadDirectory(currentDirRecord);
