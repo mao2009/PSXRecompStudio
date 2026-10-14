@@ -132,6 +132,8 @@ public sealed class MixedFallbackTests
         Gpr(run.Result, S5).Should().Be(0x11112345u, "the artifact computed with the interpreter's result");
         run.Evidence!.Transitions.Should().Be(1);
         run.Evidence.Returns.Should().Be(1);
+        run.Evidence.LastEntryPc.Should().Be(Target, "the accepted fallback entry was observed");
+        run.Evidence.LastReturnPc.Should().Be(returnSite, "the state was committed before the artifact resumed");
         run.Evidence.Targets.Should().ContainSingle().Which.Should().Match<MixedFallbackTarget>(
             t => t.Target == Target && t.Entries == 1 && t.Instructions > 0 && t.LastReturnPc == returnSite);
         AssertSameCpuAsInterpreter(run.Result, RunInterpreter(words));
@@ -444,6 +446,8 @@ public sealed class MixedFallbackTests
         run.Result.State.Should().Be(TitleExecutionState.RuntimeFailure);
         run.Result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SegmentBudgetExhausted);
         run.Result.DiagnosticMessage.Should().Contain("1000");
+        run.Evidence!.LastEntryPc.Should().Be(Target, "the fallback entry is known even when the segment fails");
+        run.Evidence.LastReturnPc.Should().BeNull("a segment that exhausted its budget never returned to the artifact");
     }
 
     [Fact]
