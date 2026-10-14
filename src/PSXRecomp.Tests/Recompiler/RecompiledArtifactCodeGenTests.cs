@@ -797,12 +797,13 @@ public sealed class RecompiledArtifactCodeGenTests
         // the verification targets this test's process tree rather than scanning the
         // whole machine for processes named "sleep" (which could match unrelated
         // sleep invocations on the host).
+        var sleep = TestToolchain.LongSleep(999);
+        if (sleep is null)
+        {
+            Skip.If(true, "no long-running utility (ping on Windows, sleep elsewhere) found; timeout/tree-kill verification skipped");
+        }
         Assert.Throws<TimeoutException>(
-            () =>
-            {
-                var (sleepExe, sleepArgs) = TestToolchain.LongSleep(999);
-                RunProcessVerbose(sleepExe, sleepArgs, 1000);
-            });
+            () => RunProcessVerbose(sleep!.Value.FileName, sleep.Value.Arguments, 1000));
 
         var pid = s_lastSpawnedProcessId.Value;
         pid.Should().BeGreaterThan(0,

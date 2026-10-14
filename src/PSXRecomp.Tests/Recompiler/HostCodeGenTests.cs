@@ -1265,12 +1265,14 @@ int main() {
     [SkippableFact]
     public void RunHostProcess_TimesOut_When_Process_Exceeds_Budget()
     {
-        #pragma warning disable AARC003
-        Action act = () =>
+        var sleep = TestToolchain.LongSleep(30);
+        if (sleep is null)
         {
-            var (sleepExe, sleepArgs) = TestToolchain.LongSleep(30);
-            RunHostProcess(sleepExe, sleepArgs, 500);
-        };
+            Skip.If(true, "no long-running utility (ping on Windows, sleep elsewhere) found; timeout/tree-kill verification skipped");
+        }
+
+        #pragma warning disable AARC003
+        Action act = () => RunHostProcess(sleep!.Value.FileName, sleep.Value.Arguments, 500);
         #pragma warning restore AARC003
         act.Should().Throw<TimeoutException>();
 
