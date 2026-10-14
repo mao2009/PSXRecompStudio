@@ -148,8 +148,8 @@ public sealed class CdRomDiscDriveTests
         });
         iso.Initialize();
 
-        SystemCnfParser.Parse(iso.ReadFile("SYSTEM.CNF;1")).BootPath.Should().Contain("TEST.EXE");
-        PsxExe.Load(iso.ReadFile("TEST.EXE;1"), "TEST.EXE").Header.EntryPoint.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart);
+        SystemCnfParser.Parse(iso.ReadFile("SYSTEM.CNF")).BootPath.Should().Contain("TEST.EXE");
+        PsxExe.Load(iso.ReadFile("TEST.EXE"), "TEST.EXE").Header.EntryPoint.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart);
     }
 
     [Fact]

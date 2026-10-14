@@ -17,6 +17,48 @@ public sealed class Iso9660Reader
     private const byte DirectoryRecordTerminator = 0;
 
     /// <summary>
+    /// Normalizes an ISO 9660 file/directory identifier by removing the version number suffix (;1, ;2, etc.).
+    /// Per ISO 9660, the version number is a semicolon followed by digits. This method removes it for
+    /// consistent path handling across ReadFile, ListDirectory, and EnumerateFiles.
+    /// </summary>
+    internal static string NormalizeIdentifier(string identifier)
+    {
+        // Special entries "." (0x00) and ".." (0x01) are encoded as single bytes and never have version numbers.
+        if (identifier == "\0" || identifier == "..")
+        {
+            return identifier;
+        }
+
+        // Find the last semicolon that starts a version number (; followed by digits only until end).
+        int semicolonIndex = identifier.LastIndexOf(';');
+        if (semicolonIndex >= 0)
+        {
+            bool allDigits = true;
+            for (int i = semicolonIndex + 1; i < identifier.Length; i++)
+            {
+                if (!char.IsDigit(identifier[i]))
+                {
+                    allDigits = false;
+                    break;
+                }
+            }
+
+            if (allDigits && semicolonIndex + 1 < identifier.Length)
+            {
+                return identifier[..semicolonIndex];
+            }
+        }
+
+        return identifier;
+    }
+
+    /// <summary>
+    /// Normalizes a path component (single path segment) by removing ISO 9660 version number suffixes.
+    /// Public helper for callers that need to normalize paths before passing to ReadFile/ListDirectory.
+    /// </summary>
+    public static string NormalizeIdentifierForPath(string pathComponent) => NormalizeIdentifier(pathComponent);
+
+    /// <summary>
     /// Upper bound for a single file's extent read through <see cref="ReadRawFile"/>. The
     /// largest medium a PlayStation disc image can come from is a 99-minute CD: 99 * 60 * 75
     /// = 445,500 sectors of 2048-byte user data, about 870 MiB — and no single file can
@@ -99,46 +141,153 @@ public sealed class Iso9660Reader
         for (int i = 0; i < pathParts.Length; i++)
         {
             var entries = ReadDirectory(currentDirRecord);
-            var found = false;
-            foreach (var entry in entries)
-            {
-                if (string.Equals(entry.FileName, pathParts[i], StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(entry.FileName, pathParts[i] + ";1", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (i == pathParts.Length - 1)
-                    {
-                        return ReadRawFile(entry);
-                    }
 
-                    currentDirRecord = entry;
-                    found = true;
-                    break;
-                }
+            // Prefer an exact on-disc identifier (including ;1 or ;2) when specified.
+            // An unversioned path remains compatible with versioned ISO file names.
+            var part = pathParts[i];
+            var entry = entries.FirstOrDefault(candidate =>
+                string.Equals(candidate.FileName, part, StringComparison.OrdinalIgnoreCase))
+                ?? entries.FirstOrDefault(candidate =>
+                    string.Equals(NormalizeIdentifier(candidate.FileName), part, StringComparison.OrdinalIgnoreCase));
+
+            if (entry is null)
+            {
+                throw new FileNotFoundException($"ISO 9660: Path component '{part}' not found.");
             }
 
-            if (!found)
+            if (i == pathParts.Length - 1)
             {
-                // Try case-insensitive partial match for directories
-                bool matched = false;
-                foreach (var entry in entries)
+                return ReadRawFile(entry);
+            }
+
+            currentDirRecord = entry;
+        }
+
+        throw new FileNotFoundException($"ISO 9660: File '{isoPath}' not found.");
+    }
+
+    /// <summary>
+    /// Reads an enumerated file by its exact directory record, avoiding ambiguity between
+    /// distinct ISO versions that share the same normalized path.
+    /// </summary>
+    public byte[] ReadEnumeratedFile(Iso9660DirectoryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.IsDirectory)
+        {
+            throw new InvalidDataException("ISO 9660: A directory cannot be read as an enumerated file.");
+        }
+
+        return ReadRawFile(entry);
+    }
+
+    /// <summary>
+    /// Reads a file directly from its directory entry, preserving the exact version.
+    /// Use this when the entry comes from <see cref="EnumerateFiles"/> or <see cref="ListDirectory"/>
+    /// to avoid normalized path ambiguity with multiple file versions.
+    /// </summary>
+    public byte[] ReadFile(Iso9660DirectoryEntry entry) => ReadEnumeratedFile(entry);
+
+    /// <summary>
+    /// Reads at most <paramref name="maxBytes"/> bytes from an enumerated file.
+    /// Used by diagnostic listings that need only the PS-X EXE header and a small code prefix.
+    /// The actual ISO file size remains available in <paramref name="entry"/>.
+    /// </summary>
+    public byte[] ReadEnumeratedFilePrefix(Iso9660DirectoryEntry entry, int maxBytes)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.IsDirectory)
+        {
+            throw new InvalidDataException("ISO 9660: A directory cannot be read as an enumerated file.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(maxBytes);
+        return ReadRawFile(entry, maxBytes: maxBytes);
+    }
+
+    /// <summary>
+    /// Represents an enumerated file with both its normalized path (for compatibility) and its full versioned path
+    /// (for unique identification across versioned directories).
+    /// </summary>
+    public sealed record EnumeratedFile
+    {
+        /// <summary>Normalized path without version numbers (e.g., "DIR/GAME.EXE"). Compatible with ReadFile/ListDirectory.</summary>
+        public required string NormalizedPath { get; init; }
+
+        /// <summary>Full versioned path preserving all directory and file version numbers (e.g., "DIR;1/GAME.EXE;1").</summary>
+        public required string VersionedPath { get; init; }
+
+        /// <summary>The original directory entry with on-disc identifiers intact.</summary>
+        public required Iso9660DirectoryEntry Entry { get; init; }
+    }
+
+    /// <summary>
+    /// Every regular file of the volume, depth first, with both normalized and versioned paths, in ordinal
+    /// path order so the result is deterministic. Each directory is entered by its unique on-disc location, so multiple
+    /// directories with the same normalized name (e.g., DIR;1 and DIR;2) are all traversed.
+    /// </summary>
+    public IReadOnlyList<EnumeratedFile> EnumerateFiles()
+    {
+        var files = new List<EnumeratedFile>();
+        var visited = new HashSet<uint>();
+
+        void Walk(string normalizedDirectory, string versionedDirectory, Iso9660DirectoryEntry dirRecord, bool isRoot)
+        {
+            List<Iso9660DirectoryEntry> entries;
+            try
+            {
+                entries = ReadDirectory(dirRecord);
+            }
+            catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidDataException or IndexOutOfRangeException)
+            {
+                if (isRoot)
                 {
-                    if (entry.IsDirectory &&
-                        string.Equals(entry.FileName.TrimEnd(';'), pathParts[i], StringComparison.OrdinalIgnoreCase))
-                    {
-                        currentDirRecord = entry;
-                        matched = true;
-                        break;
-                    }
+                    // Root directory failure must propagate - cannot treat a broken root as an empty disc.
+                    throw;
+                }
+                // Skip invalid child directory; continue with siblings
+                return;
+            }
+
+            foreach (var entry in entries)
+            {
+                var normalizedName = NormalizeIdentifier(entry.FileName);
+                if (entry.FileName is "\0" or ".." || normalizedName.Length == 0)
+                {
+                    continue;
                 }
 
-                if (!matched)
+                var normalizedPath = normalizedDirectory.Length == 0 ? normalizedName : normalizedDirectory + "/" + normalizedName;
+                var versionedPath = versionedDirectory.Length == 0 ? entry.FileName : versionedDirectory + "/" + entry.FileName;
+
+                if (!entry.IsDirectory)
                 {
-                    throw new FileNotFoundException($"ISO 9660: Path component '{pathParts[i]}' not found.");
+                    files.Add(new EnumeratedFile
+                    {
+                        NormalizedPath = normalizedPath,
+                        VersionedPath = versionedPath,
+                        Entry = entry
+                    });
+                }
+                else if (visited.Add(entry.Location))
+                {
+                    Walk(normalizedPath, versionedPath, entry, false);
                 }
             }
         }
 
-        throw new FileNotFoundException($"ISO 9660: File '{isoPath}' not found.");
+        var rootRecord = new Iso9660DirectoryEntry
+        {
+            Location = RootDirectoryLocation,
+            Size = RootDirectorySize,
+            Flags = 0x02,
+            FileNameLength = 1,
+            FileName = "\0",
+        };
+        visited.Add(rootRecord.Location);
+        Walk("", "", rootRecord, true);
+        files.Sort(static (a, b) => string.CompareOrdinal(a.NormalizedPath, b.NormalizedPath));
+        return files;
     }
 
     public bool FileExists(string isoPath)
@@ -169,22 +318,17 @@ public sealed class Iso9660Reader
         foreach (var part in pathParts)
         {
             var entries = ReadDirectory(currentDirRecord);
-            bool found = false;
-            foreach (var entry in entries)
-            {
-                if (entry.IsDirectory &&
-                    string.Equals(entry.FileName.TrimEnd(';'), part, StringComparison.OrdinalIgnoreCase))
-                {
-                    currentDirRecord = entry;
-                    found = true;
-                    break;
-                }
-            }
+            var directory = entries.FirstOrDefault(entry => entry.IsDirectory &&
+                string.Equals(entry.FileName, part, StringComparison.OrdinalIgnoreCase))
+                ?? entries.FirstOrDefault(entry => entry.IsDirectory &&
+                    string.Equals(NormalizeIdentifier(entry.FileName), part, StringComparison.OrdinalIgnoreCase));
 
-            if (!found)
+            if (directory is null)
             {
                 throw new DirectoryNotFoundException($"ISO 9660: Directory '{isoPath}' not found.");
             }
+
+            currentDirRecord = directory;
         }
 
         return ReadDirectory(currentDirRecord);
@@ -331,12 +475,14 @@ public sealed class Iso9660Reader
         return entries;
     }
 
-    private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false)
+    private byte[] ReadRawFile(Iso9660DirectoryEntry entry, bool padToSectorSize = false, int? maxBytes = null)
     {
         // entry.Size and entry.Location come straight from an on-disc directory record
         // and are untrusted. Everything below is computed in long so nothing wraps, and
-        // the extent is proven to exist in the container before a byte is allocated.
-        long totalSectors = ((long)entry.Size + SectorSize - 1) / SectorSize;
+        // the requested extent is checked before allocating. Prefix reads never allocate
+        // or fetch the remainder of a large ISO file.
+        long bytesToRead = maxBytes.HasValue ? Math.Min((long)entry.Size, maxBytes.Value) : entry.Size;
+        long totalSectors = (bytesToRead + SectorSize - 1) / SectorSize;
         long totalBytes = totalSectors * SectorSize;
         long lastSector = (long)entry.Location + totalSectors - 1;
 
@@ -370,14 +516,13 @@ public sealed class Iso9660Reader
             Buffer.BlockCopy(sector, 0, data, i * SectorSize, SectorSize);
         }
 
-        if (padToSectorSize || data.Length == entry.Size)
+        if (padToSectorSize || data.Length == bytesToRead)
         {
             return data;
         }
 
-        // File data is exactly entry.Size bytes; trim the sector-rounded padding so
-        // hash/size and parsed content match the bytes stored on the disc.
-        Array.Resize(ref data, (int)entry.Size);
+        // Trim sector padding to exactly the requested file bytes (or prefix).
+        Array.Resize(ref data, (int)bytesToRead);
         return data;
     }
 }

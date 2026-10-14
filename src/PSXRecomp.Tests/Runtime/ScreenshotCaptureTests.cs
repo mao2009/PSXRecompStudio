@@ -210,4 +210,59 @@ public sealed class ScreenshotCaptureTests : IDisposable
         capture.TryCapture();
         capture.NextTargetVblank.Should().BeNull();
     }
+
+    // ===== 24-bit (8-8-8) display conversion (Issue #772) =====
+
+    [Fact]
+    public void Convert24BitRegion_PlacesFirstPixelAtHalfwordStartXInBytes()
+    {
+        // GP1(05h) X is a halfword address: the 24-bit display origin is at byte startX * 2,
+        // then each pixel advances 3 bytes. startX = 1 -> byte 2 (not byte 3).
+        var vram = new byte[16];
+        vram[2] = 0x11; vram[3] = 0x22; vram[4] = 0x33; // pixel 0: R G B
+        vram[5] = 0x44; vram[6] = 0x55; vram[7] = 0x66; // pixel 1: R G B
+
+        var bgra = ScreenshotCapture.Convert24BitRegionToBgra32(vram, startX: 1, startY: 0, width: 2, height: 1);
+
+        bgra.Should().Equal(new byte[]
+        {
+            0x33, 0x22, 0x11, 0xFF, // B G R A
+            0x66, 0x55, 0x44, 0xFF,
+        });
+    }
+
+    [Fact]
+    public void Convert24BitRegion_ScalesStartXAsHalfwordsNotPixels()
+    {
+        // Regression: treating startX as a pixel index (startX * 3) would read byte 9 here.
+        // The hardware uses startX * 2 = byte 6.
+        var vram = new byte[16];
+        vram[6] = 0x0A; vram[7] = 0x0B; vram[8] = 0x0C;
+
+        var bgra = ScreenshotCapture.Convert24BitRegionToBgra32(vram, startX: 3, startY: 0, width: 1, height: 1);
+
+        bgra.Should().Equal(new byte[] { 0x0C, 0x0B, 0x0A, 0xFF });
+    }
+
+    [Fact]
+    public void Convert24BitRegion_UsesRowStrideAndStartY()
+    {
+        var vram = new byte[2 * 2048];
+        vram[2048] = 0xAA; vram[2049] = 0xBB; vram[2050] = 0xCC; // row 1, column 0
+
+        var bgra = ScreenshotCapture.Convert24BitRegionToBgra32(vram, startX: 0, startY: 1, width: 1, height: 1);
+
+        bgra.Should().Equal(new byte[] { 0xCC, 0xBB, 0xAA, 0xFF });
+    }
+
+    [Fact]
+    public void Convert24BitRegion_StopsAtVramEnd()
+    {
+        var vram = new byte[4]; // exactly one complete pixel fits
+        vram[0] = 0x01; vram[1] = 0x02; vram[2] = 0x03;
+
+        var bgra = ScreenshotCapture.Convert24BitRegionToBgra32(vram, startX: 0, startY: 0, width: 2, height: 1);
+
+        bgra.Should().Equal(new byte[] { 0x03, 0x02, 0x01, 0xFF, 0x00, 0x00, 0x00, 0x00 });
+    }
 }

@@ -476,6 +476,8 @@ public static class RomAnalysisPipeline
     /// <summary>
     /// Strips the <c>cdrom:</c> scheme and leading separator from a SYSTEM.CNF BOOT value
     /// and normalizes separators to the ISO 9660 reader's convention.
+    /// Preserves explicit ISO 9660 version number suffixes (;1, ;2, etc.) so that
+    /// SYSTEM.CNF entries like "cdrom:\GAME.EXE;2" correctly select that specific version.
     /// </summary>
     internal static string NormalizeBootPath(string bootPath)
     {
@@ -488,7 +490,12 @@ public static class RomAnalysisPipeline
         {
             path = path[1..];
         }
-        return path.Replace('\\', '/');
+        path = path.Replace('\\', '/');
+
+        // Do NOT remove version numbers from path components.
+        // The BOOT path may explicitly specify a version (e.g., "GAME.EXE;2"),
+        // and removing it would cause the wrong file version to be loaded.
+        return path;
     }
 
     private static (IReadOnlyList<DecodedInstruction> Instructions, IReadOnlyList<DecodeFailure> Failures)

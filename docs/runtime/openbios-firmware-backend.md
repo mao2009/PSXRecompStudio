@@ -62,6 +62,11 @@ This command:
   fixed number of instructions is never evidence. `--capture-at <pc>` snapshots registers
   and recent transfers when a PC is first fetched; a stop prints PC, word, COP0, GPRs,
   recent fetches/transfers, and the first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
+  Local diagnostics for the interpreter engine (output is never committed): `--dump-ram <file>`
+  writes the 2 MiB of main RAM at the `--capture-at` PC, `--dump-frame <file.ppm>` the displayed
+  frame at the end (24-bit aware), `--pc-histogram <file.json>` the guest-RAM fetch counts (top PCs and
+  64-byte buckets) so a wait loop can be told from a stall, and `--list-disc <file.json>` every
+  ISO 9660 file with the PS-X EXE header of the executables (load address, entry, size).
 
 Measured with the pinned build (`openbios.bin` sha256
 `96889cfc16e3637e58e3b709a8de4f47725a4c9f2cafde57e0c24dc075f5cfb7`, GCC 16.2.0; a clean
@@ -272,8 +277,14 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
 `prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
-built ELF pair. Manifest root paths are relative to the manifest. `boot-exe`
-reads the synthetic disc's declared executable before the run. Observation
+built ELF pair. Manifest root paths are relative to the manifest. `boot-exe <name>`
+reads the executable the disc's SYSTEM.CNF `BOOT` names (the real one on a real disc; `<name>` is only a
+label) with its entry as the sole root. `disc-exes <prefix>` (Issue #734) adds every PS-X EXE file on the
+disc, one guarded image each named `<prefix>:<ISO path>`: a game's later stages are executables its boot
+program stages into RAM, and overlays may share a load address, which the loaded-code guard resolves by
+the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific.
+`prepare-aot.py --disc-exes` emits it; it is **opt-in** because, measured on Persona, entry-only roots leave every
+function-pointer target to the interpreter fallback and the mixed execution then ping-pongs (Issue #734, below). Observation
 points must remain interpreted: the generated manifest includes `C0Handler`
 (kernel RAM execution), exception vector/handler, shell and EXE entries.
 
@@ -473,6 +484,7 @@ writes the diagnostics document; the existing `FirmwareStandaloneHandoffTests` c
 |---|---|
 | Synthetic Mode 2 disc, `openbios-probe --standalone --stop-at 0x80010014` | `bootVerified`; 195,060,431 native / 2,338 fallback instructions; 327 transitions |
 | Same disc, packaged, `./synth` launched directly (200M budget) | **Runtime disc load proven by real OpenBIOS's own CD driver** (separate gate, synthetic disc + probe above) **not by this packaging E2E**: the packaging E2E's synthetic ROM stores the EXE words into RAM itself. The packaged direct launch (200M budget) reached the synthetic EXE's `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
+| Persona CHD, 600 s timeout, Windows, `PSXRecomp.RuntimeHost --diagnostics`, before/after `disc-exes` (all executables compiled, entry-only roots) | Before: 270,127,434 native / 2,221,246,107 fallback instructions / 4,698 transitions, fallback time 269 s of 601 s; last fallback entry `0x8008A484`. After: 315,766,486 native / 11,374,179 fallback / 254,095 transitions, fallback **transfer** time 175 s of 600 s (249,567 entries at `0x80084C88`, returning at `0x8008AECC`). The guest advanced ~7x *less* in the same wall time: AOT coverage rose, progress fell. Both end `ARTIFACT_TIMEOUT`; no title evidence. |
 | Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
 
 Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel

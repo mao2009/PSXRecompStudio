@@ -61,7 +61,7 @@ public sealed class SyntheticDiscReproducibilityTests
         BitConverter.ToUInt32(exe, original.Length + 4).Should().Be(0);
         var disc = SyntheticDiscBuilder.Bootable(exe);
         Sha256Hex(disc).Should().Be("bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03");
-        var parsed = PsxExe.Load(Iso(new RawCdSectorSource(disc)).ReadFile(SyntheticDiscBuilder.ExeIsoName), "synthetic");
+        var parsed = PsxExe.Load(Iso(new RawCdSectorSource(disc)).ReadFile(SyntheticDiscBuilder.ExeIsoName.Split(';')[0]), "synthetic");
         parsed.Header.TextSize.Should().Be(2048);
         parsed.TextSegment.Should().Equal(exe.AsSpan(0x800).ToArray());
     }
@@ -132,9 +132,9 @@ public sealed class SyntheticDiscReproducibilityTests
     {
         var iso = Iso(new RawCdSectorSource(Disc()));
 
-        SystemCnfParser.Parse(iso.ReadFile("SYSTEM.CNF;1")).BootPath.Should().Contain("PSXRECOMP.EXE");
-        iso.ReadFile(SyntheticDiscBuilder.ExeIsoName).Should().Equal(ExeBytes(), "the boot EXE round-trips byte for byte");
-        PsxExe.Load(iso.ReadFile(SyntheticDiscBuilder.ExeIsoName), "PSXRECOMP").Header.EntryPoint
+        SystemCnfParser.Parse(iso.ReadFile("SYSTEM.CNF")).BootPath.Should().Contain("PSXRECOMP.EXE");
+        iso.ReadFile(SyntheticDiscBuilder.ExeIsoName.Split(';')[0]).Should().Equal(ExeBytes(), "the boot EXE round-trips byte for byte");
+        PsxExe.Load(iso.ReadFile(SyntheticDiscBuilder.ExeIsoName.Split(';')[0]), "PSXRECOMP").Header.EntryPoint
             .Should().Be(GeneratedPsxExeFixtures.EntryPc);
     }
 }

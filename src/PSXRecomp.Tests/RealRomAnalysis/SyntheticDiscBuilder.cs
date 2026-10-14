@@ -10,8 +10,9 @@ namespace PSXRecomp.Tests.RealRomAnalysis;
 /// without a copyrighted disc image.
 ///
 /// Only what <see cref="Iso9660Reader"/> actually reads is emitted: a Primary Volume
-/// Descriptor, a single-sector root directory, and file extents. Images are built in
-/// memory and never committed.
+/// Descriptor, a single-sector directory per directory, and file extents. A path with
+/// separators (for example <c>DIR;1/GAME.EXE;1</c>) creates the intervening directories,
+/// each named with its on-disc version suffix. Images are built in memory and never committed.
 /// </summary>
 [Test]
 public sealed class SyntheticIsoImageBuilder
@@ -25,7 +26,15 @@ public sealed class SyntheticIsoImageBuilder
     private const int RootDirectoryRecordOffset = 156;
     private const int PathTableSize = 10; // 8-byte header + 1-byte name + 1 pad byte
 
-    private readonly List<(string Name, byte[] Content)> _files = [];
+    // Single-byte on-disc names for the implicit "." (0x00) and ".." (0x01) records.
+    private static readonly byte[] SelfName = [0];
+    private static readonly byte[] ParentName = [1];
+
+    private readonly record struct Child(string Name, bool IsDirectory, byte[]? Content, string Path);
+
+    private readonly List<(string Path, byte[] Content)> _files = [];
+    private readonly Dictionary<string, (uint Location, uint Size)> _corruptDirectories = new(StringComparer.Ordinal);
+    private (uint Location, uint Size)? _corruptRoot;
     private string _volumeIdentifier = "PSXRECOMP_TEST";
     private bool _emitPrimaryVolumeDescriptor = true;
 
@@ -47,12 +56,13 @@ public sealed class SyntheticIsoImageBuilder
     }
 
     /// <summary>
-    /// Adds a file to the root directory. <paramref name="isoName"/> is the on-disc
-    /// name including the ISO 9660 version suffix (for example <c>SYSTEM.CNF;1</c>).
+    /// Adds a file at <paramref name="versionedPath"/>. A path with no separator lands in
+    /// the root directory; separators (for example <c>DIR;1/GAME.EXE;1</c>) create the
+    /// intervening directories. Each component keeps its on-disc version suffix.
     /// </summary>
-    public SyntheticIsoImageBuilder AddFile(string isoName, byte[] content)
+    public SyntheticIsoImageBuilder AddFile(string versionedPath, byte[] content)
     {
-        _files.Add((isoName, content));
+        _files.Add((versionedPath, content));
         return this;
     }
 
@@ -64,26 +74,95 @@ public sealed class SyntheticIsoImageBuilder
     public SyntheticIsoImageBuilder AddSystemCnfWithoutBoot() =>
         AddFile("SYSTEM.CNF;1", Encoding.ASCII.GetBytes("TCB = 4\r\nEVENT = 10\r\nSTACK = 801FFFF0\r\n"));
 
+    /// <summary>
+    /// Overrides the directory record the parent writes for <paramref name="versionedDirectoryPath"/>
+    /// (for example <c>DIR;1</c>), so tests can model a corrupt child extent.
+    /// </summary>
+    public SyntheticIsoImageBuilder CorruptDirectoryExtent(string versionedDirectoryPath, uint location, uint size)
+    {
+        _corruptDirectories[versionedDirectoryPath] = (location, size);
+        return this;
+    }
+
+    /// <summary>Overrides the root directory record in the PVD, so tests can model a corrupt root.</summary>
+    public SyntheticIsoImageBuilder CorruptRootDirectoryExtent(uint location, uint size)
+    {
+        _corruptRoot = (location, size);
+        return this;
+    }
+
     public byte[] Build()
     {
-        var locations = new uint[_files.Count];
-        var cursor = FirstFileSector;
-        for (int i = 0; i < _files.Count; i++)
+        // Resolve the directory tree implied by the file paths, in first-seen order.
+        var directories = new List<string>();
+        var seenDirectories = new HashSet<string>(StringComparer.Ordinal);
+        var parentOf = new Dictionary<string, string>(StringComparer.Ordinal);
+        var childrenOf = new Dictionary<string, List<Child>>(StringComparer.Ordinal);
+        var rootChildren = new List<Child>();
+
+        List<Child> ChildrenOf(string directory)
         {
-            locations[i] = (uint)cursor;
-            var sectors = Math.Max(1, (_files[i].Content.Length + SectorSize - 1) / SectorSize);
-            cursor += sectors;
+            if (!childrenOf.TryGetValue(directory, out var list))
+            {
+                list = [];
+                childrenOf[directory] = list;
+            }
+            return list;
+        }
+
+        void AddChild(string parent, Child child) =>
+            (parent.Length == 0 ? rootChildren : ChildrenOf(parent)).Add(child);
+
+        foreach (var (path, content) in _files)
+        {
+            var parts = path.Split('/');
+            var parent = "";
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                var directory = parent.Length == 0 ? parts[i] : parent + "/" + parts[i];
+                if (seenDirectories.Add(directory))
+                {
+                    directories.Add(directory);
+                    parentOf[directory] = parent;
+                    AddChild(parent, new Child(parts[i], IsDirectory: true, Content: null, directory));
+                }
+                parent = directory;
+            }
+            AddChild(parent, new Child(parts[^1], IsDirectory: false, content, path));
+        }
+
+        // One sector per directory after the path table, then the file extents.
+        var directorySector = new Dictionary<string, uint>(StringComparer.Ordinal);
+        var fileSector = new Dictionary<string, uint>(StringComparer.Ordinal);
+        var cursor = (uint)FirstFileSector;
+        foreach (var directory in directories)
+        {
+            directorySector[directory] = cursor++;
+        }
+        foreach (var (path, content) in _files)
+        {
+            fileSector[path] = cursor;
+            cursor += (uint)Math.Max(1, (content.Length + SectorSize - 1) / SectorSize);
         }
 
         var image = new byte[cursor * SectorSize];
 
-        WriteVolumeDescriptor(image, (uint)cursor);
-        WriteRootDirectory(image, locations);
+        WriteVolumeDescriptor(image, cursor);
 
-        for (int i = 0; i < _files.Count; i++)
+        var (rootLocation, rootSize) = _corruptRoot ?? ((uint)RootDirectorySector, (uint)SectorSize);
+        WriteDirectory(image, RootDirectorySector, rootLocation, rootSize, rootChildren,
+            parentSector: null, directorySector, fileSector);
+        foreach (var directory in directories)
         {
-            var content = _files[i].Content;
-            Buffer.BlockCopy(content, 0, image, (int)locations[i] * SectorSize, content.Length);
+            var parent = parentOf[directory];
+            var parentSector = parent.Length == 0 ? (uint)RootDirectorySector : directorySector[parent];
+            WriteDirectory(image, (int)directorySector[directory], directorySector[directory], SectorSize,
+                ChildrenOf(directory), parentSector, directorySector, fileSector);
+        }
+
+        foreach (var (path, content) in _files)
+        {
+            Buffer.BlockCopy(content, 0, image, (int)fileSector[path] * SectorSize, content.Length);
         }
 
         return image;
@@ -123,27 +202,56 @@ public sealed class SyntheticIsoImageBuilder
         BitConverter.GetBytes((uint)RootDirectorySector).CopyTo(image, table + 2);
         image[table + 6] = 1;
 
-        WriteDirectoryRecord(image, offset + RootDirectoryRecordOffset,
-            RootDirectorySector, SectorSize, flags: 0x02, name: "\0");
+        var (rootLocation, rootSize) = _corruptRoot ?? ((uint)RootDirectorySector, (uint)SectorSize);
+        WriteDirectoryRecord(image, offset + RootDirectoryRecordOffset, rootLocation, rootSize, flags: 0x02, SelfName);
     }
 
-    private void WriteRootDirectory(byte[] image, uint[] locations)
+    private void WriteDirectory(
+        byte[] image,
+        int sector,
+        uint selfLocation,
+        uint selfSize,
+        List<Child> children,
+        uint? parentSector,
+        Dictionary<string, uint> directorySector,
+        Dictionary<string, uint> fileSector)
     {
-        var offset = RootDirectorySector * SectorSize;
+        var offset = sector * SectorSize;
 
         // "." — the directory's own record.
-        offset += WriteDirectoryRecord(image, offset, RootDirectorySector, SectorSize, flags: 0x02, name: "\0");
-
-        for (int i = 0; i < _files.Count; i++)
+        offset += WriteDirectoryRecord(image, offset, selfLocation, selfSize, flags: 0x02, SelfName);
+        if (parentSector is { } parent)
         {
-            offset += WriteDirectoryRecord(image, offset, locations[i],
-                (uint)_files[i].Content.Length, flags: 0x00, name: _files[i].Name);
+            offset += WriteDirectoryRecord(image, offset, parent, SectorSize, flags: 0x02, ParentName);
+        }
+
+        foreach (var child in children)
+        {
+            offset += WriteChildRecord(image, offset, child, directorySector, fileSector);
         }
     }
 
-    private static int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, string name)
+    private int WriteChildRecord(
+        byte[] image,
+        int offset,
+        Child child,
+        Dictionary<string, uint> directorySector,
+        Dictionary<string, uint> fileSector)
     {
-        var nameBytes = Encoding.ASCII.GetBytes(name);
+        if (child.IsDirectory)
+        {
+            var (location, size) = _corruptDirectories.TryGetValue(child.Path, out var corrupt)
+                ? corrupt
+                : (directorySector[child.Path], (uint)SectorSize);
+            return WriteDirectoryRecord(image, offset, location, size, flags: 0x02, Encoding.ASCII.GetBytes(child.Name));
+        }
+
+        return WriteDirectoryRecord(image, offset, fileSector[child.Path],
+            (uint)child.Content!.Length, flags: 0x00, Encoding.ASCII.GetBytes(child.Name));
+    }
+
+    private static int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, byte[] nameBytes)
+    {
         var recordLength = 33 + nameBytes.Length;
         if (recordLength % 2 != 0)
         {
