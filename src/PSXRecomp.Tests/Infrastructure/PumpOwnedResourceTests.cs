@@ -116,6 +116,22 @@ public sealed class PumpOwnedResourceTests
     }
 
     [Fact]
+    public async Task APumpThatFaultsAfterDispose_StillReleases()
+    {
+        var pump = new TaskCompletionSource();
+        var released = new TaskCompletionSource();
+        var resource = new PumpOwnedResource(released.SetResult);
+        resource.Track(pump.Task);
+
+        resource.Dispose();
+        released.Task.IsCompleted.Should().BeFalse("the pump still owns the resource");
+
+        pump.SetException(new InvalidOperationException("pump boom"));
+
+        await released.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public void TrackAfterDispose_IsAProgrammingError()
     {
         var resource = new PumpOwnedResource(() => { });

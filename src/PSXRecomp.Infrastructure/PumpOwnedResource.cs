@@ -12,10 +12,14 @@ namespace PSXRecomp.Infrastructure;
 /// <remarks>
 /// The production call order is fixed: <see cref="Track"/> is called as soon as the pump is
 /// started and disposal only when the run ends, so the tracked pump is always known before a
-/// release can be requested. A pump that never ends keeps the resource alive only until it is
-/// stopped, which <c>RunProcess</c> guarantees by killing the child and releasing its stdout
-/// pipe; a single deferred release is bounded by that pump's own termination, not unbounded
-/// retention.
+/// release can be requested. While the pump is active the resource is deliberately retained:
+/// there is no way to free it safely without risking use-after-free inside the pump. The
+/// caller bounds the pump's own liveness separately (<c>RunProcess</c> kills the child and
+/// releases its stdout pipe, then waits a bounded drain), so a deferred release normally
+/// follows shortly after; a pump wedged in device or fallback work, which killing the child
+/// cannot interrupt, holds its resource until that work returns or the process exits. The
+/// resource is never released twice, and a faulted pump is observed rather than leaking an
+/// unobserved task exception.
 /// </remarks>
 [Infrastructure]
 internal sealed class PumpOwnedResource : IDisposable
@@ -83,8 +87,14 @@ internal sealed class PumpOwnedResource : IDisposable
                 // The pump outlived the run and still owns the resource: release it only when
                 // the pump ends, on whatever thread ends it. ExecuteSynchronously also closes
                 // the window where the pump ends between the check above and this registration.
+                // Reading completed.Exception observes a fault of a pump that later failed after
+                // the bounded drain gave up, so it does not surface as an unobserved exception.
                 _ = pump.ContinueWith(
-                    static (_, state) => ((PumpOwnedResource)state!).Release(),
+                    static (completed, state) =>
+                    {
+                        _ = completed.Exception;
+                        ((PumpOwnedResource)state!).Release();
+                    },
                     state: this,
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
