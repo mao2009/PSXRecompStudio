@@ -241,6 +241,11 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 gpr, header.Value.Hi, header.Value.Lo, pc, header.Value.Sr, header.Value.Cause, header.Value.Epc);
 
             _transferClock.Stop();
+            // Record the accepted fallback entry before executing it: an interrupted
+            // segment may never produce an outcome. A return is only observed after
+            // its state was successfully committed back to the artifact.
+            _lastEntryPc = pc;
+            _lastReturnPc = null;
             FallbackSegmentOutcome outcome;
             _deviceRam.RedirectTo(_devices.Bus);
             _fallbackClock.Start();
@@ -261,8 +266,6 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 previous.Entries + 1,
                 previous.Instructions + outcome.RetiredInstructions,
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
-            _lastEntryPc = pc;
-            _lastReturnPc = outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : null;
             _transitionObserver?.Invoke(new MixedFallbackTransition(
                 pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
 
@@ -271,7 +274,13 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 return Stop(outcome.DiagnosticCode!, outcome.DiagnosticMessage!);
             }
 
-            return WriteBack(outcome.State) ? Decision.Resumed : Decision.Stopped;
+            if (!WriteBack(outcome.State))
+            {
+                return Decision.Stopped;
+            }
+
+            _lastReturnPc = outcome.State.Pc;
+            return Decision.Resumed;
         }
         finally
         {
