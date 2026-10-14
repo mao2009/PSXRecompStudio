@@ -41,7 +41,9 @@ public sealed class FrameSnapshot
     /// Captures the region named by GP1(05h) (<see cref="GpuState.DisplayVramStart"/>)
     /// and <paramref name="resolution"/> (from <see cref="GpuDevice.GetDisplayResolution"/>)
     /// out of <paramref name="vram"/>. A display region that extends past VRAM
-    /// bounds (1024x512) is clipped, never wrapped or thrown.
+    /// bounds (1024x512) is clipped, never wrapped or thrown. In 24-bit display mode,
+    /// the horizontal limit is measured in complete three-byte RGB pixels (the start X is
+    /// a 16-bit VRAM halfword coordinate), so no pixel can read into the next VRAM row.
     /// </summary>
     public static FrameSnapshot Capture(GpuVram vram, GpuState state, (ushort Width, ushort Height) resolution)
     {
@@ -51,7 +53,13 @@ public sealed class FrameSnapshot
         int _startX = (int)(state.DisplayVramStart & 0x3FF);
         int _startY = (int)((state.DisplayVramStart >> 10) & 0x1FF);
 
-        int _width = Math.Max(0, Math.Min((int)resolution.Width, GpuVram.Width - _startX));
+        // GP1(05h) X is a halfword offset regardless of the current display depth.
+        // A 24-bit scanline packs each RGB pixel into 3 bytes; clipping by remaining
+        // halfwords would let the last pixels spill into the next VRAM scanline.
+        int _availablePixels = (state.DisplayMode & 0x10u) != 0
+            ? ((GpuVram.Width - _startX) * sizeof(ushort)) / 3
+            : GpuVram.Width - _startX;
+        int _width = Math.Max(0, Math.Min((int)resolution.Width, _availablePixels));
         int _height = Math.Max(0, Math.Min((int)resolution.Height, GpuVram.Height - _startY));
 
         var _pixels = new ushort[_width * _height];
