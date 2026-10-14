@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using PSXRecomp.Architecture;
@@ -104,48 +105,69 @@ public static class RuntimeHostBuildService
                 "The PSXRecomp.RuntimeHost project could not be located; the runtime host must be published from its csproj.",
                 "RUNTIME_HOST_NOT_FOUND");
 
+        // Isolate each provision operation to a unique artifacts output directory to avoid
+        // concurrent restore/publish races on shared obj/bin and project.assets.json.
+        var artifactsRoot = Path.Combine(Path.GetTempPath(), "psxrecomp-runtimehost-artifacts", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(artifactsRoot);
+        var artifactsPath = Path.Combine(artifactsRoot, "artifacts");
+
         // Restore the project for the target RID to ensure assets are available.
-        var restoreArgs = new[] { "restore", hostProject, "-r", rid };
+        var restoreArgs = new List<string>
+        {
+            "restore",
+            hostProject,
+            "-r",
+            rid,
+            "-p:UseArtifactsOutput=true",
+            $"-p:ArtifactsPath={artifactsPath}",
+        };
         var restoreResult = RunToolchain("dotnet", restoreArgs, timeout);
         if (restoreResult.Outcome != ToolchainOutcome.Success)
         {
+            TryDeleteDirectory(artifactsRoot);
             throw new RuntimeHostProvisionFailed(
-                $"{restoreResult.Outcome} while restoring the runtime host ({string.Join(" ", restoreArgs)}):\n{restoreResult.Stderr}",
+                restoreResult.Outcome + " while restoring the runtime host (" + string.Join(" ", restoreArgs) + "):\n" + restoreResult.Stderr,
                 MapProvisionFailure(restoreResult.Outcome));
         }
 
-        var args = new[]
+        var args = new List<string>
         {
-            "publish", hostProject,
-            "-c", "Release",
-            "-r", rid,
-            "-o", Path.GetFullPath(targetDirectory),
+            "publish",
+            hostProject,
+            "-c",
+            "Release",
+            "-r",
+            rid,
+            "-o",
+            Path.GetFullPath(targetDirectory),
+            "-p:UseArtifactsOutput=true",
+            $"-p:ArtifactsPath={artifactsPath}",
             // Restore is done explicitly above; --no-restore avoids duplicate work.
             "--no-restore",
         };
 
         if (selfContained)
         {
-            args = args.Concat(new[]
-            {
-                "-p:SelfContained=true",
-                "-p:PublishSingleFile=true",
-            }).ToArray();
+            args.Add("-p:SelfContained=true");
+            args.Add("-p:PublishSingleFile=true");
         }
         else
         {
             // Framework-dependent deploy: bundle the apphost + app + runtime files.
             // The end-user host must have the matching .NET runtime installed.
-            args = args.Concat(new[] { "-p:SelfContained=false" }).ToArray();
+            args.Add("-p:SelfContained=false");
         }
 
         var result = RunToolchain("dotnet", args, timeout);
         if (result.Outcome != ToolchainOutcome.Success)
         {
+            TryDeleteDirectory(artifactsRoot);
             throw new RuntimeHostProvisionFailed(
-                $"{result.Outcome} while provisioning the runtime host ({string.Join(" ", args)}):\n{result.Stderr}",
+                result.Outcome + " while provisioning the runtime host (" + string.Join(" ", args) + "):\n" + result.Stderr,
                 MapProvisionFailure(result.Outcome));
         }
+
+        TryDeleteDirectory(artifactsRoot);
 
         // Validate the published layout: the launcher execs the host at the layout's
         // canonical name relative to the distribution root.
@@ -368,6 +390,27 @@ public static class RuntimeHostBuildService
     }
 
     internal readonly record struct ToolchainResult(ToolchainOutcome Outcome, int ExitCode, string Stderr);
+
+    private static void TryDeleteDirectory(string? directory)
+    {
+        if (directory is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup; do not throw.
+        }
+    }
+
 
     internal enum ToolchainOutcome
     {
