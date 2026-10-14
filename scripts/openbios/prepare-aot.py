@@ -77,7 +77,7 @@ def prepare(rom_path, shell_path, output):
                                ('vectorb0', 'B0Vector', 0xB0), ('vectorc0', 'C0Vector', 0xC0)]:
         roots(f'{name}.roots', {dest, dest + 4})
         lines.append(f'image {name} 0x{dest:X} rom 0x{rom.symbols[symbol]:X} 0x10 {name}.roots')
-    lines += [f'image shell 0x80030000 rom 0x{shell_start:X} 0x{shell_size:X} shell.roots', 'boot-exe synthetic',
+    lines += [f'image shell 0x80030000 rom 0x{shell_start:X} 0x{shell_size:X} shell.roots', 'boot-exe boot', 'disc-exes disc',
               f'interpret 0x{rom.symbols["C0Handler"]:X}', 'interpret 0x80000080', f'interpret 0x{rom.symbols["exceptionHandler"]:X}']
     (output / 'images.txt').write_text('\n'.join(lines) + '\n')
     print(f'--code-bytes {text_size} --roots {output / "rom.roots"} --load-images {output / "images.txt"}')

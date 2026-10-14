@@ -22,6 +22,7 @@ public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words
 /// image    &lt;name&gt; &lt;dest-hex&gt; rom &lt;rom-addr-hex&gt; &lt;size-hex&gt; [roots-file]   # ROM bytes copied into RAM
 /// exe      &lt;name&gt; &lt;exe-path&gt; [roots-file]                                        # a PS-X EXE on disk
 /// boot-exe &lt;name&gt;                                                                    # the SYSTEM.CNF boot EXE on --disc
+/// disc-exes &lt;prefix&gt;                                                                 # every PS-X EXE file on --disc
 /// interpret &lt;addr-hex&gt;                                                                # an entry that stays interpreted
 /// </code>
 /// Blank lines, leading/trailing whitespace and <c>#</c> comments are ignored; numbers are hexadecimal (an optional
@@ -69,6 +70,18 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     iso ??= OpenIso(disc);
                     images.Add(FromExeBytes(fields[1], iso.ReadFile(NormalizeBootPath(iso)), []));
                     break;
+                case "disc-exes":
+                    if (fields.Length != 2)
+                    {
+                        throw new InvalidDataException($"manifest: 'disc-exes' takes exactly one name prefix; got '{line}'.");
+                    }
+                    if (disc is null)
+                    {
+                        throw new InvalidDataException($"manifest: 'disc-exes {fields[1]}' needs a --disc image.");
+                    }
+                    iso ??= OpenIso(disc);
+                    images.AddRange(DiscExecutables(iso, fields[1]));
+                    break;
                 case "interpret":
                     if (fields.Length != 2)
                     {
@@ -86,8 +99,8 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
 
     /// <summary>
     /// The file paths a manifest's directives reference, exactly as written (Issue #732 P1-3): <c>image</c>'s
-    /// optional roots file and both the executable and optional roots file of <c>exe</c>. <c>boot-exe</c> and
-    /// <c>interpret</c> reference no file of their own (the disc is hashed separately). Malformed or unknown
+    /// optional roots file and both the executable and optional roots file of <c>exe</c>. <c>boot-exe</c>,
+    /// <c>disc-exes</c> and <c>interpret</c> reference no file of their own (the disc is hashed separately). Malformed or unknown
     /// directives are rejected exactly as <see cref="Read"/> rejects them. Packaging resolves, contains and hashes
     /// these; the run re-verifies them.
     /// </summary>
@@ -124,6 +137,12 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     if (fields.Length != 2)
                     {
                         throw new InvalidDataException($"manifest: 'boot-exe' takes exactly one name; got '{line}'.");
+                    }
+                    break;
+                case "disc-exes":
+                    if (fields.Length != 2)
+                    {
+                        throw new InvalidDataException($"manifest: 'disc-exes' takes exactly one name prefix; got '{line}'.");
                     }
                     break;
                 case "interpret":
@@ -214,10 +233,37 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         return new LoadedImageSpec(name, exe.Header.TextStart, words, entries);
     }
 
+    /// <summary>The largest file a PS-X EXE can be: the 2 MiB of main RAM plus its 2 KiB header.</summary>
+    private const int MaxExecutableFileBytes = 0x200000 + 0x800;
+
+    /// <summary>
+    /// Every PS-X EXE file on the disc (a file whose header carries the <c>PS-X EXE</c> magic), as one image each named
+    /// <c>prefix:ISO/PATH</c>. A game's later stages are such files, staged into RAM by its boot program; overlays may share a
+    /// load address, which the loaded-code guard resolves by comparing the code actually in RAM. Files too large to be an
+    /// executable (movies, archives) are not read. Nothing is title-specific.
+    /// </summary>
+    private static IEnumerable<LoadedImageSpec> DiscExecutables(Iso9660Reader iso, string prefix)
+    {
+        foreach (var (path, entry) in iso.EnumerateFiles())
+        {
+            if (entry.Size is < 0x800 or > MaxExecutableFileBytes)
+            {
+                continue;
+            }
+
+            var bytes = iso.ReadFile(path);
+            if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
+            {
+                yield return FromExeBytes($"{prefix}:{path}", bytes, []);
+            }
+        }
+    }
+
     private static string NormalizeBootPath(Iso9660Reader iso) =>
         RomAnalysisPipeline.NormalizeBootPath(SystemCnfParser.Parse(iso.ReadFile("SYSTEM.CNF")).BootPath);
 
-    private static Iso9660Reader OpenIso(ICdSectorSource disc)
+    /// <summary>Opens the ISO 9660 filesystem of a disc's first data track (Mode 1 or Mode 2 Form 1 user data).</summary>
+    public static Iso9660Reader OpenIso(ICdSectorSource disc)
     {
         var reader = new Iso9660Reader(lba =>
         {

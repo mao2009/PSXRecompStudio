@@ -141,6 +141,42 @@ public sealed class Iso9660Reader
         throw new FileNotFoundException($"ISO 9660: File '{isoPath}' not found.");
     }
 
+    /// <summary>
+    /// Every regular file of the volume, depth first, as an ISO path (no version suffix) and its directory record, in ordinal
+    /// path order so the result is deterministic. A directory is never entered twice, so a looped image cannot recurse forever.
+    /// </summary>
+    public IReadOnlyList<(string Path, Iso9660DirectoryEntry Entry)> EnumerateFiles()
+    {
+        var files = new List<(string, Iso9660DirectoryEntry)>();
+        var visited = new HashSet<uint>();
+
+        void Walk(string directory)
+        {
+            foreach (var entry in ListDirectory(directory))
+            {
+                var name = entry.FileName.Split(';')[0];
+                if (entry.FileName is "\0" or ".." || name.Length == 0)
+                {
+                    continue;
+                }
+
+                var path = directory.Length == 0 ? name : directory + "/" + name;
+                if (!entry.IsDirectory)
+                {
+                    files.Add((path, entry));
+                }
+                else if (visited.Add(entry.Location))
+                {
+                    Walk(path);
+                }
+            }
+        }
+
+        Walk("");
+        files.Sort(static (a, b) => string.CompareOrdinal(a.Item1, b.Item1));
+        return files;
+    }
+
     public bool FileExists(string isoPath)
     {
         try

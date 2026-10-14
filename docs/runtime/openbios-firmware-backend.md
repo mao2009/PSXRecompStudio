@@ -62,6 +62,11 @@ This command:
   fixed number of instructions is never evidence. `--capture-at <pc>` snapshots registers
   and recent transfers when a PC is first fetched; a stop prints PC, word, COP0, GPRs,
   recent fetches/transfers, and the first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
+  Local diagnostics for the interpreter engine (output is never committed): `--dump-ram <file>`
+  writes the 2 MiB of main RAM at the `--capture-at` PC, `--dump-frame <file.ppm>` the displayed
+  frame at the end (24-bit aware), `--pc-histogram <file.json>` the guest-RAM fetch counts (top PCs and
+  64-byte buckets) so a wait loop can be told from a stall, and `--list-disc <file.json>` every
+  ISO 9660 file with the PS-X EXE header of the executables (load address, entry, size).
 
 Measured with the pinned build (`openbios.bin` sha256
 `96889cfc16e3637e58e3b709a8de4f47725a4c9f2cafde57e0c24dc075f5cfb7`, GCC 16.2.0; a clean
@@ -272,8 +277,12 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
 `prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
-built ELF pair. Manifest root paths are relative to the manifest. `boot-exe`
-reads the synthetic disc's declared executable before the run. Observation
+built ELF pair. Manifest root paths are relative to the manifest. `boot-exe <name>`
+reads the executable the disc's SYSTEM.CNF `BOOT` names (the real one on a real disc; `<name>` is only a
+label) with its entry as the sole root. `disc-exes <prefix>` (Issue #734) adds every PS-X EXE file on the
+disc, one guarded image each named `<prefix>:<ISO path>`: a game's later stages are executables its boot
+program stages into RAM, and overlays may share a load address, which the loaded-code guard resolves by
+the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific. Observation
 points must remain interpreted: the generated manifest includes `C0Handler`
 (kernel RAM execution), exception vector/handler, shell and EXE entries.
 

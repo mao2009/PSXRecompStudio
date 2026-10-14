@@ -24,7 +24,7 @@ internal static class OpenBiosProbeCommand
 
     private const int RamBytes = 0x200000;
 
-    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] " +
+    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]";
 
@@ -38,7 +38,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false, standalone = false;
-        string? discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
+        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         var compareAt = new SortedSet<uint>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -68,7 +68,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -76,7 +76,11 @@ internal static class OpenBiosProbeCommand
                     return 1;
                 }
 
-                if (option == "--disc") discPath = args[i];
+                if (option == "--dump-ram") dumpRamPath = args[i];
+                else if (option == "--dump-frame") dumpFramePath = args[i];
+                else if (option == "--pc-histogram") histogramPath = args[i];
+                else if (option == "--list-disc") listDiscPath = args[i];
+                else if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
                 else if (option == "--symbols") symbolsPath = args[i];
                 else if (option == "--load-images") loadImagesPath = args[i];
@@ -125,11 +129,16 @@ internal static class OpenBiosProbeCommand
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var firmware = OpenBiosFirmware.FromBytes(bytes);
             using var disc = discPath is null ? null : OpenDisc(discPath);
+            if (listDiscPath is not null && disc is not null)
+            {
+                WriteDiscListing(disc.Source, listDiscPath);
+                return 0;
+            }
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
             return engineKind == "generated-host"
                 ? RunGeneratedHost(new GeneratedHostProbe(
                     firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error)
-                : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, json, output);
+                : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output);
         }
         catch (Exception ex) when (
             ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
@@ -140,21 +149,61 @@ internal static class OpenBiosProbeCommand
         }
     }
 
+    /// <summary>
+    /// Local diagnostic: every file the disc's ISO 9660 filesystem holds, with the PS-X EXE header fields of those that are
+    /// executables (load address, size, entry), so the executables a boot program may stage in RAM can be told apart from data.
+    /// </summary>
+    private static void WriteDiscListing(ICdSectorSource disc, string path)
+    {
+        var iso = PSXRecomp.Core.Recompiler.LoadImageManifest.OpenIso(disc);
+        var rows = new List<object>();
+        foreach (var (full, entry) in iso.EnumerateFiles())
+        {
+            object? exe = null;
+            if (entry.Size is >= 2048 and <= 4 * 1024 * 1024)
+            {
+                var data = iso.ReadFile(full);
+                if (data.Length >= 0x1800 && System.Text.Encoding.ASCII.GetString(data, 0, 8) == "PS-X EXE")
+                {
+                    exe = new
+                    {
+                        entry = $"0x{BitConverter.ToUInt32(data, 0x10):X8}", loadAddress = $"0x{BitConverter.ToUInt32(data, 0x18):X8}",
+                        textSize = BitConverter.ToUInt32(data, 0x1C),
+                        head4KSha256 = Convert.ToHexString(SHA256.HashData(data.AsSpan(0x800, 0x1000))).ToLowerInvariant(),
+                    };
+                }
+            }
+
+            rows.Add(new { path = full, size = entry.Size, exe });
+        }
+
+        File.WriteAllText(path, JsonSerializer.Serialize(rows, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
     private static int RunInterpreter(
-        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, bool json, TextWriter output)
+        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
         object? captured = null;
         var observed = engine as InterpreterTitleExecutionEngine;
+        var histogram = histogramPath is null ? null : new ulong[RamBytes / 4];
         var monitor = new OpenBiosBootMonitor(observed is null ? null : () => (observed.Cop0Diagnostics.Cause, observed.Cop0Diagnostics.Epc, observed.Cop0Diagnostics.BadVAddr));
         if (observed is not null)
         {
             observed.FetchObserver = pc =>
             {
                 monitor.OnFetch(pc);
+                if (histogram is not null && (pc & 0x1FFFFFFFu) < RamBytes) histogram[(pc & 0x1FFFFFFFu) >> 2]++;
                 if (pc == capturePc && captured is null)
                 {
+                    if (dumpRamPath is not null)
+                    {
+                        // Raw 2 MiB main RAM (KSEG0) for offline disassembly; local diagnostic output only.
+                        var ram = new byte[RamBytes];
+                        for (var a = 0; a < RamBytes; a += 4) BitConverter.TryWriteBytes(ram.AsSpan(a), observed.ReadGuestWord(0x80000000u + (uint)a));
+                        File.WriteAllBytes(dumpRamPath, ram);
+                    }
                     captured = new
                     {
                         pc = $"0x{pc:X8}", word = $"0x{observed.ReadGuestWord(pc):X8}",
@@ -177,6 +226,50 @@ internal static class OpenBiosProbeCommand
         var report = (engine as InterpreterTitleExecutionEngine) is { } reader
             ? monitor.Evaluate(reader.ReadGuestWord)
             : null;
+        if (histogram is not null)
+        {
+            // Local diagnostic only: guest-RAM fetch counts, the top PCs plus 64-byte buckets, for wait-loop classification.
+            ulong total = 0;
+            foreach (var c in histogram) total += c;
+            var top = Enumerable.Range(0, histogram.Length).Where(i => histogram[i] != 0).OrderByDescending(i => histogram[i]).Take(64)
+                .Select(i => new { pc = $"0x{0x80000000u + (uint)i * 4:X8}", count = histogram[i] });
+            var buckets = Enumerable.Range(0, histogram.Length / 16).Select(b => (b, c: histogram.Skip(b * 16).Take(16).Aggregate(0UL, (a, v) => a + v)))
+                .Where(t => t.c != 0).OrderByDescending(t => t.c).Take(48)
+                .Select(t => new { start = $"0x{0x80000000u + (uint)t.b * 64:X8}", count = t.c });
+            File.WriteAllText(histogramPath!, JsonSerializer.Serialize(new { totalRamFetches = total, top, buckets }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        if (dumpFramePath is not null && observed?.CaptureFrameEvidence() is { } shot)
+        {
+            // Local diagnostic only (never committed): the displayed frame as a binary PPM. GP1(08h) bit 4 selects 24-bit
+            // colour (MDEC movies), which is three bytes per pixel in VRAM, not the 15-bit halfwords FrameSnapshot holds.
+            var gpu = observed.DiagnosticDevices.GpuDevice;
+            var state = gpu.GetState();
+            var rgb = new List<byte>();
+            var width = shot.Width;
+            var height = shot.Height;
+            if ((state.DisplayMode & 0x10) != 0)
+            {
+                var vram = gpu.GetVramBytes();
+                var startX = (int)(state.DisplayVramStart & 0x3FF);
+                var startY = (int)((state.DisplayVramStart >> 10) & 0x1FF);
+                for (var y = 0; y < height; y++)
+                    for (var x = 0; x < width; x++)
+                    {
+                        var offset = (((startY + y) & 0x1FF) * 2048) + (((startX * 2 / 3) + x) * 3);
+                        if (offset + 2 < vram.Length) { rgb.Add(vram[offset]); rgb.Add(vram[offset + 1]); rgb.Add(vram[offset + 2]); }
+                        else { rgb.Add(0); rgb.Add(0); rgb.Add(0); }
+                    }
+            }
+            else
+            {
+                foreach (var px in shot.Pixels)
+                {
+                    rgb.Add((byte)((px & 31) << 3)); rgb.Add((byte)(((px >> 5) & 31) << 3)); rgb.Add((byte)(((px >> 10) & 31) << 3));
+                }
+            }
+            var header = System.Text.Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n");
+            File.WriteAllBytes(dumpFramePath, header.Concat(rgb).ToArray());
+        }
         // The kernel reaching its shell is the strongest claim this command makes; a title has not started.
         var kernelBooted = report?.KernelBooted ?? false;
         // No reliable OpenBIOS boot-completion contract is implemented yet. A
