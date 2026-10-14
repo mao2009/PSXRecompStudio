@@ -475,7 +475,8 @@ public static class RomAnalysisPipeline
 
     /// <summary>
     /// Strips the <c>cdrom:</c> scheme and leading separator from a SYSTEM.CNF BOOT value
-    /// and normalizes separators to the ISO 9660 reader's convention.
+    /// and normalizes separators to the ISO 9660 reader's convention. Also removes ISO 9660
+    /// version number suffixes (;1, ;2, etc.) for consistent path handling.
     /// </summary>
     internal static string NormalizeBootPath(string bootPath)
     {
@@ -488,7 +489,15 @@ public static class RomAnalysisPipeline
         {
             path = path[1..];
         }
-        return path.Replace('\\', '/');
+        path = path.Replace('\\', '/');
+
+        // Remove ISO 9660 version number suffixes from each path component
+        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            parts[i] = Iso9660Reader.NormalizeIdentifierForPath(parts[i]);
+        }
+        return string.Join('/', parts);
     }
 
     private static (IReadOnlyList<DecodedInstruction> Instructions, IReadOnlyList<DecodeFailure> Failures)

@@ -17,6 +17,48 @@ public sealed class Iso9660Reader
     private const byte DirectoryRecordTerminator = 0;
 
     /// <summary>
+    /// Normalizes an ISO 9660 file/directory identifier by removing the version number suffix (;1, ;2, etc.).
+    /// Per ISO 9660, the version number is a semicolon followed by digits. This method removes it for
+    /// consistent path handling across ReadFile, ListDirectory, and EnumerateFiles.
+    /// </summary>
+    internal static string NormalizeIdentifier(string identifier)
+    {
+        // Special entries "." (0x00) and ".." (0x01) are encoded as single bytes and never have version numbers.
+        if (identifier == "\0" || identifier == "..")
+        {
+            return identifier;
+        }
+
+        // Find the last semicolon that starts a version number (; followed by digits only until end).
+        int semicolonIndex = identifier.LastIndexOf(';');
+        if (semicolonIndex >= 0)
+        {
+            bool allDigits = true;
+            for (int i = semicolonIndex + 1; i < identifier.Length; i++)
+            {
+                if (!char.IsDigit(identifier[i]))
+                {
+                    allDigits = false;
+                    break;
+                }
+            }
+
+            if (allDigits && semicolonIndex + 1 < identifier.Length)
+            {
+                return identifier[..semicolonIndex];
+            }
+        }
+
+        return identifier;
+    }
+
+    /// <summary>
+    /// Normalizes a path component (single path segment) by removing ISO 9660 version number suffixes.
+    /// Public helper for callers that need to normalize paths before passing to ReadFile/ListDirectory.
+    /// </summary>
+    public static string NormalizeIdentifierForPath(string pathComponent) => NormalizeIdentifier(pathComponent);
+
+    /// <summary>
     /// Upper bound for a single file's extent read through <see cref="ReadRawFile"/>. The
     /// largest medium a PlayStation disc image can come from is a 99-minute CD: 99 * 60 * 75
     /// = 445,500 sectors of 2048-byte user data, about 870 MiB — and no single file can
@@ -102,8 +144,8 @@ public sealed class Iso9660Reader
             var found = false;
             foreach (var entry in entries)
             {
-                if (string.Equals(entry.FileName, pathParts[i], StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(entry.FileName, pathParts[i] + ";1", StringComparison.OrdinalIgnoreCase))
+                var normalizedEntryName = NormalizeIdentifier(entry.FileName);
+                if (string.Equals(normalizedEntryName, pathParts[i], StringComparison.OrdinalIgnoreCase))
                 {
                     if (i == pathParts.Length - 1)
                     {
@@ -118,23 +160,7 @@ public sealed class Iso9660Reader
 
             if (!found)
             {
-                // Try case-insensitive partial match for directories
-                bool matched = false;
-                foreach (var entry in entries)
-                {
-                    if (entry.IsDirectory &&
-                        string.Equals(entry.FileName.TrimEnd(';'), pathParts[i], StringComparison.OrdinalIgnoreCase))
-                    {
-                        currentDirRecord = entry;
-                        matched = true;
-                        break;
-                    }
-                }
-
-                if (!matched)
-                {
-                    throw new FileNotFoundException($"ISO 9660: Path component '{pathParts[i]}' not found.");
-                }
+                throw new FileNotFoundException($"ISO 9660: Path component '{pathParts[i]}' not found.");
             }
         }
 
@@ -154,7 +180,7 @@ public sealed class Iso9660Reader
         {
             foreach (var entry in ListDirectory(directory))
             {
-                var name = entry.FileName.Split(';')[0];
+                var name = NormalizeIdentifier(entry.FileName);
                 if (entry.FileName is "\0" or ".." || name.Length == 0)
                 {
                     continue;
@@ -209,7 +235,7 @@ public sealed class Iso9660Reader
             foreach (var entry in entries)
             {
                 if (entry.IsDirectory &&
-                    string.Equals(entry.FileName.TrimEnd(';'), part, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(NormalizeIdentifier(entry.FileName), part, StringComparison.OrdinalIgnoreCase))
                 {
                     currentDirRecord = entry;
                     found = true;
