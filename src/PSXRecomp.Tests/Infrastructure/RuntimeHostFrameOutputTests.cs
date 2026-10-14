@@ -137,7 +137,7 @@ public sealed class RuntimeHostFrameOutputTests
 
     [Theory]
     [InlineData("")]
-    [InlineData("invalid\\0frame.png")]
+    [InlineData("invalid\0frame.png")]
     public void TryWrite_InvalidOptionalPath_DoesNotThrow(string invalidPath)
     {
         using var dir = new TempDirectory();
