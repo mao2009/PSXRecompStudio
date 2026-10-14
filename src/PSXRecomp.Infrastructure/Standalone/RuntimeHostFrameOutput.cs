@@ -25,7 +25,7 @@ public static class RuntimeHostFrameOutput
 
         try
         {
-            if (engine.CaptureFrameBgra32() is not { } frame)
+            if (engine.LastFrameBgra32 is not { } frame)
             {
                 error.WriteLine("runtime host: no frame (the guest drew nothing to the display); nothing written.");
                 return false;

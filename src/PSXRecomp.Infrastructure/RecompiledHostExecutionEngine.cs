@@ -89,11 +89,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public FallbackDeclinedTransfer? LastDeclinedTransfer => _bridge?.LastDeclinedTransfer;
 
     /// <summary>
-    /// The display the last run's guest left in the shared GPU/VRAM state as BGRA32, or null when the guest drew nothing
-    /// or there is no bridge (Issue #762). Call it only after the run has ended: the bridge's device graph is owned by the
-    /// pump thread while the artifact runs.
+    /// The display the last run's guest left in the shared GPU/VRAM state as BGRA32, or null when the guest drew nothing or
+    /// there is no bridge (Issue #762). It is read when the run's pump has ended and before the run's device graph is
+    /// disposed: the GPU's VRAM is pinned native memory that does not outlive that graph.
     /// </summary>
-    public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32() => _bridge?.CaptureFrameBgra32();
+    public (byte[] Bgra, int Width, int Height)? LastFrameBgra32 { get; private set; }
 
     /// <summary>The guest MMIO access the last run's host bridge relayed most recently, or null (Issue #763, measurement only).</summary>
     public HostMmioAccess? LastMmioAccess => _bridge?.LastMmioAccess;
@@ -600,6 +600,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // even when the run then ends on a protocol fault, a timeout, or an MMIO or guest-time failure (Issue #693).
         FallbackEvidence = bridge?.FallbackEvidence;
         FallbackTimings = bridge?.FallbackTimings;
+        LastFrameBgra32 = bridge?.CaptureFrameBgra32();
 
         if (hostProtocolFaulted)
         {
@@ -1010,9 +1011,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return null;
             }
 
-            var frame = gpu.CaptureFrame();
-            var bgra = PSXRecomp.Infrastructure.Runtime.Gpu.ScreenshotCapture.ToBgra32(frame, gpu);
-            return bgra.Length == 0 ? null : (bgra, frame.Width, frame.Height);
+            try
+            {
+                var frame = gpu.CaptureFrame();
+                var bgra = PSXRecomp.Infrastructure.Runtime.Gpu.ScreenshotCapture.ToBgra32(frame, gpu);
+                return bgra.Length == 0 ? null : (bgra, frame.Width, frame.Height);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+            {
+                // Observation only: a pump that outlived a timed-out run may still own the device graph. Never let the
+                // frame read change the run's classified result.
+                Trace.WriteLine($"Frame capture failed: {exception}");
+                return null;
+            }
         }
 
         public HostTransferBridge(
