@@ -23,7 +23,12 @@ that:
 1. Accepts the path to the `runtime-host.json` manifest, an optional
    `--diagnostics <path>` sink (Issue #763: writes the machine-readable stop
    diagnostic, observation only — it never changes the exit code or the run's
-   output), and `--help`/`-h`.
+   output), and `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   run's wall time, the host round trips the native code made (MMIO accesses,
+   guest-time reports), the mixed-fallback time split, and the last observations
+   of a run stopped from outside (last fallback entry/return PC, last relayed
+   MMIO register); a timed-out run's guest `finalPc` stays `null` because it is
+   unknowable.
 2. Parses the manifest (schema version 1), verifying artifact and image paths,
    entry PC, program end, and block entry PCs.
 3. Loads the guest program image from `artifact-image.bin` (sidecar used for

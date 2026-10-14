@@ -172,10 +172,12 @@ public static class Program
                 outerBudget: 1,
                 segmentBudget: uint.MaxValue);
 
+            var wall = System.Diagnostics.Stopwatch.StartNew();
             var execution = new ExecutionOrchestrator().Execute(
                 engine,
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
+            wall.Stop();
 
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
@@ -209,7 +211,9 @@ public static class Program
                         engine.FallbackEvidence?.FallbackInstructions,
                         engine.FallbackEvidence?.Transitions,
                         engine.LastDeclinedTransfer,
-                        engine.FallbackEvidence?.Targets));
+                        engine.FallbackEvidence?.Targets,
+                        RuntimeHostRunMetrics.From(
+                        wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess)));
             }
 
             return RecompiledArtifactExitCode.ExitCodeFor(execution.State);

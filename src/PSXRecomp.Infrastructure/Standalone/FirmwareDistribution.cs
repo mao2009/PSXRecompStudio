@@ -632,11 +632,13 @@ public static class FirmwareRuntimeLauncher
                 launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost,
                 disc: disc.Source);
 
+            var wall = System.Diagnostics.Stopwatch.StartNew();
             var result = new ExecutionOrchestrator().Execute(
                 engine,
                 handoff: null,
                 new TitleExecutionRequest(
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
+            wall.Stop();
 
             var evidence = engine.FallbackEvidence;
             var exitCode = RecompiledArtifactExitCode.ExitCodeFor(result.State);
@@ -650,7 +652,9 @@ public static class FirmwareRuntimeLauncher
                     evidence?.FallbackInstructions,
                     evidence?.Transitions,
                     engine.LastDeclinedTransfer,
-                    evidence?.Targets),
+                    evidence?.Targets,
+                    RuntimeHostRunMetrics.From(
+                        wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess)),
                 error);
             error.WriteLine(JsonSerializer.Serialize(new
             {

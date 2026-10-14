@@ -42,7 +42,8 @@ public sealed record RuntimeHostDiagnostic(
     string? OrchestratorDiagnosticCode,
     bool TimedOut,
     IReadOnlyList<MixedFallbackTarget>? FallbackTargets = null,
-    string? FailureExceptionType = null)
+    string? FailureExceptionType = null,
+    RuntimeHostRunMetrics? Metrics = null)
 {
     /// <summary>
     /// The diagnostic for a run that ended in an exception before any orchestration result existed: only the manifest's
@@ -91,7 +92,8 @@ public sealed record RuntimeHostDiagnostic(
         ulong? fallbackRetiredInstructions,
         uint? fallbackTransitionCount,
         FallbackDeclinedTransfer? declinedTransfer,
-        IReadOnlyList<MixedFallbackTarget>? fallbackTargets = null)
+        IReadOnlyList<MixedFallbackTarget>? fallbackTargets = null,
+        RuntimeHostRunMetrics? metrics = null)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(execution);
@@ -131,8 +133,47 @@ public sealed record RuntimeHostDiagnostic(
             OrchestratorState: execution.State.ToString(),
             OrchestratorDiagnosticCode: execution.DiagnosticCode,
             TimedOut: execution.DiagnosticCode == RecompiledHostExecutionEngine.TimeoutDiagnosticCode,
-            FallbackTargets: fallbackTargets);
+            FallbackTargets: fallbackTargets,
+            Metrics: metrics);
     }
+}
+
+/// <summary>
+/// Where a run's wall-clock time went (measurement only): host round trips the native code made (guest MMIO relayed to the
+/// device graph, guest-time reports) and the mixed-fallback wall-clock split. Fields the engine could not measure are null.
+/// </summary>
+[Infrastructure]
+public sealed record RuntimeHostRunMetrics(
+    double WallMilliseconds,
+    ulong? MmioAccesses,
+    ulong? TimeReports,
+    double? FallbackTransferMilliseconds,
+    double? FallbackInterpreterMilliseconds,
+    uint? LastFallbackEntryPc = null,
+    uint? LastFallbackReturnPc = null,
+    uint? LastMmioPhysicalAddress = null,
+    bool? LastMmioWasWrite = null)
+{
+    /// <summary>
+    /// Assembles the metrics from the engine's own surfaces; any of them may be absent (no protocol, no mixed fallback). The
+    /// last-observation fields name what the host last saw a stopped-from-outside run do: the guest pc itself is unknowable then.
+    /// </summary>
+    public static RuntimeHostRunMetrics From(
+        double wallMilliseconds,
+        (ulong MmioAccesses, ulong TimeReports)? roundTrips,
+        MixedFallbackTimings? timings,
+        MixedFallbackEvidence? evidence = null,
+        HostMmioAccess? lastMmio = null) =>
+        new(
+            wallMilliseconds,
+            roundTrips?.MmioAccesses,
+            roundTrips?.TimeReports,
+            timings?.TransferMilliseconds,
+            timings?.FallbackMilliseconds,
+            evidence?.LastEntryPc,
+            evidence?.LastReturnPc,
+            lastMmio?.PhysicalAddress,
+            lastMmio?.IsWrite);
 }
 
 /// <summary>Canonical JSON writing for <see cref="RuntimeHostDiagnostic"/>, matching the manifest's style.</summary>
