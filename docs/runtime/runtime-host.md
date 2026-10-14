@@ -23,7 +23,11 @@ that:
 1. Accepts the path to the `runtime-host.json` manifest, an optional
    `--diagnostics <path>` sink (Issue #763: writes the machine-readable stop
    diagnostic, observation only — it never changes the exit code or the run's
-   output), and `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   output), an optional `--frame-out <path.png>` (Issue #762: writes the display
+   the guest left in the shared GPU/VRAM state when the run ends, reusing the
+   headless screenshot capture; when the guest drew nothing it reports "no
+   frame" and writes nothing — there is no live window, see Issue #630), and
+   `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
    run's wall time, the host round trips the native code made (MMIO accesses,
    guest-time reports), the mixed-fallback time split, and the last observations
    of a run stopped from outside (last fallback entry/return PC, last relayed
