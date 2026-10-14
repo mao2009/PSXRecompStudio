@@ -88,6 +88,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public FallbackDeclinedTransfer? LastDeclinedTransfer => _bridge?.LastDeclinedTransfer;
 
+    /// <summary>The guest MMIO access the last run's host bridge relayed most recently, or null (Issue #763, measurement only).</summary>
+    public HostMmioAccess? LastMmioAccess => _bridge?.LastMmioAccess;
+
     private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
@@ -953,6 +956,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         public ulong MmioAccesses { get; private set; }
 
+        /// <summary>The most recent MMIO access relayed to the device graph (Issue #763).</summary>
+        public HostMmioAccess? LastMmioAccess { get; private set; }
+
         public ulong TimeReports { get; private set; }
 
         /// <summary>Why the host refused the artifact's guest-time report, or null when it did not (Issue #679).</summary>
@@ -1456,6 +1462,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 throw new InvalidOperationException($"Malformed MMIO request '{fields}'.");
             }
 
+            LastMmioAccess = new HostMmioAccess(physical, width, isWrite);
             var kind = isWrite ? "write" : "read";
             PsxDeviceAccessStatus status;
             uint result = 0;

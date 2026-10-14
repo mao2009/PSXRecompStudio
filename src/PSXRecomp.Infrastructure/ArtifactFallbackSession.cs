@@ -50,6 +50,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
     private readonly byte[] _synced = new byte[PSXCoreWrapper.RamSize];
     private readonly byte[] _scratch = new byte[PSXCoreWrapper.RamSize];
     private readonly Dictionary<uint, (ulong Entries, ulong Instructions, uint LastReturnPc)> _targets = [];
+    private uint? _lastEntryPc;
+    private uint? _lastReturnPc;
     private readonly Stopwatch _transferClock = new();
     private readonly Stopwatch _fallbackClock = new();
 
@@ -164,7 +166,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
         _pagesToArtifact,
         _targets.OrderBy(static t => t.Key)
             .Select(static t => new MixedFallbackTarget(t.Key, t.Value.Entries, t.Value.Instructions, t.Value.LastReturnPc))
-            .ToArray());
+            .ToArray(),
+        _lastEntryPc,
+        _lastReturnPc);
 
     public MixedFallbackTimings Timings => new(_transferClock.Elapsed.TotalMilliseconds, _fallbackClock.Elapsed.TotalMilliseconds);
 
@@ -257,6 +261,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 previous.Entries + 1,
                 previous.Instructions + outcome.RetiredInstructions,
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
+            _lastEntryPc = pc;
+            _lastReturnPc = outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : null;
             _transitionObserver?.Invoke(new MixedFallbackTransition(
                 pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
 

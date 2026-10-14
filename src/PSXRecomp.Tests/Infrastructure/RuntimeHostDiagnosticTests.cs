@@ -75,6 +75,43 @@ public sealed class RuntimeHostDiagnosticTests
     }
 
     [Fact]
+    public void RunMetrics_AreReportedAsMeasured_AndSerializedCamelCase()
+    {
+        var metrics = RuntimeHostRunMetrics.From(
+            wallMilliseconds: 1500.5,
+            roundTrips: (MmioAccesses: 40, TimeReports: 90),
+            timings: new MixedFallbackTimings(TransferMilliseconds: 2.5, FallbackMilliseconds: 7.5));
+
+        var diagnostic = RuntimeHostDiagnostic.From(
+            Manifest([Load]),
+            Stop(Load, null, RecompilerIrTerminationReason.Success) with { State = TitleExecutionState.Completed },
+            exitCode: 0,
+            aotRetiredInstructions: 10,
+            fallbackRetiredInstructions: null,
+            fallbackTransitionCount: null,
+            declinedTransfer: null,
+            metrics: metrics);
+
+        diagnostic.Metrics.Should().Be(new RuntimeHostRunMetrics(1500.5, 40, 90, 2.5, 7.5));
+        using var json = JsonDocument.Parse(RuntimeHostDiagnosticJson.Serialize(diagnostic));
+        var written = json.RootElement.GetProperty("metrics");
+        written.GetProperty("wallMilliseconds").GetDouble().Should().Be(1500.5);
+        written.GetProperty("mmioAccesses").GetUInt64().Should().Be(40UL);
+        written.GetProperty("timeReports").GetUInt64().Should().Be(90UL);
+    }
+
+    [Fact]
+    public void RunMetrics_WithoutTheProtocolOrFallback_LeaveThoseFieldsNull()
+    {
+        var metrics = RuntimeHostRunMetrics.From(10, roundTrips: null, timings: null);
+
+        metrics.MmioAccesses.Should().BeNull();
+        metrics.TimeReports.Should().BeNull();
+        metrics.FallbackTransferMilliseconds.Should().BeNull();
+        metrics.FallbackInterpreterMilliseconds.Should().BeNull();
+    }
+
+    [Fact]
     public void NoDecline_ReportsNullTransferFields()
     {
         var diagnostic = RuntimeHostDiagnostic.From(

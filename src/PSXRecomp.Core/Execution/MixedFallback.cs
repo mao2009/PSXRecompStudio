@@ -124,6 +124,8 @@ public sealed record MixedFallbackTarget(uint Target, ulong Entries, ulong Instr
 /// <param name="PagesToInterpreter">RAM pages copied artifact to interpreter (4096 bytes each).</param>
 /// <param name="PagesToArtifact">RAM pages copied interpreter to artifact.</param>
 /// <param name="Targets">Per distinct target, ascending by target.</param>
+/// <param name="LastEntryPc">The target of the most recent handoff that ran to the end of its segment, or null when none did (Issue #763).</param>
+/// <param name="LastReturnPc">Where that segment returned to a compiled block, or null when it did not return.</param>
 [Domain]
 public sealed record MixedFallbackEvidence(
     uint Transitions,
@@ -131,7 +133,19 @@ public sealed record MixedFallbackEvidence(
     ulong FallbackInstructions,
     ulong PagesToInterpreter,
     ulong PagesToArtifact,
-    IReadOnlyList<MixedFallbackTarget> Targets);
+    IReadOnlyList<MixedFallbackTarget> Targets,
+    uint? LastEntryPc = null,
+    uint? LastReturnPc = null);
+
+/// <summary>
+/// The guest MMIO access the host last relayed to the device graph (Issue #763; measurement only). When a run is stopped from
+/// outside (a timeout) the guest's pc is unknowable, but the register it last touched says what it was waiting on.
+/// </summary>
+/// <param name="PhysicalAddress">The physical register address.</param>
+/// <param name="Width">Access width in bytes (1, 2 or 4).</param>
+/// <param name="IsWrite">Whether it was a store.</param>
+[Domain]
+public sealed record HostMmioAccess(uint PhysicalAddress, int Width, bool IsWrite);
 
 /// <summary>
 /// One artifact-to-interpreter handoff as it ended (Issue #732): what a measurement layer needs to classify why it
