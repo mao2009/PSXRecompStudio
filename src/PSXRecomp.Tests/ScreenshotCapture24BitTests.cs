@@ -172,20 +172,43 @@ public sealed class ScreenshotCapture24BitTests
     }
 
     [Fact]
-    public void ToBgra32_24Bit_VramEnd_ClipsCorrectly()
+    public void ToBgra32_24Bit_VramEnd_ClipsToCompleteRgbPixels()
     {
-        // Test that display region at VRAM boundary is clipped, not wrapped
         using var gpu = Create24BitGpu();
-        // Set DisplayVramStart near VRAM right edge: X=1016 (halfwords), so width clipped to 8
+        // At X=1016 halfwords only 16 bytes remain on each 2048-byte VRAM row.
+        // Exactly five complete 24-bit RGB pixels fit; the sixth must not read row Y+1.
         SetDisplayVramStart(gpu, 1016, 0);
+        gpu.Vram[1016, 0] = 0x2211;
+        gpu.Vram[1017, 0] = 0x4433;
+        gpu.Vram[1018, 0] = 0x6655;
+        gpu.Vram[1019, 0] = 0x8877;
+        gpu.Vram[1020, 0] = 0xAA99;
+        gpu.Vram[1021, 0] = 0xCCBB;
+        gpu.Vram[1022, 0] = 0xEEDD;
+        gpu.Vram[1023, 0] = 0xFFFF;
+        gpu.Vram[0, 1] = 0x1234; // Nonzero row sentinel: must never become a sixth pixel.
 
         var frame = gpu.CaptureFrame();
-        // Width clipped to 1024 - 1016 = 8 (resolution is 256, but VRAM only has 8 halfwords left)
-        frame.Width.Should().Be(8);
+        frame.Width.Should().Be(5);
         frame.Height.Should().Be(240);
 
         var bgra = ScreenshotCapture.ToBgra32(frame, gpu);
-        bgra.Length.Should().Be(8 * 240 * 4);
+        bgra.Length.Should().Be(5 * 240 * 4);
+        bgra.Take(4).Should().Equal(0x33, 0x22, 0x11, 0xFF);
+        bgra.Skip(4 * 4).Take(4).Should().Equal(0xFF, 0xEE, 0xDD, 0xFF);
+    }
+
+    [Fact]
+    public void ToBgra32_24Bit_VramEnd_IncompleteRgbPixel_ProducesEmptyFrame()
+    {
+        using var gpu = Create24BitGpu();
+        // One halfword (2 bytes) remains; a three-byte RGB pixel cannot fit.
+        SetDisplayVramStart(gpu, 1023, 0);
+
+        var frame = gpu.CaptureFrame();
+        frame.Width.Should().Be(0);
+
+        ScreenshotCapture.ToBgra32(frame, gpu).Should().BeEmpty();
     }
 
     [Fact]
