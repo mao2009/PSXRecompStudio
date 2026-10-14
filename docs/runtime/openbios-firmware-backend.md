@@ -282,7 +282,9 @@ reads the executable the disc's SYSTEM.CNF `BOOT` names (the real one on a real 
 label) with its entry as the sole root. `disc-exes <prefix>` (Issue #734) adds every PS-X EXE file on the
 disc, one guarded image each named `<prefix>:<ISO path>`: a game's later stages are executables its boot
 program stages into RAM, and overlays may share a load address, which the loaded-code guard resolves by
-the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific. Observation
+the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific.
+`prepare-aot.py --disc-exes` emits it; it is **opt-in** because, measured on Persona, entry-only roots leave every
+function-pointer target to the interpreter fallback and the mixed execution then ping-pongs (Issue #734, below). Observation
 points must remain interpreted: the generated manifest includes `C0Handler`
 (kernel RAM execution), exception vector/handler, shell and EXE entries.
 
@@ -482,6 +484,7 @@ writes the diagnostics document; the existing `FirmwareStandaloneHandoffTests` c
 |---|---|
 | Synthetic Mode 2 disc, `openbios-probe --standalone --stop-at 0x80010014` | `bootVerified`; 195,060,431 native / 2,338 fallback instructions; 327 transitions |
 | Same disc, packaged, `./synth` launched directly (200M budget) | **Runtime disc load proven by real OpenBIOS's own CD driver** (separate gate, synthetic disc + probe above) **not by this packaging E2E**: the packaging E2E's synthetic ROM stores the EXE words into RAM itself. The packaged direct launch (200M budget) reached the synthetic EXE's `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
+| Persona CHD, 600 s timeout, Windows, `PSXRecomp.RuntimeHost --diagnostics`, before/after `disc-exes` (all executables compiled, entry-only roots) | Before: 270,127,434 native / 2,221,246,107 fallback instructions / 4,698 transitions, fallback time 269 s of 601 s; last fallback entry `0x8008A484`. After: 315,766,486 native / 11,374,179 fallback / 254,095 transitions, fallback **transfer** time 175 s of 600 s (249,567 entries at `0x80084C88`, returning at `0x8008AECC`). The guest advanced ~7x *less* in the same wall time: AOT coverage rose, progress fell. Both end `ARTIFACT_TIMEOUT`; no title evidence. |
 | Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
 
 Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel
