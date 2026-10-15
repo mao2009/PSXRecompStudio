@@ -122,6 +122,126 @@ public sealed class LoadImageManifestTests
     }
 
     [Fact]
+    public void DiscExes_AddsEveryPsxExeOnTheDisc_AndSkipsOtherFiles()
+    {
+        var iso = new SyntheticIsoImageBuilder()
+            .AddSystemCnf(SyntheticChdBuilder.BootValue)
+            .AddFile(SyntheticChdBuilder.ExeIsoName, SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u))
+            .AddFile("STAGE2.EXE;1", SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u))
+            .AddFile("MOVIE.STR;1", new byte[0x1000])
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(), new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        // Ordinal path order, one image per executable, the movie (no PS-X EXE header) is not an image.
+        // A collision-free name stays the normalized path (no version suffix), so names stay backward compatible.
+        manifest.Images.Select(static i => i.Name).Should()
+            .Equal("game:" + SyntheticChdBuilder.ExeIsoName.Split(';')[0], "game:STAGE2.EXE");
+        manifest.Images[1].LoadAddress.Should().Be(0x80080000u);
+        manifest.Images[1].Words.Should().HaveCount(5);
+        manifest.Images[1].Roots.Should().Equal(0x80080000u);
+    }
+
+    [Fact]
+    public void DiscExes_ImportsDistinctVersionsWithTheSameNormalizedPath()
+    {
+        var firstExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var secondExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("GAME.EXE;1", firstExe)
+            .AddFile("GAME.EXE;2", secondExe)
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(),
+            new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        manifest.Images.Select(static image => image.Name).Should()
+            .BeEquivalentTo(new[] { "game:GAME.EXE;1", "game:GAME.EXE;2" });
+
+        var first = manifest.Images.Single(static image => image.Name == "game:GAME.EXE;1");
+        first.LoadAddress.Should().Be(0x80010000u);
+        first.Words.Should().HaveCount(3);
+        first.Roots.Should().Equal(0x80010000u);
+
+        var second = manifest.Images.Single(static image => image.Name == "game:GAME.EXE;2");
+        second.LoadAddress.Should().Be(0x80080000u);
+        second.Words.Should().HaveCount(5);
+        second.Roots.Should().Equal(0x80080000u);
+    }
+
+    [Fact]
+    public void DiscExes_KeepsUniqueImagesAcrossVersionedDirectories()
+    {
+        // DIR;1/GAME.EXE;1 and DIR;2/GAME.EXE;1 share one normalized path (DIR/GAME.EXE), so each image
+        // must keep its full versioned path to stay unique and read its own extent.
+        var firstExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var secondExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddFile("DIR;1/GAME.EXE;1", firstExe)
+            .AddFile("DIR;2/GAME.EXE;1", secondExe)
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("disc-exes game\n")), Firmware(),
+            new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        manifest.Images.Select(static image => image.Name).Should().OnlyHaveUniqueItems();
+        manifest.Images.Select(static image => image.Name).Should()
+            .BeEquivalentTo(new[] { "game:DIR;1/GAME.EXE;1", "game:DIR;2/GAME.EXE;1" });
+
+        var first = manifest.Images.Single(static image => image.Name == "game:DIR;1/GAME.EXE;1");
+        first.LoadAddress.Should().Be(0x80010000u);
+        first.Words.Should().HaveCount(3);
+
+        var second = manifest.Images.Single(static image => image.Name == "game:DIR;2/GAME.EXE;1");
+        second.LoadAddress.Should().Be(0x80080000u);
+        second.Words.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public void BootExe_SelectsTheVersionNamedInSystemCnf()
+    {
+        // SYSTEM.CNF's "BOOT = cdrom:\GAME.EXE;2" must resolve to GAME.EXE;2, not GAME.EXE;1.
+        var firstExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 3, textStart: 0x80010000u);
+        var secondExe = SyntheticPsxExeBuilder.BuildValid(instructionCount: 5, textStart: 0x80080000u);
+        var iso = new SyntheticIsoImageBuilder()
+            .AddSystemCnf(@"cdrom:\GAME.EXE;2")
+            .AddFile("GAME.EXE;1", firstExe)
+            .AddFile("GAME.EXE;2", secondExe)
+            .Build();
+        using var dir = new TempDirectory();
+
+        var manifest = LoadImageManifest.Read(
+            dir.WriteFile("images.txt", Text("boot-exe game\n")), Firmware(),
+            new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(iso)));
+
+        var image = manifest.Images.Should().ContainSingle().Subject;
+        image.Name.Should().Be("game");
+        image.LoadAddress.Should().Be(0x80080000u);
+        image.Words.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public void DiscExes_NeedsADisc_AndExactlyOneName()
+    {
+        using var dir = new TempDirectory();
+
+        var noDisc = dir.WriteFile("a.txt", Text("disc-exes game\n"));
+        ((Action)(() => LoadImageManifest.Read(noDisc, Firmware(), disc: null)))
+            .Should().Throw<InvalidDataException>().WithMessage("*needs a --disc image*");
+
+        var noName = dir.WriteFile("b.txt", Text("disc-exes\n"));
+        ((Action)(() => LoadImageManifest.ReadReferencedPaths(noName)))
+            .Should().Throw<InvalidDataException>().WithMessage("*disc-exes*exactly one name prefix*");
+        LoadImageManifest.ReadReferencedPaths(dir.WriteFile("c.txt", Text("disc-exes game\n"))).Should().BeEmpty();
+    }
+
+    [Fact]
     public void AnUnknownDirective_IsRejected()
     {
         using var dir = new TempDirectory();
@@ -129,5 +249,24 @@ public sealed class LoadImageManifestTests
 
         var act = () => LoadImageManifest.Read(path, Firmware(), disc: null);
         act.Should().Throw<InvalidDataException>().WithMessage("*unknown directive*");
+    }
+
+    /// <summary>
+    /// Issue #732 review P2: <see cref="LoadImageManifest.ReadRootsFile"/> is the one roots parser shared by the
+    /// manifest's <c>image</c>/<c>exe</c> roots and the firmware AOT plan's <c>rom.roots</c>. It ignores comments
+    /// and blank lines, accepts an optional <c>0x</c> prefix and case-insensitive hex, and rejects invalid lines with
+    /// <see cref="InvalidDataException"/> so no <see cref="FormatException"/> escapes the CLI.
+    /// </summary>
+    [Fact]
+    public void ReadRootsFile_IgnoresCommentsAndBlanks_AndRejectsInvalidLines()
+    {
+        using var dir = new TempDirectory();
+        var roots = dir.WriteFile("rom.roots", Text("# reset\n\n0xBFC00000\nbfc00000  # duplicate\n26a4\n"));
+
+        LoadImageManifest.ReadRootsFile(roots).Should().Equal(0x000026A4u, 0xBFC00000u);
+
+        var invalid = dir.WriteFile("invalid.roots", Text("0xBFC00000\nnonsense\n"));
+        ((Action)(() => LoadImageManifest.ReadRootsFile(invalid)))
+            .Should().Throw<InvalidDataException>().WithMessage("*not a hexadecimal number*");
     }
 }

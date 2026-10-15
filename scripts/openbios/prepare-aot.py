@@ -57,7 +57,7 @@ class Elf:
         return result
 
 
-def prepare(rom_path, shell_path, output):
+def prepare(rom_path, shell_path, output, disc_exes=False):
     rom, shell = Elf(rom_path), Elf(shell_path)
     output.mkdir(parents=True, exist_ok=True)
     text_start = 0xBFC00000
@@ -77,9 +77,8 @@ def prepare(rom_path, shell_path, output):
                                ('vectorb0', 'B0Vector', 0xB0), ('vectorc0', 'C0Vector', 0xC0)]:
         roots(f'{name}.roots', {dest, dest + 4})
         lines.append(f'image {name} 0x{dest:X} rom 0x{rom.symbols[symbol]:X} 0x10 {name}.roots')
-    lines += [f'image shell 0x80030000 rom 0x{shell_start:X} 0x{shell_size:X} shell.roots', 'boot-exe synthetic',
-              f'interpret 0x{rom.symbols["C0Handler"]:X}', 'interpret 0x80000080', f'interpret 0x{rom.symbols["exceptionHandler"]:X}',
-              'interpret 0x80030000', 'interpret 0x80010000']
+    lines += [f'image shell 0x80030000 rom 0x{shell_start:X} 0x{shell_size:X} shell.roots', 'boot-exe boot'] + (['disc-exes disc'] if disc_exes else [])
+    lines += [f'interpret 0x{rom.symbols["C0Handler"]:X}', 'interpret 0x80000080', f'interpret 0x{rom.symbols["exceptionHandler"]:X}']
     (output / 'images.txt').write_text('\n'.join(lines) + '\n')
     print(f'--code-bytes {text_size} --roots {output / "rom.roots"} --load-images {output / "images.txt"}')
 
@@ -89,5 +88,7 @@ if __name__ == '__main__':
     parser.add_argument('openbios_elf', type=Path)
     parser.add_argument('shell_elf', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--disc-exes', action='store_true',
+                        help='also compile every PS-X EXE on the disc (entry-only roots; measured slower on Persona, see Issue #734)')
     args = parser.parse_args()
-    prepare(args.openbios_elf, args.shell_elf, args.output)
+    prepare(args.openbios_elf, args.shell_elf, args.output, args.disc_exes)

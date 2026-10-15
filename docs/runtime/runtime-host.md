@@ -20,8 +20,19 @@ and HLE bridge). By default, the host ships as a framework-dependent deploy
 The host is a standalone console application (`net10.0` target, `OutputType=Exe`)
 that:
 
-1. Accepts a single command-line argument: the path to the `runtime-host.json`
-   manifest.
+1. Accepts the path to the `runtime-host.json` manifest, an optional
+   `--diagnostics <path>` sink (Issue #763: writes the machine-readable stop
+   diagnostic, observation only — it never changes the exit code or the run's
+   output), an optional `--frame-out <path.png>` (Issue #762: writes the display
+   the guest left in the shared GPU/VRAM state when the run ends, reusing the
+   headless screenshot capture; when the guest drew nothing it reports "no
+   frame" and writes nothing — there is no live window, see Issue #630), and
+   `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   run's wall time, the host round trips the native code made (MMIO accesses,
+   guest-time reports), the mixed-fallback time split, and the last observations
+   of a run stopped from outside (last fallback entry/return PC, last relayed
+   MMIO register); a timed-out run's guest `finalPc` stays `null` because it is
+   unknowable.
 2. Parses the manifest (schema version 1), verifying artifact and image paths,
    entry PC, program end, and block entry PCs.
 3. Loads the guest program image from `artifact-image.bin` (sidecar used for
@@ -160,6 +171,8 @@ The `psxrecomp package` command orchestrates the provisioning and layout:
 
 ```
 psxrecomp package <input.exe|input.chd> --output <dir> ... [--self-contained] [--json]
+# OpenBIOS-booted variant (real BIOS ROM + disc in one guest state; see openbios-firmware-backend.md):
+psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir>
 ```
 
 **Arguments:**

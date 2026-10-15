@@ -23,9 +23,10 @@ public static class Program
 {
     /// <summary>
     /// Entry point for the runtime host. Invocation:
-    /// <c>PSXRecomp.RuntimeHost [ runtime-host.json | --help | -h ]</c>.
-    /// Returns the classified run result code (0 success, 1 tooling/failure,
-    /// 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
+    /// <c>PSXRecomp.RuntimeHost [--diagnostics &lt;path&gt;] [ runtime-host.json | --help | -h ]</c>.
+    /// <c>--diagnostics</c> writes the Issue #763 stop diagnostic (best-effort, off by default, exit code
+    /// unchanged) for HLE and firmware distributions alike. Returns the classified run result code
+    /// (0 success, 1 tooling/failure, 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
     /// </summary>
     public static int Main(string[] args)
     {
@@ -40,6 +41,7 @@ public static class Program
         // Optional diagnostics sink (Issue #763): everything that is not it is the
         // manifest path. Off by default, so the run's exit code and output are unchanged.
         string? diagnosticsPath = null;
+        string? frameOutPath = null;
         var positionals = new List<string>(args.Length);
         for (var i = 0; i < args.Length; i++)
         {
@@ -53,6 +55,21 @@ public static class Program
                 }
 
                 diagnosticsPath = Path.GetFullPath(args[++i]);
+                continue;
+            }
+
+            if (args[i] == "--frame-out")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("runtime host: --frame-out requires a path.");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
+                // Defer path resolution to the best-effort frame writer so an invalid optional
+                // output path cannot prevent the guest from executing.
+                frameOutPath = args[++i];
                 continue;
             }
 
@@ -99,6 +116,15 @@ public static class Program
             // (fail closed: an out-of-distribution or linked path never reaches Process.Start).
             var prebuiltArtifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
             var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
+
+            // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
+            // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
+            // --diagnostics is honored here too (Issue #732 P2-1): the same stop diagnostic the HLE path writes.
+            if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
+            {
+                return FirmwareRuntimeLauncher.Run(
+                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath);
+            }
 
             // Read the program image for the host-transfer bridge / interpreter fallback
             // (for a prebuilt artifact this is the same image the artifact embeds).
@@ -162,10 +188,12 @@ public static class Program
                 outerBudget: 1,
                 segmentBudget: uint.MaxValue);
 
+            var wall = System.Diagnostics.Stopwatch.StartNew();
             var execution = new ExecutionOrchestrator().Execute(
                 engine,
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
+            wall.Stop();
 
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
@@ -180,6 +208,11 @@ public static class Program
                     StringComparison.Ordinal);
                 if (end >= 0) consoleOutput = consoleOutput[..end];
                 Console.Write(consoleOutput);
+            }
+
+            if (frameOutPath is not null)
+            {
+                RuntimeHostFrameOutput.TryWrite(engine, frameOutPath, Console.Error);
             }
 
             // A timeout or an engine failure ends the run with no snapshot: the guest pc is then unknown, not guessed.
@@ -199,7 +232,9 @@ public static class Program
                         engine.FallbackEvidence?.FallbackInstructions,
                         engine.FallbackEvidence?.Transitions,
                         engine.LastDeclinedTransfer,
-                        engine.FallbackEvidence?.Targets));
+                        engine.FallbackEvidence?.Targets,
+                        RuntimeHostRunMetrics.From(
+                        wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess)));
             }
 
             return RecompiledArtifactExitCode.ExitCodeFor(execution.State);
@@ -226,9 +261,10 @@ public static class Program
 
     private static void WriteUsage(TextWriter error)
     {
-        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] <runtime-host.json>");
+        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] [--frame-out <path.png>] <runtime-host.json>");
         error.WriteLine("  Executes the packaged game distribution described by the manifest.");
         error.WriteLine("  --diagnostics writes a machine-readable stop diagnostic (off by default).");
+        error.WriteLine("  --frame-out writes the display the guest left in VRAM at the end of the run as a PNG (off by default).");
         error.WriteLine("  Returns 0 on a completed run, 1 for tooling failure, 2 for an " +
             "explicit runtime stop, and 78 when the manifest, the runtime host,");
         error.WriteLine("  or the prebuilt artifact cannot be set up.");

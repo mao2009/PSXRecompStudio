@@ -88,6 +88,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public FallbackDeclinedTransfer? LastDeclinedTransfer => _bridge?.LastDeclinedTransfer;
 
+    /// <summary>
+    /// The display the last run's guest left in the shared GPU/VRAM state as BGRA32, or null when the guest drew nothing or
+    /// there is no bridge (Issue #762). It is read when the run's pump has ended and before the run's device graph is
+    /// disposed: the GPU's VRAM is pinned native memory that does not outlive that graph.
+    /// </summary>
+    public (byte[] Bgra, int Width, int Height)? LastFrameBgra32 { get; private set; }
+
+    /// <summary>The guest MMIO access the last run's host bridge relayed most recently, or null (Issue #763, measurement only).</summary>
+    public HostMmioAccess? LastMmioAccess => _bridge?.LastMmioAccess;
+
     private HostTransferBridge? _bridge;
 
     /// <summary>Reported when control reaches the general exception vector with no generated code there (Issue #680).</summary>
@@ -398,6 +408,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// keeps the default (empty); used by the bridge when it is attached.
     /// </param>
     /// <param name="imageLoadAddress">Guest address where <paramref name="imageWords"/> load; used by the bridge when attached.</param>
+    /// <param name="disc">The disc in the CD-ROM drive (a guest firmware reads it through the shared device graph); null is an empty drive.</param>
     public static RecompiledHostExecutionEngine ForPrebuiltArtifact(
         string prebuiltArtifactPath,
         IReadOnlySet<uint> blockEntryPcs,
@@ -408,7 +419,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         LoadedCodeTable? loadedCode = null,
         IReadOnlyList<uint>? imageWords = null,
         uint? imageLoadAddress = null,
-        PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer)
+        PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer,
+        ICdSectorSource? disc = null)
     {
         if (string.IsNullOrWhiteSpace(prebuiltArtifactPath))
         {
@@ -457,6 +469,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             biosRuntimeFactory: biosRuntimeFactory,
             guestFirmware: guestFirmware,
             runTimeout: runTimeout,
+            disc: disc,
             loadedCode: loadedCode,
             blockEntryPcs: blockEntryPcs,
             prebuiltArtifactPath: prebuiltArtifactPath,
@@ -572,7 +585,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
         }
 
-        var (exit, stdout, _, hostProtocolFaulted) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge);
+        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge);
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
         // guest's console output (the boot/TTY text before the engine's
@@ -585,8 +598,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         // Mixed-execution evidence is captured before any early return below: a handoff that happened is reported
         // even when the run then ends on a protocol fault, a timeout, or an MMIO or guest-time failure (Issue #693).
-        FallbackEvidence = bridge?.FallbackEvidence;
-        FallbackTimings = bridge?.FallbackTimings;
+        // None of the bridge's state is read while the host-transfer pump still owns the device graph (Issue #762):
+        // the pump may still be mutating that state (its VRAM is live native memory it may still draw through).
+        FallbackEvidence = pumpEnded ? bridge?.FallbackEvidence : null;
+        FallbackTimings = pumpEnded ? bridge?.FallbackTimings : null;
+        LastFrameBgra32 = pumpEnded ? bridge?.CaptureFrameBgra32() : null;
 
         if (hostProtocolFaulted)
         {
@@ -777,15 +793,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// containing spaces or quotes is received by the artifact unchanged as one
     /// argument.
     /// </summary>
-    /// <returns>The process exit code, captured stdout/stderr, and whether the
-    /// host-transfer pump faulted. A pump fault (a BIOS factory exception, a
-    /// protocol parse failure, a stdin/stdout read-or-write failure, or a
-    /// transfer send failure) is a classified protocol failure, not a
-    /// caller-visible exception: the child is killed and drained here and the
-    /// fault indicator lets <see cref="RunSegment"/> map it to
+    /// <returns>The process exit code, captured stdout/stderr, whether the
+    /// host-transfer pump faulted, and whether the pump has stopped. A pump fault
+    /// (a BIOS factory exception, a protocol parse failure, a stdin/stdout
+    /// read-or-write failure, or a transfer send failure) is a classified
+    /// protocol failure, not a caller-visible exception: the child is killed and
+    /// drained here and the fault indicator lets <see cref="RunSegment"/> map it to
     /// <c>ARTIFACT_HOST_PROTOCOL_FAILED</c> without leaking the underlying
-    /// exception into the result contract.</returns>
-    private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted) RunProcess(
+    /// exception into the result contract. <c>PumpEnded</c> is false only when the
+    /// pump outlived its drain budget and still owns the bridge's devices: the
+    /// caller then neither reads nor disposes those devices (Issue #762).</returns>
+    private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge)
     {
         var psi = new ProcessStartInfo(fileName)
@@ -811,18 +829,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 TryKillTree(process);
                 timedOut = true;
-                return (int.MinValue, DrainWithinCleanupBudget(stdoutTask), DrainWithinCleanupBudget(stderrTask), false);
+                return (int.MinValue, DrainWithinCleanupBudget(stdoutTask), DrainWithinCleanupBudget(stderrTask), false, true);
             }
 
             process.WaitForExit();
             timedOut = false;
-            return (process.ExitCode, stdoutTask.Result, stderrTask.Result, false);
+            return (process.ExitCode, stdoutTask.Result, stderrTask.Result, false, true);
         }
 
         process.StandardInput.AutoFlush = true;
         bridge.Attach(process.StandardOutput, process.StandardInput);
 
         var output = new StringBuilder();
+        var outputGate = new object();
         var pump = Task.Run(() =>
         {
             string? line;
@@ -830,10 +849,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 if (!bridge.TryHandle(line))
                 {
-                    output.AppendLine(line);
+                    lock (outputGate) output.AppendLine(line);
                 }
             }
         });
+        bridge.TrackPump(pump);
 
         bool pumpCompleted;
         try
@@ -847,32 +867,65 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             // diagnostics), and report the fault so RunSegment classifies it as
             // ARTIFACT_HOST_PROTOCOL_FAILED instead of letting a raw exception
             // escape the launcher. This is distinct from a timeout or a normal
-            // process-failure classification.
+            // process-failure classification. A faulted pump has already stopped,
+            // so its devices are free for the caller to read and dispose.
             TryKillTree(process);
-            try { pump.Wait(PumpDrainTimeoutMs); } catch { /* the fault verdict below stands regardless */ }
             Trace.WriteLine($"Host-transfer pump failed: {exception}");
             timedOut = false;
-            return (int.MinValue, output.ToString(), DrainWithinCleanupBudget(stderrTask), true);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), true, true);
         }
 
         if (!pumpCompleted)
         {
+            // The pump outlived the run budget. Stop the child and release its stdout
+            // pipe so a pump blocked in a read observes EOF, then give the pump a
+            // bounded drain. If it still has not ended, the bridge's devices remain
+            // under the pump's ownership: the caller neither reads nor disposes them
+            // (Issue #762).
             TryKillTree(process);
-            try { pump.Wait(PumpDrainTimeoutMs); } catch { /* the timeout verdict below stands regardless */ }
+            TryReleaseStdout(process);
+            var pumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
             timedOut = true;
-            return (int.MinValue, output.ToString(), DrainWithinCleanupBudget(stderrTask), false);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, pumpEnded);
         }
 
         if (!process.WaitForExit(timeoutMs))
         {
+            // The pump ended but the child has not exited: stop it. Nothing is using
+            // the bridge's devices any more.
             TryKillTree(process);
             timedOut = true;
-            return (int.MinValue, output.ToString(), DrainWithinCleanupBudget(stderrTask), false);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, true);
         }
 
         process.WaitForExit();
         timedOut = false;
-        return (process.ExitCode, output.ToString(), stderrTask.Result, false);
+        return (process.ExitCode, TakeOutput(output, outputGate), stderrTask.Result, false, true);
+    }
+
+    private static string TakeOutput(StringBuilder output, object gate)
+    {
+        lock (gate)
+        {
+            return output.ToString();
+        }
+    }
+
+    /// <summary>
+    /// Best-effort release of the child's stdout read pipe after it has been killed, so a pump
+    /// blocked in <c>ReadLine</c> cannot outlive the child. The child's death (its closed write
+    /// end) is the primary stop; a failure here is diagnostic-only.
+    /// </summary>
+    private static void TryReleaseStdout(Process process)
+    {
+        try
+        {
+            process.StandardOutput.Close();
+        }
+        catch (Exception exception)
+        {
+            Trace.WriteLine($"Releasing the host-transfer stdout pipe failed: {exception}");
+        }
     }
 
     /// <summary>
@@ -939,6 +992,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly uint _imageLoadAddress;
         private ArtifactFallbackSession? _fallback;
 
+        /// <summary>
+        /// Releases the device graph and fallback session only once the host-transfer pump that owns them has ended
+        /// (Issue #762): the pump runs on its own thread and calls into both, so neither may be disposed underneath it.
+        /// </summary>
+        private readonly PumpOwnedResource _resourceLifetime;
+
         /// <summary>Evidence of this run's mixed execution, or null when it was not enabled (Issue #693).</summary>
         public MixedFallbackEvidence? FallbackEvidence => _fallback?.Evidence;
 
@@ -949,6 +1008,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public ulong NativeRetiredInstructions { get; private set; }
 
         public ulong MmioAccesses { get; private set; }
+
+        /// <summary>The most recent MMIO access relayed to the device graph (Issue #763).</summary>
+        public HostMmioAccess? LastMmioAccess { get; private set; }
 
         public ulong TimeReports { get; private set; }
 
@@ -980,10 +1042,42 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public string? MmioFailureCode { get; private set; }
         public string? MmioFailureMessage { get; private set; }
 
-        public void Dispose()
+        /// <summary>Whether the host-transfer pump is still running and still using this bridge's devices (Issue #762).</summary>
+        public bool IsPumpActive => _resourceLifetime.IsPumpActive;
+
+        /// <summary>Makes <paramref name="pump"/> own the bridge's devices until it ends (Issue #762).</summary>
+        public void TrackPump(Task pump) => _resourceLifetime.Track(pump);
+
+        public void Dispose() => _resourceLifetime.Dispose();
+
+        /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
+        public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
         {
-            _fallback?.Dispose();
-            _devices?.Dispose();
+            if (_resourceLifetime.IsPumpActive)
+            {
+                // The pump still owns the device graph: reading the GPU now would race it. The frame
+                // is only ever read once the pump has stopped (Issue #762).
+                return null;
+            }
+
+            if (_devices?.GpuDevice is not { HasFrameEvidence: true } gpu)
+            {
+                return null;
+            }
+
+            try
+            {
+                var frame = gpu.CaptureFrame();
+                var bgra = PSXRecomp.Infrastructure.Runtime.Gpu.ScreenshotCapture.ToBgra32(frame, gpu);
+                return bgra.Length == 0 ? null : (bgra, frame.Width, frame.Height);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+            {
+                // Observation only: a pump that outlived a timed-out run may still own the device graph. Never let the
+                // frame read change the run's classified result.
+                Trace.WriteLine($"Frame capture failed: {exception}");
+                return null;
+            }
         }
 
         public HostTransferBridge(
@@ -1014,6 +1108,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             _blockEntryPcs = blockEntryPcs;
             _configureDevices = configureDevices;
             _exceptionChain = exceptionChain;
+            _resourceLifetime = new PumpOwnedResource(() =>
+            {
+                _fallback?.Dispose();
+                _devices?.Dispose();
+            });
         }
 
         public void Attach(TextReader fromArtifact, TextWriter toArtifact)
@@ -1453,6 +1552,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 throw new InvalidOperationException($"Malformed MMIO request '{fields}'.");
             }
 
+            LastMmioAccess = new HostMmioAccess(physical, width, isWrite);
             var kind = isWrite ? "write" : "read";
             PsxDeviceAccessStatus status;
             uint result = 0;

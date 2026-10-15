@@ -62,6 +62,11 @@ This command:
   fixed number of instructions is never evidence. `--capture-at <pc>` snapshots registers
   and recent transfers when a PC is first fetched; a stop prints PC, word, COP0, GPRs,
   recent fetches/transfers, and the first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
+  Local diagnostics for the interpreter engine (output is never committed): `--dump-ram <file>`
+  writes the 2 MiB of main RAM at the `--capture-at` PC, `--dump-frame <file.ppm>` the displayed
+  frame at the end (24-bit aware), `--pc-histogram <file.json>` the guest-RAM fetch counts (top PCs and
+  64-byte buckets) so a wait loop can be told from a stall, and `--list-disc <file.json>` every
+  ISO 9660 file with the PS-X EXE header of the executables (load address, entry, size).
 
 Measured with the pinned build (`openbios.bin` sha256
 `96889cfc16e3637e58e3b709a8de4f47725a4c9f2cafde57e0c24dc075f5cfb7`, GCC 16.2.0; a clean
@@ -272,8 +277,14 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
 `prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
-built ELF pair. Manifest root paths are relative to the manifest. `boot-exe`
-reads the synthetic disc's declared executable before the run. Observation
+built ELF pair. Manifest root paths are relative to the manifest. `boot-exe <name>`
+reads the executable the disc's SYSTEM.CNF `BOOT` names (the real one on a real disc; `<name>` is only a
+label) with its entry as the sole root. `disc-exes <prefix>` (Issue #734) adds every PS-X EXE file on the
+disc, one guarded image each named `<prefix>:<ISO path>`: a game's later stages are executables its boot
+program stages into RAM, and overlays may share a load address, which the loaded-code guard resolves by
+the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific.
+`prepare-aot.py --disc-exes` emits it; it is **opt-in** because, measured on Persona, entry-only roots leave every
+function-pointer target to the interpreter fallback and the mixed execution then ping-pongs (Issue #734, below). Observation
 points must remain interpreted: the generated manifest includes `C0Handler`
 (kernel RAM execution), exception vector/handler, shell and EXE entries.
 
@@ -396,6 +407,100 @@ OpenBIOS firmware can actually load a game via the same guest memory and handle
 all required hardware and generated-host transitions. **Do not change the default
 by making an unverified OpenBIOS path appear to pass.** The purpose here is an
 executable full-ROM integration base, not another one-at-a-time HLE function.
+
+### Standalone OpenBIOS distribution (`package --bios openbios`)
+
+Issue #732 / #739. `psxrecomp package <game.exe|game.chd>` (no `--bios`) still builds the legacy HLE-bridge
+distribution. The OpenBIOS-booted distribution is selected only by the explicit `--bios` family, because the
+default must not change until the real-game gate below passes:
+
+```bash
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800] [--build-timeout-seconds <n>] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]
+./persona/persona          # persona.exe on Windows
+```
+
+`--bios` is `openbios` (default when any firmware option is given), `custom-hle` or `genuine`. The last two are
+reserved names: they stop with `BIOS backend '<name>' is not implemented` and nothing is produced or substituted
+(`BiosBackendSelection`).
+
+`--build-timeout-seconds <n>` sets the bounded per-step native-toolchain (compile/link) timeout for the firmware
+artifact build; it is independent of `--run-timeout-seconds` (the guest run bound). Omit it to keep the historical
+three-minute per-step default (`FirmwareDistributionBuilder.DefaultBuildTimeout`); it is validated to `1..86400` and
+is never unbounded. A slower build host (for example the ~515,783-line ROM + AOT dispatch on a low-core CPU) can be
+given a longer compile budget without extending the game's own run time. The `openbios-probe` generated-host build
+keeps its own fixed three-minute per-step cap.
+
+**Execution structure (one guest state).** The native artifact *is* the OpenBIOS ROM compiled ahead of time
+(`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions (`LoadedCodeTable`: kernel data,
+vectors, shell and the disc's `boot-exe`, ADR-026). The game is never a second CPU session: OpenBIOS starts at the
+reset vector, its own CD driver reads the disc through the Runtime host's `CdRomDevice`/DMA3/IRQ graph, and `exec`
+jumps into the game in the same RAM, COP0 and device state. The game's calls back into A0/B0/C0 reach OpenBIOS code
+(native if it has a block, counted interpreter fallback otherwise); no `IBiosRuntime` is attached to a guest firmware.
+Unknown or changed RAM code is the explicit, counted, bounded fallback (ADR-025/026); it is reported, never silent.
+The distribution's AOT compiles the probe's post-shell milestones too: `0x80030000` and `0x80010000` are lowered as
+guarded blocks, never kept interpreted (`FirmwareAotPlan.FixedExceptionObservationPcs`); only OpenBIOS's own exception
+vectors (`0x80000080`, `0x26A4`) stay observed/interpreted, and a guarded game block runs only while RAM holds its
+compiled words.
+
+| Item | Where |
+|---|---|
+| BIOS ROM | user-supplied `--bios-rom`, exactly 512 KiB; copied to `runtime/artifact-image.bin`; SHA-256 re-verified on every run |
+| Disc (CD sector source) | user-supplied, copied to `runtime/disc/disc.{chd,bin}`; SHA-256 re-verified on every run |
+| AOT inputs | `--aot-dir` files (`rom.roots`, `images.txt` and every `image`/`exe` reference, resolved fail-closed against the AOT directory) copied to `runtime/firmware/` preserving their layout; per-file SHA-256 pinned in the boot manifest (`aotInputs`, schema 2) and re-verified before every plan rebuild; the host rebuilds the identical `LoadedCodeTable` (analysis only, no code generation) |
+| Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`, schema 2), selects the firmware run in the shared RuntimeHost |
+| Run settings | `runtime/runtime-host.json` (`guestFirmware:true`; mixed fallback on by default — `--mixed-fallback`/`--no-mixed-fallback` with `--fallback-segment-budget`/`--fallback-max-transitions` propagate through the manifest, recorded as 0 budgets when off) |
+
+`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes.
+The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts and the final register file, and `RuntimeHost --diagnostics <path>` additionally writes the Issue #763 stop diagnostic (best-effort; the classified exit code is unchanged).
+
+**Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
+commercial game or genuine BIOS is bundled. Redistributing OpenBIOS (even the compiled artifact embeds the ROM) waits
+for the #730 file-by-file license audit; the generated `README.txt` says so. This is a technical verification path,
+not distribution approval.
+
+**Tests.** `OpenBiosStandaloneSelectionTests` (selection, manifest, ROM/disc rejection, CLI fail-closed — including a malformed `rom.roots` returning exit 1 with no partial output),
+`FirmwareGameRoundTripTests` (ROM code → RAM game → ROM routine → game → ROM, COP0/RAM preserved, interpreter parity,
+native vs counted-fallback), `FirmwareAotPlanTests` (the game entry is compiled to a guarded native block whose
+flipped RAM word voids the match; the exception vectors stay observed; the shared roots parser accepts comments/blank
+lines and rejects invalid lines as `InvalidDataException`), `FirmwareAotBundleTests` (input containment,
+copy layout, digest pinning and tamper/missing/escape/link rejection — including a linked `rom.roots`/`images.txt` or
+a linked AOT root — schema-2 manifest negatives), `FirmwareDistributionBuilderTests` (a build whose AOT input
+escapes the root or has a malformed roots file fails before any output, preserves a pre-existing distribution and
+leaves no staging directory), `FirmwareRuntimeLauncherTests`/`FirmwareRuntimeLauncherDiagnosticsTests` (fallback-policy propagation and
+`--diagnostics` honoring) and the packaging E2E `OpenBiosStandalonePackageE2E` (a `boot-exe` AOT image runs in the
+one packaged guest state with zero fallback instructions and ROM → game → ROM register continuity). **The packaging
+E2E uses a synthetic ROM that stores the game's words into RAM itself; it proves packaging → guarded game AOT → ROM
+continuity, not OpenBIOS's run-time CD-sector load.** The latter is the separate runtime disc-load gate, verified by
+real OpenBIOS over the shared device graph with the synthetic Mode 2 disc (see "Disc in the drive" above and the
+measured table below) and by the real Persona runs. The game block's own contribution is attributed inside the
+aggregate native count by the game-only final register (`$t0`) plus zero fallback instructions, never by the BIOS's
+native count alone. The same E2E asserts the explicit fallback budgets reach the packaged manifest and that the host
+writes the diagnostics document; the existing `FirmwareStandaloneHandoffTests` cover the pre-packaged handoff.
+
+**Measured (pinned OpenBIOS build, `--instruction-budget`/timeout bounded, local only).**
+
+| Run | Result |
+|---|---|
+| Synthetic Mode 2 disc, `openbios-probe --standalone --stop-at 0x80010014` | `bootVerified`; 195,060,431 native / 2,338 fallback instructions; 327 transitions |
+| Same disc, packaged, `./synth` launched directly (200M budget) | **Runtime disc load proven by real OpenBIOS's own CD driver** (separate gate, synthetic disc + probe above) **not by this packaging E2E**: the packaging E2E's synthetic ROM stores the EXE words into RAM itself. The packaged direct launch (200M budget) reached the synthetic EXE's `b .` loop at `0x80010014`; 278,673,285 native / 2,338 fallback / 326 transitions; ends `OUTER_BUDGET_EXHAUSTED` (exit 2 = bounded by design) |
+| Persona CHD, 600 s timeout, Windows, `PSXRecomp.RuntimeHost --diagnostics`, before/after `disc-exes` (all executables compiled, entry-only roots) | Before: 270,127,434 native / 2,221,246,107 fallback instructions / 4,698 transitions, fallback time 269 s of 601 s; last fallback entry `0x8008A484`. After: 315,766,486 native / 11,374,179 fallback / 254,095 transitions, fallback **transfer** time 175 s of 600 s (249,567 entries at `0x80084C88`, returning at `0x8008AECC`). The guest advanced ~7x *less* in the same wall time: AOT coverage rose, progress fell. Both end `ARTIFACT_TIMEOUT`; no title evidence. |
+| Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
+
+Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel
+booted and `titleStarted:true`, but 275,017,697 native vs 11,066,526,413 fallback instructions, 9,118 transitions,
+`ARTIFACT_TIMEOUT`. 99.9% of the fallback is `user-ram`/`ps-x-exe` code classified `unknown-code` (in no AOT image):
+entry `0x8008A484` (1,127 entries, 10.9 G instructions) spinning in the loop `0x8008AECC..0x8008AF04` (about 154 M
+iterations per PC), with the stream code at `0x80081BC8..0x80081C18` next. The disc's boot EXE does not cover this
+code (it is loaded or placed at run time), so the fix is more game AOT images supplied through `--aot-dir`
+(`exe`/`image` lines, no title constants in the tool) and, separately, finding out why that wait never completes
+under the generated host. Until then Persona is **not** verified on this path.
+
+**Relation to #764.** #764 (host-resolved indirect resume, the `J` protocol, `--diagnostics`) is merged and this
+branch builds on it. `RuntimeHost` now honors `--diagnostics` for a firmware distribution as well: the launcher
+writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFailure`, best-effort — the run's
+classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
+as part of the one guest state.
 
 ### Remaining acceptance gates
 

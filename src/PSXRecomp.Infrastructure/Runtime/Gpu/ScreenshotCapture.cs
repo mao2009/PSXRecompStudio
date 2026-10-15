@@ -212,17 +212,25 @@ public sealed class ScreenshotCapture : IDisposable
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
     /// Handles both 15-bit (5-5-5) and 24-bit (8-8-8) display modes.
     /// </summary>
-    private byte[] ConvertToBgra32(FrameSnapshot frame)
+    private byte[] ConvertToBgra32(FrameSnapshot frame) => ToBgra32(frame, _gpuDevice);
+
+    /// <summary>
+    /// Converts <paramref name="frame"/>, captured from <paramref name="gpuDevice"/>, to BGRA32 in whichever display colour
+    /// depth the GPU is currently in. Shared by the headless screenshot service and the standalone Runtime host (Issue #762).
+    /// </summary>
+    public static byte[] ToBgra32(FrameSnapshot frame, GpuDevice gpuDevice)
     {
+        ArgumentNullException.ThrowIfNull(frame);
+        ArgumentNullException.ThrowIfNull(gpuDevice);
         if (frame.Width <= 0 || frame.Height <= 0)
             return [];
 
-        var gpuState = _gpuDevice.GetState();
+        var gpuState = gpuDevice.GetState();
         bool is24BitMode = (gpuState.DisplayMode & 0x10) != 0; // Bit 4: 24-bit color depth
 
         if (is24BitMode)
         {
-            return Convert24BitToBgra32(frame, gpuState);
+            return Convert24BitToBgra32(frame, gpuState, gpuDevice);
         }
         else
         {
@@ -256,8 +264,9 @@ public sealed class ScreenshotCapture : IDisposable
     /// Converts 24-bit (8-8-8) VRAM pixels to BGRA32 format.
     /// In 24-bit mode, VRAM stores 24-bit pixels as 3 bytes per pixel (R, G, B).
     /// VRAM is byte-addressed in 24-bit mode with stride of 1024 * 2 = 2048 bytes (same halfword layout, read as bytes).
+    /// DisplayVramStart X is in 16-bit halfword units; byte offset = startX * 2. Each pixel = 3 bytes.
     /// </summary>
-    private byte[] Convert24BitToBgra32(FrameSnapshot frame, GpuState gpuState)
+    private static byte[] Convert24BitToBgra32(FrameSnapshot frame, GpuState gpuState, GpuDevice gpuDevice)
     {
         if (frame.Width <= 0 || frame.Height <= 0)
             return [];
@@ -265,31 +274,41 @@ public sealed class ScreenshotCapture : IDisposable
         // Get display region from GPU state
         int startX = (int)(gpuState.DisplayVramStart & 0x3FF);
         int startY = (int)((gpuState.DisplayVramStart >> 10) & 0x1FF);
-        var resolution = _gpuDevice.GetDisplayResolution();
-        int width = Math.Max(0, Math.Min((int)resolution.Width, GpuVram.Width - startX));
-        int height = Math.Max(0, Math.Min((int)resolution.Height, GpuVram.Height - startY));
+        // FrameSnapshot already applies mode-aware scanline clipping (15-bit vs 24-bit).
+        // Keep the PNG dimensions identical to the captured frame and never read
+        // three-byte RGB pixels across the 2048-byte VRAM row boundary.
+        int maxWidthInRow = ((GpuVram.Width - startX) * sizeof(ushort)) / 3;
+        int width = Math.Min(frame.Width, maxWidthInRow);
+        int height = Math.Min(frame.Height, GpuVram.Height - startY);
 
+        return Convert24BitRegionToBgra32(gpuDevice.GetVramBytes(), startX, startY, width, height);
+    }
+
+    /// <summary>
+    /// Converts a 24-bit (8-8-8) VRAM region to BGRA32. VRAM stores 3 bytes per pixel (R, G, B),
+    /// and each row is byte-addressed with a fixed <see cref="GpuVram.Width"/> * 2 byte stride; Y wraps
+    /// at the 512-line VRAM bound. <paramref name="startX"/> is the GP1(05h) display origin, a halfword
+    /// address, so its byte offset is <c>startX * 2</c> and each pixel then advances 3 bytes.
+    /// Internal so the display conversion is testable directly.
+    /// </summary>
+    internal static byte[] Convert24BitRegionToBgra32(ReadOnlySpan<byte> vramBytes, int startX, int startY, int width, int height)
+    {
         if (width <= 0 || height <= 0)
             return [];
 
         var bgra = new byte[width * height * 4];
 
-        // In 24-bit mode, VRAM is byte-addressed with 3 bytes per pixel (R, G, B)
-        // VRAM stride = 1024 * 2 = 2048 bytes per row (same halfword layout, read as bytes)
-        // Each pixel = 3 bytes, so effective pixels per row = 2048 / 3 = 682
-        const int VRAM_STRIDE_24BIT = GpuVram.Width * 2; // 2048 bytes per row
-
-        var vramBytes = _gpuDevice.GetVramBytes();
+        // VRAM stride = 1024 halfwords * 2 bytes per row.
+        const int VramRowStride = GpuVram.Width * 2;
 
         for (int y = 0; y < height; y++)
         {
-            int vramY = (startY + y) & 0x1FF;
-            int vramRowOffset = vramY * VRAM_STRIDE_24BIT;
+            int vramRowOffset = ((startY + y) & 0x1FF) * VramRowStride;
 
             for (int x = 0; x < width; x++)
             {
-                int vramX = (startX + x) & 0x3FF;
-                int vramByteOffset = vramRowOffset + vramX * 3;
+                // startX is a halfword address; the 24-bit pixel stream is 3 bytes per pixel.
+                int vramByteOffset = vramRowOffset + startX * 2 + x * 3;
 
                 // Bounds check
                 if (vramByteOffset + 2 >= vramBytes.Length)

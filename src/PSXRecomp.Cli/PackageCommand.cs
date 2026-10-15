@@ -46,11 +46,17 @@ public static class PackageCommand
     public const string Usage =
         "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... " +
         "[--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] " +
-        "[--fallback-max-transitions <n>] [--self-contained] [--json]";
+        "[--fallback-max-transitions <n>] [--self-contained] [--json]\n" +
+        "       psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--build-timeout-seconds <n>] [--self-contained]";
 
     internal static int Run(
         ParsedArguments arguments, TextWriter standardOutput, TextWriter standardError)
     {
+        if (arguments.Firmware is { } firmware)
+        {
+            return FirmwarePackageCommand.Run(arguments, firmware, standardOutput, standardError);
+        }
+
         var outputDir = Path.GetFullPath(arguments.OutputDirectory!);
         var segmentBudget = arguments.SegmentBudget ?? DefaultSegmentBudget;
 

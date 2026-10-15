@@ -133,6 +133,10 @@ public static class Program
         var help = false;
         bool selfContained = false;
         bool? guestFirmware = null;
+        string? bios = null, biosRom = null, aotDir = null;
+        uint? codeBytes = null, instructionBudget = null;
+        int? runTimeoutSeconds = null;
+        int? buildTimeoutSeconds = null;
 
         for (var i = 0; i < arguments.Count; i++)
         {
@@ -303,6 +307,34 @@ public static class Program
                         guestFirmware = true;
                     }
                     break;
+                case "--bios" or "--bios-rom" or "--aot-dir" or "--code-bytes" or "--instruction-budget" or "--run-timeout-seconds" or "--build-timeout-seconds":
+                    if (!allowGuestFirmware)
+                    {
+                        parsed = default;
+                        error = $"'{token}' is only valid for 'package'.";
+                        return false;
+                    }
+                    if (i + 1 >= arguments.Count || arguments[i + 1].StartsWith("--", StringComparison.Ordinal))
+                    {
+                        parsed = default;
+                        error = $"missing value for option '{token}'.";
+                        return false;
+                    }
+                    var optionText = arguments[++i];
+                    if (token == "--bios") bios = optionText;
+                    else if (token == "--bios-rom") biosRom = optionText;
+                    else if (token == "--aot-dir") aotDir = optionText;
+                    else if (token == "--code-bytes" && uint.TryParse(optionText, out var parsedCodeBytes) && parsedCodeBytes != 0) codeBytes = parsedCodeBytes;
+                    else if (token == "--instruction-budget" && uint.TryParse(optionText, out var parsedBudget) && parsedBudget != 0) instructionBudget = parsedBudget;
+                    else if (token == "--run-timeout-seconds" && int.TryParse(optionText, out var parsedTimeout) && parsedTimeout is > 0 and <= 86400) runTimeoutSeconds = parsedTimeout;
+                    else if (token == "--build-timeout-seconds" && int.TryParse(optionText, out var parsedBuildTimeout) && parsedBuildTimeout is > 0 and <= 86400) buildTimeoutSeconds = parsedBuildTimeout;
+                    else
+                    {
+                        parsed = default;
+                        error = $"invalid value '{optionText}' for '{token}': expected a positive integer.";
+                        return false;
+                    }
+                    break;
                 default:
                     if (token.StartsWith("--", StringComparison.Ordinal))
                     {
@@ -322,6 +354,9 @@ public static class Program
         }
 
         var mixedFallback = explicitMixedFallback ?? allowMixedFallback;
+        var firmware = bios is null && biosRom is null && aotDir is null && codeBytes is null && instructionBudget is null && runTimeoutSeconds is null && buildTimeoutSeconds is null
+            ? null
+            : new FirmwareOptions(bios, biosRom, aotDir, codeBytes, runTimeoutSeconds, instructionBudget, buildTimeoutSeconds);
 
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {
@@ -332,7 +367,7 @@ public static class Program
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware, Firmware: firmware);
             error = null;
             return true;
         }
@@ -351,7 +386,7 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware, Firmware: firmware);
         error = null;
         return true;
     }
@@ -463,4 +498,15 @@ internal sealed record ParsedArguments(
     uint? FallbackSegmentBudget = null,
     uint? FallbackMaxTransitions = null,
     bool SelfContained = false,
-    bool? GuestFirmware = null);
+    bool? GuestFirmware = null,
+    FirmwareOptions? Firmware = null);
+
+/// <summary>The <c>package --bios</c> family (Issue #732). Present only when at least one of the options was given.</summary>
+/// <param name="BuildTimeoutSeconds">
+/// <c>--build-timeout-seconds</c>: the bounded per-step native-toolchain (compiler/linker) timeout for the
+/// firmware artifact build, or null to use <c>FirmwareDistributionBuilder.DefaultBuildTimeout</c>. It is
+/// independent of <paramref name="RunTimeoutSeconds"/> (the guest run bound): a slow host CPU can need a
+/// longer compile without extending the game's own run time.
+/// </param>
+[Infrastructure]
+internal sealed record FirmwareOptions(string? Bios, string? BiosRom, string? AotDir, uint? CodeBytes, int? RunTimeoutSeconds, uint? InstructionBudget = null, int? BuildTimeoutSeconds = null);
