@@ -11,6 +11,7 @@ FILES = [
     "README.md", "README.ja.md", "CONTRIBUTING.md",
     "docs/community/get-involved.md", "docs/community/rrs-vision.md",
     "docs/index.html", "docs/get-involved.html", "docs/rrs-vision.html",
+    "docs/ja/index.html", "docs/ja/get-involved.html",
 ]
 
 class Links(HTMLParser):
