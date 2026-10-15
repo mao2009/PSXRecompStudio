@@ -65,6 +65,16 @@ public static class RecompilerHostCodeGen
     /// single-argument overload.
     /// </summary>
     public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode)
+        => Generate(program, loadedCode, traceUnits: false);
+
+    /// <summary>
+    /// <see cref="Generate(RecompilerIrProgram, LoadedCodeTable?)"/>, plus the opt-in unit retirement trace (Issue #774).
+    /// With <paramref name="traceUnits"/> the generated dispatcher calls the state's <c>host_unit_trace</c> hook once per
+    /// dispatch unit that reaches its retirement credit, with the unit's entry PC, its next PC, the instructions it
+    /// credited, the cumulative native total after the credit and whether it was interrupted. False generates the same
+    /// source byte for byte as the overload without the flag, so the default artifact is unchanged.
+    /// </summary>
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool traceUnits)
     {
         ArgumentNullException.ThrowIfNull(program);
         loadedCode ??= LoadedCodeTable.Empty;
@@ -165,7 +175,7 @@ public static class RecompilerHostCodeGen
             }
         }
 
-        var source = EmitSource(program, loadedCode);
+        var source = EmitSource(program, loadedCode, traceUnits);
         return new RecompilerHostCodeGenResult(true, source, null, null);
     }
 
@@ -234,7 +244,7 @@ public static class RecompilerHostCodeGen
         _ => false,
     };
 
-    private static string EmitSource(RecompilerIrProgram program, LoadedCodeTable loadedCode)
+    private static string EmitSource(RecompilerIrProgram program, LoadedCodeTable loadedCode, bool traceUnits)
     {
         var sb = new StringBuilder();
 
@@ -258,7 +268,7 @@ public static class RecompilerHostCodeGen
         {
             EmitGteHelperDeclarations(sb);
         }
-        EmitStateStruct(sb);
+        EmitStateStruct(sb, traceUnits);
         EmitSra32Helper(sb);
         EmitMulDivHelpers(sb);
 
@@ -276,7 +286,7 @@ public static class RecompilerHostCodeGen
             }
         }
 
-        EmitDispatchFunction(sb, program, loadedCode);
+        EmitDispatchFunction(sb, program, loadedCode, traceUnits);
 
         return sb.ToString();
     }
@@ -346,7 +356,7 @@ public static class RecompilerHostCodeGen
     /// needs no change.
     /// </para>
     /// </remarks>
-    private static void EmitStateStruct(StringBuilder sb)
+    private static void EmitStateStruct(StringBuilder sb, bool traceUnits)
     {
         sb.AppendLine("struct " + StateStruct + ";");
         sb.AppendLine("/* Optional host control-transfer hook (see recompiler_dispatch). Returns 0 when");
@@ -359,6 +369,12 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("   iteration — an instruction-fetch boundary outside any branch delay slot. When it accepts an");
         sb.AppendLine("   interrupt it performs the INT exception entry in the state and leaves pc at the vector. */");
         sb.AppendLine("typedef void (*" + HostInterruptFnType + ")(struct " + StateStruct + "*);");
+        if (traceUnits)
+        {
+            // Issue #774: present only in a trace build, so the default struct layout is unchanged.
+            sb.AppendLine("typedef void (*recompiler_unit_trace_fn)(struct " + StateStruct + "*, uint32_t entry_pc, uint32_t next_pc,");
+            sb.AppendLine("    uint32_t credited, uint64_t retired_total, uint32_t interrupted);");
+        }
         sb.AppendLine("typedef struct " + StateStruct + " {");
         sb.AppendLine("  uint32_t gpr[32];");
         sb.AppendLine("  uint32_t hi;");
@@ -401,6 +417,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint64_t " + RetiredReportedField + ";");
         sb.AppendLine("  " + HostRetiredFnType + " " + HostRetiredField + ";");
         sb.AppendLine("  " + HostInterruptFnType + " " + HostInterruptField + ";");
+        if (traceUnits)
+            sb.AppendLine("  recompiler_unit_trace_fn host_unit_trace;");
         sb.AppendLine("  /* Issue #732: the COP0 registers other than SR/CAUSE/EPC (which live in the fields above), indexed");
         sb.AppendLine("     by register number, as MFC0/MTC0 read and write them (PSXCpu::cop0_). Slots 12-14 are unused. */");
         sb.AppendLine("  uint32_t " + Cop0OtherField + "[32];");
@@ -897,7 +915,7 @@ public static class RecompilerHostCodeGen
     }
 
     private static void EmitDispatchFunction(
-        StringBuilder sb, RecompilerIrProgram program, LoadedCodeTable loadedCode)
+        StringBuilder sb, RecompilerIrProgram program, LoadedCodeTable loadedCode, bool traceUnits)
     {
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
@@ -910,6 +928,10 @@ public static class RecompilerHostCodeGen
         // budget guard as the blocks below, so budget == 0 still executes nothing. A null hook (every
         // state that does not set one) keeps the pre-existing behavior.
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostInterruptField} != 0 && steps < budget) {{ {StateParam}->{HostInterruptField}({StateParam}); }}");
+        // Issue #774: the unit's entry PC, captured after the interrupt boundary (which may move pc to the vector). The
+        // credit below cannot recover it: an interrupted unit has already set pc to its resume address.
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + $"uint32_t unit_entry_pc = {StateParam}->{PcField};");
 
         // A generated-host budget is a strict upper bound on retired dispatch
         // units. Known generated blocks and host-claimed transfers both spend one
@@ -1061,6 +1083,9 @@ public static class RecompilerHostCodeGen
         // A fault charges no instruction of its own; any preceding successful fused
         // instructions keep their time. An interior load INT retires only the load.
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{RetiredTotalField} += retired - {StateParam}->partial_retired;");
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->host_unit_trace != 0) {{ {StateParam}->host_unit_trace({StateParam}, unit_entry_pc, {StateParam}->{NextPcField}, " +
+                $"retired - {StateParam}->partial_retired, {StateParam}->{RetiredTotalField}, {StateParam}->unit_interrupted); }}");
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostRetiredField} != 0) {{ {StateParam}->{HostRetiredField}({StateParam}); }}");
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{PcField} = {StateParam}->{NextPcField};");
         sb.AppendLine(IndentUnit + IndentUnit + "steps++;");

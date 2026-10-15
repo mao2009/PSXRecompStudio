@@ -1284,6 +1284,78 @@ int main() {
             "the child process the helper started must have been terminated on timeout");
     }
 
+    // --- Issue #774: opt-in unit retirement trace ---
+
+    [Fact]
+    public void UnitTrace_Off_Generates_The_Same_Source_As_The_Default()
+    {
+        var program = UnitTraceProgram();
+
+        var defaults = RecompilerHostCodeGen.Generate(program, loadedCode: null);
+        var explicitlyOff = RecompilerHostCodeGen.Generate(program, loadedCode: null, traceUnits: false);
+
+        defaults.Success.Should().BeTrue();
+        explicitlyOff.Source.Should().Be(defaults.Source);
+        defaults.Source.Should().NotContain("host_unit_trace");
+        defaults.Source.Should().NotContain("unit_entry_pc");
+    }
+
+    [Fact]
+    public void UnitTrace_On_Reports_Each_Unit_Once_With_Its_Credit_And_Cumulative_Total()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+
+        // Three units: a single instruction, a single instruction, then a fused unit of two. The hook must see
+        // each unit's entry PC, next PC, credit, cumulative total after the credit, and an uninterrupted flag.
+        var testResult = CompileAndRun(result.Source!, @"
+static int seen = 0;
+static const uint32_t want_entry[] = {0x80000000u, 0x80000004u, 0x8000000Cu};
+static const uint32_t want_next[] = {0x80000004u, 0x8000000Cu, 0x80000014u};
+static const uint32_t want_credit[] = {1u, 1u, 2u};
+static const uint64_t want_total[] = {1ull, 2ull, 4ull};
+static void hook(RecompilerState* s, uint32_t entry, uint32_t next, uint32_t credited, uint64_t total, uint32_t interrupted) {
+    (void)s;
+    if (seen < 3 && entry == want_entry[seen] && next == want_next[seen] && credited == want_credit[seen] &&
+        total == want_total[seen] && interrupted == 0u) seen++;
+    else seen = 99;
+}
+int main() {
+    RecompilerState state = {0};
+    state.pc = 0x80000000u;
+    state.host_unit_trace = hook;
+    recompiler_dispatch(&state, 10);
+    return seen == 3 ? 0 : 1;
+}");
+        testResult.Should().Be(0, "every unit must be traced exactly once, with its own entry PC and credit");
+    }
+
+    [Fact]
+    public void UnitTrace_Off_Source_Has_No_Hook_Call_Even_With_A_Fused_Unit()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: false);
+
+        result.Success.Should().BeTrue();
+        result.Source.Should().NotContain("host_unit_trace(");
+    }
+
+    // A straight-line chain: 0x80000000 -> 0x80000004 -> fused 0x8000000C (two instructions, boundary after the first).
+    private static RecompilerIrProgram UnitTraceProgram() => new(new[]
+    {
+        new RecompilerIrBlock(0x80000000u, Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000004u)),
+        new RecompilerIrBlock(0x80000004u, Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x8000000Cu)),
+        new RecompilerIrBlock(0x8000000Cu,
+            new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1u),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 2u),
+            },
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000014u),
+            retiredInstructionCount: 2, instructionBoundaries: new[] { 1 }),
+    });
+
     #pragma warning disable AARC003
     private static int CompileWithHostCompiler(string source)
     {
