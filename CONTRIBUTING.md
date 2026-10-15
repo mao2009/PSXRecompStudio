@@ -4,6 +4,12 @@ Thanks for contributing to PSXRecompStudio. This project spans managed C#, nativ
 
 This guide is for **human contributors**. AI development agents use [AGENTS.md](AGENTS.md) and the repository Skills instead; those agent-only operating rules are intentionally not duplicated here.
 
+## First time here?
+
+You do **not** need to submit a pull request to help. Start with the [human collaboration guide](docs/community/get-involved.md), which maps expertise to specific subsystems and gives examples of useful technical feedback. For long-term architecture discussions, see the [proposed RRS vision](docs/community/rrs-vision.md).
+
+This is a heavily AI-assisted project. Implementation and preliminary review often rely on coding agents. Human contributors are invited to challenge assumptions and request reproducible evidence; nobody is expected to validate large AI-generated patches without a bounded, agreed scope. State AI involvement, provenance, and validation limits in your contributions.
+
 ## Before starting
 
 1. Read the Issue completely and confirm that it is still open.
