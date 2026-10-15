@@ -930,6 +930,7 @@ public static class RecompilerHostCodeGen
     private const string UnitTraceWriterSource = """
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define RECOMPILER_TRACE_SCHEMA_VERSION 1
 #define RECOMPILER_TRACE_DEFAULT_CAP 67108864ull
 #define RECOMPILER_TRACE_RESERVE 512ull
@@ -990,6 +991,40 @@ static void recompiler_trace_unit(struct RecompilerState* state, uint32_t entry_
     if (length > 0) recompiler_trace_line(line, (size_t)length);
 }
 
+/* The session id links this trace to the parent's fallback trace of the same run (Issue #774). It comes from
+   PSX_TRACE_SESSION and is kept only when it is a short [0-9A-Za-z-] token, so it can be written unescaped. */
+static char recompiler_trace_session[65] = "";
+static unsigned long long recompiler_trace_handoffs = 0ull;
+
+static void recompiler_trace_read_session(void) {
+    const char* text = getenv("PSX_TRACE_SESSION");
+    size_t i, n;
+    recompiler_trace_session[0] = '\0';
+    if (text == 0) return;
+    n = strlen(text);
+    if (n == 0 || n > 64) return;
+    for (i = 0; i < n; i++) {
+        char c = text[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-')) return;
+    }
+    memcpy(recompiler_trace_session, text, n + 1);
+}
+
+/* One handoff record per transfer to the host, numbered in the order the host sees them. The handoff counts even when
+   the record cannot be written (cap reached), so a later record never reuses or skips a number. native_total is the
+   retired total at the transfer: every unit before it is credited and no unit after it has started. */
+static void recompiler_trace_handoff(RecompilerState* state) {
+    char line[320];
+    int length;
+    recompiler_trace_handoffs++;
+    if (recompiler_trace_mode != 1) return;
+    length = snprintf(line, sizeof line,
+        "{\"v\":%d,\"kind\":\"handoff\",\"seq\":%llu,\"handoff\":%llu,\"native_total\":%llu,\"pc\":\"0x%08X\"}\n",
+        RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq, recompiler_trace_handoffs,
+        (unsigned long long)state->retired_total, (unsigned)state->pc);
+    if (length > 0) recompiler_trace_line(line, (size_t)length);
+}
+
 /* Opens the trace from the environment and attaches it to the state. Returns 1 when attached, 0 when no path is
    configured, -1 when the file cannot be created and -2 when PSX_UNIT_TRACE_MAX_BYTES is not a valid size. In every
    non-1 case the hook stays null and the run is untraced. */
@@ -1004,13 +1039,19 @@ int recompiler_trace_attach(struct RecompilerState* state) {
         if (end == cap_text || *end != '\0' || cap < RECOMPILER_TRACE_MIN_CAP) return -2;
     }
     if (recompiler_trace_mode != 0) return 0;
+    recompiler_trace_read_session();
     recompiler_trace_file = fopen(path, "w");
     if (recompiler_trace_file == 0) return -1;
     recompiler_trace_cap = cap;
     recompiler_trace_seq = 0ull;
     recompiler_trace_bytes = 0ull;
     recompiler_trace_mode = 1;
-    fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"header\",\"cap\":%llu}\n", RECOMPILER_TRACE_SCHEMA_VERSION, cap);
+    if (recompiler_trace_session[0] != '\0') {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"header\",\"session\":\"%s\",\"cap\":%llu}\n",
+            RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_session, cap);
+    } else {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"header\",\"cap\":%llu}\n", RECOMPILER_TRACE_SCHEMA_VERSION, cap);
+    }
     recompiler_trace_bytes = (unsigned long long)ftell(recompiler_trace_file);
     if (!recompiler_trace_exit_registered) {
         atexit(recompiler_trace_close);
@@ -1028,6 +1069,9 @@ int recompiler_trace_attach(struct RecompilerState* state) {
     {
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
+        // Issue #774: a trace build attaches its trace on the first dispatch of the process. Emitted only with traceUnits.
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + "{ static int trace_started = 0; if (!trace_started) { trace_started = 1; recompiler_trace_attach(state); } }");
         sb.AppendLine(IndentUnit + "for (;;) {");
         sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
         sb.AppendLine(IndentUnit + IndentUnit + "state->partial_retired = 0u; state->unit_interrupted = 0u;");
@@ -1132,6 +1176,9 @@ int recompiler_trace_attach(struct RecompilerState* state) {
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
         EmitBudgetExceededReturn(sb, 4);
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+        // Issue #774: every transfer to the host is one handoff, whatever serves it (fallback, BIOS, exception).
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"recompiler_trace_handoff({StateParam});");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"int32_t hosted = {StateParam}->{HostTransferField}({StateParam});");
         // A decline the budget guard above let through is definitive: this pc has
         // no block and no host claim, regardless of steps. Unlike the null-hook

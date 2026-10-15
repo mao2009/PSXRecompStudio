@@ -332,7 +332,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             return;
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode);
+        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -746,7 +746,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode);
+        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -817,6 +817,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         foreach (var argument in arguments)
         {
             psi.ArgumentList.Add(argument);
+        }
+
+        // Issue #774: only a traced run changes the child's environment; an untraced run passes it through unchanged.
+        if (bridge?.UnitTraceChildEnvironment is { } traceEnvironment)
+        {
+            foreach (var (name, value) in traceEnvironment)
+            {
+                psi.Environment[name] = value;
+            }
         }
 
         using var process = Process.Start(psi)!;
@@ -1046,9 +1055,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public bool IsPumpActive => _resourceLifetime.IsPumpActive;
 
         /// <summary>Makes <paramref name="pump"/> own the bridge's devices until it ends (Issue #762).</summary>
+        // Issue #774: the parent's side of the unit trace. Null unless a trace scope is active (see UnitTraceScope).
+        private readonly UnitTraceRun? _unitTrace = UnitTraceRun.TryStart();
+
+        /// <summary>The environment the child process gets for its own trace of this run, or null when tracing is off.</summary>
+        public IReadOnlyDictionary<string, string>? UnitTraceChildEnvironment => _unitTrace?.ChildEnvironment();
+
         public void TrackPump(Task pump) => _resourceLifetime.Track(pump);
 
-        public void Dispose() => _resourceLifetime.Dispose();
+        public void Dispose()
+        {
+            _resourceLifetime.Dispose();
+            _unitTrace?.Dispose();
+        }
 
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
@@ -1202,7 +1221,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolTransferPrefix, StringComparison.Ordinal))
             {
-                HandleTransfer(trimmed[RecompiledArtifactCodeGen.ProtocolTransferPrefix.Length..]);
+                var transferFields = trimmed[RecompiledArtifactCodeGen.ProtocolTransferPrefix.Length..];
+                // Issue #774: every transfer is one handoff, in the order the child sent it. The fallback segment it ran (if
+                // any) is read after it is served; the protocol itself is unchanged.
+                _fallback?.BeginSegmentRecord();
+                HandleTransfer(transferFields);
+                if (_unitTrace is not null && ulong.TryParse(transferFields.Split(' ')[0], NumberStyles.None,
+                        CultureInfo.InvariantCulture, out var transferPc))
+                {
+                    _unitTrace.RecordTransfer(transferPc, _fallback?.LastSegment);
+                }
+
                 return true;
             }
 

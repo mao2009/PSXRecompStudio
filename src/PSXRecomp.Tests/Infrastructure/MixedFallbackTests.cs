@@ -1,3 +1,4 @@
+using PSXRecomp.Core.Diagnostics;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Cli;
@@ -87,6 +88,100 @@ public sealed class MixedFallbackTests
         diff["match"]!.GetValue<bool>().Should().BeTrue(diff["firstMismatch"]?.ToJsonString() ?? "all CPU, RAM and device fields match");
         actual!.Cpu.Single(static v => v.Name == "cause").Value.Should().Be(0x400u);
 
+    }
+
+    // Issue #774 (B-4): the production generated host, traced, native -> fallback -> native. The joined sequence is checked
+    // against an independent count: the interpreter's own fetches on the same program (no interrupts or exceptions occur here,
+    // so one fetch is one retired instruction).
+    [Fact]
+    public void UnitTrace_EndToEnd_NativeFallbackNative_JoinsToTheInterpreterInstructionCount()
+    {
+        var (words, returnSite) = RoundTripProgram();
+#pragma warning disable AARC003
+        using var dir = new TempDirectory();
+        var tracePath = Path.Combine(dir.FullPath, "unit.jsonl");
+
+        MixedRun run;
+        using (UnitTraceScope.Begin(tracePath))
+        {
+            run = RunArtifact(words, dir, On);
+        }
+
+        run.Result.State.Should().Be(TitleExecutionState.Completed);
+        var native = File.ReadAllLines(tracePath);
+        var fallback = File.ReadAllLines(UnitTraceScope.FallbackPathFor(tracePath));
+#pragma warning restore AARC003
+
+        var join = UnitTraceJoiner.Join(native, fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete,
+            join.Reason ?? string.Join("; ", join.Errors));
+
+        var fallbackSegment = join.Segments.Should().ContainSingle(s => s.Source == UnitTraceSegmentSource.Fallback).Subject;
+        fallbackSegment.Handoff.Should().Be(1U);
+        fallbackSegment.EntryPc.Should().Be($"0x{Target:X8}", "the fallback entered at the transfer pc");
+        fallbackSegment.NextPc.Should().Be($"0x{returnSite:X8}", "the fallback returned to the artifact at the return site");
+        var fallbackRetired = fallbackSegment.GlobalEnd - fallbackSegment.GlobalStart;
+        fallbackRetired.Should().Be(run.Evidence!.Targets.Single().Instructions);
+
+        // Native stretches sit on either side of the fallback, with no gap and no overlap.
+        var stretches = join.Segments.Where(s => s.Source == UnitTraceSegmentSource.Native).ToList();
+        stretches.Should().HaveCountGreaterThan(1);
+        stretches.First().GlobalStart.Should().Be(0UL);
+        stretches.Last().GlobalEnd.Should().Be(join.ComparableUpToRetired);
+        var beforeFallback = join.Segments.TakeWhile(s => s.Source != UnitTraceSegmentSource.Fallback).Last();
+        var afterFallback = join.Segments.SkipWhile(s => s.Source != UnitTraceSegmentSource.Fallback).Skip(1).First();
+        beforeFallback.Source.Should().Be(UnitTraceSegmentSource.Native);
+        fallbackSegment.GlobalStart.Should().Be(beforeFallback.GlobalEnd);
+        afterFallback.GlobalStart.Should().Be(fallbackSegment.GlobalEnd);
+
+        // The independent reference: the interpreter's fetches on the same program.
+        // The same configuration as RunInterpreter. The program ends with jr zero: a fetch at pc 0 is the exit handoff,
+        // not an instruction, so it is not counted.
+        ulong interpreterFetches = 0;
+        using var interpreter = new InterpreterTitleExecutionEngine(
+            words, Entry, (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer));
+        interpreter.FetchObserver = pc =>
+        {
+            if (pc != 0u) interpreterFetches++;
+        };
+        new ExecutionOrchestrator().Execute(interpreter, new ExitAtZeroHandoff(), Request(1000));
+        join.ComparableUpToRetired.Should().Be(interpreterFetches,
+            "the joined native + fallback retirement count must equal the interpreter's instruction count");
+    }
+
+    [Fact]
+    public void UnitTrace_EndToEnd_AMismatchedOrMissingFallbackRecord_IsRejected_AndAnUntracedRunWritesNothing()
+    {
+        var (words, _) = RoundTripProgram();
+#pragma warning disable AARC003
+        using var dir = new TempDirectory();
+        var tracePath = Path.Combine(dir.FullPath, "unit.jsonl");
+        using (UnitTraceScope.Begin(tracePath))
+        {
+            RunArtifact(words, dir, On).Result.State.Should().Be(TitleExecutionState.Completed);
+        }
+
+        var native = File.ReadAllLines(tracePath);
+        var fallback = File.ReadAllLines(UnitTraceScope.FallbackPathFor(tracePath));
+
+        // The fallback trace of another run: the session id no longer matches the native trace.
+        var otherSession = fallback.Select(line => line.Replace(
+            "\"session\":\"", "\"session\":\"other-", StringComparison.Ordinal)).ToArray();
+        UnitTraceJoiner.Join(native, otherSession).Status.Should().Be(UnitTraceJoinStatus.Rejected);
+
+        // The fallback record for handoff 1 is removed although both traces ended normally. Removing a record leaves a
+        // sequence gap, which the parser reports first; the join must refuse, not place the rest of the run.
+        var missingRecord = fallback.Where(line => !line.Contains("\"handoff\":1,", StringComparison.Ordinal)).ToArray();
+        var join = UnitTraceJoiner.Join(native, missingRecord);
+        join.Status.Should().Be(UnitTraceJoinStatus.Rejected);
+        join.Errors.Should().NotBeEmpty();
+        join.Segments.Should().BeEmpty("a rejected join returns no segments");
+
+        // Tracing off: the same program writes no trace and no fallback trace next to the artifact.
+        using var untracedDir = new TempDirectory();
+        RunArtifact(words, untracedDir, On).Result.State.Should().Be(TitleExecutionState.Completed);
+        Directory.GetFiles(untracedDir.FullPath, "*.jsonl*", SearchOption.AllDirectories).Should().BeEmpty();
+#pragma warning restore AARC003
     }
 
     /// <summary>The artifact writes RAM, the interpreter reads and rewrites it (two pages), and the artifact reads it back.</summary>

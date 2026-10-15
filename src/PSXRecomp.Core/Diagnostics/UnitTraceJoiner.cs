@@ -73,6 +73,7 @@ public static class UnitTraceJoiner
             // A handoff marker: the native side transferred to the host here with this native total.
             var handoff = record.GetProperty("handoff").GetUInt64();
             var atNative = record.GetProperty("native_total").GetUInt64();
+            var nativePc = record.TryGetProperty("pc", out var pcElement) ? pcElement.GetString() : null;
             if (handoff != expectedHandoff)
                 return UnitTraceJoin.Rejected([$"native seq {seq}: handoff {handoff} out of order (expected {expectedHandoff})"]);
             if (atNative != nativeTotal)
@@ -95,14 +96,32 @@ public static class UnitTraceJoiner
 
             var status = fallbackRecord.GetProperty("status").GetString()!;
             var fallbackRetired = fallbackRecord.GetProperty("retired").GetUInt64();
-            if (status is not ("returned" or "stopped" or "not_run"))
-                return UnitTraceJoin.Rejected([$"fallback handoff {handoff}: unknown status '{status}'"]);
-            if (status == "not_run" && fallbackRetired != 0)
-                return UnitTraceJoin.Rejected([$"fallback handoff {handoff}: status not_run but retired {fallbackRetired}"]);
+            var isHostTransfer = fallbackRecord.GetProperty("kind").GetString() == "transfer";
+            if (isHostTransfer)
+            {
+                // A transfer the host served without running guest instructions (BIOS, exception, or declined).
+                if (status is not ("host" or "declined"))
+                    return UnitTraceJoin.Rejected([$"transfer handoff {handoff}: unknown status '{status}'"]);
+                if (fallbackRetired != 0)
+                    return UnitTraceJoin.Rejected([$"transfer handoff {handoff}: the host served it but it claims {fallbackRetired} retired instructions"]);
+            }
+            else
+            {
+                if (status is not ("returned" or "stopped" or "not_run"))
+                    return UnitTraceJoin.Rejected([$"fallback handoff {handoff}: unknown status '{status}'"]);
+                if (status == "not_run" && fallbackRetired != 0)
+                    return UnitTraceJoin.Rejected([$"fallback handoff {handoff}: status not_run but retired {fallbackRetired}"]);
+            }
+
+            // Both sides name the transfer PC when they can. A disagreement means the two records are not the same transfer.
+            var startPc = fallbackRecord.GetProperty("start_pc").GetString()!;
+            if (nativePc is not null && !string.Equals(nativePc, startPc, StringComparison.OrdinalIgnoreCase))
+                return UnitTraceJoin.Rejected([$"handoff {handoff}: native transfer pc {nativePc} but fallback record pc {startPc}"]);
 
             segments.Add(new UnitTraceSegment(
-                UnitTraceSegmentSource.Fallback, Handoff: checked((uint)handoff), Status: status,
-                EntryPc: fallbackRecord.GetProperty("start_pc").GetString()!,
+                isHostTransfer ? UnitTraceSegmentSource.Host : UnitTraceSegmentSource.Fallback,
+                Handoff: checked((uint)handoff), Status: status,
+                EntryPc: startPc,
                 NextPc: fallbackRecord.GetProperty("end_pc").GetString()!,
                 GlobalStart: nativeTotal + fallbackTotal, GlobalEnd: nativeTotal + fallbackTotal + fallbackRetired));
             fallbackTotal += fallbackRetired;
@@ -215,14 +234,15 @@ public static class UnitTraceJoiner
                     sawHeader = true;
                     break;
 
-                case "unit" or "handoff" or "fallback":
+                case "unit" or "handoff" or "fallback" or "transfer":
                     if (!sawHeader)
                     {
                         errors.Add($"{where}: record before the header");
                         return parsed;
                     }
 
-                    if (kind == "fallback" && !allowFallback || kind != "fallback" && allowFallback)
+                    var belongsToStream = allowFallback ? kind is "fallback" or "transfer" : kind is "unit" or "handoff";
+                    if (!belongsToStream)
                     {
                         errors.Add($"{where}: a '{kind}' record does not belong to the {stream} trace");
                         return parsed;
@@ -297,6 +317,9 @@ public enum UnitTraceSegmentSource
 {
     Native,
     Fallback,
+
+    /// <summary>A transfer the host served (BIOS, exception, declined). It completes no guest instruction.</summary>
+    Host,
 }
 
 /// <summary>
