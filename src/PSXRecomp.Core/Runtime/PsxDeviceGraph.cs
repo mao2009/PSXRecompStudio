@@ -152,6 +152,13 @@ public sealed class PsxDeviceGraph : IGuestDeviceAccess, IDisposable
     public MdecDevice Mdec { get; } = new();
     public MdecDmaTransfer MdecDmaTransfer { get; }
 
+    /// <summary>
+    /// The device scheduler every engine uses over this graph (Issue #774, B-7). It owns the bridged DMA channels (GPU
+    /// 2/6, MDEC 0/1, CD-ROM 3); building it with fewer bridges leaves those channels' data undelivered.
+    /// </summary>
+    public DeviceScheduler CreateScheduler() => new(
+        Core, InterruptControllerAdapter, GpuAdapter, CdRomDevice, CdRomDmaTransfer, GpuDmaTransfer, MdecDmaTransfer);
+
     private const uint MdecBase = 0x1F801820;
 
     /// <summary>

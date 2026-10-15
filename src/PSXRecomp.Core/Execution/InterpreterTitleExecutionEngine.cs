@@ -252,6 +252,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             // Attached (Issue #693): the owner's scheduler, and no Load — the image arrives by RAM sync.
             _scheduler = sharedScheduler;
+            _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
             _loaded = true;
         }
 
@@ -285,6 +286,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>HI/LO as the CPU holds them now (diagnostic only, Issue #732).</summary>
     public (uint Hi, uint Lo) HiLoDiagnostics => (_core.Hi, _core.Lo);
+
+    /// <summary>
+    /// False while a branch delay slot or a load's result is still uncommitted (Issue #774, B-7). A register written by
+    /// that pending load still holds its old value here; diagnostic only.
+    /// </summary>
+    public bool PipelineClean => _core.IsPipelineClean;
 
     /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
     public PsxDeviceGraph DiagnosticDevices => _devices;
@@ -331,8 +338,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         }
 
         // Fresh device timing for the freshly reset core (Issue #442).
-        _scheduler = new DeviceScheduler(
-            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer, _devices.GpuDmaTransfer, _devices.MdecDmaTransfer);
+        _scheduler = _devices.CreateScheduler();
+        // Issue #774 (B-7): the MDEC event observer reports the scheduler time (= guest retirements). Diagnostic only.
+        _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;

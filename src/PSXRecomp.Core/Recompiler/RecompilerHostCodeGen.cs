@@ -941,6 +941,10 @@ static unsigned long long recompiler_trace_bytes = 0ull;
 static unsigned long long recompiler_trace_cap = 0ull;
 static int recompiler_trace_mode = 0; /* 0 off, 1 writing, 2 truncated (output cap reached) */
 static int recompiler_trace_exit_registered = 0;
+/* Issue #774 (B-7): optional window over the native retirement total. A unit is written only when its [start, end)
+   range lies in [from, to); the default window is everything, so the default trace is unchanged. */
+static unsigned long long recompiler_trace_from = 0ull;
+static unsigned long long recompiler_trace_to = ~0ull;
 
 static void recompiler_trace_close(void) {
     if (recompiler_trace_mode == 0 || recompiler_trace_file == 0) return;
@@ -983,6 +987,7 @@ static void recompiler_trace_unit(struct RecompilerState* state, uint32_t entry_
     int gpr_length = 0;
     int i;
     if (recompiler_trace_mode != 1) return;
+    if (end_total < recompiler_trace_from || start_total > recompiler_trace_to) return;
     /* Issue #774 (B-6b): the CPU state at the unit's end (the successor pc, the registers and COP0 as the unit left them). */
     for (i = 0; i < 32; i++) {
         gpr_length += snprintf(gpr_text + gpr_length, sizeof gpr_text - (size_t)gpr_length,
@@ -1041,12 +1046,24 @@ static void recompiler_trace_handoff(RecompilerState* state) {
 int recompiler_trace_attach(struct RecompilerState* state) {
     const char* path = getenv("PSX_UNIT_TRACE_FILE");
     const char* cap_text = getenv("PSX_UNIT_TRACE_MAX_BYTES");
+    const char* from_text = getenv("PSX_UNIT_TRACE_FROM");
+    const char* to_text = getenv("PSX_UNIT_TRACE_TO");
     unsigned long long cap = RECOMPILER_TRACE_DEFAULT_CAP;
     char* end = 0;
     if (path == 0 || path[0] == '\0') return 0;
     if (cap_text != 0 && cap_text[0] != '\0') {
         cap = strtoull(cap_text, &end, 10);
         if (end == cap_text || *end != '\0' || cap < RECOMPILER_TRACE_MIN_CAP) return -2;
+    }
+    recompiler_trace_from = 0ull;
+    recompiler_trace_to = ~0ull;
+    if (from_text != 0 && from_text[0] != '\0') {
+        recompiler_trace_from = strtoull(from_text, &end, 10);
+        if (end == from_text || *end != '\0') return -2;
+    }
+    if (to_text != 0 && to_text[0] != '\0') {
+        recompiler_trace_to = strtoull(to_text, &end, 10);
+        if (end == to_text || *end != '\0') return -2;
     }
     if (recompiler_trace_mode != 0) return 0;
     recompiler_trace_read_session();

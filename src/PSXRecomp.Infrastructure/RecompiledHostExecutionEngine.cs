@@ -1155,8 +1155,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 // The same wiring the interpreter engine builds (InterpreterTitleExecutionEngine.Load):
                 // device time, order and interrupt delivery to the controller are the existing
                 // scheduler's, fed by the guest time the artifact reports.
-                _scheduler = new DeviceScheduler(
-                    _devices.Core, _devices.InterruptControllerAdapter, _devices.GpuAdapter, _devices.CdRomDevice, _devices.CdRomDmaTransfer);
+                _scheduler = _devices.CreateScheduler();
+                // Issue #774 (B-7): the MDEC event observer reports this scheduler's time. Diagnostic only.
+                _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)
