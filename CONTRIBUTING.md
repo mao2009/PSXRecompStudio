@@ -45,7 +45,7 @@ Install these tools (versions and details: [Native library build](docs/developme
 
 Platform coverage in CI:
 
-- **Linux (Ubuntu 24.04):** native build and tests, .NET build and tests, and headless GUI tests run on every pull request.
+- **Linux (Ubuntu 24.04):** for a pull request that changes code, the native build and tests, the .NET build and tests, and the headless GUI tests run. For a documentation-only pull request, the native and .NET build and test steps are skipped and the GUI tests do not run. The artifact policy check and the aggregate `CI Gate` run on every pull request.
 - **Windows and macOS:** the cross-platform workflow runs on a schedule, on manual dispatch, and on a pull request that has the `ci:cross-platform` label.
 - Other platforms are not covered by CI. If you test on one, say so in your PR and do not claim support.
 
@@ -69,11 +69,13 @@ Checks to run before opening a PR:
 ```bash
 git diff --check
 pwsh ./scripts/ci/check-artifact-policy.ps1               # before committing binary-like files
-python scripts/ci/check-community-links.py                # when touching README, CONTRIBUTING or docs
+python scripts/ci/check-community-links.py                # when touching the community docs listed in the script
 pwsh ./scripts/ci/check-documentation-translations.ps1    # when touching README*.md or docs
 ```
 
-Documentation-only changes (`docs/`, `README*.md`, `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/*.md`) skip the native and .NET build jobs by design.
+`check-community-links.py` validates local links and anchors only in the 10 community-facing files listed in its `FILES` array (README, CONTRIBUTING, the `get-involved` and RRS pages, and their Pages counterparts). If you change a link in any other document, check that link by hand.
+
+Documentation-only changes (`docs/`, `README*.md`, `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/*.md`) skip the native and .NET build and test steps and the GUI tests by design.
 
 ## Validation
 
