@@ -6,10 +6,7 @@ on:
       - 'README.md'
       - 'README.ja.md'
       - 'CONTRIBUTING.md'
-      - 'docs/community/**'
-      - 'docs/index.html'
-      - 'docs/get-involved.html'
-      - 'docs/rrs-vision.html'
+      - 'docs/**'
       - 'scripts/ci/check-community-links.py'
       - '.github/workflows/community-docs-links.yml'
   push:
@@ -18,10 +15,7 @@ on:
       - 'README.md'
       - 'README.ja.md'
       - 'CONTRIBUTING.md'
-      - 'docs/community/**'
-      - 'docs/index.html'
-      - 'docs/get-involved.html'
-      - 'docs/rrs-vision.html'
+      - 'docs/**'
       - 'scripts/ci/check-community-links.py'
       - '.github/workflows/community-docs-links.yml'
 
