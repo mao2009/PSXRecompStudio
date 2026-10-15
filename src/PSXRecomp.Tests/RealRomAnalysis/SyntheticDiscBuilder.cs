@@ -165,6 +165,13 @@ public sealed class SyntheticIsoImageBuilder
             cursor += (uint)Math.Max(1, (content.Length + SectorSize - 1) / SectorSize);
         }
 
+        // Corrected layout: check every directory's record area and identifiers before the first byte is written, so a
+        // refused build returns no image and cannot spill into the path tables or neighbouring sectors.
+        if (_bothEndianNumericFields)
+        {
+            ValidateCorrectedDirectories(rootChildren, childrenOf, directories);
+        }
+
         var image = new byte[cursor * SectorSize];
 
         WriteVolumeDescriptor(image, cursor,
@@ -447,13 +454,58 @@ public sealed class SyntheticIsoImageBuilder
             (uint)child.Content!.Length, flags: 0x00, Encoding.ASCII.GetBytes(child.Name));
     }
 
+    // ECMA-119 9.1.1: 33 fixed bytes plus the identifier, padded to an even length.
+    private static int RecordLength(int identifierLength)
+    {
+        var length = 33 + identifierLength;
+        return length % 2 == 0 ? length : length + 1;
+    }
+
+    // ECMA-119 6.8.1: a directory is one sector, so its "." and ".." records plus every child record must fit in it.
+    // The corrected layout writes directory identifiers without a version, so two children can normalise to one name.
+    private void ValidateCorrectedDirectories(
+        List<Child> rootChildren, Dictionary<string, List<Child>> childrenOf, List<string> directories)
+    {
+        ValidateCorrectedDirectory("", rootChildren);
+        foreach (var directory in directories)
+        {
+            ValidateCorrectedDirectory(directory, childrenOf.TryGetValue(directory, out var children) ? children : []);
+        }
+    }
+
+    private void ValidateCorrectedDirectory(string directory, List<Child> children)
+    {
+        var label = directory.Length == 0 ? "(root)" : directory;
+        var total = 2 * RecordLength(1); // "." and ".." (identifiers 0x00 and 0x01)
+        var identifiers = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var child in children)
+        {
+            var identifier = child.IsDirectory ? DirectoryName(child.Name) : Encoding.ASCII.GetBytes(child.Name);
+            total += RecordLength(identifier.Length);
+            if (child.IsDirectory)
+            {
+                var key = Encoding.ASCII.GetString(identifier);
+                if (identifiers.TryGetValue(key, out var first))
+                {
+                    throw new NotSupportedException(
+                        $"directory '{label}' has two children whose identifiers both normalise to '{key}' " +
+                        $"once the version is removed: '{first}' and '{child.Path}'.");
+                }
+                identifiers[key] = child.Path;
+            }
+        }
+
+        if (total > SectorSize)
+        {
+            throw new NotSupportedException(
+                $"directory record area of '{label}' needs {total} bytes, more than one {SectorSize}-byte sector; " +
+                "split the directory or shorten its identifiers.");
+        }
+    }
+
     private int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, byte[] nameBytes)
     {
-        var recordLength = 33 + nameBytes.Length;
-        if (recordLength % 2 != 0)
-        {
-            recordLength++;
-        }
+        var recordLength = RecordLength(nameBytes.Length);
 
         buffer[offset] = (byte)recordLength;
         buffer[offset + 1] = 0; // extended attribute length

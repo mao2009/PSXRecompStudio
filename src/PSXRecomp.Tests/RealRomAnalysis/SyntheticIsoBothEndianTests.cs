@@ -470,4 +470,106 @@ public sealed class SyntheticIsoBothEndianTests
         exe.Header.TextStart.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart, "the text segment loads at the synthetic text start");
         exe.Header.EntryPoint.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart, "the entry point is the synthetic text start");
     }
+
+    // Issue #743 review: a corrected directory's records (".", "..", and children) must fit its one sector, and
+    // identifiers must stay unique once the version is stripped. Names below are 12 characters, so each file record is
+    // 33 + 12 = 45 bytes, padded to 46 (ECMA-119 6.1.1 / 7.1.1 even-length rule). With "." and ".." (34 bytes each) a
+    // directory holds 43 such files (68 + 43 * 46 = 2046) and rejects a 44th (68 + 44 * 46 = 2092).
+    private static SyntheticIsoImageBuilder WithFilesIn(SyntheticIsoImageBuilder builder, string directory, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            builder.AddFile($"{directory}ABCD{i:D2}.BIN;1", Bytes(1, 7));
+        }
+        return builder;
+    }
+
+    [Fact]
+    public void RootRecordArea_ExactlyOneSector_IsAccepted_AndEveryFileKeepsItsBytes()
+    {
+        var disc = SyntheticDiscBuilder.Mode2Form1(WithFilesIn(new SyntheticIsoImageBuilder().WithBothEndianNumericFields(), "", 43).Build());
+
+        AssertEveryFileIntact(disc, expectedFiles: 43);
+    }
+
+    [Fact]
+    public void RootRecordArea_OneRecordTooMany_IsRejectedBeforeAnyWrite()
+    {
+        var builder = WithFilesIn(new SyntheticIsoImageBuilder().WithBothEndianNumericFields(), "", 44);
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*(root)*2092*2048*");
+    }
+
+    [Fact]
+    public void SubdirectoryRecordArea_ExactlyOneSector_IsAccepted_AndEveryFileKeepsItsBytes()
+    {
+        var disc = SyntheticDiscBuilder.Mode2Form1(WithFilesIn(new SyntheticIsoImageBuilder().WithBothEndianNumericFields(), "D;1/", 43).Build());
+
+        AssertEveryFileIntact(disc, expectedFiles: 43);
+    }
+
+    [Fact]
+    public void SubdirectoryRecordArea_OneRecordTooMany_IsRejectedNamingTheDirectory()
+    {
+        var builder = WithFilesIn(new SyntheticIsoImageBuilder().WithBothEndianNumericFields(), "D;1/", 44);
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*D;1*2092*2048*");
+    }
+
+    [Fact]
+    public void DirectoryIdentifiers_CollidingAfterVersionStripping_UnderOneParent_AreRejected()
+    {
+        var builder = new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("A;1/ONE.BIN;1", Bytes(1, 1))
+            .AddFile("A;2/TWO.BIN;1", Bytes(1, 2));
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*A;1*A;2*");
+    }
+
+    [Fact]
+    public void DirectoryIdentifiers_OneWrittenWithoutAVersion_CollideWithAVersionedOne_AreRejected()
+    {
+        var builder = new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("A/ONE.BIN;1", Bytes(1, 1))
+            .AddFile("A;1/TWO.BIN;1", Bytes(1, 2));
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*A;1*");
+    }
+
+    [Fact]
+    public void DirectoryIdentifiers_SameNameUnderDifferentParents_AreAccepted()
+    {
+        var disc = SyntheticDiscBuilder.Mode2Form1(new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("P;1/A;1/X.BIN;1", Bytes(1, 3))
+            .AddFile("Q;1/A;2/Y.BIN;1", Bytes(1, 4))
+            .Build());
+
+        var walk = Walk(disc);
+        walk.Files.Should().ContainKeys("P/A/X.BIN", "Q/A/Y.BIN");
+    }
+
+    [Fact]
+    public void DirectoryIdentifiers_LegacyLayout_IsNotChecked_AndStillBuilds()
+    {
+        new Action(() => new SyntheticIsoImageBuilder()
+            .AddFile("A;1/ONE.BIN;1", Bytes(1, 1))
+            .AddFile("A;2/TWO.BIN;1", Bytes(1, 2))
+            .Build()).Should().NotThrow("the legacy layout keeps its versioned identifiers and is unchanged");
+    }
+
+    private static void AssertEveryFileIntact(byte[] disc, int expectedFiles)
+    {
+        var walk = Walk(disc);
+        var files = walk.Files.Where(f => f.Key.Contains("ABCD")).ToList();
+        files.Should().HaveCount(expectedFiles);
+        foreach (var (_, (extent, size)) in files)
+        {
+            size.Should().Be(1u);
+            User(disc, (int)extent)[0].Should().Be(7, "the file's sector was not overwritten by a directory record");
+        }
+    }
 }
