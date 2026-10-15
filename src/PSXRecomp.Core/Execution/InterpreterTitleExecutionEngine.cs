@@ -631,6 +631,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     _core.PopExceptionSrStack();
                     _core.Pc = unchecked(_core.ExceptionFaultPc + 4u);
                     _scheduler!.Advance(CyclesPerInstruction);
+                    // Issue #789: a serviced SYSCALL completes and resumes at EPC + 4, so it retires like any instruction.
+                    // The device time above already charges it one instruction; the counter must agree with that.
+                    retiredInstructions++;
                     continue;
                 }
 
