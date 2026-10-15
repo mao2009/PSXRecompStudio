@@ -441,8 +441,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             case RecompilerIrTerminationReason.ExecutionBudgetExceeded when StopRequested:
                 // A probe's StopRequested ends the step loop before the fetched instruction executes, and the loop
                 // then reports the same termination a real budget exhaustion would (see the property's contract).
-                // Nothing was retired against a budget, so saying "retired its budget" here is false and misleads
-                // triage: name the stop instead (Issue #774).
+                // The budget was not exhausted (the segment may still have retired many instructions), so saying
+                // "retired its budget" here is false and misleads triage: name the stop instead (Issue #774).
                 return new FallbackSegmentOutcome(
                     FallbackSegmentStatus.Stopped, state, retired,
                     MixedFallbackDiagnostics.StoppedOnRequest,
