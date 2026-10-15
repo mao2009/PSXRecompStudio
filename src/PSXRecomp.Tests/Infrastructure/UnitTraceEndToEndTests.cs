@@ -228,15 +228,8 @@ public sealed class UnitTraceEndToEndTests
         AssertStretchesMatchTheInterpreter(join, traced.InterpreterFetches);
     }
 
-    /// <summary>
-    /// A timer IRQ taken at a boundary (deadline 2) or inside a fallback segment (deadline 4). The interpreter's fetch list
-    /// ends with the instruction the interrupt preempted: fetched, not retired. The fallback stretch that the interrupt cut
-    /// ends at the vector.
-    /// </summary>
-    [Theory]
-    [InlineData(2)]
-    [InlineData(4)]
-    public void TimerIrq_ThePreemptedFetchIsNotRetired_AndTheStretchEndsAtTheVector(ushort deadline)
+    /// <summary>A timer IRQ armed for <paramref name="deadline"/> cycles, then a JALR into a fallback target that is interrupted.</summary>
+    private static uint[] TimerJumpProgram(ushort deadline)
     {
         var main = new Block(Entry);
         main.Emit(Ori(T1, Zero, 0x401), 0x40896000u); // MTC0 t1,SR: guest-owned IRQ enable
@@ -249,7 +242,20 @@ public sealed class UnitTraceEndToEndTests
         main.Emit(End());
         var callee = new Block(Target);
         callee.Emit(Nop, Jr(Ra), Nop);
-        var words = Image(main, callee);
+        return Image(main, callee);
+    }
+
+    /// <summary>
+    /// A timer IRQ taken at a boundary (deadline 2) or inside a fallback segment (deadline 4). The interpreter's fetch list
+    /// ends with the instruction the interrupt preempted: fetched, not retired. The fallback stretch that the interrupt cut
+    /// ends at the vector.
+    /// </summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void TimerIrq_ThePreemptedFetchIsNotRetired_AndTheStretchEndsAtTheVector(ushort deadline)
+    {
+        var words = TimerJumpProgram(deadline);
         using var dir = new TempDirectory();
         var (native, fallback) = RunTimerIrqTraced(words, dir);
         var join = UnitTraceJoiner.Join(native, fallback);
@@ -409,6 +415,128 @@ public sealed class UnitTraceEndToEndTests
         join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
         AssertStretchesMatchTheInterpreter(join, traced.InterpreterFetches);
     }
+
+    /// <summary>
+    /// The interpreter's CPU state before each fetch, keyed by its global position (the instructions retired before it).
+    /// <see cref="Vectors"/> holds the state after an interrupt entered the vector, keyed by the position of the instruction
+    /// it preempted: the same position at which a fallback records the vector as its exit (interrupt-entry boundary).
+    /// </summary>
+    private sealed class InterpreterCheckpoints
+    {
+        public Dictionary<ulong, CpuCheckpoint> At { get; } = [];
+
+        public Dictionary<ulong, CpuCheckpoint> Vectors { get; } = [];
+    }
+
+    private static CpuCheckpoint Snapshot(InterpreterTitleExecutionEngine engine, ulong position, uint pc)
+    {
+        var gpr = Enumerable.Range(0, CpuCheckpoint.GprCount).Select(r => engine.ReadGuestGpr(r)).ToArray();
+        var (hi, lo) = engine.HiLoDiagnostics;
+        var cop0 = engine.Cop0Diagnostics;
+        return new CpuCheckpoint(position, pc, gpr, hi, lo, cop0.Sr, cop0.Cause, cop0.Epc);
+    }
+
+    private static InterpreterCheckpoints CaptureInterpreterCheckpoints(uint[] words, bool interruptProgram)
+    {
+        var captured = new InterpreterCheckpoints();
+        ulong fetches = 0;
+        using var interpreter = interruptProgram
+            ? new InterpreterTitleExecutionEngine(words, Entry, allowRuntimeRamExecution: true)
+            : new InterpreterTitleExecutionEngine(words, Entry, (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer));
+        interpreter.FetchObserver = pc =>
+        {
+            if (pc == 0u) return;
+            if (interruptProgram && pc == Vector)
+            {
+                captured.Vectors[fetches - 1] = Snapshot(interpreter, fetches - 1, pc);
+                interpreter.StopRequested = true;
+                return;
+            }
+
+            captured.At[fetches] = Snapshot(interpreter, fetches, pc);
+            fetches++;
+        };
+        new ExecutionOrchestrator().Execute(interpreter, interruptProgram ? null : new ExitAtZeroHandoff(), Request(1000));
+        return captured;
+    }
+
+    /// <summary>
+    /// Every fallback segment's entry, and its exit when it returned or entered the vector, must equal the interpreter's state
+    /// at the same global position. A field that differs is named in the failure message.
+    /// </summary>
+    private static void AssertFallbackCheckpointsMatchTheInterpreter(UnitTraceJoin join, IReadOnlyList<string> fallbackLines, InterpreterCheckpoints reference)
+    {
+        var records = fallbackLines.Select(static line => JsonDocument.Parse(line).RootElement.Clone())
+            .Where(static r => r.GetProperty("kind").GetString() == "fallback").ToList();
+        var segments = join.Segments.Where(static s => s.Source == UnitTraceSegmentSource.Fallback).ToList();
+        segments.Should().NotBeEmpty();
+        foreach (var segment in segments)
+        {
+            var record = records.Single(r => r.GetProperty("handoff").GetUInt64() == segment.Handoff);
+            var entry = CpuCheckpoint.TryParse(record, "entry", segment.GlobalStart);
+            entry.Should().NotBeNull($"handoff {segment.Handoff} must carry its entry state");
+            reference.At.Should().ContainKey(segment.GlobalStart);
+            entry!.FirstMismatch(reference.At[segment.GlobalStart]).Should().BeNull(
+                $"handoff {segment.Handoff}: the entry state at {segment.GlobalStart} must match the interpreter");
+
+            var exit = CpuCheckpoint.TryParse(record, "exit", segment.GlobalEnd);
+            exit.Should().NotBeNull($"handoff {segment.Handoff} must carry its exit state");
+            var reached = segment.NextPc == $"0x{Vector:X8}"
+                ? reference.Vectors
+                : reference.At;
+            reached.Should().ContainKey(segment.GlobalEnd);
+            exit!.FirstMismatch(reached[segment.GlobalEnd]).Should().BeNull(
+                $"handoff {segment.Handoff}: the exit state at {segment.GlobalEnd} must match the interpreter");
+        }
+    }
+
+    [Fact]
+    public void CpuCheckpoints_AtEveryFallbackBoundary_MatchTheInterpreter()
+    {
+        using var dir = new TempDirectory();
+        var words = ThreeStretchProgram();
+        var traced = RunTraced(words, dir);
+        var join = UnitTraceJoiner.Join(traced.Native, traced.Fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+
+        AssertFallbackCheckpointsMatchTheInterpreter(join, traced.Fallback, CaptureInterpreterCheckpoints(words, interruptProgram: false));
+    }
+
+    [Fact]
+    public void CpuCheckpoints_AroundAServicedSyscallInTheFallback_IncludeTheCop0Registers()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), [Jalr(T0), Nop]);
+        main.Emit(Addiu(S1, S1, 1));
+        main.Emit(End());
+        var callee = new Block(Target);
+        callee.Emit(Ori(A0, Zero, 2), MipsEncoding.Syscall(), Addiu(S2, S2, 1), Jr(Ra), Nop);
+        var words = Image(main, callee);
+        using var dir = new TempDirectory();
+        var traced = RunTraced(words, dir);
+        var join = UnitTraceJoiner.Join(traced.Native, traced.Fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+
+        AssertFallbackCheckpointsMatchTheInterpreter(join, traced.Fallback, CaptureInterpreterCheckpoints(words, interruptProgram: false));
+
+        // The exit after the service returns with the kernel's SR and EPC: EPC is the syscall's own address.
+        var record = traced.Fallback.Select(static l => JsonDocument.Parse(l).RootElement).Single(static r => r.TryGetProperty("exit", out _));
+        var exit = CpuCheckpoint.TryParse(record, "exit", 0)!;
+        exit.Epc.Should().Be(0x80001104u, "the serviced SYSCALL's EPC is the syscall, at 0x80001104");
+    }
+
+    [Fact]
+    public void CpuCheckpoints_AtAnInterruptEnteringTheVector_MatchTheInterpreterAfterTheEntry()
+    {
+        var words = TimerJumpProgram(4);
+        using var dir = new TempDirectory();
+        var (native, fallback) = RunTimerIrqTraced(words, dir);
+        var join = UnitTraceJoiner.Join(native, fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+
+        AssertFallbackCheckpointsMatchTheInterpreter(join, fallback, CaptureInterpreterCheckpoints(words, interruptProgram: true));
+    }
+
 
     private static (string[] Native, string[] Fallback) RunTimerIrqTraced(uint[] words, TempDirectory dir)
     {

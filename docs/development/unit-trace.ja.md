@@ -57,7 +57,7 @@ fallback ファイル（`<path>.fallback`）:
 | `kind` | フィールド | 意味 |
 |---|---|---|
 | `header` | `session`、`stream`、`cap` | 先頭行。 |
-| `fallback` | `seq`、`handoff`、`retired`、`status`、`start_pc`、`end_pc`、`stop`（任意） | インタプリタの 1 区間。`status` は `returned`、`stopped`、`not_run` のいずれか。`end_pc` は区間が CPU を離れた PC です。`stop` は区間が止まった場合の診断名です。 |
+| `fallback` | `seq`、`handoff`、`retired`、`status`、`start_pc`、`end_pc`、`stop`（任意）、`entry`（任意）、`exit`（任意） | インタプリタの 1 区間。`status` は `returned`、`stopped`、`not_run` のいずれか。`end_pc` は区間が CPU を離れた PC です。`stop` は区間が止まった場合の診断名です。`entry` と `exit`（Issue #774、B-6b。トレースビルドのみ、追加的）は、区間の開始時と終了時の CPU 状態で、`pc`、`gpr`（32 個の値）、`hi`、`lo`、`sr`、`cause`、`epc` を持ちます。 |
 | `transfer` | `seq`、`handoff`、`retired`、`status`、`start_pc`、`end_pc` | guest 命令を実行せずにホストが処理した transfer。`retired` は常に 0、`status` は `host` または `declined`。 |
 | `truncated`、`end` | 上記と同じ | |
 

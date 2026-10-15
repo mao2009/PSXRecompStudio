@@ -57,7 +57,7 @@ Fallback file (`<path>.fallback`):
 | `kind` | Fields | Meaning |
 |---|---|---|
 | `header` | `session`, `stream`, `cap` | First line. |
-| `fallback` | `seq`, `handoff`, `retired`, `status`, `start_pc`, `end_pc`, `stop`? | One interpreter segment. `status` is `returned`, `stopped` or `not_run`. `end_pc` is the PC the segment left the CPU at. `stop` names the diagnostic when the segment stopped. |
+| `fallback` | `seq`, `handoff`, `retired`, `status`, `start_pc`, `end_pc`, `stop`?, `entry`?, `exit`? | One interpreter segment. `status` is `returned`, `stopped` or `not_run`. `end_pc` is the PC the segment left the CPU at. `stop` names the diagnostic when the segment stopped. `entry` and `exit` (Issue #774, B-6b; trace build only, additive) are the CPU state the segment started and ended with: `pc`, `gpr` (32 values), `hi`, `lo`, `sr`, `cause`, `epc`. |
 | `transfer` | `seq`, `handoff`, `retired`, `status`, `start_pc`, `end_pc` | A transfer the host served without running guest instructions. `retired` is always 0; `status` is `host` or `declined`. |
 | `truncated`, `end` | as above | |
 

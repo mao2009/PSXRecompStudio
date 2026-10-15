@@ -57,6 +57,19 @@ The PC values are distinct and must not be compared as one. The table lists what
 
 Verified in B-6a: the in-body case records `entry` at the executed PC, `retired` 1, and `next` at the vector; the preempted PC is never stored, so it can be recovered only from the interpreter's fetch list. A proposal to record `interrupted_pc` explicitly needs a new additive field on both sides (B-6b). Until then it is not stored, and no consumer may infer it.
 
+### Decisions fixed in B-6b
+
+| Question | Decision |
+|---|---|
+| Comparable CPU boundaries | A fallback **transfer** (entry) and a fallback **return or interrupt entry** (exit). Both sides carry the full CPU state there. Unit-internal positions are not compared. |
+| Retirement basis | Section "Retirement definition" above, with the serviced SYSCALL counted (#790). |
+| Exception and interrupt PC | `entry` is the state the segment started with; `exit` is the state it ended with. For an interrupt that entered the vector, the comparable interpreter state is the one after the entry (`Vectors` in the test harness), keyed by the position of the preempted instruction. |
+| Load-delay state | Not carried in the checkpoint. The pipeline-clean rule (returns) is the only evidence; equality of pending loads across engines is not claimed. |
+| Scheduler time | Not compared in the checkpoint. Device time is charged one unit per executed instruction on both sides (including a serviced SYSCALL), pinned by the device-time contract test. A time field is a later addition. |
+| Comparison method | Per-transfer: the native record's `entry` and `exit` are compared with the interpreter's state at the same global position. The first differing field is named. |
+
+Implemented in B-6b: the `entry` and `exit` states on fallback trace records (trace build only), `CpuCheckpoint` with its comparison, and e2e comparisons on the three-stretch program, a serviced SYSCALL (COP0 included) and an interrupt entry. Not implemented: per-unit checkpoints, memory ranges, and display.
+
 ## 2. CPU checkpoint
 
 One JSON Lines record per checkpoint, written by both sides in the same schema:
