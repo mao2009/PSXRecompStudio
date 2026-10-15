@@ -32,6 +32,49 @@ Start with:
 
 The nearest subsystem documentation and tests are part of the contract. Do not introduce title-specific behavior into generic runtime or recompilation code unless the architecture explicitly calls for it.
 
+## Development setup
+
+Install these tools (versions and details: [Native library build](docs/development/native-library-build.md)):
+
+| Tool | Notes |
+|---|---|
+| .NET SDK 10 | CI uses `10.x`. |
+| CMake and Ninja | The native library is configured with `-G Ninja`. |
+| Rust (`cargo`) | Required for the native build. `src/PSXRecomp.Native/rust/rust-toolchain.toml` pins the toolchain. |
+| C/C++ compiler | Windows: MSVC or MinGW-w64 GCC. Linux: GCC or Clang. macOS: Apple Clang. |
+
+Platform coverage in CI:
+
+- **Linux (Ubuntu 24.04):** native build and tests, .NET build and tests, and headless GUI tests run on every pull request.
+- **Windows and macOS:** the cross-platform workflow runs on a schedule, on manual dispatch, and on a pull request that has the `ci:cross-platform` label.
+- Other platforms are not covered by CI. If you test on one, say so in your PR and do not claim support.
+
+Build and test from the repository root:
+
+```bash
+# Native library (C++ / Rust)
+cmake -S src/PSXRecomp.Native -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native --parallel
+ctest --test-dir build/native --output-on-failure
+
+# .NET solution and tests
+dotnet build src/PSXRecompStudio.slnx --configuration Release
+dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release
+```
+
+The `build/` and `out/` directories are git-ignored and must not be committed (see the [artifact policy](docs/development/artifact-policy.md)).
+
+Checks to run before opening a PR:
+
+```bash
+git diff --check
+pwsh ./scripts/ci/check-artifact-policy.ps1               # before committing binary-like files
+python scripts/ci/check-community-links.py                # when touching README, CONTRIBUTING or docs
+pwsh ./scripts/ci/check-documentation-translations.ps1    # when touching README*.md or docs
+```
+
+Documentation-only changes (`docs/`, `README*.md`, `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/*.md`) skip the native and .NET build jobs by design.
+
 ## Validation
 
 A contributor-ready task should state the validation it requires. Use the smallest test set that proves the change, then run the broader checks required by the touched subsystem or CI.
@@ -58,6 +101,13 @@ A focused PR should:
 Prefer `jj` over `git` locally? It is optional and does not change the GitHub flow; see the [Optional Jujutsu workflow](docs/development/jujutsu.md).
 
 Keep implementation, tests, and documentation synchronized when the change modifies a public or architectural contract.
+
+Workflow notes:
+
+- Open a **draft** PR as soon as you want early feedback; mark it ready once the PR template's validation section is filled in. The [PR template](.github/PULL_REQUEST_TEMPLATE.md) asks only for what reviewers need.
+- The `CI Gate` job in [ci.yml](.github/workflows/ci.yml) aggregates the Linux checks.
+- Commit subjects follow the `type: subject` style used in the history (`feat`, `fix`, `docs`, `test`, `ci`, `refactor`), for example `docs: make first five minutes actionable for human contributors (#778)`. Put the issue number in the subject or body when there is one.
+- Report AI involvement and the validation you personally ran. Reviewers rely on that record.
 
 ## Contributor-ready Issues
 
