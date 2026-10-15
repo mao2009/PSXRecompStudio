@@ -1,0 +1,40 @@
+name: Community docs links
+
+on:
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'README.ja.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/community/**'
+      - 'docs/index.html'
+      - 'docs/get-involved.html'
+      - 'docs/rrs-vision.html'
+      - 'scripts/ci/check-community-links.py'
+      - '.github/workflows/community-docs-links.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'README.ja.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/community/**'
+      - 'docs/index.html'
+      - 'docs/get-involved.html'
+      - 'docs/rrs-vision.html'
+      - 'scripts/ci/check-community-links.py'
+      - '.github/workflows/community-docs-links.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate local community docs and Pages links
+        run: python scripts/ci/check-community-links.py
