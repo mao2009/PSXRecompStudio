@@ -35,7 +35,7 @@ for file_name in FILES:
         parser.feed(content)
         refs = parser.refs
     else:
-        refs = re.findall(r"!?(?:\\[[^\\]]*\\])\\(([^)]+)\\)", content)
+        refs = re.findall(r"\]\(([^)]+)\)", content)
         # The pattern above is intentionally simple: checked files use direct inline links.
     for href in refs:
         parts = urlsplit(href.strip())
