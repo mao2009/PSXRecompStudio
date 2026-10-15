@@ -9,6 +9,18 @@ It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a determinist
 
 [日本語 README](README.ja.md) · [Project website](https://mao2009.github.io/PSXRecompStudio/) · [Latest release](https://github.com/mao2009/PSXRecompStudio/releases/latest)
 
+## Start here: technical collaborators welcome
+
+**What this is:** an experimental PS1 static recompilation and runtime project, with a longer-term mission of reconstructing editable, rebuildable development assets for **authorized** game preservation and re-releases.
+
+**What it is not:** a completed commercial game port, a proven full-game AOT backend, or an implemented multi-console plugin ecosystem.
+
+**What we need:** independent human reviews of PS1 BIOS/hardware behavior, MIPS semantics, compiler/recompilation correctness, runtime integration and reproducible validation. Bug reports, documented counterexamples and small synthetic tests are as useful as code contributions.
+
+**How this is built:** the independent maintainer sets direction, but development **relies heavily on AI coding agents** for coding, investigation, tests, docs and preliminary review. CI verifies bounded properties; it does **not** substitute for expert human review. Critical technical feedback is welcome.
+
+**[Get involved — choose an area, ask a technical question or review a contract](docs/community/get-involved.md)** · [Proposed RRS ecosystem](docs/community/rrs-vision.md) · [Contributor guide](CONTRIBUTING.md) · [Current evidence](docs/status/capabilities.md)
+
 ## Milestone: Persona opening captured (October 2026)
 
 **The OpenBIOS interpreter execution path has visibly reached the opening sequence of *Megami Ibunroku Persona*.** VBlank-accurate screenshots show the ATLUS logo followed by the opening text inspired by Zhuangzi's butterfly dream. This is a real game-rendering milestone, not proof of complete static recompilation or a playable native port.
