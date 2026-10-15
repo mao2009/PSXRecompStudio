@@ -255,7 +255,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
             // Issue #773: the core holds artifact RAM now, so the refused versions are read from the same memory the guard saw.
             if (_loadedCodeMismatch is not null && _loadedCode.Contains(pc))
             {
-                _loadedCodeMismatch.Observe(pc, _loadedCode.VersionsAt(pc), LoadedCodeWordAt);
+                _loadedCodeMismatch.Observe(pc, _loadedCode.VersionsAt(pc), LoadedCodeWordAt, _loadedCode.OriginsAt(pc));
             }
 
             _transitions++;

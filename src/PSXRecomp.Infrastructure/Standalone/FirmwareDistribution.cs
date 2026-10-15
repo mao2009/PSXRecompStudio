@@ -46,7 +46,7 @@ public sealed record FirmwareAotPlan(
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
-            i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed)));
+            i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
         return new FirmwareAotPlan(image.Program, loaded, observed);
     }
 }

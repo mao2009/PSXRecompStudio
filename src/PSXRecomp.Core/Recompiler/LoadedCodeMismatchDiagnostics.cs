@@ -45,8 +45,10 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>
     /// Observes one refused PC. <paramref name="versions"/> are the versions registered at <paramref name="pc"/> in link order;
     /// <paramref name="readWord"/> reads the guest word at a virtual address, as <see cref="LoadedCodeTable.Match"/> does.
+    /// <paramref name="origins"/> are the images behind each version (<see cref="LoadedCodeTable.OriginsAt"/>); null when unknown.
     /// </summary>
-    public void Observe(uint pc, IReadOnlyList<GuardedBlock> versions, Func<uint, uint> readWord)
+    public void Observe(
+        uint pc, IReadOnlyList<GuardedBlock> versions, Func<uint, uint> readWord, IReadOnlyList<IReadOnlyList<LoadedImageOrigin>>? origins = null)
     {
         ArgumentNullException.ThrowIfNull(versions);
         ArgumentNullException.ThrowIfNull(readWord);
@@ -74,7 +76,8 @@ public sealed class LoadedCodeMismatchDiagnostics
                     continue;
                 }
 
-                entry = new Entry(pc, index, versions.Count, aot.ToArray());
+                var versionOrigins = origins is not null && index < origins.Count ? origins[index] : [];
+                entry = new Entry(pc, index, versions.Count, aot.ToArray(), versionOrigins);
                 _entries[(pc, index)] = entry;
             }
 
@@ -120,19 +123,21 @@ public sealed class LoadedCodeMismatchDiagnostics
     {
         private readonly uint[] _aot;
         private readonly string _aotSha256;
+        private readonly IReadOnlyList<LoadedImageOrigin> _origins;
         // The RAM range of the latest refusal: hashed once when the report is written, not on every handoff.
         private uint[]? _lastRam;
         private uint[] _windowAot = [];
         private uint[] _windowRam = [];
         private int _windowStart;
 
-        public Entry(uint pc, int version, int versionCount, uint[] aot)
+        public Entry(uint pc, int version, int versionCount, uint[] aot, IReadOnlyList<LoadedImageOrigin> origins)
         {
             Pc = pc;
             Version = version;
             VersionCount = versionCount;
             _aot = aot;
             _aotSha256 = Sha256(aot);
+            _origins = origins;
         }
 
         public uint Pc { get; }
@@ -208,7 +213,32 @@ public sealed class LoadedCodeMismatchDiagnostics
                 ["windowRam"] = new JsonArray(_windowRam.Select(static w => (JsonNode)Hex(w)).ToArray()),
                 // Handoffs run after the artifact found no matching version, so none was selected.
                 ["selectedVersion"] = null,
+                ["origins"] = OriginsJson(),
             };
+        }
+
+        /// <summary>Every image that registered this exact code, with the word offset of the entry inside it. Empty means unknown.</summary>
+        private JsonArray OriginsJson()
+        {
+            var array = new JsonArray();
+            foreach (var origin in _origins)
+            {
+                array.Add(new JsonObject
+                {
+                    ["name"] = origin.Name,
+                    ["kind"] = origin.Kind,
+                    ["loadAddress"] = Hex(origin.LoadAddress),
+                    ["imageWords"] = JsonValue.Create(origin.WordCount),
+                    ["wordOffset"] = JsonValue.Create(((long)Pc - origin.LoadAddress) / 4),
+                });
+            }
+
+            if (array.Count == 0)
+            {
+                array.Add(new JsonObject { ["name"] = null, ["kind"] = "unknown" });
+            }
+
+            return array;
         }
     }
 }
