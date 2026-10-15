@@ -91,13 +91,16 @@
     <section class="hero">
       <p class="eyebrow">Open-source PlayStation 1 research</p>
       <h1>PSXRecompStudio</h1>
-      <p class="lead">A development environment for PlayStation 1 (PS1 / PSX) binary analysis, MIPS R3000A analysis, static recompilation research, reverse engineering, and native porting experiments.</p>
-      <p>PSXRecompStudio focuses on building and validating the technical foundations needed for reliable PlayStation 1 recompilation. It does not yet recompile complete commercial PS1 games into native ports.</p>
-      <p class="actions"><a class="button" href="https://github.com/mao2009/PSXRecompStudio">View the repository on GitHub</a></p>
+      <p class="lead">Open-source PS1 binary analysis, MIPS R3000A validation, and static recompilation research.</p>
+      <p><strong>Works today:</strong> Bounded recompilation and interpreter comparison, plus PS-X EXE/CHD analysis.</p>
+      <p><strong>Not yet:</strong> Complete commercial-title AOT recompilation or playable native ports.</p>
+      <p><strong>Start here:</strong> <a href="faq.html">Read the FAQ</a>, <a href="cli.html">try the CLI</a>, or <a href="get-involved.html#first-contributions">pick a first contribution</a>.</p>
+      <p class="actions"><a class="button" href="get-involved.html#first-contributions">Get involved</a> <a href="ja/">日本語</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p>
     </section>
 
     <section id="collaboration">
       <h2>Technical collaborators welcome</h2>
+      <p>Japanese-language Issues and technical discussions are welcome. <a href="ja/get-involved.html">日本語の参加ガイド</a></p>
       <p><strong>We welcome independent, critical human reviews.</strong> Specialists in PS1 BIOS and hardware, MIPS I, static recompilation, runtime integration, testing, and game preservation can contribute through a focused question, architecture review, or reproducible synthetic test—not only through large code changes.</p>
       <p><strong>Transparent AI use:</strong> the maintainer defines the direction, but AI coding agents are heavily used for coding, investigations, tests, documentation, and preliminary review. Automated CI is important bounded evidence, not a substitute for independent engineering review.</p>
       <p>Current limits: Persona opening imagery comes from the OpenBIOS <strong>interpreter</strong> path. Title-screen progress, full commercial-game native AOT parity, and playable native ports remain unverified. Our proposed multi-platform plugin ecosystem is a long-term concept, not a shipped feature.</p>
@@ -105,13 +108,13 @@
     </section>
 
     <section id="persona-milestone">
-      <h2>Latest milestone: Persona opening captured</h2>
+      <h2>Latest milestone: OpenBIOS interpreter reaches Persona opening imagery</h2>
       <p>The OpenBIOS interpreter path now visibly reaches the opening of <em>Megami Ibunroku Persona</em>. VBlank-accurate captures show the ATLUS logo and narrative text referencing Zhuangzi's butterfly dream.</p>
       <div class="grid">
         <figure class="card"><img src="assets/images/persona-opening/atlus-logo.png" width="320" height="240" loading="lazy" alt="ATLUS logo shown during the Persona opening" style="max-width:100%;height:auto"><figcaption>ATLUS logo — VBlank 1200</figcaption></figure>
         <figure class="card"><img src="assets/images/persona-opening/butterfly-dream.png" width="320" height="240" loading="lazy" alt="Japanese opening narrative text about the butterfly dream" style="max-width:100%;height:auto"><figcaption>Opening narrative — VBlank 2700</figcaption></figure>
       </div>
-      <p><strong>Scope:</strong> Verified game-rendered progression, not complete-title AOT recompilation, title-screen access, or playable compatibility. See <a href="https://github.com/mao2009/PSXRecompStudio/pull/754">capture evidence and implementation in PR #754</a>. Imagery is used as limited documentation evidence; game rights remain with their owners and this is not an ATLUS-affiliated project.</p>
+      <p><strong>Scope:</strong> Verified game-rendered progression, not complete-title AOT recompilation, title-screen access, or playable compatibility. See <a href="https://github.com/mao2009/PSXRecompStudio/pull/754">capture evidence and implementation in PR #754</a>. Imagery is limited interoperability research evidence; rights remain with their owners and this project is not ATLUS-affiliated. See the <a href="legal.html">legal and asset policy</a> for rights and contact guidance.</p>
     </section>
 
     <section>
