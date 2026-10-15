@@ -977,17 +977,27 @@ static void recompiler_trace_line(const char* line, size_t length) {
 
 static void recompiler_trace_unit(struct RecompilerState* state, uint32_t entry_pc, uint32_t next_pc,
     uint64_t start_total, uint64_t end_total, uint32_t flags, int32_t termination) {
-    char line[320];
+    char line[1536];
+    char gpr_text[512];
     int length;
-    (void)state;
+    int gpr_length = 0;
+    int i;
     if (recompiler_trace_mode != 1) return;
+    /* Issue #774 (B-6b): the CPU state at the unit's end (the successor pc, the registers and COP0 as the unit left them). */
+    for (i = 0; i < 32; i++) {
+        gpr_length += snprintf(gpr_text + gpr_length, sizeof gpr_text - (size_t)gpr_length,
+            "%s\"0x%08X\"", i == 0 ? "" : ",", (unsigned)state->gpr[i]);
+    }
     length = snprintf(line, sizeof line,
         "{\"v\":%d,\"kind\":\"unit\",\"seq\":%llu,\"entry\":\"0x%08X\",\"next\":\"0x%08X\",\"start\":%llu,\"end\":%llu,"
-        "\"retired\":%llu,\"interrupted\":%u,\"exception\":%u,\"termination\":%d}\n",
+        "\"retired\":%llu,\"interrupted\":%u,\"exception\":%u,\"termination\":%d,"
+        "\"state\":{\"pc\":\"0x%08X\",\"gpr\":[%s],\"hi\":\"0x%08X\",\"lo\":\"0x%08X\","
+        "\"sr\":\"0x%08X\",\"cause\":\"0x%08X\",\"epc\":\"0x%08X\"}}\n",
         RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq, (unsigned)entry_pc, (unsigned)next_pc,
         (unsigned long long)start_total, (unsigned long long)end_total,
         (unsigned long long)(end_total - start_total), (unsigned)(flags & 1u), (unsigned)((flags >> 1) & 1u),
-        (int)termination);
+        (int)termination, (unsigned)next_pc, gpr_text, (unsigned)state->hi, (unsigned)state->lo,
+        (unsigned)state->cop0_sr, (unsigned)state->cop0_cause, (unsigned)state->cop0_epc);
     if (length > 0) recompiler_trace_line(line, (size_t)length);
 }
 
