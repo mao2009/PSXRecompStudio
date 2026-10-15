@@ -197,6 +197,27 @@ public sealed class MixedFallbackTests
         Gpr(run.Result, S1).Should().Be(Gpr(reference, S1), "a SYSCALL inside the fallback is serviced exactly as in the interpreter");
     }
 
+    // Issue #789: a serviced SYSCALL completes (execution resumes at EPC + 4) and costs one unit of device time, so it is
+    // a retired instruction. The fallback's count must match the instructions the interpreter executed: ori, syscall,
+    // addiu, jr, and the delay-slot nop, five in all.
+    [Fact]
+    public void ASyscallServicedInsideTheFallback_IsCountedAsRetired()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), [Jalr(T0), Nop]);
+        main.Emit(End());
+        var target = new Block(Target);
+        target.Emit(Ori(A0, Zero, 2), MipsEncoding.Syscall(), Addiu(S2, S2, 1), Jr(Ra), Nop);
+        var words = Image(main, target);
+        using var dir = new TempDirectory();
+
+        var run = RunArtifact(words, dir, On);
+
+        run.Result.State.Should().Be(TitleExecutionState.Completed);
+        run.Evidence!.Targets.Single().Instructions.Should().Be(5UL,
+            "the serviced SYSCALL is one of the five instructions the fallback executes and retires");
+    }
+
     [Fact]
     public void RepeatedLegitimateFallback_TheSameTargetIsEnteredEveryIteration_WithStateCarriedBothWays()
     {
