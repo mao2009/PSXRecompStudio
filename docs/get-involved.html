@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Get involved | PSXRecompStudio</title>
+  <meta name="description" content="Human technical feedback is welcome, including reviews without pull requests.">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="site-header"><nav class="nav" aria-label="Primary navigation"><a class="brand" href="./">PSXRecompStudio</a><div class="nav-links"><a href="architecture.html">Architecture</a><a href="roadmap.html">Roadmap</a><a href="get-involved.html">Get involved</a><a href="rrs-vision.html">RRS vision</a><a href="ja/" lang="ja">日本語</a><a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></div></nav></header>
+<main><section class="hero compact"><p class="eyebrow">Independent research · Open source</p><h1>Get involved</h1><p class="lead">Human technical feedback is welcome, including reviews without pull requests.</p></section>
+<section><h2>Choose a starting point</h2><div class="grid">
+<article class="card"><h3>PS1 hardware and BIOS</h3><p>Challenge a hardware-model assumption or identify a reproducible behavior using public specifications and redistributable synthetic fixtures.</p><p><a href="https://github.com/mao2009/PSXRecompStudio/issues?q=is%3Aissue+is%3Aopen+BIOS">Related Issues</a></p></article>
+<article class="card"><h3>Recompilers and MIPS</h3><p>Review IR semantics, load and branch delays, dynamic code, and verification boundaries.</p><p><a href="https://github.com/mao2009/PSXRecompStudio/issues/205">Recompiler roadmap</a></p></article>
+<article class="card"><h3>Runtime, native code and CI</h3><p>Review C ABI/FFI contracts, lifecycle, determinism, packaging, and diagnostic testability.</p><p><a href="https://github.com/mao2009/PSXRecompStudio/blob/main/ARCHITECTURE.md">Architecture</a></p></article>
+<article class="card"><h3>Game preservation</h3><p>Evaluate rights-holder needs for editable, verifiable, rebuildable assets and practical re-release workflows.</p><p><a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/project-mission.md">Project mission</a></p></article>
+</div></section>
+<section><h2>Start small</h2><ol><li>Read a focused <a href="https://github.com/mao2009/PSXRecompStudio/issues">Issue</a> and check for an existing PR.</li><li>Describe one concrete concern with expected behavior, observed results, and a public reference or synthetic reproduction.</li><li>Offer a review, documentation correction, small test, or scoped PR after checking <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.</li></ol></section>
+<section><h2>Transparent AI development</h2><p>The independent maintainer sets project direction. AI coding agents are used extensively for implementation, debugging, test creation, docs, and preliminary review. Automated tests are bounded evidence, not independent human validation. We welcome critical technical feedback; no one is asked to review large AI-generated changes without an agreed scope. Contributors should be transparent about AI assistance and remain accountable for tests and provenance.</p></section>
+<section><h2>Verification and legal boundaries</h2><p>Persona opening screenshots demonstrate limited <strong>OpenBIOS interpreter</strong> execution—not title-screen success, complete-game recompilation, or native AOT parity. <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/v0.1.0/persona-e2e-status.md">Read current verification status</a>.</p><p>Please never upload proprietary ROMs, disc images, BIOS files, keys, or commercial game assets. Prefer synthetic distributable fixtures.</p></section></main>
+<footer><p><a href="./">Home</a> · <a href="https://github.com/mao2009/PSXRecompStudio">Source and Issues</a>. No copyrighted game or BIOS data is provided by this project.</p></footer>
+</body></html>
