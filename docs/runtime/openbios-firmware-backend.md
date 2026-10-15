@@ -277,7 +277,17 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
 `prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
-built ELF pair. Manifest root paths are relative to the manifest. `boot-exe <name>`
+built ELF pair. Manifest root paths are relative to the manifest. Issue #773 adds the observed-roots directive
+`roots <image> <roots-file> <source-sha256> <load-hex> <words-sha256>`: it names exactly one EXE-based image (`exe`,
+`boot-exe` or `disc-exes`), and the load is refused unless the image's source-file SHA-256, load address and code-word
+SHA-256 all match, and every root is a unique, aligned, in-image, structurally safe PC that is not already a root. The
+roots file is read strictly (a duplicate is an error). `psxrecomp fallback-roots <openbios.bin> --load-images <manifest>
+--fallback-targets <file.json> --out <manifest> [--disc <image>]` plans those roots from a probe run's full fallback
+export (`openbios-probe --engine generated-host --fallback-targets <file.json>`, which writes every distinct fallback target
+and leaves the top-12 summary unchanged). Only `unknown-code` targets inside one identified EXE image are candidates. The
+plan is ordered by observed instructions and bounded by `ObservedRootBudget.Default` (64 roots per image, 256 in total, and
+added reachable code of at most max(1024 instructions, 20 % of the entry-driven reachable set)). The output manifest must
+sit beside the input, is never overwritten, and is re-read before the command reports success. `boot-exe <name>`
 reads the executable the disc's SYSTEM.CNF `BOOT` names (the real one on a real disc; `<name>` is only a
 label) with its entry as the sole root. `disc-exes <prefix>` (Issue #734) adds every PS-X EXE file on the
 disc, one guarded image each named `<prefix>:<ISO path>`: a game's later stages are executables its boot

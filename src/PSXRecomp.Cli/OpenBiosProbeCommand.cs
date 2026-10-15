@@ -24,7 +24,7 @@ internal static class OpenBiosProbeCommand
 
     private const int RamBytes = 0x200000;
 
-    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] " +
+    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>]" +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]";
 
@@ -38,7 +38,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false, standalone = false;
-        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
+        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         var compareAt = new SortedSet<uint>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -68,7 +68,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--fallback-targets")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -84,6 +84,7 @@ internal static class OpenBiosProbeCommand
                 else if (option == "--roots") rootsPath = args[i];
                 else if (option == "--symbols") symbolsPath = args[i];
                 else if (option == "--load-images") loadImagesPath = args[i];
+                else if (option == "--fallback-targets") fallbackTargetsPath = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -121,6 +122,12 @@ internal static class OpenBiosProbeCommand
         if (engineKind == "generated-host" && histogramPath is not null)
         {
             error.WriteLine("openbios-probe: --pc-histogram is not supported with --engine generated-host (use --engine interpreter for PC histogram)");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        if (fallbackTargetsPath is not null && engineKind != "generated-host")
+        {
+            error.WriteLine("openbios-probe: --fallback-targets requires --engine generated-host (the export records the mixed-execution fallback)");
             error.WriteLine(Usage);
             return 1;
         }
@@ -175,7 +182,7 @@ internal static class OpenBiosProbeCommand
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
             return engineKind == "generated-host"
                 ? RunGeneratedHost(new GeneratedHostProbe(
-                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error)
+                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath), json, output, error)
                 : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output);
         }
         catch (Exception ex) when (
@@ -376,7 +383,7 @@ internal static class OpenBiosProbeCommand
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
         uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath,
-        bool Standalone);
+        bool Standalone, string? FallbackTargetsPath);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
@@ -551,6 +558,23 @@ internal static class OpenBiosProbeCommand
             var kernelBooted = report.KernelBooted;
             var evidence = engine.FallbackEvidence;
             var costs = engine.FallbackTimings;
+            if (probe.FallbackTargetsPath is not null)
+            {
+                // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
+                // report above is unchanged; this file is written only when requested.
+                var allTargets = (evidence?.Targets ?? []).Select(t => new
+                {
+                    pc = Hex(t.Target),
+                    cause = FallbackCause(t.Target),
+                    entries = t.Entries,
+                    instructions = t.Instructions,
+                    lastReturnPc = Hex(t.LastReturnPc),
+                }).ToArray();
+                File.WriteAllText(probe.FallbackTargetsPath, JsonSerializer.Serialize(
+                    new { format = PSXRecomp.Core.Recompiler.ObservedRootPlanner.TargetFormat, sha256 = probe.Hash, targets = allTargets },
+                    new JsonSerializerOptions { WriteIndented = true }));
+            }
+
             var document = new
             {
                 kind = "openbios-probe",
@@ -808,7 +832,7 @@ internal static class OpenBiosProbeCommand
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
-    private static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
+    internal static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
 
     private static object BuildStop(InterpreterTitleExecutionEngine engine, RecompilerStateSnapshot? snapshot)
     {
