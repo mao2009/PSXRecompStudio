@@ -477,21 +477,43 @@ public sealed class SyntheticIsoImageBuilder
     {
         var label = directory.Length == 0 ? "(root)" : directory;
         var total = 2 * RecordLength(1); // "." and ".." (identifiers 0x00 and 0x01)
-        var identifiers = new Dictionary<string, string>(StringComparer.Ordinal);
+        var directoryKeys = new Dictionary<string, string>(StringComparer.Ordinal); // normalised name -> path
+        var fileKeys = new Dictionary<string, string>(StringComparer.Ordinal);      // file identifier -> path
         foreach (var child in children)
         {
             var identifier = child.IsDirectory ? DirectoryName(child.Name) : Encoding.ASCII.GetBytes(child.Name);
-            total += RecordLength(identifier.Length);
-            if (child.IsDirectory)
+            var recordLength = RecordLength(identifier.Length);
+            if (recordLength > byte.MaxValue)
             {
-                var key = Encoding.ASCII.GetString(identifier);
-                if (identifiers.TryGetValue(key, out var first))
-                {
-                    throw new NotSupportedException(
-                        $"directory '{label}' has two children whose identifiers both normalise to '{key}' " +
-                        $"once the version is removed: '{first}' and '{child.Path}'.");
-                }
-                identifiers[key] = child.Path;
+                // LEN_DR is one byte; WriteDirectoryRecord would truncate the value and end the directory early.
+                throw new NotSupportedException(
+                    $"the record for '{child.Path}' in '{label}' is {recordLength} bytes; LEN_DR is one byte (at most 255).");
+            }
+            total += recordLength;
+
+            var key = Encoding.ASCII.GetString(identifier);
+            var keys = child.IsDirectory ? directoryKeys : fileKeys;
+            if (keys.TryGetValue(key, out var first))
+            {
+                throw new NotSupportedException(child.IsDirectory
+                    ? $"directory '{label}' has two children whose identifiers both normalise to '{key}' " +
+                      $"once the version is removed: '{first}' and '{child.Path}'."
+                    : $"directory '{label}' has two files with the identifier '{key}': '{first}' and '{child.Path}'. " +
+                      "The second would overwrite the first's content.");
+            }
+            keys[key] = child.Path;
+        }
+
+        // Directory identifiers have no version, so a directory and a file whose names agree once the version is removed
+        // cannot be told apart by name. Rejected conservatively; files that differ only in version remain allowed.
+        foreach (var (file, filePath) in fileKeys)
+        {
+            var stripped = StripVersion(file);
+            if (directoryKeys.TryGetValue(stripped, out var directoryPath))
+            {
+                throw new NotSupportedException(
+                    $"directory '{label}' has the directory '{directoryPath}' and the file '{filePath}', " +
+                    $"which both normalise to '{stripped}'.");
             }
         }
 

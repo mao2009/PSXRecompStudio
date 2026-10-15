@@ -561,6 +561,122 @@ public sealed class SyntheticIsoBothEndianTests
             .Build()).Should().NotThrow("the legacy layout keeps its versioned identifiers and is unchanged");
     }
 
+    // Review #780 (M2): LEN_DR is one byte. A 221-character identifier gives a 33 + 221 = 254 byte record (accepted);
+    // a 222-character one gives 255, padded to 256 (rejected, since WriteDirectoryRecord would truncate it to 0).
+    [Fact]
+    public void RecordLength_254Bytes_IsAccepted_ForAFileAndForADirectory()
+    {
+        new Action(() => new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile(new string('C', 219) + ";1", Bytes(1, 1))
+            .AddFile(new string('E', 221) + ";1/F.BIN;1", Bytes(1, 2))
+            .Build()).Should().NotThrow("both records are 254 bytes");
+    }
+
+    [Fact]
+    public void RecordLength_256Bytes_IsRejected_ForARootFile()
+    {
+        var name = new string('B', 220) + ";1";
+        new Action(() => new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile(name, Bytes(1, 1)).Build())
+            .Should().Throw<NotSupportedException>()
+            .WithMessage($"*{name}*256*");
+    }
+
+    [Fact]
+    public void RecordLength_256Bytes_IsRejected_ForARootDirectory()
+    {
+        var directory = new string('A', 222) + ";1";
+        new Action(() => new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile(directory + "/F.BIN;1", Bytes(1, 1)).Build())
+            .Should().Throw<NotSupportedException>()
+            .WithMessage($"*{directory}*256*");
+    }
+
+    [Fact]
+    public void RecordLength_256Bytes_IsRejected_ForASubdirectoryFile()
+    {
+        var name = new string('D', 220) + ";1";
+        new Action(() => new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("S;1/" + name, Bytes(1, 1)).Build())
+            .Should().Throw<NotSupportedException>()
+            .WithMessage($"*{name}*256*");
+    }
+
+    [Fact]
+    public void RecordLength_256Bytes_IsRejected_ForASubdirectoryDirectory()
+    {
+        var directory = new string('G', 222) + ";1";
+        new Action(() => new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("S;1/" + directory + "/F.BIN;1", Bytes(1, 1)).Build())
+            .Should().Throw<NotSupportedException>()
+            .WithMessage($"*{directory}*256*");
+    }
+
+    // Review #780 (M2): the same file path added twice wrote two records with one identifier, and the sector map kept
+    // only the second extent, so the first content was lost without an error.
+    [Fact]
+    public void FileIdentifiers_DuplicatePath_UnderOneParent_IsRejected()
+    {
+        var builder = new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("X.BIN;1", Bytes(1, 1))
+            .AddFile("X.BIN;1", Bytes(1, 2));
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*X.BIN;1*");
+    }
+
+    [Fact]
+    public void FileIdentifiers_DuplicatePath_InASubdirectory_IsRejected()
+    {
+        var builder = new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("S;1/X.BIN;1", Bytes(1, 1))
+            .AddFile("S;1/X.BIN;1", Bytes(1, 2));
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*S;1/X.BIN;1*");
+    }
+
+    [Fact]
+    public void FileIdentifiers_DifferentNamesUnderOneParent_AreAccepted()
+    {
+        var disc = SyntheticDiscBuilder.Mode2Form1(new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("X.BIN;1", Bytes(1, 1))
+            .AddFile("X.BIN;2", Bytes(1, 2))
+            .Build());
+
+        // Walk strips versions, so check the raw root records: both identifiers must be present, each with its own extent.
+        var records = Records(User(disc, 18));
+        records.Select(r => r.Name).Should().Contain(new[] { "X.BIN;1", "X.BIN;2" });
+        var first = records.Single(r => r.Name == "X.BIN;1");
+        var second = records.Single(r => r.Name == "X.BIN;2");
+        first.Extent.Should().NotBe(second.Extent);
+    }
+
+    [Fact]
+    public void FileIdentifiers_SameNameUnderDifferentParents_AreAccepted_WithTheirOwnContent()
+    {
+        var disc = SyntheticDiscBuilder.Mode2Form1(new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("P;1/X.BIN;1", Bytes(1, 1))
+            .AddFile("Q;1/X.BIN;1", Bytes(1, 2))
+            .Build());
+
+        var walk = Walk(disc);
+        User(disc, (int)walk.Files["P/X.BIN"].Extent)[0].Should().Be(1);
+        User(disc, (int)walk.Files["Q/X.BIN"].Extent)[0].Should().Be(2);
+    }
+
+    // A directory and a file in one directory share the normalised name "A", so the reader could not tell them apart.
+    [Fact]
+    public void FileAndDirectoryIdentifiers_CollidingAfterNormalisation_AreRejected()
+    {
+        var builder = new SyntheticIsoImageBuilder().WithBothEndianNumericFields()
+            .AddFile("A;1/ONE.BIN;1", Bytes(1, 1))
+            .AddFile("A;1", Bytes(1, 2));
+
+        new Action(() => builder.Build()).Should().Throw<NotSupportedException>()
+            .WithMessage("*A;1*");
+    }
+
     private static void AssertEveryFileIntact(byte[] disc, int expectedFiles)
     {
         var walk = Walk(disc);
