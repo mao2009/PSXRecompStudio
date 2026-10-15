@@ -32,6 +32,14 @@ It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a determinist
 
 **Important boundaries:** This result uses the OpenBIOS / interpreter path. Full intro completion, title screen, user input, AOT parity, and full-game compatibility are **not established**.
 
+## Demo
+
+A real console run of the synthetic demo, using the released `v0.0.0-alpha.2` Windows binary. The CLI generates a five-instruction PS-X EXE, `psxrecomp recompile` builds a native host artifact from it, and `psxrecomp run` executes it, printing `P` to the TTY.
+
+![Real console capture: psxrecomp recompile and run of a synthetic PS-X EXE](docs/assets/demo/synthetic-demo-console.png)
+
+Reproduce it with the [synthetic demo guide](docs/development/showcase-demo.md). This is a five-instruction proof of the pipeline, not a compatibility claim.
+
 ## What works today
 
 - **Runnable recompilation pipeline:** MIPS → IR/lowering → deterministic host code → native artifact → bounded execution.
@@ -80,8 +88,6 @@ psxrecomp run <input.exe|input.chd> --output out --report
 ```
 
 No input to hand? Run the [synthetic demo](docs/development/showcase-demo.md), which generates its own redistributable PS-X EXE.
-
-![Synthetic demo: pipeline and terminal output](docs/assets/demo/synthetic-demo.svg)
 
 **Packaged distribution (`psxrecomp package`):** creates a standalone game directory that launches directly on Windows or Linux — no Studio, no CLI, and no .NET SDK at runtime (when using `--self-contained`). See the [Runtime host documentation](docs/runtime/runtime-host.md) and [headless CLI reference](docs/development/headless-cli.md) for usage, layout, and exit codes.
 
