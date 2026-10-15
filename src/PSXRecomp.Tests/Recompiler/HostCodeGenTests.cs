@@ -1482,6 +1482,42 @@ int main() {
 #pragma warning restore AARC003
     }
 
+    [Fact]
+    public void UnitTrace_File_Records_A_Taken_Branch_With_The_Taken_Target_As_Next_PC()
+    {
+        // 0x80000000 branches on a non-zero condition to 0x80000010 (the taken target); 0x80000010 then falls out.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1u) },
+                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000008u,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x80000010u, conditionValueId: 0))),
+            new RecompilerIrBlock(0x80000010u, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000018u)),
+        });
+        var result = RecompilerHostCodeGen.Generate(program, loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+#pragma warning disable AARC003
+        var dir = CreateTempDir();
+        try
+        {
+            var path = Path.Combine(dir, "branch.jsonl");
+
+            RunTraced(result.Source!, path, maxBytes: null, "return state.retired_total == 2 ? 0 : 1;").Should().Be(0);
+
+            var units = ReadTraceLines(path).Where(line => line.GetProperty("kind").GetString() == "unit").ToList();
+            units.Select(u => u.GetProperty("entry").GetString()).Should().Equal(new[] { "0x80000000", "0x80000010" });
+            units.Select(u => u.GetProperty("next").GetString()).Should().Equal(new[] { "0x80000010", "0x80000018" },
+                "the taken target is the next PC of the branching unit");
+            units.Select(u => u.GetProperty("retired").GetUInt64()).Should().Equal(new ulong[] { 1, 1 });
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+#pragma warning restore AARC003
+    }
+
     // Builds the C main: it points the trace at tracePath (and optionally a cap) through its own environment, attaches,
     // dispatches the program from 0x80000000 with a budget of 10, then runs the given return statement.
     private static string RunTracedMain(string tracePath, string? maxBytes, string returnStatement)
