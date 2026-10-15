@@ -19,7 +19,7 @@ assignees: ""
 
 ## Steps to reproduce
 
-<!-- Use synthetic or repository-owned input only. Do not attach ROMs, ISOs, CHD, BIOS, or commercial executables. -->
+<!-- Prefer synthetic or repository-owned input. If the bug needs a legally owned title, give the title, its revision and the steps, but do not attach ROMs, ISOs, CHD, BIOS, PS-X EXE files or save data. -->
 
 1.
 
