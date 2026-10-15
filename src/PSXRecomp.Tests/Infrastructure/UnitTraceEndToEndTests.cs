@@ -20,8 +20,7 @@ namespace PSXRecomp.Tests.Infrastructure;
 /// </summary>
 /// <remarks>
 /// Counting rule used throughout: the interpreter's fetches are the reference positions. A fetch that an interrupt
-/// preempts does not retire, so it is counted as a fetch but not as a retirement. Known divergences are pinned by name
-/// rather than hidden (see the SYSCALL test).
+/// preempts does not retire, so it is counted as a fetch but not as a retirement. A serviced SYSCALL retires (Issue #789).
 /// </remarks>
 [Test]
 public sealed class UnitTraceEndToEndTests
@@ -204,13 +203,11 @@ public sealed class UnitTraceEndToEndTests
     }
 
     /// <summary>
-    /// KNOWN DIVERGENCE, pinned and not fixed (B-6a decision: the serviced SYSCALL retires; the fix is #789). The same kind of serviced SYSCALL is credited when it runs in native
-    /// code (previous test) and not credited when it runs in the fallback: the interpreter's retirement loop skips its count
-    /// after a serviced SYSCALL, while the interpreter still fetches it. Changing either count changes device time
-    /// (host_retired feeds the scheduler), so the reconciliation is a runtime decision for Phase B-6 / Phase C.
+    /// A serviced SYSCALL in the fallback retires like the same SYSCALL in native code (Issue #789). It is one of the five
+    /// instructions the fallback executes, and every stretch matches the interpreter boundary by boundary.
     /// </summary>
     [Fact]
-    public void KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired()
+    public void ServicedSyscallInTheFallback_IsRetiredLikeTheNativeOne()
     {
         var main = new Block(Entry);
         main.Emit(Li(T0, Target), [Jalr(T0), Nop]);
@@ -227,9 +224,8 @@ public sealed class UnitTraceEndToEndTests
         var fallback = join.Segments.Single(static s => s.Source == UnitTraceSegmentSource.Fallback);
 
         traced.InterpreterFetches.Should().Contain(0x80001104u, "the SYSCALL is fetched and serviced by the interpreter");
-        (fallback.GlobalEnd - fallback.GlobalStart).Should().Be(4UL, "5 fetches, of which the serviced SYSCALL is not retired");
-        join.ComparableUpToRetired.Should().Be((ulong)traced.InterpreterFetches.Count - 1,
-            "the joined run is one retirement short of the interpreter's fetch count: exactly the serviced SYSCALL");
+        (fallback.GlobalEnd - fallback.GlobalStart).Should().Be(5UL, "ori, syscall, addiu, jr and the delay slot all retire");
+        AssertStretchesMatchTheInterpreter(join, traced.InterpreterFetches);
     }
 
     /// <summary>
@@ -392,11 +388,11 @@ public sealed class UnitTraceEndToEndTests
     }
 
     /// <summary>
-    /// native SYSCALL -&gt; fallback (with its own SYSCALL) -&gt; native. The native part matches the interpreter boundary by
-    /// boundary; the fallback part carries the pinned one-retirement difference, so the joined total is exactly one short.
+    /// native SYSCALL -&gt; fallback (with its own SYSCALL) -&gt; native. Every stretch matches the interpreter boundary by
+    /// boundary, so the counts of the two SYSCALL paths agree (Issue #789).
     /// </summary>
     [Fact]
-    public void NativeThenFallbackThenNative_WithASyscallInEachPart_MatchesExceptTheKnownSyscallDifference()
+    public void NativeThenFallbackThenNative_WithASyscallInEachPart_MatchesTheInterpreterBoundaryByBoundary()
     {
         var main = new Block(Entry);
         main.Emit(Ori(A0, Zero, 2), MipsEncoding.Syscall(), Addiu(S0, S0, 1));
@@ -411,14 +407,7 @@ public sealed class UnitTraceEndToEndTests
 
         var join = UnitTraceJoiner.Join(traced.Native, traced.Fallback);
         join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
-        var fallback = join.Segments.Single(static s => s.Source == UnitTraceSegmentSource.Fallback);
-        (fallback.GlobalEnd - fallback.GlobalStart).Should().Be(4UL, "the fallback SYSCALL is not retired (pinned, #789)");
-        join.ComparableUpToRetired.Should().Be((ulong)traced.InterpreterFetches.Count - 1);
-        var nativeBefore = join.Segments.Where(s => s.Source == UnitTraceSegmentSource.Native && s.GlobalEnd <= fallback.GlobalStart).ToList();
-        foreach (var stretch in nativeBefore.Where(static s => s.GlobalEnd > s.GlobalStart))
-        {
-            traced.InterpreterFetches[(int)stretch.GlobalStart].Should().Be(Pc(stretch.EntryPc));
-        }
+        AssertStretchesMatchTheInterpreter(join, traced.InterpreterFetches);
     }
 
     private static (string[] Native, string[] Fallback) RunTimerIrqTraced(uint[] words, TempDirectory dir)

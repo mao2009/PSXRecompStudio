@@ -110,7 +110,7 @@ handoff の後、その transfer を処理したディスパッチャの通過�
 
 以下は B-5 では記録のみで、修正していません。利用側はこれを考慮する必要があります。
 
-1. **処理済み SYSCALL の計上。** native コードで処理された SYSCALL は 1 回計上され、`pc + 4` から再開します。fallback で処理された SYSCALL は計上されません。インタプリタの retire ループが、処理済み SYSCALL の後で計上をスキップするためです。インタプリタはその命令を fetch し、native と同じく 1 単位のデバイス時間を消費するため、`time` は一致します。判定（B-6a）: 処理済み SYSCALL は retire した命令とみなし、欠陥は fallback 側（インタプリタ）の計上です。修正は #789 で扱います。固定化したテストは `KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired` です。
+1. **処理済み SYSCALL の計上（#790 で修正済み）。** native でも fallback でも、処理済み SYSCALL は 1 回計上され、`pc + 4` から再開します。インタプリタはその命令を fetch し、native と同じく 1 単位のデバイス時間を消費します。#790 以前は fallback が計上していませんでしたが、現在は揃っています。`ServicedSyscallInTheFallback_IsRetiredLikeTheNativeOne` で検証しています。
 2. **割り込み後の PC。** fallback 区間内の割り込みでは `end_pc` はベクタで、割り込まれた命令は記録されません。native の unit 内部の割り込み（B-6a で再現）でも `next` はベクタです。一方、native の unit 境界での割り込みでは `next` はプログラム順の PC のままで、transfer レコードがベクタを持ちます。
 3. **termination 5。** これらの実行では、fallback が停止を報告したため、`termination` 5（`UnresolvedIndirectFlow`）が fallback の停止と共に現れました。
 4. **遅延スロットの SYSCALL。** 両エンジンとも処理せず、実行時の失敗で止まります。分岐は両側で 1 回計上されます。R3000 の再実行モデルでは分岐は再実行されるため、分岐を計上するかは未決の規則です（`DelaySlotSyscall_IsRefusedByBothEngines_AndNeitherCompletes` で固定）。

@@ -111,7 +111,7 @@ Each level narrows the search, and each level's result is recorded before the ne
 
 These block Phase C. They are recorded here, not fixed in B-5.
 
-1. **Serviced SYSCALL counting differs.** A SYSCALL serviced in native code is credited one retirement; the same SYSCALL serviced in the fallback is not. Device time agrees (one unit each), so global retirement positions shift by one while `time` does not. Decision (B-6a): the serviced SYSCALL retires, so the fallback counter is the defect. The fix is a reporting-only change to the interpreter counter and is tracked in #789. The pinned test is `KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired`, which asserts the current value.
+1. **Serviced SYSCALL counting (fixed in #790).** The interpreter now counts a serviced SYSCALL as retired, as native does. Before the fix, the fallback counter was one short per serviced SYSCALL; device time had always agreed. Blocker 1 is resolved.
 2. **Where `next` points after an interrupt.** Inside a fallback segment the interrupt leaves `end_pc` at the vector, and the preempted PC is not recorded. An in-body native interrupt (reproduced in B-6a) also sets `next` to the vector. A native boundary interrupt keeps `next` at the program-order PC and the transfer record carries the vector. The checkpoint must use `kind = interrupt_entry` and must not compare `next` across these cases.
 3. **Fused-unit partial completion and in-body native interrupts are reproduced (B-6a).** A timer edge between the two instructions of a fused load block yields an interrupted unit with `retired` 1 and `next` at the vector. The checkpoint rule for these cases is now testable; the rule itself is not yet implemented.
 
@@ -121,7 +121,7 @@ Phase C (measuring the first divergence on the real standalone path) may start o
 
 | Condition | Status at B-5 end |
 |---|---|
-| Serviced SYSCALL counting agrees on both sides, or an explicit mapping is recorded and tested | Not met: fix proposed, not applied; the defect is located in the interpreter counter (blocker 1) |
+| Serviced SYSCALL counting agrees on both sides, or an explicit mapping is recorded and tested | Met (#790; regression test in the fallback suite) |
 | The checkpoint format is implemented on both sides for CPU state and selected RAM, and the synthetic programs produce no false mismatch at the same positions | Not met (design only) |
 | The interrupt-entry rule (blocker 2) is implemented and tested | Not met (documented, not implemented) |
 | The VRAM comparison runs only at VBlank and only with an empty GPU queue | Not met (design only) |
