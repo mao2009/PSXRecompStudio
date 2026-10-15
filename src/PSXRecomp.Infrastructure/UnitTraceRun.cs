@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Execution;
 
 namespace PSXRecomp.Infrastructure;
 
@@ -121,8 +122,19 @@ internal sealed class UnitTraceRun : IDisposable
         var pc = $"0x{transferPc:X8}";
         var line = segment is null
             ? $"{{\"v\":{SchemaVersion},\"kind\":\"transfer\",\"seq\":{_seq},\"handoff\":{_handoffs},\"retired\":0,\"status\":\"host\",\"start_pc\":\"{pc}\",\"end_pc\":\"{pc}\"}}"
-            : $"{{\"v\":{SchemaVersion},\"kind\":\"fallback\",\"seq\":{_seq},\"handoff\":{_handoffs},\"retired\":{segment.Retired},\"status\":\"{segment.Status}\",\"start_pc\":\"{pc}\",\"end_pc\":\"0x{segment.EndPc:X8}\"{(segment.StopCode is null ? string.Empty : $",\"stop\":\"{segment.StopCode}\"")}}}";
+            : $"{{\"v\":{SchemaVersion},\"kind\":\"fallback\",\"seq\":{_seq},\"handoff\":{_handoffs},\"retired\":{segment.Retired},\"status\":\"{segment.Status}\",\"start_pc\":\"{pc}\",\"end_pc\":\"0x{segment.EndPc:X8}\"{(segment.StopCode is null ? string.Empty : $",\"stop\":\"{segment.StopCode}\"")}{StateField("entry", segment.Entry)}{StateField("exit", segment.Exit)}}}";
         WriteRecord(line);
+    }
+
+    /// <summary>
+    /// The optional CPU state of a fallback record (Issue #774, B-6b): <c>,"name":{...}</c>, or nothing when the state is absent.
+    /// Written in hex, one value per register, in the order gpr[0..31], then hi, lo, sr, cause and epc.
+    /// </summary>
+    private static string StateField(string name, FallbackCpuState? state)
+    {
+        if (state is null) return string.Empty;
+        var gpr = string.Join(",", state.Gpr.Select(static value => $"\"0x{value:X8}\""));
+        return $",\"{name}\":{{\"pc\":\"0x{state.Pc:X8}\",\"gpr\":[{gpr}],\"hi\":\"0x{state.Hi:X8}\",\"lo\":\"0x{state.Lo:X8}\",\"sr\":\"0x{state.Sr:X8}\",\"cause\":\"0x{state.Cause:X8}\",\"epc\":\"0x{state.Epc:X8}\"}}";
     }
 
     public void Dispose()
