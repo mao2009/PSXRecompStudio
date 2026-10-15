@@ -446,6 +446,7 @@ public sealed class UnitTraceEndToEndTests
         interpreter.FetchObserver = pc =>
         {
             if (pc == 0u) return;
+
             if (interruptProgram && pc == Vector)
             {
                 captured.Vectors[fetches - 1] = Snapshot(interpreter, fetches - 1, pc);
@@ -457,7 +458,71 @@ public sealed class UnitTraceEndToEndTests
             fetches++;
         };
         new ExecutionOrchestrator().Execute(interpreter, interruptProgram ? null : new ExitAtZeroHandoff(), Request(1000));
+        if (!interruptProgram)
+        {
+            // The exit handoff ends the run before a fetch of PC 0, so the final state is read once the run has ended.
+            captured.At[fetches] = Snapshot(interpreter, fetches, 0u);
+        }
+
         return captured;
+    }
+
+    /// <summary>
+    /// Every native unit that ended cleanly carries its CPU state at the unit's end (B-6b). The state must equal the
+    /// interpreter's state at the same global position, or, for an in-body interrupt, the state after the vector entry.
+    /// </summary>
+    private static void AssertUnitStatesMatchTheInterpreter(UnitTraceJoin join, IReadOnlyList<string> nativeLines, InterpreterCheckpoints reference)
+    {
+        var units = nativeLines.Select(static line => JsonDocument.Parse(line).RootElement.Clone())
+            .Where(static r => r.GetProperty("kind").GetString() == "unit").ToList();
+        var natives = join.Segments.Where(static s => s.Source == UnitTraceSegmentSource.Native).ToList();
+        units.Should().HaveCount(natives.Count, "every unit record is one native segment, in order");
+
+        var checkedUnits = 0;
+        for (var i = 0; i < units.Count; i++)
+        {
+            var unit = units[i];
+            var segment = natives[i];
+            if (unit.GetProperty("termination").GetInt32() != 0)
+            {
+                continue;
+            }
+
+            var state = CpuCheckpoint.TryParse(unit, "state", segment.GlobalEnd);
+            state.Should().NotBeNull($"unit {i} must carry its end state");
+            var interrupted = unit.GetProperty("interrupted").GetInt32() != 0;
+            var expected = interrupted ? reference.Vectors : reference.At;
+            expected.Should().ContainKey(segment.GlobalEnd, $"unit {i} ends at position {segment.GlobalEnd}");
+            state!.FirstMismatch(expected[segment.GlobalEnd]).Should().BeNull(
+                $"unit {i} (entry {segment.EntryPc}, interrupted {interrupted}): its end state must match the interpreter");
+            checkedUnits++;
+        }
+
+        checkedUnits.Should().BeGreaterThan(0, "the program must have clean units to compare");
+    }
+
+    [Fact]
+    public void UnitStates_AtEveryUnitEnd_MatchTheInterpreter()
+    {
+        var words = ThreeStretchProgram();
+        using var dir = new TempDirectory();
+        var traced = RunTraced(words, dir);
+        var join = UnitTraceJoiner.Join(traced.Native, traced.Fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+
+        AssertUnitStatesMatchTheInterpreter(join, traced.Native, CaptureInterpreterCheckpoints(words, interruptProgram: false));
+    }
+
+    [Fact]
+    public void UnitStates_AtAnInBodyInterrupt_MatchTheInterpreterAfterTheVectorEntry()
+    {
+        var words = LoadProgram(4);
+        using var dir = new TempDirectory();
+        var (native, fallback) = RunTimerIrqTraced(words, dir);
+        var join = UnitTraceJoiner.Join(native, fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+
+        AssertUnitStatesMatchTheInterpreter(join, native, CaptureInterpreterCheckpoints(words, interruptProgram: true));
     }
 
     /// <summary>

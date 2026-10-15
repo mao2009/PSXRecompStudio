@@ -47,7 +47,7 @@ native ファイル（`<path>`）:
 | `kind` | フィールド | 意味 |
 |---|---|---|
 | `header` | `session`、`cap` | 先頭行。 |
-| `unit` | `seq`、`entry`、`next`、`start`、`end`、`retired`、`interrupted`、`exception`、`termination` | ディスパッチャの 1 回の通過。`start` と `end` は、その通過の前後の累積 native retirement 数です。`retired` は `end - start` で、完了した命令だけを数えます。`entry` は、その通過の割り込みによる PC 変更の後の PC です。`interrupted` と `exception` は 0 または 1 です。`termination` は `RecompilerIrTerminationReason` の値で、0 が成功です。 |
+| `unit` | `seq`、`entry`、`next`、`start`、`end`、`retired`、`interrupted`、`exception`、`termination`、`state`（任意） | ディスパッチャの 1 回の通過。`start` と `end` は、その通過の前後の累積 native retirement 数です。`retired` は `end - start` で、完了した命令だけを数えます。`entry` は、その通過の割り込みによる PC 変更の後の PC です。`interrupted` と `exception` は 0 または 1 です。`termination` は `RecompilerIrTerminationReason` の値で、0 が成功です。 `state`（B-6b。トレースビルドのみ、追加的）は unit の終端の CPU 状態で、`pc`（後続）、`gpr`（32 個の値）、`hi`、`lo`、`sr`、`cause`、`epc` を持ちます。 |
 | `handoff` | `seq`、`handoff`、`native_total`、`pc` | native コードがホストへ transfer した。`pc` は transfer 時の state の PC です。 |
 | `truncated` | `seq`、`reason` | 出力上限に達した。以降のレコードは捨てられます。 |
 | `end` | `seq`、`complete`、`reason`（任意） | 最終行。切り詰め後は `complete:false` と `reason:"output_cap"`。 |

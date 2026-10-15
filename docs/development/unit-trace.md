@@ -47,7 +47,7 @@ Native file (`<path>`):
 | `kind` | Fields | Meaning |
 |---|---|---|
 | `header` | `session`, `cap` | First line. |
-| `unit` | `seq`, `entry`, `next`, `start`, `end`, `retired`, `interrupted`, `exception`, `termination` | One dispatcher pass. `start` and `end` are cumulative native retirement totals before and after the pass. `retired` is `end - start` and counts only instructions that completed. `entry` is the PC after any interrupt redirect of that pass. `interrupted` and `exception` are 0 or 1. `termination` is the `RecompilerIrTerminationReason` value; 0 is success. |
+| `unit` | `seq`, `entry`, `next`, `start`, `end`, `retired`, `interrupted`, `exception`, `termination`, `state`? | One dispatcher pass. `start` and `end` are cumulative native retirement totals before and after the pass. `retired` is `end - start` and counts only instructions that completed. `entry` is the PC after any interrupt redirect of that pass. `interrupted` and `exception` are 0 or 1. `termination` is the `RecompilerIrTerminationReason` value; 0 is success. `state` (B-6b; trace build only, additive) is the CPU state at the unit's end: `pc` (the successor), `gpr` (32 values), `hi`, `lo`, `sr`, `cause` and `epc`. |
 | `handoff` | `seq`, `handoff`, `native_total`, `pc` | The native code transferred to the host. `pc` is the state PC at the transfer. |
 | `truncated` | `seq`, `reason` | The output cap was reached. Later records are dropped. |
 | `end` | `seq`, `complete`, `reason`? | Last line. `complete:false` with `reason:"output_cap"` after truncation. |

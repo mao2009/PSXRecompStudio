@@ -1396,6 +1396,7 @@ int main() {
 #pragma warning restore AARC003
     }
 
+    // Issue #774 (B-6b): a unit record carries the 32-register state, so two records and a marker fit in 2200 bytes.
     [Fact]
     public void UnitTrace_File_Truncates_At_The_Cap_With_A_Marker_And_An_Incomplete_End()
     {
@@ -1409,10 +1410,10 @@ int main() {
 
             // 900 admits the header and two units with the reserved tail still free, but not a third unit; the third
             // unit is dropped and the trace stops there.
-            RunTraced(result.Source!, path, maxBytes: "900", "return state.retired_total == 4 ? 0 : 1;").Should().Be(0,
+            RunTraced(result.Source!, path, maxBytes: "2200", "return state.retired_total == 4 ? 0 : 1;").Should().Be(0,
                 "a full trace file must not change the guest run");
 
-            new FileInfo(path).Length.Should().BeLessThanOrEqualTo(900);
+            new FileInfo(path).Length.Should().BeLessThanOrEqualTo(2200);
             var lines = ReadTraceLines(path);
             lines.Where(line => line.GetProperty("kind").GetString() == "unit")
                 .Select(u => u.GetProperty("seq").GetUInt64()).Should().Equal(new ulong[] { 0, 1 });
