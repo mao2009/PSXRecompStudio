@@ -96,12 +96,13 @@ internal static class IndirectRootDiscovery
 
                     for (var i = 0; i < MaxTableWords && !Full(); i++)
                     {
-                        var tableAddress = tableBase + (uint)i * InstructionSize;
-                        if ((ulong)tableAddress + InstructionSize > imageEnd)
+                        var address = (ulong)tableBase + (ulong)i * InstructionSize;
+                        if (address > uint.MaxValue || address + InstructionSize > imageEnd)
                         {
                             break;
                         }
 
+                        var tableAddress = (uint)address;
                         var target = words[(int)((tableAddress - loadAddress) / InstructionSize)];
                         if (!IsInImagePc(loadAddress, imageEnd, target))
                         {
