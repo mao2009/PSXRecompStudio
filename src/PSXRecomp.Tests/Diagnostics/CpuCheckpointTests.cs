@@ -15,6 +15,25 @@ public class CpuCheckpointTests
         JsonDocument.Parse("{\"kind\":\"fallback\",\"entry\":" + entry + "}").RootElement.Clone();
 
     [Fact]
+    public void FromState_Snapshots_General_Registers()
+    {
+        var registers = new uint[32];
+        registers[5] = 7;
+        var state = new PSXRecomp.Core.Execution.FallbackCpuState(registers, 1, 2, 0x80001100u, 0x401u, 0x20u, 0x80001104u);
+        var checkpoint = CpuCheckpoint.FromState(3UL, state);
+
+        registers[5] = 99;
+
+        checkpoint.Gpr[5].Should().Be(7u, "later changes to fallback CPU storage must not rewrite captured history");
+        var mutable = checkpoint.Gpr as IList<uint>;
+        if (mutable is not null)
+        {
+            var change = () => mutable[5] = 99;
+            change.Should().Throw<NotSupportedException>("a checkpoint must expose read-only register storage");
+        }
+    }
+
+    [Fact]
     public void A_Record_Without_State_Has_No_Checkpoint()
     {
         var record = JsonDocument.Parse("{\"kind\":\"fallback\",\"handoff\":1}").RootElement;
