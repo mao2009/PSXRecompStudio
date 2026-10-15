@@ -34,13 +34,11 @@ public static class RealRomFixtures
 
     /// <summary>
     /// Reason reported when a test needs <paramref name="required"/> distinct fixtures but only
-    /// <paramref name="found"/> are present. Zero fixtures reuse <see cref="NoFixtureSkipReason"/>,
-    /// so the report never says "absent" when some fixtures exist, or "present" when none do.
+    /// <paramref name="found"/> are present. Always states both counts, including zero, so the
+    /// report shows what was required and what was detected.
     /// </summary>
     public static string FixtureShortfallSkipReason(int required, int found) =>
-        found == 0
-            ? NoFixtureSkipReason
-            : $"skipped: {required} real-ROM fixtures required under rom/*.chd, {found} found";
+        $"skipped: {required} real-ROM fixtures required under rom/*.chd, {found} found";
 
     /// <summary>
     /// Repository root, resolved from the test assembly's output directory

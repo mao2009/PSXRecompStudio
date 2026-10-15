@@ -69,12 +69,13 @@ public class RealRomAnalysisSkillTests
     }
 
     /// <summary>
-    /// The skip report must tell "no fixture" apart from "too few fixtures". Pure function, always runs.
+    /// The skip report always states the required and detected counts, including zero. Pure function, always runs.
     /// </summary>
     [Fact]
-    public void FixtureShortfallSkipReason_ZeroFixtures_ReportsNoFixture()
+    public void FixtureShortfallSkipReason_ZeroFixtures_ReportsRequiredAndFoundCounts()
     {
-        RealRomFixtures.FixtureShortfallSkipReason(2, 0).Should().Be(RealRomFixtures.NoFixtureSkipReason);
+        RealRomFixtures.FixtureShortfallSkipReason(2, 0)
+            .Should().Be("skipped: 2 real-ROM fixtures required under rom/*.chd, 0 found");
     }
 
     [Fact]
