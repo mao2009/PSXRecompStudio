@@ -52,6 +52,58 @@ public static class ReachableProgramBuilder
         BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets: null, out _);
 
     /// <summary>
+    /// The in-image PCs that the entry-driven and explicit-root discovery reaches (Issue #773). It runs the same
+    /// <see cref="DiscoverPath"/> walk as <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/> and
+    /// builds no IR, so callers can tell which code is already direct-reachable.
+    /// </summary>
+    internal static IReadOnlySet<uint> ReachablePcs(uint loadAddress, IReadOnlyList<uint> instructionWords, IEnumerable<uint> roots)
+    {
+        ArgumentNullException.ThrowIfNull(instructionWords);
+        ArgumentNullException.ThrowIfNull(roots);
+
+        var image = new InstructionImage(loadAddress, (ulong)loadAddress + (ulong)instructionWords.Count * InstructionSize, instructionWords);
+        return DiscoverStatic(image, roots).Reachable;
+    }
+
+    /// <summary>
+    /// Whether a single candidate root can be discovered on its own without a structural error (Issue #773). A
+    /// candidate that would make discovery throw (for example a branch in the image's last word whose delay slot
+    /// lies outside it) is rejected here, so one bad code-pointer guess cannot fail the whole image build.
+    /// </summary>
+    internal static bool IsDiscoverableRoot(uint loadAddress, IReadOnlyList<uint> instructionWords, uint pc)
+    {
+        var image = new InstructionImage(loadAddress, (ulong)loadAddress + (ulong)instructionWords.Count * InstructionSize, instructionWords);
+        try
+        {
+            DiscoverStatic(image, [pc]);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static (Dictionary<uint, R3000aInstruction> Decoded, HashSet<uint> Reachable, HashSet<uint> DelaySlots) DiscoverStatic(
+        InstructionImage image,
+        IEnumerable<uint> roots)
+    {
+        var decoded = new Dictionary<uint, R3000aInstruction>();
+        var reachable = new HashSet<uint>();
+        var delaySlots = new HashSet<uint>();
+        var leaders = new SortedSet<uint>(roots);
+        var pending = new SortedSet<uint>(leaders);
+        while (pending.Count > 0)
+        {
+            var start = pending.Min;
+            pending.Remove(start);
+            DiscoverPath(start, image, decoded, reachable, delaySlots, leaders, pending, outOfImageTargets: null);
+        }
+
+        return (decoded, reachable, delaySlots);
+    }
+
+    /// <summary>
     /// Builds a firmware ROM image (Issue #732) — for example the BIOS at <c>0xBFC00000</c> — with exactly the
     /// discovery and lowering of <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/>, and
     /// reports how much of the image is native.

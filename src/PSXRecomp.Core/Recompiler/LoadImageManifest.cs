@@ -13,7 +13,14 @@ namespace PSXRecomp.Core.Recompiler;
 /// or the load address itself). Nothing here is derived at run time.
 /// </summary>
 [Domain]
-public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words, IReadOnlyList<uint> Roots);
+public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words, IReadOnlyList<uint> Roots)
+{
+    /// <summary>
+    /// The code-pointer roots the scan added to <see cref="Roots"/>, with their source words (Issue #773). Empty unless the
+    /// manifest enables <c>scan-code-pointers</c>.
+    /// </summary>
+    internal IReadOnlyList<CodePointerRoot> DiscoveredRoots { get; init; } = [];
+}
 
 /// <summary>
 /// The explicit list of RAM-placed code images the AOT build compiles, plus the observation points that must stay
@@ -24,6 +31,7 @@ public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words
 /// boot-exe &lt;name&gt;                                                                    # the SYSTEM.CNF boot EXE on --disc
 /// disc-exes &lt;prefix&gt;                                                                 # every PS-X EXE file on --disc
 /// interpret &lt;addr-hex&gt;                                                                # an entry that stays interpreted
+/// scan-code-pointers                                                                  # add code-pointer roots to every EXE image (Issue #773)
 /// </code>
 /// Blank lines, leading/trailing whitespace and <c>#</c> comments are ignored; numbers are hexadecimal (an optional
 /// <c>0x</c> prefix is accepted). The image compile itself is <see cref="ReachableProgramBuilder.BuildLoadedImage"/>.
@@ -47,6 +55,8 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         var images = new List<LoadedImageSpec>();
         var interpreted = new HashSet<uint>();
         Iso9660Reader? iso = null;
+        // Issue #773: an opt-in switch that applies to every EXE image in the manifest, whatever its position.
+        var scanCodePointers = Directives(path).Any(static directive => directive.Fields[0] == "scan-code-pointers");
 
         foreach (var (line, fields) in Directives(path))
         {
@@ -56,7 +66,13 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     images.Add(ParseRomImage(fields, firmware, baseDirectory));
                     break;
                 case "exe":
-                    images.Add(ParseExeImage(fields, baseDirectory));
+                    images.Add(ParseExeImage(fields, baseDirectory, scanCodePointers));
+                    break;
+                case "scan-code-pointers":
+                    if (fields.Length != 1)
+                    {
+                        throw new InvalidDataException($"manifest: 'scan-code-pointers' takes no arguments; got '{line}'.");
+                    }
                     break;
                 case "boot-exe":
                     if (fields.Length != 2)
@@ -68,7 +84,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                         throw new InvalidDataException($"manifest: 'boot-exe {fields[1]}' needs a --disc image.");
                     }
                     iso ??= OpenIso(disc);
-                    images.Add(FromExeBytes(fields[1], iso.ReadFile(NormalizeBootPath(iso)), []));
+                    images.Add(FromExeBytes(fields[1], iso.ReadFile(NormalizeBootPath(iso)), [], scanCodePointers));
                     break;
                 case "disc-exes":
                     if (fields.Length != 2)
@@ -80,7 +96,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                         throw new InvalidDataException($"manifest: 'disc-exes {fields[1]}' needs a --disc image.");
                     }
                     iso ??= OpenIso(disc);
-                    images.AddRange(DiscExecutables(iso, fields[1]));
+                    images.AddRange(DiscExecutables(iso, fields[1], scanCodePointers));
                     break;
                 case "interpret":
                     if (fields.Length != 2)
@@ -151,6 +167,12 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                         throw new InvalidDataException($"manifest: 'interpret' takes exactly one address; got '{line}'.");
                     }
                     break;
+                case "scan-code-pointers":
+                    if (fields.Length != 1)
+                    {
+                        throw new InvalidDataException($"manifest: 'scan-code-pointers' takes no arguments; got '{line}'.");
+                    }
+                    break;
                 default:
                     throw new InvalidDataException($"manifest: unknown directive '{fields[0]}'.");
             }
@@ -208,7 +230,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         return new LoadedImageSpec(name, loadAddress, words, roots);
     }
 
-    private static LoadedImageSpec ParseExeImage(IReadOnlyList<string> fields, string? baseDirectory)
+    private static LoadedImageSpec ParseExeImage(IReadOnlyList<string> fields, string? baseDirectory, bool scanCodePointers)
     {
         // exe <name> <path> [roots-file]
         if (fields.Count is < 3 or > 4)
@@ -217,10 +239,10 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         var roots = fields.Count == 4 ? ReadRoots(fields[3], baseDirectory) : [];
-        return FromExeBytes(fields[1], File.ReadAllBytes(Resolve(fields[2], baseDirectory)), roots);
+        return FromExeBytes(fields[1], File.ReadAllBytes(Resolve(fields[2], baseDirectory)), roots, scanCodePointers);
     }
 
-    private static LoadedImageSpec FromExeBytes(string name, byte[] bytes, IReadOnlyList<uint> roots)
+    private static LoadedImageSpec FromExeBytes(string name, byte[] bytes, IReadOnlyList<uint> roots, bool scanCodePointers)
     {
         var exe = PsxExe.Load(bytes, name);
         var words = new uint[exe.TextSegment.Length / 4];
@@ -230,7 +252,16 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         var entries = roots.Append(exe.Header.EntryPoint).Distinct().Order().ToArray();
-        return new LoadedImageSpec(name, exe.Header.TextStart, words, entries);
+        if (!scanCodePointers)
+        {
+            return new LoadedImageSpec(name, exe.Header.TextStart, words, entries);
+        }
+
+        // Issue #773 (opt-in): a runtime-loaded EXE calls through pointer tables and callback registrations, so the roots may
+        // also include code-pointer targets that direct reachability from the entry cannot see. Each keeps its source word.
+        var discovered = CodePointerRootScanner.Find(exe.Header.TextStart, words, entries);
+        var allRoots = entries.Concat(discovered.Select(static root => root.TargetPc)).Order().ToArray();
+        return new LoadedImageSpec(name, exe.Header.TextStart, words, allRoots) { DiscoveredRoots = discovered };
     }
 
     /// <summary>The largest file a PS-X EXE can be: the 2 MiB of main RAM plus its 2 KiB header.</summary>
@@ -247,7 +278,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     /// in one directory) does each keep its full versioned path, so those names stay unique. Distinct files are always read
     /// from their own directory records. Nothing is title-specific.
     /// </summary>
-    private static IEnumerable<LoadedImageSpec> DiscExecutables(Iso9660Reader iso, string prefix)
+    private static IEnumerable<LoadedImageSpec> DiscExecutables(Iso9660Reader iso, string prefix, bool scanCodePointers)
     {
         var files = iso.EnumerateFiles();
 
@@ -271,7 +302,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
             {
                 var imagePath = ambiguousPaths.Contains(file.NormalizedPath) ? file.VersionedPath : file.NormalizedPath;
-                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, []);
+                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, [], scanCodePointers);
             }
         }
     }

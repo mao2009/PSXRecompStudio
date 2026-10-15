@@ -288,6 +288,17 @@ function-pointer target to the interpreter fallback and the mixed execution then
 points must remain interpreted: the generated manifest includes `C0Handler`
 (kernel RAM execution), exception vector/handler, shell and EXE entries.
 
+Issue #773 adds an **opt-in** manifest switch, `scan-code-pointers` (no arguments, default off, position-independent). When it
+is present, every PS-X EXE image in the manifest (`exe`, `boot-exe`, `disc-exes`) also takes **code-pointer roots from its
+own words** (`CodePointerRootScanner`, not title-specific): a word that names an in-image PC, either as a data word or as a
+`lui` followed by `addiu`/`ori` on the same register. A target is kept only when direct reachability from the entry and
+explicit roots does not already reach it, it looks like a function (an `addiu $sp,$sp,-N` prologue, or the word after a
+`jr $ra` and its delay slot), and discovery from it alone is structurally valid. Each root records its source word
+(`LoadedImageSpec.DiscoveredRoots`, internal). Without the switch the roots are unchanged. Enabling it on Persona's
+`disc-exes` exceeds the host compile timeout in the one-segment probe, so it is not a default. A PC reached only through a
+computed or runtime-stored address has no such word and is not found here; it stays on the fallback path (Issue #773's
+`0x80084C88` case, unresolved).
+
 `--compare-at <hex-pc>` adds comparison boundaries; `--stop-at <hex-pc>` stops
 both engines before that instruction. These PCs are excluded from RAM native
 blocks. ROM-only compiled interior PCs may be unobservable; a missing boundary
