@@ -288,6 +288,14 @@ function-pointer target to the interpreter fallback and the mixed execution then
 points must remain interpreted: the generated manifest includes `C0Handler`
 (kernel RAM execution), exception vector/handler, shell and EXE entries.
 
+`indirect-roots` (Issue #773, **opt-in**) adds the functions an EXE calls only through a function-pointer table to
+that EXE image's roots. A reachable `lui`/`addiu|ori` pair names a table; the table words that are in-image,
+function-entry-shaped (an `addiu $sp,$sp,-N` prologue, or the word after `jr $ra` and its delay slot), and not
+reserved encodings become roots. Discovery repeats to a fixed point under fixed caps (8 rounds, 256 roots, 32
+words per table, 1024 candidate checks). The table base itself is never a root. Limits: a table reached through a
+pointer variable or a computed index is not found, and a data word that looks like a prologue can still be accepted.
+Every root is a guarded block, so an unused root costs build time only. Without the directive the roots are unchanged.
+
 `--compare-at <hex-pc>` adds comparison boundaries; `--stop-at <hex-pc>` stops
 both engines before that instruction. These PCs are excluded from RAM native
 blocks. ROM-only compiled interior PCs may be unobservable; a missing boundary

@@ -24,6 +24,7 @@ public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words
 /// boot-exe &lt;name&gt;                                                                    # the SYSTEM.CNF boot EXE on --disc
 /// disc-exes &lt;prefix&gt;                                                                 # every PS-X EXE file on --disc
 /// interpret &lt;addr-hex&gt;                                                                # an entry that stays interpreted
+/// indirect-roots                                                             # add function-pointer-table targets to every EXE image
 /// </code>
 /// Blank lines, leading/trailing whitespace and <c>#</c> comments are ignored; numbers are hexadecimal (an optional
 /// <c>0x</c> prefix is accepted). The image compile itself is <see cref="ReachableProgramBuilder.BuildLoadedImage"/>.
@@ -45,7 +46,9 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
 
         var baseDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
         var images = new List<LoadedImageSpec>();
+        var exeImages = new List<int>(); // indices into images of the PS-X EXE images (Issue #773)
         var interpreted = new HashSet<uint>();
+        var indirectRoots = false;
         Iso9660Reader? iso = null;
 
         foreach (var (line, fields) in Directives(path))
@@ -56,6 +59,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     images.Add(ParseRomImage(fields, firmware, baseDirectory));
                     break;
                 case "exe":
+                    exeImages.Add(images.Count);
                     images.Add(ParseExeImage(fields, baseDirectory));
                     break;
                 case "boot-exe":
@@ -68,6 +72,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                         throw new InvalidDataException($"manifest: 'boot-exe {fields[1]}' needs a --disc image.");
                     }
                     iso ??= OpenIso(disc);
+                    exeImages.Add(images.Count);
                     images.Add(FromExeBytes(fields[1], iso.ReadFile(NormalizeBootPath(iso)), []));
                     break;
                 case "disc-exes":
@@ -80,7 +85,18 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                         throw new InvalidDataException($"manifest: 'disc-exes {fields[1]}' needs a --disc image.");
                     }
                     iso ??= OpenIso(disc);
-                    images.AddRange(DiscExecutables(iso, fields[1]));
+                    foreach (var image in DiscExecutables(iso, fields[1]))
+                    {
+                        exeImages.Add(images.Count);
+                        images.Add(image);
+                    }
+                    break;
+                case "indirect-roots":
+                    if (fields.Length != 1)
+                    {
+                        throw new InvalidDataException($"manifest: 'indirect-roots' takes no arguments; got '{line}'.");
+                    }
+                    indirectRoots = true;
                     break;
                 case "interpret":
                     if (fields.Length != 2)
@@ -91,6 +107,17 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     break;
                 default:
                     throw new InvalidDataException($"manifest: unknown directive '{fields[0]}'.");
+            }
+        }
+
+        // Issue #773: opt-in. Without the directive the roots are exactly the entry point and the explicit roots.
+        if (indirectRoots)
+        {
+            foreach (var index in exeImages)
+            {
+                var spec = images[index];
+                var found = IndirectRootDiscovery.Find(spec.LoadAddress, spec.Words, spec.Roots);
+                images[index] = spec with { Roots = spec.Roots.Concat(found.Select(static root => root.TargetPc)).Distinct().Order().ToArray() };
             }
         }
 
@@ -143,6 +170,12 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     if (fields.Length != 2)
                     {
                         throw new InvalidDataException($"manifest: 'disc-exes' takes exactly one name prefix; got '{line}'.");
+                    }
+                    break;
+                case "indirect-roots":
+                    if (fields.Length != 1)
+                    {
+                        throw new InvalidDataException($"manifest: 'indirect-roots' takes no arguments; got '{line}'.");
                     }
                     break;
                 case "interpret":
