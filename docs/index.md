@@ -18,6 +18,10 @@ PSXRecompStudio is an experimental, open-source PlayStation (PS1) binary analysi
 - The **OpenBIOS interpreter path** reached and captured the beginning of *Megami Ibunroku Persona*: [ATLUS logo](assets/images/persona-opening/atlus-logo.png) and [opening text](assets/images/persona-opening/butterfly-dream.png) ([evidence, PR #754](https://github.com/mao2009/PSXRecompStudio/pull/754)).
 - **Not yet demonstrated:** Persona title screen, fully playable commercial title, end-to-end AOT parity for a commercial game, or an editable/rebuildable commercial port.
 
+![ATLUS logo captured from the Persona opening using the OpenBIOS interpreter](assets/images/persona-opening/atlus-logo.png)
+
+![Opening text captured from Persona using the OpenBIOS interpreter](assets/images/persona-opening/butterfly-dream.png)
+
 The opening captures are evidence of limited interoperability research, not a compatibility endorsement. Persona and ATLUS belong to their respective rights holders; this is an unaffiliated project.
 
 ## We welcome human technical review
