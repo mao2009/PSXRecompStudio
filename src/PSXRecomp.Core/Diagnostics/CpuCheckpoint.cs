@@ -29,7 +29,7 @@ public sealed record CpuCheckpoint(
 
     /// <summary>Builds a checkpoint from a fallback CPU state at a known global position.</summary>
     public static CpuCheckpoint FromState(ulong globalRetired, FallbackCpuState state) =>
-        new(globalRetired, state.Pc, state.Gpr, state.Hi, state.Lo, state.Sr, state.Cause, state.Epc);
+        new(globalRetired, state.Pc, Array.AsReadOnly(state.Gpr.ToArray()), state.Hi, state.Lo, state.Sr, state.Cause, state.Epc);
 
     /// <summary>
     /// Reads the <c>entry</c> or <c>exit</c> object of a fallback trace record. Returns null when the record has none, which is
