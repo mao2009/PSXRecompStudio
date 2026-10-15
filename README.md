@@ -19,9 +19,9 @@ It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a determinist
 
 **How this is built:** the independent maintainer sets direction, but development **relies heavily on AI coding agents** for coding, investigation, tests, docs and preliminary review. CI verifies bounded properties; it does **not** substitute for expert human review. Critical technical feedback is welcome.
 
-**[Get involved — choose an area, ask a technical question or review a contract](docs/community/get-involved.md)** · [Proposed RRS ecosystem](docs/community/rrs-vision.md) · [Contributor guide](CONTRIBUTING.md) · [Current evidence](docs/status/capabilities.md)
+**[Get involved — choose a first contribution](https://mao2009.github.io/PSXRecompStudio/get-involved.html#first-contributions)** · [日本語で参加](https://mao2009.github.io/PSXRecompStudio/ja/get-involved.html) · [Proposed RRS ecosystem](docs/community/rrs-vision.md) · [Contributor guide](CONTRIBUTING.md) · [Current evidence](docs/status/capabilities.md)
 
-## Milestone: Persona opening captured (October 2026)
+## Milestone: OpenBIOS interpreter reaches Persona opening imagery (October 2026)
 
 **The OpenBIOS interpreter execution path has visibly reached the opening sequence of *Megami Ibunroku Persona*.** VBlank-accurate screenshots show the ATLUS logo followed by the opening text inspired by Zhuangzi's butterfly dream. This is a real game-rendering milestone, not proof of complete static recompilation or a playable native port.
 
