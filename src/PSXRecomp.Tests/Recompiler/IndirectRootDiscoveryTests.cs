@@ -63,6 +63,27 @@ public sealed class IndirectRootDiscoveryTests
     private static byte[] ToBytes(uint[] words) => words.SelectMany(BitConverter.GetBytes).ToArray();
 
     [Fact]
+    public void TableAtEndOfAddressSpace_DoesNotWrapTheNextWord()
+    {
+        const uint load = 0xFFFFFF00u;
+        const uint table = 0xFFFFFFFCu;
+        const uint callee = 0xFFFFFF40u;
+        var words = new uint[64];
+        words[0] = MipsEncoding.I(0x0F, V0, 0, 0xFFFF);
+        words[1] = MipsEncoding.I(0x0D, V0, V0, 0xFFFC);
+        words[2] = Return;
+        words[3] = MipsEncoding.Nop;
+        words[(int)((callee - load) / 4)] = Prologue;
+        words[(int)((callee - load) / 4) + 1] = Return;
+        words[(int)((callee - load) / 4) + 2] = MipsEncoding.Nop;
+        words[^1] = callee;
+
+        var roots = IndirectRootDiscovery.Find(load, words, [load]);
+
+        roots.Should().ContainSingle().Which.TargetPc.Should().Be(callee);
+    }
+
+    [Fact]
     public void TableEntriesNamedByReachableCode_AreFound_WhenDirectDiscoveryMissesThem()
     {
         var (image, table, callerA, callerB, _) = Layout();
