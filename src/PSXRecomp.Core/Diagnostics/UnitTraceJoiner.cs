@@ -194,6 +194,42 @@ public static class UnitTraceJoiner
         return UnitTraceJoin.Partial(segments, reason);
     }
 
+    /// <summary>The first field the record kind needs that is missing or has the wrong JSON type, or null when all are sound.</summary>
+    private static string? FieldProblem(JsonElement root, string kind)
+    {
+        switch (kind)
+        {
+            case "unit":
+                return FirstFieldProblem(root, ["start", "end", "retired"], IsUInt64, "an unsigned integer")
+                    ?? FirstFieldProblem(root, ["entry", "next"], IsString, "a string")
+                    ?? FirstFieldProblem(root, ["termination", "interrupted", "exception"], IsInt32, "a 32-bit integer");
+            case "handoff":
+                if (root.TryGetProperty("pc", out var pc) && pc.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                    return "'pc' is not a string";
+                return FirstFieldProblem(root, ["handoff", "native_total"], IsUInt64, "an unsigned integer");
+            default:
+                return FirstFieldProblem(root, ["handoff", "retired"], IsUInt64, "an unsigned integer")
+                    ?? FirstFieldProblem(root, ["start_pc", "end_pc", "status"], IsString, "a string");
+        }
+    }
+
+    private static string? FirstFieldProblem(JsonElement root, string[] names, Func<JsonElement, bool> isValid, string expected)
+    {
+        foreach (var name in names)
+        {
+            if (!root.TryGetProperty(name, out var value) || !isValid(value))
+                return $"'{name}' is missing or is not {expected}";
+        }
+
+        return null;
+    }
+
+    private static bool IsUInt64(JsonElement value) => value.ValueKind == JsonValueKind.Number && value.TryGetUInt64(out _);
+
+    private static bool IsInt32(JsonElement value) => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _);
+
+    private static bool IsString(JsonElement value) => value.ValueKind == JsonValueKind.String;
+
     private sealed class ParsedStream
     {
         public string? Session { get; set; }
@@ -298,9 +334,17 @@ public static class UnitTraceJoiner
                         return parsed;
                     }
 
-                    if (!root.TryGetProperty("seq", out var seq) || seq.ValueKind != JsonValueKind.Number || seq.GetUInt64() != expectedSeq)
+                    if (!root.TryGetProperty("seq", out var seq) || seq.ValueKind != JsonValueKind.Number || !seq.TryGetUInt64(out var seqValue) || seqValue != expectedSeq)
                     {
                         errors.Add($"{where}: sequence gap (expected seq {expectedSeq})");
+                        return parsed;
+                    }
+
+                    // Join reads these fields without further checks, so a missing or mistyped one is rejected here, with its line.
+                    var fieldProblem = FieldProblem(root, kind);
+                    if (fieldProblem is not null)
+                    {
+                        errors.Add($"{where}: {fieldProblem}");
                         return parsed;
                     }
 

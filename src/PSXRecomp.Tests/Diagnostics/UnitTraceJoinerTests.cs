@@ -332,6 +332,58 @@ public class UnitTraceJoinerTests
         result.Errors.Should().Contain(e => e.Contains("empty trace"));
     }
 
+    // Malformed-but-valid JSON: a required field that is missing or has the wrong type must come back as Rejected with the
+    // line and field named, never as an exception out of Join.
+
+    [Fact]
+    public void A_Unit_Without_Its_Start_Field_Is_Rejected_Not_Thrown()
+    {
+        const string unitWithoutStart = "{\"v\":1,\"kind\":\"unit\",\"seq\":0,\"entry\":\"0x80000000\",\"next\":\"0x80000004\"," +
+            "\"end\":1,\"retired\":1,\"interrupted\":0,\"exception\":0,\"termination\":0}";
+
+        var result = UnitTraceJoiner.Join([NativeHeader(), unitWithoutStart, End(true)], [FallbackHeader(), End(true)]);
+
+        result.Status.Should().Be(UnitTraceJoinStatus.Rejected);
+        result.Errors.Should().Contain(e => e.Contains("native line 2") && e.Contains("'start'"));
+    }
+
+    [Fact]
+    public void A_Unit_Whose_Start_Is_Not_A_Number_Is_Rejected_Not_Thrown()
+    {
+        const string unitWithStringStart = "{\"v\":1,\"kind\":\"unit\",\"seq\":0,\"entry\":\"0x80000000\",\"next\":\"0x80000004\"," +
+            "\"start\":\"zero\",\"end\":1,\"retired\":1,\"interrupted\":0,\"exception\":0,\"termination\":0}";
+
+        var result = UnitTraceJoiner.Join([NativeHeader(), unitWithStringStart, End(true)], [FallbackHeader(), End(true)]);
+
+        result.Status.Should().Be(UnitTraceJoinStatus.Rejected);
+        result.Errors.Should().Contain(e => e.Contains("native line 2") && e.Contains("'start'"));
+    }
+
+    [Fact]
+    public void A_Handoff_Whose_Pc_Is_Not_A_String_Is_Rejected_Not_Thrown()
+    {
+        const string handoffWithNumericPc = "{\"v\":1,\"kind\":\"handoff\",\"seq\":0,\"handoff\":1,\"native_total\":0,\"pc\":2147483648}";
+
+        var result = UnitTraceJoiner.Join([NativeHeader(), handoffWithNumericPc, End(true)], [FallbackHeader(), End(true)]);
+
+        result.Status.Should().Be(UnitTraceJoinStatus.Rejected);
+        result.Errors.Should().Contain(e => e.Contains("native line 2") && e.Contains("'pc'"));
+    }
+
+    [Fact]
+    public void A_Fallback_Record_Without_Its_Start_Pc_Is_Rejected_Not_Thrown()
+    {
+        const string fallbackWithoutStartPc = "{\"v\":1,\"kind\":\"fallback\",\"seq\":0,\"handoff\":1,\"retired\":0," +
+            "\"status\":\"returned\",\"end_pc\":\"0x80010010\"}";
+
+        var result = UnitTraceJoiner.Join(
+            [NativeHeader(), HandoffAt(1, 1, 0, 0x80000000u), End(true)],
+            [FallbackHeader(), fallbackWithoutStartPc, End(true)]);
+
+        result.Status.Should().Be(UnitTraceJoinStatus.Rejected);
+        result.Errors.Should().Contain(e => e.Contains("fallback line 2") && e.Contains("'start_pc'"));
+    }
+
     // Issue #774 (B-5): the control-flow and stop invariants. Each native stretch must enter where the previous one ended.
 
     /// <summary>A unit with explicit termination and flags, for the stop and interrupt cases.</summary>
