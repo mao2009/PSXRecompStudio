@@ -97,7 +97,9 @@ same pipeline on a second OS, not a separately generated program.
 
 These two PNGs are screenshots of a real `conhost` window taken during the runs
 above. They are not mock-ups and not video. Their content is the actual output of
-the commands shown; only the window edges were cropped.
+the commands shown. Cropping only removed the window's outer edges and the
+shell prompt line below the output (which showed a local user path). No text was
+redrawn, replaced or composited.
 
 | File | Shows | Produced by |
 |---|---|---|
