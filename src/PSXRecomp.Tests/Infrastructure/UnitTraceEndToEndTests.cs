@@ -204,7 +204,7 @@ public sealed class UnitTraceEndToEndTests
     }
 
     /// <summary>
-    /// KNOWN DIVERGENCE, pinned and not fixed in B-5. The same kind of serviced SYSCALL is credited when it runs in native
+    /// KNOWN DIVERGENCE, pinned and not fixed (B-6a decision: the serviced SYSCALL retires; the fix is #789). The same kind of serviced SYSCALL is credited when it runs in native
     /// code (previous test) and not credited when it runs in the fallback: the interpreter's retirement loop skips its count
     /// after a serviced SYSCALL, while the interpreter still fetches it. Changing either count changes device time
     /// (host_retired feeds the scheduler), so the reconciliation is a runtime decision for Phase B-6 / Phase C.
@@ -282,6 +282,143 @@ public sealed class UnitTraceEndToEndTests
         // and its next pc carries no meaning, so it is not checked.
         join.Segments.Single(static s => s.Source == UnitTraceSegmentSource.Fallback).NextPc.Should().Be($"0x{Vector:X8}",
             "the interrupted fallback stretch ends at the vector");
+    }
+
+    /// <summary>
+    /// A load-heavy program whose timer edge can land between the two instructions of one fused block (deadline 4).
+    /// </summary>
+    private static uint[] LoadProgram(ushort deadline)
+    {
+        var main = new Block(Entry);
+        main.Emit(Ori(T1, Zero, 0x401), 0x40896000u); // MTC0 t1,SR: guest-owned IRQ enable
+        main.Emit(Li(T0, Target), [MipsEncoding.I(0x0F, (byte)T3, 0, 0x1F80)]);
+        main.Emit(Ori(T1, Zero, 1 << 6), Sw(T1, T3, 0x1074));
+        main.Emit(Ori(T1, Zero, deadline), Sw(T1, T3, 0x1128));
+        main.Emit(Ori(T1, Zero, 0x10), Sw(T1, T3, 0x1124));
+        main.Emit(Li(T2, Data), [Lw(T4, T2, 0), Addiu(T5, T4, 1), Lw(T6, T2, 4), Addu(T7, T5, T6), Sw(T7, T2, 8), Lw(T8, T2, 8), Addiu(T9, T8, 1), Nop]);
+        main.Emit(End());
+        return Image(main);
+    }
+
+    /// <summary>The interpreter's fetches on the same timer program, stopped at the vector (the vector is not fetched).</summary>
+    private static List<uint> InterpreterFetchesUntilVector(uint[] words)
+    {
+        var fetches = new List<uint>();
+        using var interpreter = new InterpreterTitleExecutionEngine(words, Entry, allowRuntimeRamExecution: true);
+        interpreter.FetchObserver = pc =>
+        {
+            if (pc == Vector)
+            {
+                interpreter.StopRequested = true;
+                return;
+            }
+
+            if (pc != 0u) fetches.Add(pc);
+        };
+        new ExecutionOrchestrator().Execute(interpreter, null, Request(1000));
+        return fetches;
+    }
+
+    [Fact]
+    public void InterruptInsideAFusedBlock_CreditsOnlyTheInstructionsThatCompleted()
+    {
+        var words = LoadProgram(4);
+        using var dir = new TempDirectory();
+        var (native, fallback) = RunTimerIrqTraced(words, dir);
+        var join = UnitTraceJoiner.Join(native, fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+
+        // The native unit that was interrupted in its body: it completed one instruction, then the interrupt was taken
+        // at the next instruction's boundary. Its next pc is the vector, not the program-order successor.
+        var interrupted = native.Select(static line => JsonDocument.Parse(line).RootElement)
+            .Single(static r => r.GetProperty("kind").GetString() == "unit" && r.GetProperty("interrupted").GetInt32() == 1);
+        interrupted.GetProperty("entry").GetString().Should().Be("0x80001034");
+        interrupted.GetProperty("retired").GetInt32().Should().Be(1);
+        interrupted.GetProperty("next").GetString().Should().Be($"0x{Vector:X8}", "the in-body interrupt redirects next to the vector");
+
+        var fetches = InterpreterFetchesUntilVector(words);
+        var retired = join.ComparableUpToRetired;
+        retired.Should().Be((ulong)fetches.Count - 1, "the preempted fetch is counted as a fetch but does not retire");
+        fetches[(int)retired - 1].Should().Be(0x80001034u, "the last completed instruction is the unit's entry");
+        fetches[(int)retired].Should().Be(0x80001038u, "the preempted instruction is the program-order successor");
+    }
+
+    [Fact]
+    public void DelaySlotSyscall_IsRefusedByBothEngines_AndNeitherCompletes()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), [Jalr(T0), MipsEncoding.Syscall()]);
+        main.Emit(Addiu(S1, S1, 1));
+        main.Emit(End());
+        var callee = new Block(Target);
+        callee.Emit(Jr(Ra), Nop);
+        var words = Image(main, callee);
+        using var dir = new TempDirectory();
+        var traced = RunTraced(words, dir);
+        var reference = RunInterpreter(words);
+
+        traced.Run.Result.State.Should().Be(TitleExecutionState.RuntimeFailure, "a SYSCALL in a delay slot is not serviced");
+        reference.State.Should().Be(traced.Run.Result.State);
+
+        var faulting = traced.Native.Select(static line => JsonDocument.Parse(line).RootElement)
+            .Single(static r => r.GetProperty("kind").GetString() == "unit" && r.GetProperty("exception").GetInt32() == 1);
+        faulting.GetProperty("termination").GetInt32().Should().Be((int)RecompilerIrTerminationReason.Exception);
+        faulting.GetProperty("entry").GetString().Should().Be("0x80001008", "the branch is the unit's entry");
+
+        // The delay slot was fetched by both engines. The branch is credited once (both engines execute it), which is the
+        // current convention; under the R3000 restart model it would be re-executed, so the convention is open (see docs).
+        traced.InterpreterFetches.Should().Contain(0x8000100Cu);
+        faulting.GetProperty("retired").GetInt32().Should().Be(1);
+    }
+
+    /// <summary>An exception the runtime does not service stops the run; it is not retired, and both engines agree.</summary>
+    [Fact]
+    public void UnserviceableException_IsNotRetired_AndBothEnginesStop()
+    {
+        var main = new Block(Entry);
+        main.Emit(Addiu(S0, S0, 1), MipsEncoding.Break(), Addiu(S1, S1, 1));
+        main.Emit(End());
+        using var dir = new TempDirectory();
+        var traced = RunTraced(Image(main), dir);
+        var reference = RunInterpreter(Image(main));
+
+        traced.Run.Result.State.Should().Be(TitleExecutionState.RuntimeFailure);
+        reference.State.Should().Be(traced.Run.Result.State);
+        var faulting = traced.Native.Select(static line => JsonDocument.Parse(line).RootElement)
+            .Single(static r => r.GetProperty("kind").GetString() == "unit" && r.GetProperty("exception").GetInt32() == 1);
+        faulting.GetProperty("entry").GetString().Should().Be("0x80001004", "the BREAK is the faulting unit");
+        faulting.GetProperty("retired").GetInt32().Should().Be(0, "the faulting instruction does not retire");
+        faulting.GetProperty("termination").GetInt32().Should().Be((int)RecompilerIrTerminationReason.Exception);
+    }
+
+    /// <summary>
+    /// native SYSCALL -&gt; fallback (with its own SYSCALL) -&gt; native. The native part matches the interpreter boundary by
+    /// boundary; the fallback part carries the pinned one-retirement difference, so the joined total is exactly one short.
+    /// </summary>
+    [Fact]
+    public void NativeThenFallbackThenNative_WithASyscallInEachPart_MatchesExceptTheKnownSyscallDifference()
+    {
+        var main = new Block(Entry);
+        main.Emit(Ori(A0, Zero, 2), MipsEncoding.Syscall(), Addiu(S0, S0, 1));
+        main.Emit(Li(T0, Target), [Jalr(T0), Nop]);
+        main.Emit(Addiu(S1, S1, 1));
+        main.Emit(End());
+        var callee = new Block(Target);
+        callee.Emit(Ori(A0, Zero, 2), MipsEncoding.Syscall(), Addiu(S2, S2, 1), Jr(Ra), Nop);
+        using var dir = new TempDirectory();
+        var traced = RunTraced(Image(main, callee), dir);
+        traced.Run.Result.State.Should().Be(TitleExecutionState.Completed);
+
+        var join = UnitTraceJoiner.Join(traced.Native, traced.Fallback);
+        join.Status.Should().Be(UnitTraceJoinStatus.Complete, join.Reason ?? string.Join("; ", join.Errors));
+        var fallback = join.Segments.Single(static s => s.Source == UnitTraceSegmentSource.Fallback);
+        (fallback.GlobalEnd - fallback.GlobalStart).Should().Be(4UL, "the fallback SYSCALL is not retired (pinned, #789)");
+        join.ComparableUpToRetired.Should().Be((ulong)traced.InterpreterFetches.Count - 1);
+        var nativeBefore = join.Segments.Where(s => s.Source == UnitTraceSegmentSource.Native && s.GlobalEnd <= fallback.GlobalStart).ToList();
+        foreach (var stretch in nativeBefore.Where(static s => s.GlobalEnd > s.GlobalStart))
+        {
+            traced.InterpreterFetches[(int)stretch.GlobalStart].Should().Be(Pc(stretch.EntryPc));
+        }
     }
 
     private static (string[] Native, string[] Fallback) RunTimerIrqTraced(uint[] words, TempDirectory dir)
