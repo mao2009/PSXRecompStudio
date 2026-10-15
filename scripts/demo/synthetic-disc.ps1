@@ -50,7 +50,7 @@ $ExpectedSha256 = '4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152a
 
 if ($OpenBiosCompatible -and $BothEndianIso9660) { throw 'OpenBiosCompatible and BothEndianIso9660 have no combined pin' }
 if ($OpenBiosCompatible) { $ExpectedSha256 = 'bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03' }
-if ($BothEndianIso9660) { $ExpectedSha256 = '0f6f743f47e7c87b8737f7427354dc582d6c9725d1396d1b3cddfc5b7c061941' }
+if ($BothEndianIso9660) { $ExpectedSha256 = '39892b2b734595491f234da7992fa9522b00025c72ec015d7ee51676d474c05b' }
 
 # --- 1. the boot PS-X EXE: the checked BiosPutCharMarker fixture, built from first principles ----
 function Imm([int]$op, [int]$rt, [int]$imm) { [uint32](($op -shl 26) -bor ($rt -shl 16) -bor $imm) }
@@ -113,6 +113,8 @@ function WriteDirRecord([byte[]]$buffer, [int]$offset, [uint32]$location, [uint3
     WriteU32 $buffer ($offset + 2) $location
     WriteU32 $buffer ($offset + 10) $size
     if ($BothEndianIso9660) {
+        WriteU16 $buffer ($offset + 28) ([uint16]1)
+        WriteU16BE $buffer ($offset + 30) ([uint16]1)
         WriteU32BE $buffer ($offset + 6) $location
         WriteU32BE $buffer ($offset + 14) $size
     }
@@ -140,6 +142,7 @@ if ($BothEndianIso9660) {
     WriteU16BE $iso ($pvd + 130) ([uint16]$SectorSize)
     WriteU32BE $iso ($pvd + 136) ([uint32]10)
     WriteU32BE $iso ($pvd + 148) ([uint32]$MPathTableSector)
+    $iso[$pvd + 881] = 1 # File Structure Version (BP 882)
     # Type M path table: the root entry with big-endian location and parent.
     $mTable = $MPathTableSector * $SectorSize
     $iso[$mTable] = 1
@@ -161,7 +164,9 @@ if ($BothEndianIso9660) {
     # The root's ".." refers to the root itself.
     $root += WriteDirRecord $iso $root ([uint32]$RootSector) ([uint32]$SectorSize) ([byte]0x02) ([byte[]]@(1))
 }
-foreach ($file in $files) {
+# ECMA-119 9.3: the corrected layout writes records in File Identifier order; extents keep the file order above.
+$recordOrder = if ($BothEndianIso9660) { $files | Sort-Object { $_.Name } } else { $files }
+foreach ($file in $recordOrder) {
     $root += WriteDirRecord $iso $root ([uint32]$file.Location) ([uint32]$file.Bytes.Length) ([byte]0x00) ([Text.Encoding]::ASCII.GetBytes($file.Name))
 }
 foreach ($file in $files) {
