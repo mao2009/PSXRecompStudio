@@ -14,8 +14,9 @@ internal enum CodePointerRootKind
 }
 
 /// <summary>
-/// One discovered code-pointer root: the entry PC, and the image word that named it (Issue #773). <see cref="SourcePc"/> is
-/// the word holding the pointer, or the <c>lui</c> of a materializing pair, so every root can be traced back to the bytes.
+/// One discovered code-pointer root (Issue #773). <see cref="TargetPc"/> is the in-image PC that becomes a block entry.
+/// <see cref="SourcePc"/> is the image word that named it: the pointer word itself, or the <c>lui</c> of a materializing pair.
+/// Both are kept so that every root traces back to the bytes that produced it.
 /// </summary>
 [Domain]
 internal sealed record CodePointerRoot(uint TargetPc, uint SourcePc, CodePointerRootKind Kind);
@@ -29,14 +30,18 @@ internal sealed record CodePointerRoot(uint TargetPc, uint SourcePc, CodePointer
 /// </para>
 /// <list type="bullet">
 /// <item>the target is not already reachable from the entry or the explicit roots (existing discovery is unchanged);</item>
-/// <item>the target looks like a function entry: a <c>addiu $sp,$sp,-N</c> prologue, or the word after a <c>jr $ra</c> and its delay slot;</item>
+/// <item>the target looks like a function entry: an <c>addiu $sp,$sp,-N</c> prologue, or the word after a <c>jr $ra</c> and its delay slot;</item>
 /// <item>discovery from the target alone is structurally valid (<see cref="ReachableProgramBuilder.IsDiscoverableRoot"/>).</item>
 /// </list>
 /// <para>
-/// A rejected candidate costs only code that is never run, because every AOT block is guarded by its words. A missed one
-/// stays on the interpreter fallback, so the scan errs toward the first. Whole-image scanning is O(words), with one bounded
-/// discovery per shape-matching candidate. ponytail: a simple-ceiling heuristic. Cross-function jump tables and computed
-/// pointers (<c>sll</c>/<c>addu</c> indexing) are not matched. Add them when a title's fallback trace shows the miss.
+/// Every AOT block is guarded by the words it was compiled from, so an accepted root that never runs costs only build time.
+/// A rejected candidate that does run stays on the interpreter fallback; the rules therefore favor rejection over acceptance.
+/// Cost is one linear pass over the words plus one bounded discovery per shape-matching candidate.
+/// </para>
+/// <para>
+/// ponytail: the scan matches only direct data-word pointers and adjacent <c>lui</c>/<c>addiu|ori</c> pairs. Computed targets
+/// (<c>sll</c>/<c>addu</c> table indexing, pointers built from non-adjacent instructions) are not matched. Upgrade path: a
+/// fallback-observed root feed (see the design note for the next stage), not a wider static pattern.
 /// </para>
 /// </summary>
 [Domain]
