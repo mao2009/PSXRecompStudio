@@ -420,4 +420,54 @@ public sealed class SyntheticIsoBothEndianTests
         Sha256Hex(SyntheticDiscBuilder.Bootable(SyntheticDiscBuilder.OpenBiosCompatibleExe(ExeBytes()))).Should().Be(OpenBiosSha256);
         Disc().Should().NotEqual(SyntheticDiscBuilder.Bootable(ExeBytes()), "the corrected volume is a distinct fixture");
     }
+
+    // Issue #743 comparison fixture (the 4th): the corrected ISO 9660 volume carrying the OpenBIOS-compatible EXE.
+    // Mirrored by scripts/demo/synthetic-disc.ps1 -OpenBiosCompatible -BothEndianIso9660. The three pins above are unchanged.
+    private const string OpenBiosBothEndianSha256 = "1a5c41f912e1e2b7687bd2dea8c127397581b34f7ed5271dbf509d46126e69c7";
+
+    private static byte[] OpenBiosBothEndianExe() => SyntheticDiscBuilder.OpenBiosCompatibleExe(ExeBytes());
+
+    private static byte[] OpenBiosBothEndianDisc() => SyntheticDiscBuilder.Bootable(OpenBiosBothEndianExe(), iso9660BothEndian: true);
+
+    [Fact]
+    public void OpenBiosBothEndianDisc_MatchesItsOwnPin_AndIsADistinctFourthFixture()
+    {
+        var disc = OpenBiosBothEndianDisc();
+        Sha256Hex(disc).Should().Be(OpenBiosBothEndianSha256);
+        new[] { LegacySha256, OpenBiosSha256, CorrectedSha256 }.Should().NotContain(Sha256Hex(disc));
+        Sha256Hex(disc).Should().Be(Sha256Hex(OpenBiosBothEndianDisc()), "generation is a pure function of the inputs");
+    }
+
+    [Fact]
+    public void OpenBiosBothEndianDisc_VolumeIsCorrected_AndTheBootExeIsSectorAlignedAndEntersAtTheMarker()
+    {
+        var disc = OpenBiosBothEndianDisc();
+        var pvd = User(disc, 16);
+
+        ReadField(pvd, 128, 2, bigEndian: false).Should().Be(Payload, "logical block size");
+        ReadField(pvd, 120, 2, bigEndian: false).Should().Be(1u, "volume set size");
+        ReadField(pvd, 124, 2, bigEndian: false).Should().Be(1u, "volume sequence number");
+        pvd[FileStructureVersionOffset].Should().Be(1, "File Structure Version (BP 882)");
+        ReadField(pvd, 80, 4, bigEndian: false).Should().Be((uint)(disc.Length / RawSector), "volume space size equals the sector count");
+        ReadField(pvd, 80, 4, bigEndian: false).Should().Be(ReadField(pvd, 84, 4, bigEndian: true), "both-endian space size");
+
+        var walk = Walk(disc);
+        walk.Files.Should().ContainKey("PSXRECOMP.EXE");
+        var (extent, size) = walk.Files["PSXRECOMP.EXE"];
+        size.Should().Be((uint)OpenBiosBothEndianExe().Length, "the file size is the sector-aligned EXE");
+        (size % (uint)Payload).Should().Be(0u, "the EXE is a whole number of 2048-byte sectors");
+
+        var bytes = new byte[size];
+        for (var i = 0; i < size / Payload; i++)
+        {
+            User(disc, (int)extent + i).AsSpan(0, Payload).CopyTo(bytes.AsSpan(i * Payload));
+        }
+        bytes.Should().Equal(OpenBiosBothEndianExe(), "the EXE bytes read back through the corrected volume");
+
+        var exe = PsxExe.Load(bytes, "synthetic");
+        exe.Header.TextSize.Should().Be(2048u, "the OpenBIOS CD driver reads whole sectors");
+        exe.Header.TextSize.Should().Be((uint)(bytes.Length - 0x800));
+        exe.Header.TextStart.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart, "the text segment loads at the synthetic text start");
+        exe.Header.EntryPoint.Should().Be(SyntheticPsxExeBuilder.DefaultTextStart, "the entry point is the synthetic text start");
+    }
 }

@@ -22,7 +22,8 @@
   Write the corrected ISO 9660 volume (Issue #743): every mandatory both-endian numeric field carries its
   big-endian half, the Type M path table is present, and the root has its ".." record. The first file moves
   to sector 21. Writes synthetic-disc-iso9660-bothendian.bin and checks its own pin; the legacy baseline
-  (default) and the OpenBIOS-compatible pin are unchanged.
+  (default) and the OpenBIOS-compatible pin are unchanged. Combined with -OpenBiosCompatible it writes the
+  fourth fixture, synthetic-disc-openbios-iso9660-bothendian.bin, with its own pin (Issue #743 comparison).
 
 .PARAMETER WorkDir
   Output directory (default: a temp directory). Nothing is written into the repository.
@@ -48,9 +49,9 @@ $BootPath = 'cdrom:\PSXRECOMP.EXE;1'
 $ExeIsoName = 'PSXRECOMP.EXE;1'
 $ExpectedSha256 = '4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27'
 
-if ($OpenBiosCompatible -and $BothEndianIso9660) { throw 'OpenBiosCompatible and BothEndianIso9660 have no combined pin' }
-if ($OpenBiosCompatible) { $ExpectedSha256 = 'bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03' }
-if ($BothEndianIso9660) { $ExpectedSha256 = '39892b2b734595491f234da7992fa9522b00025c72ec015d7ee51676d474c05b' }
+if ($OpenBiosCompatible -and $BothEndianIso9660) { $ExpectedSha256 = '1a5c41f912e1e2b7687bd2dea8c127397581b34f7ed5271dbf509d46126e69c7' }
+elseif ($OpenBiosCompatible) { $ExpectedSha256 = 'bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03' }
+elseif ($BothEndianIso9660) { $ExpectedSha256 = '39892b2b734595491f234da7992fa9522b00025c72ec015d7ee51676d474c05b' }
 
 # --- 1. the boot PS-X EXE: the checked BiosPutCharMarker fixture, built from first principles ----
 function Imm([int]$op, [int]$rt, [int]$imm) { [uint32](($op -shl 26) -bor ($rt -shl 16) -bor $imm) }
@@ -191,7 +192,7 @@ for ($lba = 0; $lba -lt $cursor; $lba++) {
 
 # --- 4. write and verify the checked contract ---
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
-$fileName = if ($OpenBiosCompatible) { 'synthetic-disc-openbios.bin' } elseif ($BothEndianIso9660) { 'synthetic-disc-iso9660-bothendian.bin' } else { 'synthetic-disc.bin' }
+$fileName = if ($OpenBiosCompatible -and $BothEndianIso9660) { 'synthetic-disc-openbios-iso9660-bothendian.bin' } elseif ($OpenBiosCompatible) { 'synthetic-disc-openbios.bin' } elseif ($BothEndianIso9660) { 'synthetic-disc-iso9660-bothendian.bin' } else { 'synthetic-disc.bin' }
 $path = Join-Path $WorkDir $fileName
 [IO.File]::WriteAllBytes($path, $disc)
 $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
