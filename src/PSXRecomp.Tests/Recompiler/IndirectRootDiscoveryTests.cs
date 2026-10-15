@@ -205,4 +205,32 @@ public sealed class IndirectRootDiscoveryTests
         plain.Images.Single().Roots.Should().Equal(Base);
         opted.Images.Single().Roots.Should().Equal(Base, callerA, callerB);
     }
+
+    // Review (#792): a structurally invalid reachable graph must not come back as a partial root set that reads as a complete search.
+    // A branch as the last word has its delay slot past the image, which discovery rejects as an invalid transfer.
+    private const uint BranchAtImageEnd = 0x10000000u; // beq $zero,$zero,0
+
+    [Fact]
+    public void A_Seed_Whose_Reachable_Graph_Is_Invalid_Throws_Instead_Of_Returning_A_Partial_Result()
+    {
+        var image = new[] { BranchAtImageEnd };
+
+        var act = () => IndirectRootDiscovery.Find(Base, image, [Base]);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void A_Manifest_With_An_Invalid_Indirect_Search_Fails_Closed_Naming_The_Image()
+    {
+        var image = new[] { BranchAtImageEnd };
+        using var dir = new TempDirectory();
+        dir.WriteFile("prog.exe", SyntheticPsxExeBuilder.Build(Base, Base, (uint)image.Length * 4, ToBytes(image)));
+        var firmware = OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]);
+        var manifest = dir.WriteFile("opted.txt", System.Text.Encoding.ASCII.GetBytes("exe prog prog.exe\nindirect-roots\n"));
+
+        var act = () => LoadImageManifest.Read(manifest, firmware, disc: null);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*0x80080000*");
+    }
 }

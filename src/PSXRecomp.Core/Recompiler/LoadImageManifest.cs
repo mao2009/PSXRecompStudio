@@ -116,7 +116,18 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             foreach (var index in exeImages)
             {
                 var spec = images[index];
-                var found = IndirectRootDiscovery.Find(spec.LoadAddress, spec.Words, spec.Roots);
+                IReadOnlyList<IndirectRoot> found;
+                try
+                {
+                    found = IndirectRootDiscovery.Find(spec.LoadAddress, spec.Words, spec.Roots);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Fail closed: a partial root set from an invalid graph must not stand in for the image's roots.
+                    throw new InvalidDataException(
+                        $"manifest: the indirect-root search for the image at 0x{spec.LoadAddress:X8} reaches an invalid transfer: {ex.Message}", ex);
+                }
+
                 images[index] = spec with { Roots = spec.Roots.Concat(found.Select(static root => root.TargetPc)).Distinct().Order().ToArray() };
             }
         }

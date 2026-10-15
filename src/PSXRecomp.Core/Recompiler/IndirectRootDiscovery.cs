@@ -80,58 +80,53 @@ internal static class IndirectRootDiscovery
 
         bool Full() => accepted.Count >= MaxRoots || checks >= MaxCandidateChecks;
 
-        try
+        for (var round = 0; round < MaxRounds && !Full(); round++)
         {
-            for (var round = 0; round < MaxRounds && !Full(); round++)
-            {
-                var reach = ReachableProgramBuilder.ReachablePcs(loadAddress, words, seeds.Concat(accepted.Keys));
-                var added = false;
+            // Throws InvalidOperationException when a seed or an accepted root reaches a structurally invalid transfer. That
+            // is not caught here: a partial root set would read as a complete search.
+            var reach = ReachableProgramBuilder.ReachablePcs(loadAddress, words, seeds.Concat(accepted.Keys));
+            var added = false;
 
-                foreach (var pc in reach.Order())
+            foreach (var pc in reach.Order())
+            {
+                if (!TryGetTableBase(loadAddress, words, imageEnd, reach, pc, out var tableBase))
                 {
-                    if (!TryGetTableBase(loadAddress, words, imageEnd, reach, pc, out var tableBase))
+                    continue;
+                }
+
+                for (var i = 0; i < MaxTableWords && !Full(); i++)
+                {
+                    var address = (ulong)tableBase + (ulong)i * InstructionSize;
+                    if (address > uint.MaxValue || address + InstructionSize > imageEnd)
+                    {
+                        break;
+                    }
+
+                    var tableAddress = (uint)address;
+                    var target = words[(int)((tableAddress - loadAddress) / InstructionSize)];
+                    if (!IsInImagePc(loadAddress, imageEnd, target))
+                    {
+                        break;
+                    }
+
+                    if (reach.Contains(target) || accepted.ContainsKey(target))
                     {
                         continue;
                     }
 
-                    for (var i = 0; i < MaxTableWords && !Full(); i++)
+                    checks++;
+                    if (IsFunctionCandidate(loadAddress, words, target))
                     {
-                        var address = (ulong)tableBase + (ulong)i * InstructionSize;
-                        if (address > uint.MaxValue || address + InstructionSize > imageEnd)
-                        {
-                            break;
-                        }
-
-                        var tableAddress = (uint)address;
-                        var target = words[(int)((tableAddress - loadAddress) / InstructionSize)];
-                        if (!IsInImagePc(loadAddress, imageEnd, target))
-                        {
-                            break;
-                        }
-
-                        if (reach.Contains(target) || accepted.ContainsKey(target))
-                        {
-                            continue;
-                        }
-
-                        checks++;
-                        if (IsFunctionCandidate(loadAddress, words, target))
-                        {
-                            accepted.Add(target, new IndirectRoot(target, tableAddress, pc));
-                            added = true;
-                        }
+                        accepted.Add(target, new IndirectRoot(target, tableAddress, pc));
+                        added = true;
                     }
                 }
-
-                if (!added)
-                {
-                    break;
-                }
             }
-        }
-        catch (InvalidOperationException)
-        {
-            // A seed reaches a structurally invalid transfer. The caller's build reports that, so the roots found so far stand.
+
+            if (!added)
+            {
+                break;
+            }
         }
 
         return accepted.Values.ToArray();
