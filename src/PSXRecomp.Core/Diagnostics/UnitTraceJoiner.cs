@@ -47,26 +47,65 @@ public static class UnitTraceJoiner
         var expectedHandoff = 1UL;
         var fallbackRecords = fallback.Records;
 
+        // Control-flow state. chainPc is the pc the next native stretch must enter at, when the traces fix it: a native
+        // unit's next pc, or a returned fallback's end pc. It is unknown after a host-served transfer or an interrupt
+        // boundary, because the host or the interrupt decides where execution resumes.
+        string? chainPc = null;
+        string? handoffPc = null;
+        var sinceHandoff = false;
+        var stoppedNative = false;
+        var stoppedFallback = false;
+
         foreach (var record in native.Records)
         {
             var kind = record.GetProperty("kind").GetString();
             var seq = record.GetProperty("seq").GetUInt64();
+            if (stoppedNative)
+                return UnitTraceJoin.Rejected([$"native seq {seq}: a record follows the run's stop at native total {nativeTotal}"]);
+
             if (kind == "unit")
             {
                 var start = record.GetProperty("start").GetUInt64();
                 var end = record.GetProperty("end").GetUInt64();
                 var retired = record.GetProperty("retired").GetUInt64();
+                var entry = record.GetProperty("entry").GetString()!;
+                var next = record.GetProperty("next").GetString()!;
+                var termination = record.GetProperty("termination").GetInt32();
+                var interrupted = record.GetProperty("interrupted").GetInt32() != 0;
+                var exception = record.GetProperty("exception").GetInt32() != 0;
                 if (end < start || retired != end - start)
                     return UnitTraceJoin.Rejected([$"native seq {seq}: retired {retired} does not equal end {end} - start {start}"]);
                 if (start != nativeTotal)
                     return UnitTraceJoin.Rejected([$"native seq {seq}: starts at native total {start} but the trace is at {nativeTotal} (gap or reorder)"]);
 
+                // A host-transfer iteration: the dispatcher's pass that handed off at its entry pc, so it completes nothing.
+                // Any other unit that completes nothing must be an interrupt boundary or a stop.
+                var hostIteration = sinceHandoff && retired == 0 && termination == 0 && !interrupted && !exception
+                    && string.Equals(entry, handoffPc, StringComparison.OrdinalIgnoreCase);
+                if (retired == 0 && termination == 0 && !hostIteration && !interrupted)
+                    return UnitTraceJoin.Rejected([$"native seq {seq}: a unit completes no instruction and is neither a transfer iteration nor an interrupt boundary"]);
+                if (stoppedFallback && termination == 0)
+                    return UnitTraceJoin.Rejected([$"native seq {seq}: a unit follows a fallback segment that stopped the run"]);
+
+                if (hostIteration)
+                {
+                    if (chainPc is not null && !string.Equals(next, chainPc, StringComparison.OrdinalIgnoreCase))
+                        return UnitTraceJoin.Rejected([$"native seq {seq}: the transfer iteration ends at {next} but the fallback returned to {chainPc}"]);
+                }
+                else if (!interrupted && chainPc is not null && !string.Equals(entry, chainPc, StringComparison.OrdinalIgnoreCase))
+                {
+                    // An interrupt boundary moves the entry to the vector, so only an uninterrupted unit must continue the chain.
+                    return UnitTraceJoin.Rejected([$"native seq {seq}: enters at {entry} but the previous stretch ended at {chainPc} (control-flow break)"]);
+                }
+
                 nativeTotal = end;
                 segments.Add(new UnitTraceSegment(
                     UnitTraceSegmentSource.Native, Handoff: 0, Status: null,
-                    EntryPc: record.GetProperty("entry").GetString()!,
-                    NextPc: record.GetProperty("next").GetString()!,
+                    EntryPc: entry, NextPc: next,
                     GlobalStart: start + fallbackTotal, GlobalEnd: end + fallbackTotal));
+                chainPc = next;
+                sinceHandoff = false;
+                stoppedNative = termination != 0;
                 continue;
             }
 
@@ -78,6 +117,11 @@ public static class UnitTraceJoiner
                 return UnitTraceJoin.Rejected([$"native seq {seq}: handoff {handoff} out of order (expected {expectedHandoff})"]);
             if (atNative != nativeTotal)
                 return UnitTraceJoin.Rejected([$"native seq {seq}: handoff {handoff} at native total {atNative} but the trace is at {nativeTotal}"]);
+            if (stoppedFallback)
+                return UnitTraceJoin.Rejected([$"native seq {seq}: handoff {handoff} follows a fallback segment that stopped the run"]);
+            handoffPc = nativePc;
+            sinceHandoff = true;
+            chainPc = null;
 
             if (fallbackIndex >= fallbackRecords.Count)
             {
@@ -118,11 +162,17 @@ public static class UnitTraceJoiner
             if (nativePc is not null && !string.Equals(nativePc, startPc, StringComparison.OrdinalIgnoreCase))
                 return UnitTraceJoin.Rejected([$"handoff {handoff}: native transfer pc {nativePc} but fallback record pc {startPc}"]);
 
+            var endPc = fallbackRecord.GetProperty("end_pc").GetString()!;
+            // Only a returned segment fixes where the artifact resumes. A host-served transfer resumes wherever the host
+            // decides, and a stopped segment ends the run.
+            chainPc = status == "returned" ? endPc : null;
+            stoppedFallback = status == "stopped";
+
             segments.Add(new UnitTraceSegment(
                 isHostTransfer ? UnitTraceSegmentSource.Host : UnitTraceSegmentSource.Fallback,
                 Handoff: checked((uint)handoff), Status: status,
                 EntryPc: startPc,
-                NextPc: fallbackRecord.GetProperty("end_pc").GetString()!,
+                NextPc: endPc,
                 GlobalStart: nativeTotal + fallbackTotal, GlobalEnd: nativeTotal + fallbackTotal + fallbackRetired));
             fallbackTotal += fallbackRetired;
             fallbackIndex++;
