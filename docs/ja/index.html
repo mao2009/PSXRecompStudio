@@ -27,6 +27,7 @@
     <nav class="nav" aria-label="メインナビゲーション">
       <a class="brand" href="./">PSXRecompStudio</a>
       <div class="nav-links">
+        <a href="get-involved.html">協力・参加</a>
         <a href="faq.html">FAQ</a>
         <a href="cli.html">CLI</a>
         <a href="runtime.html">Runtime</a>
@@ -41,19 +42,21 @@
     <section class="hero">
       <p class="eyebrow">オープンソース PlayStation 1 研究</p>
       <h1>PSXRecompStudio</h1>
-      <p class="lead">PlayStation 1（PS1 / PSX）のバイナリ解析、MIPS R3000A解析、静的再コンパイル、リバースエンジニアリング、ネイティブ移植を研究するための開発環境です。</p>
-      <p>現在は完全な市販PS1タイトルをネイティブ移植へ変換する段階には到達していません。実ROM由来の限定的な再コンパイル検証、実行可能な生成ホスト成果物、分類可能なCLI実行結果、部分的なPS1 Runtime実装を積み上げています。</p>
-      <p class="actions"><a class="button" href="https://github.com/mao2009/PSXRecompStudio">GitHubでソースを見る</a></p>
+      <p class="lead">PS1バイナリ解析、MIPS R3000Aの検証、静的再コンパイルを研究するオープンソースプロジェクトです。</p>
+      <p><strong>現在できること：</strong>限定的な再コンパイル・インタープリタ比較とPS-X EXE/CHDの解析。</p>
+      <p><strong>まだできないこと：</strong>市販ゲーム全体のAOT再コンパイルや、遊べるネイティブ移植。</p>
+      <p><strong>最初の一歩：</strong><a href="faq.html">FAQ</a>、<a href="cli.html">CLI</a>、<a href="get-involved.html#first-contributions">最初の貢献3例</a>。</p>
+      <p class="actions"><a class="button" href="get-involved.html#first-contributions">協力・参加</a> <a href="../">English</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p>
     </section>
 
     <section id="persona-milestone">
-      <h2>最新の成果：Personaのオープニング描画</h2>
+      <h2>最新の成果：OpenBIOSインタープリタでPersonaのオープニング画像を確認</h2>
       <p>OpenBIOSを用いたインタープリタ経路で『女神異聞録ペルソナ』のオープニング冒頭を表示できました。ATLUSロゴと「胡蝶の夢」に関する文章をVBlank単位で確認しています。</p>
       <div class="grid">
         <figure class="card"><img src="../assets/images/persona-opening/atlus-logo.png" width="320" height="240" loading="lazy" alt="ペルソナのオープニングに表示されたATLUSロゴ" style="max-width:100%;height:auto"><figcaption>ATLUSロゴ — VBlank 1200</figcaption></figure>
         <figure class="card"><img src="../assets/images/persona-opening/butterfly-dream.png" width="320" height="240" loading="lazy" alt="胡蝶の夢を題材としたオープニング文章" style="max-width:100%;height:auto"><figcaption>冒頭の文章 — VBlank 2700</figcaption></figure>
       </div>
-      <p><strong>達成範囲：</strong>実ゲームの描画進行を確認しましたが、タイトル画面到達、ゲーム全体のAOT再コンパイル、操作可能性は未確認です。<a href="https://github.com/mao2009/PSXRecompStudio/pull/754">証拠・実装（PR #754）</a>をご覧ください。画像は互換性研究の限定的な資料であり、本プロジェクトはATLUSと無関係です。</p>
+      <p><strong>達成範囲：</strong>実ゲームの描画進行を確認しましたが、タイトル画面到達、ゲーム全体のAOT再コンパイル、操作可能性は未確認です。<a href="https://github.com/mao2009/PSXRecompStudio/pull/754">証拠・実装（PR #754）</a>をご覧ください。画像は互換性研究の限定的な資料であり、本プロジェクトはATLUSと無関係です。権利関係は<a href="../legal.html">Legal</a>をご覧ください。</p>
     </section>
 
     <section>
