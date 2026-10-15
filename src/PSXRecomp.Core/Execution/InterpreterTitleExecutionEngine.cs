@@ -438,6 +438,17 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         switch (snapshot.Termination)
         {
+            case RecompilerIrTerminationReason.ExecutionBudgetExceeded when StopRequested:
+                // A probe's StopRequested ends the step loop before the fetched instruction executes, and the loop
+                // then reports the same termination a real budget exhaustion would (see the property's contract).
+                // Nothing was retired against a budget, so saying "retired its budget" here is false and misleads
+                // triage: name the stop instead (Issue #774).
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired,
+                    MixedFallbackDiagnostics.StoppedOnRequest,
+                    $"A fallback segment stopped on the engine's StopRequested at pc 0x{snapshot.PC:X8} " +
+                    $"({retired} instructions retired); no instruction budget was exhausted.");
+
             case RecompilerIrTerminationReason.ExecutionBudgetExceeded:
                 // Still inside the program (or a guest handler) with no clean block entry reached.
                 return new FallbackSegmentOutcome(

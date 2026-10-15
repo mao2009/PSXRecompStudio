@@ -41,6 +41,10 @@ public static class MixedFallbackDiagnostics
     /// <summary>One fallback segment retired its whole instruction budget without reaching a clean block entry.</summary>
     public const string SegmentBudgetExhausted = "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED";
 
+    /// <summary>The segment ended because the engine's diagnostic <c>StopRequested</c> fired (a probe's stop PC), so
+    /// no budget was spent and no exhaustion happened.</summary>
+    public const string StoppedOnRequest = "ARTIFACT_FALLBACK_STOP_REQUESTED";
+
     /// <summary>The run made more artifact-to-interpreter handoffs than its transition budget.</summary>
     public const string TransitionBudgetExhausted = "ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED";
 
