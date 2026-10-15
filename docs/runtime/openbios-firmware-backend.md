@@ -514,8 +514,10 @@ same one that ran the interpreter reference.
 | `0x80081BC8` (`DecDCTinSync`, MDEC status `0x1F801824`) | **never fetched in 3,000,000,000 fetches (= 88.6 s at the PSX's 33.87 MHz)** | reached at 268,652,329 native + 3,827,708 fallback = **272,480,037 guest cycles** (≈8.0 s of guest CPU time) | **host-only** |
 
 "identical" is `ProbeGuestState.Compare`: PC, `r1`..`r31`, HI/LO, SR/CAUSE/EPC/BadVAddr, all of the 2 MiB of main
-RAM (SHA-256), VRAM SHA-256, `gpustat`, and every captured device register including `guest_cycles`. So both
-engines agree bit for bit through the first 268,664,967 guest cycles and then separate: the host is at the movie
+RAM (SHA-256), VRAM SHA-256, `gpustat`, and every captured device register including `guest_cycles`. That equality
+is a comparison of the **state at the checkpoint instant** (the PC's first fetch); the cycles *between* checkpoints
+are not observed, so it proves "no divergence was observed at this checkpoint", not "no divergence exists at any
+earlier cycle". At that checkpoint the two engines are bit-identical and then separate: the host is at the movie
 player's MDEC sync after ≈272.5M guest cycles, while the interpreter at 3,000,000,000 fetches has not reached it
 and ends at `0x8008A248`. The two runs also occupy different loops: the standalone interpreter spends its 3G
 budget in one hot function around `0x8009284C` (46.1 M calls; `--pc-histogram`), while the host's dominant fallback
@@ -524,18 +526,26 @@ distribution comparison, not a checkpoint comparison, but it is the shape a path
 
 Classification of the hypotheses:
 
-- **H1 (a mere phase/progress offset): rejected.** The last shared checkpoint is bit-identical, not merely close,
-  in CPU, RAM, device time and VRAM, so the difference is not an offset.
-- **H2 (CPU execution path): confirmed as the locus.** After that checkpoint the same instruction semantics (the
-  generated host's fallback *is* the interpreter engine) follow a different guest control flow; the divergence is
-  in the instructions executed between `0x8008A484` and `0x80081BC8` and in the native/fallback handoff around
-  them.
-- **H3 (GPU/VRAM mismatch): rejected for the measured range.** VRAM SHA-256 and `gpustat` are equal at every
-  compared checkpoint.
-- **H4 (frame/PNG conversion): rejected as the cause.** The probe's frame evidence reads VRAM as 15-bit, so a
-  24-bit display looks striped and a black frame is not evidence of black VRAM (see the Persona section above).
-- **H5 (another device or scheduling difference): rejected for the measured range** — every captured device
-  register, `guest_cycles` and the first interrupt entry are equal at the checkpoint. Nothing is captured after it.
+- **H1 (a mere phase/progress offset): not observed up to the last shared checkpoint; INCONCLUSIVE after it.**
+  At 268,664,967 guest cycles the two engines are bit-identical, not merely close, in CPU, RAM, device time and
+  VRAM, so no phase offset exists at that instant. That single-instant equality does not bound the phase or
+  scheduler difference *after* the checkpoint, and nothing is observed between it and the separation, so
+  post-checkpoint phase divergence is neither confirmed nor rejected.
+- **H2 (CPU execution path): a control-flow difference is observed after the checkpoint.** After that checkpoint
+  the same instruction semantics (the generated host's fallback *is* the interpreter engine) follow a different
+  guest control flow, so the difference lies in the instructions executed between `0x8008A484` and `0x80081BC8`
+  and in the native/fallback handoff around them. The observed locus does not identify the specific defect.
+- **H3 (GPU/VRAM mismatch): no mismatch observed at the compared checkpoints.** VRAM SHA-256 and `gpustat` are
+  equal at every compared checkpoint, but no checkpoint after the separation is available, so a later GPU/VRAM
+  difference is not excluded.
+- **H4 (frame/PNG conversion): INCONCLUSIVE — the probe's frame evidence cannot settle it.** The probe reads VRAM
+  as 15-bit, so a 24-bit display looks striped and a black frame is not evidence of black VRAM (see the Persona
+  section above). Equally, VRAM/`gpustat` checkpoint equality is a *GPU-state* equality, not a rendered-image
+  equality, so it neither confirms nor denies the frame/PNG conversion path. Settling H4 needs a correct 24-bit
+  display capture.
+- **H5 (another device or scheduling difference): no mismatch observed at the compared checkpoints.** Every
+  captured device register, `guest_cycles` and the first interrupt entry are equal at the checkpoint, and nothing
+  is captured after it, so a later device or scheduling difference is not excluded.
 
 **The specific defect is not identified.** Which engine deviates is not decided by this evidence (the interpreter
 is the project's reference, so the presumption is the host), and no comparison point exists after the divergence
