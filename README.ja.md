@@ -34,7 +34,7 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の静的再コンパイルと
 
 ## デモ
 
-リリース版 `v0.0.0-alpha.2` の Windows バイナリで synthetic demo を実行した際の、実コンソールのキャプチャです（録画ではありません）。CLI が 5 命令の PS-X EXE を生成し、`psxrecomp recompile` でネイティブのホスト成果物を作り、`psxrecomp run` で実行して TTY に `P` を出力します。
+リリース版 `v0.0.0-alpha.2` の Windows バイナリで synthetic demo を実行した際の、実コンソールのキャプチャです（録画ではありません）。デモスクリプトが 5 命令の PS-X EXE を生成し、`psxrecomp recompile` でネイティブのホスト成果物を作り、`psxrecomp run` で実行して TTY に `P` を出力します。
 
 ![実コンソールのキャプチャ: synthetic PS-X EXE の psxrecomp recompile と run](docs/assets/demo/synthetic-demo-console.png)
 

@@ -34,7 +34,7 @@ It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a determinist
 
 ## Demo
 
-A real console run of the synthetic demo, using the released `v0.0.0-alpha.2` Windows binary. The CLI generates a five-instruction PS-X EXE, `psxrecomp recompile` builds a native host artifact from it, and `psxrecomp run` executes it, printing `P` to the TTY.
+A real console run of the synthetic demo, using the released `v0.0.0-alpha.2` Windows binary. The demo script generates a five-instruction PS-X EXE, `psxrecomp recompile` builds a native host artifact from it, and `psxrecomp run` executes it, printing `P` to the TTY.
 
 ![Real console capture: psxrecomp recompile and run of a synthetic PS-X EXE](docs/assets/demo/synthetic-demo-console.png)
 

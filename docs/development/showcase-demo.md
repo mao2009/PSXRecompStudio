@@ -104,15 +104,17 @@ redrawn, replaced or composited.
 | File | Shows | Produced by |
 |---|---|---|
 | [`synthetic-demo-console.png`](../assets/demo/synthetic-demo-console.png) | The whole demo: input generation, `recompile`, `run`, `DEMO OK` | `synthetic-demo.ps1` against the `v0.0.0-alpha.2` win-x64 binary |
-| [`synthetic-demo-lowering-console.png`](../assets/demo/synthetic-demo-lowering-console.png) | The five MIPS words of the input (hex, with mnemonics from the script's comments) and the first generated block of `recompiled-artifact.c`, showing `ori $t1,$zero,0x3C` lowered to `state->gpr[9] = 0 | 60` | `Get-Content` on the generated `out\recompiled-artifact.c` after the run above |
+| [`synthetic-demo-lowering-console.png`](../assets/demo/synthetic-demo-lowering-console.png) | The five MIPS words of the input (hex, with mnemonics from the script's comments) and the first generated block of `recompiled-artifact.c`, showing `ori $t1,$zero,0x3C` lowered to `state->gpr[9] = 0 \| 60` | `Get-Content` on the generated `out\recompiled-artifact.c` after the run above |
 
 ![Real console capture of the synthetic demo](../assets/demo/synthetic-demo-console.png)
 
 ![Real console capture: MIPS words and the generated C for the first block](../assets/demo/synthetic-demo-lowering-console.png)
 
-The CLI itself does not print the MIPS analysis, IR or lowering stages; the
-JSON output only reports success, status and the artifact path. The lowering is
-visible in the generated C file, which is why the second capture reads it.
+The CLI itself does not print the MIPS analysis, IR or lowering stages. Its
+`recompile --json` output reports only `kind`, `success`, `status`, the artifact
+path and any error fields. Its `run --json` output reports the TTY bytes
+(`output`) and `result.engineName` / `result.exitCode`. The lowering is visible
+in the generated C file, which is why the second capture reads it.
 
 ## Visual asset
 
