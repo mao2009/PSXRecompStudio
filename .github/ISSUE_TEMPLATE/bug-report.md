@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible defect using synthetic or repository-owned input
+about: Report defects using synthetic input or descriptions of legally owned titles (no game data attachments)
 title: "[Bug] "
 labels: ""
 assignees: ""

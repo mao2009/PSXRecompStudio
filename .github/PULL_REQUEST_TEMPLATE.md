@@ -32,4 +32,4 @@
 
 ## Legal inputs
 
-- [ ] This PR adds no ROM, ISO, CHD, BIOS, commercial PS-X EXE, save data, or other copyrighted artifacts.
+- [ ] This PR adds no ROM, ISO, CHD, BIOS, commercial PS-X EXE, save data, or other unauthorized proprietary game assets.
