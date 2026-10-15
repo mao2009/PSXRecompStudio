@@ -584,7 +584,8 @@ public static class FirmwareRuntimeLauncher
         string imagePath,
         TextWriter error,
         string? diagnosticsPath = null,
-        string? frameOutPath = null)
+        string? frameOutPath = null,
+        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null)
     {
         try
         {
@@ -632,6 +633,7 @@ public static class FirmwareRuntimeLauncher
                 imageLoadAddress: host.ImageLoadAddress,
                 launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost,
                 disc: disc.Source);
+            engine.LoadedCodeMismatchDiagnostics = loadedCodeMismatch;
 
             var wall = System.Diagnostics.Stopwatch.StartNew();
             var result = new ExecutionOrchestrator().Execute(

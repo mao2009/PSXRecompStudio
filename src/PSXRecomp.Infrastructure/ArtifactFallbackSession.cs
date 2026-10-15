@@ -76,11 +76,13 @@ internal sealed class ArtifactFallbackSession : IDisposable
         bool guestFirmware = false,
         Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null,
         Action<MixedFallbackTransition>? transitionObserver = null,
-        LoadedCodeTable? loadedCode = null)
+        LoadedCodeTable? loadedCode = null,
+        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null)
     {
         _transitionObserver = transitionObserver;
         _guestFirmware = guestFirmware;
         _loadedCode = loadedCode ?? LoadedCodeTable.Empty;
+        _loadedCodeMismatch = loadedCodeMismatch;
         _options = options;
         _imageWords = imageWords;
         _imageLoadAddress = imageLoadAddress;
@@ -103,6 +105,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
     /// <summary>The pre-generated versions of RAM-placed code (Issue #732).</summary>
     private readonly LoadedCodeTable _loadedCode;
+
+    /// <summary>Opt-in record of refused RAM-placed code (Issue #773); null keeps the handoff path unchanged.</summary>
+    private readonly LoadedCodeMismatchDiagnostics? _loadedCodeMismatch;
 
     /// <summary>
     /// Whether the artifact may resume at <paramref name="pc"/>: it has a static block there, or a version of RAM-placed
@@ -133,6 +138,19 @@ internal sealed class ArtifactFallbackSession : IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The guest word at a virtual address, through the artifact's translation (as in <see cref="IsReturnPoint"/>). Outside
+    /// the artifact's RAM it reads 0; such a PC has no RAM to compare, so a 0 there is a diagnostic placeholder and not
+    /// evidence that a version matched (a compiled <c>nop</c> is also 0).
+    /// </summary>
+    private uint LoadedCodeWordAt(uint address)
+    {
+        var physical = address <= 0x7FFFFFFFu ? address : address & 0x1FFFFFFFu;
+        if (address >= 0xC0000000u || physical >= 0x00800000u) return 0;
+        physical &= PSXCoreWrapper.RamSize - 1;
+        return physical + 4 > PSXCoreWrapper.RamSize ? 0 : _devices.Core.ReadMemory32(physical);
     }
 
     /// <summary>What <see cref="Handle"/> decided about one offered transfer.</summary>
@@ -234,6 +252,12 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
             var incoming = ReadPages(header.Value.DirtyPages);
             ApplyToCore(incoming);
+            // Issue #773: the core holds artifact RAM now, so the refused versions are read from the same memory the guard saw.
+            if (_loadedCodeMismatch is not null && _loadedCode.Contains(pc))
+            {
+                _loadedCodeMismatch.Observe(pc, _loadedCode.VersionsAt(pc), LoadedCodeWordAt);
+            }
+
             _transitions++;
             _pagesToInterpreter += (ulong)incoming.Count;
 
