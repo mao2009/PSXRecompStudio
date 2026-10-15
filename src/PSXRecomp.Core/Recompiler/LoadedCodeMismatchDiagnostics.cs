@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -103,9 +104,14 @@ public sealed class LoadedCodeMismatchDiagnostics
 
     private static string Hex(uint value) => $"0x{value:X8}";
 
-    private static string Sha256(IEnumerable<uint> words)
+    private static string Sha256(uint[] words)
     {
-        var bytes = words.SelectMany(static w => BitConverter.GetBytes(w)).ToArray();
+        var bytes = new byte[words.Length * 4];
+        for (var i = 0; i < words.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(i * 4), words[i]);
+        }
+
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
@@ -114,7 +120,8 @@ public sealed class LoadedCodeMismatchDiagnostics
     {
         private readonly uint[] _aot;
         private readonly string _aotSha256;
-        private string? _lastRamSha256;
+        // The RAM range of the latest refusal: hashed once when the report is written, not on every handoff.
+        private uint[]? _lastRam;
         private uint[] _windowAot = [];
         private uint[] _windowRam = [];
         private int _windowStart;
@@ -165,9 +172,8 @@ public sealed class LoadedCodeMismatchDiagnostics
             MismatchedWordsMin = Math.Min(MismatchedWordsMin, mismatched);
             MismatchedWordsMax = Math.Max(MismatchedWordsMax, mismatched);
 
-            var ramSha256 = Sha256(ram);
-            if (_lastRamSha256 is not null && _lastRamSha256 != ramSha256) RamHashChanges++;
-            _lastRamSha256 = ramSha256;
+            if (_lastRam is not null && !_lastRam.AsSpan().SequenceEqual(ram)) RamHashChanges++;
+            _lastRam = ram;
 
             if (Rejections == 1)
             {
@@ -196,7 +202,7 @@ public sealed class LoadedCodeMismatchDiagnostics
                 ["mismatchedWordsRange"] = Rejections == 0 ? null : new JsonArray(JsonValue.Create(MismatchedWordsMin), JsonValue.Create(MismatchedWordsMax)),
                 ["ramHashChanges"] = JsonValue.Create(RamHashChanges),
                 ["aotSha256"] = _aotSha256,
-                ["ramSha256"] = _lastRamSha256,
+                ["ramSha256"] = _lastRam is null ? null : Sha256(_lastRam),
                 ["windowStartPc"] = Rejections == 0 ? null : Hex(Pc + (uint)_windowStart * 4u),
                 ["windowAot"] = new JsonArray(_windowAot.Select(static w => (JsonNode)Hex(w)).ToArray()),
                 ["windowRam"] = new JsonArray(_windowRam.Select(static w => (JsonNode)Hex(w)).ToArray()),

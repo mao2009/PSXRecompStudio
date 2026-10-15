@@ -69,7 +69,17 @@ public static class Program
                     return 78;
                 }
 
-                loadedCodeMismatchPath = Path.GetFullPath(args[++i]);
+                try
+                {
+                    loadedCodeMismatchPath = Path.GetFullPath(args[++i]);
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    Console.Error.WriteLine($"runtime host: --loaded-code-diagnostics path is not valid: {ex.Message}");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
                 continue;
             }
 
@@ -116,6 +126,8 @@ public static class Program
                 "The runtime host manifest has no directory component.");
 
         RuntimeHostManifest? manifest = null;
+        // Issue #773: written from the finally below, so a failed or stopped run still leaves its refusals behind.
+        var loadedCodeMismatch = loadedCodeMismatchPath is null ? null : new LoadedCodeMismatchDiagnostics();
         try
         {
             manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
@@ -135,13 +147,10 @@ public static class Program
             // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
             // --diagnostics is honored here too (Issue #732 P2-1): the same stop diagnostic the HLE path writes.
-            var loadedCodeMismatch = loadedCodeMismatchPath is null ? null : new LoadedCodeMismatchDiagnostics();
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
-                var firmwareExit = FirmwareRuntimeLauncher.Run(
+                return FirmwareRuntimeLauncher.Run(
                     manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
-                WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch);
-                return firmwareExit;
             }
 
             // Read the program image for the host-transfer bridge / interpreter fallback
@@ -213,8 +222,6 @@ public static class Program
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
             wall.Stop();
-            WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch);
-
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
 
@@ -276,6 +283,10 @@ public static class Program
             }
 
             return 78;
+        }
+        finally
+        {
+            WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch);
         }
     }
 
