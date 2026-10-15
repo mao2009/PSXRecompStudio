@@ -182,11 +182,21 @@ internal static class OpenBiosProbeCommand
                 return 0;
             }
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
-            using var mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
-            return engineKind == "generated-host"
-                ? RunGeneratedHost(new GeneratedHostProbe(
-                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error, mdecLog)
-                : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog);
+            var mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
+            try
+            {
+                return engineKind == "generated-host"
+                    ? RunGeneratedHost(new GeneratedHostProbe(
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error, mdecLog)
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog);
+            }
+            finally
+            {
+                // The log contains its own output failures, so the guest run keeps its result. Report the gap here, after the flush.
+                mdecLog?.Dispose();
+                if (mdecLog?.FailureMessage is { } failure)
+                    error.WriteLine($"openbios-probe: warning: MDEC event log is incomplete: {failure}");
+            }
         }
         catch (Exception ex) when (
             ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
