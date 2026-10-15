@@ -182,7 +182,7 @@ public class RealRomAnalysisTests
     public void DistinctFixtures_HaveDistinctIdentities()
     {
         var fixtures = Fixtures;
-        Skip.If(fixtures.Count < 2, "skipped: fewer than two real-ROM fixtures are present locally");
+        Skip.If(fixtures.Count < 2, RealRomFixtures.FixtureShortfallSkipReason(2, fixtures.Count));
 
         var identities = fixtures
             .Select(fixture => RealRomAnalyzer.Analyze(fixture.DiscImagePath, fixture.FixtureId).Artifacts)
