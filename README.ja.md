@@ -32,6 +32,14 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の静的再コンパイルと
 
 **未確認の範囲：** オープニング全編、タイトル画面、操作入力、AOTとの同等性、ゲーム全体の互換性。
 
+## デモ
+
+リリース版 `v0.0.0-alpha.2` の Windows バイナリで synthetic demo を実行した際の、実コンソールのキャプチャです（録画ではありません）。デモスクリプトが 5 命令の PS-X EXE を生成し、`psxrecomp recompile` でネイティブのホスト成果物を作り、`psxrecomp run` で実行して TTY に `P` を出力します。
+
+![実コンソールのキャプチャ: synthetic PS-X EXE の psxrecomp recompile と run](docs/assets/demo/synthetic-demo-console.png)
+
+再現手順は [synthetic demo ガイド](docs/development/showcase-demo.md)（英語版）を参照してください。5 命令の処理経路の確認であり、互換性の主張ではありません。
+
 ## 現在できること
 
 - **実行可能な再コンパイルパイプライン:** MIPS → IR/lowering → 決定論的 host code → native artifact → bounded execution。
@@ -80,8 +88,6 @@ psxrecomp run <input.exe|input.chd> --output out --report
 ```
 
 入力ファイルがない場合は、再配布可能な PS-X EXE を自動生成する [synthetic demo](docs/development/showcase-demo.md) を実行できます（英語版）。
-
-![Synthetic demo: pipeline and terminal output](docs/assets/demo/synthetic-demo.svg)
 
 JSON 出力、exit code、report 内容、入力処理の詳細は [Headless CLI reference](docs/development/headless-cli.md) を参照してください。
 
