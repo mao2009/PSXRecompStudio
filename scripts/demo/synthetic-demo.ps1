@@ -25,9 +25,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '../..')
 
+if (-not $Psxrecomp) {
+    # Build first with its output discarded: on a fresh checkout `dotnet run` prints build
+    # progress (e.g. "PSXRecomp.Cli -> C:\...") to stdout, which breaks the ConvertFrom-Json below.
+    & dotnet build (Join-Path $repo 'src/PSXRecomp.Cli') --configuration Release --nologo -v q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet build of the CLI failed' }
+}
+
 function Invoke-Cli {
     if ($Psxrecomp) { & $Psxrecomp @args }
-    else { & dotnet run --project (Join-Path $repo 'src/PSXRecomp.Cli') --configuration Release -- @args }
+    else { & dotnet run --no-build --project (Join-Path $repo 'src/PSXRecomp.Cli') --configuration Release -- @args }
 }
 
 # --- 1. Generate the synthetic PS-X EXE (2048-byte header + 5 MIPS words) ---------
