@@ -18,13 +18,20 @@
   Pad the EXE text to 2048 bytes (required by the firmware CD driver) and append a stable loop.
   Omitting this switch preserves the historical hash for differential baseline comparisons.
 
+.PARAMETER BothEndianIso9660
+  Write the corrected ISO 9660 volume (Issue #743): every mandatory both-endian numeric field carries its
+  big-endian half, the Type M path table is present, and the root has its ".." record. The first file moves
+  to sector 21. Writes synthetic-disc-iso9660-bothendian.bin and checks its own pin; the legacy baseline
+  (default) and the OpenBIOS-compatible pin are unchanged.
+
 .PARAMETER WorkDir
   Output directory (default: a temp directory). Nothing is written into the repository.
 #>
 [CmdletBinding()]
 param(
     [string]$WorkDir = (Join-Path ([IO.Path]::GetTempPath()) 'psxrecomp-synthetic-disc'),
-    [switch]$OpenBiosCompatible
+    [switch]$OpenBiosCompatible,
+    [switch]$BothEndianIso9660
 )
 $ErrorActionPreference = 'Stop'
 
@@ -35,12 +42,15 @@ $PvdSector = 16
 $TerminatorSector = 17
 $RootSector = 18
 $PathTableSector = 19
-$FirstFile = 20
+$MPathTableSector = 20
+$FirstFile = if ($BothEndianIso9660) { 21 } else { 20 }
 $BootPath = 'cdrom:\PSXRECOMP.EXE;1'
 $ExeIsoName = 'PSXRECOMP.EXE;1'
 $ExpectedSha256 = '4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27'
 
+if ($OpenBiosCompatible -and $BothEndianIso9660) { throw 'OpenBiosCompatible and BothEndianIso9660 have no combined pin' }
 if ($OpenBiosCompatible) { $ExpectedSha256 = 'bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03' }
+if ($BothEndianIso9660) { $ExpectedSha256 = '0f6f743f47e7c87b8737f7427354dc582d6c9725d1396d1b3cddfc5b7c061941' }
 
 # --- 1. the boot PS-X EXE: the checked BiosPutCharMarker fixture, built from first principles ----
 function Imm([int]$op, [int]$rt, [int]$imm) { [uint32](($op -shl 26) -bor ($rt -shl 16) -bor $imm) }
@@ -81,6 +91,20 @@ $iso = New-Object byte[] ($cursor * $SectorSize)
 function WriteU32([byte[]]$buffer, [int]$offset, [uint32]$value) {
     [BitConverter]::GetBytes($value).CopyTo($buffer, $offset)
 }
+# Big-endian half of a both-endian pair (ECMA-119 7.3.3): the same bytes as WriteU32, reversed.
+function WriteU32BE([byte[]]$buffer, [int]$offset, [uint32]$value) {
+    $bytes = [BitConverter]::GetBytes($value)
+    [Array]::Reverse($bytes)
+    $bytes.CopyTo($buffer, $offset)
+}
+function WriteU16([byte[]]$buffer, [int]$offset, [uint16]$value) {
+    [BitConverter]::GetBytes($value).CopyTo($buffer, $offset)
+}
+function WriteU16BE([byte[]]$buffer, [int]$offset, [uint16]$value) {
+    $bytes = [BitConverter]::GetBytes($value)
+    [Array]::Reverse($bytes)
+    $bytes.CopyTo($buffer, $offset)
+}
 function WriteDirRecord([byte[]]$buffer, [int]$offset, [uint32]$location, [uint32]$size, [byte]$flags, [byte[]]$name) {
     $recordLength = 33 + $name.Length
     if ($recordLength % 2 -ne 0) { $recordLength++ }
@@ -88,6 +112,10 @@ function WriteDirRecord([byte[]]$buffer, [int]$offset, [uint32]$location, [uint3
     $buffer[$offset + 1] = 0
     WriteU32 $buffer ($offset + 2) $location
     WriteU32 $buffer ($offset + 10) $size
+    if ($BothEndianIso9660) {
+        WriteU32BE $buffer ($offset + 6) $location
+        WriteU32BE $buffer ($offset + 14) $size
+    }
     $buffer[$offset + 25] = $flags
     $buffer[$offset + 32] = [byte]$name.Length
     $name.CopyTo($buffer, $offset + 33)
@@ -102,6 +130,22 @@ WriteU32 $iso ($pvd + 80) ([uint32]$cursor)
 # L path table (size @132, LBA @140) + descriptor-set terminator: OpenBIOS's CD driver needs both.
 WriteU32 $iso ($pvd + 132) ([uint32]10)
 WriteU32 $iso ($pvd + 140) ([uint32]$PathTableSector)
+if ($BothEndianIso9660) {
+    WriteU32BE $iso ($pvd + 84) ([uint32]$cursor)
+    WriteU16 $iso ($pvd + 120) ([uint16]1)
+    WriteU16BE $iso ($pvd + 122) ([uint16]1)
+    WriteU16 $iso ($pvd + 124) ([uint16]1)
+    WriteU16BE $iso ($pvd + 126) ([uint16]1)
+    WriteU16 $iso ($pvd + 128) ([uint16]$SectorSize)
+    WriteU16BE $iso ($pvd + 130) ([uint16]$SectorSize)
+    WriteU32BE $iso ($pvd + 136) ([uint32]10)
+    WriteU32BE $iso ($pvd + 148) ([uint32]$MPathTableSector)
+    # Type M path table: the root entry with big-endian location and parent.
+    $mTable = $MPathTableSector * $SectorSize
+    $iso[$mTable] = 1
+    WriteU32BE $iso ($mTable + 2) ([uint32]$RootSector)
+    WriteU16BE $iso ($mTable + 6) ([uint16]1)
+}
 $term = $TerminatorSector * $SectorSize
 $iso[$term] = 255
 [Text.Encoding]::ASCII.GetBytes('CD001').CopyTo($iso, $term + 1)
@@ -113,6 +157,10 @@ $iso[$table + 6] = 1
 WriteDirRecord $iso ($pvd + 156) ([uint32]$RootSector) ([uint32]$SectorSize) ([byte]0x02) ([byte[]]@(0)) | Out-Null
 $root = $RootSector * $SectorSize
 $root += WriteDirRecord $iso $root ([uint32]$RootSector) ([uint32]$SectorSize) ([byte]0x02) ([byte[]]@(0))
+if ($BothEndianIso9660) {
+    # The root's ".." refers to the root itself.
+    $root += WriteDirRecord $iso $root ([uint32]$RootSector) ([uint32]$SectorSize) ([byte]0x02) ([byte[]]@(1))
+}
 foreach ($file in $files) {
     $root += WriteDirRecord $iso $root ([uint32]$file.Location) ([uint32]$file.Bytes.Length) ([byte]0x00) ([Text.Encoding]::ASCII.GetBytes($file.Name))
 }
@@ -138,7 +186,8 @@ for ($lba = 0; $lba -lt $cursor; $lba++) {
 
 # --- 4. write and verify the checked contract ---
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
-$path = Join-Path $WorkDir $(if ($OpenBiosCompatible) { 'synthetic-disc-openbios.bin' } else { 'synthetic-disc.bin' })
+$fileName = if ($OpenBiosCompatible) { 'synthetic-disc-openbios.bin' } elseif ($BothEndianIso9660) { 'synthetic-disc-iso9660-bothendian.bin' } else { 'synthetic-disc.bin' }
+$path = Join-Path $WorkDir $fileName
 [IO.File]::WriteAllBytes($path, $disc)
 $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 Write-Host "Generated $path ($($disc.Length) bytes, SHA-256 $sha)"

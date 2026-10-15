@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Runtime.CdRom;
@@ -23,6 +24,8 @@ public sealed class SyntheticIsoImageBuilder
     private const int RootDirectorySector = 18;
     private const int PathTableSector = 19;
     private const int FirstFileSector = 20;
+    private const int BothEndianFirstFileSector = 21; // the Type M path table takes sector 20 in that layout
+    private const int MPathTableSector = 20;
     private const int RootDirectoryRecordOffset = 156;
     private const int PathTableSize = 10; // 8-byte header + 1-byte name + 1 pad byte
 
@@ -37,6 +40,21 @@ public sealed class SyntheticIsoImageBuilder
     private (uint Location, uint Size)? _corruptRoot;
     private string _volumeIdentifier = "PSXRECOMP_TEST";
     private bool _emitPrimaryVolumeDescriptor = true;
+    private bool _bothEndianNumericFields;
+
+    /// <summary>
+    /// Fills the big-endian half of every mandatory both-endian numeric field (ECMA-119 7.3.3): the PVD volume
+    /// space size, volume set size, sequence number, logical block size, path table size and path table
+    /// locations, and each directory record's extent location and data length. Also sets the Logical Block
+    /// Size, Volume Set and Sequence fields, writes the root's ".." record, and adds the Type M path table
+    /// (its location is a mandatory PVD field), which moves the first file extent to sector 21.
+    /// Off by default: the legacy layout stays byte-identical so the checked baseline pin does not move.
+    /// </summary>
+    public SyntheticIsoImageBuilder WithBothEndianNumericFields()
+    {
+        _bothEndianNumericFields = true;
+        return this;
+    }
 
     /// <summary>Sets the 32-byte volume identifier written into the PVD.</summary>
     public SyntheticIsoImageBuilder WithVolumeIdentifier(string volumeIdentifier)
@@ -134,7 +152,7 @@ public sealed class SyntheticIsoImageBuilder
         // One sector per directory after the path table, then the file extents.
         var directorySector = new Dictionary<string, uint>(StringComparer.Ordinal);
         var fileSector = new Dictionary<string, uint>(StringComparer.Ordinal);
-        var cursor = (uint)FirstFileSector;
+        var cursor = (uint)(_bothEndianNumericFields ? BothEndianFirstFileSector : FirstFileSector);
         foreach (var directory in directories)
         {
             directorySector[directory] = cursor++;
@@ -202,8 +220,38 @@ public sealed class SyntheticIsoImageBuilder
         BitConverter.GetBytes((uint)RootDirectorySector).CopyTo(image, table + 2);
         image[table + 6] = 1;
 
+        if (_bothEndianNumericFields)
+        {
+            WriteBothEndianVolumeFields(image, offset, volumeSpaceSize);
+            WriteMPathTable(image);
+        }
+
         var (rootLocation, rootSize) = _corruptRoot ?? ((uint)RootDirectorySector, (uint)SectorSize);
         WriteDirectoryRecord(image, offset + RootDirectoryRecordOffset, rootLocation, rootSize, flags: 0x02, SelfName);
+    }
+
+    // ECMA-119 8.4: the big-endian halves of the PVD numeric fields, plus the single-volume set/sequence/block values.
+    // Offsets are 0-based from the start of the PVD. The little-endian halves are written in WriteVolumeDescriptor.
+    private void WriteBothEndianVolumeFields(byte[] image, int offset, uint volumeSpaceSize)
+    {
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset + 84), volumeSpaceSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(offset + 120), 1); // volume set size
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(offset + 122), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(offset + 124), 1); // volume sequence number
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(offset + 126), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(offset + 128), SectorSize); // logical block size
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(offset + 130), SectorSize);
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset + 136), PathTableSize);
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset + 148), MPathTableSector);
+    }
+
+    // Type M path table: the same single root entry as the L table, with every multi-byte value big-endian.
+    private void WriteMPathTable(byte[] image)
+    {
+        var table = MPathTableSector * SectorSize;
+        image[table] = 1;
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(table + 2), RootDirectorySector);
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(table + 6), 1);
     }
 
     private void WriteDirectory(
@@ -223,6 +271,11 @@ public sealed class SyntheticIsoImageBuilder
         if (parentSector is { } parent)
         {
             offset += WriteDirectoryRecord(image, offset, parent, SectorSize, flags: 0x02, ParentName);
+        }
+        else if (_bothEndianNumericFields)
+        {
+            // The root's ".." refers to the root itself.
+            offset += WriteDirectoryRecord(image, offset, selfLocation, selfSize, flags: 0x02, ParentName);
         }
 
         foreach (var child in children)
@@ -250,7 +303,7 @@ public sealed class SyntheticIsoImageBuilder
             (uint)child.Content!.Length, flags: 0x00, Encoding.ASCII.GetBytes(child.Name));
     }
 
-    private static int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, byte[] nameBytes)
+    private int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, byte[] nameBytes)
     {
         var recordLength = 33 + nameBytes.Length;
         if (recordLength % 2 != 0)
@@ -262,6 +315,11 @@ public sealed class SyntheticIsoImageBuilder
         buffer[offset + 1] = 0; // extended attribute length
         BitConverter.GetBytes(location).CopyTo(buffer, offset + 2);
         BitConverter.GetBytes(size).CopyTo(buffer, offset + 10);
+        if (_bothEndianNumericFields)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 6), location);
+            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 14), size);
+        }
         buffer[offset + 25] = flags;
         buffer[offset + 32] = (byte)nameBytes.Length;
         nameBytes.CopyTo(buffer, offset + 33);
@@ -361,9 +419,20 @@ public static class SyntheticDiscBuilder
     public const string BootPath = @"cdrom:\PSXRECOMP.EXE;1";
     public const string ExeIsoName = "PSXRECOMP.EXE;1";
 
-    /// <summary>A bootable Mode 2 Form 1 disc whose SYSTEM.CNF runs <see cref="ExeIsoName"/>.</summary>
-    public static byte[] Bootable(byte[] exeBytes) => Mode2Form1(
-        new SyntheticIsoImageBuilder().AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
+    /// <summary>
+    /// A bootable Mode 2 Form 1 disc whose SYSTEM.CNF runs <see cref="ExeIsoName"/>. Pass
+    /// <paramref name="iso9660BothEndian"/> for the corrected volume (see
+    /// <see cref="SyntheticIsoImageBuilder.WithBothEndianNumericFields"/>); the default is the legacy baseline.
+    /// </summary>
+    public static byte[] Bootable(byte[] exeBytes, bool iso9660BothEndian = false)
+    {
+        var iso = new SyntheticIsoImageBuilder();
+        if (iso9660BothEndian)
+        {
+            iso.WithBothEndianNumericFields();
+        }
+        return Mode2Form1(iso.AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
+    }
 
     /// <summary>Sector-aligns a synthetic EXE payload for OpenBIOS CD reads and ends it with a stable loop.</summary>
     public static byte[] OpenBiosCompatibleExe(byte[] exeBytes)
