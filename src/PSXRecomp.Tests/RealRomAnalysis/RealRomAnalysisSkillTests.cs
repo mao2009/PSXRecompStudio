@@ -69,6 +69,24 @@ public class RealRomAnalysisSkillTests
     }
 
     /// <summary>
+    /// The skip report must tell "no fixture" apart from "too few fixtures". Pure function, always runs.
+    /// </summary>
+    [Fact]
+    public void FixtureShortfallSkipReason_ZeroFixtures_ReportsNoFixture()
+    {
+        RealRomFixtures.FixtureShortfallSkipReason(2, 0).Should().Be(RealRomFixtures.NoFixtureSkipReason);
+    }
+
+    [Fact]
+    public void FixtureShortfallSkipReason_OneOfTwoRequired_ReportsCountsNotAbsence()
+    {
+        var reason = RealRomFixtures.FixtureShortfallSkipReason(2, 1);
+
+        reason.Should().Contain("2 real-ROM fixtures required").And.Contain("1 found");
+        reason.Should().NotBe(RealRomFixtures.NoFixtureSkipReason);
+    }
+
+    /// <summary>
     /// The skill relies on the repository artifact policy (SSOT for the CI contamination
     /// gate) to keep disc images out of Git. Assert that contract still holds, so the
     /// skill cannot silently start operating without that protection.
