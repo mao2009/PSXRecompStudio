@@ -31,6 +31,32 @@ Two sides are compared at the same **global retirement position** `g` only when 
 
 A matching `g` is not sufficient. The checkpoint must also match in boundary kind, PC, delay-slot pending state (always 0 at these boundaries; a non-zero value is itself a mismatch), and interrupt-handler state.
 
+### Retirement definition (B-6a)
+
+An instruction **retires** when it completes and its architectural effect is visible at its successor: the PC moves on to the next instruction in program order, or to a branch target. The following do not retire:
+
+- an instruction whose fetch is preempted by an interrupt before it executes;
+- an instruction that raises an exception that is not serviced (the run stops or vectors to a handler);
+- the exception-entry step itself.
+
+A **serviced SYSCALL** retires. It is charged one unit of device time, and execution resumes at its successor. The counter is therefore distinct from fetches (which include the preempted fetch) and from scheduler units (which also include the serviced SYSCALL). A delay-slot fault is an open case: the branch is credited by both engines today, though under the R3000 restart model the branch would be re-executed (see the trace document).
+
+### PC fields at exceptions and interrupts (B-6a)
+
+The PC values are distinct and must not be compared as one. The table lists what each side can actually observe today.
+
+| Field | Meaning | Native (generated host) | Interpreter / fallback |
+|---|---|---|---|
+| `executed_pc` | PC of the first instruction the unit or segment executed | `entry` (captured after the interrupt boundary) | fetch PC of the first step |
+| `architectural_next_pc` | PC after the last retired instruction, as the successor | `next` at a clean end | `end_pc` at a clean return |
+| `transfer_target_pc` | PC the host transfer was made for | `handoff.pc` | `start_pc` of the transfer record |
+| `exception_vector_pc` | vector entered by an exception or interrupt | the `entry` of the handler's record, or `handoff.pc` at 0x80000080 | `end_pc` after an interrupt |
+| `interrupted_pc` (the preempted fetch) | the instruction the interrupt stopped before it executed | **not recorded** (the last completed PC is `entry` plus retired) | **not recorded** (fetched but not stored) |
+| `retired_before_exception` | completed instructions before the exception | `retired` of the unit | `retired` of the segment |
+| exception / interrupt kind | what was raised | `exception` flag and `termination` code | `stop` code and termination |
+
+Verified in B-6a: the in-body case records `entry` at the executed PC, `retired` 1, and `next` at the vector; the preempted PC is never stored, so it can be recovered only from the interpreter's fetch list. A proposal to record `interrupted_pc` explicitly needs a new additive field on both sides (B-6b). Until then it is not stored, and no consumer may infer it.
+
 ## 2. CPU checkpoint
 
 One JSON Lines record per checkpoint, written by both sides in the same schema:
@@ -67,7 +93,7 @@ The display state is the end goal (Issue #774 is a standalone display divergence
 - **Selected regions.** The display area and the drawing area are hashed separately, using the same VRAM read path.
 - **GPU command progress.** The GPU command queue is not drained by the CPU instruction count. Each checkpoint records the queue depth and the last command index. VRAM is compared only when both queues are empty; otherwise the checkpoint is marked `gpu_busy` and not compared.
 - **Frame capture.** `CaptureFrame` (Issue #575) snapshots the current display state. A frame is compared at a VBlank IRQ, on the device scheduler clock, not at a CPU position.
-- **Synchronization.** A CPU checkpoint and a display checkpoint are paired only when they carry the same scheduler `time`. The CPU checkpoint is the first clean boundary at or after the VBlank event time. Because the native side advances device time through `host_retired`, a retirement count that differs from the interpreter's shifts every later `time` too. That is why the serviced-SYSCALL divergence (section 6) must be resolved before display comparison is trusted.
+- **Synchronization.** A CPU checkpoint and a display checkpoint are paired only when they carry the same scheduler `time`. The CPU checkpoint is the first clean boundary at or after the VBlank event time. Both sides charge device time per executed instruction (a serviced SYSCALL costs one unit on both; see the device-time contract test), so the `time` values agree even while retirement counts differ.
 
 ## 5. Divergence search
 
@@ -85,9 +111,9 @@ Each level narrows the search, and each level's result is recorded before the ne
 
 These block Phase C. They are recorded here, not fixed in B-5.
 
-1. **Serviced SYSCALL counting differs.** A SYSCALL serviced in native code is credited; the same SYSCALL serviced in the fallback is not. Every position after it, and every `time` in section 4, is shifted by one on one side. The pinned test is `KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired`. The fix changes device time, so it needs a runtime decision, not only a trace change.
-2. **Interrupt inside a fallback segment.** The fallback's `end_pc` is the vector, and the preempted PC is not recorded. A native boundary interrupt leaves `next` at the program-order PC. The checkpoint must use `kind = interrupt_entry` and the vector for these positions, and must not assume the two sides agree on `next`.
-3. **Fused-unit partial completion and in-body native interrupts are not reproduced.** The synthetic programs in B-5 never produced an interrupt inside a native unit. Until one is reproduced, the checkpoint rule for those cases is unverified.
+1. **Serviced SYSCALL counting differs.** A SYSCALL serviced in native code is credited one retirement; the same SYSCALL serviced in the fallback is not. Device time agrees (one unit each), so global retirement positions shift by one while `time` does not. Decision (B-6a): the serviced SYSCALL retires, so the fallback counter is the defect. The fix is a reporting-only change to the interpreter counter and is tracked in #789. The pinned test is `KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired`, which asserts the current value.
+2. **Where `next` points after an interrupt.** Inside a fallback segment the interrupt leaves `end_pc` at the vector, and the preempted PC is not recorded. An in-body native interrupt (reproduced in B-6a) also sets `next` to the vector. A native boundary interrupt keeps `next` at the program-order PC and the transfer record carries the vector. The checkpoint must use `kind = interrupt_entry` and must not compare `next` across these cases.
+3. **Fused-unit partial completion and in-body native interrupts are reproduced (B-6a).** A timer edge between the two instructions of a fused load block yields an interrupted unit with `retired` 1 and `next` at the vector. The checkpoint rule for these cases is now testable; the rule itself is not yet implemented.
 
 ## 7. Phase C gate
 
@@ -95,10 +121,10 @@ Phase C (measuring the first divergence on the real standalone path) may start o
 
 | Condition | Status at B-5 end |
 |---|---|
-| Serviced SYSCALL counting agrees on both sides, or an explicit mapping is recorded and tested | Not met (blocker 1) |
+| Serviced SYSCALL counting agrees on both sides, or an explicit mapping is recorded and tested | Not met: fix proposed, not applied; the defect is located in the interpreter counter (blocker 1) |
 | The checkpoint format is implemented on both sides for CPU state and selected RAM, and the synthetic programs produce no false mismatch at the same positions | Not met (design only) |
 | The interrupt-entry rule (blocker 2) is implemented and tested | Not met (documented, not implemented) |
 | The VRAM comparison runs only at VBlank and only with an empty GPU queue | Not met (design only) |
-| The fused-unit partial and in-body interrupt cases are reproduced, or shown to be absent from the generated code | Not met (not reproduced) |
+| The fused-unit partial and in-body interrupt cases are reproduced, or shown to be absent from the generated code | Reproduced (B-6a); the checkpoint rule is not yet implemented |
 
 Phase C is not ready to start.

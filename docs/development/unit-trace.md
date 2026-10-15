@@ -103,16 +103,17 @@ After a handoff, the dispatcher's pass that served the transfer is recorded as a
 
 - Instruction positions inside a native fused unit. A unit is one record; a partial completion inside it is reported only as its retired count.
 - GPU, VRAM, DMA or device state.
-- Interrupts taken inside a native unit. The synthetic programs in B-5 produced none; interrupts appeared only at unit boundaries or inside fallback segments.
+- Interrupts inside a native fused block are reproduced (B-6a, `InterruptInsideAFusedBlock_...`); other in-unit positions are not covered.
 - Process failures. Child kills and timeouts are checked by cutting the traces at every line, not by killing a real child.
 
 ## Known semantic differences
 
 These are recorded, not fixed, in B-5. Consumers must account for them.
 
-1. **Serviced SYSCALL counting.** A SYSCALL serviced in native code is credited one retirement and resumes at `pc + 4`. A SYSCALL serviced in the fallback is not counted, because the interpreter's retirement loop skips the count after it. The interpreter still fetches the instruction. Reconciling the two changes device time, because `host_retired` drives the scheduler. The pinned test is `KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired`.
-2. **PC after an interrupt inside a fallback segment.** The fallback's `end_pc` is the PC after the interrupt, the vector. The instruction the interrupt preempted is not recorded. A native boundary interrupt instead leaves `next` at the program-order PC, and the transfer record carries the vector.
+1. **Serviced SYSCALL counting.** A SYSCALL serviced in native code is credited one retirement and resumes at `pc + 4`. A SYSCALL serviced in the fallback is not counted, because the interpreter's retirement loop skips the count after it. The interpreter still fetches the instruction and charges it one unit of device time, as the native side does, so `time` agrees. Decision (B-6a): the serviced SYSCALL retires, so the fallback counter is the defect; the fix is tracked in #789. The pinned test is `KnownDivergence_ServicedSyscallInTheFallback_IsFetchedButNotRetired`.
+2. **PC after an interrupt.** Inside a fallback segment the fallback's `end_pc` is the vector, and the instruction the interrupt preempted is not recorded. An in-body native interrupt (reproduced in B-6a) also sets `next` to the vector. A native boundary interrupt keeps `next` at the program-order PC, and the transfer record carries the vector.
 3. **Termination 5.** In these runs, `termination` 5 (`UnresolvedIndirectFlow`) appears with a fallback stop, because the fallback reported its stop that way.
+4. **SYSCALL in a delay slot.** Both engines refuse to service it and stop with a runtime failure. Both credit the branch once. Under the R3000 restart model the branch would be re-executed, so whether the branch counts is an open convention (pinned by `DelaySlotSyscall_IsRefusedByBothEngines_AndNeitherCompletes`).
 
 ## Verification
 
