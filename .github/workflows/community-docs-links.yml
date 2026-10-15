@@ -10,6 +10,8 @@ on:
       - 'docs/index.html'
       - 'docs/get-involved.html'
       - 'docs/rrs-vision.html'
+      - 'docs/ja/index.html'
+      - 'docs/ja/get-involved.html'
       - 'scripts/ci/check-community-links.py'
       - '.github/workflows/community-docs-links.yml'
   push:
@@ -22,6 +24,8 @@ on:
       - 'docs/index.html'
       - 'docs/get-involved.html'
       - 'docs/rrs-vision.html'
+      - 'docs/ja/index.html'
+      - 'docs/ja/get-involved.html'
       - 'scripts/ci/check-community-links.py'
       - '.github/workflows/community-docs-links.yml'
 
