@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Recompiler;
 
@@ -35,6 +37,15 @@ internal static class ObservedRootsFixtures
 
     internal static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    internal static string TargetsJson(uint pc, string cause, ulong instructions) =>
-        $$"""{"format":"psxrecomp.fallback-targets/v1","sha256":"0","targets":[{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":1,"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}]}""";
+    /// <summary>A run identity that is well formed but describes no real input (for tests that only parse an export).</summary>
+    internal static ObservedRunIdentity PlaceholderRun { get; } = new(new string('0', 64), [], []);
+
+    internal static string TargetsJson(uint pc, string cause, ulong instructions, ObservedRunIdentity? run = null) =>
+        TargetsJson(run, $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":1,"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""");
+
+    internal static string TargetsJson(ObservedRunIdentity? run, params string[] targetObjects)
+    {
+        run ??= PlaceholderRun;
+        return $$"""{"format":"psxrecomp.fallback-targets/v2","sha256":"{{run.FirmwareSha256}}","run":{{JsonSerializer.Serialize(ObservedRootPlanner.RunDocument(run))}},"targets":[{{string.Join(",", targetObjects)}}]}""";
+    }
 }

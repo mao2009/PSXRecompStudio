@@ -618,7 +618,7 @@ internal static class OpenBiosProbeCommand
                     lastReturnPc = Hex(t.LastReturnPc),
                 }).ToArray();
                 File.WriteAllText(probe.FallbackTargetsPath, JsonSerializer.Serialize(
-                    new { format = PSXRecomp.Core.Recompiler.ObservedRootPlanner.TargetFormat, sha256 = probe.Hash, targets = allTargets },
+                    new { format = PSXRecomp.Core.Recompiler.ObservedRootPlanner.TargetFormat, sha256 = probe.Hash, run = PSXRecomp.Core.Recompiler.ObservedRootPlanner.RunDocument(PSXRecomp.Core.Recompiler.ObservedRootPlanner.DescribeRun(probe.Hash, manifest)), targets = allTargets },
                     new JsonSerializerOptions { WriteIndented = true }));
             }
 

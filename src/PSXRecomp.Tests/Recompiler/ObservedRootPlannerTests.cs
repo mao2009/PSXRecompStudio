@@ -142,15 +142,61 @@ public sealed class ObservedRootPlannerTests
         targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100));
     }
 
+    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1}""";
+
+    public static TheoryData<string> Malformed => new()
+    {
+        """{"format":"other/v9","targets":[]}""",
+        """{"format":"psxrecomp.fallback-targets/v1","sha256":"0","targets":[]}""",
+        """{"format":"psxrecomp.fallback-targets/v2","sha256":"0000000000000000000000000000000000000000000000000000000000000000","targets":[]}""",
+        ObservedRootsFixtures.TargetsJson(null, Dup, Dup),
+        ObservedRootsFixtures.TargetsJson(null, """{"pc":"0xZZ","cause":"unknown-code","entries":1,"instructions":1}"""),
+        ObservedRootsFixtures.TargetsJson(PlaceholderWithFirmware('A'), Dup),
+        ObservedRootsFixtures.TargetsJson(null, Dup).Replace("\"sha256\":\"0000", "\"sha256\":\"1111"),
+    };
+
+    private static ObservedRunIdentity PlaceholderWithFirmware(char c) => ObservedRootsFixtures.PlaceholderRun with { FirmwareSha256 = new string(c, 64) };
+
     [Theory]
-    [InlineData("""{"format":"other/v9","targets":[]}""")]
-    [InlineData("""{"format":"psxrecomp.fallback-targets/v1","targets":[{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1},{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1}]}""")]
-    [InlineData("""{"format":"psxrecomp.fallback-targets/v1","targets":[{"pc":"0xZZ","cause":"unknown-code","entries":1,"instructions":1}]}""")]
-    [InlineData("""{"format":"psxrecomp.fallback-targets/v1"}""")]
+    [MemberData(nameof(Malformed))]
     public void ReadTargets_RejectsAMalformedDocument(string json)
     {
         var act = () => ObservedRootPlanner.ReadTargets(json);
 
         act.Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void ReadExport_RoundTripsTheRunIdentity()
+    {
+        var run = new ObservedRunIdentity(new string('c', 64), [0x80000100u], [new ObservedRunImage("img", Dest, new string('d', 64), Sha.Replace('0', 'e'), [Dest, A])]);
+
+        var read = ObservedRootPlanner.ReadExport(ObservedRootsFixtures.TargetsJson(A, "unknown-code", 1, run)).Run;
+
+        read.Should().BeEquivalentTo(run);
+    }
+
+    [Fact]
+    public void Verify_AcceptsTheSameRun_AndRejectsEachDifferingField()
+    {
+        var run = new ObservedRunIdentity(new string('c', 64), [0x80000100u], [new ObservedRunImage("img", Dest, new string('d', 64), new string('e', 64), [Dest])]);
+        var image = run.Images[0];
+        ObservedRootPlanner.Verify(run, run with { });
+
+        foreach (var (changed, what) in new (ObservedRunIdentity, string)[]
+        {
+            (run with { FirmwareSha256 = new string('f', 64) }, "firmware"),
+            (run with { Interpreted = [] }, "interpret"),
+            (run with { Images = [] }, "image count"),
+            (run with { Images = [image with { Name = "x" }] }, "name"),
+            (run with { Images = [image with { LoadAddress = Dest + 4 }] }, "load address"),
+            (run with { Images = [image with { WordsSha256 = new string('0', 64) }] }, "code words"),
+            (run with { Images = [image with { SourceSha256 = null }] }, "source SHA-256"),
+            (run with { Images = [image with { Roots = [Dest, A] }] }, "roots"),
+        })
+        {
+            var act = () => ObservedRootPlanner.Verify(changed, run);
+            act.Should().Throw<InvalidDataException>().WithMessage($"*{what}*");
+        }
     }
 }

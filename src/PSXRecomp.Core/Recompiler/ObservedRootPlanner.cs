@@ -24,6 +24,24 @@ internal sealed record ObservedRootBudget(int MaxRootsPerImage, int MaxRootsTota
 [Domain]
 internal sealed record ObservedFallbackTarget(uint Pc, string Cause, ulong Entries, ulong Instructions);
 
+/// <summary>One image of the run that produced a fallback-target export, as the run's manifest described it.</summary>
+/// <param name="SourceSha256">The SHA-256 of the file an EXE image was read from; null for a ROM image.</param>
+/// <param name="Roots">The image's roots as the run built them (sorted).</param>
+[Domain]
+internal sealed record ObservedRunImage(string Name, uint LoadAddress, string WordsSha256, string? SourceSha256, IReadOnlyList<uint> Roots);
+
+/// <summary>
+/// The identity of the run behind a fallback-target export (Issue #773): the firmware it ran, the interpret points and the images
+/// (with their source and code-word hashes and roots) its manifest produced. It proves which inputs the trace was taken over; it does
+/// not prove the disc image, the ROM roots/code-bytes options or the run's inputs, none of which the export carries a hash of.
+/// </summary>
+[Domain]
+internal sealed record ObservedRunIdentity(string FirmwareSha256, IReadOnlyList<uint> Interpreted, IReadOnlyList<ObservedRunImage> Images);
+
+/// <summary>A parsed fallback-target export: the identity of its run, and its targets.</summary>
+[Domain]
+internal sealed record ObservedFallbackExport(ObservedRunIdentity Run, IReadOnlyList<ObservedFallbackTarget> Targets);
+
 /// <summary>One accepted observed root with the run evidence that selected it.</summary>
 [Domain]
 internal sealed record ObservedRoot(uint Pc, ulong Instructions, ulong Entries);
@@ -59,7 +77,7 @@ internal sealed record ObservedRootPlan(IReadOnlyList<ObservedImageRoots> Images
 internal static class ObservedRootPlanner
 {
     /// <summary>The fallback-target export format written by <c>openbios-probe --fallback-targets</c>.</summary>
-    internal const string TargetFormat = "psxrecomp.fallback-targets/v1";
+    internal const string TargetFormat = "psxrecomp.fallback-targets/v2";
 
     internal const string UnknownCodeCause = "unknown-code";
 
@@ -180,11 +198,64 @@ internal static class ObservedRootPlanner
         return new ObservedRootPlan(perImage, new ObservedRootCounts(targets.Count, total, baseReachable, extra, rejected));
     }
 
+    /// <summary>The run identity as the probe records it and as <see cref="Verify"/> recomputes it from the current inputs.</summary>
+    public static ObservedRunIdentity DescribeRun(string firmwareSha256, LoadImageManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(firmwareSha256);
+        ArgumentNullException.ThrowIfNull(manifest);
+        return new ObservedRunIdentity(
+            firmwareSha256.ToLowerInvariant(),
+            manifest.Interpreted.Order().ToArray(),
+            manifest.Images.Select(static i => new ObservedRunImage(
+                i.Name, i.LoadAddress, LoadImageManifest.CodeWordsSha256(i.Words), i.SourceSha256, i.Roots.Order().ToArray())).ToArray());
+    }
+
+    /// <summary>The JSON shape of <see cref="ObservedRunIdentity"/> in an export (the inverse of the <c>run</c> parse).</summary>
+    public static object RunDocument(ObservedRunIdentity run) => new
+    {
+        firmwareSha256 = run.FirmwareSha256,
+        interpret = run.Interpreted.Select(static pc => $"0x{pc:X8}").ToArray(),
+        images = run.Images.Select(static i => new
+        {
+            name = i.Name,
+            loadAddress = $"0x{i.LoadAddress:X8}",
+            wordsSha256 = i.WordsSha256,
+            sourceSha256 = i.SourceSha256,
+            roots = i.Roots.Select(static pc => $"0x{pc:X8}").ToArray(),
+        }).ToArray(),
+    };
+
+    /// <summary>Fail closed unless the export's run is exactly the run the current inputs describe.</summary>
+    public static void Verify(ObservedRunIdentity recorded, ObservedRunIdentity current)
+    {
+        ArgumentNullException.ThrowIfNull(recorded);
+        ArgumentNullException.ThrowIfNull(current);
+        static InvalidDataException Mismatch(string what) =>
+            new($"fallback targets: the export was not taken over these inputs ({what} differs); re-run openbios-probe --fallback-targets with this firmware and manifest.");
+
+        if (recorded.FirmwareSha256 != current.FirmwareSha256) throw Mismatch("firmware SHA-256");
+        if (!recorded.Interpreted.SequenceEqual(current.Interpreted)) throw Mismatch("interpret points");
+        if (recorded.Images.Count != current.Images.Count) throw Mismatch("image count");
+        for (var i = 0; i < current.Images.Count; i++)
+        {
+            var (r, c) = (recorded.Images[i], current.Images[i]);
+            if (r.Name != c.Name) throw Mismatch($"image {i} name");
+            if (r.LoadAddress != c.LoadAddress) throw Mismatch($"image '{c.Name}' load address");
+            if (r.WordsSha256 != c.WordsSha256) throw Mismatch($"image '{c.Name}' code words");
+            if (r.SourceSha256 != c.SourceSha256) throw Mismatch($"image '{c.Name}' source SHA-256");
+            if (!r.Roots.SequenceEqual(c.Roots)) throw Mismatch($"image '{c.Name}' roots");
+        }
+    }
+
+    /// <summary>Reads the targets of an export; the run identity is parsed but not checked here (see <see cref="Verify"/>).</summary>
+    public static IReadOnlyList<ObservedFallbackTarget> ReadTargets(string json) => ReadExport(json).Targets;
+
     /// <summary>
-    /// Reads a fallback-target export. Fail closed: the format must match, every target must carry a valid PC, cause, entries
-    /// and instructions, and a PC may appear only once.
+    /// Reads a fallback-target export. Fail closed: the format must match, the run identity must be present and well formed
+    /// (its firmware hash equal to the top-level <c>sha256</c>), every target must carry a valid PC, cause, entries and
+    /// instructions, and a PC may appear only once.
     /// </summary>
-    public static IReadOnlyList<ObservedFallbackTarget> ReadTargets(string json)
+    public static ObservedFallbackExport ReadExport(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
         try
@@ -195,6 +266,23 @@ internal static class ObservedRootPlanner
             {
                 throw new InvalidDataException($"fallback targets: the format is not '{TargetFormat}'.");
             }
+
+            var runElement = root.GetProperty("run");
+            var firmware = Sha(runElement.GetProperty("firmwareSha256").GetString(), "firmwareSha256");
+            if (root.GetProperty("sha256").GetString() != firmware)
+            {
+                throw new InvalidDataException("fallback targets: 'sha256' and 'run.firmwareSha256' disagree.");
+            }
+
+            var run = new ObservedRunIdentity(
+                firmware,
+                runElement.GetProperty("interpret").EnumerateArray().Select(static e => ParsePc(e.GetString())).ToArray(),
+                runElement.GetProperty("images").EnumerateArray().Select(static e => new ObservedRunImage(
+                    e.GetProperty("name").GetString() ?? throw new InvalidDataException("fallback targets: an image name is null."),
+                    ParsePc(e.GetProperty("loadAddress").GetString()),
+                    Sha(e.GetProperty("wordsSha256").GetString(), "wordsSha256"),
+                    e.GetProperty("sourceSha256") is { ValueKind: not JsonValueKind.Null } s ? Sha(s.GetString(), "sourceSha256") : null,
+                    e.GetProperty("roots").EnumerateArray().Select(static r => ParsePc(r.GetString())).ToArray())).ToArray());
 
             var seen = new HashSet<uint>();
             var targets = new List<ObservedFallbackTarget>();
@@ -211,13 +299,18 @@ internal static class ObservedRootPlanner
                 targets.Add(target);
             }
 
-            return targets;
+            return new ObservedFallbackExport(run, targets);
         }
         catch (Exception ex) when (ex is KeyNotFoundException or FormatException or InvalidOperationException or JsonException)
         {
             throw new InvalidDataException($"fallback targets: malformed document ({ex.Message}).", ex);
         }
     }
+
+    private static string Sha(string? text, string field) =>
+        text is { Length: 64 } && text.All(static c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'))
+            ? text
+            : throw new InvalidDataException($"fallback targets: '{field}' is not a lower-case SHA-256.");
 
     private static uint ParsePc(string? text)
     {

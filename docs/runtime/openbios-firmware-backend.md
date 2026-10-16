@@ -287,8 +287,22 @@ roots file is read strictly (a duplicate is an error). `psxrecomp fallback-roots
 export (`openbios-probe --engine generated-host --fallback-targets <file.json>`, which writes every distinct fallback target
 and leaves the top-12 summary unchanged). Only `unknown-code` targets inside one identified EXE image are candidates. The
 plan is ordered by observed instructions and bounded by `ObservedRootBudget.Default` (64 roots per image, 256 in total, and
-added reachable code of at most max(1024 instructions, 20 % of the entry-driven reachable set)). The output manifest must
-sit beside the input, is never overwritten, and is re-read before the command reports success. `boot-exe <name>`
+added reachable code of at most max(1024 instructions, 20 % of the entry-driven reachable set)). The export (`psxrecomp.fallback-targets/v2`)
+also records the identity of the run that produced it (`run`: firmware SHA-256, the manifest's interpret points, and per
+image its name, load address, code-word SHA-256, source-file SHA-256 and roots), and `fallback-roots` refuses an export
+unless that identity equals what the supplied firmware and manifest describe now. This proves which firmware, which EXE
+bytes, which load addresses and which root set the trace was taken over; it does **not** prove the disc image beyond the EXE
+files it supplied, the ROM `--roots`/`--code-bytes` options, the run's inputs, or that a PC was reached by the same
+execution that a different export would show. A v1 export carries no identity and is refused. Output safety: the
+output manifest must sit beside the input; no existing file or directory is overwritten; every output is first written
+under a run-unique `.<name>.<guid>.tmp` name in the same directory (exclusive create), the staged manifest is read back
+through the manifest parser, then the roots files are renamed into place (no overwrite) and the manifest last (the commit
+point), and the final manifest is read back again. On any failure the files this run published are removed, staged files
+are removed, and a file or directory that was already there is never touched. Two concurrent runs onto the same names
+cannot both publish: the loser fails and removes only its own files. Not atomic across files: if the process is killed
+between publishing a roots file and the manifest, `observed-roots-NNN.txt` and `.*.tmp` files remain with no manifest
+naming them. Recovery: delete the `.*.tmp` files and the `observed-roots-NNN.txt` files that no manifest references, then
+re-run (the next run refuses to start while those names exist, by design). `boot-exe <name>`
 reads the executable the disc's SYSTEM.CNF `BOOT` names (the real one on a real disc; `<name>` is only a
 label) with its entry as the sole root. `disc-exes <prefix>` (Issue #734) adds every PS-X EXE file on the
 disc, one guarded image each named `<prefix>:<ISO path>`: a game's later stages are executables its boot
