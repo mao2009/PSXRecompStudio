@@ -78,7 +78,10 @@ public sealed class TransitionAttributionRecorder
     {
         try
         {
-            File.WriteAllText(path, ToJson(run));
+            // Whole-file replacement: a reader never sees a half-written summary.
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, ToJson(run));
+            File.Move(temp, path, overwrite: true);
         }
         catch (Exception ex)
         {
@@ -99,6 +102,10 @@ public sealed class TransitionAttributionRecorder
                     distinctKeys = _keys.Count,
                     droppedKeys = _droppedKeys,
                     droppedDetailEvents = _droppedDetail,
+                    // byEntry and keys are built from the kept keys only; false means they omit some transitions (byCause stays exact).
+                    byEntryAndKeysComplete = _droppedKeys == 0,
+                    // The causes are host observations (loaded-code table vs the RAM the artifact held), not native guard decisions.
+                    causeSource = "host-observation",
                     // Counted independently of the key cap, so the sum always equals totalTransitions.
                     byCause = _causes.Select(static c => new { cause = c.Key, entries = c.Value.Entries, instructions = c.Value.Instructions })
                         .OrderBy(static x => x.cause, StringComparer.Ordinal).ToArray(),

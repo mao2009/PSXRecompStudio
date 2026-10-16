@@ -56,7 +56,24 @@ public sealed class TransitionAttributionRecorderTests
                 .Should().Be(n, "cause totals stay exact when distinct keys are dropped");
             doc.GetProperty("droppedDetailEvents").GetUInt64().Should().Be((ulong)(n - TransitionAttributionRecorder.MaxDetailEvents));
             doc.GetProperty("firstEvents").GetArrayLength().Should().Be(TransitionAttributionRecorder.MaxDetailEvents);
+            doc.GetProperty("byEntryAndKeysComplete").GetBoolean().Should().BeFalse("dropped keys make byEntry and keys partial");
         }
+    }
+
+    [Fact]
+    public void ByEntryAndKeys_AreMarkedComplete_OnlyWhenNothingWasDropped_AndTheFileIsWrittenWhole()
+    {
+        var r = new TransitionAttributionRecorder();
+        r.Observe(T(0x80000000, 0, -1));
+        Write(r).GetProperty("byEntryAndKeysComplete").GetBoolean().Should().BeTrue();
+
+        using var dir = new TempDirectory();
+        var path = Path.Combine(dir.FullPath, "attribution.json");
+        r.TryWrite(path, new StringWriter(), new Dictionary<string, object?>());
+#pragma warning disable AARC003 // Test-only: reads back the file the recorder wrote.
+        JsonDocument.Parse(File.ReadAllText(path)).RootElement.GetProperty("totalTransitions").GetUInt64().Should().Be(1);
+        Directory.GetFiles(dir.FullPath).Should().ContainSingle("the temporary file is renamed into place");
+#pragma warning restore AARC003
     }
 
     [Fact]
