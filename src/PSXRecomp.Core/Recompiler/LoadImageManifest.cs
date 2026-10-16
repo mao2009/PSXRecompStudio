@@ -147,8 +147,15 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             }
         }
 
+        // The per-image limit is checked per directive, so one image takes at most one: a second would raise it past the budget.
+        var named = new HashSet<string>(StringComparer.Ordinal);
         foreach (var directive in observedRoots)
         {
+            if (directive.Fields.Length > 1 && !named.Add(directive.Fields[1]))
+            {
+                throw new InvalidDataException($"manifest: more than one 'roots' directive names '{directive.Fields[1]}'; an image takes one.");
+            }
+
             ApplyObservedRoots(images, directive, baseDirectory);
         }
 

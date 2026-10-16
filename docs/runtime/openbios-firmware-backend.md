@@ -282,10 +282,10 @@ built ELF pair. Manifest root paths are relative to the manifest. Issue #773 add
 `roots <image> <roots-file> <source-sha256> <load-hex> <words-sha256>`: it names exactly one EXE-based image (`exe`,
 `boot-exe` or `disc-exes`), and the load is refused unless the image's source-file SHA-256, load address and code-word
 SHA-256 all match, and every root is a unique, aligned, in-image, structurally safe PC that is not already a root. The
-roots file is read strictly (a duplicate is an error). `psxrecomp fallback-roots <openbios.bin> --load-images <manifest>
+roots file is read strictly (a duplicate is an error), and one image takes at most one `roots` directive (the per-image limit is checked per file). `psxrecomp fallback-roots <openbios.bin> --load-images <manifest>
 --fallback-targets <file.json> --out <manifest> [--disc <image>]` plans those roots from a probe run's full fallback
 export (`openbios-probe --engine generated-host --fallback-targets <file.json>`, which writes every distinct fallback target
-and leaves the top-12 summary unchanged). Only `unknown-code` targets inside one identified EXE image are candidates. The
+and leaves the top-12 summary unchanged). Only `unknown-code` and `aot-coverage-gap:loaded-image` targets inside one identified EXE image are candidates. The
 plan is ordered by observed instructions and bounded by `ObservedRootBudget.Default` (64 roots per image, 256 in total, and
 added reachable code of at most max(1024 instructions, 20 % of the entry-driven reachable set)). The export (`psxrecomp.fallback-targets/v2`)
 also records the identity of the run that produced it (`run`: firmware SHA-256, the manifest's interpret points, and per

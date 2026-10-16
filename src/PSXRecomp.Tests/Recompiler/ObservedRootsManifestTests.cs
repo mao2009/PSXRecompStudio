@@ -60,6 +60,21 @@ public sealed class ObservedRootsManifestTests
         act.Should().Throw<InvalidDataException>().WithMessage("*per image*");
     }
 
+    // The per-image budget is checked on one roots file, so a second directive for the same image would raise the image past it.
+    [Fact]
+    public void ASecondDirectiveForTheSameImage_FailsClosed()
+    {
+        using var dir = new TempDirectory();
+        var text = new uint[200];
+        var perImage = ObservedRootBudget.Default.MaxRootsPerImage;
+        string Roots(int from) => string.Join("\n", Enumerable.Range(from, perImage).Select(i => $"0x{Dest + (uint)i * 4:X8}")) + "\n";
+        dir.WriteFile("observed2.txt", Encoding.ASCII.GetBytes(Roots(1 + perImage)));
+
+        var act = () => Load(dir, text, "exe test test.exe\n" + Directive(text) + Directive(text, file: "observed2.txt"), Roots(1));
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*more than one 'roots'*");
+    }
+
     [Fact]
     public void TheProbeUsage_SeparatesEveryOption()
     {
