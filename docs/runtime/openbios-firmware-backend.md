@@ -487,6 +487,25 @@ writes the diagnostics document; the existing `FirmwareStandaloneHandoffTests` c
 | Persona CHD, 600 s timeout, Windows, `PSXRecomp.RuntimeHost --diagnostics`, before/after `disc-exes` (all executables compiled, entry-only roots) | Before: 270,127,434 native / 2,221,246,107 fallback instructions / 4,698 transitions, fallback time 269 s of 601 s; last fallback entry `0x8008A484`. After: 315,766,486 native / 11,374,179 fallback / 254,095 transitions, fallback **transfer** time 175 s of 600 s (249,567 entries at `0x80084C88`, returning at `0x8008AECC`). The guest advanced ~7x *less* in the same wall time: AOT coverage rose, progress fell. Both end `ARTIFACT_TIMEOUT`; no title evidence. |
 | Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
 
+**Host IPC profile and the fused report + MMIO request (Issue #768).** `PSXRECOMP_IPC_PROFILE=<path>` (opt-in; absent, the
+bridge holds no profile and the hot path pays a null check) writes per message kind (time report, fused MMIO, MMIO read/write,
+transfer, GTE, COP0, other): count, lines written, bytes, wait (previous handler end to this line read: native execution plus
+pipe wake-up), handler time (parse, device work, reply writes), device time, write time and p50/p95/p99 (power-of-two
+microsecond buckets). Every counted message is one synchronous round trip; `mmioAccesses`/`timeReports` therefore equal message
+counts (no double counting) except that a fused request is counted in both. Measured on Persona, #792 head, Windows, 60 s,
+machine shared with other agents (CPU 4-83 %): about 63,000 messages/s, ~16 us each; 66 % are time reports, 32 % MMIO reads;
+wait is 73 % of wall time (the artifact and the pipe wake-up, which the host cannot shorten), host handler 27 %, of which the
+reply write syscalls are about 20 % of wall and device advance about 2.5 %. Each MMIO access was preceded by its own time
+report (reports ~ 2 x MMIO: one before the access, one after its unit). The access and the report that must precede it now
+travel as one line `RHOST_RETIRED count R|W width physical [value]`; the host handles the report, then the access, and the
+artifact reads the same replies in the same order, so no device observes a different order or time. The report after the unit
+is unchanged (it carries the credit and the interrupt line the next dispatch boundary needs). Result, same host build, 3
+interleaved 60 s runs each: round trips per guest instruction 0.106 -> 0.071 (-33 %, deterministic); native instructions in 60 s
+29.4 M / 21.9 M / 36.4 M -> 46.8 M / 26.6 M / 37.6 M (median +28 %, run-to-run noise about +-25 %, so the throughput figure is
+indicative only). Not adopted: coalescing the host's reply lines into one write (AutoFlush off, flush before every blocking
+read): two interleaved 40 s runs each showed no difference beyond noise. Not attempted: skipping the report after a read whose
+access did not change the scheduler (it would defer a device advance past dispatch boundaries; needs its own proof).
+
 Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel
 booted and `titleStarted:true`, but 275,017,697 native vs 11,066,526,413 fallback instructions, 9,118 transitions,
 `ARTIFACT_TIMEOUT`. 99.9% of the fallback is `user-ram`/`ps-x-exe` code classified `unknown-code` (in no AOT image):
