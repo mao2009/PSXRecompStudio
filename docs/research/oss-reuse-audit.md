@@ -8,6 +8,22 @@ Baseline: `origin/main` at `19507d1` (2026-10-15)
 
 This document is a research record. It does not grant a license, approve distribution, or select a dependency. Per [References and Prior Art](../REFERENCES.md), a file-level audit is required before any third-party source is incorporated. The license observations below are first-party readings of upstream files and are not legal advice.
 
+## OpenBIOS acquisition and distribution boundary (Issue #794)
+
+This audit separates **local upstream use** from **third-party source incorporation** and **redistribution**. These are different activities and must not share a single approval gate:
+
+| Activity | PSXRecompStudio policy | Review gate |
+|---|---|---|
+| Developer/user obtains pinned Nugget OpenBIOS from the upstream repository and builds `openbios.bin` on their own machine | Supported for local development, testing, and execution; upstream license terms still apply | No PSXRecompStudio source-incorporation or binary-redistribution approval merely to run the locally built firmware |
+| Project publishes links, build instructions, or a helper that fetches the pinned upstream revision without shipping OpenBIOS source/assets | Supported; provenance, pin, and build output remain inspectable | Review script behavior and notices; do not imply bundled binary permission |
+| Copying, translating, or porting Nugget source into PSXRecompStudio | Not covered by local-use permission | File-by-file license/provenance/NOTICE review under `docs/REFERENCES.md`, before incorporation |
+| PSXRecompStudio maintainers ship `openbios.bin`, its embedded fonts/audio, or a generated standalone executable containing firmware bytes | **Not in the current project release scope** | Separate human review of every actually distributed component, including `blip.hit` and fonts, before release |
+| An end user generates a standalone artifact locally that embeds their own OpenBIOS build | Local generation is a supported workflow; the resulting file may contain third-party firmware | The user's further redistribution requires checking applicable upstream/component terms; local generation is not a grant to redistribute |
+
+Project releases and CI-published artifacts must not contain OpenBIOS firmware or unauthorized game assets. Local ROMs and generated artifacts stay outside tracked source and public release bundles. The pending binary-redistribution audit does **not** block the documentation-only PR #793 or local execution work; Issue #794 remains open for any future source-import or redistribution proposal. The MIT headers observed in Nugget do not establish permissions for every bundled third-party asset.
+
+---
+
 Evidence labels: **[FACT]** = read directly from a repository file or API result at the SHA listed. **[INFERRED]** = derived from code reading, not confirmed by a test. **[HYPOTHESIS]** = an effort estimate with no measurement behind it. **[UNVERIFIED]** = not checked.
 
 ---
@@ -229,7 +245,7 @@ Host Controller (OS device, via SDL3 if adopted)
 **Risks:**
 
 - Relying on the zlib, BSD, MIT, or public-domain status of a top-level file without checking bundled code (the SDL, libchdr, and miniaudio cases above) would be a provenance error.
-- The Nugget `statemachine.c` drift means the recorded file-level evidence is stale.
+- The pinned Nugget `statemachine.c` blob remains valid for commit `c950e18`; checking a different upstream revision requires a fresh file-level audit, not reusing the pinned blob as HEAD evidence.
 
 **Not performed:** no build, no test run, no ROM run. No product code, dependency, or license file was changed.
 
@@ -239,7 +255,7 @@ Host Controller (OS device, via SDL3 if adopted)
 
 No new issue is opened by this audit. Existing issues cover the blockers. Suggested follow-ups, each to be checked for duplicates first:
 
-1. **Reconcile the OpenBIOS license status** between `docs/REFERENCES.md` and `docs/legal/openbios-license-audit.md`, and re-verify the `statemachine.c` blob. Likely belongs under #730.
+1. **Keep distribution and direct-source-import decisions scoped to actual proposals** under #794 / #730; the PENDING file-level status and pinned-versus-HEAD `statemachine.c` distinction are documented, and neither blocks local upstream builds or this research PR.
 2. **Decide the BIN/CUE input requirement for v0.1.** If required, open one Issue for an in-tree CUE parser (no libcue). Check for an existing disc-input Issue first.
 3. **Decide whether target discs need `cdfl` / `cdzs`.** If yes, open a libchdr evaluation Issue with per-dependency license audit.
 4. **Schedule host-input design (SDL3 as adapter only)** after #661 / #712 / #443 family, and reference #47 and #435 (the existing input contract).
