@@ -151,10 +151,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>
     /// Builds the artifact with per-entry loaded-code guard counters, written to the file named by PSX_GUARD_STATS_FILE
-    /// (measurement only, Issue #773). Opt-in through PSXRECOMP_NATIVE_GUARD_STATS (the artifact is generated while the
-    /// engine is constructed, so a property set afterwards would be too late); off, the generated text is unchanged.
+    /// (measurement only, Issue #773). Opt-in through <see cref="GuardStatsScope"/> or PSXRECOMP_NATIVE_GUARD_STATS (the
+    /// artifact is generated while the engine is constructed, so a property set afterwards would be too late); off, the
+    /// generated text is unchanged.
     /// </summary>
-    private static bool GuardStats => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"));
+    private static bool GuardStats => GuardStatsScope.Enabled;
 
     /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
     public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
@@ -836,6 +837,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 psi.Environment[name] = value;
             }
+        }
+
+        // Issue #773: a guard-stats scope names the report for this child only; without one the environment passes through.
+        if (GuardStatsScope.CurrentPath is { } guardStatsFile)
+        {
+            psi.Environment[GuardStatsScope.FileEnvironmentVariable] = guardStatsFile;
         }
 
         using var process = Process.Start(psi)!;

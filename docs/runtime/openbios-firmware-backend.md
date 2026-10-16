@@ -519,8 +519,15 @@ access did not change the scheduler (it would defer a device advance past dispat
 package time builds the artifact with counters per RAM-placed entry PC (arrivals, hits per version, misses) and, for each entry's
 first miss, the entry PC of the previous dispatch-loop iteration (not necessarily the guest source of the transfer), the RAM word and
 the CPU registers; per-version tables are flat (no padding to the widest slot). At run time `PSX_GUARD_STATS_FILE=<path>` receives
-them, written to `<path>.tmp` and renamed (every 4 M dispatch units and at exit). The last line is `end final 1` only for the exit
-dump; a file without it comes from a run that did not exit normally and must not be read as complete. The generated text is byte-for-byte unchanged without the option. Values are produced
+them (every 4 M dispatch units and at exit), written whole to `<path>.tmp` and then replaced over `<path>` in one step; the previous
+report is never removed first, so a failed replacement leaves the previous complete report and deletes the `.tmp`. Platform
+difference: POSIX uses `rename()` (atomic replace); Windows uses `MoveFileExA(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` (declared by hand, not via `<windows.h>`),
+a same-volume rename in practice but not documented as atomic, which fails (keeping the old report) while the destination is
+open without `FILE_SHARE_DELETE`. Guarantee on a killed or timed-out run: the file at `<path>` is always a complete earlier dump
+(or absent before the first dump), never a truncated one; a `<path>.tmp` of the dump in progress may remain, and nothing is
+promised across power loss (no `fsync`). The last line is `end final 1` only for the exit dump; a file without it comes from a
+run that did not exit normally and must not be read as complete. Tests select the counters with `GuardStatsScope.Begin(path)`
+(a per-async-context switch handed to the child process only) instead of process-wide environment variables. The generated text is byte-for-byte unchanged without the option. Values are produced
 inside the generated code, so they are native-side observations, unlike the host-side attribution of fallback entries.
 Persona CHD, `disc-exes` + `indirect-roots` (#792) on main with the fused report (#796), Windows, 600 s, one run (CPU 20-53 %, other
 agents' processes present): `0x80084C88` had **1,655,795 native arrivals, all guard hits on version 0 (the ATLUS.EXE version),

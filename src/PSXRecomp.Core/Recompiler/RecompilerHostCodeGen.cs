@@ -954,9 +954,21 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("static uint64_t psx_gs_snapdropped = 0u;");
         sb.AppendLine("static uint32_t psx_gs_cur = 0u, psx_gs_prev = 0u;");
         sb.AppendLine("static uint64_t psx_gs_iter = 0u;");
-        // The file is written whole to <path>.tmp and renamed over <path>, so a reader (or a killed run) never sees a
-        // half-written file. The last line says whether this is the process's final dump; a file without "end final 1"
-        // comes from a periodic dump of a run that did not exit normally and is incomplete.
+        // The file is written whole to <path>.tmp and then replaced over <path> in one step; the previous report is never
+        // removed first, so a failed replacement (or a killed run) leaves the previous complete report in place and a reader
+        // never sees a missing or half-written file. Replacement is platform specific: POSIX rename() replaces atomically;
+        // Windows MoveFileExA(MOVEFILE_REPLACE_EXISTING) is a same-volume rename in practice (not documented as atomic) and
+        // fails, keeping the old file, while the destination is open without FILE_SHARE_DELETE. A killed process loses at most
+        // the dump in progress (the .tmp is then left behind); durability across power loss is not promised (no fsync).
+        // The last line says whether this is the process's final dump; a file without "end final 1" comes from a periodic
+        // dump of a run that did not exit normally and is incomplete.
+        sb.AppendLine("#ifdef _WIN32");
+        // Declared by hand: <windows.h> (excpt.h) #defines exception_code, which the generated state uses as a member name.
+        sb.AppendLine("__declspec(dllimport) int __stdcall MoveFileExA(const char*, const char*, unsigned long);");
+        sb.AppendLine("static int psx_gs_replace(const char* tmp, const char* path) { return MoveFileExA(tmp, path, 0x1ul /* MOVEFILE_REPLACE_EXISTING */ | 0x8ul /* MOVEFILE_WRITE_THROUGH */) ? 0 : -1; }");
+        sb.AppendLine("#else");
+        sb.AppendLine("static int psx_gs_replace(const char* tmp, const char* path) { return rename(tmp, path); }");
+        sb.AppendLine("#endif");
         sb.AppendLine("static void psx_gs_dump(int final_dump) {");
         sb.AppendLine("  const char* path = getenv(\"PSX_GUARD_STATS_FILE\");");
         sb.AppendLine("  char tmp[1024]; FILE* f; unsigned i, v; int ok;");
@@ -979,9 +991,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  fprintf(f, \"snapdropped %llu\\nend final %d\\n\", (unsigned long long)psx_gs_snapdropped, final_dump ? 1 : 0);");
         sb.AppendLine("  ok = ferror(f) == 0;");
         sb.AppendLine("  if (fclose(f) != 0) ok = 0;");
-        sb.AppendLine("  if (!ok) { remove(tmp); return; }");
-        sb.AppendLine("  remove(path);");
-        sb.AppendLine("  if (rename(tmp, path) != 0) remove(tmp);");
+        sb.AppendLine("  if (!ok || psx_gs_replace(tmp, path) != 0) remove(tmp);");
         sb.AppendLine("}");
         sb.AppendLine("static void psx_gs_dump_final(void) { psx_gs_dump(1); }");
         sb.AppendLine("/* psx_gs_prev is the entry PC of the previous dispatch-loop iteration, not necessarily the guest source of the transfer. */");
