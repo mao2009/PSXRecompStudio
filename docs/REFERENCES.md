@@ -54,6 +54,18 @@ The commercial Sony BIOS and game disc/asset contents are forbidden in tracked f
 
 **Usage to date:** existing BIOS/Card/Pad/Event C# and Rust implementations cite OpenBIOS for behavior, but this audit has not established that licensed source text was directly incorporated. Do not add third-party copyright to an unrelated independent C# file without evidence. If future work copies/ports code, a human must approve the pinned files/dependencies, record altered code paths and preserve the exact MIT license/copyright in an appropriate NOTICE before merge. Current #712 first blocker remains unresolved by documentation alone. Links: [#730](https://github.com/mao2009/PSXRecompStudio/issues/730), [#712](https://github.com/mao2009/PSXRecompStudio/issues/712), [#661](https://github.com/mao2009/PSXRecompStudio/issues/661).
 
+## Nugget OpenBIOS: local build versus source import/distribution (Issue #794)
+
+The current PSXRecompStudio release does **not** ship OpenBIOS source or firmware binaries. The upstream-pinned Nugget repository is obtained and built on the developer's or user's own machine; the resulting `openbios.bin` is supplied locally. The project may publish upstream links and build scripts, but must not include the ROM, embedded assets, or any game content in its repository, release downloads, or public CI artifacts.
+
+This **local build-and-run workflow does not require project approval to redistribute a firmware binary**, because the project is not distributing one. It does not waive upstream conditions on the user's use. By contrast:
+
+- **Direct source copy, translation, or port** into PSXRecompStudio requires the file-by-file provenance, permission, modification, and third-party notice checks above. The candidate files remain PENDING for direct incorporation until that review is recorded.
+- **Maintainer redistribution of `openbios.bin` or a standalone output embedding its bytes** requires a separate asset-level review. In particular, `shell/blip.hit` and the font binaries have unresolved provenance/terms in [the binary audit](legal/openbios-license-audit.md).
+- **User-generated standalone outputs** may embed the user's locally built ROM. They are not project-distributed releases. Any later redistribution by the user is subject to the applicable licenses and asset permissions; project documentation must not imply that local generation grants redistribution rights.
+
+See [the v0.1 OSS reuse audit](research/oss-reuse-audit.md) and [Issue #794](https://github.com/mao2009/PSXRecompStudio/issues/794). Keeping binary redistribution PENDING does not block documentation-only research changes, local compatibility testing, or building against a user-supplied firmware.
+
 ## PSn00bSDK — alternative reference, different obligations
 
 - Source: https://github.com/Lameguy64/PSn00bSDK — snapshot `5d9aa2d3dfc7d6e51c2eb942ab4cdbae5571a40a` (2026-10-09).
