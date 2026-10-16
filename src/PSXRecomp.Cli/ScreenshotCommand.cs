@@ -173,7 +173,6 @@ public static class ScreenshotCommand
         TextWriter standardError)
     {
         var stopwatch = Stopwatch.StartNew();
-        var savedFiles = new List<string>();
 
         using var engine = new InterpreterTitleExecutionEngine(
             input.InstructionWords,
@@ -183,15 +182,13 @@ public static class ScreenshotCommand
         var handoff = new ProgramEndHandoff(input.LoadAddress, input.InstructionWords.Count);
         var orchestrator = new ExecutionOrchestrator();
 
-        var request = input.Request;
         TitleExecutionResult? executionResult = null;
         var stopReason = "Unknown";
-        var lastVblank = 0ul;
         ScreenshotCapture? screenshotCapture = null;
 
         try
         {
-            engine.Load(request);
+            engine.Load(input.Request);
 
             screenshotCapture = new ScreenshotCapture(
                 engine.DiagnosticDevices.GpuDevice,
@@ -201,71 +198,43 @@ public static class ScreenshotCommand
                 maxScreenshots,
                 startVblank);
 
-            // Use ExecutionOrchestrator like TitleExecutionService does, but with periodic screenshot capture
-            // We run the orchestrator with a small outer budget and capture screenshots between segments
-            // by checking VBlank count after each segment completion
-            var outerBudget = 1000u; // Large enough for full execution
-            var currentRequest = request;
-
+            // One orchestrator run; screenshots are taken at segment boundaries and the guard ends the run at the
+            // capture cap or wall-clock timeout (Issue #751). The outer budget still bounds a guest that never stops.
+            var guard = StopGuard(screenshotCapture, stopwatch, timeout);
+            var currentRequest = input.Request;
             while (true)
             {
-                // Check wall-clock timeout
-                if (stopwatch.Elapsed >= timeout)
-                {
-                    stopReason = "WallClockTimeout";
+                executionResult = orchestrator.Execute(
+                    engine,
+                    handoff,
+                    currentRequest,
+                    segmentCallback: snap =>
+                    {
+                        screenshotCapture.TryCapture();
+                        guard(snap);
+                    });
+
+                // A RuntimeHandoff is continued from its snapshot (pre-existing behaviour); anything else ends the run.
+                if (executionResult.State != TitleExecutionState.RuntimeHandoff || executionResult.FinalSnapshot is not { } snapshot)
                     break;
-                }
 
-                // Check if screenshot capture is complete
-                if (screenshotCapture.IsComplete)
-                {
-                    stopReason = "ScreenshotsComplete";
-                    break;
-                }
-
-                // Check for hang (no VBlank progress for extended period)
-                var currentVblank = engine.Scheduler!.VblankCount;
-                if (currentVblank == lastVblank && stopwatch.Elapsed > TimeSpan.FromSeconds(60))
-                {
-                    stopReason = "HangDetected";
-                    break;
-                }
-                lastVblank = currentVblank;
-
-                // Run one segment via orchestrator
-                var result = orchestrator.Execute(engine, handoff, currentRequest);
-                executionResult = result;
-
-                // Try to capture screenshot at segment boundary
-                screenshotCapture.TryCapture();
-
-                // Check termination
-                if (result.State != TitleExecutionState.RuntimeHandoff)
-                {
-                    stopReason = result.State.ToString();
-                    break;
-                }
-
-                // Continue from the handoff's continuation point
-                // The orchestrator handles the continuation internally, so this shouldn't happen
-                // But if it does, we need to update the request for the next iteration
-                if (result.FinalSnapshot is not null)
-                {
-                    currentRequest = new TitleExecutionRequest(
-                        result.FinalSnapshot.PC,
-                        result.FinalSnapshot.Gpr.ToArray(),
-                        result.FinalSnapshot.HI,
-                        result.FinalSnapshot.LO,
-                        [],
-                        outerBudget,
-                        segmentBudget);
-                }
-                else
-                {
-                    stopReason = "NoSnapshot";
-                    break;
-                }
+                currentRequest = new TitleExecutionRequest(
+                    snapshot.PC,
+                    snapshot.Gpr.ToArray(),
+                    snapshot.HI,
+                    snapshot.LO,
+                    [],
+                    1000u,
+                    segmentBudget);
             }
+            stopReason = StopReasonOf(executionResult.State);
+        }
+        catch (CaptureStop stop)
+        {
+            stopReason = stop.Reason;
+            executionResult = new TitleExecutionResult(
+                TitleExecutionState.RuntimeHandoff, stop.Last, 0, InterpreterTitleExecutionEngine.EngineName,
+                stop.Reason.ToUpperInvariant(), $"Stopped by the screenshot command: {stop.Reason}.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -277,32 +246,7 @@ public static class ScreenshotCommand
             stopwatch.Stop();
         }
 
-        // Final capture if not complete
-        if (screenshotCapture is not null && !screenshotCapture.IsComplete)
-        {
-            screenshotCapture.ForceCapture("persona_vblank_final.png");
-        }
-
-        // Collect saved files
-        if (Directory.Exists(outputDirectory))
-        {
-            savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
-                .OrderBy(f => f)
-                .Select(Path.GetFullPath));
-        }
-
-        var maxVblank = engine.Scheduler?.VblankCount ?? 0;
-
-        return new HeadlessRunResult(
-            executionResult ?? new TitleExecutionResult(
-                TitleExecutionState.RuntimeFailure,
-                null, 0, InterpreterTitleExecutionEngine.EngineName,
-                "NO_RESULT", "Execution did not produce a result"),
-            screenshotCapture?.ScreenshotsTaken ?? 0,
-            maxVblank,
-            savedFiles.AsReadOnly(),
-            stopwatch.Elapsed,
-            stopReason);
+        return FinishCapture(screenshotCapture, executionResult, engine.Scheduler, outputDirectory, stopwatch, stopReason);
     }
 
     private static string SerializeResult(string? inputSha256, HeadlessRunResult result)
@@ -591,7 +535,29 @@ public static class ScreenshotCommand
         }
     }
 
-    private static HeadlessRunResult RunScreenshotCaptureOpenBios(
+    /// <summary>Thrown from the segment callback to end the run cooperatively at a segment boundary (Issue #751).</summary>
+    private sealed class CaptureStop(string reason, RecompilerStateSnapshot? last) : Exception(reason)
+    {
+        public string Reason { get; } = reason;
+        public RecompilerStateSnapshot? Last { get; } = last;
+    }
+
+    /// <summary>
+    /// Segment-boundary stop check: capture cap reached or wall-clock timeout (the guest is bounded per segment by the
+    /// segment budget, so this bounds the whole run even when VBlank/display never advances).
+    /// </summary>
+    private static Action<RecompilerStateSnapshot> StopGuard(ScreenshotCapture capture, Stopwatch stopwatch, TimeSpan timeout) =>
+        snap =>
+        {
+            if (capture.IsComplete) throw new CaptureStop("capture_limit", snap);
+            if (stopwatch.Elapsed >= timeout) throw new CaptureStop("timeout", snap);
+        };
+
+    /// <summary>Maps an orchestrator terminal state to the issue's stop-reason vocabulary.</summary>
+    private static string StopReasonOf(TitleExecutionState state) =>
+        state == TitleExecutionState.BudgetExhausted ? "execution_budget" : "guest_stopped";
+
+    internal static HeadlessRunResult RunScreenshotCaptureOpenBios(
         OpenBiosFirmware firmware,
         string firmwareHash,
         ICdSectorSource? disc,
@@ -605,7 +571,6 @@ public static class ScreenshotCommand
         TextWriter standardError)
     {
         var stopwatch = Stopwatch.StartNew();
-        var savedFiles = new List<string>();
 
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
@@ -622,25 +587,18 @@ public static class ScreenshotCommand
         ScreenshotCapture? screenshotCapture = null;
         TitleExecutionResult? executionResult = null;
         var stopReason = "Unknown";
-        var lastVblank = 0ul;
 
         try
         {
-            // Patch OpenBIOS ROM: add jump to shell entry point (0x80030000) at end of exception handler
-            // Exception handler ends at offset 0x280; insert jump to shell entry (0x80030000) at 0x284
-            // j 0x80030000 = 0x08000000 | (0x80030000 >> 2) = 0x0A000C00
-            // nop = 0x00000000
-            // Note: ROM patching must happen after Load, so we do it in postLoadAction
-            
             var orchestrator = new ExecutionOrchestrator();
-            var result = orchestrator.Execute(
-                interpreterEngine, 
-                handoff: null, 
+            executionResult = orchestrator.Execute(
+                interpreterEngine,
+                handoff: null,
                 request,
-                segmentCallback: null,
+                segmentCallback: snap => StopGuard(screenshotCapture!, stopwatch, timeout)(snap),
                 postLoadAction: () =>
                 {
-                    // This runs after engine.Load() but before first segment
+                    // Patch OpenBIOS ROM: jump to shell entry (0x80030000) after the exception handler.
                     var core = interpreterEngine.DiagnosticDevices.Core;
                     core.WriteMemory32(0x00000284, 0x0A000C00); // j 0x80030000
                     core.WriteMemory32(0x00000288, 0x00000000); // nop
@@ -653,80 +611,66 @@ public static class ScreenshotCommand
                         maxScreenshots,
                         startVblank);
 
-                    // Register VBlank callback for precise screenshot capture at VBlank interrupts
-                    interpreterEngine.Scheduler!.VblankCallback = vblank =>
-                    {
-                        // Capture screenshot at VBlank intervals
-                        screenshotCapture.TryCaptureAtVBlank(vblank);
-                    };
+                    interpreterEngine.Scheduler!.VblankCallback = vblank => screenshotCapture.TryCaptureAtVBlank(vblank);
                 });
-            executionResult = result;
-            stopReason = result.State.ToString();
-
-            // Final capture if not complete (screenshots are captured DURING execution via handoff)
-            if (!screenshotCapture.IsComplete)
-            {
-                screenshotCapture.ForceCapture("persona_vblank_final.png");
-            }
-
-            // Collect saved files
-            if (Directory.Exists(outputDirectory))
-            {
-                savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
-                    .OrderBy(f => f)
-                    .Select(Path.GetFullPath));
-            }
-
-            var maxVblank = interpreterEngine.Scheduler?.VblankCount ?? 0;
-
-            return new HeadlessRunResult(
-                executionResult ?? new TitleExecutionResult(
-                    TitleExecutionState.RuntimeFailure,
-                    null, 0, InterpreterTitleExecutionEngine.EngineName,
-                    "NO_RESULT", "Execution did not produce a result"),
-                screenshotCapture.ScreenshotsTaken,
-                maxVblank,
-                savedFiles.AsReadOnly(),
-                stopwatch.Elapsed,
-                stopReason);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                stopReason = $"Crash: {ex.GetType().Name}";
-                standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
-
-                // Final capture if not complete
-                if (!screenshotCapture.IsComplete)
-                {
-                    screenshotCapture.ForceCapture("persona_vblank_final.png");
-                }
-
-                // Collect saved files
-                if (Directory.Exists(outputDirectory))
-                {
-                    savedFiles.AddRange(Directory.GetFiles(outputDirectory, "*.png")
-                        .OrderBy(f => f)
-                        .Select(Path.GetFullPath));
-                }
-
-                var maxVblank = interpreterEngine.Scheduler?.VblankCount ?? 0;
-
-                return new HeadlessRunResult(
-                    new TitleExecutionResult(
-                        TitleExecutionState.RuntimeFailure,
-                        null, 0, InterpreterTitleExecutionEngine.EngineName,
-                        "CRASH", $"Runtime crash: {ex}"),
-                    screenshotCapture.ScreenshotsTaken,
-                    maxVblank,
-                    savedFiles.AsReadOnly(),
-                    stopwatch.Elapsed,
-                    stopReason);
-            }
-            finally
-            {
-                stopwatch.Stop();
-            }
+            stopReason = StopReasonOf(executionResult.State);
         }
+        catch (CaptureStop stop)
+        {
+            stopReason = stop.Reason;
+            executionResult = new TitleExecutionResult(
+                TitleExecutionState.RuntimeHandoff, stop.Last, 0, InterpreterTitleExecutionEngine.EngineName,
+                stop.Reason.ToUpperInvariant(), $"Stopped by the screenshot command: {stop.Reason}.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            stopReason = $"Crash: {ex.GetType().Name}";
+            standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
+            executionResult = new TitleExecutionResult(
+                TitleExecutionState.RuntimeFailure,
+                null, 0, InterpreterTitleExecutionEngine.EngineName,
+                "CRASH", $"Runtime crash: {ex}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+        }
+
+        return FinishCapture(screenshotCapture, executionResult, interpreterEngine.Scheduler, outputDirectory, stopwatch, stopReason);
+    }
+
+    /// <summary>
+    /// Keeps the frames already written, adds a final frame when the cap was not reached, writes manifest.json with the
+    /// stop reason and collects the result. Shared by both execution paths so a partial run always leaves a manifest.
+    /// </summary>
+    private static HeadlessRunResult FinishCapture(
+        ScreenshotCapture? capture,
+        TitleExecutionResult? executionResult,
+        DeviceScheduler? scheduler,
+        string outputDirectory,
+        Stopwatch stopwatch,
+        string stopReason)
+    {
+        if (capture is not null && !capture.IsComplete)
+            capture.ForceCapture("persona_vblank_final.png");
+
+        var savedFiles = Directory.Exists(outputDirectory)
+            ? Directory.GetFiles(outputDirectory, "*.png").OrderBy(f => f).Select(Path.GetFullPath).ToList()
+            : [];
+        var maxVblank = scheduler?.VblankCount ?? 0;
+        capture?.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC);
+
+        return new HeadlessRunResult(
+            executionResult ?? new TitleExecutionResult(
+                TitleExecutionState.RuntimeFailure,
+                null, 0, InterpreterTitleExecutionEngine.EngineName,
+                "NO_RESULT", "Execution did not produce a result"),
+            capture?.ScreenshotsTaken ?? 0,
+            maxVblank,
+            savedFiles.AsReadOnly(),
+            stopwatch.Elapsed,
+            stopReason);
+    }
 
     private static OpenedDisc OpenDisc(string path)
     {

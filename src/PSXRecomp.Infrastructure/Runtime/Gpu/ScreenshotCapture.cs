@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.Gpu;
@@ -19,6 +20,7 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly int _maxScreenshots;
     private readonly List<ulong> _targetVblanks;
     private readonly HashSet<ulong> _capturedVblanks = new();
+    private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
     private ulong _lastVblank = 0;
     private bool _disposed;
@@ -195,8 +197,7 @@ public sealed class ScreenshotCapture : IDisposable
     private void CaptureAndSave(ulong vblank, string? customName = null)
     {
         var frame = _gpuDevice.CaptureFrame();
-        var frameHash = frame.ComputeStableHash();
-        var frameHashStr = Convert.ToHexString(frameHash)[..16];
+        var frameHash = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant();
         var bgra = ConvertToBgra32(frame);
 
         if (bgra.Length == 0)
@@ -205,8 +206,40 @@ public sealed class ScreenshotCapture : IDisposable
         var fileName = customName ?? $"persona_vblank_{vblank:D4}.png";
         var filePath = Path.Combine(_outputDirectory, fileName);
 
-        PngWriter.Save(filePath, bgra, frame.Width, frame.Height);
+        // Write beside the target and rename so an interrupted run never leaves a truncated PNG (Issue #751).
+        var tempPath = filePath + ".tmp";
+        PngWriter.Save(tempPath, bgra, frame.Width, frame.Height);
+        File.Move(tempPath, filePath, overwrite: true);
+
+        var mode = _gpuDevice.GetState().DisplayMode;
+        _frames.Add(new CapturedFrame(fileName, vblank, frameHash, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
     }
+
+    /// <summary>
+    /// Writes <c>manifest.json</c> into the output directory: the stop reason, the final guest PC (when known) and, per
+    /// saved PNG, the VBlank (guest frame) index, size, display mode, pixel hash and whether the 24-bit path was used
+    /// (false means the frame was converted as legacy 15-bit). Written atomically; safe to call after a partial run.
+    /// </summary>
+    public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc)
+    {
+        var manifest = new
+        {
+            stopReason,
+            screenshotsTaken = _frames.Count,
+            maxVblankReached,
+            elapsedMs = (long)elapsed.TotalMilliseconds,
+            lastGuestPc = lastGuestPc is { } pc ? $"0x{pc:X8}" : null,
+            frames = _frames,
+        };
+        var path = Path.Combine(_outputDirectory, "manifest.json");
+        var tempPath = path + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(manifest, ManifestOptions));
+        File.Move(tempPath, path, overwrite: true);
+    }
+
+    private static readonly JsonSerializerOptions ManifestOptions = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    private sealed record CapturedFrame(string File, ulong Vblank, string Sha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
 
     /// <summary>
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
