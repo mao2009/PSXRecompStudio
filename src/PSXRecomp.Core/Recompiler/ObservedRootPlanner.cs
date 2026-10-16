@@ -175,9 +175,16 @@ internal static class ObservedRootPlanner
                 continue;
             }
 
+            var allowance = Math.Max(budget.MinExtraReachable, budget.MaxExtraReachableFraction * baseReachable);
+            if (extra + 1 > allowance)
+            {
+                // A new root adds at least itself, so an exhausted allowance rejects without recomputing the image's reachable set.
+                Reject("code-budget");
+                continue;
+            }
+
             var grown = ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, roots[index].Append(target.Pc));
             var growth = grown.Count - reachable[index].Count;
-            var allowance = Math.Max(budget.MinExtraReachable, budget.MaxExtraReachableFraction * baseReachable);
             if (extra + growth > allowance)
             {
                 Reject("code-budget");

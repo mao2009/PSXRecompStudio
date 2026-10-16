@@ -423,6 +423,12 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
 
         var roots = ReadStrictRootsFile(Resolve(fields[2], baseDirectory));
         var imageEnd = (ulong)image.LoadAddress + (ulong)image.Words.Length * 4;
+        if (roots.Length > ObservedRootBudget.Default.MaxRootsPerImage)
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' lists {roots.Length} roots; the limit is {ObservedRootBudget.Default.MaxRootsPerImage} per image.");
+        }
+
+        var existing = image.Roots.ToHashSet();
         foreach (var root in roots)
         {
             if ((root & 3) != 0 || root < image.LoadAddress || root >= imageEnd)
@@ -430,7 +436,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                 throw new InvalidDataException($"manifest: 'roots {name}' root 0x{root:X8} is not an aligned PC inside the image.");
             }
 
-            if (image.Roots.Contains(root))
+            if (existing.Contains(root))
             {
                 throw new InvalidDataException($"manifest: 'roots {name}' root 0x{root:X8} is already a root of the image.");
             }

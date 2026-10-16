@@ -60,40 +60,21 @@ public static class ReachableProgramBuilder
     {
         ArgumentNullException.ThrowIfNull(instructionWords);
 
-        var image = new InstructionImage(loadAddress, (ulong)loadAddress + (ulong)instructionWords.Count * InstructionSize, instructionWords);
-        if (!image.Contains(pc))
+        var imageEnd = (ulong)loadAddress + (ulong)instructionWords.Count * InstructionSize;
+        if (pc < loadAddress || pc >= imageEnd)
         {
             return false;
         }
 
         try
         {
-            DiscoverStatic(image, [pc]);
+            _ = ReachablePcs(loadAddress, instructionWords, [pc]);
             return true;
         }
         catch (InvalidOperationException)
         {
             return false;
         }
-    }
-
-    private static (Dictionary<uint, R3000aInstruction> Decoded, HashSet<uint> Reachable, HashSet<uint> DelaySlots) DiscoverStatic(
-        InstructionImage image,
-        IEnumerable<uint> roots)
-    {
-        var decoded = new Dictionary<uint, R3000aInstruction>();
-        var reachable = new HashSet<uint>();
-        var delaySlots = new HashSet<uint>();
-        var leaders = new SortedSet<uint>(roots);
-        var pending = new SortedSet<uint>(leaders);
-        while (pending.Count > 0)
-        {
-            var start = pending.Min;
-            pending.Remove(start);
-            DiscoverPath(start, image, decoded, reachable, delaySlots, leaders, pending, outOfImageTargets: null);
-        }
-
-        return (decoded, reachable, delaySlots);
     }
 
     /// <summary>

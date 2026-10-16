@@ -46,6 +46,26 @@ public sealed class ObservedRootsManifestTests
         image.Roots.Should().Equal(Dest, Callee);
     }
 
+    // The planner never writes more than the per-image budget, so a longer roots file is refused before any root is validated
+    // (each validation walks the image).
+    [Fact]
+    public void ARootsFileLongerThanThePerImageBudget_FailsClosed()
+    {
+        using var dir = new TempDirectory();
+        var text = new uint[200];
+        var observed = string.Join("\n", Enumerable.Range(1, ObservedRootBudget.Default.MaxRootsPerImage + 1).Select(i => $"0x{Dest + (uint)i * 4:X8}")) + "\n";
+
+        var act = () => Load(dir, text, "exe test test.exe\n" + Directive(text), observed);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*per image*");
+    }
+
+    [Fact]
+    public void TheProbeUsage_SeparatesEveryOption()
+    {
+        PSXRecomp.Infrastructure.Cli.OpenBiosProbeCommand.Usage.Should().NotContain("][", "adjacent options need a space between them");
+    }
+
     [Fact]
     public void TheDirective_MayPrecedeItsImage()
     {
