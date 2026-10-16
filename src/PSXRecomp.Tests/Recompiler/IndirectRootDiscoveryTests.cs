@@ -165,9 +165,9 @@ public sealed class IndirectRootDiscoveryTests
     }
 
     [Fact]
-    public void TheRootCount_IsCapped_ForAnArbitrarilyLargeTableSet()
+    public void TheRootCount_Limit_FailsClosed_InsteadOfReturningAPartialSet()
     {
-        // Ten tables of 32 callers are 320 candidates: more than MaxRoots, so the cap must stop the discovery.
+        // Ten tables of 32 callers are 320 candidates: more than MaxRoots, so the limit must fail the search.
         const int tables = 10, entriesPerTable = 32;
         var image = Image(0x2000);
         var tableBases = Enumerable.Range(0, tables).Select(k => Base + 0x100u + (uint)k * 0x80u).ToArray();
@@ -182,10 +182,9 @@ public sealed class IndirectRootDiscoveryTests
             }
         }
 
-        var roots = IndirectRootDiscovery.Find(Base, image, [Base]);
+        var act = () => IndirectRootDiscovery.Find(Base, image, [Base]);
 
-        roots.Should().HaveCount(IndirectRootDiscovery.MaxRoots);
-        roots.Select(r => r.TargetPc).Should().BeInAscendingOrder();
+        act.Should().Throw<InvalidDataException>().WithMessage($"*{IndirectRootDiscovery.MaxRoots}*");
     }
 
     [Fact]

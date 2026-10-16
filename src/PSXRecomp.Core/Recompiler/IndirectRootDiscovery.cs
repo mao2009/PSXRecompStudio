@@ -29,7 +29,7 @@ internal sealed record IndirectRoot(uint TargetPc, uint TableAddress, uint Mater
 /// The table base is never a root, and neither is any word that is not a table entry. A base such as a data array that happens
 /// to look like code is therefore not registered, which prevents the false root seen in the Persona EXE (0x800A724C).
 /// The scan is a fixed point: each round adds the code its accepted roots reach, which can materialize further tables. It stops
-/// at the first round that adds nothing, or at <see cref="MaxRounds"/>, <see cref="MaxRoots"/>, or <see cref="MaxCandidateChecks"/>.
+/// at the first round that adds nothing. Exceeding <see cref="MaxRounds"/>, <see cref="MaxRoots"/>, or <see cref="MaxCandidateChecks"/> throws <see cref="InvalidDataException"/>: a truncated search is not a result.
 /// The result is ascending by target PC and depends only on the input words.
 /// </para>
 /// <para>
@@ -78,9 +78,9 @@ internal static class IndirectRootDiscovery
         var accepted = new SortedDictionary<uint, IndirectRoot>();
         var checks = 0;
 
-        bool Full() => accepted.Count >= MaxRoots || checks >= MaxCandidateChecks;
+        var converged = false;
 
-        for (var round = 0; round < MaxRounds && !Full(); round++)
+        for (var round = 0; round < MaxRounds; round++)
         {
             // Throws InvalidOperationException when a seed or an accepted root reaches a structurally invalid transfer. That
             // is not caught here: a partial root set would read as a complete search.
@@ -94,7 +94,7 @@ internal static class IndirectRootDiscovery
                     continue;
                 }
 
-                for (var i = 0; i < MaxTableWords && !Full(); i++)
+                for (var i = 0; i < MaxTableWords; i++)
                 {
                     var address = (ulong)tableBase + (ulong)i * InstructionSize;
                     if (address > uint.MaxValue || address + InstructionSize > imageEnd)
@@ -114,9 +114,20 @@ internal static class IndirectRootDiscovery
                         continue;
                     }
 
+                    // Fail closed at a limit: a truncated search must not read as a complete one.
+                    if (checks >= MaxCandidateChecks)
+                    {
+                        throw new InvalidDataException($"indirect-root search exceeded {MaxCandidateChecks} candidate checks.");
+                    }
+
                     checks++;
                     if (IsFunctionCandidate(loadAddress, words, target))
                     {
+                        if (accepted.Count >= MaxRoots)
+                        {
+                            throw new InvalidDataException($"indirect-root search exceeded {MaxRoots} roots.");
+                        }
+
                         accepted.Add(target, new IndirectRoot(target, tableAddress, pc));
                         added = true;
                     }
@@ -125,8 +136,14 @@ internal static class IndirectRootDiscovery
 
             if (!added)
             {
+                converged = true;
                 break;
             }
+        }
+
+        if (!converged)
+        {
+            throw new InvalidDataException($"indirect-root search did not converge within {MaxRounds} rounds.");
         }
 
         return accepted.Values.ToArray();
