@@ -82,6 +82,40 @@ with `DEMO OK`. The transcripts match the committed capture except for line
 endings (the committed copy uses CRLF). Re-rendering the SVG from that transcript
 gives the same content, also differing only in line endings.
 
+### Verification record (2026-10-15)
+
+| Platform | Binary (`v0.0.0-alpha.2`) | Archive SHA-256 (matches `SHA256SUMS.txt`) | How it was run | Result |
+|---|---|---|---|---|
+| Windows 11 Pro 10.0.26300, x64 | `psxrecomp-v0.0.0-alpha.2-win-x64.zip` | `ff7464937af34a7934bef8b381cdd024401527c700786745af70a08a308db17e` | `scripts/demo/synthetic-demo.ps1 -Psxrecomp <extracted>\psxrecomp.exe` (the script itself) | exit `0`, `DEMO OK`, TTY `P`, `engine=recompiled-host-artifact` |
+| Ubuntu 26.04.1 LTS on WSL2, x64 | `psxrecomp-v0.0.0-alpha.2-linux-x64.tar.gz` | `a8ffe0d25d529db86c64459ebe5709af1de7111ffef7d151d8d1cc68dc4800f7` | **manual equivalent**: the same 2068-byte input (SHA-256 `a863090b…e6e`, copied from the Windows run) with `psxrecomp recompile … --json` and `psxrecomp run … --json` | both exit `0`; run JSON `output: [80]` (`P`), `engineName: recompiled-host-artifact`. The script was not run (no `pwsh` in that environment) and no `DEMO OK` line was produced |
+| macOS (osx-arm64) | `psxrecomp-v0.0.0-alpha.2-osx-arm64.tar.gz` | `8fd8c8feedf9009b7750fe3e46ee6f86969d83428052e2ce93e9b70cf1743490` (checksum listed, not verified against the archive) | not run | **Not verified** (no macOS environment) |
+
+The Windows and Linux runs used the same input bytes, so the Linux row shows the
+same pipeline on a second OS, not a separately generated program.
+
+## Real console captures
+
+These two PNGs are screenshots of a real `conhost` window taken during the runs
+above. They are not mock-ups and not video. Their content is the actual output of
+the commands shown. Cropping only removed the window's outer edges and the
+shell prompt line below the output (which showed a local user path). No text was
+redrawn, replaced or composited.
+
+| File | Shows | Produced by |
+|---|---|---|
+| [`synthetic-demo-console.png`](../assets/demo/synthetic-demo-console.png) | The whole demo: input generation, `recompile`, `run`, `DEMO OK` | `synthetic-demo.ps1` against the `v0.0.0-alpha.2` win-x64 binary |
+| [`synthetic-demo-lowering-console.png`](../assets/demo/synthetic-demo-lowering-console.png) | The five MIPS words of the input (hex, with mnemonics from the script's comments) and the first generated block of `recompiled-artifact.c`, showing `ori $t1,$zero,0x3C` lowered to `state->gpr[9] = 0 \| 60` | `Get-Content` on the generated `out\recompiled-artifact.c` after the run above |
+
+![Real console capture of the synthetic demo](../assets/demo/synthetic-demo-console.png)
+
+![Real console capture: MIPS words and the generated C for the first block](../assets/demo/synthetic-demo-lowering-console.png)
+
+The CLI itself does not print the MIPS analysis, IR or lowering stages. Its
+`recompile --json` output reports only `kind`, `success`, `status`, the artifact
+path and any error fields. Its `run --json` output reports the TTY bytes
+(`output`) and `result.engineName` / `result.exitCode`. The lowering is visible
+in the generated C file, which is why the second capture reads it.
+
 ## Visual asset
 
 ![Synthetic demo: pipeline and terminal output](../assets/demo/synthetic-demo.svg)

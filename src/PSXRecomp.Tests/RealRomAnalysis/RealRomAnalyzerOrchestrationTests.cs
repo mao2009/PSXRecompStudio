@@ -240,7 +240,7 @@ public class RealRomAnalyzerOrchestrationTests
     public void RunAllCore_MetadataFailure_ContinuesPastTheFailingFixture()
     {
         var fixtures = Fixtures;
-        Skip.If(fixtures.Count < 2, RealRomFixtures.NoFixtureSkipReason);
+        Skip.If(fixtures.Count < 2, RealRomFixtures.FixtureShortfallSkipReason(2, fixtures.Count));
 
         using var temp = new TempDirectory();
         var failingPath = fixtures[0].DiscImagePath;

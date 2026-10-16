@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Runtime.CdRom;
@@ -23,8 +24,11 @@ public sealed class SyntheticIsoImageBuilder
     private const int RootDirectorySector = 18;
     private const int PathTableSector = 19;
     private const int FirstFileSector = 20;
+    private const int BothEndianFirstFileSector = 21; // the Type M path table takes sector 20 in that layout
+    private const int MPathTableSector = 20;
     private const int RootDirectoryRecordOffset = 156;
     private const int PathTableSize = 10; // 8-byte header + 1-byte name + 1 pad byte
+    private const int FileStructureVersionOffset = 881; // PVD BP 882, File Structure Version (ECMA-119 table of PVD fields), value 1
 
     // Single-byte on-disc names for the implicit "." (0x00) and ".." (0x01) records.
     private static readonly byte[] SelfName = [0];
@@ -37,6 +41,22 @@ public sealed class SyntheticIsoImageBuilder
     private (uint Location, uint Size)? _corruptRoot;
     private string _volumeIdentifier = "PSXRECOMP_TEST";
     private bool _emitPrimaryVolumeDescriptor = true;
+    private bool _bothEndianNumericFields;
+
+    /// <summary>
+    /// Corrected volume layout (ECMA-119): fills the big-endian halves of the both-endian PVD fields and of each
+    /// directory record's location and data length; sets Volume Set Size, Volume Sequence Number, Logical Block
+    /// Size and File Structure Version; sets each directory record's Volume Sequence Number; writes the root's
+    /// ".." record; and writes complete L and M path tables (one record per directory, ordered by 6.9.1) in
+    /// sectors 19 and 20, which moves the first file extent to sector 21. Directory identifiers carry no version
+    /// number. Path tables must fit one sector; larger hierarchies throw.
+    /// Off by default: the legacy layout stays byte-identical so the checked baseline pin does not move.
+    /// </summary>
+    public SyntheticIsoImageBuilder WithBothEndianNumericFields()
+    {
+        _bothEndianNumericFields = true;
+        return this;
+    }
 
     /// <summary>Sets the 32-byte volume identifier written into the PVD.</summary>
     public SyntheticIsoImageBuilder WithVolumeIdentifier(string volumeIdentifier)
@@ -134,7 +154,7 @@ public sealed class SyntheticIsoImageBuilder
         // One sector per directory after the path table, then the file extents.
         var directorySector = new Dictionary<string, uint>(StringComparer.Ordinal);
         var fileSector = new Dictionary<string, uint>(StringComparer.Ordinal);
-        var cursor = (uint)FirstFileSector;
+        var cursor = (uint)(_bothEndianNumericFields ? BothEndianFirstFileSector : FirstFileSector);
         foreach (var directory in directories)
         {
             directorySector[directory] = cursor++;
@@ -145,9 +165,17 @@ public sealed class SyntheticIsoImageBuilder
             cursor += (uint)Math.Max(1, (content.Length + SectorSize - 1) / SectorSize);
         }
 
+        // Corrected layout: check every directory's record area and identifiers before the first byte is written, so a
+        // refused build returns no image and cannot spill into the path tables or neighbouring sectors.
+        if (_bothEndianNumericFields)
+        {
+            ValidateCorrectedDirectories(rootChildren, childrenOf, directories);
+        }
+
         var image = new byte[cursor * SectorSize];
 
-        WriteVolumeDescriptor(image, cursor);
+        WriteVolumeDescriptor(image, cursor,
+            _bothEndianNumericFields ? BuildPathTables(directories, parentOf, directorySector) : null);
 
         var (rootLocation, rootSize) = _corruptRoot ?? ((uint)RootDirectorySector, (uint)SectorSize);
         WriteDirectory(image, RootDirectorySector, rootLocation, rootSize, rootChildren,
@@ -168,7 +196,7 @@ public sealed class SyntheticIsoImageBuilder
         return image;
     }
 
-    private void WriteVolumeDescriptor(byte[] image, uint volumeSpaceSize)
+    private void WriteVolumeDescriptor(byte[] image, uint volumeSpaceSize, (byte[] L, byte[] M)? pathTables)
     {
         var offset = VolumeDescriptorSector * SectorSize;
 
@@ -189,21 +217,155 @@ public sealed class SyntheticIsoImageBuilder
 
         // OpenBIOS's own CD driver resolves files through the L path table (size @132, LBA @140), not the PVD's
         // root record alone, and expects the descriptor set to end with a terminator.
-        BitConverter.GetBytes((uint)PathTableSize).CopyTo(image, offset + 132);
+        var pathTableSize = (uint)(pathTables?.L.Length ?? PathTableSize);
+        BitConverter.GetBytes(pathTableSize).CopyTo(image, offset + 132);
         BitConverter.GetBytes((uint)PathTableSector).CopyTo(image, offset + 140);
         var terminator = TerminatorSector * SectorSize;
         image[terminator] = 255;
         Encoding.ASCII.GetBytes("CD001").CopyTo(image, terminator + 1);
         image[terminator + 6] = 1;
 
-        // L path table: one entry, the root directory (name length 1, LBA, parent 1, name 0x00).
-        var table = PathTableSector * SectorSize;
-        image[table] = 1;
-        BitConverter.GetBytes((uint)RootDirectorySector).CopyTo(image, table + 2);
-        image[table + 6] = 1;
+        if (pathTables is { } tables)
+        {
+            tables.L.CopyTo(image, PathTableSector * SectorSize);
+            tables.M.CopyTo(image, MPathTableSector * SectorSize);
+            WriteBothEndianVolumeFields(image, offset, volumeSpaceSize, pathTableSize);
+            image[offset + FileStructureVersionOffset] = 1;
+        }
+        else
+        {
+            // L path table: one entry, the root directory (name length 1, LBA, parent 1, name 0x00).
+            var table = PathTableSector * SectorSize;
+            image[table] = 1;
+            BitConverter.GetBytes((uint)RootDirectorySector).CopyTo(image, table + 2);
+            image[table + 6] = 1;
+        }
 
         var (rootLocation, rootSize) = _corruptRoot ?? ((uint)RootDirectorySector, (uint)SectorSize);
         WriteDirectoryRecord(image, offset + RootDirectoryRecordOffset, rootLocation, rootSize, flags: 0x02, SelfName);
+    }
+
+    // ECMA-119 8.4: the big-endian halves of the PVD numeric fields, plus the single-volume set/sequence/block values.
+    // Offsets are 0-based from the start of the PVD. The little-endian halves are written in WriteVolumeDescriptor.
+    private void WriteBothEndianVolumeFields(byte[] image, int offset, uint volumeSpaceSize, uint pathTableSize)
+    {
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset + 84), volumeSpaceSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(offset + 120), 1); // volume set size
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(offset + 122), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(offset + 124), 1); // volume sequence number
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(offset + 126), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(offset + 128), SectorSize); // logical block size
+        BinaryPrimitives.WriteUInt16BigEndian(image.AsSpan(offset + 130), SectorSize);
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset + 136), pathTableSize);
+        BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(offset + 148), MPathTableSector);
+    }
+
+    // ECMA-119 6.9 and 9.4: one Path Table Record per directory, numbered from the root (1) and ordered by level,
+    // then parent directory number, then identifier (6.9.1). The L table is little-endian and the M table is
+    // big-endian; both describe the same hierarchy. Each table must fit the one sector reserved for it.
+    private (byte[] L, byte[] M) BuildPathTables(
+        List<string> directories, Dictionary<string, string> parentOf, Dictionary<string, uint> directorySector)
+    {
+        var childrenOf = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var directory in directories)
+        {
+            var parent = parentOf[directory];
+            if (!childrenOf.TryGetValue(parent, out var list))
+            {
+                childrenOf[parent] = list = [];
+            }
+            list.Add(directory);
+        }
+
+        // Breadth-first from the root, so a directory's queue position plus one is its directory number.
+        var order = new List<string> { "" };
+        for (var i = 0; i < order.Count; i++)
+        {
+            if (childrenOf.TryGetValue(order[i], out var children))
+            {
+                children.Sort((a, b) => CompareIdentifiers(IdentifierOf(a), IdentifierOf(b)));
+                order.AddRange(children);
+            }
+        }
+
+        var number = new Dictionary<string, ushort>(StringComparer.Ordinal);
+        for (var i = 0; i < order.Count; i++)
+        {
+            number[order[i]] = (ushort)(i + 1);
+        }
+
+        var lTable = new List<byte>();
+        var mTable = new List<byte>();
+        foreach (var directory in order)
+        {
+            var identifier = IdentifierOf(directory);
+            var extent = directory.Length == 0 ? (uint)RootDirectorySector : directorySector[directory];
+            var parentNumber = number[directory.Length == 0 ? "" : parentOf[directory]];
+            AppendPathTableRecord(lTable, identifier, extent, parentNumber, bigEndian: false);
+            AppendPathTableRecord(mTable, identifier, extent, parentNumber, bigEndian: true);
+        }
+
+        if (lTable.Count > SectorSize)
+        {
+            throw new NotSupportedException("Path table exceeds one sector; the synthetic builder supports at most one sector of directories.");
+        }
+        return (lTable.ToArray(), mTable.ToArray());
+    }
+
+    private void AppendPathTableRecord(List<byte> table, byte[] identifier, uint extent, ushort parent, bool bigEndian)
+    {
+        var extentBytes = new byte[4];
+        var parentBytes = new byte[2];
+        if (bigEndian)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(extentBytes, extent);
+            BinaryPrimitives.WriteUInt16BigEndian(parentBytes, parent);
+        }
+        else
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(extentBytes, extent);
+            BinaryPrimitives.WriteUInt16LittleEndian(parentBytes, parent);
+        }
+
+        table.Add((byte)identifier.Length);
+        table.Add(0); // extended attribute record length
+        table.AddRange(extentBytes);
+        table.AddRange(parentBytes);
+        table.AddRange(identifier);
+        if (identifier.Length % 2 != 0)
+        {
+            table.Add(0); // padding field
+        }
+    }
+
+    // Directory identifiers carry no version number in the corrected layout (ECMA-119 7.6.1: d-characters only).
+    // The legacy layout keeps the versioned names that the existing path contract depends on.
+    private byte[] DirectoryName(string name) =>
+        Encoding.ASCII.GetBytes(_bothEndianNumericFields ? StripVersion(name) : name);
+
+    // Identifier of a directory path; the root is the single (00) byte.
+    private byte[] IdentifierOf(string path) =>
+        path.Length == 0 ? SelfName : DirectoryName(path[(path.LastIndexOf('/') + 1)..]);
+
+    private static string StripVersion(string name)
+    {
+        var semicolon = name.LastIndexOf(';');
+        return semicolon > 0 ? name[..semicolon] : name;
+    }
+
+    // ECMA-119 6.9.1: shorter identifiers are padded on the right with spaces (0x20) before comparison.
+    private static int CompareIdentifiers(byte[] a, byte[] b)
+    {
+        for (var i = 0; i < Math.Max(a.Length, b.Length); i++)
+        {
+            var x = i < a.Length ? a[i] : (byte)0x20;
+            var y = i < b.Length ? b[i] : (byte)0x20;
+            if (x != y)
+            {
+                return x.CompareTo(y);
+            }
+        }
+        return 0;
     }
 
     private void WriteDirectory(
@@ -224,11 +386,53 @@ public sealed class SyntheticIsoImageBuilder
         {
             offset += WriteDirectoryRecord(image, offset, parent, SectorSize, flags: 0x02, ParentName);
         }
+        else if (_bothEndianNumericFields)
+        {
+            // The root's ".." refers to the root itself.
+            offset += WriteDirectoryRecord(image, offset, selfLocation, selfSize, flags: 0x02, ParentName);
+        }
 
-        foreach (var child in children)
+        // ECMA-119 6.8.1.2 and 9.3: records follow the File Identifier order in the corrected layout.
+        var ordered = _bothEndianNumericFields
+            ? children.OrderBy(c => c.IsDirectory ? StripVersion(c.Name) : c.Name, Comparer<string>.Create(CompareRecordNames)).ToList()
+            : children;
+        foreach (var child in ordered)
         {
             offset += WriteChildRecord(image, offset, child, directorySector, fileSector);
         }
+    }
+
+    // ECMA-119 9.3: by File Name, then File Extension (both space-padded, 6.9.1 style), then File Version descending.
+    private static int CompareRecordNames(string a, string b)
+    {
+        var (nameA, extensionA, versionA) = SplitRecordName(a);
+        var (nameB, extensionB, versionB) = SplitRecordName(b);
+        var order = ComparePadded(nameA, nameB);
+        if (order == 0)
+        {
+            order = ComparePadded(extensionA, extensionB);
+        }
+        return order != 0 ? order : versionB.CompareTo(versionA);
+    }
+
+    private static (string Name, string Extension, int Version) SplitRecordName(string identifier)
+    {
+        if (identifier is "\0" or "\x01")
+        {
+            return (identifier, "", 0); // "." and ".." sort first
+        }
+
+        var semicolon = identifier.LastIndexOf(';');
+        var body = semicolon >= 0 ? identifier[..semicolon] : identifier;
+        var version = semicolon >= 0 && int.TryParse(identifier.AsSpan(semicolon + 1), out var parsed) ? parsed : 0;
+        var dot = body.IndexOf('.');
+        return dot >= 0 ? (body[..dot], body[(dot + 1)..], version) : (body, "", version);
+    }
+
+    private static int ComparePadded(string a, string b)
+    {
+        var width = Math.Max(a.Length, b.Length);
+        return string.CompareOrdinal(a.PadRight(width), b.PadRight(width));
     }
 
     private int WriteChildRecord(
@@ -243,25 +447,99 @@ public sealed class SyntheticIsoImageBuilder
             var (location, size) = _corruptDirectories.TryGetValue(child.Path, out var corrupt)
                 ? corrupt
                 : (directorySector[child.Path], (uint)SectorSize);
-            return WriteDirectoryRecord(image, offset, location, size, flags: 0x02, Encoding.ASCII.GetBytes(child.Name));
+            return WriteDirectoryRecord(image, offset, location, size, flags: 0x02, DirectoryName(child.Name));
         }
 
         return WriteDirectoryRecord(image, offset, fileSector[child.Path],
             (uint)child.Content!.Length, flags: 0x00, Encoding.ASCII.GetBytes(child.Name));
     }
 
-    private static int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, byte[] nameBytes)
+    // ECMA-119 9.1.1: 33 fixed bytes plus the identifier, padded to an even length.
+    private static int RecordLength(int identifierLength)
     {
-        var recordLength = 33 + nameBytes.Length;
-        if (recordLength % 2 != 0)
+        var length = 33 + identifierLength;
+        return length % 2 == 0 ? length : length + 1;
+    }
+
+    // ECMA-119 6.8.1: a directory is one sector, so its "." and ".." records plus every child record must fit in it.
+    // The corrected layout writes directory identifiers without a version, so two children can normalise to one name.
+    private void ValidateCorrectedDirectories(
+        List<Child> rootChildren, Dictionary<string, List<Child>> childrenOf, List<string> directories)
+    {
+        ValidateCorrectedDirectory("", rootChildren);
+        foreach (var directory in directories)
         {
-            recordLength++;
+            ValidateCorrectedDirectory(directory, childrenOf.TryGetValue(directory, out var children) ? children : []);
         }
+    }
+
+    private void ValidateCorrectedDirectory(string directory, List<Child> children)
+    {
+        var label = directory.Length == 0 ? "(root)" : directory;
+        var total = 2 * RecordLength(1); // "." and ".." (identifiers 0x00 and 0x01)
+        var directoryKeys = new Dictionary<string, string>(StringComparer.Ordinal); // normalised name -> path
+        var fileKeys = new Dictionary<string, string>(StringComparer.Ordinal);      // file identifier -> path
+        foreach (var child in children)
+        {
+            var identifier = child.IsDirectory ? DirectoryName(child.Name) : Encoding.ASCII.GetBytes(child.Name);
+            var recordLength = RecordLength(identifier.Length);
+            if (recordLength > byte.MaxValue)
+            {
+                // LEN_DR is one byte; WriteDirectoryRecord would truncate the value and end the directory early.
+                throw new NotSupportedException(
+                    $"the record for '{child.Path}' in '{label}' is {recordLength} bytes; LEN_DR is one byte (at most 255).");
+            }
+            total += recordLength;
+
+            var key = Encoding.ASCII.GetString(identifier);
+            var keys = child.IsDirectory ? directoryKeys : fileKeys;
+            if (keys.TryGetValue(key, out var first))
+            {
+                throw new NotSupportedException(child.IsDirectory
+                    ? $"directory '{label}' has two children whose identifiers both normalise to '{key}' " +
+                      $"once the version is removed: '{first}' and '{child.Path}'."
+                    : $"directory '{label}' has two files with the identifier '{key}': '{first}' and '{child.Path}'. " +
+                      "The second would overwrite the first's content.");
+            }
+            keys[key] = child.Path;
+        }
+
+        // Directory identifiers have no version, so a directory and a file whose names agree once the version is removed
+        // cannot be told apart by name. Rejected conservatively; files that differ only in version remain allowed.
+        foreach (var (file, filePath) in fileKeys)
+        {
+            var stripped = StripVersion(file);
+            if (directoryKeys.TryGetValue(stripped, out var directoryPath))
+            {
+                throw new NotSupportedException(
+                    $"directory '{label}' has the directory '{directoryPath}' and the file '{filePath}', " +
+                    $"which both normalise to '{stripped}'.");
+            }
+        }
+
+        if (total > SectorSize)
+        {
+            throw new NotSupportedException(
+                $"directory record area of '{label}' needs {total} bytes, more than one {SectorSize}-byte sector; " +
+                "split the directory or shorten its identifiers.");
+        }
+    }
+
+    private int WriteDirectoryRecord(byte[] buffer, int offset, uint location, uint size, byte flags, byte[] nameBytes)
+    {
+        var recordLength = RecordLength(nameBytes.Length);
 
         buffer[offset] = (byte)recordLength;
         buffer[offset + 1] = 0; // extended attribute length
         BitConverter.GetBytes(location).CopyTo(buffer, offset + 2);
         BitConverter.GetBytes(size).CopyTo(buffer, offset + 10);
+        if (_bothEndianNumericFields)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(offset + 28), 1); // volume sequence number
+            BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(offset + 30), 1);
+            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 6), location);
+            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(offset + 14), size);
+        }
         buffer[offset + 25] = flags;
         buffer[offset + 32] = (byte)nameBytes.Length;
         nameBytes.CopyTo(buffer, offset + 33);
@@ -361,9 +639,20 @@ public static class SyntheticDiscBuilder
     public const string BootPath = @"cdrom:\PSXRECOMP.EXE;1";
     public const string ExeIsoName = "PSXRECOMP.EXE;1";
 
-    /// <summary>A bootable Mode 2 Form 1 disc whose SYSTEM.CNF runs <see cref="ExeIsoName"/>.</summary>
-    public static byte[] Bootable(byte[] exeBytes) => Mode2Form1(
-        new SyntheticIsoImageBuilder().AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
+    /// <summary>
+    /// A bootable Mode 2 Form 1 disc whose SYSTEM.CNF runs <see cref="ExeIsoName"/>. Pass
+    /// <paramref name="iso9660BothEndian"/> for the corrected volume (see
+    /// <see cref="SyntheticIsoImageBuilder.WithBothEndianNumericFields"/>); the default is the legacy baseline.
+    /// </summary>
+    public static byte[] Bootable(byte[] exeBytes, bool iso9660BothEndian = false)
+    {
+        var iso = new SyntheticIsoImageBuilder();
+        if (iso9660BothEndian)
+        {
+            iso.WithBothEndianNumericFields();
+        }
+        return Mode2Form1(iso.AddSystemCnf(BootPath).AddFile(ExeIsoName, exeBytes).Build());
+    }
 
     /// <summary>Sector-aligns a synthetic EXE payload for OpenBIOS CD reads and ends it with a stable loop.</summary>
     public static byte[] OpenBiosCompatibleExe(byte[] exeBytes)

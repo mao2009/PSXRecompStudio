@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Recompiler;
@@ -1283,6 +1284,277 @@ int main() {
         IsProcessAlive(pid).Should().BeFalse(
             "the child process the helper started must have been terminated on timeout");
     }
+
+    // --- Issue #774: opt-in unit retirement trace ---
+
+    [Fact]
+    public void UnitTrace_Off_Generates_The_Same_Source_As_The_Default()
+    {
+        var program = UnitTraceProgram();
+
+        var defaults = RecompilerHostCodeGen.Generate(program, loadedCode: null);
+        var explicitlyOff = RecompilerHostCodeGen.Generate(program, loadedCode: null, traceUnits: false);
+
+        defaults.Success.Should().BeTrue();
+        explicitlyOff.Source.Should().Be(defaults.Source);
+        defaults.Source.Should().NotContain("host_unit_trace");
+        defaults.Source.Should().NotContain("unit_entry_pc");
+    }
+
+    [Fact]
+    public void UnitTrace_On_Reports_Each_Unit_Once_With_Its_Credit_And_Cumulative_Total()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+
+        // Three units: a single instruction, a single instruction, then a fused unit of two. The hook must see
+        // each unit's entry PC, next PC, credit, cumulative total after the credit, and an uninterrupted flag.
+        var testResult = CompileAndRun(result.Source!, @"
+static int seen = 0;
+static const uint32_t want_entry[] = {0x80000000u, 0x80000004u, 0x8000000Cu};
+static const uint32_t want_next[] = {0x80000004u, 0x8000000Cu, 0x80000014u};
+static const uint64_t want_start[] = {0ull, 1ull, 2ull};
+static const uint64_t want_end[] = {1ull, 2ull, 4ull};
+static void hook(RecompilerState* s, uint32_t entry, uint32_t next, uint64_t start, uint64_t end, uint32_t flags, int32_t termination) {
+    (void)s;
+    if (seen < 3 && entry == want_entry[seen] && next == want_next[seen] && start == want_start[seen] &&
+        end == want_end[seen] && flags == 0u && termination == 0) seen++;
+    else seen = 99;
+}
+int main() {
+    RecompilerState state = {0};
+    state.pc = 0x80000000u;
+    state.host_unit_trace = hook;
+    recompiler_dispatch(&state, 10);
+    return seen == 3 ? 0 : 1;
+}");
+        testResult.Should().Be(0, "every unit must be traced exactly once, with its own entry PC and credit");
+    }
+
+    [Fact]
+    public void UnitTrace_Off_Source_Has_No_Hook_Call_Even_With_A_Fused_Unit()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: false);
+
+        result.Success.Should().BeTrue();
+        result.Source.Should().NotContain("host_unit_trace(");
+    }
+
+    // A straight-line chain: 0x80000000 -> 0x80000004 -> fused 0x8000000C (two instructions, boundary after the first).
+    private static RecompilerIrProgram UnitTraceProgram() => new(new[]
+    {
+        new RecompilerIrBlock(0x80000000u, Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000004u)),
+        new RecompilerIrBlock(0x80000004u, Array.Empty<RecompilerIrOperation>(),
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x8000000Cu)),
+        new RecompilerIrBlock(0x8000000Cu,
+            new[]
+            {
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1u),
+                new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 1, immediate: 2u),
+            },
+            new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000014u),
+            retiredInstructionCount: 2, instructionBoundaries: new[] { 1 }),
+    });
+
+
+    // --- Issue #774 (B-2): the trace file ---
+    // The trace path reaches the child through its own environment, set by the generated main, so the Test layer
+    // never mutates the process environment. File reads and the scratch directory stay behind the same
+    // AARC003 suppression the other gcc-driven tests in this file use.
+
+    [Fact]
+    public void UnitTrace_File_Records_Each_Unit_With_Start_And_End_Then_A_Complete_End_Line()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+#pragma warning disable AARC003
+        var dir = CreateTempDir();
+        try
+        {
+            var path = Path.Combine(dir, "unit.jsonl");
+
+            RunTraced(result.Source!, path, maxBytes: null, "return state.retired_total == 4 ? 0 : 1;").Should().Be(0);
+
+            var lines = ReadTraceLines(path);
+            lines[0].GetProperty("kind").GetString().Should().Be("header");
+            var units = lines.Where(line => line.GetProperty("kind").GetString() == "unit").ToList();
+            units.Select(u => u.GetProperty("seq").GetUInt64()).Should().Equal(new ulong[] { 0, 1, 2 });
+            units.Select(u => u.GetProperty("entry").GetString()).Should().Equal(new[] { "0x80000000", "0x80000004", "0x8000000C" });
+            units.Select(u => u.GetProperty("next").GetString()).Should().Equal(new[] { "0x80000004", "0x8000000C", "0x80000014" });
+            units.Select(u => u.GetProperty("start").GetUInt64()).Should().Equal(new ulong[] { 0, 1, 2 });
+            units.Select(u => u.GetProperty("end").GetUInt64()).Should().Equal(new ulong[] { 1, 2, 4 });
+            units.Select(u => u.GetProperty("retired").GetUInt64()).Should().Equal(new ulong[] { 1, 1, 2 },
+                "the fused unit completes two instructions, and the record says so");
+            lines[^1].GetProperty("kind").GetString().Should().Be("end");
+            lines[^1].GetProperty("complete").GetBoolean().Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+#pragma warning restore AARC003
+    }
+
+    // Issue #774 (B-6b): a unit record carries the 32-register state, so two records and a marker fit in 2200 bytes.
+    [Fact]
+    public void UnitTrace_File_Truncates_At_The_Cap_With_A_Marker_And_An_Incomplete_End()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+#pragma warning disable AARC003
+        var dir = CreateTempDir();
+        try
+        {
+            var path = Path.Combine(dir, "capped.jsonl");
+
+            // 900 admits the header and two units with the reserved tail still free, but not a third unit; the third
+            // unit is dropped and the trace stops there.
+            RunTraced(result.Source!, path, maxBytes: "2200", "return state.retired_total == 4 ? 0 : 1;").Should().Be(0,
+                "a full trace file must not change the guest run");
+
+            new FileInfo(path).Length.Should().BeLessThanOrEqualTo(2200);
+            var lines = ReadTraceLines(path);
+            lines.Where(line => line.GetProperty("kind").GetString() == "unit")
+                .Select(u => u.GetProperty("seq").GetUInt64()).Should().Equal(new ulong[] { 0, 1 });
+            var marker = lines.Single(line => line.GetProperty("kind").GetString() == "truncated");
+            marker.GetProperty("seq").GetUInt64().Should().Be(2UL, "the first dropped record");
+            lines[^1].GetProperty("kind").GetString().Should().Be("end");
+            lines[^1].GetProperty("complete").GetBoolean().Should().BeFalse("a reader must see the trace is incomplete");
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void UnitTrace_Open_Failure_Leaves_The_Run_Untraced_And_Unchanged()
+    {
+        var result = RecompilerHostCodeGen.Generate(UnitTraceProgram(), loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+#pragma warning disable AARC003
+        var dir = CreateTempDir();
+        try
+        {
+            var missing = Path.Combine(dir, "no-such-folder", "unit.jsonl");
+
+            // The attach reports -1 and leaves the hook null, so the dispatch runs exactly as an untraced one.
+            RunTraced(result.Source!, missing, maxBytes: null,
+                "return state.retired_total == 4 && state.host_unit_trace == 0 ? 0 : 1;").Should().Be(0);
+            File.Exists(missing).Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void UnitTrace_Stopping_Unit_Is_Recorded_With_Its_Termination_And_Credits_Nothing()
+    {
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Exception)),
+        });
+        var result = RecompilerHostCodeGen.Generate(program, loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+#pragma warning disable AARC003
+        var dir = CreateTempDir();
+        try
+        {
+            var path = Path.Combine(dir, "stop.jsonl");
+
+            RunTraced(result.Source!, path, maxBytes: null,
+                "return state.termination_reason == RECOMPILER_REASON_EXCEPTION ? 0 : 1;").Should().Be(0);
+
+            var unit = ReadTraceLines(path).Single(line => line.GetProperty("kind").GetString() == "unit");
+            unit.GetProperty("entry").GetString().Should().Be("0x80000000");
+            unit.GetProperty("retired").GetUInt64().Should().Be(0UL, "the stopping unit completed no instruction");
+            unit.GetProperty("termination").GetInt32().Should().NotBe(0, "the stop reason is recorded");
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void UnitTrace_File_Records_A_Taken_Branch_With_The_Taken_Target_As_Next_PC()
+    {
+        // 0x80000000 branches on a non-zero condition to 0x80000010 (the taken target); 0x80000010 then falls out.
+        var program = new RecompilerIrProgram(new[]
+        {
+            new RecompilerIrBlock(0x80000000u,
+                new[] { new RecompilerIrOperation(RecompilerIrOperationKind.Constant, resultValueId: 0, immediate: 1u) },
+                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000008u,
+                    flow: new RecompilerIrFlow(RecompilerIrFlowKind.Branch, target: 0x80000010u, conditionValueId: 0))),
+            new RecompilerIrBlock(0x80000010u, Array.Empty<RecompilerIrOperation>(),
+                new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80000018u)),
+        });
+        var result = RecompilerHostCodeGen.Generate(program, loadedCode: null, traceUnits: true);
+        result.Success.Should().BeTrue();
+#pragma warning disable AARC003
+        var dir = CreateTempDir();
+        try
+        {
+            var path = Path.Combine(dir, "branch.jsonl");
+
+            RunTraced(result.Source!, path, maxBytes: null, "return state.retired_total == 2 ? 0 : 1;").Should().Be(0);
+
+            var units = ReadTraceLines(path).Where(line => line.GetProperty("kind").GetString() == "unit").ToList();
+            units.Select(u => u.GetProperty("entry").GetString()).Should().Equal(new[] { "0x80000000", "0x80000010" });
+            units.Select(u => u.GetProperty("next").GetString()).Should().Equal(new[] { "0x80000010", "0x80000018" },
+                "the taken target is the next PC of the branching unit");
+            units.Select(u => u.GetProperty("retired").GetUInt64()).Should().Equal(new ulong[] { 1, 1 });
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+#pragma warning restore AARC003
+    }
+
+    // Builds the C main: it points the trace at tracePath (and optionally a cap) through its own environment, attaches,
+    // dispatches the program from 0x80000000 with a budget of 10, then runs the given return statement.
+    private static string RunTracedMain(string tracePath, string? maxBytes, string returnStatement)
+    {
+        var path = EscapeCString(tracePath);
+        var cap = maxBytes is null ? string.Empty : $"    SET_ENV(\"PSX_UNIT_TRACE_MAX_BYTES\", \"{EscapeCString(maxBytes)}\");\n";
+        return $@"
+#include <stdlib.h>
+#ifdef _WIN32
+#define SET_ENV(name, value) _putenv(name ""="" value)
+#else
+#define SET_ENV(name, value) putenv((char*)(name ""="" value))
+#endif
+int main() {{
+    RecompilerState state = {{0}};
+    state.pc = 0x80000000u;
+    SET_ENV(""PSX_UNIT_TRACE_FILE"", ""{path}"");
+{cap}    if (recompiler_trace_attach(&state) == 1) {{}} else {{ if (state.host_unit_trace != 0) return 4; }}
+    recompiler_dispatch(&state, 10);
+    {returnStatement}
+}}";
+    }
+
+    private static int RunTraced(string generatedSource, string tracePath, string? maxBytes, string returnStatement) =>
+        CompileAndRun(generatedSource, RunTracedMain(tracePath, maxBytes, returnStatement));
+
+    private static string EscapeCString(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+
+#pragma warning disable AARC003
+    private static List<JsonElement> ReadTraceLines(string path) =>
+        File.ReadAllLines(path).Select(line =>
+        {
+            using var document = JsonDocument.Parse(line);
+            return document.RootElement.Clone();
+        }).ToList();
+#pragma warning restore AARC003
 
     #pragma warning disable AARC003
     private static int CompileWithHostCompiler(string source)

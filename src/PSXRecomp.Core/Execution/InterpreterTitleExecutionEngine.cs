@@ -252,6 +252,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             // Attached (Issue #693): the owner's scheduler, and no Load — the image arrives by RAM sync.
             _scheduler = sharedScheduler;
+            _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
             _loaded = true;
         }
 
@@ -285,6 +286,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>HI/LO as the CPU holds them now (diagnostic only, Issue #732).</summary>
     public (uint Hi, uint Lo) HiLoDiagnostics => (_core.Hi, _core.Lo);
+
+    /// <summary>
+    /// False while a branch delay slot or a load's result is still uncommitted (Issue #774, B-7). A register written by
+    /// that pending load still holds its old value here; diagnostic only.
+    /// </summary>
+    public bool PipelineClean => _core.IsPipelineClean;
 
     /// <summary>The device graph this engine steps, for side-effect-free state reads by a differential probe (Issue #732).</summary>
     public PsxDeviceGraph DiagnosticDevices => _devices;
@@ -331,8 +338,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         }
 
         // Fresh device timing for the freshly reset core (Issue #442).
-        _scheduler = new DeviceScheduler(
-            _core, _interruptControllerAdapter, _gpuAdapter, _cdRomDevice, _cdRomDmaTransfer, _devices.GpuDmaTransfer, _devices.MdecDmaTransfer);
+        _scheduler = _devices.CreateScheduler();
+        // Issue #774 (B-7): the MDEC event observer reports the scheduler time (= guest retirements). Diagnostic only.
+        _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
@@ -438,6 +446,17 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         switch (snapshot.Termination)
         {
+            case RecompilerIrTerminationReason.ExecutionBudgetExceeded when StopRequested:
+                // A probe's StopRequested ends the step loop before the fetched instruction executes, and the loop
+                // then reports the same termination a real budget exhaustion would (see the property's contract).
+                // The budget was not exhausted (the segment may still have retired many instructions), so saying
+                // "retired its budget" here is false and misleads triage: name the stop instead (Issue #774).
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired,
+                    MixedFallbackDiagnostics.StoppedOnRequest,
+                    $"A fallback segment stopped on the engine's StopRequested at pc 0x{snapshot.PC:X8} " +
+                    $"({retired} instructions retired); no instruction budget was exhausted.");
+
             case RecompilerIrTerminationReason.ExecutionBudgetExceeded:
                 // Still inside the program (or a guest handler) with no clean block entry reached.
                 return new FallbackSegmentOutcome(
@@ -620,6 +639,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                     _core.PopExceptionSrStack();
                     _core.Pc = unchecked(_core.ExceptionFaultPc + 4u);
                     _scheduler!.Advance(CyclesPerInstruction);
+                    // Issue #789: a serviced SYSCALL completes and resumes at EPC + 4, so it retires like any instruction.
+                    // The device time above already charges it one instruction; the counter must agree with that.
+                    retiredInstructions++;
                     continue;
                 }
 
