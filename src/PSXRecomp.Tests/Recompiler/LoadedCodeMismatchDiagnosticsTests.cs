@@ -125,4 +125,48 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    // Review (#786): the cost of observing must be bounded and reported. A suppressed (PC, version) must not read its words.
+    [Fact]
+    public void A_Suppressed_Record_Does_Not_Read_Its_Words_After_The_Cap_Is_Reached()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxRecords: 1);
+        diagnostics.Observe(Pc, [Version(Pc, 1)], _ => 1u);
+        var reads = 0;
+
+        diagnostics.Observe(Pc + 0x100u, [Version(Pc + 0x100u, 1, 2, 3, 4, 5, 6, 7, 8)], _ => { reads++; return 0u; });
+
+        reads.Should().Be(0);
+        diagnostics.SuppressedObservations.Should().Be(1);
+    }
+
+    [Fact]
+    public void Observing_Stops_Comparing_At_The_Word_Budget_And_Reports_The_Skipped_Observations()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: 10);
+        var reads = 0;
+        for (var n = 0; n < 4; n++)
+        {
+            diagnostics.Observe(Pc, [Version(Pc, 1, 2, 3, 4)], _ => { reads++; return 9u; });
+        }
+
+        // Observations 1–3 compare 4 words each (the budget is checked before an observation, so the third overshoots to 12).
+        reads.Should().Be(12);
+        diagnostics.ComparedWords.Should().Be(12);
+        diagnostics.SkippedObservations.Should().Be(1);
+
+        var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue();
+        report["skippedObservations"]!.GetValue<ulong>().Should().Be(1);
+        report["maxComparedWords"]!.GetValue<ulong>().Should().Be(10);
+    }
+
+    [Fact]
+    public void The_Report_Says_It_Records_Observed_Handoffs_Not_Confirmed_Guard_Decisions()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+        diagnostics.Observe(Pc, [Version(Pc, 1)], _ => 2u);
+
+        JsonNode.Parse(diagnostics.ToJson())!["guardDecisionRecorded"]!.GetValue<bool>().Should().BeFalse();
+    }
 }

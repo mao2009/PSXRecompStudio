@@ -7,10 +7,12 @@ using PSXRecomp.Architecture;
 namespace PSXRecomp.Core.Recompiler;
 
 /// <summary>
-/// Opt-in observation of RAM-placed code that the artifact refused (Issue #773 Phase B). Every handoff at a PC that has
-/// loaded-code versions is counted; per (PC, version) the first differing word, the compared range as the AOT build holds
-/// it and as guest RAM holds it, and SHA-256 of both are kept. Records are aggregated per (PC, version), capped, and written
-/// in a deterministic order. Diagnostics only: nothing read here feeds <see cref="LoadedCodeTable.Match"/> or dispatch.
+/// Opt-in observation of handoffs at RAM-placed code whose artifact versions matched no guest word (Issue #773 Phase B). Every
+/// handoff at a PC that has loaded-code versions is counted; per (PC, version) the first differing word, the compared range as
+/// the AOT build holds it and as guest RAM holds it, and SHA-256 of both are kept. The compiled guard's own decision is not
+/// recorded, so a record is an observed handoff, not a confirmed guard refusal. Records are aggregated per (PC, version),
+/// capped, and written in a deterministic order. Diagnostics only: nothing read here feeds <see cref="LoadedCodeTable.Match"/>
+/// or dispatch.
 /// </summary>
 [Domain]
 public sealed class LoadedCodeMismatchDiagnostics
@@ -18,26 +20,41 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>Default cap on distinct (PC, version) records.</summary>
     public const int DefaultMaxRecords = 64;
 
+    /// <summary>Default budget of compared guest words: 16 Mi words, about 64 MiB of reads per run.</summary>
+    public const ulong DefaultMaxComparedWords = 1UL << 24;
+
     /// <summary>Schema tag written into the JSON report.</summary>
     public const string SchemaName = "loaded-code-mismatch/1";
 
     private const int WindowRadius = 2;
 
     private readonly int _maxRecords;
+    private readonly ulong _maxComparedWords;
     private readonly Dictionary<(uint Pc, int Version), Entry> _entries = [];
 
     /// <param name="maxRecords">Maximum distinct (PC, version) records kept; further ones are counted, not recorded.</param>
-    public LoadedCodeMismatchDiagnostics(int maxRecords = DefaultMaxRecords)
+    /// <param name="maxComparedWords">
+    /// Guest words the observation may compare in one run. The budget is checked before each observation, so the last one may
+    /// overshoot it. Once spent, later observations are counted in <see cref="SkippedObservations"/>, not compared.
+    /// </param>
+    public LoadedCodeMismatchDiagnostics(int maxRecords = DefaultMaxRecords, ulong maxComparedWords = DefaultMaxComparedWords)
     {
         if (maxRecords < 1) throw new ArgumentOutOfRangeException(nameof(maxRecords), "At least one record must be kept.");
         _maxRecords = maxRecords;
+        _maxComparedWords = maxComparedWords;
     }
 
-    /// <summary>Handoffs observed at a PC with loaded-code versions, including ones whose records were suppressed.</summary>
+    /// <summary>Handoffs observed at a PC with loaded-code versions, including ones whose records were suppressed or skipped.</summary>
     public ulong TotalObservations { get; private set; }
 
     /// <summary>Per-version observations that had no record because the record cap was already reached.</summary>
     public ulong SuppressedObservations { get; private set; }
+
+    /// <summary>Handoffs not compared because the word budget was already spent. A non-zero value makes the report incomplete.</summary>
+    public ulong SkippedObservations { get; private set; }
+
+    /// <summary>Guest words compared so far, across every version of every observation.</summary>
+    public ulong ComparedWords { get; private set; }
 
     /// <summary>Distinct (PC, version) records currently kept.</summary>
     public int DistinctRecords => _entries.Count;
@@ -54,8 +71,22 @@ public sealed class LoadedCodeMismatchDiagnostics
         ArgumentNullException.ThrowIfNull(readWord);
 
         TotalObservations++;
+        if (ComparedWords >= _maxComparedWords)
+        {
+            SkippedObservations++;
+            return;
+        }
+
         for (var index = 0; index < versions.Count; index++)
         {
+            // A version that would get no record is not read at all: the cap bounds the reads as well as the storage.
+            var key = (pc, index);
+            if (!_entries.ContainsKey(key) && _entries.Count >= _maxRecords)
+            {
+                SuppressedObservations++;
+                continue;
+            }
+
             var aot = versions[index].Words;
             var ram = new uint[aot.Count];
             var firstMismatch = -1;
@@ -68,17 +99,12 @@ public sealed class LoadedCodeMismatchDiagnostics
                 firstMismatch = firstMismatch < 0 ? i : firstMismatch;
             }
 
-            if (!_entries.TryGetValue((pc, index), out var entry))
+            ComparedWords += (ulong)aot.Count;
+            if (!_entries.TryGetValue(key, out var entry))
             {
-                if (_entries.Count >= _maxRecords)
-                {
-                    SuppressedObservations++;
-                    continue;
-                }
-
                 var versionOrigins = origins is not null && index < origins.Count ? origins[index] : [];
                 entry = new Entry(pc, index, versions.Count, aot.ToArray(), versionOrigins);
-                _entries[(pc, index)] = entry;
+                _entries[key] = entry;
             }
 
             entry.Add(firstMismatch, mismatched, ram);
@@ -99,6 +125,12 @@ public sealed class LoadedCodeMismatchDiagnostics
             ["schema"] = SchemaName,
             ["totalObservations"] = JsonValue.Create(TotalObservations),
             ["suppressedObservations"] = JsonValue.Create(SuppressedObservations),
+            // Explicit so a cut-short comparison is never mistaken for a complete one.
+            ["incomplete"] = JsonValue.Create(SkippedObservations > 0),
+            ["skippedObservations"] = JsonValue.Create(SkippedObservations),
+            ["comparedWordTotal"] = JsonValue.Create(ComparedWords),
+            ["maxComparedWords"] = JsonValue.Create(_maxComparedWords),
+            ["guardDecisionRecorded"] = JsonValue.Create(false),
             ["maxRecords"] = JsonValue.Create(_maxRecords),
             ["records"] = records,
         };
