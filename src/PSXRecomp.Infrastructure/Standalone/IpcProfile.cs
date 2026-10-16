@@ -99,7 +99,7 @@ public sealed class IpcProfile
 
     private static int Bucket(long ticks)
     {
-        var micros = (ulong)(ticks * 1_000_000L / Stopwatch.Frequency);
+        var micros = (ulong)(ticks * (1_000_000.0 / Stopwatch.Frequency));
         return micros == 0 ? 0 : Math.Min(Buckets - 1, 64 - System.Numerics.BitOperations.LeadingZeroCount(micros));
     }
 

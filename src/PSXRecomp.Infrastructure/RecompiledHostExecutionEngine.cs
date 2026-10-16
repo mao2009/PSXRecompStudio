@@ -1662,14 +1662,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 return;
             }
 
-            var access = fields[(space + 1)..];
-            var isWrite = access.StartsWith("W ", StringComparison.Ordinal);
-            if (!isWrite && !access.StartsWith("R ", StringComparison.Ordinal))
+            // Validated whole before any effect: a malformed line must not advance the devices and then fail.
+            if (!FusedRetiredRequest.TryParse(fields, out var retired, out var isWrite, out var access))
             {
                 throw new ProtocolFaultException($"Malformed fused guest-time report '{fields}'.");
             }
 
-            if (HandleRetired(fields[..space])) HandleMmio(access[2..], isWrite);
+            // A refused report ends the request without the access, exactly as a refused stand-alone report did.
+            if (HandleRetired(retired)) HandleMmio(access, isWrite);
         }
 
         private bool HandleRetired(string fields)
