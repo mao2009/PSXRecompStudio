@@ -127,6 +127,40 @@ public static class ReachableProgramBuilder
         return new GuardedImageProgram(blocks, skipped.Order().ToArray());
     }
 
+    /// <summary>
+    /// The PCs that direct discovery from <paramref name="roots"/> reaches inside the image (Issue #773). It is the same
+    /// walk <see cref="BuildCore"/> performs, so a root the indirect discovery adds is reached exactly as an explicit one.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A root reaches a structurally invalid transfer (the same condition
+    /// <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/> rejects).</exception>
+    internal static IReadOnlySet<uint> ReachablePcs(uint loadAddress, IReadOnlyList<uint> instructionWords, IEnumerable<uint> roots)
+    {
+        var imageEnd = (ulong)loadAddress + (ulong)instructionWords.Count * InstructionSize;
+        var image = new InstructionImage(loadAddress, imageEnd, instructionWords);
+        var leaders = new SortedSet<uint>();
+        var pending = new SortedSet<uint>();
+        foreach (var root in roots)
+        {
+            if (image.Contains(root))
+            {
+                leaders.Add(root);
+                pending.Add(root);
+            }
+        }
+
+        var decoded = new Dictionary<uint, R3000aInstruction>();
+        var reachable = new HashSet<uint>();
+        var delaySlots = new HashSet<uint>();
+        while (pending.Count > 0)
+        {
+            var start = pending.Min;
+            pending.Remove(start);
+            DiscoverPath(start, image, decoded, reachable, delaySlots, leaders, pending, outOfImageTargets: null);
+        }
+
+        return reachable;
+    }
+
     private static RecompilerIrProgram BuildCore(
         uint loadAddress,
         IReadOnlyList<uint> instructionWords,

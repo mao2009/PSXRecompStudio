@@ -347,4 +347,40 @@ public sealed class RuntimeCodeGeneratedHostTests
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == r).Which.Instructions.Should().Be(3ul);
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == q + 12).Which.Instructions.Should().Be(1ul);
     }
+
+    [Fact]
+    public void IndirectRoots_RunNatively_AndMatchTheInterpreter_OnATableDispatchedChain()
+    {
+        // Issue #773 (E-9): a RAM routine dispatches through a pointer table. Its callee is reached only by a direct jump
+        // from the table entry, so direct discovery from the routine's entry never reaches it. Without the discovered roots the
+        // table caller runs in the fallback; with them the whole chain is native. Both runs must match the interpreter.
+        const uint slot = 0x80001000u;
+        var table = slot + 0x20u;
+        var callerA = slot + 0x40u;
+        var target = slot + 0x60u;
+        var image = new uint[0x80 / 4];
+        var entry = new List<uint>(Li(V0, table)) { Lw(T9, V0, 0), MipsEncoding.Nop, Jalr(T9), MipsEncoding.Nop, Jr(Ra), MipsEncoding.Nop };
+        entry.CopyTo(image, 0);
+        image[(table - slot) / 4] = callerA;
+        new[] { Addiu(R3000aRegister.Sp, R3000aRegister.Sp, -16), Addiu(S2, S2, 1), MipsEncoding.Jump(target), MipsEncoding.Nop }.CopyTo(image, (int)(callerA - slot) / 4);
+        new[] { Addiu(S2, S2, 0x10), Jr(Ra), MipsEncoding.Nop }.CopyTo(image, (int)(target - slot) / 4);
+
+        var reset = new Block(RomBase);
+        Install(reset, slot, image);
+        Call(reset, slot);
+        var rom = Rom(reset);
+
+        var reference = Reference(rom, 3_000);
+        reference.Gpr[(int)S2].Should().Be(0x11u);
+        var discovered = IndirectRootDiscovery.Find(slot, image, [slot]).Select(static r => r.TargetPc).ToArray();
+        discovered.Should().Equal(callerA);
+
+        var plain = RunHost(rom, [(slot, image, new[] { slot })], new HashSet<uint>(), 3_000);
+        var indirect = RunHost(rom, [(slot, image, discovered.Append(slot).ToArray())], new HashSet<uint>(), 3_000);
+
+        plain.Final.Gpr[(int)S2].Should().Be(reference.Gpr[(int)S2]);
+        plain.Evidence.FallbackInstructions.Should().BeGreaterThan(0ul);
+        indirect.Final.Gpr[(int)S2].Should().Be(reference.Gpr[(int)S2]);
+        indirect.Evidence.FallbackInstructions.Should().Be(0ul);
+    }
 }
