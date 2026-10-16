@@ -10,7 +10,8 @@ namespace PSXRecomp.Core.Recompiler;
 /// Opt-in observation of handoffs at RAM-placed code whose artifact versions matched no guest word (Issue #773 Phase B). Every
 /// handoff at a PC that has loaded-code versions is counted; per (PC, version) the first differing word, the compared range as
 /// the AOT build holds it and as guest RAM holds it, and SHA-256 of both are kept. The compiled guard's own decision is not
-/// recorded, so a record is an observed handoff, not a confirmed guard refusal. Records are aggregated per (PC, version),
+/// recorded, so a record is an observed handoff, not a confirmed guard refusal: the comparison is the host's, made against RAM
+/// at the handoff, while the generated native code makes its own guard decision (Rejections is never evidence of it). Records are aggregated per (PC, version),
 /// capped, and written in a deterministic order. Diagnostics only: nothing read here feeds <see cref="LoadedCodeTable.Match"/>
 /// or dispatch.
 /// </summary>
@@ -34,8 +35,9 @@ public sealed class LoadedCodeMismatchDiagnostics
 
     /// <param name="maxRecords">Maximum distinct (PC, version) records kept; further ones are counted, not recorded.</param>
     /// <param name="maxComparedWords">
-    /// Guest words the observation may compare in one run. The budget is checked before each observation, so the last one may
-    /// overshoot it. Once spent, later observations are counted in <see cref="SkippedObservations"/>, not compared.
+    /// Guest words the observation may compare in one run, enforced strictly per version: a version is compared whole or, when
+    /// it does not fit the remaining budget, not read at all (counted in <see cref="SkippedVersions"/> and
+    /// <see cref="SkippedWords"/>, never stored as a match or mismatch). Reads therefore never exceed this value.
     /// </param>
     public LoadedCodeMismatchDiagnostics(int maxRecords = DefaultMaxRecords, ulong maxComparedWords = DefaultMaxComparedWords)
     {
@@ -50,8 +52,14 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>Per-version observations that had no record because the record cap was already reached.</summary>
     public ulong SuppressedObservations { get; private set; }
 
-    /// <summary>Handoffs not compared because the word budget was already spent. A non-zero value makes the report incomplete (as does a non-zero <see cref="SuppressedObservations"/>).</summary>
+    /// <summary>Observations in which at least one version was not compared because it did not fit the word budget. A non-zero value makes the report incomplete (as does a non-zero <see cref="SuppressedObservations"/>).</summary>
     public ulong SkippedObservations { get; private set; }
+
+    /// <summary>Versions not compared because they did not fit the remaining word budget.</summary>
+    public ulong SkippedVersions { get; private set; }
+
+    /// <summary>Guest words in the versions counted by <see cref="SkippedVersions"/> (saturating).</summary>
+    public ulong SkippedWords { get; private set; }
 
     /// <summary>Guest words compared so far, across every version of every observation.</summary>
     public ulong ComparedWords { get; private set; }
@@ -71,12 +79,7 @@ public sealed class LoadedCodeMismatchDiagnostics
         ArgumentNullException.ThrowIfNull(readWord);
 
         TotalObservations++;
-        if (ComparedWords >= _maxComparedWords)
-        {
-            SkippedObservations++;
-            return;
-        }
-
+        var skippedAny = false;
         for (var index = 0; index < versions.Count; index++)
         {
             // A version that would get no record is not read at all: the cap bounds the reads as well as the storage.
@@ -87,7 +90,17 @@ public sealed class LoadedCodeMismatchDiagnostics
                 continue;
             }
 
+            // Strict budget: a version is compared whole or not at all. ComparedWords never exceeds the budget, so the
+            // remaining budget below cannot underflow, and nothing is read or allocated for a version that does not fit.
             var aot = versions[index].Words;
+            if ((ulong)aot.Count > _maxComparedWords - ComparedWords)
+            {
+                SkippedVersions++;
+                SkippedWords = SkippedWords > ulong.MaxValue - (ulong)aot.Count ? ulong.MaxValue : SkippedWords + (ulong)aot.Count;
+                skippedAny = true;
+                continue;
+            }
+
             var ram = new uint[aot.Count];
             var firstMismatch = -1;
             var mismatched = 0;
@@ -109,6 +122,8 @@ public sealed class LoadedCodeMismatchDiagnostics
 
             entry.Add(firstMismatch, mismatched, ram);
         }
+
+        if (skippedAny) SkippedObservations++;
     }
 
     /// <summary>The report as indented JSON with a fixed property order and no timestamps: equal observations give equal text.</summary>
@@ -130,7 +145,11 @@ public sealed class LoadedCodeMismatchDiagnostics
             ["skippedObservations"] = JsonValue.Create(SkippedObservations),
             ["comparedWordTotal"] = JsonValue.Create(ComparedWords),
             ["maxComparedWords"] = JsonValue.Create(_maxComparedWords),
+            ["skippedVersions"] = JsonValue.Create(SkippedVersions),
+            ["skippedWords"] = JsonValue.Create(SkippedWords),
             ["guardDecisionRecorded"] = JsonValue.Create(false),
+            ["attribution"] = "host-handoff-ram-comparison",
+            ["rejectionsMeaning"] = "Per-version rejections count host-side RAM comparisons at the fallback handoff; they are not a confirmed native guard refusal.",
             ["maxRecords"] = JsonValue.Create(_maxRecords),
             ["records"] = records,
         };
@@ -178,7 +197,10 @@ public sealed class LoadedCodeMismatchDiagnostics
 
         public int VersionCount { get; }
 
-        /// <summary>Handoffs at this PC that refused this version.</summary>
+        /// <summary>
+        /// Handoffs at this PC where the host's RAM comparison differed from this version. Not a confirmed native guard
+        /// refusal: the generated code's own guard decision is not recorded.
+        /// </summary>
         public ulong Rejections { get; private set; }
 
         /// <summary>Handoffs at this PC where this version matched in full (a correct version that was not selected).</summary>

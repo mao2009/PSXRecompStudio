@@ -150,8 +150,75 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         diagnostics.SuppressedObservations.Should().Be(1);
     }
 
+    // Review M1 (#786): the budget bounds every version, not just the start of an observation. A version is compared whole
+    // or not at all, so reads never exceed maxComparedWords and a cut-short comparison is never stored as a result.
     [Fact]
-    public void Observing_Stops_Comparing_At_The_Word_Budget_And_Reports_The_Skipped_Observations()
+    public void A_Budget_Of_One_Word_Reads_Nothing_From_Two_Five_Word_Versions()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: 1);
+        var reads = 0;
+
+        diagnostics.Observe(Pc, [Version(Pc, 1, 2, 3, 4, 5), Version(Pc, 6, 7, 8, 9, 10)], _ => { reads++; return 0u; });
+
+        reads.Should().Be(0);
+        diagnostics.ComparedWords.Should().Be(0);
+        diagnostics.SkippedVersions.Should().Be(2);
+        diagnostics.SkippedWords.Should().Be(10);
+        diagnostics.SkippedObservations.Should().Be(1);
+        diagnostics.DistinctRecords.Should().Be(0);
+        var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue();
+        report["skippedVersions"]!.GetValue<ulong>().Should().Be(2);
+        report["skippedWords"]!.GetValue<ulong>().Should().Be(10);
+    }
+
+    [Fact]
+    public void A_Zero_Budget_Reads_Nothing_And_Reports_Incomplete()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: 0);
+        var reads = 0;
+
+        diagnostics.Observe(Pc, [Version(Pc, 1)], _ => { reads++; return 0u; });
+
+        reads.Should().Be(0);
+        JsonNode.Parse(diagnostics.ToJson())!["incomplete"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_Version_That_Does_Not_Fit_The_Remaining_Budget_Is_Skipped_Whole_And_A_Smaller_One_Still_Runs()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: 6);
+        var reads = 0;
+        uint Read(uint _) { reads++; return 0u; }
+
+        // 4 words fit (remaining 2); the 4-word second version does not and is skipped; the 2-word third fits exactly.
+        diagnostics.Observe(Pc, [Version(Pc, 1, 2, 3, 4), Version(Pc, 5, 6, 7, 8), Version(Pc, 9, 10)], Read);
+
+        reads.Should().Be(6);
+        diagnostics.ComparedWords.Should().Be(6);
+        diagnostics.SkippedVersions.Should().Be(1);
+        diagnostics.SkippedWords.Should().Be(4);
+        Records(diagnostics).Select(static r => r!["version"]!.GetValue<int>()).Should().Equal(0, 2);
+    }
+
+    [Fact]
+    public void Many_Versions_Never_Read_More_Than_The_Budget()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxRecords: 5000, maxComparedWords: 100);
+        var versions = Enumerable.Range(0, 1000).Select(n => Version(Pc, (uint)n, 2, 3)).ToArray();
+        var reads = 0;
+
+        diagnostics.Observe(Pc, versions, _ => { reads++; return 0u; });
+
+        reads.Should().Be(99); // 33 whole three-word versions
+        diagnostics.ComparedWords.Should().Be(99);
+        diagnostics.SkippedVersions.Should().Be(967);
+        diagnostics.SkippedWords.Should().Be(967UL * 3);
+        reads.Should().Be((int)diagnostics.ComparedWords);
+    }
+
+    [Fact]
+    public void Repeated_Observations_Of_One_Pc_Stop_Reading_When_The_Budget_Is_Spent()
     {
         var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: 10);
         var reads = 0;
@@ -160,15 +227,48 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
             diagnostics.Observe(Pc, [Version(Pc, 1, 2, 3, 4)], _ => { reads++; return 9u; });
         }
 
-        // Observations 1–3 compare 4 words each (the budget is checked before an observation, so the third overshoots to 12).
-        reads.Should().Be(12);
-        diagnostics.ComparedWords.Should().Be(12);
-        diagnostics.SkippedObservations.Should().Be(1);
+        reads.Should().Be(8);
+        diagnostics.ComparedWords.Should().Be(8);
+        diagnostics.SkippedObservations.Should().Be(2);
+        diagnostics.SkippedVersions.Should().Be(2);
+        diagnostics.TotalObservations.Should().Be(4);
 
         var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
         report["incomplete"]!.GetValue<bool>().Should().BeTrue();
-        report["skippedObservations"]!.GetValue<ulong>().Should().Be(1);
+        report["skippedObservations"]!.GetValue<ulong>().Should().Be(2);
         report["maxComparedWords"]!.GetValue<ulong>().Should().Be(10);
+        Records(diagnostics)[0]!["rejections"]!.GetValue<ulong>().Should().Be(2);
+    }
+
+    [Fact]
+    public void The_Record_Cap_And_The_Budget_Together_Keep_Reads_Equal_To_ComparedWords()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxRecords: 2, maxComparedWords: 7);
+        var reads = 0;
+        for (var n = 0u; n < 6; n++)
+        {
+            var pc = Pc + n * 0x100u;
+            diagnostics.Observe(pc, [Version(pc, 1, 2, 3)], _ => { reads++; return 0u; });
+        }
+
+        reads.Should().Be(6);
+        ((ulong)reads).Should().Be(diagnostics.ComparedWords);
+        diagnostics.DistinctRecords.Should().Be(2);
+        diagnostics.SuppressedObservations.Should().Be(4);
+    }
+
+    [Fact]
+    public void An_Unbounded_Budget_Behaves_As_Before_And_Is_Complete()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: ulong.MaxValue);
+        diagnostics.Observe(Pc, [Version(Pc, 1, 2), Version(Pc, 3)], _ => 0u);
+        diagnostics.Observe(Pc, [Version(Pc, 1, 2), Version(Pc, 3)], _ => 0u);
+
+        diagnostics.ComparedWords.Should().Be(6);
+        diagnostics.SkippedVersions.Should().Be(0);
+        var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["incomplete"]!.GetValue<bool>().Should().BeFalse();
+        report["skippedWords"]!.GetValue<ulong>().Should().Be(0);
     }
 
     [Fact]
@@ -177,6 +277,9 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         var diagnostics = new LoadedCodeMismatchDiagnostics();
         diagnostics.Observe(Pc, [Version(Pc, 1)], _ => 2u);
 
-        JsonNode.Parse(diagnostics.ToJson())!["guardDecisionRecorded"]!.GetValue<bool>().Should().BeFalse();
+        var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["guardDecisionRecorded"]!.GetValue<bool>().Should().BeFalse();
+        report["attribution"]!.GetValue<string>().Should().Be("host-handoff-ram-comparison");
+        report["rejectionsMeaning"]!.GetValue<string>().Should().Contain("not a confirmed native guard refusal");
     }
 }
