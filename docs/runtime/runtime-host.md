@@ -27,7 +27,14 @@ that:
    the guest left in the shared GPU/VRAM state when the run ends, reusing the
    headless screenshot capture; when the guest drew nothing it reports "no
    frame" and writes nothing — there is no live window, see Issue #630), and
-   `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   `--loaded-code-diagnostics <path>` (Issue #773: writes a JSON report,
+   `loaded-code-mismatch/1`, of host-side RAM comparisons at fallback handoffs to
+   RAM-placed code; off by default and observation only. `rejections` counts the
+   host's RAM comparison at the handoff, not a confirmed native guard refusal
+   (`guardDecisionRecorded` is `false`). The comparison is bounded by a word
+   budget, enforced per version; a version that does not fit is skipped whole and
+   reported in `skippedVersions`/`skippedWords`, and `incomplete: true` marks a
+   report cut short by the budget or the record cap), and `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
    run's wall time, the host round trips the native code made (MMIO accesses,
    guest-time reports), the mixed-fallback time split, and the last observations
    of a run stopped from outside (last fallback entry/return PC, last relayed

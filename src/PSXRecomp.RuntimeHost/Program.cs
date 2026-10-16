@@ -42,6 +42,8 @@ public static class Program
         // manifest path. Off by default, so the run's exit code and output are unchanged.
         string? diagnosticsPath = null;
         string? frameOutPath = null;
+        // Issue #773 Phase B: opt-in report of RAM-placed code the artifact refused. Off by default.
+        string? loadedCodeMismatchPath = null;
         var positionals = new List<string>(args.Length);
         for (var i = 0; i < args.Length; i++)
         {
@@ -55,6 +57,29 @@ public static class Program
                 }
 
                 diagnosticsPath = Path.GetFullPath(args[++i]);
+                continue;
+            }
+
+            if (args[i] == "--loaded-code-diagnostics")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("runtime host: --loaded-code-diagnostics requires a path.");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
+                try
+                {
+                    loadedCodeMismatchPath = Path.GetFullPath(args[++i]);
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    Console.Error.WriteLine($"runtime host: --loaded-code-diagnostics path is not valid: {ex.Message}");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
                 continue;
             }
 
@@ -101,6 +126,8 @@ public static class Program
                 "The runtime host manifest has no directory component.");
 
         RuntimeHostManifest? manifest = null;
+        // Issue #773: written from the finally below, so a failed or stopped run still leaves its refusals behind.
+        var loadedCodeMismatch = loadedCodeMismatchPath is null ? null : new LoadedCodeMismatchDiagnostics();
         try
         {
             manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
@@ -123,7 +150,7 @@ public static class Program
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
                 return FirmwareRuntimeLauncher.Run(
-                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath);
+                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
             }
 
             // Read the program image for the host-transfer bridge / interpreter fallback
@@ -178,6 +205,7 @@ public static class Program
                 imageWords: imageWords,
                 imageLoadAddress: manifest.ImageLoadAddress,
                 launchMode: launchMode);
+            engine.LoadedCodeMismatchDiagnostics = loadedCodeMismatch;
 
             var request = new TitleExecutionRequest(
                 entryPc: manifest.EntryPc,
@@ -194,7 +222,6 @@ public static class Program
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
             wall.Stop();
-
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
 
@@ -257,13 +284,18 @@ public static class Program
 
             return 78;
         }
+        finally
+        {
+            WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch);
+        }
     }
 
     private static void WriteUsage(TextWriter error)
     {
-        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] [--frame-out <path.png>] <runtime-host.json>");
+        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] [--loaded-code-diagnostics <path>] [--frame-out <path.png>] <runtime-host.json>");
         error.WriteLine("  Executes the packaged game distribution described by the manifest.");
         error.WriteLine("  --diagnostics writes a machine-readable stop diagnostic (off by default).");
+        error.WriteLine("  --loaded-code-diagnostics writes the RAM-placed code refusals as JSON (off by default).");
         error.WriteLine("  --frame-out writes the display the guest left in VRAM at the end of the run as a PNG (off by default).");
         error.WriteLine("  Returns 0 on a completed run, 1 for tooling failure, 2 for an " +
             "explicit runtime stop, and 78 when the manifest, the runtime host,");
@@ -284,6 +316,26 @@ public static class Program
         {
             // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
             Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Writes the Issue #773 loaded-code report when it was requested. Best-effort like <see cref="WriteDiagnostics"/>: a write
+    /// failure is reported on stderr and never changes the run's exit code.
+    /// </summary>
+    private static void WriteLoadedCodeMismatch(string? path, LoadedCodeMismatchDiagnostics? diagnostics)
+    {
+        if (path is null || diagnostics is null) return;
+        try
+        {
+            // Temp file then move: a reader never sees a half-written report that could pass for a short, valid one.
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, diagnostics.ToJson() + "\n", new System.Text.UTF8Encoding(false));
+            File.Move(temp, path, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"runtime host: could not write loaded-code diagnostics to {path}: {ex.Message}");
         }
     }
 

@@ -46,7 +46,7 @@ public sealed record FirmwareAotPlan(
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
-            i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed)));
+            i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
         return new FirmwareAotPlan(image.Program, loaded, observed);
     }
 }
@@ -584,7 +584,8 @@ public static class FirmwareRuntimeLauncher
         string imagePath,
         TextWriter error,
         string? diagnosticsPath = null,
-        string? frameOutPath = null)
+        string? frameOutPath = null,
+        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null)
     {
         try
         {
@@ -632,6 +633,7 @@ public static class FirmwareRuntimeLauncher
                 imageLoadAddress: host.ImageLoadAddress,
                 launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost,
                 disc: disc.Source);
+            engine.LoadedCodeMismatchDiagnostics = loadedCodeMismatch;
 
             // Opt-in transition attribution (measurement only): absent the environment variable, no observer is installed.
             var attribution = TransitionAttributionRecorder.FromEnvironment();

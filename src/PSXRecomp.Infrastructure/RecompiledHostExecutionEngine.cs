@@ -152,6 +152,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
     public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
 
+    /// <summary>
+    /// Opt-in record of RAM-placed code the artifact refused at a handoff (Issue #773). Set before the run; null (the default)
+    /// keeps the run exactly as it was. Only read on the handoff path, so it does not change what executes.
+    /// </summary>
+    public LoadedCodeMismatchDiagnostics? LoadedCodeMismatchDiagnostics { get; set; }
+
     private IReadOnlyList<RecompilerInitialMemoryItem> _initialMemory =
         Array.Empty<RecompilerInitialMemoryItem>();
 
@@ -552,7 +558,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode, LoadedCodeMismatchDiagnostics);
         _bridge = bridge;
 
         // Build the launch arguments. A prebuilt artifact in RuntimeHost mode gets
@@ -985,6 +991,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly Action<MixedFallbackTransition>? _fallbackTransitionObserver;
         private readonly ICdSectorSource? _disc;
         private readonly LoadedCodeTable _loadedCode;
+        private readonly LoadedCodeMismatchDiagnostics? _loadedCodeMismatch;
 
         private TextReader? _fromArtifact;
         private TextWriter? _toArtifact;
@@ -1118,11 +1125,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
             ICdSectorSource? disc,
             Action<MixedFallbackTransition>? fallbackTransitionObserver,
-            LoadedCodeTable loadedCode)
+            LoadedCodeTable loadedCode,
+            LoadedCodeMismatchDiagnostics? loadedCodeMismatch)
         {
             _fallbackTransitionObserver = fallbackTransitionObserver;
             _disc = disc;
             _loadedCode = loadedCode;
+            _loadedCodeMismatch = loadedCodeMismatch;
             _guestFirmware = guestFirmware;
             _fallbackFetchObserver = fallbackFetchObserver;
             _memoryCardSlots = memoryCardSlots;
@@ -1180,7 +1189,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode, _loadedCodeMismatch);
                 }
                 Send(string.Create(CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
