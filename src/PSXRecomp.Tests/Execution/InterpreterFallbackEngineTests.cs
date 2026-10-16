@@ -113,6 +113,49 @@ public sealed class InterpreterFallbackEngineTests
     }
 
     [Fact]
+    public void AStopRequestedEnd_IsReportedAsAStop_AndNeverClaimsAnExhaustedBudget()
+    {
+        // A probe's --stop-at sets StopRequested from a FetchObserver; the step loop then ends exactly as budget
+        // exhaustion does, and the outcome must not claim an instruction budget was retired (Issue #774).
+        var code = new Block(Entry).Emit(Addiu(S0, Zero, 1), PSXRecomp.Tests.Recompiler.MipsEncoding.Jump(Entry), Nop);
+        var (graph, _, engine) = Attached(Image(code));
+        using var _ = graph;
+        using var __ = engine;
+        engine.FetchObserver = _ => { engine.StopRequested = true; };
+
+        var outcome = engine.RunFallbackSegment(Entering(Entry), Returns, instructionBudget: 50);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.Stopped);
+        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.StoppedOnRequest);
+        outcome.RetiredInstructions.Should().Be(0, "the loop ends before the fetched instruction executes");
+        outcome.DiagnosticMessage.Should().NotContain("retired its", "no budget was retired");
+    }
+
+    [Fact]
+    public void AStopRequestedEnd_AfterInstructionsRetired_KeepsTheirExactCount_AndStillClaimsNoExhaustion()
+    {
+        // The real --stop-at case stops after millions of retired instructions, not at the first fetch: the outcome
+        // must keep the exact retired count, name the stop PC, and still never claim an exhausted budget (Issue #774).
+        var code = new Block(Entry).Emit(
+            Addiu(S0, Zero, 1), Addiu(S0, S0, 1), Addiu(S0, S0, 1), PSXRecomp.Tests.Recompiler.MipsEncoding.Jump(Entry), Nop);
+        var (graph, _, engine) = Attached(Image(code));
+        using var _ = graph;
+        using var __ = engine;
+        var fetches = 0;
+        engine.FetchObserver = _ => { if (++fetches == 3) { engine.StopRequested = true; } };
+
+        var outcome = engine.RunFallbackSegment(Entering(Entry), Returns, instructionBudget: 50);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.Stopped);
+        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.StoppedOnRequest);
+        outcome.RetiredInstructions.Should().Be(2, "two instructions retired before the observer requested the stop");
+        outcome.State.Gpr[(int)S0].Should().Be(2u, "the retired instructions' writes are reported");
+        outcome.DiagnosticMessage.Should().Contain($"0x{Entry + 8:X8}")
+            .And.Contain("2 instructions retired", "the message names the stop PC and the exact retired count");
+        outcome.DiagnosticMessage.Should().NotContain("retired its", "the configured budget was not exhausted");
+    }
+
+    [Fact]
     public void AnUnservicedException_StopsFailClosed()
     {
         var code = new Block(Entry).Emit(PSXRecomp.Tests.Recompiler.MipsEncoding.Break(), Nop);
