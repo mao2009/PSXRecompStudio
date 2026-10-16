@@ -162,7 +162,19 @@ public sealed record HostMmioAccess(uint PhysicalAddress, int Width, bool IsWrit
 [Domain]
 public sealed record MixedFallbackTransition(
     uint EntryPc, bool Indirect, FallbackSegmentStatus Status, uint ExitPc, ulong RetiredInstructions, string? DiagnosticCode,
-    string? AotClass = null);
+    string? AotClass = null,
+    FallbackEntryAttribution? Attribution = null);
+
+/// <summary>
+/// Why one fallback entry had no native code, decided on entry from the loaded-code table and the RAM the artifact held
+/// (measurement only; computed only when a transition observer is installed).
+/// </summary>
+/// <param name="RegisteredVersions">How many guarded versions of RAM-placed code are registered at the entry PC (0: none).</param>
+/// <param name="MatchedVersion">Index of a registered version whose words equal RAM, or -1 when none does. A match here
+/// would be an anomaly: the artifact only offers a PC when no version matched.</param>
+/// <param name="PreviousReturnPc">Where the previous fallback segment returned to a compiled block, or null for the first / after a non-return.</param>
+[Domain]
+public sealed record FallbackEntryAttribution(int RegisteredVersions, int MatchedVersion, uint? PreviousReturnPc);
 
 /// <summary>
 /// Why a PC that reached the interpreter fallback had no AOT code (Issue #732): the taxonomy a fallback is measured by.

@@ -135,6 +135,31 @@ internal sealed class ArtifactFallbackSession : IDisposable
         return false;
     }
 
+    private FallbackEntryAttribution Attribute(uint pc, uint? previousReturnPc)
+    {
+        var versions = _loadedCode.VersionsAt(pc);
+        var matched = -1;
+        var physical = pc <= 0x7FFFFFFFu ? pc : pc & 0x1FFFFFFFu;
+        if (versions.Count != 0 && pc < 0xC0000000u && physical < 0x00800000u)
+        {
+            physical &= PSXCoreWrapper.RamSize - 1;
+            for (var v = 0; v < versions.Count && matched < 0; v++)
+            {
+                var words = versions[v].Words;
+                if (words.Count == 0 || (ulong)words.Count * 4ul > PSXCoreWrapper.RamSize - physical) continue;
+                var equal = true;
+                for (var i = 0; i < words.Count && equal; i++)
+                {
+                    equal = _devices.Core.ReadMemory32(physical + (uint)i * 4u) == words[i];
+                }
+
+                if (equal) matched = v;
+            }
+        }
+
+        return new FallbackEntryAttribution(versions.Count, matched, previousReturnPc);
+    }
+
     /// <summary>What <see cref="Handle"/> decided about one offered transfer.</summary>
     public enum Decision
     {
@@ -240,6 +265,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
             var entry = new FallbackCpuState(
                 gpr, header.Value.Hi, header.Value.Lo, pc, header.Value.Sr, header.Value.Cause, header.Value.Epc);
 
+            // Attribution (opt-in): classified on entry, while core RAM equals the artifact's RAM.
+            var attribution = _transitionObserver is null ? null : Attribute(pc, _lastReturnPc);
+
             _transferClock.Stop();
             // Record the accepted fallback entry before executing it: an interrupted
             // segment may never produce an outcome. A return is only observed after
@@ -267,7 +295,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 previous.Instructions + outcome.RetiredInstructions,
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
             _transitionObserver?.Invoke(new MixedFallbackTransition(
-                pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
+                pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode,
+                Attribution: attribution));
 
             if (outcome.Status != FallbackSegmentStatus.Returned)
             {
