@@ -368,7 +368,7 @@ public sealed class RuntimeCodeGeneratedHostTests
         var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(slot, registered, [slot], new HashSet<uint>())]);
         var romCode = ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program;
         RecompilerHostCodeGen.Generate(romCode, loaded).Source.Should().NotContain("PSX_GS_", "the default text is unchanged");
-        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should().Contain("PSX_GS_ARRIVE(0)");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should().Contain("PSX_GS_ARRIVE(0)").And.Contain("psx_gs_off").And.NotContain("PSX_GS_V", "per-version tables are flat, not padded to the widest slot");
 
 #pragma warning disable AARC003 // Test-only: the artifact writes its counters to a file named by an environment variable.
         using var dir = new TempDirectory();
@@ -392,7 +392,10 @@ public sealed class RuntimeCodeGeneratedHostTests
         line.Should().Contain("slot 80001000 nver 1 arrive 40 miss 20");
         line.Should().Contain("v0 hit 20 len 1");
         line.Should().Contain($"missram {Addiu(S2, S2, 0x100):X8}");
+        line.Should().Contain("missprevdispatch");
         File.ReadAllLines(statsPath).Should().Contain(static l => l.StartsWith("snap slot 80001000", StringComparison.Ordinal));
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1", "a complete exit dump says so; a partial file would lack it");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the dump is renamed into place");
 #pragma warning restore AARC003
     }
 }

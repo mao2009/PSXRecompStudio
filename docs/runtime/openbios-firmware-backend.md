@@ -186,8 +186,9 @@ first fetch of `0x80030000` (shell), `0x80010000` (the executable entry) and
 every `--compare-at` PC (repeatable). A host boundary is captured by the
 fallback interpreter, so a PC inside a compiled block is reported as not
 reached. `--stop-at <pc>` ends both runs before they first execute that PC
-(the host sees fallback PCs only; its run then ends as
-`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED` with `stopAt.reachedByHost:true`), so a
+(the host sees fallback PCs only; a stop the fallback observes ends that segment
+as `ARTIFACT_FALLBACK_STOP_REQUESTED` — a stop on request, not an exhausted
+instruction budget — with `stopAt.reachedByHost:true`), so a
 check need not spin the executable's final loop; without it the full run is
 unchanged. `--symbols` takes `nm -n` output (the CLI never parses ELF).
 Without `--json` a compact summary precedes the indented document; progress
@@ -508,8 +509,10 @@ access did not change the scheduler (it would defer a device advance past dispat
 
 **Native guard counters and the integrated Persona run (Issue #773; measurement only).** `PSXRECOMP_NATIVE_GUARD_STATS=1` at
 package time builds the artifact with counters per RAM-placed entry PC (arrivals, hits per version, misses) and, for each entry's
-first miss, the previous PC, the RAM word and the CPU registers; at run time `PSX_GUARD_STATS_FILE=<path>` receives them (rewritten
-every 4 M dispatch units and at exit). The generated text is byte-for-byte unchanged without the option. Values are produced
+first miss, the entry PC of the previous dispatch-loop iteration (not necessarily the guest source of the transfer), the RAM word and
+the CPU registers; per-version tables are flat (no padding to the widest slot). At run time `PSX_GUARD_STATS_FILE=<path>` receives
+them, written to `<path>.tmp` and renamed (every 4 M dispatch units and at exit). The last line is `end final 1` only for the exit
+dump; a file without it comes from a run that did not exit normally and must not be read as complete. The generated text is byte-for-byte unchanged without the option. Values are produced
 inside the generated code, so they are native-side observations, unlike the host-side attribution of fallback entries.
 Persona CHD, `disc-exes` + `indirect-roots` (#792) on main with the fused report (#796), Windows, 600 s, one run (CPU 20-53 %, other
 agents' processes present): `0x80084C88` had **1,655,795 native arrivals, all guard hits on version 0 (the ATLUS.EXE version),
@@ -538,6 +541,77 @@ iterations per PC), with the stream code at `0x80081BC8..0x80081C18` next. The d
 code (it is loaded or placed at run time), so the fix is more game AOT images supplied through `--aot-dir`
 (`exe`/`image` lines, no title constants in the tool) and, separately, finding out why that wait never completes
 under the generated host. Until then Persona is **not** verified on this path.
+
+#### Measured divergence between the generated host and the interpreter (Issue #774)
+
+Two runs of **one** build (pinned `openbios.bin`, the Persona CHD, `openbios-probe --standalone
+--engine generated-host --differential`, synthetic-disc AOT inputs only, so every byte of the game is counted
+fallback) compared the host against the interpreter at the first fetch of each checkpoint PC. Never mix
+measurements from different builds or the packaged `persona` distribution directories: the host binary must be the
+same one that ran the interpreter reference.
+
+| Checkpoint PC | interpreter | generated host | verdict |
+|---|---|---|---|
+| `0x80030000` (shell) | fetch 709,142 | fallback fetch 1,688 | identical |
+| first hardware interrupt | guest cycle 169,936,299, EPC `0x000015BC` | same PC | identical |
+| `0x8008A484` | guest cycle 268,664,967 (fetch 268,665,641 = cycles + 674 interrupt entries) | 268,576,640 native + 88,327 fallback = 268,664,967 | identical |
+| `0x800812E8`, `0x8008A014` (movie stream ring) | first fetched 73.5 s / 73.6 s into the reference run; 9,274,208 fetches each in the standalone 3G run | never fetched as fallback | **interpreter-only** |
+| `0x80081BC8` (`DecDCTinSync`, MDEC status `0x1F801824`) | **never fetched in 3,000,000,000 fetches (= 88.6 s at the PSX's 33.87 MHz)** | reached at 268,652,329 native + 3,827,708 fallback = **272,480,037 guest cycles** (≈8.0 s of guest CPU time) | **host-only** |
+
+"identical" is `ProbeGuestState.Compare`: PC, `r1`..`r31`, HI/LO, SR/CAUSE/EPC/BadVAddr, all of the 2 MiB of main
+RAM (SHA-256), VRAM SHA-256, `gpustat`, and every captured device register including `guest_cycles`. That equality
+is a comparison of the **state at the checkpoint instant** (the PC's first fetch); the cycles *between* checkpoints
+are not observed, so it proves "no divergence was observed at this checkpoint", not "no divergence exists at any
+earlier cycle". At that checkpoint the two engines are bit-identical and then separate: the host is at the movie
+player's MDEC sync after ≈272.5M guest cycles, while the interpreter at 3,000,000,000 fetches has not reached it
+and ends at `0x8008A248`. The two runs also occupy different loops: the standalone interpreter spends its 3G
+budget in one hot function around `0x8009284C` (46.1 M calls; `--pc-histogram`), while the host's dominant fallback
+targets are `0x8008AECC`..`0x8008AF18` and `0x80088378` (626,572 / 584,779 retired instructions). That is a
+distribution comparison, not a checkpoint comparison, but it is the shape a path divergence has.
+
+Classification of the hypotheses:
+
+- **H1 (a mere phase/progress offset): not observed up to the last shared checkpoint; INCONCLUSIVE after it.**
+  At 268,664,967 guest cycles the two engines are bit-identical, not merely close, in CPU, RAM, device time and
+  VRAM, so no phase offset exists at that instant. That single-instant equality does not bound the phase or
+  scheduler difference *after* the checkpoint, and nothing is observed between it and the separation, so
+  post-checkpoint phase divergence is neither confirmed nor rejected.
+- **H2 (CPU execution path): a control-flow difference is observed after the checkpoint.** After that checkpoint
+  the same instruction semantics (the generated host's fallback *is* the interpreter engine) follow a different
+  guest control flow, so the difference lies in the instructions executed between `0x8008A484` and `0x80081BC8`
+  and in the native/fallback handoff around them. The observed locus does not identify the specific defect.
+- **H3 (GPU/VRAM mismatch): no mismatch observed at the compared checkpoints.** VRAM SHA-256 and `gpustat` are
+  equal at every compared checkpoint, but no checkpoint after the separation is available, so a later GPU/VRAM
+  difference is not excluded.
+- **H4 (frame/PNG conversion): INCONCLUSIVE — the probe's frame evidence cannot settle it.** The probe reads VRAM
+  as 15-bit, so a 24-bit display looks striped and a black frame is not evidence of black VRAM (see the Persona
+  section above). Equally, VRAM/`gpustat` checkpoint equality is a *GPU-state* equality, not a rendered-image
+  equality, so it neither confirms nor denies the frame/PNG conversion path. Settling H4 needs a correct 24-bit
+  display capture.
+- **H5 (another device or scheduling difference): no mismatch observed at the compared checkpoints.** Every
+  captured device register, `guest_cycles` and the first interrupt entry are equal at the checkpoint, and nothing
+  is captured after it, so a later device or scheduling difference is not excluded.
+
+**The specific defect is not identified.** Which engine deviates is not decided by this evidence (the interpreter
+is the project's reference, so the presumption is the host), and no comparison point exists after the divergence
+because of the tooling limits below. This is a measured locus, not a root cause.
+
+Tooling limits that bound the above (they are properties of the differential, not of the engines):
+
+- the host captures a checkpoint only when the **counted fallback** fetches that PC; a PC inside a compiled native
+  block is unobservable ("not reached by the generated host"), so `0x80010000` and `0x80084B58` cannot be compared
+  on the host at all, and the tool cannot say whether a missing host boundary means "executed natively" or "never
+  reached";
+- the host's `atFetch`, `milestones`, `InterruptEntries` and `TitleEntryPc` count **fallback fetches only**, so they
+  must never be compared with the interpreter's fetch counts or milestones (compare state at the same PC, or
+  `guest_cycles`, instead);
+- `interpretedEntries` is the sorted set of observed fallback PCs, not an execution order.
+
+One `--stop-at` run also reported the `0x80081BC8` stop as `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED` ("retired its
+3000000000-instruction budget") although the whole run retired 3,827,708 fallback instructions: a probe
+`StopRequested` ended the segment exactly as exhaustion does and the report kept the exhaustion message. That
+false diagnostic is fixed on this branch (`ARTIFACT_FALLBACK_STOP_REQUESTED`); it was reporting noise, not a
+retired budget.
 
 **Relation to #764.** #764 (host-resolved indirect resume, the `J` protocol, `--diagnostics`) is merged and this
 branch builds on it. `RuntimeHost` now honors `--diagnostics` for a firmware distribution as well: the launcher
