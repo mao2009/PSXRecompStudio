@@ -27,7 +27,7 @@ Evidence labels: **[FACT]** = read directly from a repository file or API result
   - **Dear ImGui:** defer. It is not needed for v0.1 and would add a second UI stack beside Avalonia.
   - **Catch2:** do not adopt. The existing xunit and custom native harness cover the need.
 - **Effort reduction:** no reduction figure is claimed here. No measurement exists for any candidate, so any percentage would be a fabricated number, which the issue prohibits.
-- **Discrepancies found in the documentation**, which need follow-up (§11): REFERENCES.md marks the Nugget files as direct reuse PENDING while `docs/legal/openbios-license-audit.md` marks the same files APPROVED; and the `statemachine.c` blob SHA recorded in REFERENCES.md no longer matches upstream HEAD.
+- **Documentation discrepancies (§11)**: REFERENCES.md marked the Nugget files as direct reuse PENDING while `docs/legal/openbios-license-audit.md` marked the same files APPROVED. This branch reconciled the legal audit to PENDING; the `statemachine.c` blob difference is only pinned-vs-HEAD, not a recording error. Any APPROVED decision remains a human decision (#794).
 
 ---
 
@@ -40,7 +40,7 @@ All paths are relative to the repository root at `19507d1`.
 | Language split and FFI | C++ shared library `PSXRecomp.Native` with a Rust staticlib, managed binding via `LibraryImport`. Hand-written header. | `src/PSXRecomp.Native/include/psx_core.h`; `src/PSXRecomp.Core/NativeInterop.cs`; ADR-023 | Rust: no third-party crates (`src/PSXRecomp.Native/rust/Cargo.toml`). C++: none. | ABI version declared in Rust (`ABI_VERSION = 1`, `rust/src/lib.rs:57`) and in the header and managed side under different names. Only an export-name test (`tests/test_psx_abi_contract.cpp`) links them. | Yes (existing substrate) |
 | RuntimeHost | Implemented for Phase 2 Step C (#739). `--frame-out` writes one end-of-run PNG. | `src/PSXRecomp.RuntimeHost/Program.cs:61`; `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostFrameOutput.cs:38`; `docs/runtime/runtime-host.md` | .NET 10 | Frame output is a single snapshot, not a stream. | Yes |
 | Recompiler | AOT emits C# source; interpreter fallback via `MixedFallback`. | `src/PSXRecomp.Core/Recompiler/`; `src/PSXRecomp.Core/Execution/MixedFallback.cs`; `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs` | None | Known native/interpreter divergence (#774). | Yes (#734, #739) |
-| OpenBIOS | Integrated as a replaceable backend. The ROM is built locally from pinned Nugget `c950e18` and is not vendored. Persona opening imagery is reached on the interpreter path only. | PR #765 (merge `7704e84`), PR #733; `docs/runtime/openbios-firmware-backend.md`; `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs`; `docs/index.html:106` | Build-time only; no runtime dependency | Title screen not reached. Two documentation sources disagree on license status (§11). | Yes (#732 is still Open) |
+| OpenBIOS | Integrated as a replaceable backend. The ROM is built locally from pinned Nugget `c950e18` and is not vendored. Persona opening imagery is reached on the interpreter path only. | PR #765 (merge `7704e84`), PR #733; `docs/runtime/openbios-firmware-backend.md`; `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs`; `docs/index.html:106` | Build-time only; no runtime dependency | Title screen not reached. The two documentation sources were reconciled to PENDING (§11); the human decision is tracked in #794. | Yes (#732 is still Open) |
 | GPU and frame output | Pure managed software GPU (VRAM 1024x512 halfword buffer, rasterizer, GP0 decoder). PNG output is hand-written. No GPU backend. | `src/PSXRecomp.Core/Runtime/Gpu/GpuDevice.cs`, `GpuVram.cs`, `GpuRasterizer.cs`, `Gp0CommandDecoder.cs`; `src/PSXRecomp.Infrastructure/Runtime/Gpu/PngWriter.cs` (BCL `ZLibStream`); ADR-022 | None | No hardware-accelerated presentation (not needed for the headless path). | Yes (for frame output); No (for presentation) |
 | SPU and audio | **No audio output.** `ISpu` has no implementation. Rust `spu.rs` is register-only. | `src/PSXRecomp.Core/Runtime/ISpu.cs`; `src/PSXRecomp.Native/rust/src/spu.rs` | None | Total absence of synthesis and output. | Unknown (see §8 open question) |
 | CD-ROM and disc image | ISO9660 reader, PS-X EXE parser. CHD reader supports `cdlz` and `cdzl` plus uncompressed hunks. Any other codec tag throws. | `src/PSXRecomp.Core/DiscImage/Iso9660Reader.cs`, `PsxExe.cs`, `ChdReader.cs`, `ChdCdCodec.cs` (lines 18-19, 69) | SharpCompress (LZMA for `cdlz`); BCL `DeflateStream` for `cdzl` | `cdfl` and `cdzs` unsupported. | Depends on target disc images |
@@ -80,7 +80,7 @@ Commit SHAs are the upstream default-branch HEAD read via `gh api` on 2026-10-15
 | `openbios/sio0/driver.c` | `b846e440…` | `b846e440…` | yes |
 | `openbios/sio0/card.c` | `70f664e6…` | `70f664e6…` | yes |
 | `openbios/kernel/events.c` | `9c693c4d…` | `9c693c4d…` | yes |
-| `openbios/cdrom/statemachine.c` | `c6ee3bdf…` | `577eb186…` | **no** (changed upstream after the recorded snapshot) |
+| `openbios/cdrom/statemachine.c` | `c6ee3bdf…` | `577eb186…` | **no** (HEAD moved on after the pinned commit) |
 
 The pinned revision in `docs/runtime/openbios-firmware-backend.md` is unchanged and is the revision used. Verified on 2026-10-16 with the GitHub contents API: `c6ee3bdf…` is the blob at the pinned commit `c950e18…`, and `577eb186…` is the blob at upstream HEAD `51ee9ab…`. The column compares the pinned blob with HEAD, so the mismatch means only that HEAD has moved on for that file. REFERENCES.md's value is correct for the pin, and only its column label needed clarifying. The file-level reuse decision is still PENDING.
 
@@ -203,7 +203,7 @@ Host Controller (OS device, via SDL3 if adopted)
 
 ## 11. Unverified Items and Risks
 
-**Documentation discrepancies found (must be fixed in follow-up, not in this PR):**
+**Documentation discrepancies found (items 1 and 2 reconciled in this PR; item 3 remains a follow-up):**
 
 1. `docs/REFERENCES.md` marks `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, and `cdrom/statemachine.c` as "REFERENCE_ONLY; direct/ported use PENDING." `docs/legal/openbios-license-audit.md` marked the same files "APPROVED". Reconciled toward PENDING in this branch: the file-level rule in REFERENCES.md requires a reviewer and a decision date, and none is recorded. The legal audit now records the per-file MIT header and leaves direct reuse PENDING. Whether to record any file-level APPROVED is a human decision.
 2. Resolved on 2026-10-16: the `statemachine.c` blob recorded in `docs/REFERENCES.md` (`c6ee3bdf…`) is the blob at the pinned commit `c950e18…`. The differing value `577eb186…` is the blob at upstream HEAD `51ee9ab…`. No recording error was found.
