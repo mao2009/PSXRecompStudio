@@ -348,6 +348,138 @@ public sealed class RuntimeCodeGeneratedHostTests
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == q + 12).Which.Instructions.Should().Be(1ul);
     }
 
+    // Issue #773 measurement fixture: a registered one-instruction entry at `slot` matches RAM for 20 calls, then RAM holds other code.
+    private const uint GuardSlot = 0x80001000u;
+
+    private static (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) GuardStatsFixture()
+    {
+        const int loops = 20;
+        uint[] registered = [Addiu(S2, S2, 1)];
+        uint[] whole = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        uint[] replaced = [Addiu(S2, S2, 0x100), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, GuardSlot, whole);
+        for (var i = 0; i < loops; i++) Call(reset, GuardSlot);
+        Install(reset, GuardSlot, replaced);
+        for (var i = 0; i < loops; i++) Call(reset, GuardSlot);
+        var rom = Rom(reset);
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(GuardSlot, registered, [GuardSlot], new HashSet<uint>())]);
+        return (rom, ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program, loaded);
+    }
+
+    // The counters are selected through GuardStatsScope, never through process-wide environment variables.
+    private static void RunWithGuardStats(string statsPath, string workDir)
+    {
+        var (rom, romCode, loaded) = GuardStatsFixture();
+        using var scope = GuardStatsScope.Begin(statsPath);
+        using var engine = new RecompiledHostExecutionEngine(
+            romCode, rom, RomBase, new GeneratedHostBuildService(), workDir,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+        new ExecutionOrchestrator().Execute(engine, handoff: null, Request(20_000)).FinalSnapshot.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void GuardStats_CountArrivalsHitsAndMisses_OfARegisteredEntry_AndStayOffByDefault()
+    {
+        // Issue #773 measurement: a registered one-instruction entry that matches RAM is a guard hit; once RAM holds other
+        // code, the same arrival is a guard miss that keeps its previous PC and RAM word. Counters exist only when asked for.
+        var (_, romCode, loaded) = GuardStatsFixture();
+        RecompilerHostCodeGen.Generate(romCode, loaded).Source.Should().NotContain("PSX_GS_", "the default text is unchanged");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should().Contain("PSX_GS_ARRIVE(0)").And.Contain("psx_gs_off").And.NotContain("PSX_GS_V", "per-version tables are flat, not padded to the widest slot");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should()
+            .Contain("psx_gs_replace(tmp, path)").And.Contain("MoveFileExA").And.Contain("MOVEFILE_REPLACE_EXISTING").And.NotContain("<windows.h>", "windows.h defines exception_code and breaks the generated state")
+            .And.NotContain("remove(path)", "the previous report is never removed before the new one is in place (Issue #773 review M1)");
+
+#pragma warning disable AARC003 // Test-only: the artifact writes its counters to a file named by an environment variable (set for the child only).
+        var envBefore = (Environment.GetEnvironmentVariable("PSX_GUARD_STATS_FILE"), Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"));
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        RunWithGuardStats(statsPath, dir.FullPath);
+        (Environment.GetEnvironmentVariable("PSX_GUARD_STATS_FILE"), Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"))
+            .Should().Be(envBefore, "the test selects the counters through a scope and leaves the process environment as it found it");
+        GuardStatsScope.CurrentPath.Should().BeNull("the scope ends with the run");
+
+        var line = File.ReadAllLines(statsPath).Single(static l => l.StartsWith("slot ", StringComparison.Ordinal));
+        line.Should().Contain("slot 80001000 nver 1 arrive 40 miss 20");
+        line.Should().Contain("v0 hit 20 len 1");
+        line.Should().Contain($"missram {Addiu(S2, S2, 0x100):X8}");
+        line.Should().Contain("missprevdispatch");
+        File.ReadAllLines(statsPath).Should().Contain(static l => l.StartsWith("snap slot 80001000", StringComparison.Ordinal));
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1", "a complete exit dump says so; a partial file would lack it");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the dump is renamed into place");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_ReplacesThePreviousReport_AndNeverLeavesNoReport_WhileAReaderHoldsIt()
+    {
+        // Issue #773 review M1: the dump must not remove the previous report before the new one is in place. A reader that
+        // holds the report open with FILE_SHARE_DELETE (the weakest sharing a viewer needs) must still leave a valid report:
+        // either the previous one (replacement refused) or the new complete one. Removing first would leave none on Windows,
+        // where the held name stays pending-delete and the rename onto it fails.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+
+        using (var reader = new FileStream(statsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            RunWithGuardStats(statsPath, dir.FullPath);
+            new StreamReader(reader).ReadToEnd().Should().Be(previous, "an open reader keeps seeing the report it opened");
+        }
+
+        File.Exists(statsPath).Should().BeTrue("a report always remains");
+        var lines = File.ReadAllLines(statsPath);
+        (lines[^1] == "end final 1").Should().BeTrue("the remaining report is complete");
+        (lines.Any(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal))
+            || lines.Contains("previous complete report")).Should().BeTrue("it is either the new report or the untouched previous one");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("a refused replacement removes its temporary file");
+
+        // With no reader, the previous report is replaced by the new complete one.
+        RunWithGuardStats(statsPath, dir.FullPath);
+        File.ReadAllLines(statsPath).Should().Contain(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal));
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1");
+        File.Exists(statsPath + ".tmp").Should().BeFalse();
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_WhenReplacementFails_KeepsTheExistingDestination_AndRemovesTheTemporaryFile()
+    {
+        // Issue #773 review M1: a destination that cannot be replaced (here a directory, refused by rename and MoveFileEx alike)
+        // stays as it was, and the temporary file does not remain. The diagnostic failure does not change the guest outcome.
+#pragma warning disable AARC003 // Test-only: the report path is a file system location.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        Directory.CreateDirectory(statsPath);
+        File.WriteAllText(Path.Combine(statsPath, "keep.txt"), "x");
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        File.Exists(Path.Combine(statsPath, "keep.txt")).Should().BeTrue("the existing destination is preserved");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("a failed replacement removes its temporary file");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public async Task GuardStatsScope_IsPerAsyncContext_NestsAndRestores()
+    {
+        // Issue #773 review M2: the scope is not process-wide, so parallel tests never see each other's switches.
+        GuardStatsScope.CurrentPath.Should().BeNull();
+        using (GuardStatsScope.Begin("outer"))
+        {
+            GuardStatsScope.CurrentPath.Should().Be("outer");
+            using (GuardStatsScope.Begin("inner")) GuardStatsScope.CurrentPath.Should().Be("inner");
+            GuardStatsScope.CurrentPath.Should().Be("outer");
+            (await Task.Run(static () => GuardStatsScope.CurrentPath)).Should().Be("outer", "child tasks of the context inherit it");
+        }
+        GuardStatsScope.CurrentPath.Should().BeNull();
+        var other = await Task.Run(() => { using var s = GuardStatsScope.Begin("elsewhere"); return GuardStatsScope.CurrentPath; });
+        other.Should().Be("elsewhere");
+        GuardStatsScope.CurrentPath.Should().BeNull("a scope begun on another context does not leak back");
+    }
+
     [Fact]
     public void IndirectRoots_RunNatively_AndMatchTheInterpreter_OnATableDispatchedChain()
     {
