@@ -633,6 +633,10 @@ public static class FirmwareRuntimeLauncher
                 launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost,
                 disc: disc.Source);
 
+            // Opt-in transition attribution (measurement only): absent the environment variable, no observer is installed.
+            var attribution = TransitionAttributionRecorder.FromEnvironment();
+            if (attribution is not null) engine.FallbackTransitionObserver = attribution.Observe;
+
             var wall = System.Diagnostics.Stopwatch.StartNew();
             var result = new ExecutionOrchestrator().Execute(
                 engine,
@@ -657,6 +661,19 @@ public static class FirmwareRuntimeLauncher
                     ["nativeInstructions"] = engine.NativeRetiredInstructions,
                     ["mmioAccesses"] = engine.HostRoundTrips?.MmioAccesses,
                     ["timeReports"] = engine.HostRoundTrips?.TimeReports,
+                });
+            }
+            if (attribution is not null && TransitionAttributionRecorder.OutputPathFromEnvironment() is { } attributionPath)
+            {
+                attribution.TryWrite(attributionPath, error, new Dictionary<string, object?>
+                {
+                    ["state"] = result.State.ToString(),
+                    ["wallMilliseconds"] = wall.Elapsed.TotalMilliseconds,
+                    ["nativeInstructions"] = engine.NativeRetiredInstructions,
+                    ["fallbackInstructions"] = evidence?.FallbackInstructions,
+                    ["fallbackTransitions"] = evidence?.Transitions,
+                    ["transferMilliseconds"] = engine.FallbackTimings?.TransferMilliseconds,
+                    ["fallbackMilliseconds"] = engine.FallbackTimings?.FallbackMilliseconds,
                 });
             }
             WriteDiagnostics(

@@ -520,6 +520,19 @@ writes the diagnostics document; the existing `FirmwareStandaloneHandoffTests` c
 | Persona CHD, 600 s timeout, Windows, `PSXRecomp.RuntimeHost --diagnostics`, before/after `disc-exes` (all executables compiled, entry-only roots) | Before: 270,127,434 native / 2,221,246,107 fallback instructions / 4,698 transitions, fallback time 269 s of 601 s; last fallback entry `0x8008A484`. After: 315,766,486 native / 11,374,179 fallback / 254,095 transitions, fallback **transfer** time 175 s of 600 s (249,567 entries at `0x80084C88`, returning at `0x8008AECC`). The guest advanced ~7x *less* in the same wall time: AOT coverage rose, progress fell. Both end `ARTIFACT_TIMEOUT`; no title evidence. |
 | Persona CHD, packaged with the synthetic-disc AOT inputs (`boot-exe` has only the entry as a root), 55 min timeout | OpenBIOS boots from real MIPS code and hands control to the game; **no title/frame evidence**: 357,153,833 native / 23,541,800,409 fallback instructions / 24,625 transitions, ends `ARTIFACT_TIMEOUT`. The game body ran as counted interpreter fallback because it has no AOT roots. **Not a pass.** |
 
+**Transition attribution (PR #792 measurement; opt-in, off by default).** Setting `PSXRECOMP_TRANSITION_ATTRIBUTION=<path>` for a
+firmware `PSXRecomp.RuntimeHost` run installs a recorder that classifies every artifact-to-interpreter entry on entry, from the
+loaded-code table and the RAM the artifact held: `unregistered` (no version at the PC), `guard-mismatch` (versions registered, none
+equals RAM) or `guard-matched-anomaly` (a version matches RAM; must be 0, the artifact only offers a PC no version matched). It
+aggregates by (entry, cause, previous return, exit) with at most 4096 keys and 64 detailed events, reports what it dropped, writes
+once at the end, and never fails the run. Not observable host-side: native arrivals at a registered PC and the native block that
+made a transfer (the wire protocol carries neither). The 254,095-transition row above was measured with `disc-exes` and
+entry-only roots, i.e. **without** `indirect-roots`. Persona CHD, #792 head 28b1b11 (`disc-exes` + `indirect-roots`), 600 s,
+Windows, one configuration: 367,675,344 native / 142,792 fallback instructions / 4,494 transitions (1,176 guard-mismatch,
+3,318 unregistered, 0 anomalies); no fallback entry at `0x80084C78`, `0x80084C88` or `0x8008AECC`; fallback transfer 3.1 s and
+interpreter 0.06 s of 600 s; 12.2 M MMIO accesses and 23.0 M time reports (the IPC bound of #768 remains the limiter). Ends
+`ARTIFACT_TIMEOUT`, black frame: **no title evidence**. Precompile (package) 227 s, separate from the 600 s guest run.
+
 **Host IPC profile and the fused report + MMIO request (Issue #768).** `PSXRECOMP_IPC_PROFILE=<path>` (opt-in; absent, the
 bridge holds no profile and the hot path pays a null check) writes per message kind (time report, fused MMIO, MMIO read/write,
 transfer, GTE, COP0, other): count, lines written, bytes, wait (previous handler end to this line read: native execution plus
