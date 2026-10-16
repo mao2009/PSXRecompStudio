@@ -383,4 +383,40 @@ public sealed class RuntimeCodeGeneratedHostTests
         indirect.Final.Gpr[(int)S2].Should().Be(reference.Gpr[(int)S2]);
         indirect.Evidence.FallbackInstructions.Should().Be(0ul);
     }
+
+    [Fact]
+    public void FallbackEntries_AreAttributedToUnregisteredCode_OrGuardMismatch_NotToTheOneInstructionBlockThatMatched()
+    {
+        // PR #792 measurement: a registered one-instruction block that matches RAM runs natively; the transfer then lands on
+        // the unregistered word after it (cause: unregistered). Code that replaced the registered word is a guard
+        // mismatch. The two must never be conflated, and a matching block must never be a fallback entry.
+        const uint slot = 0x80001000u;
+        const int loops = 20;
+        uint[] registered = [Addiu(S2, S2, 1)];
+        uint[] whole = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        uint[] replaced = [Addiu(S2, S2, 0x100), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, slot, whole);
+        for (var i = 0; i < loops; i++) Call(reset, slot);
+        Install(reset, slot, replaced);
+        for (var i = 0; i < loops; i++) Call(reset, slot);
+        var rom = Rom(reset);
+
+        var reference = Reference(rom, 20_000);
+        var host = RunHost(rom, [(slot, registered, [slot])], new HashSet<uint>(), 20_000);
+
+        host.Final.Gpr[(int)S2].Should().Be(reference.Gpr[(int)S2]).And.Be((uint)(loops + loops * 0x100));
+        host.Transitions.Should().OnlyContain(t => t.Attribution != null);
+
+        var afterBlock = host.Transitions.Where(t => t.EntryPc == slot + 4).ToArray();
+        afterBlock.Should().HaveCount(loops, "the matching one-instruction block falls through to the unregistered word");
+        afterBlock.Should().OnlyContain(t => t.Attribution!.RegisteredVersions == 0 && t.Attribution.MatchedVersion == -1);
+
+        var mismatched = host.Transitions.Where(t => t.EntryPc == slot).ToArray();
+        mismatched.Should().HaveCount(loops, "once RAM holds other code, the registered version is rejected by its guard");
+        mismatched.Should().OnlyContain(t => t.Attribution!.RegisteredVersions == 1 && t.Attribution.MatchedVersion == -1);
+
+        host.Transitions.Should().NotContain(t => t.Attribution!.MatchedVersion >= 0, "a version that matches RAM is never a fallback entry");
+        host.Transitions.Count.Should().Be(2 * loops);
+    }
 }
