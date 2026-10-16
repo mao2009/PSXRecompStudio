@@ -26,6 +26,7 @@ public sealed class TransitionAttributionRecorder
     private readonly object _lock = new();
     private readonly Dictionary<(uint Entry, string Cause, uint Prev, uint Exit, bool Returned), (ulong Entries, ulong Instructions)> _keys = [];
     private readonly List<object> _detail = [];
+    private readonly Dictionary<string, (ulong Entries, ulong Instructions)> _causes = [];
     private ulong _total;
     private ulong _droppedKeys;
     private ulong _droppedDetail;
@@ -46,6 +47,8 @@ public sealed class TransitionAttributionRecorder
         lock (_lock)
         {
             _total++;
+            _causes.TryGetValue(cause, out var c);
+            _causes[cause] = (c.Entries + 1, c.Instructions + t.RetiredInstructions);
             if (_keys.TryGetValue(key, out var v)) _keys[key] = (v.Entries + 1, v.Instructions + t.RetiredInstructions);
             else if (_keys.Count < MaxKeys) _keys[key] = (1, t.RetiredInstructions);
             else _droppedKeys++;
@@ -96,8 +99,8 @@ public sealed class TransitionAttributionRecorder
                     distinctKeys = _keys.Count,
                     droppedKeys = _droppedKeys,
                     droppedDetailEvents = _droppedDetail,
-                    byCause = _keys.GroupBy(static k => k.Key.Cause)
-                        .Select(static g => new { cause = g.Key, entries = (ulong)g.Sum(static x => (decimal)x.Value.Entries), instructions = (ulong)g.Sum(static x => (decimal)x.Value.Instructions) })
+                    // Counted independently of the key cap, so the sum always equals totalTransitions.
+                    byCause = _causes.Select(static c => new { cause = c.Key, entries = c.Value.Entries, instructions = c.Value.Instructions })
                         .OrderBy(static x => x.cause, StringComparer.Ordinal).ToArray(),
                     byEntry = _keys.GroupBy(static k => k.Key.Entry)
                         .Select(static g => new

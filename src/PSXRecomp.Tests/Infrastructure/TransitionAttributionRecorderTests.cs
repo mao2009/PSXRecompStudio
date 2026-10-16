@@ -52,6 +52,8 @@ public sealed class TransitionAttributionRecorderTests
             var doc = Write(r);
             doc.GetProperty("distinctKeys").GetInt32().Should().Be(TransitionAttributionRecorder.MaxKeys);
             doc.GetProperty("droppedKeys").GetUInt64().Should().Be(100);
+            doc.GetProperty("byCause").EnumerateArray().Sum(static e => (long)e.GetProperty("entries").GetUInt64())
+                .Should().Be(n, "cause totals stay exact when distinct keys are dropped");
             doc.GetProperty("droppedDetailEvents").GetUInt64().Should().Be((ulong)(n - TransitionAttributionRecorder.MaxDetailEvents));
             doc.GetProperty("firstEvents").GetArrayLength().Should().Be(TransitionAttributionRecorder.MaxDetailEvents);
         }
