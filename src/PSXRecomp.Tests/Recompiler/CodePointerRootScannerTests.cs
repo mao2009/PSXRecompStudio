@@ -199,4 +199,42 @@ public sealed class CodePointerManifestTests
 
         act.Should().Throw<InvalidDataException>().WithMessage($"*{CodePointerRootScanner.MaxRoots}*");
     }
+
+    // Review (#782): a PS-X EXE can hold 2 MiB of text. A full-size image with no pointer-shaped word is one linear pass, not a
+    // search, and it must finish without roots.
+    [Fact]
+    public void A_Maximum_Size_Image_Without_Candidates_Is_One_Cheap_Pass()
+    {
+        var words = new uint[512 * 1024];
+        words[0] = MipsEncoding.JumpRegister(31);
+        words[1] = MipsEncoding.Nop;
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var roots = CodePointerRootScanner.Find(Dest, words, [Dest]);
+
+        roots.Should().BeEmpty();
+        started.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+    }
+
+    // Review (#782): every word of a maximum-size image can be a pointer to a prologue-shaped word. The candidate cap stops that
+    // before it costs one discovery pass per word.
+    [Fact]
+    public void A_Maximum_Size_Image_Full_Of_Candidates_Fails_Closed_Quickly()
+    {
+        var words = new uint[512 * 1024];
+        words[0] = MipsEncoding.JumpRegister(31);
+        words[1] = MipsEncoding.Nop;
+        var prologue = MipsEncoding.I(0x09, 29, 29, 0xFFF0);
+        for (var i = 2; i + 1 < words.Length; i += 2)
+        {
+            words[i] = prologue;
+            words[i + 1] = Dest + (uint)i * 4u; // names the prologue word before it
+        }
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var act = () => CodePointerRootScanner.Find(Dest, words, [Dest]);
+
+        act.Should().Throw<InvalidDataException>();
+        started.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+    }
 }
