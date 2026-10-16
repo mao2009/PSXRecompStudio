@@ -181,4 +181,22 @@ public sealed class CodePointerManifestTests
 
         act.Should().Throw<InvalidDataException>().WithMessage("*takes no arguments*");
     }
+
+    // Review (#782): the scan's cost and its output are bounded. A scan that would exceed the root cap fails closed, naming the cap,
+    // instead of returning a set that looks complete.
+    [Fact]
+    public void A_Scan_That_Would_Exceed_The_Root_Cap_Fails_Closed_Naming_The_Cap()
+    {
+        var callees = CodePointerRootScanner.MaxRoots + 44;
+        var calleeStart = Dest + (uint)(2 + callees) * 4u;
+        // Each callee: addiu $sp,$sp,-16; jr $ra; nop, with the same shape the other fixtures use.
+        var callee = new[] { MipsEncoding.I(0x09, 29, 29, 0xFFF0), MipsEncoding.JumpRegister(31), MipsEncoding.Nop };
+        var words = new List<uint> { MipsEncoding.JumpRegister(31), MipsEncoding.Nop };
+        for (var i = 0; i < callees; i++) words.Add(calleeStart + (uint)i * 12u);
+        for (var i = 0; i < callees; i++) words.AddRange(callee);
+
+        var act = () => CodePointerRootScanner.Find(Dest, words.ToArray(), [Dest]);
+
+        act.Should().Throw<InvalidDataException>().WithMessage($"*{CodePointerRootScanner.MaxRoots}*");
+    }
 }

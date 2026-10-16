@@ -52,10 +52,20 @@ internal static class CodePointerRootScanner
     private const uint SpRegister = 29;
     private const uint OpAddiu = 0x09, OpOri = 0x0D, OpLui = 0x0F;
 
+    /// <summary>Upper bound on accepted roots in one scan (Issue #782 review). Exceeding it fails the scan.</summary>
+    internal const int MaxRoots = 256;
+
+    /// <summary>Upper bound on discovery passes (<see cref="ReachableProgramBuilder.IsDiscoverableRoot"/>), the expensive step.</summary>
+    internal const int MaxCandidateChecks = 1024;
+
     /// <summary>
     /// The code-pointer roots of an image not already reached from <paramref name="roots"/>, ascending by target PC. The
     /// first word that names a target is the one recorded as its source.
     /// </summary>
+    /// <remarks>
+    /// Fail closed: when the scan would need more than <see cref="MaxRoots"/> roots or <see cref="MaxCandidateChecks"/>
+    /// discovery passes, it throws <see cref="InvalidDataException"/>. A truncated set would look like a complete one.
+    /// </remarks>
     /// <param name="loadAddress">Guest address of the first word.</param>
     /// <param name="words">The image, as little-endian words, in guest order.</param>
     /// <param name="roots">The entry point and explicit roots, whose reachable code is excluded.</param>
@@ -68,6 +78,7 @@ internal static class CodePointerRootScanner
         var imageEnd = (ulong)loadAddress + (ulong)words.Count * InstructionSize;
         var found = new SortedDictionary<uint, CodePointerRoot>();
         var rejected = new HashSet<uint>();
+        var checks = 0;
 
         void Consider(uint target, uint source, CodePointerRootKind kind)
         {
@@ -77,15 +88,32 @@ internal static class CodePointerRootScanner
                 return;
             }
 
-            if (LooksLikeFunctionEntry(loadAddress, words, target)
-                && ReachableProgramBuilder.IsDiscoverableRoot(loadAddress, words, target))
-            {
-                found.Add(target, new CodePointerRoot(target, source, kind));
-            }
-            else
+            if (!LooksLikeFunctionEntry(loadAddress, words, target))
             {
                 rejected.Add(target);
+                return;
             }
+
+            if (checks >= MaxCandidateChecks)
+            {
+                throw new InvalidDataException(
+                    $"code-pointer scan: more than {MaxCandidateChecks} candidate checks; the root set would be incomplete.");
+            }
+
+            checks++;
+            if (!ReachableProgramBuilder.IsDiscoverableRoot(loadAddress, words, target))
+            {
+                rejected.Add(target);
+                return;
+            }
+
+            if (found.Count >= MaxRoots)
+            {
+                throw new InvalidDataException(
+                    $"code-pointer scan: more than {MaxRoots} roots; the root set would be incomplete.");
+            }
+
+            found.Add(target, new CodePointerRoot(target, source, kind));
         }
 
         for (var index = 0; index < words.Count; index++)
