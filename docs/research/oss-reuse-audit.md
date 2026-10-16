@@ -82,7 +82,7 @@ Commit SHAs are the upstream default-branch HEAD read via `gh api` on 2026-10-15
 | `openbios/kernel/events.c` | `9c693c4d…` | `9c693c4d…` | yes |
 | `openbios/cdrom/statemachine.c` | `c6ee3bdf…` | `577eb186…` | **no** (changed upstream after the recorded snapshot) |
 
-The pinned revision in `docs/runtime/openbios-firmware-backend.md` is unchanged and is the revision used. The HEAD mismatch affects only the file-level record in REFERENCES.md, which must be corrected before any reuse decision on that file.
+The pinned revision in `docs/runtime/openbios-firmware-backend.md` is unchanged and is the revision used. Verified on 2026-10-16 with the GitHub contents API: `c6ee3bdf…` is the blob at the pinned commit `c950e18…`, and `577eb186…` is the blob at upstream HEAD `51ee9ab…`. The column compares the pinned blob with HEAD, so the mismatch means only that HEAD has moved on for that file. REFERENCES.md's value is correct for the pin, and only its column label needed clarifying. The file-level reuse decision is still PENDING.
 
 ---
 
@@ -205,8 +205,8 @@ Host Controller (OS device, via SDL3 if adopted)
 
 **Documentation discrepancies found (must be fixed in follow-up, not in this PR):**
 
-1. `docs/REFERENCES.md` marks `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, and `cdrom/statemachine.c` as "REFERENCE_ONLY; direct/ported use PENDING." `docs/legal/openbios-license-audit.md` (line 63 and the surrounding table) marks the same files "APPROVED." The two must be reconciled by a human reviewer.
-2. The `statemachine.c` blob recorded in `docs/REFERENCES.md` (`c6ee3bdf…`) differs from upstream HEAD (`577eb186…`). The pinned snapshot should be re-read to confirm which blob it contains.
+1. `docs/REFERENCES.md` marks `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, and `cdrom/statemachine.c` as "REFERENCE_ONLY; direct/ported use PENDING." `docs/legal/openbios-license-audit.md` marked the same files "APPROVED". Reconciled toward PENDING in this branch: the file-level rule in REFERENCES.md requires a reviewer and a decision date, and none is recorded. The legal audit now records the per-file MIT header and leaves direct reuse PENDING. Whether to record any file-level APPROVED is a human decision.
+2. Resolved on 2026-10-16: the `statemachine.c` blob recorded in `docs/REFERENCES.md` (`c6ee3bdf…`) is the blob at the pinned commit `c950e18…`. The differing value `577eb186…` is the blob at upstream HEAD `51ee9ab…`. No recording error was found.
 3. `docs/development/ci-policy.md` requires Windows and macOS for release candidates. The `ci` gate in `.github/workflows/ci.yml` (line 225) covers Linux native, .NET, and GUI tests. These are consistent for ordinary PRs, but a reader could misread the policy. Clarify when next editing that file.
 
 **Unverified upstream items:**

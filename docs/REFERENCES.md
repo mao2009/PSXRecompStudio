@@ -44,7 +44,7 @@ The commercial Sony BIOS and game disc/asset contents are forbidden in tracked f
 - CAUTION: the **separate** `grumpycoders/pcsx-redux` emulator repository uses GPL-2.0. Its code cannot be treated as Nugget MIT source.
 - Origin: OpenBIOS README says its implementation was developed using analysis/reverse engineering of commercial PS1 BIOS. Its MIT grant applies to its own code, and does not imply permission to distribute protected Sony ROM bytes or assets.
 
-| File (relative to Nugget root) | Observed blob SHA | Relevant services | Current decision |
+| File (relative to Nugget root) | Blob SHA at the pinned commit `c950e18` | Relevant services | Current decision |
 | --- | --- | --- | --- |
 | `openbios/card/backupunit.c` | `5c5a739186a3848c603e7221a5ec9c478e744e36` | A0:55/A0:70 `initBackupUnit`; `buInit`, card directory state, error delivery | REFERENCE_ONLY; direct/ported use PENDING |
 | `openbios/sio0/driver.c` | `b846e440f98f89f55cd8eecd93fa815e424c4099` | Pad/Card IRQ, VBlank, `firstStageCardAction`, `mcReadSector` | REFERENCE_ONLY; direct/ported use PENDING |

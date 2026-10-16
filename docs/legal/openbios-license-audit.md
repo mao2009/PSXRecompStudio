@@ -60,7 +60,7 @@ Spot-checked files and their observed copyright years:
 | File / group | Year in header | Verdict |
 |---|---|---|
 | `boot/psx.s`, `openbios/main/main.c` | 2019 | APPROVED |
-| `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, `cdrom/statemachine.c` | 2020–2021 | APPROVED |
+| `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, `cdrom/statemachine.c` | 2020–2021 | MIT header observed; direct/ported use PENDING (REFERENCES.md, no reviewer decision recorded) |
 | `openbios/charset/sjis.c` | 2021 | APPROVED |
 | `openbios/shell/shell.c`, `handlers/irq.c` | 2020 | APPROVED |
 | `common/psxlibc/fastmemset.s` | 2020 | APPROVED |
@@ -174,7 +174,7 @@ hashed and compared independently before claiming agreement.
 
 | Group | Components | License observed | Verdict |
 |---|---|---|---|
-| OpenBIOS C/S source | All `.c`/`.s` in openbios/* and common/psxlibc/fastmemset.s | MIT (PCSX-Redux authors 2019–2025) — explicit per-file header | **APPROVED** |
+| OpenBIOS C/S source | All `.c`/`.s` in openbios/* and common/psxlibc/fastmemset.s | MIT (PCSX-Redux authors 2019–2025) — explicit per-file header | **Header observed; file-level direct reuse PENDING** (REFERENCES.md) |
 | Shell C/S source | shell/*.c, crt0, syscalls | MIT (PCSX-Redux authors 2021) — explicit per-file header | **APPROVED** |
 | modplayer.c | modplayer/modplayer.c | MIT (PCSX-Redux authors 2021); RE provenance noted | **APPROVED** |
 | patches | patches/*.c | MIT (PCSX-Redux authors 2021) — explicit per-file header | **APPROVED** |
