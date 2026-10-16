@@ -328,7 +328,10 @@ public static class Program
         if (path is null || diagnostics is null) return;
         try
         {
-            File.WriteAllText(path, diagnostics.ToJson() + "\n", new System.Text.UTF8Encoding(false));
+            // Temp file then move: a reader never sees a half-written report that could pass for a short, valid one.
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, diagnostics.ToJson() + "\n", new System.Text.UTF8Encoding(false));
+            File.Move(temp, path, overwrite: true);
         }
         catch (Exception ex)
         {

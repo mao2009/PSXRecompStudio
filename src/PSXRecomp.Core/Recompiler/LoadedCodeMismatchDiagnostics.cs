@@ -50,7 +50,7 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>Per-version observations that had no record because the record cap was already reached.</summary>
     public ulong SuppressedObservations { get; private set; }
 
-    /// <summary>Handoffs not compared because the word budget was already spent. A non-zero value makes the report incomplete.</summary>
+    /// <summary>Handoffs not compared because the word budget was already spent. A non-zero value makes the report incomplete (as does a non-zero <see cref="SuppressedObservations"/>).</summary>
     public ulong SkippedObservations { get; private set; }
 
     /// <summary>Guest words compared so far, across every version of every observation.</summary>
@@ -125,8 +125,8 @@ public sealed class LoadedCodeMismatchDiagnostics
             ["schema"] = SchemaName,
             ["totalObservations"] = JsonValue.Create(TotalObservations),
             ["suppressedObservations"] = JsonValue.Create(SuppressedObservations),
-            // Explicit so a cut-short comparison is never mistaken for a complete one.
-            ["incomplete"] = JsonValue.Create(SkippedObservations > 0),
+            // Explicit so a cut-short comparison or a record dropped by the cap is never mistaken for a complete report.
+            ["incomplete"] = JsonValue.Create(SkippedObservations > 0 || SuppressedObservations > 0),
             ["skippedObservations"] = JsonValue.Create(SkippedObservations),
             ["comparedWordTotal"] = JsonValue.Create(ComparedWords),
             ["maxComparedWords"] = JsonValue.Create(_maxComparedWords),

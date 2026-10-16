@@ -92,6 +92,16 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
     }
 
     [Fact]
+    public void ToJson_ReportsIncomplete_WhenTheRecordCapDroppedRecords()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics(maxRecords: 1);
+        diagnostics.Observe(Pc, [Version(Pc, 1)], _ => 0u);
+        diagnostics.Observe(Pc + 0x100u, [Version(Pc + 0x100u, 1)], _ => 0u);
+
+        JsonNode.Parse(diagnostics.ToJson())!["incomplete"]!.GetValue<bool>().Should().BeTrue("a dropped record is a gap in the report");
+    }
+
+    [Fact]
     public void ToJson_IsDeterministic_ForTheSameObservations()
     {
         string Run()
