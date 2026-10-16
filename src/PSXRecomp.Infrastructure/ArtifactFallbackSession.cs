@@ -268,6 +268,10 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 outcome.Status == FallbackSegmentStatus.Returned ? outcome.State.Pc : previous.LastReturnPc);
             _transitionObserver?.Invoke(new MixedFallbackTransition(
                 pc, header.Value.Indirect, outcome.Status, outcome.State.Pc, outcome.RetiredInstructions, outcome.DiagnosticCode));
+            // Issue #774: the per-transfer record of the unit trace reads this. Only observed; nothing above changes.
+            LastSegment = new SegmentRecord(
+                outcome.Status == FallbackSegmentStatus.Returned ? "returned" : "stopped",
+                outcome.RetiredInstructions, outcome.State.Pc, outcome.DiagnosticCode, entry, outcome.State);
 
             if (outcome.Status != FallbackSegmentStatus.Returned)
             {
@@ -287,6 +291,20 @@ internal sealed class ArtifactFallbackSession : IDisposable
             _transferClock.Stop();
         }
     }
+
+    /// <summary>One fallback segment that ran for the current transfer (Issue #774).</summary>
+    /// <remarks>
+    /// <see cref="Entry"/> and <see cref="Exit"/> are the CPU state the segment started and ended with (Issue #774, B-6b).
+    /// They are carried only to the trace; the segment itself does not read them back.
+    /// </remarks>
+    public sealed record SegmentRecord(
+        string Status, ulong Retired, uint EndPc, string? StopCode, FallbackCpuState? Entry = null, FallbackCpuState? Exit = null);
+
+    /// <summary>The segment the most recent transfer ran, or null when the transfer ran no fallback segment.</summary>
+    public SegmentRecord? LastSegment { get; private set; }
+
+    /// <summary>Called before each transfer is served, so <see cref="LastSegment"/> describes only that transfer.</summary>
+    public void BeginSegmentRecord() => LastSegment = null;
 
     private Decision Stop(string code, string message)
     {

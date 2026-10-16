@@ -123,6 +123,82 @@ public sealed class RecompiledArtifactDeviceTimeTests
     }
 
     [Fact]
+    public void ReportAndTheMmioAccessItPrecedes_TravelAsOneRequest_AndAnAccessWithNothingPendingTravelsAlone()
+    {
+        // Issue #768: four retirements precede the read, so the report and the read are one line (one round trip);
+        // the host handles them in the old order (report, then access), which the harness replays as two requests.
+        // A read straight after a read has nothing pending except the read itself, which is still reported first.
+        var words = Program(
+            [Lui(T0, 0x1F80)],
+            [Nop, Nop, Nop],
+            Load(R3000aOpcode.Lw, S0, T0, 0x1814),
+            Load(R3000aOpcode.Lw, T1, T0, 0x1814),
+            [Nop]);
+
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+
+        var run = RunScripted(dir, _ => "V 0");
+
+        run.Requests.Should().HaveCount(2, "both reads reach the host exactly once each, as before");
+        run.FusedRequests.Should().Be(2, "each read had instructions pending, so each travelled with its report");
+        run.Retired.Take(2).Should().Equal(new[] { 4ul, 1ul }, "the reports carry the same counts the stand-alone reports did");
+    }
+
+    [Fact]
+    public void AnAccessWithNothingPending_TravelsAsAPlainRequest_AndIsNotPrecededByAReport()
+    {
+        // Issue #768: two accesses inside ONE unit: the first reports the retirements before it, the second finds nothing
+        // pending (the unit retires after both) and keeps the stand-alone request form.
+        var words = Program(
+            [Lui(T0, 0x1F80)],
+            [Mem(R3000aOpcode.Lw, S0, T0, 0x1814), Mem(R3000aOpcode.Lw, R3000aRegister.S1, T0, 0x1814)]);
+
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+        var run = RunScripted(dir, _ => "V 0");
+
+        run.Requests.Should().HaveCount(2);
+        run.FusedRequests.Should().Be(1, "only the first access had retirements to report; the second travels alone");
+        run.Retired.Count.Should().BeGreaterThan(1);
+    }
+
+    [Fact]
+    public void FusedReports_LeaveEveryTimerReadAtTheInterpretersDeviceTime()
+    {
+        // Issue #768: Timer 0 counts device time, so a read is exact only if the report before it advanced the devices by
+        // precisely the retired instructions. Reads after 3, 17, 0 (a pending-free access in the same unit) and 1
+        // instructions must equal the interpreter's, which advances its devices after every instruction.
+        const ushort counter = 0x1100;
+        var words = Program(
+            [Lui(T0, 0x1F80)],
+            Load(R3000aOpcode.Lw, S0, T0, counter),
+            [Nop, Nop, Nop],
+            Load(R3000aOpcode.Lw, R3000aRegister.S1, T0, counter),
+            Enumerable.Repeat(Nop, 17).ToArray(),
+            Load(R3000aOpcode.Lw, R3000aRegister.S2, T0, counter),
+            Load(R3000aOpcode.Lw, R3000aRegister.S3, T0, counter),
+            [Nop],
+            Load(R3000aOpcode.Lw, R3000aRegister.S4, T0, counter));
+
+        using var interpreter = new InterpreterTitleExecutionEngine(words, Entry);
+        var reference = new ExecutionOrchestrator().Execute(interpreter, new ExitHandoff(), Request(256)).FinalSnapshot!;
+
+        using var dir = new TempDirectory();
+        ulong fused = 0;
+        var host = Run(words, dir, withRuntime: true, observe: engine => fused = engine.HostRoundTrips!.Value.TimeReports);
+        host.FinalSnapshot.Should().NotBeNull(host.DiagnosticMessage);
+
+        foreach (var reg in new[] { R3000aRegister.S0, R3000aRegister.S1, R3000aRegister.S2, R3000aRegister.S3, R3000aRegister.S4 })
+        {
+            host.FinalSnapshot!.Gpr[(int)reg].Should().Be(reference.Gpr[(int)reg], $"{reg} read the timer at the interpreter's device time");
+        }
+
+        reference.Gpr[(int)R3000aRegister.S4].Should().BeGreaterThan(reference.Gpr[(int)R3000aRegister.S1], "the timer advanced between reads");
+        fused.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
     public void TimerModeWriteInBranchDelaySlot_ChargesOnlyTheStoreAfterItsReset()
     {
         var target = Entry + 16u;

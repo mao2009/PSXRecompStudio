@@ -101,7 +101,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         bool HasSnapshot,
         IReadOnlyList<ulong> Retired,
         IReadOnlyDictionary<string, uint>? Snapshot = null,
-        int SyscallOffers = 0);
+        int SyscallOffers = 0,
+        int FusedRequests = 0);
 
     /// <summary>
     /// Re-launches the artifact an earlier <see cref="Run"/> built in <paramref name="dir"/>
@@ -138,9 +139,27 @@ public sealed class RecompiledArtifactMmioBridgeTests
         var hasSnapshot = false;
         var inputClosed = false;
         var syscallOffers = 0;
+        var fusedRequests = 0;
         string? line;
         while ((line = process.StandardOutput.ReadLine()) is not null)
         {
+            // Issue #768: a guest-time report may carry the MMIO access that follows it ("count R width pa" or
+            // "count W width pa value"). It is handled as the two requests it replaces, in order: the report first,
+            // then the access, so every assertion about reports and requests is unchanged.
+            string? fusedRequest = null;
+            if (line.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
+            {
+                var body = line[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..];
+                var space = body.IndexOf(' ');
+                if (space >= 0)
+                {
+                    var access = body[(space + 1)..];
+                    fusedRequest = (access[0] == 'W' ? RecompiledArtifactCodeGen.ProtocolMmioWritePrefix : RecompiledArtifactCodeGen.ProtocolMmioReadPrefix) + access[2..];
+                    line = RecompiledArtifactCodeGen.ProtocolRetiredPrefix + body[..space];
+                    fusedRequests++;
+                }
+            }
+
             var isRequest = line.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioReadPrefix, StringComparison.Ordinal)
                 || line.StartsWith(RecompiledArtifactCodeGen.ProtocolMmioWritePrefix, StringComparison.Ordinal)
                 || line.StartsWith(RecompiledArtifactCodeGen.ProtocolCop0AccessPrefix, StringComparison.Ordinal);
@@ -183,6 +202,13 @@ public sealed class RecompiledArtifactMmioBridgeTests
                 {
                     if (sendCreditOnReports && eventCredit is { } credit) process.StandardInput.WriteLine($"T {credit}");
                     process.StandardInput.WriteLine(retiredAnswer);
+                    if (fusedRequest is not null)
+                    {
+                        requests.Add(fusedRequest);
+                        var fusedAnswer = reply(fusedRequest);
+                        if (fusedAnswer is null) process.StandardInput.Close();
+                        else process.StandardInput.WriteLine(fusedAnswer);
+                    }
                 }
             }
             else if (isRequest)
@@ -217,7 +243,7 @@ public sealed class RecompiledArtifactMmioBridgeTests
         process.WaitForExit(10000).Should().BeTrue("the artifact must terminate");
         var exit = process.ExitCode;
 #pragma warning restore AARC003
-        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot, syscallOffers);
+        return new ScriptedRun(exit, requests, gpr, hasSnapshot, retired, snapshot, syscallOffers, fusedRequests);
     }
 
     internal static string Read(int width, uint pa) =>
