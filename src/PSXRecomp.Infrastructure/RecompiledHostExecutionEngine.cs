@@ -149,6 +149,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public Action<InterpreterTitleExecutionEngine, uint>? FallbackFetchObserver { get; set; }
 
+    /// <summary>
+    /// Builds the artifact with per-entry loaded-code guard counters, written to the file named by PSX_GUARD_STATS_FILE
+    /// (measurement only, Issue #773). Opt-in through PSXRECOMP_NATIVE_GUARD_STATS (the artifact is generated while the
+    /// engine is constructed, so a property set afterwards would be too late); off, the generated text is unchanged.
+    /// </summary>
+    private static bool GuardStats => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"));
+
     /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
     public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
 
@@ -335,7 +342,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             return;
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode);
+        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode, GuardStats);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -749,7 +756,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode);
+        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode, GuardStats);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");

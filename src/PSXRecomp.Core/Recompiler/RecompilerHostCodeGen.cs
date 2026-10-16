@@ -52,6 +52,9 @@ public static class RecompilerHostCodeGen
     private const string ExceptionEntryHelper = "recompiler_exception_entry";
     private const string CodeGuardHelper = "recompiler_code_current";
     private const string UnknownPcLabel = "recompiler_unknown_pc";
+
+    // Set for the duration of one Generate call (single-threaded codegen); false emits the historical text.
+    [ThreadStatic] private static bool s_guardStats;
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
@@ -64,8 +67,18 @@ public static class RecompilerHostCodeGen
     /// (the host transfer) exactly as for a PC without a block. Null or empty generates the same source as the
     /// single-argument overload.
     /// </summary>
-    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode)
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode) =>
+        Generate(program, loadedCode, guardStats: false);
+
+    /// <summary>
+    /// As above; with <paramref name="guardStats"/> the dispatcher also counts, per RAM-placed entry PC, arrivals, guard
+    /// hits per version and guard misses, keeps the first miss's previous PC, RAM word and CPU state, and writes them to
+    /// the file named by the PSX_GUARD_STATS_FILE environment variable (measurement only, Issue #773). Off, the emitted
+    /// text is exactly what it was.
+    /// </summary>
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool guardStats)
     {
+        s_guardStats = guardStats;
         ArgumentNullException.ThrowIfNull(program);
         loadedCode ??= LoadedCodeTable.Empty;
         var entries = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
@@ -259,6 +272,7 @@ public static class RecompilerHostCodeGen
             EmitGteHelperDeclarations(sb);
         }
         EmitStateStruct(sb);
+        if (s_guardStats && loadedCode.Blocks.Count != 0) EmitGuardStatsSupport(sb, loadedCode);
         EmitSra32Helper(sb);
         EmitMulDivHelpers(sb);
 
@@ -896,6 +910,55 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(indent + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
     }
 
+
+    private static void EmitGuardStatsSupport(StringBuilder sb, LoadedCodeTable loadedCode)
+    {
+        var groups = loadedCode.Blocks.GroupBy(static v => v.Block.EntryPc).OrderBy(static g => g.Key).ToList();
+        var maxVersions = groups.Max(static g => g.Count());
+        string Table(Func<IGrouping<uint, GuardedBlock>, int, string> cell) =>
+            string.Join(", ", groups.Select(g => "{" + string.Join(", ", Enumerable.Range(0, maxVersions).Select(v => cell(g, v))) + "}"));
+        sb.AppendLine("/* Measurement only (PSX_GUARD_STATS_FILE): per RAM-placed entry, arrivals, guard hits per version, guard misses. */");
+        sb.AppendLine("#include <stdio.h>");
+        sb.AppendLine("#include <stdlib.h>");
+        sb.AppendLine($"#define PSX_GS_N {groups.Count}u");
+        sb.AppendLine($"#define PSX_GS_V {maxVersions}u");
+        sb.AppendLine($"static const uint32_t psx_gs_pc[PSX_GS_N] = {{ {string.Join(", ", groups.Select(g => FormatHex(g.Key)))} }};");
+        sb.AppendLine($"static const uint32_t psx_gs_nver[PSX_GS_N] = {{ {string.Join(", ", groups.Select(g => g.Count().ToString(System.Globalization.CultureInfo.InvariantCulture) + "u"))} }};");
+        sb.AppendLine($"static const uint32_t psx_gs_len[PSX_GS_N][PSX_GS_V] = {{ {Table((g, v) => v < g.Count() ? g.ElementAt(v).Words.Count + "u" : "0u")} }};");
+        sb.AppendLine($"static const uint32_t psx_gs_w0[PSX_GS_N][PSX_GS_V] = {{ {Table((g, v) => v < g.Count() && g.ElementAt(v).Words.Count != 0 ? FormatHex(g.ElementAt(v).Words[0]) : "0u")} }};");
+        sb.AppendLine("static uint64_t psx_gs_arrive[PSX_GS_N], psx_gs_hit[PSX_GS_N][PSX_GS_V], psx_gs_miss[PSX_GS_N];");
+        sb.AppendLine("static uint32_t psx_gs_missprev[PSX_GS_N], psx_gs_missram[PSX_GS_N];");
+        sb.AppendLine("static uint32_t psx_gs_snap[16][36];");
+        sb.AppendLine("static int psx_gs_nsnap = 0, psx_gs_registered = 0;");
+        sb.AppendLine("static uint32_t psx_gs_cur = 0u, psx_gs_prev = 0u;");
+        sb.AppendLine("static uint64_t psx_gs_iter = 0u;");
+        sb.AppendLine("static void psx_gs_dump(void) {");
+        sb.AppendLine("  const char* path = getenv(\"PSX_GUARD_STATS_FILE\");");
+        sb.AppendLine("  FILE* f; unsigned i, v;");
+        sb.AppendLine("  if (path == (const char*)0 || path[0] == '\\0') return;");
+        sb.AppendLine("  f = fopen(path, \"w\");");
+        sb.AppendLine("  if (f == (FILE*)0) return;");
+        sb.AppendLine("  fprintf(f, \"iter %llu\\n\", (unsigned long long)psx_gs_iter);");
+        sb.AppendLine("  for (i = 0u; i < PSX_GS_N; i++) {");
+        sb.AppendLine("    if (psx_gs_arrive[i] == 0u) continue;");
+        sb.AppendLine("    fprintf(f, \"slot %08X nver %u arrive %llu miss %llu missprev %08X missram %08X\", (unsigned)psx_gs_pc[i], (unsigned)psx_gs_nver[i], (unsigned long long)psx_gs_arrive[i], (unsigned long long)psx_gs_miss[i], (unsigned)psx_gs_missprev[i], (unsigned)psx_gs_missram[i]);");
+        sb.AppendLine("    for (v = 0u; v < psx_gs_nver[i]; v++) fprintf(f, \" v%u hit %llu len %u w0 %08X\", v, (unsigned long long)psx_gs_hit[i][v], (unsigned)psx_gs_len[i][v], (unsigned)psx_gs_w0[i][v]);");
+        sb.AppendLine("    fprintf(f, \"\\n\");");
+        sb.AppendLine("  }");
+        sb.AppendLine("  for (i = 0u; i < (unsigned)psx_gs_nsnap; i++) {");
+        sb.AppendLine("    fprintf(f, \"snap slot %08X prev %08X ram %08X pc %08X gpr\", (unsigned)psx_gs_pc[psx_gs_snap[i][34]], (unsigned)psx_gs_snap[i][33], (unsigned)psx_gs_snap[i][35], (unsigned)psx_gs_snap[i][32]);");
+        sb.AppendLine("    for (v = 0u; v < 32u; v++) fprintf(f, \" %08X\", (unsigned)psx_gs_snap[i][v]);");
+        sb.AppendLine("    fprintf(f, \"\\n\");");
+        sb.AppendLine("  }");
+        sb.AppendLine("  fclose(f);");
+        sb.AppendLine("}");
+        sb.AppendLine("#define PSX_GS_TICK(st) do { if (!psx_gs_registered) { psx_gs_registered = 1; atexit(psx_gs_dump); } psx_gs_prev = psx_gs_cur; psx_gs_cur = (st)->pc; if ((++psx_gs_iter & 0x3FFFFFu) == 0u) psx_gs_dump(); } while (0)");
+        sb.AppendLine("#define PSX_GS_ARRIVE(slot) (psx_gs_arrive[slot]++)");
+        sb.AppendLine("#define PSX_GS_HIT(slot, ver) (psx_gs_hit[slot][ver]++)");
+        sb.AppendLine("#define PSX_GS_MISS(slot, st) do { unsigned k_; if (psx_gs_miss[slot]++ == 0u) { psx_gs_missprev[slot] = psx_gs_prev; psx_gs_missram[slot] = recompiler_read_mem32((st)->core, (st)->pc); if (psx_gs_nsnap < 16) { for (k_ = 0u; k_ < 32u; k_++) psx_gs_snap[psx_gs_nsnap][k_] = (st)->gpr[k_]; psx_gs_snap[psx_gs_nsnap][32] = (st)->pc; psx_gs_snap[psx_gs_nsnap][33] = psx_gs_prev; psx_gs_snap[psx_gs_nsnap][34] = (uint32_t)(slot); psx_gs_snap[psx_gs_nsnap][35] = psx_gs_missram[slot]; psx_gs_nsnap++; } } } while (0)");
+        sb.AppendLine();
+    }
+
     private static void EmitDispatchFunction(
         StringBuilder sb, RecompilerIrProgram program, LoadedCodeTable loadedCode)
     {
@@ -903,6 +966,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
         sb.AppendLine(IndentUnit + "for (;;) {");
         sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
+        if (s_guardStats && loadedCode.Blocks.Count != 0) sb.AppendLine(IndentUnit + IndentUnit + $"PSX_GS_TICK({StateParam});");
         sb.AppendLine(IndentUnit + IndentUnit + "state->partial_retired = 0u; state->unit_interrupted = 0u;");
         // Issue #680: the interrupt boundary. Every iteration starts between dispatch units, and a unit
         // fuses a branch with its delay slot, so this is never inside a branch + delay-slot pair —
@@ -917,6 +981,10 @@ public static class RecompilerHostCodeGen
         // state; budget == 0 executes nothing.
         // Clang -O0 lowers a sparse cross-image switch to thousands of linear comparisons.
         // Bound each inner switch to a 4 KiB PC page; preserve full addresses and version guards.
+        // Measurement only: the slot numbering EmitGuardStatsSupport uses (entry PCs ascending).
+        var guardSlots = s_guardStats
+            ? loadedCode.Blocks.Select(static v => v.Block.EntryPc).Distinct().Order().Select(static (pc, i) => (pc, i)).ToDictionary(static t => t.pc, static t => t.i)
+            : [];
         var splitDispatch = loadedCode.Blocks.Count != 0;
         var pages = splitDispatch
             ? program.Blocks.Select(static b => b.EntryPc >> 12).Concat(loadedCode.Blocks.Select(static b => b.Block.EntryPc >> 12)).Distinct().Order().ToArray()
@@ -955,12 +1023,15 @@ public static class RecompilerHostCodeGen
             {
                 var indent = IndentUnit + IndentUnit + IndentUnit;
                 sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(group.Key)}: {{");
+                var guardSlot = s_guardStats ? guardSlots[group.Key] : -1;
+                if (s_guardStats) sb.AppendLine(indent + $"PSX_GS_ARRIVE({guardSlot});");
                 var version = 0;
                 foreach (var loaded in group)
                 {
                     sb.AppendLine(indent + $"static const uint32_t code{version}[] = {{ {string.Join(", ", loaded.Words.Select(FormatHex))} }};");
                     sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
                     sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
+                    if (s_guardStats) sb.AppendLine(indent + IndentUnit + $"PSX_GS_HIT({guardSlot}, {version});");
                     sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
                     EmitBudgetExceededReturn(sb, 5);
                     sb.AppendLine(indent + IndentUnit + "}");
@@ -974,6 +1045,7 @@ public static class RecompilerHostCodeGen
                     version++;
                 }
 
+                if (s_guardStats) sb.AppendLine(indent + $"PSX_GS_MISS({guardSlot}, {StateParam});");
                 sb.AppendLine(indent + $"goto {UnknownPcLabel};");
                 sb.AppendLine(IndentUnit + IndentUnit + "}");
             }

@@ -380,7 +380,9 @@ public static class FirmwareDistributionBuilder
                     disc.Source);
             }
 
-            var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode);
+            // Measurement only (Issue #773): PSXRECOMP_NATIVE_GUARD_STATS at package time builds the artifact with guard counters.
+            var dispatch = RecompilerHostCodeGen.Generate(
+                plan.Program, plan.LoadedCode, guardStats: !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS")));
             if (!dispatch.Success)
             {
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");

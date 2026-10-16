@@ -347,4 +347,52 @@ public sealed class RuntimeCodeGeneratedHostTests
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == r).Which.Instructions.Should().Be(3ul);
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == q + 12).Which.Instructions.Should().Be(1ul);
     }
+
+    [Fact]
+    public void GuardStats_CountArrivalsHitsAndMisses_OfARegisteredEntry_AndStayOffByDefault()
+    {
+        // Issue #773 measurement: a registered one-instruction entry that matches RAM is a guard hit; once RAM holds other
+        // code, the same arrival is a guard miss that keeps its previous PC and RAM word. Counters exist only when asked for.
+        const uint slot = 0x80001000u;
+        const int loops = 20;
+        uint[] registered = [Addiu(S2, S2, 1)];
+        uint[] whole = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        uint[] replaced = [Addiu(S2, S2, 0x100), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, slot, whole);
+        for (var i = 0; i < loops; i++) Call(reset, slot);
+        Install(reset, slot, replaced);
+        for (var i = 0; i < loops; i++) Call(reset, slot);
+        var rom = Rom(reset);
+
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(slot, registered, [slot], new HashSet<uint>())]);
+        var romCode = ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program;
+        RecompilerHostCodeGen.Generate(romCode, loaded).Source.Should().NotContain("PSX_GS_", "the default text is unchanged");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should().Contain("PSX_GS_ARRIVE(0)");
+
+#pragma warning disable AARC003 // Test-only: the artifact writes its counters to a file named by an environment variable.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        Environment.SetEnvironmentVariable("PSX_GUARD_STATS_FILE", statsPath);
+        Environment.SetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS", "1");
+        try
+        {
+            using var engine = new RecompiledHostExecutionEngine(
+                romCode, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
+                mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+            new ExecutionOrchestrator().Execute(engine, handoff: null, Request(20_000)).FinalSnapshot.Should().NotBeNull();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PSX_GUARD_STATS_FILE", null);
+            Environment.SetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS", null);
+        }
+
+        var line = File.ReadAllLines(statsPath).Single(static l => l.StartsWith("slot ", StringComparison.Ordinal));
+        line.Should().Contain("slot 80001000 nver 1 arrive 40 miss 20");
+        line.Should().Contain("v0 hit 20 len 1");
+        line.Should().Contain($"missram {Addiu(S2, S2, 0x100):X8}");
+        File.ReadAllLines(statsPath).Should().Contain(static l => l.StartsWith("snap slot 80001000", StringComparison.Ordinal));
+#pragma warning restore AARC003
+    }
 }
