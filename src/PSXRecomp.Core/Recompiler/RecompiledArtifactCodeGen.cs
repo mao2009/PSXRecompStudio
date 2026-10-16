@@ -1040,17 +1040,22 @@ static unsigned long long artifact_read_time_credit(void) {
     return value;
 }
 
-static void artifact_report_retired(void) {
+/* The unreported retired instructions, now marked reported; 0 when there is nothing to report or no host. */
+static unsigned long long artifact_retired_take(void) {
+    unsigned long long pending;
+    if (!artifact_mmio_bridge || artifact_state == (RecompilerState*)0) return 0ull;
+    pending = artifact_state->retired_total - artifact_state->retired_reported;
+    if (pending == 0ull) return 0ull;
+    artifact_state->retired_reported = artifact_state->retired_total;
+    return pending;
+}
+
+/* Serves the host's replies to a guest-time report (device RAM requests, the credit, the ack) up to the ack. */
+static void artifact_retired_receive(void) {
     char cmd[8];
     unsigned long a, v;
-    unsigned long long pending, credit;
+    unsigned long long credit;
     int time_credit_seen = 0;
-    if (!artifact_mmio_bridge || artifact_state == (RecompilerState*)0) return;
-    pending = artifact_state->retired_total - artifact_state->retired_reported;
-    if (pending == 0ull) return;
-    artifact_state->retired_reported = artifact_state->retired_total;
-    printf(""%s%llu\n"", ""@RETIRED@"", pending);
-    fflush(stdout);
     for (;;) {
         if (scanf(""%7s"", cmd) != 1) exit(@EXIT_RETIRED_PROTOCOL@);
         if (strcmp(cmd, ""R"") == 0) {
@@ -1082,6 +1087,14 @@ static void artifact_report_retired(void) {
     }
 }
 
+static void artifact_report_retired(void) {
+    unsigned long long pending = artifact_retired_take();
+    if (pending == 0ull) return;
+    printf(""%s%llu\n"", ""@RETIRED@"", pending);
+    fflush(stdout);
+    artifact_retired_receive();
+}
+
 /* An MMIO write is reported as soon as its unit retires, not at the next observation: the
    interpreter advances its devices after every instruction, so what a store sets going (a
    DMA kick, a CD-ROM command) has already happened — device-originated RAM writes included
@@ -1102,11 +1115,23 @@ static void artifact_after_unit(RecompilerState* state) {
 static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t address, int is_write, uint32_t value) {
     char reply[8];
     unsigned long v;
+    unsigned long long pending;
     if (!artifact_mmio_bridge) exit(@EXIT_MMIO_UNAVAILABLE@);
-    artifact_report_retired();
-    if (is_write) printf(""%s%u %lu %lu\n"", tag, (unsigned)width, (unsigned long)artifact_translate(address), (unsigned long)value);
-    else printf(""%s%u %lu\n"", tag, (unsigned)width, (unsigned long)artifact_translate(address));
-    fflush(stdout);
+    /* Issue #768: the guest-time report that must precede the access and the access itself travel as ONE request line
+       (@RETIRED@ count, R or W, width, physical, [value]): the host handles the report first and the access second, exactly
+       the order two requests had, and answers with the report's replies followed by the access's reply. One round trip
+       instead of two; nothing retires between them, so no device observes a different order. */
+    pending = artifact_retired_take();
+    if (pending != 0ull) {
+        if (is_write) printf(""%s%llu W %u %lu %lu\n"", ""@RETIRED@"", pending, (unsigned)width, (unsigned long)artifact_translate(address), (unsigned long)value);
+        else printf(""%s%llu R %u %lu\n"", ""@RETIRED@"", pending, (unsigned)width, (unsigned long)artifact_translate(address));
+        fflush(stdout);
+        artifact_retired_receive();
+    } else {
+        if (is_write) printf(""%s%u %lu %lu\n"", tag, (unsigned)width, (unsigned long)artifact_translate(address), (unsigned long)value);
+        else printf(""%s%u %lu\n"", tag, (unsigned)width, (unsigned long)artifact_translate(address));
+        fflush(stdout);
+    }
     if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
     if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
     if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);

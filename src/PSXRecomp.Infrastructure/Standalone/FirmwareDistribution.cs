@@ -648,6 +648,17 @@ public static class FirmwareRuntimeLauncher
 
             var evidence = engine.FallbackEvidence;
             var exitCode = RecompiledArtifactExitCode.ExitCodeFor(result.State);
+            if (engine.IpcProfile is { } ipcProfile && IpcProfile.OutputPathFromEnvironment() is { } ipcPath)
+            {
+                ipcProfile.TryWrite(ipcPath, error, new Dictionary<string, object?>
+                {
+                    ["state"] = result.State.ToString(),
+                    ["wallMilliseconds"] = wall.Elapsed.TotalMilliseconds,
+                    ["nativeInstructions"] = engine.NativeRetiredInstructions,
+                    ["mmioAccesses"] = engine.HostRoundTrips?.MmioAccesses,
+                    ["timeReports"] = engine.HostRoundTrips?.TimeReports,
+                });
+            }
             WriteDiagnostics(
                 diagnosticsPath,
                 () => RuntimeHostDiagnostic.From(

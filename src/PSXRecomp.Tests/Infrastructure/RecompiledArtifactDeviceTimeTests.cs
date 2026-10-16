@@ -123,6 +123,29 @@ public sealed class RecompiledArtifactDeviceTimeTests
     }
 
     [Fact]
+    public void ReportAndTheMmioAccessItPrecedes_TravelAsOneRequest_AndAnAccessWithNothingPendingTravelsAlone()
+    {
+        // Issue #768: four retirements precede the read, so the report and the read are one line (one round trip);
+        // the host handles them in the old order (report, then access), which the harness replays as two requests.
+        // A read straight after a read has nothing pending except the read itself, which is still reported first.
+        var words = Program(
+            [Lui(T0, 0x1F80)],
+            [Nop, Nop, Nop],
+            Load(R3000aOpcode.Lw, S0, T0, 0x1814),
+            Load(R3000aOpcode.Lw, T1, T0, 0x1814),
+            [Nop]);
+
+        using var dir = new TempDirectory();
+        Run(words, dir, withRuntime: false);
+
+        var run = RunScripted(dir, _ => "V 0");
+
+        run.Requests.Should().HaveCount(2, "both reads reach the host exactly once each, as before");
+        run.FusedRequests.Should().Be(2, "each read had instructions pending, so each travelled with its report");
+        run.Retired.Take(2).Should().Equal(new[] { 4ul, 1ul }, "the reports carry the same counts the stand-alone reports did");
+    }
+
+    [Fact]
     public void TimerModeWriteInBranchDelaySlot_ChargesOnlyTheStoreAfterItsReset()
     {
         var target = Entry + 16u;
