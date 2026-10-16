@@ -282,4 +282,14 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         report["attribution"]!.GetValue<string>().Should().Be("host-handoff-ram-comparison");
         report["rejectionsMeaning"]!.GetValue<string>().Should().Contain("not a confirmed native guard refusal");
     }
+
+    // Coordination with #784, which adds an init property to LoadedImageSpec: a `with` rebuild must keep the provenance Kind.
+    [Fact]
+    public void Rebuilding_A_LoadedImageSpec_With_Another_Member_Keeps_Its_Kind()
+    {
+        var spec = new LoadedImageSpec("a", 0x80010000u, [1u], [0x80010000u], "boot-exe");
+
+        (spec with { Roots = [0x80010004u] }).Kind.Should().Be("boot-exe");
+        (spec with { Roots = [0x80010004u] }).Origin.Kind.Should().Be("boot-exe");
+    }
 }

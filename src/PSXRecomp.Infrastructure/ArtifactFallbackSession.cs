@@ -110,6 +110,18 @@ internal sealed class ArtifactFallbackSession : IDisposable
     private readonly LoadedCodeMismatchDiagnostics? _loadedCodeMismatch;
 
     /// <summary>
+    /// The artifact's translation of a guest PC to a RAM offset (artifact_translate / artifact_ram_offset): KUSEG as is,
+    /// KSEG0/1 masked, the low 8 MiB mirroring the 2 MiB RAM; false when the PC is not RAM (so there is nothing to compare).
+    /// </summary>
+    private static bool TryRamOffset(uint address, out uint physical)
+    {
+        physical = address <= 0x7FFFFFFFu ? address : address & 0x1FFFFFFFu;
+        if (address >= 0xC0000000u || physical >= 0x00800000u) return false;
+        physical &= PSXCoreWrapper.RamSize - 1;
+        return true;
+    }
+
+    /// <summary>
     /// Whether the artifact may resume at <paramref name="pc"/>: it has a static block there, or a version of RAM-placed
     /// code whose words the interpreter's RAM (equal to <c>artifact_ram</c> once written back) holds now. Stale or unknown
     /// RAM code is no return point; the artifact makes the same check and would only offer the PC back.
@@ -118,11 +130,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
     {
         if (_blockEntryPcs.Contains(pc)) return true;
         if (!_loadedCode.Contains(pc)) return false;
-        // The artifact's own translation (artifact_translate / artifact_ram_offset): KUSEG as is, KSEG0/1 masked, the
-        // low 8 MiB mirroring the 2 MiB RAM; a unit running off the end of RAM is not RAM code.
-        var physical = pc <= 0x7FFFFFFFu ? pc : pc & 0x1FFFFFFFu;
-        if (pc >= 0xC0000000u || physical >= 0x00800000u) return false;
-        physical &= PSXCoreWrapper.RamSize - 1;
+        // A PC outside RAM is not RAM code.
+        if (!TryRamOffset(pc, out var physical)) return false;
         foreach (var version in _loadedCode.VersionsAt(pc))
         {
             // Match the artifact's per-version byte span without overflowing the size calculation. A longer
@@ -147,9 +156,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
     /// </summary>
     private uint LoadedCodeWordAt(uint address)
     {
-        var physical = address <= 0x7FFFFFFFu ? address : address & 0x1FFFFFFFu;
-        if (address >= 0xC0000000u || physical >= 0x00800000u) return 0;
-        physical &= PSXCoreWrapper.RamSize - 1;
+        if (!TryRamOffset(address, out var physical)) return 0;
         return physical + 4 > PSXCoreWrapper.RamSize ? 0 : _devices.Core.ReadMemory32(physical);
     }
 
@@ -157,10 +164,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
     {
         var versions = _loadedCode.VersionsAt(pc);
         var matched = -1;
-        var physical = pc <= 0x7FFFFFFFu ? pc : pc & 0x1FFFFFFFu;
-        if (versions.Count != 0 && pc < 0xC0000000u && physical < 0x00800000u)
+        if (versions.Count != 0 && TryRamOffset(pc, out var physical))
         {
-            physical &= PSXCoreWrapper.RamSize - 1;
             for (var v = 0; v < versions.Count && matched < 0; v++)
             {
                 var words = versions[v].Words;
