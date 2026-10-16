@@ -38,7 +38,7 @@ public sealed class MdecDmaTransfer
         {
             for (uint i = 0; i < input.Words; i++)
             {
-                _mdec.WriteData(_memory.Read((input.Madr + 4 * i) & RamAddressMask));
+                _mdec.WriteDataFromDma(_memory.Read((input.Madr + 4 * i) & RamAddressMask));
             }
 
             Complete(InChannel, input);
@@ -48,7 +48,7 @@ public sealed class MdecDmaTransfer
         {
             for (uint i = 0; i < output.Words; i++)
             {
-                _memory.Write((output.Madr + 4 * i) & RamAddressMask, _mdec.ReadData());
+                _memory.Write((output.Madr + 4 * i) & RamAddressMask, _mdec.ReadDataForDma());
             }
 
             Complete(OutChannel, output);
