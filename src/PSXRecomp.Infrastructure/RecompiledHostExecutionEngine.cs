@@ -80,6 +80,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// Synchronous host round trips the last run's native code made (Issue #732, measurement only): guest MMIO accesses
     /// relayed to the device graph and guest-time reports. Null without the protocol.
     /// </summary>
+    /// <summary>The opt-in pipe-protocol profile of the last run (Issue #768), or null when not enabled.</summary>
+    public Standalone.IpcProfile? IpcProfile => _bridge?.Profile;
+
     public (ulong MmioAccesses, ulong TimeReports)? HostRoundTrips =>
         _bridge is null ? null : (_bridge.MmioAccesses, _bridge.TimeReports);
 
@@ -338,7 +341,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             return;
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode);
+        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -752,7 +755,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode);
+        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -823,6 +826,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         foreach (var argument in arguments)
         {
             psi.ArgumentList.Add(argument);
+        }
+
+        // Issue #774: only a traced run changes the child's environment; an untraced run passes it through unchanged.
+        if (bridge?.UnitTraceChildEnvironment is { } traceEnvironment)
+        {
+            foreach (var (name, value) in traceEnvironment)
+            {
+                psi.Environment[name] = value;
+            }
         }
 
         using var process = Process.Start(psi)!;
@@ -999,6 +1011,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly uint _imageLoadAddress;
         private ArtifactFallbackSession? _fallback;
 
+        /// <summary>Opt-in protocol profile (Issue #768); null unless PSXRECOMP_IPC_PROFILE is set, so the hot path pays a null check.</summary>
+        public Standalone.IpcProfile? Profile { get; } = Standalone.IpcProfile.FromEnvironment();
+
         /// <summary>
         /// Releases the device graph and fallback session only once the host-transfer pump that owns them has ended
         /// (Issue #762): the pump runs on its own thread and calls into both, so neither may be disposed underneath it.
@@ -1053,9 +1068,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public bool IsPumpActive => _resourceLifetime.IsPumpActive;
 
         /// <summary>Makes <paramref name="pump"/> own the bridge's devices until it ends (Issue #762).</summary>
+        // Issue #774: the parent's side of the unit trace. Null unless a trace scope is active (see UnitTraceScope).
+        private readonly UnitTraceRun? _unitTrace = UnitTraceRun.TryStart();
+
+        /// <summary>The environment the child process gets for its own trace of this run, or null when tracing is off.</summary>
+        public IReadOnlyDictionary<string, string>? UnitTraceChildEnvironment => _unitTrace?.ChildEnvironment();
+
         public void TrackPump(Task pump) => _resourceLifetime.Track(pump);
 
-        public void Dispose() => _resourceLifetime.Dispose();
+        public void Dispose()
+        {
+            _resourceLifetime.Dispose();
+            _unitTrace?.Dispose();
+        }
 
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
@@ -1132,6 +1157,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         public bool TryHandle(string line)
         {
+            if (Profile is null) return TryHandleCore(line);
+            Profile.Begin(line);
+            try { return TryHandleCore(line); }
+            finally { Profile.End(); }
+        }
+
+        private bool TryHandleCore(string line)
+        {
             var trimmed = line.TrimEnd();
             if (trimmed == RecompiledArtifactCodeGen.ProtocolInitLine)
             {
@@ -1145,8 +1178,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 // The same wiring the interpreter engine builds (InterpreterTitleExecutionEngine.Load):
                 // device time, order and interrupt delivery to the controller are the existing
                 // scheduler's, fed by the guest time the artifact reports.
-                _scheduler = new DeviceScheduler(
-                    _devices.Core, _devices.InterruptControllerAdapter, _devices.GpuAdapter, _devices.CdRomDevice, _devices.CdRomDmaTransfer);
+                _scheduler = _devices.CreateScheduler();
+                // Issue #774 (B-7): the MDEC event observer reports this scheduler's time. Diagnostic only.
+                _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)
@@ -1199,7 +1233,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolRetiredPrefix, StringComparison.Ordinal))
             {
-                HandleRetired(trimmed[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..]);
+                HandleRetiredMessage(trimmed[RecompiledArtifactCodeGen.ProtocolRetiredPrefix.Length..]);
                 return true;
             }
 
@@ -1211,7 +1245,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
             if (trimmed.StartsWith(RecompiledArtifactCodeGen.ProtocolTransferPrefix, StringComparison.Ordinal))
             {
-                HandleTransfer(trimmed[RecompiledArtifactCodeGen.ProtocolTransferPrefix.Length..]);
+                var transferFields = trimmed[RecompiledArtifactCodeGen.ProtocolTransferPrefix.Length..];
+                // Issue #774: every transfer is one handoff, in the order the child sent it. The fallback segment it ran (if
+                // any) is read after it is served; the protocol itself is unchanged.
+                _fallback?.BeginSegmentRecord();
+                HandleTransfer(transferFields);
+                if (_unitTrace is not null && ulong.TryParse(transferFields.Split(' ')[0], NumberStyles.None,
+                        CultureInfo.InvariantCulture, out var transferPc))
+                {
+                    _unitTrace.RecordTransfer(transferPc, _fallback?.LastSegment);
+                }
+
                 return true;
             }
 
@@ -1641,7 +1685,33 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// waits for the reply. A count that is not a positive integer is a protocol fault (the
         /// artifact never reports 0); a scheduler or device failure refuses the report.
         /// </summary>
-        private void HandleRetired(string fields)
+        /// <summary>
+        /// A guest-time report, optionally fused with the MMIO access that follows it (Issue #768):
+        /// <c>count</c> alone, or <c>count R width physical</c> / <c>count W width physical value</c>. A fused request is
+        /// handled as the two requests it replaces, in the same order — the report (device advance, credit, ack), then
+        /// the access — and a refused report ends it without performing the access, as a refused stand-alone report
+        /// did. The replies go out in that order, so the artifact reads exactly the lines it read before.
+        /// </summary>
+        private void HandleRetiredMessage(string fields)
+        {
+            var space = fields.IndexOf(' ');
+            if (space < 0)
+            {
+                HandleRetired(fields);
+                return;
+            }
+
+            // Validated whole before any effect: a malformed line must not advance the devices and then fail.
+            if (!FusedRetiredRequest.TryParse(fields, out var retired, out var isWrite, out var access))
+            {
+                throw new ProtocolFaultException($"Malformed fused guest-time report '{fields}'.");
+            }
+
+            // A refused report ends the request without the access, exactly as a refused stand-alone report did.
+            if (HandleRetired(retired)) HandleMmio(access, isWrite);
+        }
+
+        private bool HandleRetired(string fields)
         {
             TimeReports++;
             if (_scheduler is null
@@ -1657,20 +1727,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             if (!TryScale(retired, InterpreterTitleExecutionEngine.CyclesPerInstruction, out var cycles))
             {
                 RefuseRetired("ARTIFACT_CYCLES_OVERFLOW", $"{retired} retired instructions overflow the 64-bit device-cycle count.");
-                return;
+                return false;
             }
 
             if (retired > _issuedCredit)
             {
                 RefuseRetired("ARTIFACT_EVENT_DEADLINE_EXCEEDED", "The artifact retired instructions beyond its issued device-event deadline.");
-                return;
+                return false;
             }
 
             NativeRetiredInstructions += retired;
-            if (AdvanceDevices(cycles) is { } failure)
+            var deviceStart = Profile is null ? 0 : Stopwatch.GetTimestamp();
+            var advanceFailure = AdvanceDevices(cycles);
+            if (Profile is not null) Profile.Device(Stopwatch.GetTimestamp() - deviceStart);
+            if (advanceFailure is { } failure)
             {
                 RefuseRetired(failure.Code, failure.Message);
-                return;
+                return false;
             }
 
             // The Interrupt Controller's aggregate line (I_STAT & I_MASK != 0) after the advance, read from the
@@ -1685,13 +1758,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 Trace.WriteLine($"Interrupt controller read failed: {exception}");
                 RefuseRetired("ARTIFACT_INTERRUPT_CONTROLLER_FAILED", "The Runtime interrupt controller failed reporting its pending line.");
-                return;
+                return false;
             }
 
             SendTimeCredit();
             Send(interruptLine
                 ? RecompiledArtifactCodeGen.ProtocolRetiredAckInterruptReply
                 : RecompiledArtifactCodeGen.ProtocolRetiredAckReply);
+            return true;
         }
 
         private void SendTimeCredit()
@@ -1807,8 +1881,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             WriteLine(line);
         }
 
-        private void WriteLine(string line) =>
-            (_toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.")).WriteLine(line);
+        private void WriteLine(string line)
+        {
+            var toArtifact = _toArtifact ?? throw new ProtocolFaultException("The host-transfer bridge is not attached to a process.");
+            if (Profile is null)
+            {
+                toArtifact.WriteLine(line);
+                return;
+            }
+
+            var start = Stopwatch.GetTimestamp();
+            toArtifact.WriteLine(line);
+            Profile.Wrote(line.Length + toArtifact.NewLine.Length, Stopwatch.GetTimestamp() - start); // AutoFlush: one syscall per line
+        }
 
         private static uint ParseUInt(string value) => uint.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
 

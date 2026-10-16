@@ -6,6 +6,18 @@
       "translation": "README.ja.md",
       "language": "ja",
       "canonicalMarker": "[English README (Canonical / SSOT)](README.md)"
+    },
+    {
+      "canonical": "docs/development/unit-trace.md",
+      "translation": "docs/development/unit-trace.ja.md",
+      "language": "ja",
+      "canonicalMarker": "[English (Canonical / SSOT)](unit-trace.md)"
+    },
+    {
+      "canonical": "docs/development/divergence-checkpoints.md",
+      "translation": "docs/development/divergence-checkpoints.ja.md",
+      "language": "ja",
+      "canonicalMarker": "[English (Canonical / SSOT)](divergence-checkpoints.md)"
     }
   ]
 }

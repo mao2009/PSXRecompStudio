@@ -14,6 +14,9 @@ public class DiscImageAnalyzerIntegrationTests
     private static readonly string ChdPath = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..", "..", "rom", "PERSONA.chd");
 
+    private const string MissingFixtureSkipReason =
+        "skipped: rom/PERSONA.chd not found (disc images are never committed)";
+
 #pragma warning disable AARC003
     private static bool FixtureExists() => File.Exists(ChdPath);
 #pragma warning restore AARC003
@@ -33,10 +36,10 @@ public class DiscImageAnalyzerIntegrationTests
         return (bytes, ComputeSha256(bytes));
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_ProducesValidReport()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 32);
@@ -50,10 +53,10 @@ public class DiscImageAnalyzerIntegrationTests
         report.DecodedInstructions.Should().NotBeEmpty();
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_SystemCnfBootPathFound()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256);
@@ -62,10 +65,10 @@ public class DiscImageAnalyzerIntegrationTests
         report.SystemCnfBootPath.Should().Contain("SLPS", "Persona (PS1, Japanese release) boots via SLPS_005.00");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_PsxExeHeaderValid()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256);
@@ -78,10 +81,10 @@ public class DiscImageAnalyzerIntegrationTests
             "A real game executable should be larger than the header");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_MipsInstructionsDecoded()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 16);
@@ -97,10 +100,10 @@ public class DiscImageAnalyzerIntegrationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_DecodeFailuresEmpty()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 32);
@@ -109,10 +112,10 @@ public class DiscImageAnalyzerIntegrationTests
             "decoding from entry point within text segment should not fail");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_CanDecodeFirstInstruction()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 8);
@@ -122,10 +125,10 @@ public class DiscImageAnalyzerIntegrationTests
             "the first instruction should be a recognized MIPS opcode");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_TokenStringDeterministic()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report1 = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 8);
@@ -135,10 +138,10 @@ public class DiscImageAnalyzerIntegrationTests
             "same input should produce identical deterministic token");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_BasicBlocksBuilt()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
@@ -152,10 +155,10 @@ public class DiscImageAnalyzerIntegrationTests
         firstBlock.InstructionCount.Should().BeGreaterThan(0);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_CfgEdgesProduced()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
@@ -170,10 +173,10 @@ public class DiscImageAnalyzerIntegrationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_BasicBlockCountConsistent()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);
@@ -182,10 +185,10 @@ public class DiscImageAnalyzerIntegrationTests
         report.BasicBlocks.Count.Should().BeLessThanOrEqualTo(report.DecodedInstructionCount);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Analyze_PersonaChd_CallReturnCandidates()
     {
-        if (!FixtureExists()) return;
+        Skip.IfNot(FixtureExists(), MissingFixtureSkipReason);
 
         var (chdBytes, sha256) = LoadChd();
         var report = DiscImageAnalyzer.Analyze(chdBytes, sha256, instructionCount: 128);

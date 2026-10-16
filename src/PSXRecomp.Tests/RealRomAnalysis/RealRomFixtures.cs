@@ -33,6 +33,14 @@ public static class RealRomFixtures
         "skipped: no real-ROM fixture found under rom/*.chd (disc images are never committed)";
 
     /// <summary>
+    /// Reason reported when a test needs <paramref name="required"/> distinct fixtures but only
+    /// <paramref name="found"/> are present. Always states both counts, including zero, so the
+    /// report shows what was required and what was detected.
+    /// </summary>
+    public static string FixtureShortfallSkipReason(int required, int found) =>
+        $"skipped: {required} real-ROM fixtures required under rom/*.chd, {found} found";
+
+    /// <summary>
     /// Repository root, resolved from the test assembly's output directory
     /// (<c>src/PSXRecomp.Tests/bin/&lt;config&gt;/&lt;tfm&gt;</c> is five levels below the root).
     /// Used only to locate local input and output directories; never written into artifacts.

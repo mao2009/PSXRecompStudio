@@ -41,13 +41,43 @@ public sealed class MdecDevice : IMdec
     /// <summary>DMA1 request: output enabled (control bit 29) and the output FIFO holds data.</summary>
     public bool DataOutRequest => (_control & (1u << 29)) != 0 && _output.Count > 0;
 
-    public uint ReadRegister(uint offset) => (offset & 4) == 0 ? ReadData() : ReadStatus();
+    /// <summary>
+    /// One MDEC port event (Issue #774, B-7). Diagnostic only: the device never reads it back. <see cref="Kind"/> is one of
+    /// <c>cpu_write_data</c>, <c>cpu_write_control</c>, <c>cpu_read_data</c>, <c>cpu_read_status</c>, <c>dma_in</c>,
+    /// <c>dma_out</c> or <c>reset</c>. The device fields are the state after the event; <see cref="BusyBefore"/> is the
+    /// busy bit before it. <see cref="Cycles"/> is the scheduler time from <see cref="CycleSource"/>, or 0 when unset.
+    /// </summary>
+    public readonly record struct MdecEvent(
+        string Kind, uint Value, uint Command, int Remaining, uint Control, int FifoWords, bool BusyBefore, bool BusyAfter, ulong Cycles);
 
-    public void WriteRegister(uint offset, uint value)
+    /// <summary>Optional observer of every port event (Issue #774, B-7). Null by default, so the run is unchanged.</summary>
+    public Action<MdecEvent>? Observer { get; set; }
+
+    /// <summary>The scheduler time the owner reports for an event (Issue #774, B-7). Used only when <see cref="Observer"/> is set.</summary>
+    public Func<ulong>? CycleSource { get; set; }
+
+    public uint ReadRegister(uint offset)
     {
         if ((offset & 4) == 0)
         {
+            var busy = IsBusy;
+            var word = ReadData();
+            Emit("cpu_read_data", word, busy);
+            return word;
+        }
+
+        var status = ReadStatus();
+        Emit("cpu_read_status", status, IsBusy);
+        return status;
+    }
+
+    public void WriteRegister(uint offset, uint value)
+    {
+        var busy = IsBusy;
+        if ((offset & 4) == 0)
+        {
             WriteData(value);
+            Emit("cpu_write_data", value, busy);
             return;
         }
 
@@ -57,15 +87,42 @@ public sealed class MdecDevice : IMdec
         }
 
         _control = value & 0x60000000u;
+        Emit("cpu_write_control", value, busy);
+    }
+
+    /// <summary>One DMA0 word (Issue #774, B-7): the same effect as <see cref="WriteData"/>, reported as a DMA event.</summary>
+    public void WriteDataFromDma(uint word)
+    {
+        var busy = IsBusy;
+        WriteData(word);
+        Emit("dma_in", word, busy);
+    }
+
+    /// <summary>One DMA1 word (Issue #774, B-7): the same effect as <see cref="ReadData"/>, reported as a DMA event.</summary>
+    public uint ReadDataForDma()
+    {
+        var busy = IsBusy;
+        var word = ReadData();
+        Emit("dma_out", word, busy);
+        return word;
+    }
+
+    private void Emit(string kind, uint value, bool busyBefore)
+    {
+        if (Observer is null) return;
+        Observer(new MdecEvent(kind, value, _command, _remaining, _control, _output.Count, busyBefore, IsBusy,
+            CycleSource is null ? 0ul : CycleSource()));
     }
 
     public void Reset()
     {
+        var busy = IsBusy;
         _output.Clear();
         _parameters.Clear();
         _command = 0;
         _remaining = 0;
         _control = 0;
+        Emit("reset", 0, busy);
     }
 
     /// <summary>The next output word, or 0 when the FIFO is empty.</summary>

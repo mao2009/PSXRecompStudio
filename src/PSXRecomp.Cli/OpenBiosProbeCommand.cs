@@ -40,6 +40,8 @@ internal static class OpenBiosProbeCommand
         bool json = false, differential = false, standalone = false;
         string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
+        string? retireTargetsPath = null, retireOutPath = null;
+        string? mdecEventsPath = null, mdecFromText = null, mdecToText = null;
         var compareAt = new SortedSet<uint>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Count; i++)
@@ -68,7 +70,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -84,6 +86,11 @@ internal static class OpenBiosProbeCommand
                 else if (option == "--roots") rootsPath = args[i];
                 else if (option == "--symbols") symbolsPath = args[i];
                 else if (option == "--load-images") loadImagesPath = args[i];
+                else if (option == "--retire-states") retireTargetsPath = args[i];
+                else if (option == "--retire-out") retireOutPath = args[i];
+                else if (option == "--mdec-events") mdecEventsPath = args[i];
+                else if (option == "--mdec-from") mdecFromText = args[i];
+                else if (option == "--mdec-to") mdecToText = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -146,6 +153,8 @@ internal static class OpenBiosProbeCommand
         if (engineKind is not ("interpreter" or "generated-host") || (engineKind == "generated-host" && rootsPath is null)
             || (engineKind != "generated-host" && (differential || compareAt.Count != 0 || stopAt is not null || symbolsPath is not null || loadImagesPath is not null || rootsPath is not null || standalone || seen.Contains("--code-bytes")))
             || (engineKind == "generated-host" && capturePc is not null)
+            || (engineKind == "generated-host" && (retireTargetsPath is not null || retireOutPath is not null))
+            || (retireTargetsPath is null) != (retireOutPath is null)
             || (compareAt.Count != 0 && !differential))
         {
             error.WriteLine("openbios-probe: --engine generated-host requires --roots; --roots, --code-bytes, --differential, --compare-at, --stop-at, --symbols, --load-images and --standalone require --engine generated-host; --capture-at requires --engine interpreter; " +
@@ -173,10 +182,21 @@ internal static class OpenBiosProbeCommand
                 return 0;
             }
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
-            return engineKind == "generated-host"
-                ? RunGeneratedHost(new GeneratedHostProbe(
-                    firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error)
-                : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output);
+            var mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
+            try
+            {
+                return engineKind == "generated-host"
+                    ? RunGeneratedHost(new GeneratedHostProbe(
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error, mdecLog)
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog);
+            }
+            finally
+            {
+                // The log contains its own output failures, so the guest run keeps its result. Report the gap here, after the flush.
+                mdecLog?.Dispose();
+                if (mdecLog?.FailureMessage is { } failure)
+                    error.WriteLine($"openbios-probe: warning: MDEC event log is incomplete: {failure}");
+            }
         }
         catch (Exception ex) when (
             ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
@@ -232,20 +252,43 @@ internal static class OpenBiosProbeCommand
         File.WriteAllText(path, JsonSerializer.Serialize(rows, new JsonSerializerOptions { WriteIndented = true }));
     }
 
+    /// <summary>A decimal window bound for the MDEC log (Issue #774, B-7); absent means <paramref name="fallback"/>.</summary>
+    private static ulong ParseWindowBound(string? text, ulong fallback) =>
+        text is null ? fallback : ulong.Parse(text, NumberStyles.None, CultureInfo.InvariantCulture);
+
     private static int RunInterpreter(
-        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output)
+        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
+        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
         object? captured = null;
         var observed = engine as InterpreterTitleExecutionEngine;
+        uint lastFetch = 0;
+        if (mdecLog is not null && observed is not null)
+        {
+            observed.DiagnosticDevices.Mdec.Observer = e => mdecLog.Write("interpreter", e, $"0x{lastFetch:X8}", null);
+        }
+        // Issue #774 (B-7): the CPU state after each listed retirement position (guest cycles = retired instructions).
+        var retireTargets = retireTargetsPath is null ? null : new HashSet<ulong>(File.ReadLines(retireTargetsPath)
+            .Where(static line => line.Trim().Length != 0).Select(static line => ulong.Parse(line.Trim(), CultureInfo.InvariantCulture)));
+        using var retireWriter = retireOutPath is null ? null : new StreamWriter(retireOutPath, append: false);
         var histogram = histogramPath is null ? null : new ulong[RamBytes / 4];
         var monitor = new OpenBiosBootMonitor(observed is null ? null : () => (observed.Cop0Diagnostics.Cause, observed.Cop0Diagnostics.Epc, observed.Cop0Diagnostics.BadVAddr));
         if (observed is not null)
         {
             observed.FetchObserver = pc =>
             {
+                lastFetch = pc;
                 monitor.OnFetch(pc);
+                if (retireTargets is not null && retireWriter is not null && retireTargets.Contains(observed.GuestCycles))
+                {
+                    // Every fetch at this position is written (an interrupt entry adds fetches without a retirement).
+                    var (sr, cause, epc, _) = observed.Cop0Diagnostics;
+                    var (hi, lo) = observed.HiLoDiagnostics;
+                    var gpr = string.Join(",", Enumerable.Range(0, 32).Select(r => $"\"0x{observed.ReadGuestGpr(r):X8}\""));
+                    retireWriter.WriteLine($"{{\"g\":{observed.GuestCycles},\"pc\":\"0x{pc:X8}\",\"gpr\":[{gpr}],\"hi\":\"0x{hi:X8}\",\"lo\":\"0x{lo:X8}\",\"sr\":\"0x{sr:X8}\",\"cause\":\"0x{cause:X8}\",\"epc\":\"0x{epc:X8}\",\"pipelineClean\":{(observed.PipelineClean ? "true" : "false")}}}");
+                }
                 if (histogram is not null && (pc & 0x1FFFFFFFu) < RamBytes) histogram[(pc & 0x1FFFFFFFu) >> 2]++;
                 if (pc == capturePc && captured is null)
                 {
@@ -392,7 +435,7 @@ internal static class OpenBiosProbeCommand
     /// the existing <c>--host-transfer</c> path. It changes only how the ROM is delivered to the engine, never whether
     /// the result is a verified boot.
     /// </summary>
-    private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error)
+    private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error, OpenBiosProbeMdecLog? mdecLog = null)
     {
         var wall = Stopwatch.StartNew();
         var clock = Stopwatch.StartNew();
@@ -474,6 +517,7 @@ internal static class OpenBiosProbeCommand
             // the file-driven path is a no-op (offset 0).
             double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
+            uint? lastFallbackFetch = null;
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
@@ -485,6 +529,8 @@ internal static class OpenBiosProbeCommand
                 // run in RAM for most of a boot, so a shorter segment bound would stop a correct run.
                 mixedFallback: new MixedFallbackOptions(budget, uint.MaxValue),
                 guestFirmware: true,
+                // Issue #774 (B-7): optional MDEC event log; the host reports no PC for a port access (native code).
+                configureDevices: mdecLog is null ? null : devices => devices.Mdec.Observer = e => mdecLog.Write("host", e, null, lastFallbackFetch is null ? null : $"0x{lastFallbackFetch.Value:X8}"),
                 runTimeout: TimeSpan.FromMinutes(30),
                 disc: probe.Disc, loadedCode: loadedCode,
                 // Phase 2 Step B (Issue #739): the probe can run the firmware through
@@ -498,6 +544,7 @@ internal static class OpenBiosProbeCommand
                 FallbackFetchObserver = (interpreter, pc) =>
                 {
                     current = interpreter;
+                    lastFallbackFetch = pc;
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
                     if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)

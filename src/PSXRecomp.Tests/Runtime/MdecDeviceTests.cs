@@ -108,6 +108,31 @@ public sealed class MdecDeviceTests : IDisposable
         _dma.ReadRegister(Ps1MemoryMap.GetChannelMadr(1)).Should().Be(0x3040u);
     }
 
+    /// <summary>
+    /// Issue #774 (B-7): the MDEC DMA0 transfer runs only when the scheduler is wired to it. A scheduler built without the
+    /// bridged MDEC channels leaves the parameter words undelivered, so the decoder stays busy (the standalone host did this
+    /// before the wiring was shared with the interpreter).
+    /// </summary>
+    [Fact]
+    public void SchedulerFromTheHostWiring_DeliversTheMdecDmaInputWords()
+    {
+        using var graph = new PsxDeviceGraph();
+        graph.TryWrite(0x1F801824, 4, 0x60000000u); // enable DMA in/out
+        graph.TryWrite(0x1F801820, 4, 0x40000001u); // set quantisation tables: 32 parameter words follow
+        for (var i = 0u; i < 32; i++) graph.Bus.Write32(0x2000 + 4 * i, 0x01010101u);
+        graph.DmaAdapter.WriteRegister(Ps1MemoryMap.Dpcr, 0x07654321u | (1u << 3) | (1u << 7));
+        graph.DmaAdapter.WriteRegister(Ps1MemoryMap.GetChannelMadr(0), 0x2000);
+        graph.DmaAdapter.WriteRegister(Ps1MemoryMap.GetChannelBcr(0), 0x00010020);
+        graph.DmaAdapter.WriteRegister(Ps1MemoryMap.GetChannelChcr(0), BlockToDevice);
+        graph.Mdec.IsBusy.Should().BeTrue("parameters still pending before the DMA runs");
+
+        var scheduler = graph.CreateScheduler();
+        scheduler.Advance(1);
+
+        graph.Mdec.IsBusy.Should().BeFalse("all 32 DMA0 words reached the decoder");
+        (graph.DmaAdapter.ReadRegister(Ps1MemoryMap.GetChannelChcr(0)) & StartBusy).Should().Be(0u);
+    }
+
     [Fact]
     public void DeviceGraph_RoutesGuestAccessesAt1F801820And1F801824ToTheMdec()
     {

@@ -65,6 +65,18 @@ public static class RecompilerHostCodeGen
     /// single-argument overload.
     /// </summary>
     public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode)
+        => Generate(program, loadedCode, traceUnits: false);
+
+    /// <summary>
+    /// <see cref="Generate(RecompilerIrProgram, LoadedCodeTable?)"/>, plus the opt-in unit retirement trace (Issue #774).
+    /// With <paramref name="traceUnits"/> the generated dispatcher calls the state's <c>host_unit_trace</c> hook once per
+    /// dispatch unit: at its retirement credit, or at a stop, with the unit's entry PC, next PC, the cumulative native
+    /// total before and after the unit (so their difference is the instructions it actually completed), flags
+    /// (interrupted, guest exception) and termination. The same build also contains <c>recompiler_trace_attach</c>, which
+    /// writes the trace to the file named by the PSX_UNIT_TRACE_FILE environment variable. False generates the same
+    /// source byte for byte as the overload without the flag, so the default artifact is unchanged.
+    /// </summary>
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool traceUnits)
     {
         ArgumentNullException.ThrowIfNull(program);
         loadedCode ??= LoadedCodeTable.Empty;
@@ -165,7 +177,7 @@ public static class RecompilerHostCodeGen
             }
         }
 
-        var source = EmitSource(program, loadedCode);
+        var source = EmitSource(program, loadedCode, traceUnits);
         return new RecompilerHostCodeGenResult(true, source, null, null);
     }
 
@@ -234,7 +246,7 @@ public static class RecompilerHostCodeGen
         _ => false,
     };
 
-    private static string EmitSource(RecompilerIrProgram program, LoadedCodeTable loadedCode)
+    private static string EmitSource(RecompilerIrProgram program, LoadedCodeTable loadedCode, bool traceUnits)
     {
         var sb = new StringBuilder();
 
@@ -258,7 +270,7 @@ public static class RecompilerHostCodeGen
         {
             EmitGteHelperDeclarations(sb);
         }
-        EmitStateStruct(sb);
+        EmitStateStruct(sb, traceUnits);
         EmitSra32Helper(sb);
         EmitMulDivHelpers(sb);
 
@@ -276,7 +288,9 @@ public static class RecompilerHostCodeGen
             }
         }
 
-        EmitDispatchFunction(sb, program, loadedCode);
+        if (traceUnits)
+            EmitUnitTraceWriter(sb);
+        EmitDispatchFunction(sb, program, loadedCode, traceUnits);
 
         return sb.ToString();
     }
@@ -346,7 +360,7 @@ public static class RecompilerHostCodeGen
     /// needs no change.
     /// </para>
     /// </remarks>
-    private static void EmitStateStruct(StringBuilder sb)
+    private static void EmitStateStruct(StringBuilder sb, bool traceUnits)
     {
         sb.AppendLine("struct " + StateStruct + ";");
         sb.AppendLine("/* Optional host control-transfer hook (see recompiler_dispatch). Returns 0 when");
@@ -359,6 +373,14 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("   iteration — an instruction-fetch boundary outside any branch delay slot. When it accepts an");
         sb.AppendLine("   interrupt it performs the INT exception entry in the state and leaves pc at the vector. */");
         sb.AppendLine("typedef void (*" + HostInterruptFnType + ")(struct " + StateStruct + "*);");
+        if (traceUnits)
+        {
+            // Issue #774: present only in a trace build, so the default struct layout is unchanged.
+            // start_total / end_total bracket the instructions the unit actually completed; flags bit 0 = interrupted,
+            // bit 1 = a guest exception was raised inside the unit; termination is 0 for a unit that reached its credit.
+            sb.AppendLine("typedef void (*recompiler_unit_trace_fn)(struct " + StateStruct + "*, uint32_t entry_pc, uint32_t next_pc,");
+            sb.AppendLine("    uint64_t start_total, uint64_t end_total, uint32_t flags, int32_t termination);");
+        }
         sb.AppendLine("typedef struct " + StateStruct + " {");
         sb.AppendLine("  uint32_t gpr[32];");
         sb.AppendLine("  uint32_t hi;");
@@ -401,6 +423,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  uint64_t " + RetiredReportedField + ";");
         sb.AppendLine("  " + HostRetiredFnType + " " + HostRetiredField + ";");
         sb.AppendLine("  " + HostInterruptFnType + " " + HostInterruptField + ";");
+        if (traceUnits)
+            sb.AppendLine("  recompiler_unit_trace_fn host_unit_trace;");
         sb.AppendLine("  /* Issue #732: the COP0 registers other than SR/CAUSE/EPC (which live in the fields above), indexed");
         sb.AppendLine("     by register number, as MFC0/MTC0 read and write them (PSXCpu::cop0_). Slots 12-14 are unused. */");
         sb.AppendLine("  uint32_t " + Cop0OtherField + "[32];");
@@ -896,11 +920,185 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(indent + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
     }
 
+    // Issue #774: the unit trace writer, emitted only in a trace build. One JSON object per line:
+    //   {"v":1,"kind":"header",...} once, {"v":1,"kind":"unit",...} per unit, then either
+    //   {"v":1,"kind":"end","complete":true} at a normal exit, or {"v":1,"kind":"truncated",...} when the output
+    //   cap is reached and {"v":1,"kind":"end","complete":false,...} after it. A file without an "end" line,
+    //   or with a last line that does not parse, comes from a run that did not exit normally (for example a kill).
+    // It writes only to its own file: stdout and the RHOST_* protocol are untouched. Open failure leaves the hook
+    // null, so the run continues exactly as an untraced one.
+    private const string UnitTraceWriterSource = """
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define RECOMPILER_TRACE_SCHEMA_VERSION 1
+#define RECOMPILER_TRACE_DEFAULT_CAP 67108864ull
+#define RECOMPILER_TRACE_RESERVE 512ull
+#define RECOMPILER_TRACE_MIN_CAP (RECOMPILER_TRACE_RESERVE + 128ull)
+static FILE* recompiler_trace_file = 0;
+static unsigned long long recompiler_trace_seq = 0ull;
+static unsigned long long recompiler_trace_bytes = 0ull;
+static unsigned long long recompiler_trace_cap = 0ull;
+static int recompiler_trace_mode = 0; /* 0 off, 1 writing, 2 truncated (output cap reached) */
+static int recompiler_trace_exit_registered = 0;
+/* Issue #774 (B-7): optional window over the native retirement total. A unit is written only when its [start, end)
+   range lies in [from, to); the default window is everything, so the default trace is unchanged. */
+static unsigned long long recompiler_trace_from = 0ull;
+static unsigned long long recompiler_trace_to = ~0ull;
+
+static void recompiler_trace_close(void) {
+    if (recompiler_trace_mode == 0 || recompiler_trace_file == 0) return;
+    if (recompiler_trace_mode == 1) {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"end\",\"seq\":%llu,\"complete\":true}\n",
+            RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq);
+    } else {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"end\",\"seq\":%llu,\"complete\":false,\"reason\":\"output_cap\"}\n",
+            RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq);
+    }
+    fclose(recompiler_trace_file);
+    recompiler_trace_file = 0;
+    recompiler_trace_mode = 0;
+}
+
+static void recompiler_trace_line(const char* line, size_t length) {
+    if (recompiler_trace_mode != 1) return;
+    if (recompiler_trace_bytes + (unsigned long long)length + RECOMPILER_TRACE_RESERVE > recompiler_trace_cap) {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"truncated\",\"seq\":%llu,\"reason\":\"output_cap\"}\n",
+            RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq);
+        recompiler_trace_mode = 2;
+        return;
+    }
+    if (fwrite(line, 1, length, recompiler_trace_file) != length) {
+        /* A failed write stops tracing quietly; the missing end line marks the output incomplete. */
+        fclose(recompiler_trace_file);
+        recompiler_trace_file = 0;
+        recompiler_trace_mode = 0;
+        return;
+    }
+    recompiler_trace_bytes += (unsigned long long)length;
+    recompiler_trace_seq++;
+}
+
+static void recompiler_trace_unit(struct RecompilerState* state, uint32_t entry_pc, uint32_t next_pc,
+    uint64_t start_total, uint64_t end_total, uint32_t flags, int32_t termination) {
+    char line[1536];
+    char gpr_text[512];
+    int length;
+    int gpr_length = 0;
+    int i;
+    if (recompiler_trace_mode != 1) return;
+    if (end_total < recompiler_trace_from || start_total > recompiler_trace_to) return;
+    /* Issue #774 (B-6b): the CPU state at the unit's end (the successor pc, the registers and COP0 as the unit left them). */
+    for (i = 0; i < 32; i++) {
+        gpr_length += snprintf(gpr_text + gpr_length, sizeof gpr_text - (size_t)gpr_length,
+            "%s\"0x%08X\"", i == 0 ? "" : ",", (unsigned)state->gpr[i]);
+    }
+    length = snprintf(line, sizeof line,
+        "{\"v\":%d,\"kind\":\"unit\",\"seq\":%llu,\"entry\":\"0x%08X\",\"next\":\"0x%08X\",\"start\":%llu,\"end\":%llu,"
+        "\"retired\":%llu,\"interrupted\":%u,\"exception\":%u,\"termination\":%d,"
+        "\"state\":{\"pc\":\"0x%08X\",\"gpr\":[%s],\"hi\":\"0x%08X\",\"lo\":\"0x%08X\","
+        "\"sr\":\"0x%08X\",\"cause\":\"0x%08X\",\"epc\":\"0x%08X\"}}\n",
+        RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq, (unsigned)entry_pc, (unsigned)next_pc,
+        (unsigned long long)start_total, (unsigned long long)end_total,
+        (unsigned long long)(end_total - start_total), (unsigned)(flags & 1u), (unsigned)((flags >> 1) & 1u),
+        (int)termination, (unsigned)next_pc, gpr_text, (unsigned)state->hi, (unsigned)state->lo,
+        (unsigned)state->cop0_sr, (unsigned)state->cop0_cause, (unsigned)state->cop0_epc);
+    if (length > 0) recompiler_trace_line(line, (size_t)length);
+}
+
+/* The session id links this trace to the parent's fallback trace of the same run (Issue #774). It comes from
+   PSX_TRACE_SESSION and is kept only when it is a short [0-9A-Za-z-] token, so it can be written unescaped. */
+static char recompiler_trace_session[65] = "";
+static unsigned long long recompiler_trace_handoffs = 0ull;
+
+static void recompiler_trace_read_session(void) {
+    const char* text = getenv("PSX_TRACE_SESSION");
+    size_t i, n;
+    recompiler_trace_session[0] = '\0';
+    if (text == 0) return;
+    n = strlen(text);
+    if (n == 0 || n > 64) return;
+    for (i = 0; i < n; i++) {
+        char c = text[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-')) return;
+    }
+    memcpy(recompiler_trace_session, text, n + 1);
+}
+
+/* One handoff record per transfer to the host, numbered in the order the host sees them. The handoff counts even when
+   the record cannot be written (cap reached), so a later record never reuses or skips a number. native_total is the
+   retired total at the transfer: every unit before it is credited and no unit after it has started. */
+static void recompiler_trace_handoff(RecompilerState* state) {
+    char line[320];
+    int length;
+    recompiler_trace_handoffs++;
+    if (recompiler_trace_mode != 1) return;
+    length = snprintf(line, sizeof line,
+        "{\"v\":%d,\"kind\":\"handoff\",\"seq\":%llu,\"handoff\":%llu,\"native_total\":%llu,\"pc\":\"0x%08X\"}\n",
+        RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_seq, recompiler_trace_handoffs,
+        (unsigned long long)state->retired_total, (unsigned)state->pc);
+    if (length > 0) recompiler_trace_line(line, (size_t)length);
+}
+
+/* Opens the trace from the environment and attaches it to the state. Returns 1 when attached, 0 when no path is
+   configured, -1 when the file cannot be created and -2 when PSX_UNIT_TRACE_MAX_BYTES is not a valid size. In every
+   non-1 case the hook stays null and the run is untraced. */
+int recompiler_trace_attach(struct RecompilerState* state) {
+    const char* path = getenv("PSX_UNIT_TRACE_FILE");
+    const char* cap_text = getenv("PSX_UNIT_TRACE_MAX_BYTES");
+    const char* from_text = getenv("PSX_UNIT_TRACE_FROM");
+    const char* to_text = getenv("PSX_UNIT_TRACE_TO");
+    unsigned long long cap = RECOMPILER_TRACE_DEFAULT_CAP;
+    char* end = 0;
+    if (path == 0 || path[0] == '\0') return 0;
+    if (cap_text != 0 && cap_text[0] != '\0') {
+        cap = strtoull(cap_text, &end, 10);
+        if (end == cap_text || *end != '\0' || cap < RECOMPILER_TRACE_MIN_CAP) return -2;
+    }
+    recompiler_trace_from = 0ull;
+    recompiler_trace_to = ~0ull;
+    if (from_text != 0 && from_text[0] != '\0') {
+        recompiler_trace_from = strtoull(from_text, &end, 10);
+        if (end == from_text || *end != '\0') return -2;
+    }
+    if (to_text != 0 && to_text[0] != '\0') {
+        recompiler_trace_to = strtoull(to_text, &end, 10);
+        if (end == to_text || *end != '\0') return -2;
+    }
+    if (recompiler_trace_mode != 0) return 0;
+    recompiler_trace_read_session();
+    recompiler_trace_file = fopen(path, "w");
+    if (recompiler_trace_file == 0) return -1;
+    recompiler_trace_cap = cap;
+    recompiler_trace_seq = 0ull;
+    recompiler_trace_bytes = 0ull;
+    recompiler_trace_mode = 1;
+    if (recompiler_trace_session[0] != '\0') {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"header\",\"session\":\"%s\",\"cap\":%llu}\n",
+            RECOMPILER_TRACE_SCHEMA_VERSION, recompiler_trace_session, cap);
+    } else {
+        fprintf(recompiler_trace_file, "{\"v\":%d,\"kind\":\"header\",\"cap\":%llu}\n", RECOMPILER_TRACE_SCHEMA_VERSION, cap);
+    }
+    recompiler_trace_bytes = (unsigned long long)ftell(recompiler_trace_file);
+    if (!recompiler_trace_exit_registered) {
+        atexit(recompiler_trace_close);
+        recompiler_trace_exit_registered = 1;
+    }
+    state->host_unit_trace = recompiler_trace_unit;
+    return 1;
+}
+""";
+
+    private static void EmitUnitTraceWriter(StringBuilder sb) => sb.AppendLine(UnitTraceWriterSource);
+
     private static void EmitDispatchFunction(
-        StringBuilder sb, RecompilerIrProgram program, LoadedCodeTable loadedCode)
+        StringBuilder sb, RecompilerIrProgram program, LoadedCodeTable loadedCode, bool traceUnits)
     {
         sb.AppendLine($"int32_t recompiler_dispatch({StateStruct}* {StateParam}, uint32_t budget) {{");
         sb.AppendLine(IndentUnit + "uint32_t steps = 0;");
+        // Issue #774: a trace build attaches its trace on the first dispatch of the process. Emitted only with traceUnits.
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + "{ static int trace_started = 0; if (!trace_started) { trace_started = 1; recompiler_trace_attach(state); } }");
         sb.AppendLine(IndentUnit + "for (;;) {");
         sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
         sb.AppendLine(IndentUnit + IndentUnit + "state->partial_retired = 0u; state->unit_interrupted = 0u;");
@@ -910,6 +1108,12 @@ public static class RecompilerHostCodeGen
         // budget guard as the blocks below, so budget == 0 still executes nothing. A null hook (every
         // state that does not set one) keeps the pre-existing behavior.
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostInterruptField} != 0 && steps < budget) {{ {StateParam}->{HostInterruptField}({StateParam}); }}");
+        // Issue #774: the unit's entry PC, captured after the interrupt boundary (which may move pc to the vector). The
+        // credit below cannot recover it: an interrupted unit has already set pc to its resume address.
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + $"uint32_t unit_entry_pc = {StateParam}->{PcField};");
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + $"uint64_t unit_start_total = {StateParam}->{RetiredTotalField};");
 
         // A generated-host budget is a strict upper bound on retired dispatch
         // units. Known generated blocks and host-claimed transfers both spend one
@@ -999,6 +1203,9 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "if (steps >= budget) {");
         EmitBudgetExceededReturn(sb, 4);
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "}");
+        // Issue #774: every transfer to the host is one handoff, whatever serves it (fallback, BIOS, exception).
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"recompiler_trace_handoff({StateParam});");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"int32_t hosted = {StateParam}->{HostTransferField}({StateParam});");
         // A decline the budget guard above let through is definitive: this pc has
         // no block and no host claim, regardless of steps. Unlike the null-hook
@@ -1016,6 +1223,10 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + "break;");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
+
+        // Issue #774: whether this unit raised a guest exception, read before the exception handling below consumes it.
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + $"uint32_t unit_raised = ({StateParam}->{TerminationField} == RECOMPILER_REASON_EXCEPTION && {StateParam}->{ExceptionRaisedField} != 0u) ? 1u : 0u;");
 
         // Issue #732: in firmware mode a SYSCALL/BREAK exit enters the guest's own exception vector, exactly as
         // the interpreter's RaiseException does, and execution continues there (typically the kernel handler at
@@ -1053,6 +1264,11 @@ public static class RecompilerHostCodeGen
 
         // Stop on a non-Success termination from the retired dispatch unit.
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{TerminationField} != RECOMPILER_REASON_SUCCESS) {{");
+        // Issue #774: a unit that stops here completed only the instructions already credited at its in-body boundaries
+        // (end - start = that partial count); nothing further is credited, and the record carries the stop reason.
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"if ({StateParam}->host_unit_trace != 0) {{ {StateParam}->host_unit_trace({StateParam}, unit_entry_pc, {StateParam}->{NextPcField}, " +
+                $"unit_start_total, {StateParam}->{RetiredTotalField}, ({StateParam}->unit_interrupted ? 1u : 0u) | (unit_raised << 1), {StateParam}->{TerminationField}); }}");
         sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + $"return {StateParam}->{TerminationField};");
         sb.AppendLine(IndentUnit + IndentUnit + "}");
 
@@ -1061,6 +1277,9 @@ public static class RecompilerHostCodeGen
         // A fault charges no instruction of its own; any preceding successful fused
         // instructions keep their time. An interior load INT retires only the load.
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{RetiredTotalField} += retired - {StateParam}->partial_retired;");
+        if (traceUnits)
+            sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->host_unit_trace != 0) {{ {StateParam}->host_unit_trace({StateParam}, unit_entry_pc, {StateParam}->{NextPcField}, " +
+                $"unit_start_total, {StateParam}->{RetiredTotalField}, ({StateParam}->unit_interrupted ? 1u : 0u) | (unit_raised << 1), 0); }}");
         sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostRetiredField} != 0) {{ {StateParam}->{HostRetiredField}({StateParam}); }}");
         sb.AppendLine(IndentUnit + IndentUnit + $"{StateParam}->{PcField} = {StateParam}->{NextPcField};");
         sb.AppendLine(IndentUnit + IndentUnit + "steps++;");
