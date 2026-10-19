@@ -502,6 +502,109 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [Fact]
+    public void GuardStats_Dump_WhenTheDestinationIsHeldWithoutFileShareDelete_KeepsThePreviousBytes_AndRemovesTheTemporaryFile()
+    {
+        // Issue #797 (owner decision): fault injection on Windows. The destination is held open with FileShare.Read only, so the
+        // generated MoveFileExA(MOVEFILE_REPLACE_EXISTING) is refused. The refusal is first proven from this process with the
+        // same kind of replacement (File.Move overwrite) that must throw. The dump's own failure is then seen as an unchanged
+        // destination and no .tmp left behind; the replace return value itself is not observable without changing the generated code.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var probePath = Path.Combine(dir.FullPath, "probe.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        File.WriteAllText(probePath, "probe");
+        var previousBytes = File.ReadAllBytes(statsPath);
+
+        using var held = new FileStream(statsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Exception? refusal = null;
+        try { File.Move(probePath, statsPath, overwrite: true); }
+        catch (Exception e) { refusal = e; }
+        refusal.Should().NotBeNull("a destination held without FILE_SHARE_DELETE cannot be replaced");
+        (refusal is IOException or UnauthorizedAccessException).Should().BeTrue("the refusal is the sharing/access failure, got " + refusal);
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        using var after = new MemoryStream();
+        held.Position = 0;
+        held.CopyTo(after);
+        after.ToArray().Should().Equal(previousBytes, "a refused replacement leaves the previous report byte-identical");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the failing branch removes the temporary file");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_WhenTheTemporaryFileCannotBeMoved_KeepsThePreviousReport_AndTheNextRunReplacesIt()
+    {
+        // Issue #797 (owner decision): fault injection on the source side. The dump writes <path>.tmp while this process holds
+        // it with FileShare.ReadWrite (no FILE_SHARE_DELETE), so the move onto <path> is refused. The destination must keep
+        // the previous report byte-identical: a remove-first replacement would already have deleted it. The refusal is proven
+        // first by a move of the held temporary file from this process. The leftover .tmp holds the complete new report,
+        // which shows the dump reached the replacement step. Releasing the hold and running again replaces the report and
+        // consumes the .tmp.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var tmpPath = statsPath + ".tmp";
+        var probePath = Path.Combine(dir.FullPath, "probe.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        var previousBytes = File.ReadAllBytes(statsPath);
+
+        using (var heldTmp = new FileStream(tmpPath, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite))
+        {
+            Exception? refusal = null;
+            try { File.Move(tmpPath, probePath); }
+            catch (Exception e) { refusal = e; }
+            refusal.Should().NotBeNull("a temporary file held without FILE_SHARE_DELETE cannot be moved");
+            (refusal is IOException or UnauthorizedAccessException).Should().BeTrue("the refusal is the sharing/access failure, got " + refusal);
+
+            RunWithGuardStats(statsPath, dir.FullPath);
+
+            File.Exists(statsPath).Should().BeTrue("a refused move must not have removed the previous report first");
+            File.ReadAllBytes(statsPath).Should().Equal(previousBytes, "a refused move keeps the previous report byte-identical");
+            using var tmpContent = new MemoryStream();
+            heldTmp.Position = 0;
+            heldTmp.CopyTo(tmpContent);
+            var tmpText = System.Text.Encoding.ASCII.GetString(tmpContent.ToArray());
+            tmpText.Should().Contain("end final 1", "the dump wrote a complete new report to the temporary file before the refused move");
+            tmpText.Should().Contain("slot 80001000 nver 1 arrive 40");
+        }
+
+        // The leftover .tmp (now released) is ignored and overwritten by the next run.
+        RunWithGuardStats(statsPath, dir.FullPath);
+        var lines = File.ReadAllLines(statsPath);
+        lines[0].Should().Be("guardstats 1");
+        lines[^1].Should().Be("end final 1");
+        lines.Should().Contain(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal));
+        File.Exists(tmpPath).Should().BeFalse("the next run replaces the leftover temporary file and consumes it");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_OverwritesAStaleTemporaryFile_AndLeavesOnlyTheNewCompleteReport()
+    {
+        // Issue #797 (owner decision): a leftover <path>.tmp with garbage (from a killed earlier run) must not leak into the
+        // report: the next dump overwrites it, the final file is the new complete report, and no .tmp remains.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        File.WriteAllText(statsPath, "guardstats 1\nprevious complete report\nend final 1\n");
+        File.WriteAllText(statsPath + ".tmp", "garbage {\"half\": ");
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[0].Should().Be("guardstats 1");
+        lines[^1].Should().Be("end final 1", "the final file is a complete dump");
+        lines.Should().Contain(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal));
+        File.ReadAllText(statsPath).Should().NotContain("garbage").And.NotContain("previous complete report");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the stale temporary file is replaced by the dump and then consumed");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
     public void GuardStats_WithoutABlockingEntry_ReplacesThePreviousReport_SoTheFailureTestIsNotVacuous()
     {
         // Control for the failure injection above: the same previous report IS replaced when nothing blocks the dump,
