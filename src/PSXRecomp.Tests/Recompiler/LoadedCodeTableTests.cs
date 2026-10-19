@@ -32,4 +32,13 @@ public sealed class LoadedCodeTableTests
         table.Match(Pc, _ => 3u).Should().BeNull("code that matches no pre-generated version has no native code");
         table.Match(Pc + 4, _ => 1u).Should().BeNull();
     }
+
+    [Fact]
+    public void Match_EmptyVersion_IsNeverCurrent()
+    {
+        // An empty load vouches for no words; the C guard refuses a zero-length load too, so the table must not select it.
+        var table = new LoadedCodeTable([new GuardedImageProgram([Version()], [])]);
+
+        table.Match(Pc, _ => 0u).Should().BeNull("a version with no words must not select native code");
+    }
 }
