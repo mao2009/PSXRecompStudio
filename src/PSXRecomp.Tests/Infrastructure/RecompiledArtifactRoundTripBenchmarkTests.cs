@@ -45,9 +45,14 @@ public sealed class RecompiledArtifactRoundTripBenchmarkTests(ITestOutputHelper 
         output.WriteLine($"[768 synthetic] compute: instructions={computeInstructions} roundTrips={computeRoundTrips} " +
                          $"wall={computeWall.TotalMilliseconds:F1} ms");
 
-        mmioRun.Requests.Should().HaveCountGreaterThanOrEqualTo(Accesses, "every read reaches the host once");
-        // One fused request (report + access) and at most one stand-alone report after it per access.
-        mmioRoundTrips.Should().BeLessThanOrEqualTo(2 * mmioRun.Requests.Count + 2,
+        // Expected from the synthetic definition (BuildMmioLoop): exactly Accesses guest 32-bit loads of MmioBase, each
+        // answered by one bridge request. Fixed here, never derived from the measured Requests.Count, so a duplicated
+        // request fails this line instead of loosening the ceiling below.
+        var expectedRequests = Enumerable.Repeat(Read(4, MmioBase), Accesses).ToArray();
+        mmioRun.Requests.Should().Equal(expectedRequests, "every access is one request, in order, and nothing is sent twice");
+        // One fused request (report + access) and at most one stand-alone report after it per access. The ceiling is
+        // computed from the constant access count, not from the measured request count.
+        mmioRoundTrips.Should().BeLessThanOrEqualTo(2 * Accesses + 2,
             "an access costs one fused round trip plus at most one report after it");
         // Without accesses only the 1024-instruction threshold and the device deadlines report.
         computeRoundTrips.Should().BeLessThanOrEqualTo((int)(computeInstructions / 1024) + 2,
