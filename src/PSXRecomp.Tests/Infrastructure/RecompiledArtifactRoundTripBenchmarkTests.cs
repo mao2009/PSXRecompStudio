@@ -20,7 +20,7 @@ namespace PSXRecomp.Tests.Infrastructure;
 [Test]
 public sealed class RecompiledArtifactRoundTripBenchmarkTests(ITestOutputHelper output)
 {
-    private const uint MmioBase = 0x1F801800u; // GPU region: the scripted parent answers every access with V 0
+    private const uint MmioBase = 0x1F801800u; // CD-ROM region (0x1F801800 index/status register): the scripted parent answers every access with V 0
     private const int Accesses = 400;
     private const uint SegmentBudget = 1u << 20; // the whole synthetic program runs in one segment
 
