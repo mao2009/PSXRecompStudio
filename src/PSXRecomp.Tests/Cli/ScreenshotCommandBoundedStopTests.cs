@@ -53,7 +53,8 @@ public sealed class ScreenshotCommandBoundedStopTests
         manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(1);
         var frame = manifest.GetProperty("frames")[0];
         frame.GetProperty("vblank").GetUInt64().Should().Be(1);
-        frame.GetProperty("sha256").GetString().Should().NotBeNullOrEmpty();
+        frame.GetProperty("pngSha256").GetString().Should().NotBeNullOrEmpty();
+        frame.GetProperty("vramSha256").GetString().Should().NotBeNullOrEmpty();
         frame.GetProperty("width").GetInt32().Should().BeGreaterThan(0);
     }
 
@@ -273,6 +274,36 @@ public sealed class ScreenshotCommandBoundedStopTests
         json.GetProperty("stopReason").GetString().Should().Be("capture_write_failed");
         json.GetProperty("captureStatus").GetString().Should().Be("write_failed");
         json.GetProperty("writeFailures").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public void CliRun_AfterKilledRun_ReplacesInProgressMarkerAndLeavesStalePngUntouched()
+    {
+        using var dir = new TempDirectory();
+        var romPath = Path.Combine(dir.FullPath, "spin.bin");
+        var rom = new byte[OpenBiosFirmware.ImageSize];
+        BitConverter.GetBytes(0x0BF00000u).CopyTo(rom, 0); // j 0xBFC00000
+        File.WriteAllBytes(romPath, rom);
+        var discPath = Path.Combine(dir.FullPath, "blank.bin");
+        File.WriteAllBytes(discPath, new byte[2352 * 16]);
+        var outputDirectory = Path.Combine(dir.FullPath, "shots");
+        Directory.CreateDirectory(outputDirectory);
+        var stalePath = Path.Combine(outputDirectory, "persona_vblank_0900.png");
+        File.WriteAllBytes(stalePath, [1, 2, 3]);
+        // A killed run leaves its start marker behind (no FinishCapture after it).
+        ScreenshotCommand.MarkInProgress(outputDirectory);
+
+        ScreenshotCommand.Run(
+            ["--openbios", romPath, "--disc", discPath, "--output", outputDirectory, "--json",
+             "--segment-budget", "1000", "--segments", "2", "--vblank-interval", "1000",
+             "--max-screenshots", "10", "--start-vblank", "1000", "--timeout", "60"],
+            TextWriter.Null, TextWriter.Null);
+
+        File.ReadAllBytes(stalePath).Should().Equal(new byte[] { 1, 2, 3 });
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(outputDirectory, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+        manifest.GetProperty("staleFiles").EnumerateArray().Select(e => e.GetString())
+            .Should().Equal("persona_vblank_0900.png");
     }
 
     private static string?[] ListedFrameNames(JsonElement manifest) =>

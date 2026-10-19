@@ -231,6 +231,98 @@ public sealed class ScreenshotCaptureTests : IDisposable
         capture.NextTargetVblank.Should().BeNull();
     }
 
+    [Fact]
+    public void ZeroWidthVisibleArea_IsNotCountedAndManifestClaimsNoPng()
+    {
+        // X=1023 in 24-bit mode leaves no whole pixel in the VRAM row: the frame has 0 pixels and no PNG is written.
+        _gpu.WriteGP1(0x08000010u);
+        _gpu.WriteGP1(0x05000000u | 1023u);
+        using var dir = new TempDirectory();
+        var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 1, startVblank: 1);
+
+        _scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles);
+        capture.TryCapture().Should().BeFalse();
+        capture.ForceCapture("persona_vblank_final.png");
+
+        capture.ScreenshotsTaken.Should().Be(0);
+        capture.AllTargetsSaved.Should().BeFalse();
+        capture.WriteManifest("execution_budget", 1, TimeSpan.Zero, null);
+        #pragma warning disable AARC003
+        Directory.GetFiles(dir.FullPath, "*.png").Should().BeEmpty();
+        var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        #pragma warning restore AARC003
+        manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(0);
+        manifest.GetProperty("captureStatus").GetString().Should().Be("none");
+        manifest.GetProperty("goalReached").GetBoolean().Should().BeFalse();
+        manifest.GetProperty("frames").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public void ZeroWidthVisibleArea_DoesNotConsumeTheCapForTheNextRealFrame()
+    {
+        _gpu.WriteGP1(0x08000010u);
+        _gpu.WriteGP1(0x05000000u | 1023u);
+        using var dir = new TempDirectory();
+        var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 1, startVblank: 1);
+
+        _scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles);
+        capture.TryCapture().Should().BeFalse();
+        capture.IsComplete.Should().BeFalse("a frame that was not saved must not use up the capture cap");
+
+        _gpu.WriteGP1(0x05000000u); // display origin back to X=0: a real 24-bit frame at the same target VBlank
+        capture.TryCapture().Should().BeTrue("the unsaved target was not consumed");
+        capture.ScreenshotsTaken.Should().Be(1);
+        capture.IsComplete.Should().BeTrue();
+        capture.SavedFiles.Should().ContainSingle().Which.Should().EndWith("persona_vblank_0001.png");
+    }
+
+    #pragma warning disable AARC003 // test-only inspection of the PNG and manifest that the capture wrote
+    [Fact]
+    public void PngSha256_DiffersWhenOnlyTheTwentyFourBitTailDiffers()
+    {
+        _gpu.WriteGP1(0x08000010u); // 24-bit colour depth, display origin (0,0)
+        using var dirA = new TempDirectory();
+        using var dirB = new TempDirectory();
+        var first = new ScreenshotCapture(_gpu, _scheduler, dirA.FullPath, interval: 1, maxScreenshots: 1, startVblank: 1);
+        first.ForceCapture("tail.png");
+        first.WriteManifest("execution_budget", 0, TimeSpan.Zero, null);
+
+        // Halfword 383 holds bytes 766-767, the G and B bytes of the last 24-bit pixel (row 0, pixel 255).
+        WriteVramHalfword(383, 0, 0xFFFF);
+        _gpu.GetVramBytes()[766].Should().Be(0xFF, "the test write must reach VRAM");
+
+        var second = new ScreenshotCapture(_gpu, _scheduler, dirB.FullPath, interval: 1, maxScreenshots: 1, startVblank: 1);
+        second.ForceCapture("tail.png");
+        second.WriteManifest("execution_budget", 0, TimeSpan.Zero, null);
+
+        var pngA = File.ReadAllBytes(Path.Combine(dirA.FullPath, "tail.png"));
+        var pngB = File.ReadAllBytes(Path.Combine(dirB.FullPath, "tail.png"));
+        pngA.Should().NotEqual(pngB);
+        var shaA = FrameSha(dirA.FullPath);
+        var shaB = FrameSha(dirB.FullPath);
+        shaA.Should().Be(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pngA)).ToLowerInvariant(),
+            "pngSha256 must be the hash of the saved file");
+        shaB.Should().Be(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pngB)).ToLowerInvariant());
+        shaA.Should().NotBe(shaB);
+    }
+
+    private static string FrameSha(string directory)
+    {
+        var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "manifest.json"))).RootElement;
+        return manifest.GetProperty("frames")[0].GetProperty("pngSha256").GetString()!;
+    }
+
+    #pragma warning restore AARC003
+
+    /// <summary>GP0(A0h) CPU-to-VRAM transfer of a single halfword.</summary>
+    private void WriteVramHalfword(int x, int y, ushort value)
+    {
+        _gpu.WriteGP0(0xA0000000u);
+        _gpu.WriteGP0((uint)(x | (y << 16)));
+        _gpu.WriteGP0(0x00010001u);
+        _gpu.WriteGP0(value);
+    }
+
     // ===== 24-bit (8-8-8) display conversion (Issue #772) =====
 
     [Fact]

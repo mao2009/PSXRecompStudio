@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Cryptography;
 using System.Text.Json;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Runtime;
@@ -217,7 +218,8 @@ public sealed class ScreenshotCapture : IDisposable
     private bool CaptureAndSave(ulong vblank, string? customName = null)
     {
         var frame = _gpuDevice.CaptureFrame();
-        var frameHash = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant();
+        // Native 16-bit halfword hash of the snapshot: kept as diagnostics only, not as evidence of the PNG (Issue #751).
+        var vramSha256 = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant();
         var bgra = ConvertToBgra32(frame);
 
         if (bgra.Length == 0)
@@ -243,8 +245,10 @@ public sealed class ScreenshotCapture : IDisposable
             return false;
         }
 
+        // pngSha256 is the hash of the bytes actually on disk, so it covers every displayed byte (including 24-bit tails).
+        var pngSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filePath))).ToLowerInvariant();
         var mode = _gpuDevice.GetState().DisplayMode;
-        _frames.Add(new CapturedFrame(fileName, vblank, frameHash, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
+        _frames.Add(new CapturedFrame(fileName, vblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
         return true;
     }
 
@@ -261,7 +265,8 @@ public sealed class ScreenshotCapture : IDisposable
     /// <summary>
     /// Writes <c>manifest.json</c> into the output directory: the stop reason, the final guest PC (when known) and, per
     /// saved PNG, the VBlank (guest frame) index, size, display mode, pixel hash and whether the 24-bit path was used
-    /// (false means the frame was converted as legacy 15-bit). Written atomically; safe to call after a partial run.
+    /// (false means the frame was converted as legacy 15-bit). Each frame carries <c>pngSha256</c> (SHA-256 of the saved
+    /// file) and <c>vramSha256</c> (native halfword hash, diagnostics only). Written atomically; safe after a partial run.
     /// </summary>
     public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc,
         string? exceptionType = null, bool goalReached = false) =>
@@ -335,7 +340,7 @@ public sealed class ScreenshotCapture : IDisposable
         }
     }
 
-    private sealed record CapturedFrame(string File, ulong Vblank, string Sha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
+    private sealed record CapturedFrame(string File, ulong Vblank, string VramSha256, string PngSha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
 
     /// <summary>
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
