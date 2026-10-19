@@ -502,7 +502,25 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [Fact]
-    public void GuardStats_Counts_EveryCall_OfALoop_AsOneArrivalAndOneHit()
+    public void GuardStats_WithoutABlockingEntry_ReplacesThePreviousReport_SoTheFailureTestIsNotVacuous()
+    {
+        // Control for the failure injection above: the same previous report IS replaced when nothing blocks the dump,
+        // so the surviving report in that test can only mean the dump was attempted and refused.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        File.ReadAllText(statsPath).Should().NotBe(previous, "a complete dump replaces the previous report");
+        File.ReadAllText(statsPath).Should().Contain("slot 80001000 ");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_CountsEveryCall_OfALoop_AsArrivalsAndHits()
     {
         // Issue #773 counting check: N calls from ROM are N arrivals and N guard hits, no misses, and the guest ran all N.
         const uint calls = 300;
