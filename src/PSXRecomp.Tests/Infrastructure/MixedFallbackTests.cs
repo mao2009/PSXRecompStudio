@@ -402,12 +402,11 @@ public sealed class MixedFallbackTests
 
     // Issue #773: the mismatch report only observes. Off and on, the same program ends in the same state; the on run records
     // the handoff at a RAM-placed PC that had one version the RAM did not match.
-    [Fact]
-    public void LoadedCodeMismatchDiagnostics_OffAndOn_EndInTheSameState()
+    // Issue #786 review M-B: the program overwrites the RAM at Target with code no version holds, then jumps there, so the
+    // artifact refuses every version at that handoff and the transfer goes to the fallback.
+    private static (uint[] Words, LoadedCodeTable Loaded) RefusedRamCode()
     {
         const uint done = Target + 0x100u;
-        // The program overwrites the RAM at Target with code no version holds, then jumps there: the artifact refuses every
-        // version at that handoff, so the diagnostics have something to record.
         var main = new Block(Entry);
         main.Emit(Li(T0, Target), Li(T1, Ori(S1, Zero, 0x55)), [Sw(T1, T0, 0)], Li(T1, MipsEncoding.Jump(done)), [Sw(T1, T0, 4)]);
         // Register-indirect, so the static build does not reach Target and the image version stays a RAM-placed one.
@@ -426,6 +425,13 @@ public sealed class MixedFallbackTests
             ReachableProgramBuilder.BuildLoadedImage(Target, otherWords, [Target], new HashSet<uint>()),
             ReachableProgramBuilder.BuildLoadedImage(Target, ramWords, [Target], new HashSet<uint>()),
         ]);
+        return (words, loaded);
+    }
+
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_OffAndOn_EndInTheSameState()
+    {
+        var (words, loaded) = RefusedRamCode();
         using var offDir = new TempDirectory();
         using var onDir = new TempDirectory();
 
@@ -440,6 +446,38 @@ public sealed class MixedFallbackTests
         Gpr(on.Result, S1).Should().Be(0x55u, "the code the program wrote at Target ran");
         diagnostics.TotalObservations.Should().BeGreaterThan(0UL, "the handoff at Target was observed");
         diagnostics.DistinctRecords.Should().Be(2, "both versions at Target were compared and refused");
+    }
+
+    // Issue #786 review M-B: a handoff the fallback stops before comparing (here the transition budget) is never observed, so
+    // it must be counted and make the report incomplete instead of disappearing from it.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_ATransitionBudgetStopAtARamPc_IsCountedAsUnobserved()
+    {
+        // The first handoff is an in-image target with no block (it spends the one allowed transition); the second is the
+        // refused RAM-placed code at Target, which the budget stops before it is compared.
+        const uint helper = Target + 0x80u;
+        const uint done = Target + 0x100u;
+        var main = new Block(Entry);
+        main.Emit(Li(T0, helper), [Jalr(T0), Nop]);
+        main.Emit(Li(T0, Target), Li(T1, Ori(S1, Zero, 0x55)), [Sw(T1, T0, 0)], Li(T1, MipsEncoding.Jump(done)), [Sw(T1, T0, 4)]);
+        main.Emit(Li(T1, Nop), [Sw(T1, T0, 8)], [Jr(T0)], [Nop]);
+        var helperBlock = new Block(helper);
+        helperBlock.Emit(Jr(Ra), Nop);
+        var tail = new Block(Target);
+        tail.Emit(Ori(S1, Zero, 0x77), MipsEncoding.Jump(done), Nop);
+        var doneBlock = new Block(done);
+        doneBlock.Emit(End());
+        var words = Image(main, helperBlock, tail, doneBlock);
+        var (_, loaded) = RefusedRamCode();
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        var run = RunArtifact(words, dir, new MixedFallbackOptions(MaxTransitions: 1), loadedCode: loaded, loadedCodeMismatch: diagnostics);
+
+        run.Result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.TransitionBudgetExhausted);
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["unobservedHandoffs"]!.GetValue<ulong>().Should().BeGreaterThan(0UL, "the RAM-PC handoff was stopped before it was compared");
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue("a handoff the report does not describe makes it incomplete");
     }
 
     [Fact]

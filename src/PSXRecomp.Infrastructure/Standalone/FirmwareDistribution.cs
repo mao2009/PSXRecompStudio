@@ -646,6 +646,7 @@ public static class FirmwareRuntimeLauncher
                 new TitleExecutionRequest(
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
             wall.Stop();
+            loadedCodeMismatch?.MarkExecuted();
 
             if (frameOutPath is not null)
             {

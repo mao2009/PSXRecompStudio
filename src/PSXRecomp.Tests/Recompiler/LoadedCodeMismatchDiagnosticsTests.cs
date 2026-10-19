@@ -33,7 +33,6 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         record["windowStartPc"]!.GetValue<string>().Should().Be("0x80030C44", "the window is clamped at the start of the range");
         record["windowAot"]!.AsArray().Select(static n => n!.GetValue<string>()).Should().Equal("0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000005");
         record["windowRam"]!.AsArray().Select(static n => n!.GetValue<string>()).Should().Equal("0x00000001", "0x00000002", "0x00000009", "0x00000004", "0x00000005");
-        record.ToJsonString().Should().Contain("\"selectedVersion\":null");
     }
 
     [Fact]
@@ -42,7 +41,8 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         var diagnostics = new LoadedCodeMismatchDiagnostics();
         var versions = new[] { Version(Pc, 1, 2), Version(Pc, 7, 8) };
 
-        // Guest RAM holds the second version, but the artifact still refused the PC: a selection problem, not a stale copy.
+        // Guest RAM holds the second version, while the refused handoff was recorded for the first: the host's comparison
+        // differs per version. It says nothing about which version the native guard selected.
         diagnostics.Observe(Pc, versions, address => (address - Pc) / 4 == 0 ? 7u : 8u);
 
         var records = Records(diagnostics);
@@ -54,7 +54,7 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         var matching = records[1]!;
         matching["version"]!.GetValue<int>().Should().Be(1);
         matching["rejections"]!.GetValue<ulong>().Should().Be(0);
-        matching["fullMatches"]!.GetValue<ulong>().Should().Be(1, "RAM holds this version in full, so it was a selection miss");
+        matching["fullMatches"]!.GetValue<ulong>().Should().Be(1, "the host's RAM comparison matched this version in full");
     }
 
     [Fact]
@@ -99,6 +99,16 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         diagnostics.Observe(Pc + 0x100u, [Version(Pc + 0x100u, 1)], _ => 0u);
 
         JsonNode.Parse(diagnostics.ToJson())!["incomplete"]!.GetValue<bool>().Should().BeTrue("a dropped record is a gap in the report");
+    }
+
+    // Issue #786 review M-C: a report of a run that did not finish is not complete, whatever it observed.
+    [Fact]
+    public void ToJson_IsIncomplete_WhenTheRunDidNotExecute()
+    {
+        var report = JsonNode.Parse(new LoadedCodeMismatchDiagnostics().ToJson())!.AsObject();
+
+        report["executed"]!.GetValue<bool>().Should().BeFalse();
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue("a report without the completion marker is not complete");
     }
 
     [Fact]
@@ -263,6 +273,7 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: ulong.MaxValue);
         diagnostics.Observe(Pc, [Version(Pc, 1, 2), Version(Pc, 3)], _ => 0u);
         diagnostics.Observe(Pc, [Version(Pc, 1, 2), Version(Pc, 3)], _ => 0u);
+        diagnostics.MarkExecuted();
 
         diagnostics.ComparedWords.Should().Be(6);
         diagnostics.SkippedVersions.Should().Be(0);

@@ -114,6 +114,22 @@ public static class Program
         }
 
         var manifestPath = Path.GetFullPath(positionals[0]);
+
+        // Issue #786 review M-C: a report never outlives its run. The previous one goes first, so a run that is killed or
+        // fails before it writes leaves no report that could be read as this run's.
+        if (loadedCodeMismatchPath is not null)
+        {
+            try
+            {
+                File.Delete(loadedCodeMismatchPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"runtime host: could not remove the previous loaded-code report {loadedCodeMismatchPath}: {ex.Message}");
+                return 78;
+            }
+        }
+
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
@@ -124,6 +140,15 @@ public static class Program
         var manifestDirectory = Path.GetDirectoryName(manifestPath)
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
+
+        // Issue #786 review M-A: only a firmware distribution carries the RAM-placed code table this report describes. Anywhere
+        // else the report would be empty and look complete, so the flag fails closed before the run instead.
+        if (loadedCodeMismatchPath is not null && !FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
+        {
+            Console.Error.WriteLine(
+                "runtime host: --loaded-code-diagnostics needs a firmware distribution (firmware-boot.json); this manifest has no RAM-placed code table to report on.");
+            return 78;
+        }
 
         RuntimeHostManifest? manifest = null;
         // Issue #773: written from the finally below, so a failed or stopped run still leaves its refusals behind.
@@ -222,6 +247,7 @@ public static class Program
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
             wall.Stop();
+            loadedCodeMismatch?.MarkExecuted();
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
 

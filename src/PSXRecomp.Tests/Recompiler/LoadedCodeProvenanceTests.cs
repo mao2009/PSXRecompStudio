@@ -94,7 +94,6 @@ public sealed class LoadedCodeProvenanceTests
         var record = JsonNode.Parse(diagnostics.ToJson())!["records"]!.AsArray()[0]!;
         record["rejections"]!.GetValue<ulong>().Should().Be(1);
         record["fullMatches"]!.GetValue<ulong>().Should().Be(0);
-        record["selectedVersion"].Should().BeNull();
         record["aotSha256"].Should().NotBeNull();
     }
 }

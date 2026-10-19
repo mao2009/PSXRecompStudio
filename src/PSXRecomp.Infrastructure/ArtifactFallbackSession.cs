@@ -243,18 +243,21 @@ internal sealed class ArtifactFallbackSession : IDisposable
         if ((pc & 3u) != 0)
         {
             RejectReason = MixedFallbackDiagnostics.IneligibleUnaligned;
+            NoteUnobserved(pc);
             return Decision.Ineligible;
         }
 
         if (!inImage && !_guestFirmware)
         {
             RejectReason = MixedFallbackDiagnostics.IneligibleOutOfImage;
+            NoteUnobserved(pc);
             return Decision.Ineligible;
         }
 
         if (_blockEntryPcs.Contains(pc))
         {
             RejectReason = MixedFallbackDiagnostics.IneligibleHasBlock;
+            NoteUnobserved(pc);
             return Decision.Ineligible;
         }
 
@@ -269,11 +272,14 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 RejectReason = header is null
                     ? MixedFallbackDiagnostics.IneligibleQueryRefused
                     : MixedFallbackDiagnostics.IneligibleNotIndirect;
+                NoteUnobserved(pc);
                 return Decision.Ineligible;
             }
 
             if (_transitions >= _options.MaxTransitions)
             {
+                // Issue #786 review M-B: stopped before the comparison, so the handoff is counted as unobserved.
+                NoteUnobserved(pc);
                 return Stop(
                     MixedFallbackDiagnostics.TransitionBudgetExhausted,
                     $"The run already made {_transitions} artifact-to-interpreter handoffs (budget {_options.MaxTransitions}); " +
@@ -363,6 +369,12 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
     /// <summary>Called before each transfer is served, so <see cref="LastSegment"/> describes only that transfer.</summary>
     public void BeginSegmentRecord() => LastSegment = null;
+
+    /// <summary>Counts a handoff at a versioned PC that returns before the host compares its RAM (Issue #786 review M-B).</summary>
+    private void NoteUnobserved(uint pc)
+    {
+        if (_loadedCodeMismatch is not null && _loadedCode.Contains(pc)) _loadedCodeMismatch.NoteUnobservedHandoff();
+    }
 
     private Decision Stop(string code, string message)
     {

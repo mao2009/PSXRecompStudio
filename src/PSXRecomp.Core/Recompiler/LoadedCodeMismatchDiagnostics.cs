@@ -64,6 +64,21 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>Guest words compared so far, across every version of every observation.</summary>
     public ulong ComparedWords { get; private set; }
 
+    /// <summary>
+    /// Handoffs at a PC with loaded-code versions that the fallback returned before they could be compared (for example, the
+    /// transition budget stopped the run first). They have no record, so a non-zero value makes the report incomplete.
+    /// </summary>
+    public ulong UnobservedHandoffs { get; private set; }
+
+    /// <summary>Whether the run finished its execution. A report written without it (a failed or killed run) is not complete.</summary>
+    public bool Executed { get; private set; }
+
+    /// <summary>Marks the run as having executed to its classified end.</summary>
+    public void MarkExecuted() => Executed = true;
+
+    /// <summary>Counts one handoff at a versioned PC that was returned before <see cref="Observe"/>.</summary>
+    public void NoteUnobservedHandoff() => UnobservedHandoffs++;
+
     /// <summary>Distinct (PC, version) records currently kept.</summary>
     public int DistinctRecords => _entries.Count;
 
@@ -141,8 +156,11 @@ public sealed class LoadedCodeMismatchDiagnostics
             ["schema"] = SchemaName,
             ["totalObservations"] = JsonValue.Create(TotalObservations),
             ["suppressedObservations"] = JsonValue.Create(SuppressedObservations),
-            // Explicit so a cut-short comparison or a record dropped by the cap is never mistaken for a complete report.
-            ["incomplete"] = JsonValue.Create(SkippedObservations > 0 || SuppressedObservations > 0),
+            // Explicit so a cut-short comparison, a dropped record, an unobserved handoff or a run that did not finish is never
+            // mistaken for a complete report.
+            ["executed"] = JsonValue.Create(Executed),
+            ["incomplete"] = JsonValue.Create(!Executed || SkippedObservations > 0 || SuppressedObservations > 0 || UnobservedHandoffs > 0),
+            ["unobservedHandoffs"] = JsonValue.Create(UnobservedHandoffs),
             ["skippedObservations"] = JsonValue.Create(SkippedObservations),
             ["comparedWordTotal"] = JsonValue.Create(ComparedWords),
             ["maxComparedWords"] = JsonValue.Create(_maxComparedWords),
@@ -207,7 +225,10 @@ public sealed class LoadedCodeMismatchDiagnostics
         /// </summary>
         public ulong Rejections { get; private set; }
 
-        /// <summary>Handoffs at this PC where this version matched in full (a correct version that was not selected).</summary>
+        /// <summary>
+        /// Handoffs at this PC where the host's RAM comparison matched this version in full. Not evidence of the native
+        /// guard's decision, which is not recorded.
+        /// </summary>
         public ulong FullMatches { get; private set; }
 
         public int FirstMismatchMin { get; private set; } = -1;
@@ -271,8 +292,6 @@ public sealed class LoadedCodeMismatchDiagnostics
                 ["windowStartPc"] = Rejections == 0 ? null : Hex(Pc + (uint)_windowStart * 4u),
                 ["windowAot"] = new JsonArray(_windowAot.Select(static w => (JsonNode)Hex(w)).ToArray()),
                 ["windowRam"] = new JsonArray(_windowRam.Select(static w => (JsonNode)Hex(w)).ToArray()),
-                // Handoffs run after the artifact found no matching version, so none was selected.
-                ["selectedVersion"] = null,
                 ["origins"] = OriginsJson(),
             };
         }
