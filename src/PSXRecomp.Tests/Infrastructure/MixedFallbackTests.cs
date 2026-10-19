@@ -419,7 +419,8 @@ public sealed class MixedFallbackTests
         var words = Image(main, tail, doneBlock);
         var tailStart = (int)((Target - Entry) / 4);
         var ramWords = words[tailStart..(tailStart + 3)];
-        // Two RAM-placed images at Target: the one whose words the RAM holds (selected) and one that differs (rejected).
+        // Two RAM-placed images at Target. The program overwrites Target with other code, so neither version matches the RAM
+        // at the handoff: both are refused and recorded.
         var otherWords = new[] { Ori(S1, Zero, 0x99), MipsEncoding.Jump(done), Nop };
         var loaded = new LoadedCodeTable([
             ReachableProgramBuilder.BuildLoadedImage(Target, otherWords, [Target], new HashSet<uint>()),

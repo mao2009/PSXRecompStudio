@@ -19,7 +19,7 @@ public sealed record GuardedImageProgram(IReadOnlyList<GuardedBlock> Blocks, IRe
     /// <summary>Image words covered by a block.</summary>
     public int NativeInstructionCount => Blocks.Sum(static b => b.Words.Count);
 
-    /// <summary>Where the image came from (Issue #773 provenance); null when the caller did not name it.</summary>
+    /// <summary>The manifest's declaration of the image (Issue #773); null when the caller did not declare one. Not proof of the loaded file.</summary>
     public LoadedImageOrigin? Origin { get; init; }
 }
 

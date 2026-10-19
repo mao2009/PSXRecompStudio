@@ -9,7 +9,7 @@ namespace PSXRecomp.Core.Recompiler;
 /// <summary>
 /// Opt-in observation of handoffs at RAM-placed code whose artifact versions matched no guest word (Issue #773 Phase B). Every
 /// handoff at a PC that has loaded-code versions is counted; per (PC, version) the first differing word, the compared range as
-/// the AOT build holds it and as guest RAM holds it, and SHA-256 of both are kept. The compiled guard's own decision is not
+/// the AOT build holds it and as guest RAM holds it, and SHA-256 of the AOT words is kept, with SHA-256 of the latest refusal's RAM (ramSha256). The compiled guard's own decision is not
 /// recorded, so a record is an observed handoff, not a confirmed guard refusal: the comparison is the host's, made against RAM
 /// at the handoff, while the generated native code makes its own guard decision (Rejections is never evidence of it). Records are aggregated per (PC, version),
 /// capped, and written in a deterministic order. Diagnostics only: nothing read here feeds <see cref="LoadedCodeTable.Match"/>
