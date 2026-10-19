@@ -148,9 +148,9 @@ public static class ScreenshotCommand
                 WriteHumanResult(result, standardOutput);
             }
 
-            return IsFailureState(result.ExecutionResult.State)
-                ? RecompiledArtifactExitCode.Failure
-                : RecompiledArtifactExitCode.Success;
+            return IsSuccess(result)
+                ? RecompiledArtifactExitCode.Success
+                : RecompiledArtifactExitCode.Failure;
         }
         catch (Exception ex) when (
             ex is DirectoryNotFoundException or FileNotFoundException
@@ -183,6 +183,7 @@ public static class ScreenshotCommand
         TimeSpan timeout,
         TextWriter standardError)
     {
+        MarkInProgress(outputDirectory);
         var stopwatch = Stopwatch.StartNew();
 
         using var engine = new InterpreterTitleExecutionEngine(
@@ -272,7 +273,10 @@ public static class ScreenshotCommand
         var sb = new StringBuilder();
         sb.Append("{");
         sb.Append($"\"kind\":\"screenshot\",");
-        sb.Append($"\"success\":{!IsFailureState(result.ExecutionResult.State)},");
+        sb.Append($"\"success\":{IsSuccess(result).ToString().ToLowerInvariant()},");
+        sb.Append($"\"executionOk\":{(!IsFailureState(result.ExecutionResult.State)).ToString().ToLowerInvariant()},");
+        sb.Append($"\"captureStatus\":\"{ScreenshotCapture.CaptureStatusOf(result.GoalReached, result.ScreenshotsTaken, result.WriteFailures)}\",");
+        sb.Append($"\"writeFailures\":{result.WriteFailures},");
         sb.Append($"\"screenshotsTaken\":{result.ScreenshotsTaken},");
         sb.Append($"\"maxVblankReached\":{result.MaxVblankReached},");
         sb.Append($"\"elapsedMs\":{result.ElapsedTime.TotalMilliseconds:F0},");
@@ -289,7 +293,7 @@ public static class ScreenshotCommand
         }
         sb.Append("],");
         sb.Append($"\"executionResult\":{{");
-        sb.Append($"\"state\":{result.ExecutionResult.State},");
+        sb.Append($"\"state\":\"{result.ExecutionResult.State}\",");
         sb.Append($"\"engine\":\"{result.ExecutionResult.EngineName}\",");
         if (result.ExecutionResult.DiagnosticCode is { } code)
             sb.Append($"\"diagnosticCode\":\"{code}\",");
@@ -305,6 +309,9 @@ public static class ScreenshotCommand
     {
         standardOutput.WriteLine($"Screenshot capture: {result.StopReason}");
         standardOutput.WriteLine($"  Goal reached: {result.GoalReached}");
+        standardOutput.WriteLine($"  Capture status: {ScreenshotCapture.CaptureStatusOf(result.GoalReached, result.ScreenshotsTaken, result.WriteFailures)}");
+        if (result.WriteFailures > 0)
+            standardOutput.WriteLine($"  PNG write failures: {result.WriteFailures}");
         if (result.ExceptionType is { } exceptionType)
             standardOutput.WriteLine($"  Exception type: {exceptionType}");
         standardOutput.WriteLine($"  Screenshots taken: {result.ScreenshotsTaken}");
@@ -586,6 +593,20 @@ public static class ScreenshotCommand
         state is TitleExecutionState.RuntimeFailure or TitleExecutionState.InvalidState or TitleExecutionState.UnsupportedTransfer;
 
     /// <summary>
+    /// Overall success needs both halves: the execution ended cleanly (BudgetExhausted is clean) and no requested PNG
+    /// failed to write. Execution and image results are reported separately in JSON and manifest.json.
+    /// </summary>
+    internal static bool IsSuccess(HeadlessRunResult result) =>
+        !IsFailureState(result.ExecutionResult.State) && result.WriteFailures == 0;
+
+    /// <summary>
+    /// Records that this run has started. If the process is killed before FinishCapture, the leftover manifest says
+    /// <c>in_progress</c> instead of describing an earlier run in the same directory (Issue #751).
+    /// </summary>
+    private static void MarkInProgress(string outputDirectory) =>
+        ScreenshotCapture.WriteManifestFile(outputDirectory, "in_progress", 0, 0, TimeSpan.Zero, null, []);
+
+    /// <summary>
     /// Maps an orchestrator terminal state to the stop-reason vocabulary shared by stdout, JSON and manifest.json.
     /// Failure states keep their own name so a crash-like end is never reported as a clean guest stop (Issue #751).
     /// </summary>
@@ -612,6 +633,7 @@ public static class ScreenshotCommand
         TimeSpan timeout,
         TextWriter standardError)
     {
+        MarkInProgress(outputDirectory);
         var stopwatch = Stopwatch.StartNew();
 
         var backend = new OpenBiosBootBackend(firmware, disc);
@@ -704,7 +726,7 @@ public static class ScreenshotCommand
         // Only the PNGs this run wrote: a reused output directory may hold stale files that the manifest does not list.
         IReadOnlyList<string> savedFiles = capture is null ? [] : capture.SavedFiles;
         var maxVblank = scheduler?.VblankCount ?? 0;
-        var goalReached = capture?.IsComplete ?? false;
+        var goalReached = capture?.AllTargetsSaved ?? false;
         if (capture is not null)
             capture.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC,
                 exceptionType, goalReached);
@@ -723,7 +745,8 @@ public static class ScreenshotCommand
             stopwatch.Elapsed,
             stopReason,
             exceptionType,
-            goalReached);
+            goalReached,
+            capture?.WriteFailures ?? 0);
     }
 
     private static OpenedDisc OpenDisc(string path)

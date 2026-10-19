@@ -147,5 +147,130 @@ public sealed class ScreenshotCommandBoundedStopTests
         pngs.Should().NotBeEmpty();
         listed.Should().BeEquivalentTo(pngs);
         manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(pngs.Length);
+        // Normal budget stop with an image saved: execution is clean, capture is only partial, nothing is stale.
+        manifest.GetProperty("captureStatus").GetString().Should().Be("partial");
+        manifest.GetProperty("writeFailures").GetInt32().Should().Be(0);
+        manifest.GetProperty("staleFiles").GetArrayLength().Should().Be(0);
+        ScreenshotCommand.IsFailureState(result.ExecutionResult.State).Should().BeFalse();
     }
+
+    [Fact]
+    public void StalePngFromEarlierRun_IsKeptAndListedAsStaleNotAsFrame()
+    {
+        using var dir = new TempDirectory();
+        var stalePath = Path.Combine(dir.FullPath, "persona_vblank_0900.png");
+        File.WriteAllBytes(stalePath, [1, 2, 3]);
+
+        var result = ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 1_000, segments: 2,
+            vblankInterval: 1000, maxScreenshots: 10, startVblank: 1000, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        // This run writes only the forced final frame; the older PNG is neither deleted nor claimed by the manifest.
+        File.ReadAllBytes(stalePath).Should().Equal(new byte[] { 1, 2, 3 });
+        result.SavedFiles.Should().ContainSingle().Which.Should().EndWith("persona_vblank_final.png");
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        ListedFrameNames(manifest).Should().Equal("persona_vblank_final.png");
+        manifest.GetProperty("staleFiles").EnumerateArray().Select(e => e.GetString())
+            .Should().Equal("persona_vblank_0900.png");
+    }
+
+    [Fact]
+    public void InterruptedRun_IsFollowedByRerunWithManifestOfTheRerunOnly()
+    {
+        using var dir = new TempDirectory();
+        // First run stops early at the wall-clock timeout: it writes only the forced final frame.
+        ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 100_000, segments: 50,
+            vblankInterval: 1, maxScreenshots: 3, startVblank: 1, TimeSpan.Zero, TextWriter.Null);
+
+        // Second run completes normally with two frames.
+        var result = ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 100_000, segments: 50,
+            vblankInterval: 1, maxScreenshots: 2, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        result.StopReason.Should().Be("goal_reached");
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("goal_reached");
+        manifest.GetProperty("captureStatus").GetString().Should().Be("complete");
+        ListedFrameNames(manifest).Should().Equal("persona_vblank_0001.png", "persona_vblank_0002.png");
+        manifest.GetProperty("staleFiles").EnumerateArray().Select(e => e.GetString())
+            .Should().Equal("persona_vblank_final.png");
+    }
+
+    [Fact]
+    public void KilledRun_LeavesInProgressManifestThatNextRunReplaces()
+    {
+        using var dir = new TempDirectory();
+        // What a killed run leaves behind: the start marker, with no FinishCapture after it.
+        ScreenshotCapture.WriteManifestFile(dir.FullPath, "in_progress", 0, 0, TimeSpan.Zero, null, []);
+        var before = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        before.GetProperty("stopReason").GetString().Should().Be("in_progress");
+
+        ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 1_000, segments: 2,
+            vblankInterval: 1000, maxScreenshots: 10, startVblank: 1000, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        var after = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        after.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+    }
+
+    [Fact]
+    public void PngWriteFailure_IsCountedInManifestAndFailedFrameIsNotListed()
+    {
+        using var dir = new TempDirectory();
+        // A directory at the target name makes the rename of that one frame fail; the other frames are unaffected.
+        Directory.CreateDirectory(Path.Combine(dir.FullPath, "persona_vblank_0001.png"));
+
+        var result = ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 100_000, segments: 50,
+            vblankInterval: 1, maxScreenshots: 2, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        result.WriteFailures.Should().Be(1);
+        result.ScreenshotsTaken.Should().Be(2);
+        result.StopReason.Should().Be("execution_budget");
+        result.GoalReached.Should().BeFalse();
+        Directory.GetFiles(dir.FullPath, "*.tmp").Should().BeEmpty("a failed write removes its own temp file");
+
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+        manifest.GetProperty("captureStatus").GetString().Should().Be("write_failed");
+        manifest.GetProperty("writeFailures").GetInt32().Should().Be(1);
+        // The manifest lists exactly the PNG files on disk; the failed frame is neither listed nor counted.
+        var pngs = Directory.GetFiles(dir.FullPath, "*.png").Select(Path.GetFileName).Order().ToArray();
+        ListedFrameNames(manifest).Order().Should().Equal(pngs);
+        pngs.Should().Equal("persona_vblank_0002.png", "persona_vblank_final.png");
+        manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(pngs.Length);
+    }
+
+    [Fact]
+    public void PngWriteFailure_MakesCommandExitNonZeroWhileJsonKeepsExecutionResultApart()
+    {
+        using var dir = new TempDirectory();
+        var romPath = Path.Combine(dir.FullPath, "spin.bin");
+        var rom = new byte[OpenBiosFirmware.ImageSize];
+        BitConverter.GetBytes(0x0BF00000u).CopyTo(rom, 0); // j 0xBFC00000
+        File.WriteAllBytes(romPath, rom);
+        var discPath = Path.Combine(dir.FullPath, "blank.bin");
+        File.WriteAllBytes(discPath, new byte[2352 * 16]);
+        var outputDirectory = Path.Combine(dir.FullPath, "shots");
+        Directory.CreateDirectory(Path.Combine(outputDirectory, "persona_vblank_0001.png"));
+
+        var stdout = new StringWriter();
+        var code = ScreenshotCommand.Run(
+            ["--openbios", romPath, "--disc", discPath, "--output", outputDirectory, "--json",
+             "--segment-budget", "100000", "--segments", "50", "--vblank-interval", "1",
+             "--max-screenshots", "2", "--start-vblank", "1", "--timeout", "60"],
+            stdout, TextWriter.Null);
+
+        code.Should().NotBe(0);
+        var json = JsonDocument.Parse(stdout.ToString()).RootElement;
+        json.GetProperty("executionOk").GetBoolean().Should().BeTrue();
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+        json.GetProperty("captureStatus").GetString().Should().Be("write_failed");
+        json.GetProperty("writeFailures").GetInt32().Should().Be(1);
+    }
+
+    private static string?[] ListedFrameNames(JsonElement manifest) =>
+        manifest.GetProperty("frames").EnumerateArray().Select(f => f.GetProperty("file").GetString()).ToArray();
 }

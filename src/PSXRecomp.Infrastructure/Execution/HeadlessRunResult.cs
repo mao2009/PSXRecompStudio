@@ -16,4 +16,5 @@ public sealed record HeadlessRunResult(
     TimeSpan ElapsedTime,
     string StopReason,
     string? ExceptionType = null,
-    bool GoalReached = false);
+    bool GoalReached = false,
+    int WriteFailures = 0);

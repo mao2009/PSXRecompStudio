@@ -188,6 +188,12 @@ public sealed class ScreenshotCapture : IDisposable
     public bool IsComplete => _screenshotsTaken >= _maxScreenshots;
 
     /// <summary>
+    /// True only when every target VBlank was saved. Unlike <see cref="IsComplete"/>, the forced final frame and a
+    /// target whose PNG failed to write do not count (Issue #751).
+    /// </summary>
+    public bool AllTargetsSaved => _capturedVblanks.Count == _maxScreenshots;
+
+    /// <summary>
     /// Gets the next target VBlank, or null if all targets have been passed.
     /// </summary>
     public ulong? NextTargetVblank
@@ -222,13 +228,31 @@ public sealed class ScreenshotCapture : IDisposable
 
         // Write beside the target and rename so an interrupted run never leaves a truncated PNG (Issue #751).
         var tempPath = filePath + ".tmp";
-        PngWriter.Save(tempPath, bgra, frame.Width, frame.Height);
-        File.Move(tempPath, filePath, overwrite: true);
+        try
+        {
+            PngWriter.Save(tempPath, bgra, frame.Width, frame.Height);
+            File.Move(tempPath, filePath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A failed frame is not in the manifest and not counted. Only this run's temp file is removed;
+            // the target path and any earlier PNG are left untouched.
+            DeleteQuietly(tempPath);
+            WriteFailures++;
+            LastWriteError = ex.Message;
+            return false;
+        }
 
         var mode = _gpuDevice.GetState().DisplayMode;
         _frames.Add(new CapturedFrame(fileName, vblank, frameHash, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
         return true;
     }
+
+    /// <summary>Number of frames whose PNG could not be written (not in the manifest, not counted).</summary>
+    public int WriteFailures { get; private set; }
+
+    /// <summary>Message of the most recent PNG write failure, or null.</summary>
+    public string? LastWriteError { get; private set; }
 
     /// <summary>Full paths of the PNG files this session actually wrote, in capture order (matches the manifest).</summary>
     public IReadOnlyList<string> SavedFiles =>
@@ -242,30 +266,43 @@ public sealed class ScreenshotCapture : IDisposable
     public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc,
         string? exceptionType = null, bool goalReached = false) =>
         WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames,
-            exceptionType, goalReached);
+            exceptionType, goalReached, WriteFailures, _frames.Select(f => f.File));
 
     /// <summary>
     /// Writes <c>manifest.json</c> without a capture session, so a run that failed before capture was set up still
     /// records its stop reason (Issue #751). <paramref name="stopReason"/> is the stop vocabulary only;
     /// <paramref name="exceptionType"/> is the .NET exception name when the stop came from an exception.
     /// <paramref name="goalReached"/> is true only when every target frame was captured.
+    /// <paramref name="ownPngNames"/> are the PNG names this run wrote. Any other PNG in the directory is listed as
+    /// <c>staleFiles</c>: it is kept on disk and marked as not produced by this run, never deleted.
     /// </summary>
     public static void WriteManifestFile(
         string outputDirectory, string stopReason, int screenshotsTaken, ulong maxVblankReached, TimeSpan elapsed,
-        uint? lastGuestPc, IEnumerable<object> frames, string? exceptionType = null, bool goalReached = false)
+        uint? lastGuestPc, IEnumerable<object> frames, string? exceptionType = null, bool goalReached = false,
+        int writeFailures = 0, IEnumerable<string>? ownPngNames = null)
     {
+        Directory.CreateDirectory(outputDirectory);
+        var own = new HashSet<string>(ownPngNames ?? [], StringComparer.OrdinalIgnoreCase);
+        var staleFiles = Directory.EnumerateFiles(outputDirectory, "*.png")
+            .Select(p => Path.GetFileName(p))
+            .Where(name => !own.Contains(name))
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         var manifest = new
         {
             stopReason,
             goalReached,
+            captureStatus = CaptureStatusOf(goalReached, screenshotsTaken, writeFailures),
+            writeFailures,
             exceptionType,
             screenshotsTaken,
             maxVblankReached,
             elapsedMs = (long)elapsed.TotalMilliseconds,
             lastGuestPc = lastGuestPc is { } pc ? $"0x{pc:X8}" : null,
             frames,
+            staleFiles,
         };
-        Directory.CreateDirectory(outputDirectory);
         var path = Path.Combine(outputDirectory, "manifest.json");
         var tempPath = path + ".tmp";
         File.WriteAllText(tempPath, JsonSerializer.Serialize(manifest, ManifestOptions));
@@ -273,6 +310,29 @@ public sealed class ScreenshotCapture : IDisposable
     }
 
     private static readonly JsonSerializerOptions ManifestOptions = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    /// <summary>
+    /// Image result, kept apart from the stop reason: <c>complete</c> (every target saved), <c>partial</c> (some frames
+    /// saved, no write failure), <c>none</c> (no frame saved) or <c>write_failed</c> (at least one PNG could not be written).
+    /// </summary>
+    public static string CaptureStatusOf(bool goalReached, int screenshotsTaken, int writeFailures) =>
+        writeFailures > 0 ? "write_failed"
+        : goalReached ? "complete"
+        : screenshotsTaken > 0 ? "partial"
+        : "none";
+
+    private static void DeleteQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best effort: a leftover .tmp file is not listed in the manifest.
+        }
+    }
 
     private sealed record CapturedFrame(string File, ulong Vblank, string Sha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
 
