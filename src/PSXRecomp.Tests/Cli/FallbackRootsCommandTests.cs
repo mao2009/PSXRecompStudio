@@ -269,5 +269,49 @@ public sealed class FallbackRootsCommandTests
     private static string Target(uint pc, ulong instructions) =>
         $$"""{"pc":"0x{{pc:X8}}","cause":"unknown-code","entries":1,"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""";
 
+    [Fact]
+    public void AnUnfinishedProbeRun_WritesNoExport()
+    {
+        // No fallback evidence means the run did not finish: an export would claim "no targets" and plan nothing, falsely.
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
+
+        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code")
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void AFinishedProbeRun_ExportsItsTargets_AndVerifiesAgainstItsOwnInputs()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
+        var hash = ObservedRootsFixtures.Sha256Hex(firmwareBytes);
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
+        var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
+
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code");
+
+        json.Should().NotBeNull();
+        var export = ObservedRootPlanner.ReadExport(json!);
+        export.Targets.Select(t => t.Pc).Should().Equal(Callee);
+        ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(hash, manifest));
+    }
+
+    [Fact]
+    public void AFailedExportWrite_LeavesNoTemporaryFile()
+    {
+        using var dir = new TempDirectory();
+        // The destination is a directory, so the rename fails after the temporary has been written.
+        var destination = dir.Combine("export.json");
+        Directory.CreateDirectory(destination);
+
+        var act = () => OpenBiosProbeCommand.WriteAtomically(destination, "{}");
+
+        act.Should().Throw<Exception>();
+        Directory.GetFileSystemEntries(dir.FullPath, "*.tmp").Should().BeEmpty();
+    }
+
 #pragma warning restore AARC003
 }

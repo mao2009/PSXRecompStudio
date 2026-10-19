@@ -608,18 +608,16 @@ internal static class OpenBiosProbeCommand
             if (probe.FallbackTargetsPath is not null)
             {
                 // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
-                // report above is unchanged; this file is written only when requested.
-                var allTargets = (evidence?.Targets ?? []).Select(t => new
+                // report above is unchanged; this file is written only when requested. A run that did not finish has no
+                // evidence, and an export of it would read as "no targets" to the planner, so none is written.
+                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause);
+                if (exportJson is null)
                 {
-                    pc = Hex(t.Target),
-                    cause = FallbackCause(t.Target),
-                    entries = t.Entries,
-                    instructions = t.Instructions,
-                    lastReturnPc = Hex(t.LastReturnPc),
-                }).ToArray();
-                File.WriteAllText(probe.FallbackTargetsPath, JsonSerializer.Serialize(
-                    new { format = PSXRecomp.Core.Recompiler.ObservedRootPlanner.TargetFormat, sha256 = probe.Hash, run = PSXRecomp.Core.Recompiler.ObservedRootPlanner.RunDocument(PSXRecomp.Core.Recompiler.ObservedRootPlanner.DescribeRun(probe.Hash, manifest)), targets = allTargets },
-                    new JsonSerializerOptions { WriteIndented = true }));
+                    error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
+                    return 1;
+                }
+
+                WriteAtomically(probe.FallbackTargetsPath, exportJson);
             }
 
             var document = new
@@ -878,6 +876,49 @@ internal static class OpenBiosProbeCommand
             .ToArray();
 
     private static string Hex(uint v) => $"0x{v:X8}";
+
+    /// <summary>
+    /// The <c>fallback-targets/v2</c> document for a run (Issue #773), or null when the run has no fallback evidence (it did not
+    /// finish). Null is never a valid export: the planner would read it as a run with no targets.
+    /// </summary>
+    internal static string? BuildFallbackTargetsDocument(MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf)
+    {
+        if (evidence is null)
+        {
+            return null;
+        }
+
+        var targets = evidence.Targets.Select(t => new
+        {
+            pc = Hex(t.Target),
+            cause = causeOf(t.Target),
+            entries = t.Entries,
+            instructions = t.Instructions,
+            lastReturnPc = Hex(t.LastReturnPc),
+        }).ToArray();
+        return JsonSerializer.Serialize(new
+        {
+            format = ObservedRootPlanner.TargetFormat,
+            sha256 = hash,
+            run = ObservedRootPlanner.RunDocument(ObservedRootPlanner.DescribeRun(hash, manifest)),
+            targets,
+        }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>Writes the file through a sibling temporary and a rename, so a failed write leaves no partial export behind.</summary>
+    internal static void WriteAtomically(string path, string text)
+    {
+        var temp = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temp, text);
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temp); // a no-op once the rename has moved it
+        }
+    }
 
     internal static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
 

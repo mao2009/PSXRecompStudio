@@ -149,6 +149,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
 
         // The per-image limit is checked per directive, so one image takes at most one: a second would raise it past the budget.
         var named = new HashSet<string>(StringComparer.Ordinal);
+        var observedTotal = 0;
         foreach (var directive in observedRoots)
         {
             if (directive.Fields.Length > 1 && !named.Add(directive.Fields[1]))
@@ -156,7 +157,11 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                 throw new InvalidDataException($"manifest: more than one 'roots' directive names '{directive.Fields[1]}'; an image takes one.");
             }
 
-            ApplyObservedRoots(images, directive, baseDirectory);
+            observedTotal += ApplyObservedRoots(images, directive, baseDirectory);
+            if (observedTotal > ObservedRootBudget.Default.MaxRootsTotal)
+            {
+                throw new InvalidDataException($"manifest: the 'roots' directives add {observedTotal} roots; the limit is {ObservedRootBudget.Default.MaxRootsTotal} in total.");
+            }
         }
 
         return new LoadImageManifest(images, interpreted);
@@ -390,7 +395,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     /// must name exactly one EXE-based image, and its source identity, load address and code-word SHA-256 must match that
     /// image; every root must be a unique, aligned, in-image PC that is structurally safe and not already a root.
     /// </summary>
-    private static void ApplyObservedRoots(List<LoadedImageSpec> images, (string Line, string[] Fields) directive, string? baseDirectory)
+    private static int ApplyObservedRoots(List<LoadedImageSpec> images, (string Line, string[] Fields) directive, string? baseDirectory)
     {
         var (line, fields) = directive;
         if (fields.Length != 6)
@@ -455,6 +460,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         images[index] = image with { Roots = image.Roots.Concat(roots).Order().ToArray() };
+        return roots.Length;
     }
 
     /// <summary>

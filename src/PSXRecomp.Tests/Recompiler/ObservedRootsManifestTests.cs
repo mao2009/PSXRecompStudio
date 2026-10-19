@@ -60,6 +60,29 @@ public sealed class ObservedRootsManifestTests
         act.Should().Throw<InvalidDataException>().WithMessage("*per image*");
     }
 
+    // The total budget is checked across every observed directive: five images at the per-image limit exceed it.
+    [Fact]
+    public void ObservedRootsAcrossImages_FailClosedAtTheTotalBudget()
+    {
+        using var dir = new TempDirectory();
+        var text = new uint[200];
+        var exe = ObservedRootsFixtures.Exe(text);
+        var perImage = ObservedRootBudget.Default.MaxRootsPerImage;
+        var roots = string.Join("\n", Enumerable.Range(1, perImage).Select(i => $"0x{Dest + (uint)i * 4:X8}")) + "\n";
+        var manifest = new StringBuilder();
+        foreach (var name in new[] { "img1", "img2", "img3", "img4", "img5" })
+        {
+            dir.WriteFile($"{name}.exe", exe);
+            dir.WriteFile($"{name}.txt", Encoding.ASCII.GetBytes(roots));
+            manifest.Append($"exe {name} {name}.exe\n").Append(Directive(text, file: $"{name}.txt", name: name));
+        }
+
+        var path = dir.WriteFile("images.txt", Encoding.ASCII.GetBytes(manifest.ToString()));
+        var act = () => LoadImageManifest.Read(path, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*in total*");
+    }
+
     // The per-image budget is checked on one roots file, so a second directive for the same image would raise the image past it.
     [Fact]
     public void ASecondDirectiveForTheSameImage_FailsClosed()
