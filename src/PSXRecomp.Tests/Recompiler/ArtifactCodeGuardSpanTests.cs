@@ -31,6 +31,26 @@ public sealed class ArtifactCodeGuardSpanTests
         output.Should().Be("0", $"a write into the {page} page of the block changed its compiled words, so the block must not run");
     }
 
+    /// <summary>
+    /// Issue #734 review (N1/N2): a zero-length load and a count whose <c>4u * count</c> wraps must fail closed. The
+    /// generator never emits an empty unit (the host requires <c>Words.Count == RetiredInstructionCount</c> and lowering
+    /// always emits the entry instruction), so neither input is reachable from generated code; 0 means "not current".
+    /// Before the review fix, the zero-length case returned 1 unconditionally (even outside RAM) and the wrapped count
+    /// returned 1 with no word compared, so stale code could run.
+    /// </summary>
+    [Theory]
+    [InlineData(0xBFC00000u, 0u, ulong.MaxValue, "zero-length load outside RAM (the BIOS window)")]
+    [InlineData(0x80011000u, 0u, ulong.MaxValue, "zero-length load inside RAM")]
+    [InlineData(0x80011000u, 0x40000000u, 0ul, "count 2^30: 4u * count wraps to 0, so no page is summed and no word is compared")]
+    public void CodeCurrent_InvalidLength_FailsClosed(uint pc, uint count, ulong seen, string why)
+    {
+        var source = RecompiledArtifactCodeGen.Generate(GenerateDispatch()).Source!;
+
+        var output = RunCompiled(BuildProbeHarness(source), pc.ToString(CultureInfo.InvariantCulture), count.ToString(CultureInfo.InvariantCulture), seen.ToString(CultureInfo.InvariantCulture));
+
+        output.Should().Be("0", why);
+    }
+
     private static RecompilerHostCodeGenResult GenerateDispatch()
     {
         var instruction = PSXRecomp.Core.Cpu.R3000aDecoder.Decode(0x34020000u); // ori $v0, $zero, 0
@@ -41,12 +61,35 @@ public sealed class ArtifactCodeGuardSpanTests
     private const string GuardSliceStart = "#define PSX_RAM_SIZE";
     private const string GuardSliceEnd = "/* BIOS ROM window";
 
-    private static string BuildHarness(string source, uint writeAddress)
+    private static string GuardSlice(string source)
     {
         var start = source.IndexOf(GuardSliceStart, StringComparison.Ordinal);
         var end = source.IndexOf(GuardSliceEnd, StringComparison.Ordinal);
         if (start < 0 || end <= start) throw new InvalidOperationException("RAM/guard slice not found in the generated driver source.");
-        var slice = source[start..end];
+        return source[start..end];
+    }
+
+    /// <summary>Calls the guard once with the given pc, count and seen value (argv), with RAM zeroed; prints the result.</summary>
+    private static string BuildProbeHarness(string source) =>
+        $$"""
+            #include <stdint.h>
+            #include <stdio.h>
+            #include <stdlib.h>
+            {{GuardSlice(source)}}
+
+            int main(int argc, char** argv) {
+                static const uint32_t words[4] = { 0x34020000u, 0x34020001u, 0x34020002u, 0x34020003u };
+                uint32_t pc = (uint32_t)strtoul(argv[1], NULL, 10);
+                uint32_t count = (uint32_t)strtoul(argv[2], NULL, 10);
+                uint64_t seen = (uint64_t)strtoull(argv[3], NULL, 10);
+                printf("%d\n", recompiler_code_current(NULL, pc, words, count, &seen));
+                return 0;
+            }
+            """;
+
+    private static string BuildHarness(string source, uint writeAddress)
+    {
+        var slice = GuardSlice(source);
 
         return $$"""
             #include <stdint.h>
@@ -86,7 +129,10 @@ public sealed class ArtifactCodeGuardSpanTests
     }
 
 #pragma warning disable AARC003 // Test-only gcc harness: writes a temp C file and runs the compiled guard; production process I/O stays in Infrastructure.
-    private static string RunGuardHarness(string source, uint writeAddress)
+    private static string RunGuardHarness(string source, uint writeAddress) =>
+        RunCompiled(BuildHarness(source, writeAddress), writeAddress.ToString("x", CultureInfo.InvariantCulture));
+
+    private static string RunCompiled(string cSource, params string[] args)
     {
         var dir = Path.Combine(Path.GetTempPath(), "psx-code-guard-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -94,12 +140,12 @@ public sealed class ArtifactCodeGuardSpanTests
         {
             var cPath = Path.Combine(dir, "guard.c");
             var exePath = Path.Combine(dir, "guard.exe");
-            File.WriteAllText(cPath, BuildHarness(source, writeAddress));
+            File.WriteAllText(cPath, cSource);
 
             var compile = Run("gcc", ["-std=c99", "-O0", "-Wall", "-Werror=implicit-function-declaration", "-o", exePath, cPath], dir);
             if (compile.ExitCode != 0) throw new InvalidOperationException("gcc failed: " + compile.Stderr);
 
-            var run = Run(exePath, [writeAddress.ToString("x", CultureInfo.InvariantCulture)], dir);
+            var run = Run(exePath, args, dir);
             if (run.ExitCode != 0) throw new InvalidOperationException($"harness exited {run.ExitCode}: {run.Stdout}{run.Stderr}");
             return run.Stdout.Trim();
         }
