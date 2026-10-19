@@ -610,11 +610,16 @@ internal static class OpenBiosProbeCommand
                 // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
                 // report above is unchanged; this file is written only when requested. A run that did not finish has no
                 // evidence, and an export of it would read as "no targets" to the planner, so none is written.
-                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause);
+                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State);
                 if (exportJson is null)
                 {
                     error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
                     return 1;
+                }
+
+                if (!ObservedRootPlanner.IsCompleteOutcome(result.State))
+                {
+                    error.WriteLine($"openbios-probe: --fallback-targets: the run ended in {result.State}; the export is partial and fallback-roots will refuse it.");
                 }
 
                 WriteAtomically(probe.FallbackTargetsPath, exportJson);
@@ -879,9 +884,10 @@ internal static class OpenBiosProbeCommand
 
     /// <summary>
     /// The <c>fallback-targets/v2</c> document for a run (Issue #773), or null when the run has no fallback evidence (it did not
-    /// finish). Null is never a valid export: the planner would read it as a run with no targets.
+    /// finish). Null is never a valid export: the planner would read it as a run with no targets. The run's <c>outcome</c> is
+    /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer).
     /// </summary>
-    internal static string? BuildFallbackTargetsDocument(MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf)
+    internal static string? BuildFallbackTargetsDocument(MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state)
     {
         if (evidence is null)
         {
@@ -901,6 +907,7 @@ internal static class OpenBiosProbeCommand
             format = ObservedRootPlanner.TargetFormat,
             sha256 = hash,
             run = ObservedRootPlanner.RunDocument(ObservedRootPlanner.DescribeRun(hash, manifest)),
+            outcome = new { state = state.ToString(), complete = ObservedRootPlanner.IsCompleteOutcome(state) },
             targets,
         }, new JsonSerializerOptions { WriteIndented = true });
     }

@@ -166,6 +166,47 @@ public sealed class ObservedRootPlannerTests
         act.Should().Throw<InvalidDataException>();
     }
 
+    // Issue #773 (review M1): evidence from a run that did not reach a classified end is partial, and a partial set must not
+    // read as "these are all the targets". A run that stopped at a legitimate end (including a deliberate StopAt handoff) is complete.
+    public static TheoryData<string> IncompleteStates => ["BudgetExhausted", "RuntimeFailure", "UnsupportedTransfer", "InvalidState"];
+
+    [Theory]
+    [MemberData(nameof(IncompleteStates))]
+    public void ReadExport_RejectsEvidenceFromARunThatDidNotFinish(string state)
+    {
+        var json = ObservedRootsFixtures.TargetsJsonInState(state, null, ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 1));
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().Throw<InvalidDataException>().WithMessage($"*{state}*");
+    }
+
+    [Theory]
+    [InlineData("Completed")]
+    [InlineData("Returned")]
+    [InlineData("RuntimeHandoff")]
+    public void ReadExport_AcceptsEvidenceFromARunThatReachedAClassifiedEnd(string state)
+    {
+        var json = ObservedRootsFixtures.TargetsJsonInState(state, null);
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ReadExport_RejectsAnExportWithoutAnOutcome_AndAnOutcomeThatContradictsItsState()
+    {
+        var complete = ObservedRootsFixtures.TargetsJsonInState("Completed", null);
+        var withoutOutcome = complete.Replace("\"outcome\":{\"state\":\"Completed\",\"complete\":true},", "");
+        var contradictory = complete.Replace("\"complete\":true", "\"complete\":false");
+
+        var noOutcome = () => ObservedRootPlanner.ReadExport(withoutOutcome);
+        var contradicts = () => ObservedRootPlanner.ReadExport(contradictory);
+        noOutcome.Should().Throw<InvalidDataException>();
+        contradicts.Should().Throw<InvalidDataException>();
+    }
+
     [Fact]
     public void ReadExport_RoundTripsTheRunIdentity()
     {

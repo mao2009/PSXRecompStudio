@@ -132,6 +132,23 @@ public sealed class FallbackRootsCommandTests
     }
 
     [Fact]
+    public void ARefusedRun_LeavesNothingBehind_AndARerunOnceTheObstacleIsGone_Succeeds()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        var output = dir.Combine("images-observed.txt");
+        Directory.CreateDirectory(output);
+
+        Run(fixture, output, out _, out _).Should().Be(1);
+        Directory.GetFiles(dir.FullPath, "observed-roots-*").Should().BeEmpty();
+        Directory.Delete(output);
+
+        Run(fixture, output, out _, out var stderr).Should().Be(0, stderr);
+        LoadImageManifest.Read(output, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null)
+            .Images.Single().Roots.Should().Equal(Dest, Callee);
+    }
+
+    [Fact]
     public void ARootsFileNameTakenByAUserFile_IsRefused_AndTheUserFileIsKept()
     {
         using var dir = new TempDirectory();
@@ -277,7 +294,7 @@ public sealed class FallbackRootsCommandTests
         var fixture = Create(dir, _ => "{}");
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
 
-        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code")
+        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed)
             .Should().BeNull();
     }
 
@@ -291,12 +308,47 @@ public sealed class FallbackRootsCommandTests
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
 
-        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code");
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed);
 
         json.Should().NotBeNull();
         var export = ObservedRootPlanner.ReadExport(json!);
         export.Targets.Select(t => t.Pc).Should().Equal(Callee);
         ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(hash, manifest));
+    }
+
+    // An engine whose outer budget is spent before its first segment: the orchestrator ends the run as BudgetExhausted,
+    // so the probe's evidence is partial (review M1). The real orchestrator produces the state; nothing is hand-set.
+    private sealed class NoSegmentEngine : IRecompiledExecutionEngine
+    {
+        public string Name => "test-no-segment";
+        public void Load(TitleExecutionRequest request) { }
+        public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest) =>
+            throw new InvalidOperationException("the outer budget is spent before any segment runs");
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public void AnExportOfARunThatExhaustedItsBudget_IsRefusedByThePlanner_AndWritesNothing()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
+        var hash = ObservedRootsFixtures.Sha256Hex(firmwareBytes);
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
+        var result = new ExecutionOrchestrator().Execute(new NoSegmentEngine(), handoff: null,
+            new TitleExecutionRequest(Dest, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 0, segmentBudget: 1));
+        result.State.Should().Be(TitleExecutionState.BudgetExhausted);
+        var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
+        var partial = fixture with { Targets = dir.WriteFile("partial.json", Encoding.UTF8.GetBytes(
+            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State)!)) };
+        var output = dir.Combine("images-observed.txt");
+
+        var code = Run(partial, output, out _, out var stderr);
+
+        code.Should().Be(1);
+        stderr.Should().Contain("BudgetExhausted");
+        File.Exists(output).Should().BeFalse();
+        Directory.GetFiles(dir.FullPath, "observed-roots-*").Should().BeEmpty();
     }
 
     [Fact]

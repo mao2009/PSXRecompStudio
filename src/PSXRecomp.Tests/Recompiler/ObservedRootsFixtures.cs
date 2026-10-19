@@ -40,12 +40,20 @@ internal static class ObservedRootsFixtures
     /// <summary>A run identity that is well formed but describes no real input (for tests that only parse an export).</summary>
     internal static ObservedRunIdentity PlaceholderRun { get; } = new(new string('0', 64), [], []);
 
-    internal static string TargetsJson(uint pc, string cause, ulong instructions, ObservedRunIdentity? run = null) =>
-        TargetsJson(run, $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":1,"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""");
+    internal static string TargetObject(uint pc, string cause, ulong entries, ulong instructions) =>
+        $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":{{entries}},"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""";
 
-    internal static string TargetsJson(ObservedRunIdentity? run, params string[] targetObjects)
+    internal static string TargetsJson(uint pc, string cause, ulong instructions, ObservedRunIdentity? run = null) =>
+        TargetsJson(run, TargetObject(pc, cause, 1, instructions));
+
+    internal static string TargetsJson(ObservedRunIdentity? run, params string[] targetObjects) =>
+        TargetsJsonInState("Completed", run, targetObjects);
+
+    /// <summary>An export whose run ended in <paramref name="state"/> (a <c>TitleExecutionState</c> name).</summary>
+    internal static string TargetsJsonInState(string state, ObservedRunIdentity? run, params string[] targetObjects)
     {
         run ??= PlaceholderRun;
-        return $$"""{"format":"psxrecomp.fallback-targets/v2","sha256":"{{run.FirmwareSha256}}","run":{{JsonSerializer.Serialize(ObservedRootPlanner.RunDocument(run))}},"targets":[{{string.Join(",", targetObjects)}}]}""";
+        var complete = state is "Completed" or "Returned" or "RuntimeHandoff" ? "true" : "false";
+        return $$"""{"format":"psxrecomp.fallback-targets/v2","sha256":"{{run.FirmwareSha256}}","run":{{JsonSerializer.Serialize(ObservedRootPlanner.RunDocument(run))}},"outcome":{"state":"{{state}}","complete":{{complete}}},"targets":[{{string.Join(",", targetObjects)}}]}""";
     }
 }

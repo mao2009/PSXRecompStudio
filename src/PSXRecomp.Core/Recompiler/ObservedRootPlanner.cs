@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Execution;
 
 namespace PSXRecomp.Core.Recompiler;
 
@@ -78,6 +79,14 @@ internal static class ObservedRootPlanner
 {
     /// <summary>The fallback-target export format written by <c>openbios-probe --fallback-targets</c>.</summary>
     internal const string TargetFormat = "psxrecomp.fallback-targets/v2";
+
+    /// <summary>
+    /// Whether a run that ended in <paramref name="state"/> reached a classified end, so its fallback set is the run's whole
+    /// observation. Budget exhaustion, a failed or unsupported transfer, and a contract violation leave a partial set, which
+    /// the planner refuses. A deliberate <c>StopAt</c> pause ends in <see cref="TitleExecutionState.RuntimeHandoff"/>, a complete end.
+    /// </summary>
+    public static bool IsCompleteOutcome(TitleExecutionState state) =>
+        state is TitleExecutionState.Completed or TitleExecutionState.Returned or TitleExecutionState.RuntimeHandoff;
 
     internal const string UnknownCodeCause = "unknown-code";
 
@@ -260,7 +269,7 @@ internal static class ObservedRootPlanner
     /// <summary>
     /// Reads a fallback-target export. Fail closed: the format must match, the run identity must be present and well formed
     /// (its firmware hash equal to the top-level <c>sha256</c>), every target must carry a valid PC, cause, entries and
-    /// instructions, and a PC may appear only once.
+    /// instructions, and a PC may appear only once. The run must have ended at a classified end (see <see cref="IsCompleteOutcome"/>).
     /// </summary>
     public static ObservedFallbackExport ReadExport(string json)
     {
@@ -272,6 +281,23 @@ internal static class ObservedRootPlanner
             if (root.GetProperty("format").GetString() != TargetFormat)
             {
                 throw new InvalidDataException($"fallback targets: the format is not '{TargetFormat}'.");
+            }
+
+            var outcome = root.GetProperty("outcome");
+            if (!Enum.TryParse<TitleExecutionState>(outcome.GetProperty("state").GetString(), ignoreCase: false, out var state))
+            {
+                throw new InvalidDataException("fallback targets: 'outcome.state' is not a known execution state.");
+            }
+
+            if (outcome.GetProperty("complete").GetBoolean() != IsCompleteOutcome(state))
+            {
+                throw new InvalidDataException($"fallback targets: 'outcome.complete' contradicts the state {state}.");
+            }
+
+            if (!IsCompleteOutcome(state))
+            {
+                throw new InvalidDataException(
+                    $"fallback targets: the run ended in {state}, so its evidence is partial and is refused; re-run openbios-probe to a classified end.");
             }
 
             var runElement = root.GetProperty("run");

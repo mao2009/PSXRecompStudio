@@ -293,7 +293,11 @@ image its name, load address, code-word SHA-256, source-file SHA-256 and roots),
 unless that identity equals what the supplied firmware and manifest describe now. This proves which firmware, which EXE
 bytes, which load addresses and which root set the trace was taken over; it does **not** prove the disc image beyond the EXE
 files it supplied, the ROM `--roots`/`--code-bytes` options, the run's inputs, or that a PC was reached by the same
-execution that a different export would show. A v1 export carries no identity and is refused. Output safety: the
+execution that a different export would show. A v1 export carries no identity and is refused. The export also records the run's
+`outcome` (its terminal `TitleExecutionState` and `complete`). Only a run that reached a classified end (`Completed`,
+`Returned`, `RuntimeHandoff`) is planned from; an export of a run that exhausted its budget, failed, or hit an unsupported
+transfer is partial and is refused, and an export without `outcome` is malformed. The probe still writes such an export
+(with its outcome) and reports it on stderr. Output safety: the
 output manifest must sit beside the input; no existing file or directory is overwritten; every output is first written
 under a run-unique `.<name>.<guid>.tmp` name in the same directory (exclusive create), the staged manifest is read back
 through the manifest parser, then the roots files are renamed into place (no overwrite) and the manifest last (the commit
