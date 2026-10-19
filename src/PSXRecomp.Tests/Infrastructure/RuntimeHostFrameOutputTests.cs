@@ -3,6 +3,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using FluentAssertions;
+using PSXRecomp.Core.Cpu;
+using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Runtime.Gpu;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Runtime.Gpu;
@@ -232,6 +234,89 @@ public sealed class RuntimeHostFrameOutputTests
         ReadFirstPixelsRgba(png15, 2).Should().Equal(
             0xFF, 0x00, 0x00, 0xFF,
             0x00, 0x00, 0xFF, 0xFF);
+    }
+
+    [Fact]
+    public void EndToEnd_TwentyFourBitDisplay_GuestWritesReachTheFrameThroughTheBridge_AndPngCarriesRgb()
+    {
+        // 24-bit: pixel 0 is bytes R=0x12 G=0x34 (halfword 0) and B=0x56 (low byte of halfword 1).
+        var run = RunGuestDisplay(gp1DisplayMode: 0x08000010u, vramWord: 0x00563412u, pngName: "e2e24.png");
+
+        run.Frame.Should().NotBeNull("the bridge must relay the guest's GP0/GP1 writes and propagate the frame to LastFrameBgra32");
+        run.Frame!.Value.Bgra.Length.Should().Be(run.Frame.Value.Width * run.Frame.Value.Height * 4);
+        run.Frame.Value.Bgra[..4].Should().Equal(new byte[] { 0x56, 0x34, 0x12, 0xFF }, "BGRA of the displayed pixel 0");
+        run.Written.Should().BeTrue(run.Error);
+        ReadFirstPixelsRgba(run.Png!, 1).Should().Equal(0x12, 0x34, 0x56, 0xFF);
+    }
+
+    [Fact]
+    public void EndToEnd_FifteenBitDisplay_GuestWritesReachTheFrameThroughTheBridge_AndPngExpandsEachChannel()
+    {
+        // 15-bit: pixel 0 is R=31 only, pixel 1 is B=31 only; each 5-bit channel expands to 8 bits.
+        var run = RunGuestDisplay(gp1DisplayMode: 0x08000000u, vramWord: 0x7C00001Fu, pngName: "e2e15.png");
+
+        run.Frame.Should().NotBeNull("the bridge must relay the guest's GP0/GP1 writes and propagate the frame to LastFrameBgra32");
+        run.Frame!.Value.Bgra[..8].Should().Equal(
+            0x00, 0x00, 0xFF, 0xFF,   // pixel 0: R=31 -> BGRA(00,00,FF,FF)
+            0xFF, 0x00, 0x00, 0xFF);  // pixel 1: B=31 -> BGRA(FF,00,00,FF)
+        run.Written.Should().BeTrue(run.Error);
+        ReadFirstPixelsRgba(run.Png!, 2).Should().Equal(
+            0xFF, 0x00, 0x00, 0xFF,
+            0x00, 0x00, 0xFF, 0xFF);
+    }
+
+    /// <summary>
+    /// Runs a guest that programs the display only through the host-transfer bridge: GP1 display mode, GP1 display
+    /// start (0,0), then a CPU-to-VRAM copy of two halfwords (<paramref name="vramWord"/>) at (0,0). The frame reaches
+    /// <see cref="RecompiledHostExecutionEngine.LastFrameBgra32"/> only through the bridge's propagation at the end of
+    /// the run, and <see cref="RuntimeHostFrameOutput.TryWrite"/> is called on the same engine before it is disposed.
+    /// </summary>
+    private static GuestDisplayRun RunGuestDisplay(uint gp1DisplayMode, uint vramWord, string pngName)
+    {
+        const uint gp0 = 0x1F801810u;
+        const uint gp1 = 0x1F801814u;
+        const R3000aRegister t0 = R3000aRegister.T0;
+        const R3000aRegister t1 = R3000aRegister.T1;
+        const R3000aRegister t2 = R3000aRegister.T2;
+        var words = RecompiledArtifactMmioBridgeTests.Program(
+            RecompiledArtifactMmioBridgeTests.Li(t0, gp0),
+            RecompiledArtifactMmioBridgeTests.Li(t1, gp1),
+            RecompiledArtifactMmioBridgeTests.Li(t2, gp1DisplayMode),
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t1, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0x05000000u),
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t1, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0xA0000000u),  // GP0 CPU-to-VRAM copy
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0x00000000u),  // destination x=0, y=0
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0x00010002u),  // 2 halfwords wide, 1 row high
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, vramWord),     // the two halfwords
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)]);
+
+        using var dir = new TempDirectory();
+        var png = dir.Combine(pngName);
+        var error = new StringWriter();
+        var run = new GuestDisplayRun();
+        var result = RecompiledArtifactMmioBridgeTests.Run(words, dir, withRuntime: true, segmentBudget: 4096, observe: engine =>
+        {
+            run.Frame = engine.LastFrameBgra32;
+            run.Written = RuntimeHostFrameOutput.TryWrite(engine, png, error);
+        });
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        run.Error = error.ToString();
+        #pragma warning disable AARC003
+        if (run.Written) run.Png = File.ReadAllBytes(png);
+        #pragma warning restore AARC003
+        return run;
+    }
+
+    private sealed class GuestDisplayRun
+    {
+        public (byte[] Bgra, int Width, int Height)? Frame { get; set; }
+        public bool Written { get; set; }
+        public byte[]? Png { get; set; }
+        public string Error { get; set; } = "";
     }
 
     [Fact]
