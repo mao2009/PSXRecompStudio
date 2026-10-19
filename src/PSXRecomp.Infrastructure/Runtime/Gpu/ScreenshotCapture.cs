@@ -89,7 +89,7 @@ public sealed class ScreenshotCapture : IDisposable
             if (_capturedVblanks.Contains(currentVblank))
                 return false; // Already captured this VBlank (duplicate notification)
 
-            if (!CaptureAndSave(currentVblank))
+            if (!CaptureAndSave(currentVblank, currentVblank))
             {
                 _lastVblank = currentVblank; // unsaved target is dropped, not retried (not counted, not consumed)
                 return false;
@@ -106,7 +106,8 @@ public sealed class ScreenshotCapture : IDisposable
         {
             if (targetVblank <= currentVblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
             {
-                if (!CaptureAndSave(targetVblank))
+                // A3: the frame is the picture at the actual VBlank; the target is only the schedule it was due for.
+                if (!CaptureAndSave(targetVblank, currentVblank))
                     continue; // nothing saved: this target is not counted or consumed
                 _capturedVblanks.Add(targetVblank);
                 _screenshotsTaken++;
@@ -128,7 +129,7 @@ public sealed class ScreenshotCapture : IDisposable
             return;
 
         var currentVblank = _scheduler.VblankCount;
-        if (CaptureAndSave(currentVblank, customName))
+        if (CaptureAndSave(null, currentVblank, customName))
             _screenshotsTaken++;
     }
 
@@ -149,7 +150,7 @@ public sealed class ScreenshotCapture : IDisposable
             if (_capturedVblanks.Contains(vblank))
                 return false; // Already captured this VBlank
 
-            if (!CaptureAndSave(vblank))
+            if (!CaptureAndSave(vblank, vblank))
             {
                 _lastVblank = vblank; // unsaved target is dropped, not retried (not counted, not consumed)
                 return false;
@@ -165,7 +166,7 @@ public sealed class ScreenshotCapture : IDisposable
         {
             if (targetVblank <= vblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
             {
-                if (!CaptureAndSave(targetVblank))
+                if (!CaptureAndSave(targetVblank, vblank))
                     continue; // nothing saved: this target is not counted or consumed
                 _capturedVblanks.Add(targetVblank);
                 _screenshotsTaken++;
@@ -215,7 +216,7 @@ public sealed class ScreenshotCapture : IDisposable
     /// Saves one frame as PNG and records it in the manifest. Returns false (and writes nothing) when the frame has no
     /// displayable pixels, so callers count only frames that really exist on disk (Issue #751).
     /// </summary>
-    private bool CaptureAndSave(ulong vblank, string? customName = null)
+    private bool CaptureAndSave(ulong? targetVblank, ulong capturedVblank, string? customName = null)
     {
         var frame = _gpuDevice.CaptureFrame();
         // Native 16-bit halfword hash of the snapshot: kept as diagnostics only, not as evidence of the PNG (Issue #751).
@@ -225,7 +226,7 @@ public sealed class ScreenshotCapture : IDisposable
         if (bgra.Length == 0)
             return false; // Nothing to save
 
-        var fileName = customName ?? $"persona_vblank_{vblank:D4}.png";
+        var fileName = customName ?? $"persona_vblank_{targetVblank ?? capturedVblank:D4}.png";
         var filePath = Path.Combine(_outputDirectory, fileName);
 
         // Write beside the target and rename so an interrupted run never leaves a truncated PNG (Issue #751).
@@ -236,7 +237,12 @@ public sealed class ScreenshotCapture : IDisposable
         {
             if (File.Exists(filePath))
                 throw new IOException($"refusing to overwrite existing file: {fileName}");
-            PngWriter.Save(tempPath, bgra, frame.Width, frame.Height);
+            // A3: the PNG carries the same split as the manifest (a forced final frame has no target).
+            var text = new List<KeyValuePair<string, string>>();
+            if (targetVblank is { } target)
+                text.Add(new("targetVblank", $"{target}"));
+            text.Add(new("capturedVblank", $"{capturedVblank}"));
+            PngWriter.Save(tempPath, bgra, frame.Width, frame.Height, text);
             File.Move(tempPath, filePath);
             // pngSha256 is the hash of the bytes actually on disk, so it covers every displayed byte (including 24-bit tails).
             pngSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filePath))).ToLowerInvariant();
@@ -252,7 +258,7 @@ public sealed class ScreenshotCapture : IDisposable
         }
 
         var mode = _gpuDevice.GetState().DisplayMode;
-        _frames.Add(new CapturedFrame(fileName, vblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
+        _frames.Add(new CapturedFrame(fileName, targetVblank, capturedVblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
         return true;
     }
 
@@ -344,7 +350,7 @@ public sealed class ScreenshotCapture : IDisposable
         }
     }
 
-    private sealed record CapturedFrame(string File, ulong Vblank, string VramSha256, string PngSha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
+    private sealed record CapturedFrame(string File, ulong? TargetVblank, ulong CapturedVblank, string VramSha256, string PngSha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
 
     /// <summary>
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.

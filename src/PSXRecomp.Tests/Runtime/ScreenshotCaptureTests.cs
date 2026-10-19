@@ -377,4 +377,30 @@ public sealed class ScreenshotCaptureTests : IDisposable
 
         bgra.Should().Equal(new byte[] { 0x03, 0x02, 0x01, 0xFF, 0x00, 0x00, 0x00, 0x00 });
     }
+    [Fact]
+    public void SkipAhead_RecordsTargetAndActualCaptureVBlankSeparately()
+    {
+        // A3 (MEDIUM): the counter jumped from 0 to 5 past target 2. The frame is the VBlank-5 picture, so the manifest and
+        // the PNG metadata must say both: the target 2 and the actual capture 5, never 2 as the capture time.
+        using var dir = new TempDirectory();
+        var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 1, startVblank: 2);
+
+        _scheduler.AdvanceExact(5ul * DeviceScheduler.VblankIntervalCycles);
+        capture.TryCapture().Should().BeTrue("the skipped-over target is captured on the first check past it");
+        capture.WriteManifest("goal_reached", _scheduler.VblankCount, TimeSpan.Zero, null, null, goalReached: true);
+
+#pragma warning disable AARC003
+        var frame = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json")))
+            .RootElement.GetProperty("frames")[0];
+#pragma warning restore AARC003
+        frame.GetProperty("targetVblank").GetUInt64().Should().Be(2);
+        frame.GetProperty("capturedVblank").GetUInt64().Should().Be(5);
+        frame.TryGetProperty("vblank", out _).Should().BeFalse("the single past-target field is replaced");
+
+#pragma warning disable AARC003
+        var png = File.ReadAllBytes(Path.Combine(dir.FullPath, "persona_vblank_0002.png"));
+#pragma warning restore AARC003
+        var text = System.Text.Encoding.Latin1.GetString(png);
+        text.Should().Contain("targetVblank").And.Contain("capturedVblank", "PNG metadata repeats the manifest split");
+    }
 }

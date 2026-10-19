@@ -183,64 +183,87 @@ public static class ScreenshotCommand
         TimeSpan timeout,
         TextWriter standardError)
     {
-        MarkInProgress(outputDirectory);
-        var stopwatch = Stopwatch.StartNew();
-
         using var engine = new InterpreterTitleExecutionEngine(
             input.InstructionWords,
             input.LoadAddress,
             (reader, writer) => new BiosHleRuntime(new CollectedOutput(), reader, writer));
 
-        var handoff = new ProgramEndHandoff(input.LoadAddress, input.InstructionWords.Count);
+        return RunScreenshotCaptureHle(
+            engine,
+            () => (engine.DiagnosticDevices.GpuDevice, engine.Scheduler!),
+            new ProgramEndHandoff(input.LoadAddress, input.InstructionWords.Count),
+            input.Request,
+            segmentBudget,
+            outputDirectory,
+            vblankInterval,
+            maxScreenshots,
+            startVblank,
+            timeout,
+            standardError);
+    }
+
+    /// <summary>
+    /// HLE capture core over any engine, so the stop rules can be exercised with a scripted engine (review of #751).
+    /// <paramref name="devicesAfterLoad"/> reads the GPU and the scheduler the engine uses after its Load.
+    /// </summary>
+    internal static HeadlessRunResult RunScreenshotCaptureHle(
+        IRecompiledExecutionEngine engine,
+        Func<(GpuDevice Gpu, DeviceScheduler Scheduler)> devicesAfterLoad,
+        ITitleExecutionHandoff? handoff,
+        TitleExecutionRequest request,
+        uint segmentBudget,
+        string outputDirectory,
+        uint vblankInterval,
+        int maxScreenshots,
+        ulong startVblank,
+        TimeSpan timeout,
+        TextWriter standardError)
+    {
+        MarkInProgress(outputDirectory);
+        var stopwatch = Stopwatch.StartNew();
+
         var orchestrator = new ExecutionOrchestrator();
 
         TitleExecutionResult? executionResult = null;
         var stopReason = "Unknown";
         string? exceptionType = null;
         ScreenshotCapture? screenshotCapture = null;
+        DeviceScheduler? scheduler = null;
 
         try
         {
-            engine.Load(input.Request);
-
-            screenshotCapture = new ScreenshotCapture(
-                engine.DiagnosticDevices.GpuDevice,
-                engine.Scheduler!,
-                outputDirectory,
-                vblankInterval,
-                maxScreenshots,
-                startVblank);
-
-            // One orchestrator run; screenshots are taken at segment boundaries and the guard ends the run at the
-            // capture cap or wall-clock timeout (Issue #751). The outer budget still bounds a guest that never stops.
-            var guard = StopGuard(screenshotCapture, stopwatch, timeout);
-            var currentRequest = input.Request;
-            while (true)
+            // One orchestrator run (it loads the engine exactly once). The capture is built after that Load, on the
+            // scheduler the loaded engine uses (review of #751: a second Load would replace the scheduler under the capture).
+            // Screenshots are taken at segment boundaries and the guard ends the run at the capture cap or the wall-clock
+            // timeout (Issue #751). The outer budget still bounds a guest that never stops.
+            void Segment(RecompilerStateSnapshot snap)
             {
-                executionResult = orchestrator.Execute(
-                    engine,
-                    handoff,
-                    currentRequest,
-                    segmentCallback: snap =>
-                    {
-                        screenshotCapture.TryCapture();
-                        guard(snap);
-                    });
-
-                // A RuntimeHandoff is continued from its snapshot (pre-existing behaviour); anything else ends the run.
-                if (executionResult.State != TitleExecutionState.RuntimeHandoff || executionResult.FinalSnapshot is not { } snapshot)
-                    break;
-
-                currentRequest = new TitleExecutionRequest(
-                    snapshot.PC,
-                    snapshot.Gpr.ToArray(),
-                    snapshot.HI,
-                    snapshot.LO,
-                    [],
-                    1000u,
-                    segmentBudget);
+                screenshotCapture!.TryCapture();
+                StopGuard(screenshotCapture, stopwatch, timeout)(snap);
             }
-            stopReason = StopReasonOf(executionResult.State);
+
+            string? boundaryStop = null;
+            executionResult = orchestrator.Execute(engine, handoff, request, segmentCallback: Segment, postLoadAction: () =>
+            {
+                var devices = devicesAfterLoad();
+                scheduler = devices.Scheduler;
+                screenshotCapture = new ScreenshotCapture(
+                    devices.Gpu,
+                    devices.Scheduler,
+                    outputDirectory,
+                    vblankInterval,
+                    maxScreenshots,
+                    startVblank);
+            });
+            // A RuntimeHandoff is continued on the same live engine (no Load: RAM, GPU and scheduler are kept, review of #751).
+            while (executionResult.State == TitleExecutionState.RuntimeHandoff && executionResult.FinalSnapshot is { } snapshot)
+            {
+                boundaryStop = CleanBoundaryStop(screenshotCapture, stopwatch, timeout);
+                if (boundaryStop is not null)
+                    break;
+                executionResult = orchestrator.Resume(engine, handoff, snapshot, 1000u, segmentBudget, Segment);
+            }
+            stopReason = boundaryStop ?? StopReasonOf(executionResult.State);
         }
         catch (CaptureStop stop)
         {
@@ -264,7 +287,7 @@ public static class ScreenshotCommand
             stopwatch.Stop();
         }
 
-        return FinishCapture(screenshotCapture, executionResult, engine.Scheduler, outputDirectory, stopwatch, stopReason,
+        return FinishCapture(screenshotCapture, executionResult, scheduler, outputDirectory, stopwatch, stopReason,
             exceptionType);
     }
 
@@ -581,10 +604,25 @@ public static class ScreenshotCommand
     private static Action<RecompilerStateSnapshot> StopGuard(ScreenshotCapture capture, Stopwatch stopwatch, TimeSpan timeout) =>
         snap =>
         {
+            // Review of #751 (A2): only a budget-cut segment is a progress boundary. Any other end (a CPU/runtime abnormal
+            // stop, a handoff, completion) is classified by the orchestrator, so a goal frame in that segment cannot hide it.
+            if (snap.Termination != RecompilerIrTerminationReason.ExecutionBudgetExceeded) return;
             if (capture.WriteFailures > 0) throw new CaptureStop("capture_write_failed", snap);
             if (capture.IsComplete) throw new CaptureStop("goal_reached", snap);
             if (stopwatch.Elapsed >= timeout) throw new CaptureStop("timeout", snap);
         };
+
+    /// <summary>
+    /// Stop rules at a clean Runtime boundary (a RuntimeHandoff the orchestrator already classified as clean): the goal,
+    /// a write failure or the wall-clock timeout ends the run here; otherwise the run may continue (review of #751, A1/A2).
+    /// </summary>
+    private static string? CleanBoundaryStop(ScreenshotCapture? capture, Stopwatch stopwatch, TimeSpan timeout)
+    {
+        if (capture is null) return null;
+        if (capture.WriteFailures > 0) return "capture_write_failed";
+        if (capture.IsComplete) return "goal_reached";
+        return stopwatch.Elapsed >= timeout ? "timeout" : null;
+    }
 
     /// <summary>
     /// States that are not a clean end of the run: they set a non-zero exit code and <c>success:false</c>.
@@ -684,7 +722,9 @@ public static class ScreenshotCommand
 
                     interpreterEngine.Scheduler!.VblankCallback = vblank => screenshotCapture.TryCaptureAtVBlank(vblank);
                 });
-            stopReason = StopReasonOf(executionResult.State);
+            stopReason = executionResult.State == TitleExecutionState.RuntimeHandoff
+                ? CleanBoundaryStop(screenshotCapture, stopwatch, timeout) ?? StopReasonOf(executionResult.State)
+                : StopReasonOf(executionResult.State);
         }
         catch (CaptureStop stop)
         {

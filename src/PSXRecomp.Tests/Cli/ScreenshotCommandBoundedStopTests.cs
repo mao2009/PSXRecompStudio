@@ -53,7 +53,8 @@ public sealed class ScreenshotCommandBoundedStopTests
         manifest.GetProperty("exceptionType").ValueKind.Should().Be(JsonValueKind.Null);
         manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(1);
         var frame = manifest.GetProperty("frames")[0];
-        frame.GetProperty("vblank").GetUInt64().Should().Be(1);
+        frame.GetProperty("targetVblank").GetUInt64().Should().Be(1);
+        frame.GetProperty("capturedVblank").GetUInt64().Should().Be(1);
         frame.GetProperty("pngSha256").GetString().Should().NotBeNullOrEmpty();
         frame.GetProperty("vramSha256").GetString().Should().NotBeNullOrEmpty();
         frame.GetProperty("width").GetInt32().Should().BeGreaterThan(0);
