@@ -74,6 +74,8 @@ public sealed class LoadedCodeProvenanceTests
 
         var records = JsonNode.Parse(diagnostics.ToJson())!["records"]!.AsArray();
         var origin = records[0]!["origins"]!.AsArray()[0]!;
+        JsonNode.Parse(diagnostics.ToJson())!["originBasis"]!.GetValue<string>().Should().Be("manifest-declared",
+            "an origin repeats the manifest's declaration; the report must not present it as proof of the loaded file");
         origin["name"]!.GetValue<string>().Should().Be("disc:SLUS/GAME.EXE");
         origin["kind"]!.GetValue<string>().Should().Be("disc-exe");
         origin["loadAddress"]!.GetValue<string>().Should().Be("0x80030000");

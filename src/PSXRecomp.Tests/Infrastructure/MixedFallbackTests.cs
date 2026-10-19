@@ -400,6 +400,47 @@ public sealed class MixedFallbackTests
         AssertSameCpuAsInterpreter(run.Result, RunInterpreter(words));
     }
 
+    // Issue #773: the mismatch report only observes. Off and on, the same program ends in the same state; the on run records
+    // the handoff at a RAM-placed PC that had one version the RAM did not match.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_OffAndOn_EndInTheSameState()
+    {
+        const uint done = Target + 0x100u;
+        // The program overwrites the RAM at Target with code no version holds, then jumps there: the artifact refuses every
+        // version at that handoff, so the diagnostics have something to record.
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), Li(T1, Ori(S1, Zero, 0x55)), [Sw(T1, T0, 0)], Li(T1, MipsEncoding.Jump(done)), [Sw(T1, T0, 4)]);
+        // Register-indirect, so the static build does not reach Target and the image version stays a RAM-placed one.
+        main.Emit(Li(T1, Nop), [Sw(T1, T0, 8)], [Jr(T0)], [Nop]);
+        var tail = new Block(Target);
+        tail.Emit(Ori(S1, Zero, 0x77), MipsEncoding.Jump(done), Nop);
+        var doneBlock = new Block(done);
+        doneBlock.Emit(End());
+        var words = Image(main, tail, doneBlock);
+        var tailStart = (int)((Target - Entry) / 4);
+        var ramWords = words[tailStart..(tailStart + 3)];
+        // Two RAM-placed images at Target: the one whose words the RAM holds (selected) and one that differs (rejected).
+        var otherWords = new[] { Ori(S1, Zero, 0x99), MipsEncoding.Jump(done), Nop };
+        var loaded = new LoadedCodeTable([
+            ReachableProgramBuilder.BuildLoadedImage(Target, otherWords, [Target], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(Target, ramWords, [Target], new HashSet<uint>()),
+        ]);
+        using var offDir = new TempDirectory();
+        using var onDir = new TempDirectory();
+
+        var off = RunArtifact(words, offDir, On, loadedCode: loaded);
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+        var on = RunArtifact(words, onDir, On, loadedCode: loaded, loadedCodeMismatch: diagnostics);
+
+        on.Result.State.Should().Be(off.Result.State);
+        on.Result.FinalSnapshot!.Gpr.Should().Equal(off.Result.FinalSnapshot!.Gpr);
+        Gpr(on.Result, S1).Should().Be(Gpr(off.Result, S1));
+        on.Evidence!.Transitions.Should().Be(off.Evidence!.Transitions);
+        Gpr(on.Result, S1).Should().Be(0x55u, "the code the program wrote at Target ran");
+        diagnostics.TotalObservations.Should().BeGreaterThan(0UL, "the handoff at Target was observed");
+        diagnostics.DistinctRecords.Should().Be(2, "both versions at Target were compared and refused");
+    }
+
     [Fact]
     public void PatchedBiosTarget_ToUncompiledImageCode_StaysFailClosed()
     {

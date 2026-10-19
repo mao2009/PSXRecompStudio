@@ -157,7 +157,12 @@ internal static class MixedFallbackTestSupport
 
     /// <summary>Builds the artifact for <paramref name="words"/> with the static roots only and runs it to its end.</summary>
     public static MixedRun RunArtifact(
-        uint[] words, TempDirectory dir, MixedFallbackOptions? mixedFallback, uint segmentBudget = 100_000)
+        uint[] words,
+        TempDirectory dir,
+        MixedFallbackOptions? mixedFallback,
+        uint segmentBudget = 100_000,
+        LoadedCodeTable? loadedCode = null,
+        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null)
     {
         var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
         using var engine = new RecompiledHostExecutionEngine(
@@ -167,7 +172,9 @@ internal static class MixedFallbackTestSupport
             new GeneratedHostBuildService(),
             dir.FullPath,
             (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer),
-            mixedFallback: mixedFallback);
+            mixedFallback: mixedFallback,
+            loadedCode: loadedCode);
+        engine.LoadedCodeMismatchDiagnostics = loadedCodeMismatch;
         var result = new ExecutionOrchestrator().Execute(engine, new ExitAtZeroHandoff(), Request(segmentBudget));
         return new MixedRun(result, engine.FallbackEvidence, engine.FallbackTimings, engine.LastDeclinedTransfer);
     }

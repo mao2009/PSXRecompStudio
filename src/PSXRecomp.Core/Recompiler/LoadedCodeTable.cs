@@ -24,11 +24,12 @@ public sealed record GuardedImageProgram(IReadOnlyList<GuardedBlock> Blocks, IRe
 }
 
 /// <summary>
-/// The source of one loaded code image, fixed when the image is registered (Issue #773). It names the image as the manifest
-/// does and says what kind of input it was; it never holds a host path. Diagnostics only.
+/// The manifest's declaration of one loaded code image, fixed when the image is registered (Issue #773). It repeats the
+/// label and directive the manifest gave; it is not a check of the file's bytes or of what the game loaded at run time, so
+/// it proves no more than the manifest does. It never holds a host path. Diagnostics only.
 /// </summary>
 /// <param name="Name">The manifest label (for a disc image, the normalized ISO path under its prefix).</param>
-/// <param name="Kind">The manifest directive it came from: <c>rom-image</c>, <c>exe-file</c>, <c>boot-exe</c>, <c>disc-exe</c>.</param>
+/// <param name="Kind">The manifest directive it was declared with: <c>rom-image</c>, <c>exe-file</c>, <c>boot-exe</c>, <c>disc-exe</c>.</param>
 /// <param name="LoadAddress">The guest address the image is loaded at.</param>
 /// <param name="WordCount">The image size in words.</param>
 [Domain]

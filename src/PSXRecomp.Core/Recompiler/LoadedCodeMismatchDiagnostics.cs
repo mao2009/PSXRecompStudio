@@ -70,7 +70,7 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>
     /// Observes one refused PC. <paramref name="versions"/> are the versions registered at <paramref name="pc"/> in link order;
     /// <paramref name="readWord"/> reads the guest word at a virtual address, as <see cref="LoadedCodeTable.Match"/> does.
-    /// <paramref name="origins"/> are the images behind each version (<see cref="LoadedCodeTable.OriginsAt"/>); null when unknown.
+    /// <paramref name="origins"/> are the images the manifest declared for each version (<see cref="LoadedCodeTable.OriginsAt"/>); null when unknown.
     /// </summary>
     public void Observe(
         uint pc, IReadOnlyList<GuardedBlock> versions, Func<uint, uint> readWord, IReadOnlyList<IReadOnlyList<LoadedImageOrigin>>? origins = null)
@@ -116,7 +116,8 @@ public sealed class LoadedCodeMismatchDiagnostics
             if (!_entries.TryGetValue(key, out var entry))
             {
                 var versionOrigins = origins is not null && index < origins.Count ? origins[index] : [];
-                entry = new Entry(pc, index, versions.Count, aot.ToArray(), versionOrigins);
+                // The words are the table's own immutable data: the entry references them rather than copying (memory cost, #786 review).
+                entry = new Entry(pc, index, versions.Count, aot, versionOrigins);
                 _entries[key] = entry;
             }
 
@@ -149,6 +150,8 @@ public sealed class LoadedCodeMismatchDiagnostics
             ["skippedWords"] = JsonValue.Create(SkippedWords),
             ["guardDecisionRecorded"] = JsonValue.Create(false),
             ["attribution"] = "host-handoff-ram-comparison",
+            // An origin is the manifest's declaration (label and directive), not evidence of which file the game loaded.
+            ["originBasis"] = "manifest-declared",
             ["rejectionsMeaning"] = "Per-version rejections count host-side RAM comparisons at the fallback handoff; they are not a confirmed native guard refusal.",
             ["maxRecords"] = JsonValue.Create(_maxRecords),
             ["records"] = records,
@@ -158,10 +161,10 @@ public sealed class LoadedCodeMismatchDiagnostics
 
     private static string Hex(uint value) => $"0x{value:X8}";
 
-    private static string Sha256(uint[] words)
+    private static string Sha256(IReadOnlyList<uint> words)
     {
-        var bytes = new byte[words.Length * 4];
-        for (var i = 0; i < words.Length; i++)
+        var bytes = new byte[words.Count * 4];
+        for (var i = 0; i < words.Count; i++)
         {
             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(i * 4), words[i]);
         }
@@ -172,16 +175,17 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>One (PC, version) line of the report, aggregated over every handoff that refused it.</summary>
     private sealed class Entry
     {
-        private readonly uint[] _aot;
+        private readonly IReadOnlyList<uint> _aot;
         private readonly string _aotSha256;
         private readonly IReadOnlyList<LoadedImageOrigin> _origins;
-        // The RAM range of the latest refusal: hashed once when the report is written, not on every handoff.
-        private uint[]? _lastRam;
+        // SHA-256 of the RAM range of the latest refusal. A hash, not the words: keeping every record's last RAM range
+        // would hold up to the whole comparison budget in memory (#786 review).
+        private string? _lastRamSha256;
         private uint[] _windowAot = [];
         private uint[] _windowRam = [];
         private int _windowStart;
 
-        public Entry(uint pc, int version, int versionCount, uint[] aot, IReadOnlyList<LoadedImageOrigin> origins)
+        public Entry(uint pc, int version, int versionCount, IReadOnlyList<uint> aot, IReadOnlyList<LoadedImageOrigin> origins)
         {
             Pc = pc;
             Version = version;
@@ -231,22 +235,24 @@ public sealed class LoadedCodeMismatchDiagnostics
             MismatchedWordsMin = Math.Min(MismatchedWordsMin, mismatched);
             MismatchedWordsMax = Math.Max(MismatchedWordsMax, mismatched);
 
-            if (_lastRam is not null && !_lastRam.AsSpan().SequenceEqual(ram)) RamHashChanges++;
-            _lastRam = ram;
+            var ramSha256 = Sha256(ram);
+            if (_lastRamSha256 is not null && _lastRamSha256 != ramSha256) RamHashChanges++;
+            _lastRamSha256 = ramSha256;
 
             if (Rejections == 1)
             {
                 // The window is taken at the first refusal only: a bounded sample, not a dump of the image.
                 _windowStart = Math.Max(0, firstMismatch - WindowRadius);
-                var end = Math.Min(_aot.Length, firstMismatch + WindowRadius + 1);
-                _windowAot = _aot[_windowStart..end];
+                var end = Math.Min(_aot.Count, firstMismatch + WindowRadius + 1);
+                _windowAot = new uint[end - _windowStart];
+                for (var i = 0; i < _windowAot.Length; i++) _windowAot[i] = _aot[_windowStart + i];
                 _windowRam = ram[_windowStart..end];
             }
         }
 
         public JsonObject ToJsonNode()
         {
-            var words = _aot.Length;
+            var words = _aot.Count;
             var physical = Pc & 0x1FFFFFFFu;
             return new JsonObject
             {
@@ -261,7 +267,7 @@ public sealed class LoadedCodeMismatchDiagnostics
                 ["mismatchedWordsRange"] = Rejections == 0 ? null : new JsonArray(JsonValue.Create(MismatchedWordsMin), JsonValue.Create(MismatchedWordsMax)),
                 ["ramHashChanges"] = JsonValue.Create(RamHashChanges),
                 ["aotSha256"] = _aotSha256,
-                ["ramSha256"] = _lastRam is null ? null : Sha256(_lastRam),
+                ["ramSha256"] = _lastRamSha256,
                 ["windowStartPc"] = Rejections == 0 ? null : Hex(Pc + (uint)_windowStart * 4u),
                 ["windowAot"] = new JsonArray(_windowAot.Select(static w => (JsonNode)Hex(w)).ToArray()),
                 ["windowRam"] = new JsonArray(_windowRam.Select(static w => (JsonNode)Hex(w)).ToArray()),

@@ -34,7 +34,9 @@ that:
    (`guardDecisionRecorded` is `false`). The comparison is bounded by a word
    budget, enforced per version; a version that does not fit is skipped whole and
    reported in `skippedVersions`/`skippedWords`, and `incomplete: true` marks a
-   report cut short by the budget or the record cap), and `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   report cut short by the budget or the record cap; `origins` repeats the
+   manifest's declaration (`originBasis: manifest-declared`), not a check of the
+   file the game loaded), and `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
    run's wall time, the host round trips the native code made (MMIO accesses,
    guest-time reports), the mixed-fallback time split, and the last observations
    of a run stopped from outside (last fallback entry/return PC, last relayed
