@@ -239,18 +239,28 @@ public sealed class ScreenshotCapture : IDisposable
     /// saved PNG, the VBlank (guest frame) index, size, display mode, pixel hash and whether the 24-bit path was used
     /// (false means the frame was converted as legacy 15-bit). Written atomically; safe to call after a partial run.
     /// </summary>
-    public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc)
+    public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc) =>
+        WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames);
+
+    /// <summary>
+    /// Writes <c>manifest.json</c> without a capture session, so a run that failed before capture was set up still
+    /// records its stop reason (Issue #751).
+    /// </summary>
+    public static void WriteManifestFile(
+        string outputDirectory, string stopReason, int screenshotsTaken, ulong maxVblankReached, TimeSpan elapsed,
+        uint? lastGuestPc, IEnumerable<object> frames)
     {
         var manifest = new
         {
             stopReason,
-            screenshotsTaken = _frames.Count,
+            screenshotsTaken,
             maxVblankReached,
             elapsedMs = (long)elapsed.TotalMilliseconds,
             lastGuestPc = lastGuestPc is { } pc ? $"0x{pc:X8}" : null,
-            frames = _frames,
+            frames,
         };
-        var path = Path.Combine(_outputDirectory, "manifest.json");
+        Directory.CreateDirectory(outputDirectory);
+        var path = Path.Combine(outputDirectory, "manifest.json");
         var tempPath = path + ".tmp";
         File.WriteAllText(tempPath, JsonSerializer.Serialize(manifest, ManifestOptions));
         File.Move(tempPath, path, overwrite: true);

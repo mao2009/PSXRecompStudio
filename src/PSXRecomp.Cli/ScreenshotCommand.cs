@@ -148,7 +148,7 @@ public static class ScreenshotCommand
                 WriteHumanResult(result, standardOutput);
             }
 
-            return result.ExecutionResult.State == TitleExecutionState.RuntimeFailure
+            return IsFailureState(result.ExecutionResult.State)
                 ? RecompiledArtifactExitCode.Failure
                 : RecompiledArtifactExitCode.Success;
         }
@@ -240,6 +240,10 @@ public static class ScreenshotCommand
         {
             stopReason = $"Crash: {ex.GetType().Name}";
             standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
+            executionResult = new TitleExecutionResult(
+                TitleExecutionState.RuntimeFailure,
+                null, 0, InterpreterTitleExecutionEngine.EngineName,
+                "CRASH", $"Runtime crash: {ex}");
         }
         finally
         {
@@ -254,7 +258,7 @@ public static class ScreenshotCommand
         var sb = new StringBuilder();
         sb.Append("{");
         sb.Append($"\"kind\":\"screenshot\",");
-        sb.Append($"\"success\":{result.ExecutionResult.State != TitleExecutionState.RuntimeFailure},");
+        sb.Append($"\"success\":{!IsFailureState(result.ExecutionResult.State)},");
         sb.Append($"\"screenshotsTaken\":{result.ScreenshotsTaken},");
         sb.Append($"\"maxVblankReached\":{result.MaxVblankReached},");
         sb.Append($"\"elapsedMs\":{result.ElapsedTime.TotalMilliseconds:F0},");
@@ -554,6 +558,13 @@ public static class ScreenshotCommand
         };
 
     /// <summary>
+    /// States that are not a clean end of the run: they set a non-zero exit code and <c>success:false</c>.
+    /// BudgetExhausted and clean guest stops stay successful.
+    /// </summary>
+    internal static bool IsFailureState(TitleExecutionState state) =>
+        state is TitleExecutionState.RuntimeFailure or TitleExecutionState.InvalidState or TitleExecutionState.UnsupportedTransfer;
+
+    /// <summary>
     /// Maps an orchestrator terminal state to the stop-reason vocabulary shared by stdout, JSON and manifest.json.
     /// Failure states keep their own name so a crash-like end is never reported as a clean guest stop (Issue #751).
     /// </summary>
@@ -667,7 +678,11 @@ public static class ScreenshotCommand
         // Only the PNGs this run wrote: a reused output directory may hold stale files that the manifest does not list.
         IReadOnlyList<string> savedFiles = capture is null ? [] : capture.SavedFiles;
         var maxVblank = scheduler?.VblankCount ?? 0;
-        capture?.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC);
+        if (capture is not null)
+            capture.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC);
+        else
+            ScreenshotCapture.WriteManifestFile(outputDirectory, stopReason, 0, maxVblank, stopwatch.Elapsed,
+                executionResult?.FinalSnapshot?.PC, []);
 
         return new HeadlessRunResult(
             executionResult ?? new TitleExecutionResult(

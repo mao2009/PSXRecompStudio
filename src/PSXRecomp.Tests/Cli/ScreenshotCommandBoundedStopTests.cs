@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Cli;
+using PSXRecomp.Infrastructure.Runtime.Gpu;
 using PSXRecomp.Tests.RealRomAnalysis;
 
 namespace PSXRecomp.Tests.Cli;
@@ -62,6 +63,28 @@ public sealed class ScreenshotCommandBoundedStopTests
     public void StopReasonOf_KeepsFailureStatesDistinctFromCleanGuestStops(TitleExecutionState state, string expected)
     {
         ScreenshotCommand.StopReasonOf(state).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(TitleExecutionState.RuntimeFailure, true)]
+    [InlineData(TitleExecutionState.InvalidState, true)]
+    [InlineData(TitleExecutionState.UnsupportedTransfer, true)]
+    [InlineData(TitleExecutionState.BudgetExhausted, false)]
+    [InlineData(TitleExecutionState.RuntimeHandoff, false)]
+    public void IsFailureState_NonCleanEndsFailTheRun(TitleExecutionState state, bool expected)
+    {
+        ScreenshotCommand.IsFailureState(state).Should().Be(expected);
+    }
+
+    [Fact]
+    public void ManifestWithoutCapture_RecordsStopReasonInOutputDirectory()
+    {
+        using var dir = new TempDirectory();
+        ScreenshotCapture.WriteManifestFile(dir.FullPath, "runtime_failure", 0, 0, TimeSpan.Zero, null, []);
+
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("runtime_failure");
+        manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(0);
     }
 
     [Fact]
