@@ -948,7 +948,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine($"static const uint32_t psx_gs_off[PSX_GS_N + 1u] = {{ {string.Join(", ", offsets.Select(o => o.ToString(System.Globalization.CultureInfo.InvariantCulture) + "u"))} }};");
         sb.AppendLine($"static const uint32_t psx_gs_len[PSX_GS_T] = {{ {Cells(v => v.Words.Count + "u")} }};");
         sb.AppendLine($"static const uint32_t psx_gs_w0[PSX_GS_T] = {{ {Cells(v => v.Words.Count != 0 ? FormatHex(v.Words[0]) : "0u")} }};");
-        sb.AppendLine("static uint64_t psx_gs_arrive[PSX_GS_N], psx_gs_hit[PSX_GS_T], psx_gs_miss[PSX_GS_N];");
+        sb.AppendLine("static uint64_t psx_gs_arrive[PSX_GS_N], psx_gs_hit[PSX_GS_T], psx_gs_miss[PSX_GS_N], psx_gs_refuse[PSX_GS_N];");
         sb.AppendLine("static uint32_t psx_gs_missprev[PSX_GS_N], psx_gs_missram[PSX_GS_N];");
         // CPU state (32 GPRs, pc, prev, slot, RAM word) of the first miss of each entry, at most 16 records in all. A first miss
         // beyond that is only counted in psx_gs_snapdropped and has no CPU registers in the report.
@@ -987,7 +987,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  fprintf(f, \"guardstats 1\\nrun %016llx\\niter %llu\\n\", psx_gs_runid, (unsigned long long)psx_gs_iter);");
         sb.AppendLine("  for (i = 0u; i < PSX_GS_N; i++) {");
         sb.AppendLine("    if (psx_gs_arrive[i] == 0u) continue;");
-        sb.AppendLine("    fprintf(f, \"slot %08X nver %u arrive %llu miss %llu missprevdispatch %08X missram %08X\", (unsigned)psx_gs_pc[i], (unsigned)(psx_gs_off[i + 1u] - psx_gs_off[i]), (unsigned long long)psx_gs_arrive[i], (unsigned long long)psx_gs_miss[i], (unsigned)psx_gs_missprev[i], (unsigned)psx_gs_missram[i]);");
+        sb.AppendLine("    fprintf(f, \"slot %08X nver %u arrive %llu miss %llu refuse %llu missprevdispatch %08X missram %08X\", (unsigned)psx_gs_pc[i], (unsigned)(psx_gs_off[i + 1u] - psx_gs_off[i]), (unsigned long long)psx_gs_arrive[i], (unsigned long long)psx_gs_miss[i], (unsigned long long)psx_gs_refuse[i], (unsigned)psx_gs_missprev[i], (unsigned)psx_gs_missram[i]);");
         sb.AppendLine("    for (v = psx_gs_off[i]; v < psx_gs_off[i + 1u]; v++) fprintf(f, \" v%u hit %llu len %u w0 %08X\", v - psx_gs_off[i], (unsigned long long)psx_gs_hit[v], (unsigned)psx_gs_len[v], (unsigned)psx_gs_w0[v]);");
         sb.AppendLine("    fprintf(f, \"\\n\");");
         sb.AppendLine("  }");
@@ -1005,6 +1005,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("/* psx_gs_prev is the entry PC of the previous dispatch-loop iteration, not necessarily the guest source of the transfer. */");
         sb.AppendLine("#define PSX_GS_TICK(st) do { if (!psx_gs_registered) { psx_gs_registered = 1; atexit(psx_gs_dump_final); } psx_gs_prev = psx_gs_cur; psx_gs_cur = (st)->pc; if ((++psx_gs_iter & 0x3FFFFFu) == 0u) psx_gs_dump(0); } while (0)");
         sb.AppendLine("#define PSX_GS_ARRIVE(slot) (psx_gs_arrive[slot]++)");
+        sb.AppendLine("#define PSX_GS_REFUSE(slot) (psx_gs_refuse[slot]++)");
         sb.AppendLine("#define PSX_GS_HIT(slot, ver) (psx_gs_hit[psx_gs_off[slot] + (ver)]++)");
         sb.AppendLine("#define PSX_GS_MISS(slot, st) do { unsigned k_; if (psx_gs_miss[slot]++ == 0u) { psx_gs_missprev[slot] = psx_gs_prev; psx_gs_missram[slot] = recompiler_read_mem32((st)->core, (st)->pc); if (psx_gs_nsnap < 16) { for (k_ = 0u; k_ < 32u; k_++) psx_gs_snap[psx_gs_nsnap][k_] = (st)->gpr[k_]; psx_gs_snap[psx_gs_nsnap][32] = (st)->pc; psx_gs_snap[psx_gs_nsnap][33] = psx_gs_prev; psx_gs_snap[psx_gs_nsnap][34] = (uint32_t)(slot); psx_gs_snap[psx_gs_nsnap][35] = psx_gs_missram[slot]; psx_gs_nsnap++; } else { psx_gs_snapdropped++; } } } while (0)");
         sb.AppendLine();
@@ -1255,6 +1256,7 @@ int recompiler_trace_attach(struct RecompilerState* state) {
                 var indent = IndentUnit + IndentUnit + IndentUnit;
                 sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(group.Key)}: {{");
                 var guardSlot = s_guardStats ? guardSlots[group.Key] : -1;
+                // arrive = hit + miss + refuse: an arrival whose budget check refuses it ran nothing and is counted as a refusal.
                 if (s_guardStats) sb.AppendLine(indent + $"PSX_GS_ARRIVE({guardSlot});");
                 var version = 0;
                 foreach (var loaded in group)
@@ -1263,6 +1265,7 @@ int recompiler_trace_attach(struct RecompilerState* state) {
                     sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
                     sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
                     sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
+                    if (s_guardStats) sb.AppendLine(indent + IndentUnit + IndentUnit + $"PSX_GS_REFUSE({guardSlot});");
                     EmitBudgetExceededReturn(sb, 5);
                     sb.AppendLine(indent + IndentUnit + "}");
                     // Counted after the budget check: a unit the budget refuses did not run and is not a hit (Issue #797).

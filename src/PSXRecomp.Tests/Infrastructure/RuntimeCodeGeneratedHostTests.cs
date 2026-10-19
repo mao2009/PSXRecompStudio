@@ -736,6 +736,37 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [Fact]
+    public void GuardStats_Arrivals_EqualHitsPlusMissesPlusBudgetRefusals_AtEveryBudget()
+    {
+        // Issue #773 review: an arrival is counted before the budget check, so a unit the budget refuses was an arrival that is
+        // neither a hit nor a miss. Refusals are now counted separately; every arrival is accounted for at every budget.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var sawRefusal = false;
+        for (uint budget = 1; budget <= 24; budget++)
+        {
+            RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(6), budget);
+            var slot = File.ReadAllLines(statsPath).SingleOrDefault(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal));
+            if (slot is null) continue; // no arrival at all at this budget
+            static ulong Count(string line, string pattern)
+            {
+                var match = Regex.Match(line, pattern);
+                match.Success.Should().BeTrue($"the report has the field {pattern}");
+                return ulong.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            var arrive = Count(slot, @" arrive (\d+) ");
+            var miss = Count(slot, @" miss (\d+) ");
+            var refuse = Count(slot, @" refuse (\d+) ");
+            var hit = Count(slot, @" v0 hit (\d+) ");
+            (hit + miss + refuse).Should().Be(arrive, $"budget {budget}: each arrival is a hit, a miss, or a budget refusal");
+            sawRefusal |= refuse != 0;
+        }
+        sawRefusal.Should().BeTrue("some budget in the range refuses an arrival, so the accounting is not checked only where nothing is refused");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
     public void GuardStats_PerVersionTables_AreFlat_AndAManyVersionEntryDoesNotWidenOthers()
     {
         // Issue #773 review: a slot with many versions must not pad the other slots to its width.

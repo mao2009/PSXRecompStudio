@@ -152,7 +152,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// <summary>
     /// Builds the artifact with per-entry loaded-code guard counters, written to the file named by PSX_GUARD_STATS_FILE
     /// (measurement only, Issue #773). Opt-in through <see cref="GuardStatsScope"/> or PSXRECOMP_NATIVE_GUARD_STATS (the
-    /// artifact is generated while the engine is constructed, so a property set afterwards would be too late); off, the
+    /// artifact is generated at construction, or at the first RunSegment of an embedded image, so the scope must be in effect then); off, the
     /// generated text is unchanged.
     /// </summary>
     private static bool GuardStats => GuardStatsScope.Enabled;
