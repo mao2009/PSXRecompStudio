@@ -185,6 +185,87 @@ public sealed class RuntimeHostFrameOutputTests
         bgra[3].Should().Be(0xFF);
     }
 
+    [Fact]
+    public void TryWrite_TwentyFourBitDisplay_PngCarriesRgbInChannelOrder()
+    {
+        // Synthetic GPU frame (no guest run): a 24-bit display goes through the shared capture conversion into the PNG.
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(0x08000010u); // 24-bit color depth
+        gpu.Vram[0, 0] = 0x3412;   // pixel 0 bytes: R=0x12 G=0x34
+        gpu.Vram[1, 0] = 0x0056;   // pixel 0 byte B=0x56
+        var frame = gpu.CaptureFrame();
+        SetLastFrameBgra32(engine, (ScreenshotCapture.ToBgra32(frame, gpu), frame.Width, frame.Height));
+        var output = dir.Combine("frame24.png");
+
+        RuntimeHostFrameOutput.TryWrite(engine, output, new StringWriter()).Should().BeTrue();
+
+        #pragma warning disable AARC003
+        var png24 = File.ReadAllBytes(output);
+        #pragma warning restore AARC003
+        ReadFirstPixelsRgba(png24, 1).Should().Equal(0x12, 0x34, 0x56, 0xFF);
+    }
+
+    [Fact]
+    public void TryWrite_FifteenBitDisplay_PngExpandsEachChannelToEightBits()
+    {
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(0x08000000u); // 15-bit color depth
+        gpu.Vram[0, 0] = 0x001F;   // R=31 only -> RGB(0xFF, 0, 0)
+        gpu.Vram[1, 0] = 0x7C00;   // B=31 only -> RGB(0, 0, 0xFF)
+        var frame = gpu.CaptureFrame();
+        SetLastFrameBgra32(engine, (ScreenshotCapture.ToBgra32(frame, gpu), frame.Width, frame.Height));
+        var output = dir.Combine("frame15.png");
+
+        RuntimeHostFrameOutput.TryWrite(engine, output, new StringWriter()).Should().BeTrue();
+
+        #pragma warning disable AARC003
+        var png15 = File.ReadAllBytes(output);
+        #pragma warning restore AARC003
+        ReadFirstPixelsRgba(png15, 2).Should().Equal(
+            0xFF, 0x00, 0x00, 0xFF,
+            0x00, 0x00, 0xFF, 0xFF);
+    }
+
+    [Fact]
+    public void Dispose_CalledTwiceAfterAFrameWasHeld_DoesNotThrow()
+    {
+        // Shutdown path: the run's engine is disposed after the frame has been read; a repeated dispose must be harmless.
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        SetLastFrameBgra32(engine, CreateTestFrame(16, 16));
+
+        Action act = () =>
+        {
+            engine.Dispose();
+            engine.Dispose();
+        };
+
+        act.Should().NotThrow();
+    }
+
+    /// <summary>Decodes the first <paramref name="pixelCount"/> pixels of row 0 of a PNG written by <see cref="RuntimeHostFrameOutput"/> as RGBA bytes.</summary>
+    private static byte[] ReadFirstPixelsRgba(byte[] png, int pixelCount)
+    {
+        var idatLength = checked((int)BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(33, 4)));
+        Encoding.ASCII.GetString(png, 37, 4).Should().Be("IDAT");
+        using var idat = new MemoryStream(png, 41, idatLength, writable: false);
+        using var inflater = new ZLibStream(idat, CompressionMode.Decompress);
+        var scanline = new byte[1 + pixelCount * 4];
+        inflater.ReadExactly(scanline);
+        scanline[0].Should().Be(0); // PNG filter: none
+        return scanline[1..];
+    }
+
     private static (byte[] Bgra, int Width, int Height) CreateTestFrame(int width, int height)
     {
         var bgra = new byte[width * height * 4];
