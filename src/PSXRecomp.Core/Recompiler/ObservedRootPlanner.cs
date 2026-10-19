@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
@@ -32,12 +34,19 @@ internal sealed record ObservedFallbackTarget(uint Pc, string Cause, ulong Entri
 internal sealed record ObservedRunImage(string Name, uint LoadAddress, string WordsSha256, string? SourceSha256, IReadOnlyList<uint> Roots);
 
 /// <summary>
-/// The identity of the run behind a fallback-target export (Issue #773): the firmware it ran, the interpret points and the images
-/// (with their source and code-word hashes and roots) its manifest produced. It proves which inputs the trace was taken over; it does
-/// not prove the disc image, the ROM roots/code-bytes options or the run's inputs, none of which the export carries a hash of.
+/// The identity of the run behind a fallback-target export (Issue #773): the firmware (ROM) it ran, the interpret points, the images
+/// (with their source and code-word hashes and roots) its manifest produced, the disc image's SHA-256 (null when the run had no disc)
+/// and the SHA-256 of the probe options that change which PCs are observed (<c>--roots</c>, <c>--code-bytes</c>). Every field is a
+/// content hash or a PC; no path is carried. The planner refuses an export whose identity differs from its own inputs. It does not
+/// prove the trace matches guest RAM at run time.
 /// </summary>
 [Domain]
-internal sealed record ObservedRunIdentity(string FirmwareSha256, IReadOnlyList<uint> Interpreted, IReadOnlyList<ObservedRunImage> Images);
+internal sealed record ObservedRunIdentity(
+    string FirmwareSha256,
+    IReadOnlyList<uint> Interpreted,
+    IReadOnlyList<ObservedRunImage> Images,
+    string? DiscSha256,
+    string ProbeOptionsSha256);
 
 /// <summary>A parsed fallback-target export: the identity of its run, and its targets.</summary>
 [Domain]
@@ -192,7 +201,18 @@ internal static class ObservedRootPlanner
                 continue;
             }
 
-            var grown = ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, roots[index].Append(target.Pc));
+            IReadOnlySet<uint> grown;
+            try
+            {
+                grown = ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, roots[index].Append(target.Pc));
+            }
+            catch (InvalidOperationException)
+            {
+                // Defensive: a candidate that is safe alone is rejected, not allowed to abort the plan, if the combined walk fails.
+                Reject("not-structurally-safe");
+                continue;
+            }
+
             var growth = grown.Count - reachable[index].Count;
             if (extra + growth > allowance)
             {
@@ -214,16 +234,30 @@ internal static class ObservedRootPlanner
         return new ObservedRootPlan(perImage, new ObservedRootCounts(targets.Count, total, baseReachable, extra, rejected));
     }
 
+    /// <summary>
+    /// The SHA-256 of the probe options that change which PCs a run observes: the <c>--code-bytes</c> count and the <c>--roots</c>
+    /// PCs (order and repeats do not matter). The probe and the planner compute it from the same values, so an export is bound to them.
+    /// </summary>
+    public static string ProbeOptionsSha256(uint codeBytes, IEnumerable<uint> roots)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+        var canonical = $"code-bytes={codeBytes}\nroots={string.Join(",", roots.Distinct().Order().Select(static pc => $"0x{pc:X8}"))}\n";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
     /// <summary>The run identity as the probe records it and as <see cref="Verify"/> recomputes it from the current inputs.</summary>
-    public static ObservedRunIdentity DescribeRun(string firmwareSha256, LoadImageManifest manifest)
+    public static ObservedRunIdentity DescribeRun(string firmwareSha256, LoadImageManifest manifest, string? discSha256, string probeOptionsSha256)
     {
         ArgumentNullException.ThrowIfNull(firmwareSha256);
         ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(probeOptionsSha256);
         return new ObservedRunIdentity(
             firmwareSha256.ToLowerInvariant(),
             manifest.Interpreted.Order().ToArray(),
             manifest.Images.Select(static i => new ObservedRunImage(
-                i.Name, i.LoadAddress, LoadImageManifest.CodeWordsSha256(i.Words), i.SourceSha256, i.Roots.Order().ToArray())).ToArray());
+                i.Name, i.LoadAddress, LoadImageManifest.CodeWordsSha256(i.Words), i.SourceSha256, i.Roots.Order().ToArray())).ToArray(),
+            discSha256?.ToLowerInvariant(),
+            probeOptionsSha256.ToLowerInvariant());
     }
 
     /// <summary>The JSON shape of <see cref="ObservedRunIdentity"/> in an export (the inverse of the <c>run</c> parse).</summary>
@@ -239,6 +273,8 @@ internal static class ObservedRootPlanner
             sourceSha256 = i.SourceSha256,
             roots = i.Roots.Select(static pc => $"0x{pc:X8}").ToArray(),
         }).ToArray(),
+        discSha256 = run.DiscSha256,
+        probeOptionsSha256 = run.ProbeOptionsSha256,
     };
 
     /// <summary>Fail closed unless the export's run is exactly the run the current inputs describe.</summary>
@@ -250,6 +286,8 @@ internal static class ObservedRootPlanner
             new($"fallback targets: the export was not taken over these inputs ({what} differs); re-run openbios-probe --fallback-targets with this firmware and manifest.");
 
         if (recorded.FirmwareSha256 != current.FirmwareSha256) throw Mismatch("firmware SHA-256");
+        if (recorded.DiscSha256 != current.DiscSha256) throw Mismatch("disc image SHA-256");
+        if (recorded.ProbeOptionsSha256 != current.ProbeOptionsSha256) throw Mismatch("probe options (--roots, --code-bytes)");
         if (!recorded.Interpreted.SequenceEqual(current.Interpreted)) throw Mismatch("interpret points");
         if (recorded.Images.Count != current.Images.Count) throw Mismatch("image count");
         for (var i = 0; i < current.Images.Count; i++)
@@ -284,9 +322,17 @@ internal static class ObservedRootPlanner
             }
 
             var outcome = root.GetProperty("outcome");
-            if (!Enum.TryParse<TitleExecutionState>(outcome.GetProperty("state").GetString(), ignoreCase: false, out var state))
+            // Names only: Enum.TryParse alone would also read a number (e.g. "99") as a state.
+            var stateName = outcome.GetProperty("state").GetString();
+            if (stateName is null || !Enum.IsDefined(typeof(TitleExecutionState), stateName) || !Enum.TryParse(stateName, out TitleExecutionState state))
             {
                 throw new InvalidDataException("fallback targets: 'outcome.state' is not a known execution state.");
+            }
+
+            // A run that was paused at --stop-at is a deliberate partial observation (it ends in RuntimeHandoff), so it is refused.
+            if (outcome.GetProperty("stopAt") is not { ValueKind: JsonValueKind.Null })
+            {
+                throw new InvalidDataException("fallback targets: the export was produced with --stop-at, a deliberate pause; its evidence is partial and is refused.");
             }
 
             if (outcome.GetProperty("complete").GetBoolean() != IsCompleteOutcome(state))
@@ -315,7 +361,9 @@ internal static class ObservedRootPlanner
                     ParsePc(e.GetProperty("loadAddress").GetString()),
                     Sha(e.GetProperty("wordsSha256").GetString(), "wordsSha256"),
                     e.GetProperty("sourceSha256") is { ValueKind: not JsonValueKind.Null } s ? Sha(s.GetString(), "sourceSha256") : null,
-                    e.GetProperty("roots").EnumerateArray().Select(static r => ParsePc(r.GetString())).ToArray())).ToArray());
+                    e.GetProperty("roots").EnumerateArray().Select(static r => ParsePc(r.GetString())).ToArray())).ToArray(),
+                runElement.GetProperty("discSha256") is { ValueKind: not JsonValueKind.Null } d ? Sha(d.GetString(), "discSha256") : null,
+                Sha(runElement.GetProperty("probeOptionsSha256").GetString(), "probeOptionsSha256"));
 
             var seen = new HashSet<uint>();
             var targets = new List<ObservedFallbackTarget>();

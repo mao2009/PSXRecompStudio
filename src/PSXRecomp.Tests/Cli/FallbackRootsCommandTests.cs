@@ -26,7 +26,7 @@ public sealed class FallbackRootsCommandTests
         dir.WriteFile("test.exe", ObservedRootsFixtures.Exe(text ?? ObservedRootsFixtures.Text));
         var manifest = dir.WriteFile("images.txt", Encoding.ASCII.GetBytes(manifestText));
         // The run the export claims: what the probe would record for exactly these inputs.
-        var run = ObservedRootPlanner.DescribeRun(ObservedRootsFixtures.Sha256Hex(firmwareBytes), LoadImageManifest.Read(manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null));
+        var run = ObservedRootPlanner.DescribeRun(ObservedRootsFixtures.Sha256Hex(firmwareBytes), LoadImageManifest.Read(manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null), discSha256: null, ObservedRootPlanner.ProbeOptionsSha256(0, []));
         var targets = dir.WriteFile("targets.json", Encoding.UTF8.GetBytes(targetsJson(run)));
         return new Fixture(dir, rom, manifest, targets);
     }
@@ -294,7 +294,7 @@ public sealed class FallbackRootsCommandTests
         var fixture = Create(dir, _ => "{}");
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
 
-        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed)
+        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null)
             .Should().BeNull();
     }
 
@@ -308,12 +308,12 @@ public sealed class FallbackRootsCommandTests
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
 
-        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed);
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null);
 
         json.Should().NotBeNull();
         var export = ObservedRootPlanner.ReadExport(json!);
         export.Targets.Select(t => t.Pc).Should().Equal(Callee);
-        ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(hash, manifest));
+        ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(hash, manifest, null, ObservedRootPlanner.ProbeOptionsSha256(0, [])));
     }
 
     // An engine whose outer budget is spent before its first segment: the orchestrator ends the run as BudgetExhausted,
@@ -340,7 +340,7 @@ public sealed class FallbackRootsCommandTests
         result.State.Should().Be(TitleExecutionState.BudgetExhausted);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
         var partial = fixture with { Targets = dir.WriteFile("partial.json", Encoding.UTF8.GetBytes(
-            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State)!)) };
+            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State, null, 0, [], null)!)) };
         var output = dir.Combine("images-observed.txt");
 
         var code = Run(partial, output, out _, out var stderr);
@@ -366,4 +366,30 @@ public sealed class FallbackRootsCommandTests
     }
 
 #pragma warning restore AARC003
+
+    // Issue #773 (review M2, owner decision): an export is refused when its disc image or its probe options (--roots, --code-bytes)
+    // are not the ones the planner was given, so its PCs are never read as evidence about different inputs.
+    [Fact]
+    public void AnExportFromAnotherDisc_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run with { DiscSha256 = new string('d', 64) }));
+
+        var code = Run(fixture, dir.Combine("images-observed.txt"), out _, out var stderr);
+
+        code.Should().Be(1);
+        stderr.Should().Contain("disc image");
+    }
+
+    [Fact]
+    public void AnExportFromDifferentProbeOptions_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run with { ProbeOptionsSha256 = ObservedRootPlanner.ProbeOptionsSha256(0, [Callee]) }));
+
+        var code = Run(fixture, dir.Combine("images-observed.txt"), out _, out var stderr);
+
+        code.Should().Be(1);
+        stderr.Should().Contain("probe options");
+    }
 }

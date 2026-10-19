@@ -38,7 +38,7 @@ internal static class ObservedRootsFixtures
     internal static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
     /// <summary>A run identity that is well formed but describes no real input (for tests that only parse an export).</summary>
-    internal static ObservedRunIdentity PlaceholderRun { get; } = new(new string('0', 64), [], []);
+    internal static ObservedRunIdentity PlaceholderRun { get; } = new(new string('0', 64), [], [], null, new string('0', 64));
 
     internal static string TargetObject(uint pc, string cause, ulong entries, ulong instructions) =>
         $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":{{entries}},"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""";
@@ -50,10 +50,15 @@ internal static class ObservedRootsFixtures
         TargetsJsonInState("Completed", run, targetObjects);
 
     /// <summary>An export whose run ended in <paramref name="state"/> (a <c>TitleExecutionState</c> name).</summary>
-    internal static string TargetsJsonInState(string state, ObservedRunIdentity? run, params string[] targetObjects)
+    internal static string TargetsJsonInState(string state, ObservedRunIdentity? run, params string[] targetObjects) =>
+        TargetsJsonWithStop(state, run, null, targetObjects);
+
+    /// <summary>An export whose run ended in <paramref name="state"/>; <paramref name="stopAt"/> is the <c>--stop-at</c> PC, if any.</summary>
+    internal static string TargetsJsonWithStop(string state, ObservedRunIdentity? run, string? stopAt, params string[] targetObjects)
     {
         run ??= PlaceholderRun;
         var complete = state is "Completed" or "Returned" or "RuntimeHandoff" ? "true" : "false";
-        return $$"""{"format":"psxrecomp.fallback-targets/v2","sha256":"{{run.FirmwareSha256}}","run":{{JsonSerializer.Serialize(ObservedRootPlanner.RunDocument(run))}},"outcome":{"state":"{{state}}","complete":{{complete}}},"targets":[{{string.Join(",", targetObjects)}}]}""";
+        var stop = stopAt is null ? "null" : $"\"{stopAt}\"";
+        return $$"""{"format":"psxrecomp.fallback-targets/v2","sha256":"{{run.FirmwareSha256}}","run":{{JsonSerializer.Serialize(ObservedRootPlanner.RunDocument(run))}},"outcome":{"state":"{{state}}","complete":{{complete}},"stopAt":{{stop}}},"targets":[{{string.Join(",", targetObjects)}}]}""";
     }
 }

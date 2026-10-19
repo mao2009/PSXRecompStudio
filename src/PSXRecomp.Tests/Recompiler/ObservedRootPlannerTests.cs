@@ -198,7 +198,7 @@ public sealed class ObservedRootPlannerTests
     public void ReadExport_RejectsAnExportWithoutAnOutcome_AndAnOutcomeThatContradictsItsState()
     {
         var complete = ObservedRootsFixtures.TargetsJsonInState("Completed", null);
-        var withoutOutcome = complete.Replace("\"outcome\":{\"state\":\"Completed\",\"complete\":true},", "");
+        var withoutOutcome = complete.Replace("\"outcome\":{\"state\":\"Completed\",\"complete\":true,\"stopAt\":null},", "");
         var contradictory = complete.Replace("\"complete\":true", "\"complete\":false");
 
         var noOutcome = () => ObservedRootPlanner.ReadExport(withoutOutcome);
@@ -210,7 +210,7 @@ public sealed class ObservedRootPlannerTests
     [Fact]
     public void ReadExport_RoundTripsTheRunIdentity()
     {
-        var run = new ObservedRunIdentity(new string('c', 64), [0x80000100u], [new ObservedRunImage("img", Dest, new string('d', 64), Sha.Replace('0', 'e'), [Dest, A])]);
+        var run = new ObservedRunIdentity(new string('c', 64), [0x80000100u], [new ObservedRunImage("img", Dest, new string('d', 64), Sha.Replace('0', 'e'), [Dest, A])], new string('a', 64), new string('b', 64));
 
         var read = ObservedRootPlanner.ReadExport(ObservedRootsFixtures.TargetsJson(A, "unknown-code", 1, run)).Run;
 
@@ -220,7 +220,7 @@ public sealed class ObservedRootPlannerTests
     [Fact]
     public void Verify_AcceptsTheSameRun_AndRejectsEachDifferingField()
     {
-        var run = new ObservedRunIdentity(new string('c', 64), [0x80000100u], [new ObservedRunImage("img", Dest, new string('d', 64), new string('e', 64), [Dest])]);
+        var run = new ObservedRunIdentity(new string('c', 64), [0x80000100u], [new ObservedRunImage("img", Dest, new string('d', 64), new string('e', 64), [Dest])], new string('a', 64), new string('b', 64));
         var image = run.Images[0];
         ObservedRootPlanner.Verify(run, run with { });
 
@@ -234,10 +234,57 @@ public sealed class ObservedRootPlannerTests
             (run with { Images = [image with { WordsSha256 = new string('0', 64) }] }, "code words"),
             (run with { Images = [image with { SourceSha256 = null }] }, "source SHA-256"),
             (run with { Images = [image with { Roots = [Dest, A] }] }, "roots"),
+            (run with { DiscSha256 = null }, "disc image"),
+            (run with { DiscSha256 = new string('9', 64) }, "disc image"),
+            (run with { ProbeOptionsSha256 = new string('8', 64) }, "probe options"),
         })
         {
             var act = () => ObservedRootPlanner.Verify(changed, run);
             act.Should().Throw<InvalidDataException>().WithMessage($"*{what}*");
         }
+    }
+
+    // Issue #773 (review M2, owner decision): the export is bound to the ROM, the disc and the probe options that change which PCs run.
+    [Fact]
+    public void ProbeOptionsSha256_IsDistinctPerRootsAndCodeBytes_AndIgnoresTheOrderAndRepeatsOfRoots()
+    {
+        var baseline = ObservedRootPlanner.ProbeOptionsSha256(0, []);
+
+        ObservedRootPlanner.ProbeOptionsSha256(0, [A, B]).Should().Be(ObservedRootPlanner.ProbeOptionsSha256(0, [B, A, A]));
+        ObservedRootPlanner.ProbeOptionsSha256(0, [A]).Should().NotBe(baseline);
+        ObservedRootPlanner.ProbeOptionsSha256(4096, []).Should().NotBe(baseline);
+    }
+
+    [Fact]
+    public void ReadExport_RefusesAnExportProducedWithStopAt_BecauseItIsAPartialPause()
+    {
+        var json = ObservedRootsFixtures.TargetsJsonWithStop("RuntimeHandoff", null, "0x80030000", ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 1));
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*--stop-at*");
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("99")]
+    public void ReadExport_RejectsAStateGivenAsANumber(string state)
+    {
+        var json = ObservedRootsFixtures.TargetsJsonInState(state, null);
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*not a known execution state*");
+    }
+
+    [Fact]
+    public void ReadExport_RefusesAPreChangeExport_WithoutTheRunInputs()
+    {
+        // The export format before the run-input binding carried no disc or probe-option hash: it is refused, not read as "no disc".
+        var json = ObservedRootsFixtures.TargetsJsonInState("Completed", null).Replace(",\"probeOptionsSha256\":\"" + new string('0', 64) + "\"", "");
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().Throw<InvalidDataException>();
     }
 }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
@@ -15,7 +16,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 internal static class FallbackRootsCommand
 {
     internal const string Usage =
-        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>]";
+        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>]";
 
     private const string ReportFormat = "psxrecomp.fallback-roots-report/v1";
 
@@ -30,11 +31,11 @@ internal static class FallbackRootsCommand
             }
 
             var romPath = args[0];
-            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null;
+            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null;
             for (var i = 1; i < args.Count; i++)
             {
                 var option = args[i];
-                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc"))
+                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes"))
                 {
                     error.WriteLine($"fallback-roots: unknown option {option}");
                     error.WriteLine(Usage);
@@ -50,7 +51,9 @@ internal static class FallbackRootsCommand
                 if (option == "--load-images") manifestPath = args[i];
                 else if (option == "--fallback-targets") targetsPath = args[i];
                 else if (option == "--out") outPath = args[i];
-                else discPath = args[i];
+                else if (option == "--disc") discPath = args[i];
+                else if (option == "--roots") rootsPath = args[i];
+                else codeBytesText = args[i];
             }
 
             if (manifestPath is null || targetsPath is null || outPath is null)
@@ -81,14 +84,25 @@ internal static class FallbackRootsCommand
                 return 1;
             }
 
+            // The probe options must be the ones the export's run used (--roots, --code-bytes); they are bound by hash, not guessed.
+            if (!uint.TryParse(codeBytesText ?? "0", NumberStyles.None, CultureInfo.InvariantCulture, out var codeBytes))
+            {
+                error.WriteLine("fallback-roots: --code-bytes requires a non-negative integer.");
+                return 1;
+            }
+
             var romBytes = File.ReadAllBytes(romPath);
             var firmware = OpenBiosFirmware.FromBytes(romBytes);
             using var disc = discPath is null ? null : OpenBiosProbeCommand.OpenDisc(discPath);
             var manifest = LoadImageManifest.Read(manifestFull, firmware, disc?.Source);
             var export = ObservedRootPlanner.ReadExport(File.ReadAllText(targetsPath));
-            // The export must come from a run over these exact inputs, or its PCs are not evidence about this build.
+            // The export must come from a run over these exact inputs (ROM, disc, manifest and probe options), or its PCs are not evidence about this build.
+            var roots = rootsPath is null ? Array.Empty<uint>() : OpenBiosProbeCommand.ReadRoots(rootsPath);
             ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(
-                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(romBytes)).ToLowerInvariant(), manifest));
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(romBytes)).ToLowerInvariant(),
+                manifest,
+                discPath is null ? null : OpenBiosProbeCommand.FileSha256(discPath),
+                ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots)));
             var plan = ObservedRootPlanner.Plan(manifest.Images, export.Targets);
 
             var directory = Path.GetDirectoryName(outFull)!;
@@ -132,6 +146,7 @@ internal static class FallbackRootsCommand
             // run, created exclusively, and read back before anything gets its final name. Roots files are published first and
             // the manifest last: the manifest is the commit point, and only files this run created are ever removed.
             var token = Guid.NewGuid().ToString("N");
+            var checkedReadBack = false;
             string Staged(string finalPath) => Path.Combine(directory, $".{Path.GetFileName(finalPath)}.{token}.tmp");
             var stagedFiles = new List<string>();
             var published = new List<string>();
@@ -162,6 +177,7 @@ internal static class FallbackRootsCommand
                 File.Move(finalStaged, outFull);
                 published.Add(outFull);
                 CheckReadsBack(outFull);
+                checkedReadBack = true;
             }
             catch
             {
@@ -196,7 +212,7 @@ internal static class FallbackRootsCommand
                 }),
                 manifest = outFull,
                 rootsFiles = planned.Select(static p => p.FileName),
-                verified = true,
+                verified = checkedReadBack,
             };
             output.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
             return 0;

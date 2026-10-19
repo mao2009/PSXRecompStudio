@@ -194,7 +194,7 @@ internal static class OpenBiosProbeCommand
             {
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
-                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath), json, output, error, mdecLog)
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog)
                     : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog);
             }
             finally
@@ -426,7 +426,7 @@ internal static class OpenBiosProbeCommand
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
         uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath,
-        bool Standalone, string? FallbackTargetsPath);
+        bool Standalone, string? FallbackTargetsPath, string? DiscSha256);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
@@ -610,7 +610,7 @@ internal static class OpenBiosProbeCommand
                 // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
                 // report above is unchanged; this file is written only when requested. A run that did not finish has no
                 // evidence, and an export of it would read as "no targets" to the planner, so none is written.
-                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State);
+                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt);
                 if (exportJson is null)
                 {
                     error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
@@ -872,7 +872,7 @@ internal static class OpenBiosProbeCommand
     }
 
     /// <summary>One hexadecimal block-entry PC per line (blank lines ignored); an explicit input, never guessed.</summary>
-    private static IReadOnlyList<uint> ReadRoots(string path) =>
+    internal static IReadOnlyList<uint> ReadRoots(string path) =>
         File.ReadAllLines(path)
             .Select(static line => line.Trim())
             .Where(static line => line.Length != 0)
@@ -887,7 +887,9 @@ internal static class OpenBiosProbeCommand
     /// finish). Null is never a valid export: the planner would read it as a run with no targets. The run's <c>outcome</c> is
     /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer).
     /// </summary>
-    internal static string? BuildFallbackTargetsDocument(MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state)
+    internal static string? BuildFallbackTargetsDocument(
+        MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state,
+        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt)
     {
         if (evidence is null)
         {
@@ -906,8 +908,8 @@ internal static class OpenBiosProbeCommand
         {
             format = ObservedRootPlanner.TargetFormat,
             sha256 = hash,
-            run = ObservedRootPlanner.RunDocument(ObservedRootPlanner.DescribeRun(hash, manifest)),
-            outcome = new { state = state.ToString(), complete = ObservedRootPlanner.IsCompleteOutcome(state) },
+            run = ObservedRootPlanner.RunDocument(ObservedRootPlanner.DescribeRun(hash, manifest, discSha256, ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots))),
+            outcome = new { state = state.ToString(), complete = ObservedRootPlanner.IsCompleteOutcome(state), stopAt = stopAt is { } stop ? Hex(stop) : null },
             targets,
         }, new JsonSerializerOptions { WriteIndented = true });
     }
@@ -928,6 +930,13 @@ internal static class OpenBiosProbeCommand
     }
 
     internal static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
+
+    /// <summary>The SHA-256 of a file's bytes, streamed (a disc image can be large); the export and the planner bind to it, never to its path.</summary>
+    internal static string FileSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
 
     private static object BuildStop(InterpreterTitleExecutionEngine engine, RecompilerStateSnapshot? snapshot)
     {
