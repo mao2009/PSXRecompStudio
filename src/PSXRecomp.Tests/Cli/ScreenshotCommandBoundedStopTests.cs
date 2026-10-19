@@ -77,6 +77,19 @@ public sealed class ScreenshotCommandBoundedStopTests
     }
 
     [Fact]
+    public void SetupFailure_WritesManifestNamingTheStop()
+    {
+        using var dir = new TempDirectory();
+        var outputDirectory = Path.Combine(dir.FullPath, "shots");
+        var code = ScreenshotCommand.Run(
+            ["missing-input.exe", "--output", outputDirectory, "--json"], TextWriter.Null, TextWriter.Null);
+
+        code.Should().NotBe(0);
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(outputDirectory, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("setup_failed");
+    }
+
+    [Fact]
     public void ManifestWithoutCapture_RecordsStopReasonInOutputDirectory()
     {
         using var dir = new TempDirectory();

@@ -158,6 +158,15 @@ public static class ScreenshotCommand
                 or ArgumentException or InvalidOperationException)
         {
             standardError.WriteLine($"psxrecomp screenshot: {ex.Message}");
+            // Setup failed before any capture session existed: still leave a manifest that names the stop (Issue #751).
+            // Best effort: a second I/O failure here must not hide the original error.
+            try
+            {
+                ScreenshotCapture.WriteManifestFile(outputDirectory, "setup_failed", 0, 0, TimeSpan.Zero, null, []);
+            }
+            catch (IOException)
+            {
+            }
             return RecompiledArtifactExitCode.Failure;
         }
     }
