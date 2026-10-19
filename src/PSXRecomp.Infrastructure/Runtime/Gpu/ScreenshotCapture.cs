@@ -284,6 +284,7 @@ public sealed class ScreenshotCapture : IDisposable
         Directory.CreateDirectory(outputDirectory);
         var own = new HashSet<string>(ownPngNames ?? [], StringComparer.OrdinalIgnoreCase);
         var staleFiles = Directory.EnumerateFiles(outputDirectory, "*.png")
+            .Where(p => string.Equals(Path.GetExtension(p), ".png", StringComparison.OrdinalIgnoreCase))
             .Select(p => Path.GetFileName(p))
             .Where(name => !own.Contains(name))
             .Order(StringComparer.OrdinalIgnoreCase)

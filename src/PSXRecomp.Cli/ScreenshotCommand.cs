@@ -581,6 +581,7 @@ public static class ScreenshotCommand
     private static Action<RecompilerStateSnapshot> StopGuard(ScreenshotCapture capture, Stopwatch stopwatch, TimeSpan timeout) =>
         snap =>
         {
+            if (capture.WriteFailures > 0) throw new CaptureStop("capture_write_failed", snap);
             if (capture.IsComplete) throw new CaptureStop("goal_reached", snap);
             if (stopwatch.Elapsed >= timeout) throw new CaptureStop("timeout", snap);
         };
@@ -603,7 +604,7 @@ public static class ScreenshotCommand
     /// Records that this run has started. If the process is killed before FinishCapture, the leftover manifest says
     /// <c>in_progress</c> instead of describing an earlier run in the same directory (Issue #751).
     /// </summary>
-    private static void MarkInProgress(string outputDirectory) =>
+    internal static void MarkInProgress(string outputDirectory) =>
         ScreenshotCapture.WriteManifestFile(outputDirectory, "in_progress", 0, 0, TimeSpan.Zero, null, []);
 
     /// <summary>
