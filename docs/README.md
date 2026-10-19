@@ -121,6 +121,7 @@ Constraints:
 - [Headless CLI](development/headless-cli.md)
 - [Synthetic showcase demo](development/showcase-demo.md)
 - [References and Prior Art](REFERENCES.md)
+- [OSS Reuse Audit for v0.1 (#740)](research/oss-reuse-audit.md)
 - [Architecture Decision Records](adr/)
   - [ADR-026: AOT RAM-placed code](adr/026-aot-ram-placed-code.md)
   - [ADR-027: Standalone artifact — shared Runtime integration](adr/027-standalone-artifact-runtime-integration.md)
