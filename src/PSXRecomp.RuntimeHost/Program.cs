@@ -6,6 +6,7 @@ using PSXRecomp.Core.Runtime;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Standalone;
 using System.Buffers.Binary;
+using System.Text.Json.Nodes;
 
 namespace PSXRecomp.Infrastructure.RuntimeHost;
 
@@ -115,21 +116,6 @@ public static class Program
 
         var manifestPath = Path.GetFullPath(positionals[0]);
 
-        // Issue #786 review M-C: a report never outlives its run. The previous one goes first, so a run that is killed or
-        // fails before it writes leaves no report that could be read as this run's.
-        if (loadedCodeMismatchPath is not null)
-        {
-            try
-            {
-                File.Delete(loadedCodeMismatchPath);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Console.Error.WriteLine($"runtime host: could not remove the previous loaded-code report {loadedCodeMismatchPath}: {ex.Message}");
-                return 78;
-            }
-        }
-
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
@@ -148,6 +134,22 @@ public static class Program
             Console.Error.WriteLine(
                 "runtime host: --loaded-code-diagnostics needs a firmware distribution (firmware-boot.json); this manifest has no RAM-placed code table to report on.");
             return 78;
+        }
+
+        // Issue #786 B1: the report never names an input. Checked before anything is written, so a refusal leaves every input as it was.
+        var runId = Guid.NewGuid().ToString("N");
+        if (loadedCodeMismatchPath is not null)
+        {
+            var conflict = ReportTargetInput(loadedCodeMismatchPath, manifestDirectory);
+            if (conflict is not null)
+            {
+                Console.Error.WriteLine(
+                    $"runtime host: refusing --loaded-code-diagnostics {loadedCodeMismatchPath}: it is the input {conflict}, and no report is written over an input.");
+                return 78;
+            }
+
+            // The id ties a report to this run: a report left by an earlier run, or by one that was killed, carries another id.
+            Console.Error.WriteLine($"runtime host: loaded-code report run id {runId}");
         }
 
         RuntimeHostManifest? manifest = null;
@@ -313,7 +315,7 @@ public static class Program
         }
         finally
         {
-            WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch);
+            WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch, runId);
         }
     }
 
@@ -347,17 +349,81 @@ public static class Program
     }
 
     /// <summary>
+    /// Issue #786 B1: the input the report target names, or null. The inputs are the files of the distribution directory (the
+    /// manifest, artifact, image and firmware files are confined there), except an earlier run's report, which is replaced and
+    /// is not an input. Compared by resolved path, case-insensitively on Windows, so another spelling, case or a junction to the
+    /// same file cannot pass. The report's temp file is compared too.
+    /// </summary>
+    private static string? ReportTargetInput(string reportPath, string manifestDirectory)
+    {
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var targets = new[] { ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp") };
+        foreach (var input in Directory.EnumerateFiles(manifestDirectory, "*", SearchOption.AllDirectories))
+        {
+            var resolved = ResolvedFullPath(input);
+            if (targets.Any(target => comparer.Equals(target, resolved)) && !IsPreviousLoadedCodeReport(input)) return input;
+        }
+
+        return null;
+    }
+
+    /// <summary>True for a small file that is an earlier run's loaded-code report (the schema tag is the test).</summary>
+    private static bool IsPreviousLoadedCodeReport(string path)
+    {
+        if (new FileInfo(path).Length > MaxPreviousReportBytes) return false;
+        try
+        {
+            return JsonNode.Parse(File.ReadAllText(path)) is JsonObject root
+                && root["schema"] is JsonValue schema
+                && schema.TryGetValue<string>(out var name)
+                && name == LoadedCodeMismatchDiagnostics.SchemaName;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private const long MaxPreviousReportBytes = 16L * 1024 * 1024;
+
+    /// <summary>The full path with every directory and the file itself resolved through symbolic links and junctions.</summary>
+    private static string ResolvedFullPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var parent = Path.GetDirectoryName(full);
+        if (parent is null) return full;
+
+        var candidate = Path.Combine(ResolvedDirectory(parent), Path.GetFileName(full));
+        // ResolveLinkTarget throws for a path that does not exist (the report and its temp file usually do not yet).
+        var file = new FileInfo(candidate);
+        return (file.Exists ? file.ResolveLinkTarget(returnFinalTarget: true)?.FullName : null) ?? candidate;
+    }
+
+    private static string ResolvedDirectory(string directory)
+    {
+        var parent = Path.GetDirectoryName(directory);
+        if (parent is null) return directory;
+
+        var candidate = Path.Combine(ResolvedDirectory(parent), Path.GetFileName(directory));
+        var resolvable = new DirectoryInfo(candidate);
+        return (resolvable.Exists ? resolvable.ResolveLinkTarget(returnFinalTarget: true)?.FullName : null) ?? candidate;
+    }
+
+    /// <summary>
     /// Writes the Issue #773 loaded-code report when it was requested. Best-effort like <see cref="WriteDiagnostics"/>: a write
     /// failure is reported on stderr and never changes the run's exit code.
     /// </summary>
-    private static void WriteLoadedCodeMismatch(string? path, LoadedCodeMismatchDiagnostics? diagnostics)
+    private static void WriteLoadedCodeMismatch(string? path, LoadedCodeMismatchDiagnostics? diagnostics, string runId)
     {
         if (path is null || diagnostics is null) return;
         try
         {
-            // Temp file then move: a reader never sees a half-written report that could pass for a short, valid one.
+            var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+            report["runId"] = runId;
+            // Temp file then move: a reader never sees a half-written report, and a failed write leaves the previous report in place.
             var temp = path + ".tmp";
-            File.WriteAllText(temp, diagnostics.ToJson() + "\n", new System.Text.UTF8Encoding(false));
+            var json = report.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n";
+            File.WriteAllText(temp, json, new System.Text.UTF8Encoding(false));
             File.Move(temp, path, overwrite: true);
         }
         catch (Exception ex)

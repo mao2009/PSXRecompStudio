@@ -515,6 +515,22 @@ public sealed class MixedFallbackTests
         report["incomplete"]!.GetValue<bool>().Should().BeFalse("nothing was refused, skipped or unobserved");
     }
 
+    // Issue #786 B3: the diagnostics are observation only. A run with the report on ends exactly as the same run with it off.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_OnOrOff_TheGuestResultIsIdentical()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, 0x12345678u), Li(T1, 0x9ABCDEF0u), End());
+        var words = Image(main);
+        using var offDir = new TempDirectory();
+        using var onDir = new TempDirectory();
+
+        var off = RunArtifact(words, offDir, mixedFallback: null, loadedCodeMismatch: null);
+        var on = RunArtifact(words, onDir, mixedFallback: null, loadedCodeMismatch: new LoadedCodeMismatchDiagnostics());
+
+        on.Result.Should().BeEquivalentTo(off.Result, "the report must not change the guest's result");
+    }
+
     // Issue #786 review (round 3, MAJOR): a real run that ends in a failure, with no refusal to count, must not read as complete.
     [Fact]
     public void LoadedCodeMismatchDiagnostics_ARunThatEndsInAFailure_IsNotExecuted()
