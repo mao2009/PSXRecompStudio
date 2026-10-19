@@ -51,6 +51,19 @@ public sealed class ScreenshotCommandBoundedStopTests
         frame.GetProperty("width").GetInt32().Should().BeGreaterThan(0);
     }
 
+    [Theory]
+    [InlineData(TitleExecutionState.BudgetExhausted, "execution_budget")]
+    [InlineData(TitleExecutionState.RuntimeFailure, "runtime_failure")]
+    [InlineData(TitleExecutionState.InvalidState, "invalid_state")]
+    [InlineData(TitleExecutionState.UnsupportedTransfer, "unsupported_transfer")]
+    [InlineData(TitleExecutionState.RuntimeHandoff, "guest_stopped")]
+    [InlineData(TitleExecutionState.Completed, "guest_stopped")]
+    [InlineData(TitleExecutionState.Returned, "guest_stopped")]
+    public void StopReasonOf_KeepsFailureStatesDistinctFromCleanGuestStops(TitleExecutionState state, string expected)
+    {
+        ScreenshotCommand.StopReasonOf(state).Should().Be(expected);
+    }
+
     [Fact]
     public void BudgetExhausted_IsReportedAsExecutionBudgetAndKeepsFinalFrame()
     {

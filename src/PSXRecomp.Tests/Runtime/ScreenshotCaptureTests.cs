@@ -57,6 +57,26 @@ public sealed class ScreenshotCaptureTests : IDisposable
     }
 
     [Fact]
+    public void Capture_WithNoDisplayablePixels_IsNotCountedOrWritten()
+    {
+        // 24-bit display starting at halfword X=1023: no whole 24-bit pixel fits in the VRAM row, so nothing to save.
+        _gpu.WriteGP1(0x08000010u);
+        _gpu.WriteGP1(0x05000000u | 1023u);
+        using var dir = new TempDirectory();
+        var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 1, startVblank: 1);
+
+        _scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles);
+
+        capture.TryCapture().Should().BeFalse();
+        capture.ScreenshotsTaken.Should().Be(0);
+        capture.IsComplete.Should().BeFalse();
+        capture.SavedFiles.Should().BeEmpty();
+        #pragma warning disable AARC003
+        Directory.GetFiles(dir.FullPath, "*.png").Should().BeEmpty();
+        #pragma warning restore AARC003
+    }
+
+    [Fact]
     public void Capture_SkipsNonTargetVBlanks()
     {
         using var dir = new TempDirectory();

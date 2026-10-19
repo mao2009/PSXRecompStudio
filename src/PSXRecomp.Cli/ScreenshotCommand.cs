@@ -57,7 +57,7 @@ public static class ScreenshotCommand
             standardOutput.WriteLine("  --output <dir>             required: directory to save PNG screenshots");
             standardOutput.WriteLine("  --openbios <rom.bin>       optional: OpenBIOS ROM file (512KB) for real BIOS execution");
             standardOutput.WriteLine("  --disc <image.chd|image.bin>  required with --openbios: CD-ROM image for the game");
-            standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 1000000)");
+            standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 100000)");
             standardOutput.WriteLine("  --vblank-interval <n>      VBlank interval between captures (default: 300)");
             standardOutput.WriteLine("  --max-screenshots <n>      maximum screenshots to capture (default: 10)");
             standardOutput.WriteLine("  --start-vblank <n>         first VBlank to capture (default: 300)");
@@ -553,9 +553,19 @@ public static class ScreenshotCommand
             if (stopwatch.Elapsed >= timeout) throw new CaptureStop("timeout", snap);
         };
 
-    /// <summary>Maps an orchestrator terminal state to the issue's stop-reason vocabulary.</summary>
-    private static string StopReasonOf(TitleExecutionState state) =>
-        state == TitleExecutionState.BudgetExhausted ? "execution_budget" : "guest_stopped";
+    /// <summary>
+    /// Maps an orchestrator terminal state to the stop-reason vocabulary shared by stdout, JSON and manifest.json.
+    /// Failure states keep their own name so a crash-like end is never reported as a clean guest stop (Issue #751).
+    /// </summary>
+    internal static string StopReasonOf(TitleExecutionState state) => state switch
+    {
+        TitleExecutionState.BudgetExhausted => "execution_budget",
+        TitleExecutionState.RuntimeFailure => "runtime_failure",
+        TitleExecutionState.InvalidState => "invalid_state",
+        TitleExecutionState.UnsupportedTransfer => "unsupported_transfer",
+        TitleExecutionState.Completed or TitleExecutionState.Returned or TitleExecutionState.RuntimeHandoff => "guest_stopped",
+        _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unmapped terminal state."),
+    };
 
     internal static HeadlessRunResult RunScreenshotCaptureOpenBios(
         OpenBiosFirmware firmware,
@@ -654,9 +664,8 @@ public static class ScreenshotCommand
         if (capture is not null && !capture.IsComplete)
             capture.ForceCapture("persona_vblank_final.png");
 
-        var savedFiles = Directory.Exists(outputDirectory)
-            ? Directory.GetFiles(outputDirectory, "*.png").OrderBy(f => f).Select(Path.GetFullPath).ToList()
-            : [];
+        // Only the PNGs this run wrote: a reused output directory may hold stale files that the manifest does not list.
+        IReadOnlyList<string> savedFiles = capture is null ? [] : capture.SavedFiles;
         var maxVblank = scheduler?.VblankCount ?? 0;
         capture?.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC);
 
@@ -667,7 +676,7 @@ public static class ScreenshotCommand
                 "NO_RESULT", "Execution did not produce a result"),
             capture?.ScreenshotsTaken ?? 0,
             maxVblank,
-            savedFiles.AsReadOnly(),
+            savedFiles,
             stopwatch.Elapsed,
             stopReason);
     }
