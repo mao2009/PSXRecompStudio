@@ -159,13 +159,15 @@ public static class ScreenshotCommand
         {
             standardError.WriteLine($"psxrecomp screenshot: {ex.Message}");
             // Setup failed before any capture session existed: still leave a manifest that names the stop (Issue #751).
-            // Best effort: a second I/O failure here must not hide the original error.
+            // Best effort: a second I/O failure here must not hide the original error (or escape as an unhandled exception).
             try
             {
-                ScreenshotCapture.WriteManifestFile(outputDirectory, "setup_failed", 0, 0, TimeSpan.Zero, null, []);
+                ScreenshotCapture.WriteManifestFile(outputDirectory, "setup_failed", 0, 0, TimeSpan.Zero, null, [],
+                    ex.GetType().Name);
             }
-            catch (IOException)
+            catch (Exception secondary) when (secondary is IOException or UnauthorizedAccessException)
             {
+                standardError.WriteLine($"psxrecomp screenshot: manifest.json not written: {secondary.Message}");
             }
             return RecompiledArtifactExitCode.Failure;
         }
@@ -193,6 +195,7 @@ public static class ScreenshotCommand
 
         TitleExecutionResult? executionResult = null;
         var stopReason = "Unknown";
+        string? exceptionType = null;
         ScreenshotCapture? screenshotCapture = null;
 
         try
@@ -247,7 +250,8 @@ public static class ScreenshotCommand
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            stopReason = $"Crash: {ex.GetType().Name}";
+            stopReason = "runtime_failure";
+            exceptionType = ex.GetType().Name;
             standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
             executionResult = new TitleExecutionResult(
                 TitleExecutionState.RuntimeFailure,
@@ -259,7 +263,8 @@ public static class ScreenshotCommand
             stopwatch.Stop();
         }
 
-        return FinishCapture(screenshotCapture, executionResult, engine.Scheduler, outputDirectory, stopwatch, stopReason);
+        return FinishCapture(screenshotCapture, executionResult, engine.Scheduler, outputDirectory, stopwatch, stopReason,
+            exceptionType);
     }
 
     private static string SerializeResult(string? inputSha256, HeadlessRunResult result)
@@ -272,6 +277,10 @@ public static class ScreenshotCommand
         sb.Append($"\"maxVblankReached\":{result.MaxVblankReached},");
         sb.Append($"\"elapsedMs\":{result.ElapsedTime.TotalMilliseconds:F0},");
         sb.Append($"\"stopReason\":\"{result.StopReason}\",");
+        sb.Append($"\"goalReached\":{(result.GoalReached ? "true" : "false")},");
+        sb.Append(result.ExceptionType is { } exceptionType
+            ? $"\"exceptionType\":\"{exceptionType}\","
+            : "\"exceptionType\":null,");
         sb.Append($"\"files\":[");
         for (int i = 0; i < result.SavedFiles.Count; i++)
         {
@@ -295,6 +304,9 @@ public static class ScreenshotCommand
     private static void WriteHumanResult(HeadlessRunResult result, TextWriter standardOutput)
     {
         standardOutput.WriteLine($"Screenshot capture: {result.StopReason}");
+        standardOutput.WriteLine($"  Goal reached: {result.GoalReached}");
+        if (result.ExceptionType is { } exceptionType)
+            standardOutput.WriteLine($"  Exception type: {exceptionType}");
         standardOutput.WriteLine($"  Screenshots taken: {result.ScreenshotsTaken}");
         standardOutput.WriteLine($"  Max VBlank reached: {result.MaxVblankReached}");
         standardOutput.WriteLine($"  Elapsed time: {result.ElapsedTime.TotalSeconds:F1}s");
@@ -562,7 +574,7 @@ public static class ScreenshotCommand
     private static Action<RecompilerStateSnapshot> StopGuard(ScreenshotCapture capture, Stopwatch stopwatch, TimeSpan timeout) =>
         snap =>
         {
-            if (capture.IsComplete) throw new CaptureStop("capture_limit", snap);
+            if (capture.IsComplete) throw new CaptureStop("goal_reached", snap);
             if (stopwatch.Elapsed >= timeout) throw new CaptureStop("timeout", snap);
         };
 
@@ -617,6 +629,7 @@ public static class ScreenshotCommand
         ScreenshotCapture? screenshotCapture = null;
         TitleExecutionResult? executionResult = null;
         var stopReason = "Unknown";
+        string? exceptionType = null;
 
         try
         {
@@ -654,7 +667,8 @@ public static class ScreenshotCommand
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            stopReason = $"Crash: {ex.GetType().Name}";
+            stopReason = "runtime_failure";
+            exceptionType = ex.GetType().Name;
             standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
             executionResult = new TitleExecutionResult(
                 TitleExecutionState.RuntimeFailure,
@@ -666,12 +680,14 @@ public static class ScreenshotCommand
             stopwatch.Stop();
         }
 
-        return FinishCapture(screenshotCapture, executionResult, interpreterEngine.Scheduler, outputDirectory, stopwatch, stopReason);
+        return FinishCapture(screenshotCapture, executionResult, interpreterEngine.Scheduler, outputDirectory, stopwatch, stopReason,
+            exceptionType);
     }
 
     /// <summary>
     /// Keeps the frames already written, adds a final frame when the cap was not reached, writes manifest.json with the
     /// stop reason and collects the result. Shared by both execution paths so a partial run always leaves a manifest.
+    /// <paramref name="stopReason"/> is the stop vocabulary only; <paramref name="exceptionType"/> is kept in its own field.
     /// </summary>
     private static HeadlessRunResult FinishCapture(
         ScreenshotCapture? capture,
@@ -679,7 +695,8 @@ public static class ScreenshotCommand
         DeviceScheduler? scheduler,
         string outputDirectory,
         Stopwatch stopwatch,
-        string stopReason)
+        string stopReason,
+        string? exceptionType = null)
     {
         if (capture is not null && !capture.IsComplete)
             capture.ForceCapture("persona_vblank_final.png");
@@ -687,11 +704,13 @@ public static class ScreenshotCommand
         // Only the PNGs this run wrote: a reused output directory may hold stale files that the manifest does not list.
         IReadOnlyList<string> savedFiles = capture is null ? [] : capture.SavedFiles;
         var maxVblank = scheduler?.VblankCount ?? 0;
+        var goalReached = capture?.IsComplete ?? false;
         if (capture is not null)
-            capture.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC);
+            capture.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC,
+                exceptionType, goalReached);
         else
             ScreenshotCapture.WriteManifestFile(outputDirectory, stopReason, 0, maxVblank, stopwatch.Elapsed,
-                executionResult?.FinalSnapshot?.PC, []);
+                executionResult?.FinalSnapshot?.PC, [], exceptionType, goalReached);
 
         return new HeadlessRunResult(
             executionResult ?? new TitleExecutionResult(
@@ -702,7 +721,9 @@ public static class ScreenshotCommand
             maxVblank,
             savedFiles,
             stopwatch.Elapsed,
-            stopReason);
+            stopReason,
+            exceptionType,
+            goalReached);
     }
 
     private static OpenedDisc OpenDisc(string path)

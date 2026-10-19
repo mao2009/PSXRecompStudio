@@ -239,20 +239,26 @@ public sealed class ScreenshotCapture : IDisposable
     /// saved PNG, the VBlank (guest frame) index, size, display mode, pixel hash and whether the 24-bit path was used
     /// (false means the frame was converted as legacy 15-bit). Written atomically; safe to call after a partial run.
     /// </summary>
-    public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc) =>
-        WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames);
+    public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc,
+        string? exceptionType = null, bool goalReached = false) =>
+        WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames,
+            exceptionType, goalReached);
 
     /// <summary>
     /// Writes <c>manifest.json</c> without a capture session, so a run that failed before capture was set up still
-    /// records its stop reason (Issue #751).
+    /// records its stop reason (Issue #751). <paramref name="stopReason"/> is the stop vocabulary only;
+    /// <paramref name="exceptionType"/> is the .NET exception name when the stop came from an exception.
+    /// <paramref name="goalReached"/> is true only when every target frame was captured.
     /// </summary>
     public static void WriteManifestFile(
         string outputDirectory, string stopReason, int screenshotsTaken, ulong maxVblankReached, TimeSpan elapsed,
-        uint? lastGuestPc, IEnumerable<object> frames)
+        uint? lastGuestPc, IEnumerable<object> frames, string? exceptionType = null, bool goalReached = false)
     {
         var manifest = new
         {
             stopReason,
+            goalReached,
+            exceptionType,
             screenshotsTaken,
             maxVblankReached,
             elapsedMs = (long)elapsed.TotalMilliseconds,

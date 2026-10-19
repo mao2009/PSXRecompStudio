@@ -14,4 +14,6 @@ public sealed record HeadlessRunResult(
     ulong MaxVblankReached,
     IReadOnlyList<string> SavedFiles,
     TimeSpan ElapsedTime,
-    string StopReason);
+    string StopReason,
+    string? ExceptionType = null,
+    bool GoalReached = false);

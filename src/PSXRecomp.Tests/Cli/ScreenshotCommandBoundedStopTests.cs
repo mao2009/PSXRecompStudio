@@ -31,6 +31,7 @@ public sealed class ScreenshotCommandBoundedStopTests
             vblankInterval: 1, maxScreenshots: 10, startVblank: 1, TimeSpan.Zero, TextWriter.Null);
 
         result.StopReason.Should().Be("timeout");
+        result.GoalReached.Should().BeFalse();
     }
 
     [Fact]
@@ -41,10 +42,14 @@ public sealed class ScreenshotCommandBoundedStopTests
             SpinRom(), "00", null, dir.FullPath, segmentBudget: 100_000, segments: 50,
             vblankInterval: 1, maxScreenshots: 1, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
 
-        result.StopReason.Should().Be("capture_limit");
+        result.StopReason.Should().Be("goal_reached");
+        result.GoalReached.Should().BeTrue();
+        result.ExceptionType.Should().BeNull();
         result.ScreenshotsTaken.Should().Be(1);
         var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
-        manifest.GetProperty("stopReason").GetString().Should().Be("capture_limit");
+        manifest.GetProperty("stopReason").GetString().Should().Be("goal_reached");
+        manifest.GetProperty("goalReached").GetBoolean().Should().BeTrue();
+        manifest.GetProperty("exceptionType").ValueKind.Should().Be(JsonValueKind.Null);
         manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(1);
         var frame = manifest.GetProperty("frames")[0];
         frame.GetProperty("vblank").GetUInt64().Should().Be(1);
@@ -87,21 +92,43 @@ public sealed class ScreenshotCommandBoundedStopTests
         code.Should().NotBe(0);
         var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(outputDirectory, "manifest.json"))).RootElement;
         manifest.GetProperty("stopReason").GetString().Should().Be("setup_failed");
+        manifest.GetProperty("exceptionType").GetString().Should().NotBeNullOrEmpty();
+        manifest.GetProperty("goalReached").GetBoolean().Should().BeFalse();
     }
 
     [Fact]
-    public void ManifestWithoutCapture_RecordsStopReasonInOutputDirectory()
+    public void ManifestWithoutCapture_KeepsStopReasonAndExceptionTypeInSeparateFields()
     {
         using var dir = new TempDirectory();
-        ScreenshotCapture.WriteManifestFile(dir.FullPath, "runtime_failure", 0, 0, TimeSpan.Zero, null, []);
+        ScreenshotCapture.WriteManifestFile(dir.FullPath, "runtime_failure", 0, 0, TimeSpan.Zero, null, [],
+            exceptionType: "InvalidOperationException");
 
         var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
         manifest.GetProperty("stopReason").GetString().Should().Be("runtime_failure");
+        manifest.GetProperty("exceptionType").GetString().Should().Be("InvalidOperationException");
         manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(0);
     }
 
     [Fact]
-    public void BudgetExhausted_IsReportedAsExecutionBudgetAndKeepsFinalFrame()
+    public void RuntimeCrash_IsNormalizedToRuntimeFailureWithExceptionTypeApart()
+    {
+        // A negative capture count makes the ScreenshotCapture constructor throw inside the guarded run.
+        using var dir = new TempDirectory();
+        var result = ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 1_000, segments: 2,
+            vblankInterval: 1, maxScreenshots: -1, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        result.StopReason.Should().Be("runtime_failure");
+        result.ExecutionResult.State.Should().Be(TitleExecutionState.RuntimeFailure);
+        result.ExceptionType.Should().Be("ArgumentOutOfRangeException");
+        result.GoalReached.Should().BeFalse();
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("runtime_failure");
+        manifest.GetProperty("exceptionType").GetString().Should().Be("ArgumentOutOfRangeException");
+    }
+
+    [Fact]
+    public void BudgetExhausted_IsReportedAsExecutionBudgetAndManifestMatchesPngFiles()
     {
         using var dir = new TempDirectory();
         var result = ScreenshotCommand.RunScreenshotCaptureOpenBios(
@@ -109,6 +136,16 @@ public sealed class ScreenshotCommandBoundedStopTests
             vblankInterval: 1000, maxScreenshots: 10, startVblank: 1000, TimeSpan.FromMinutes(1), TextWriter.Null);
 
         result.StopReason.Should().Be("execution_budget");
-        File.Exists(Path.Combine(dir.FullPath, "manifest.json")).Should().BeTrue();
+        result.GoalReached.Should().BeFalse();
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+        manifest.GetProperty("goalReached").GetBoolean().Should().BeFalse();
+        // Partial run: the manifest lists exactly the PNG files on disk (the final frame included).
+        var pngs = Directory.GetFiles(dir.FullPath, "*.png").Select(Path.GetFileName).Order().ToArray();
+        var listed = manifest.GetProperty("frames").EnumerateArray()
+            .Select(f => f.GetProperty("file").GetString()).Order().ToArray();
+        pngs.Should().NotBeEmpty();
+        listed.Should().BeEquivalentTo(pngs);
+        manifest.GetProperty("screenshotsTaken").GetInt32().Should().Be(pngs.Length);
     }
 }
