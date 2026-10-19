@@ -367,16 +367,37 @@ public sealed class RuntimeCodeGeneratedHostTests
         return (rom, ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program, loaded);
     }
 
-    // The counters are selected through GuardStatsScope, never through process-wide environment variables.
-    private static void RunWithGuardStats(string statsPath, string workDir)
+    // A ROM loop that calls the RAM-placed entry `calls` times, then spins in the reset block (the run ends on its budget).
+    private static (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) GuardLoopFixture(uint calls)
     {
-        var (rom, romCode, loaded) = GuardStatsFixture();
+        uint[] whole = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, GuardSlot, whole);
+        reset.Emit(Li(S0, calls));
+        var loop = reset.Here;
+        Call(reset, GuardSlot);
+        reset.Emit(Addiu(S0, S0, -1));
+        reset.Emit(MipsEncoding.Branch(0x05, (byte)S0, 0, reset.Here, loop), Nop);
+        var rom = Rom(reset);
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(GuardSlot, whole, [GuardSlot], new HashSet<uint>())]);
+        return (rom, ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program, loaded);
+    }
+
+    // The counters are selected through GuardStatsScope, never through process-wide environment variables.
+    private static RecompilerStateSnapshot RunWithGuardStats(string statsPath, string workDir,
+        (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) fixture, uint budget = 20_000)
+    {
+        var (rom, romCode, loaded) = fixture;
         using var scope = GuardStatsScope.Begin(statsPath);
         using var engine = new RecompiledHostExecutionEngine(
             romCode, rom, RomBase, new GeneratedHostBuildService(), workDir,
             mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
-        new ExecutionOrchestrator().Execute(engine, handoff: null, Request(20_000)).FinalSnapshot.Should().NotBeNull();
+        var snapshot = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(budget)).FinalSnapshot;
+        snapshot.Should().NotBeNull();
+        return snapshot!;
     }
+
+    private static void RunWithGuardStats(string statsPath, string workDir) => RunWithGuardStats(statsPath, workDir, GuardStatsFixture());
 
     [Fact]
     public void GuardStats_CountArrivalsHitsAndMisses_OfARegisteredEntry_AndStayOffByDefault()
@@ -459,6 +480,41 @@ public sealed class RuntimeCodeGeneratedHostTests
 
         File.Exists(Path.Combine(statsPath, "keep.txt")).Should().BeTrue("the existing destination is preserved");
         File.Exists(statsPath + ".tmp").Should().BeFalse("a failed replacement removes its temporary file");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_WhenTheTemporaryFileCannotBeCreated_KeepsThePreviousReport()
+    {
+        // Issue #773 review M1 (failure injection): a dump that cannot create <path>.tmp returns before the destination is touched.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        Directory.CreateDirectory(statsPath + ".tmp");
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        File.ReadAllText(statsPath).Should().Be(previous, "the previous complete report survives a dump that never started");
+        Directory.Exists(statsPath + ".tmp").Should().BeTrue("the blocking entry belongs to the user and is not removed");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Counts_EveryCall_OfALoop_AsOneArrivalAndOneHit()
+    {
+        // Issue #773 counting check: N calls from ROM are N arrivals and N guard hits, no misses, and the guest ran all N.
+        const uint calls = 300;
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var final = RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(calls), budget: 200_000);
+
+        final.Gpr[(int)S2].Should().Be(calls, "the guest executed every call");
+        var line = File.ReadAllLines(statsPath).Single(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal));
+        line.Should().Contain($"arrive {calls} miss 0");
+        line.Should().Contain($"v0 hit {calls} len 1");
 #pragma warning restore AARC003
     }
 
