@@ -531,14 +531,16 @@ access did not change the scheduler (it would defer a device advance past dispat
 **Native guard counters and the integrated Persona run (Issue #773; measurement only).** `PSXRECOMP_NATIVE_GUARD_STATS=1` at
 package time builds the artifact with counters per RAM-placed entry PC (arrivals, hits per version, misses) and, for each entry's
 first miss, the entry PC of the previous dispatch-loop iteration (not necessarily the guest source of the transfer), the RAM word and
-the CPU registers; per-version tables are flat (no padding to the widest slot). At run time `PSX_GUARD_STATS_FILE=<path>` receives
+the CPU registers (at most 16 such records in all, `psx_gs_snap[16][36]`; a first miss beyond them is only counted in `snapdropped` and has no CPU registers); per-version tables are flat (no padding to the widest slot). At run time `PSX_GUARD_STATS_FILE=<path>` receives
 them (every 4 M dispatch units and at exit), written whole to `<path>.tmp` and then replaced over `<path>` in one step; the previous
-report is never removed first, so a failed replacement leaves the previous complete report and deletes the `.tmp`. Platform
+report is not removed before the replacement, so a refused replacement keeps the report that was there and deletes the `.tmp`. Platform
 difference: POSIX uses `rename()` (atomic replace); Windows uses `MoveFileExA(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` (declared by hand, not via `<windows.h>`),
-a same-volume rename in practice but not documented as atomic, which fails (keeping the old report) while the destination is
-open without `FILE_SHARE_DELETE`. Guarantee on a killed or timed-out run: the file at `<path>` is always a complete earlier dump
-(or absent before the first dump), never a truncated one; a `<path>.tmp` of the dump in progress may remain, and nothing is
-promised across power loss (no `fsync`). The last line is `end final 1` only for the exit dump; a file without it comes from a
+a same-volume rename in practice but not documented as atomic and not guaranteed to be one step (a reader may see no `<path>` for an
+instant); it is refused (keeping the old report) while the destination is open without `FILE_SHARE_DELETE`. Each report starts with
+a `run <id>` line (line 2) that names the run which wrote it. Guarantee on a killed or timed-out run: `<path>` holds nothing, or a
+complete report, either of this run's last dump or of an earlier run not yet replaced (told apart by `run`). Its content is never a
+truncated dump, because the content is complete before the rename. A `<path>.tmp` of the dump in progress may remain (the next dump
+overwrites it). Not promised: a single-step replacement on Windows and survival across power loss (no `fsync`). The last line is `end final 1` only for the exit dump; a file without it comes from a
 run that did not exit normally and must not be read as complete. Tests select the counters with `GuardStatsScope.Begin(path)`
 (a per-async-context switch handed to the child process only) instead of process-wide environment variables. The generated text is byte-for-byte unchanged without the option. Values are produced
 inside the generated code, so they are native-side observations, unlike the host-side attribution of fallback entries.

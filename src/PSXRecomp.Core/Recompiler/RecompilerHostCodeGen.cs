@@ -941,6 +941,7 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("/* Measurement only (PSX_GUARD_STATS_FILE): per RAM-placed entry, arrivals, guard hits per version, guard misses. */");
         sb.AppendLine("#include <stdio.h>");
         sb.AppendLine("#include <stdlib.h>");
+        sb.AppendLine("#include <time.h>");
         sb.AppendLine($"#define PSX_GS_N {groups.Count}u");
         sb.AppendLine($"#define PSX_GS_T {versions.Count}u");
         sb.AppendLine($"static const uint32_t psx_gs_pc[PSX_GS_N] = {{ {string.Join(", ", groups.Select(g => FormatHex(g.Key)))} }};");
@@ -949,17 +950,21 @@ public static class RecompilerHostCodeGen
         sb.AppendLine($"static const uint32_t psx_gs_w0[PSX_GS_T] = {{ {Cells(v => v.Words.Count != 0 ? FormatHex(v.Words[0]) : "0u")} }};");
         sb.AppendLine("static uint64_t psx_gs_arrive[PSX_GS_N], psx_gs_hit[PSX_GS_T], psx_gs_miss[PSX_GS_N];");
         sb.AppendLine("static uint32_t psx_gs_missprev[PSX_GS_N], psx_gs_missram[PSX_GS_N];");
+        // CPU state (32 GPRs, pc, prev, slot, RAM word) of the first miss of each entry, at most 16 records in all. A first miss
+        // beyond that is only counted in psx_gs_snapdropped and has no CPU registers in the report.
         sb.AppendLine("static uint32_t psx_gs_snap[16][36];");
         sb.AppendLine("static int psx_gs_nsnap = 0, psx_gs_registered = 0;");
         sb.AppendLine("static uint64_t psx_gs_snapdropped = 0u;");
         sb.AppendLine("static uint32_t psx_gs_cur = 0u, psx_gs_prev = 0u;");
         sb.AppendLine("static uint64_t psx_gs_iter = 0u;");
-        // The file is written whole to <path>.tmp and then replaced over <path> in one step; the previous report is never
-        // removed first, so a failed replacement (or a killed run) leaves the previous complete report in place and a reader
-        // never sees a missing or half-written file. Replacement is platform specific: POSIX rename() replaces atomically;
-        // Windows MoveFileExA(MOVEFILE_REPLACE_EXISTING) is a same-volume rename in practice (not documented as atomic) and
-        // fails, keeping the old file, while the destination is open without FILE_SHARE_DELETE. A killed process loses at most
-        // the dump in progress (the .tmp is then left behind); durability across power loss is not promised (no fsync).
+        sb.AppendLine("static unsigned long long psx_gs_runid = 0ull;");
+        // The file is written whole to <path>.tmp and then replaced over <path>. The previous report is never removed first, so
+        // a refused replacement keeps the report that was there and removes the .tmp. The content is complete before the rename
+        // (fclose is checked). Replacement is platform specific: POSIX rename() replaces atomically; Windows
+        // MoveFileExA(MOVEFILE_REPLACE_EXISTING) is a same-volume rename in practice but not documented as atomic, so a reader
+        // may not see <path> for an instant, and it is refused (keeping the old file) while the destination is open without
+        // FILE_SHARE_DELETE. A killed process leaves the report of an earlier run or of this one (told apart by the run line)
+        // and may leave the .tmp of the dump in progress; durability across power loss is not promised (no fsync).
         // The last line says whether this is the process's final dump; a file without "end final 1" comes from a periodic
         // dump of a run that did not exit normally and is incomplete.
         sb.AppendLine("#ifdef _WIN32");
@@ -976,7 +981,10 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  if (snprintf(tmp, sizeof tmp, \"%s.tmp\", path) >= (int)sizeof tmp) return;");
         sb.AppendLine("  f = fopen(tmp, \"w\");");
         sb.AppendLine("  if (f == (FILE*)0) return;");
-        sb.AppendLine("  fprintf(f, \"guardstats 1\\niter %llu\\n\", (unsigned long long)psx_gs_iter);");
+        // The run id is fixed at the first dump of the process: a report of this run and its periodic dumps share it, and a
+        // report left by an earlier run (not yet replaced) has another one (Issue #797).
+        sb.AppendLine("  if (psx_gs_runid == 0ull) psx_gs_runid = ((unsigned long long)time(0) << 20) ^ (unsigned long long)clock() ^ 1ull;");
+        sb.AppendLine("  fprintf(f, \"guardstats 1\\nrun %016llx\\niter %llu\\n\", psx_gs_runid, (unsigned long long)psx_gs_iter);");
         sb.AppendLine("  for (i = 0u; i < PSX_GS_N; i++) {");
         sb.AppendLine("    if (psx_gs_arrive[i] == 0u) continue;");
         sb.AppendLine("    fprintf(f, \"slot %08X nver %u arrive %llu miss %llu missprevdispatch %08X missram %08X\", (unsigned)psx_gs_pc[i], (unsigned)(psx_gs_off[i + 1u] - psx_gs_off[i]), (unsigned long long)psx_gs_arrive[i], (unsigned long long)psx_gs_miss[i], (unsigned)psx_gs_missprev[i], (unsigned)psx_gs_missram[i]);");
@@ -1254,10 +1262,11 @@ int recompiler_trace_attach(struct RecompilerState* state) {
                     sb.AppendLine(indent + $"static const uint32_t code{version}[] = {{ {string.Join(", ", loaded.Words.Select(FormatHex))} }};");
                     sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
                     sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
-                    if (s_guardStats) sb.AppendLine(indent + IndentUnit + $"PSX_GS_HIT({guardSlot}, {version});");
                     sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
                     EmitBudgetExceededReturn(sb, 5);
                     sb.AppendLine(indent + IndentUnit + "}");
+                    // Counted after the budget check: a unit the budget refuses did not run and is not a hit (Issue #797).
+                    if (s_guardStats) sb.AppendLine(indent + IndentUnit + $"PSX_GS_HIT({guardSlot}, {version});");
                     sb.AppendLine(indent + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
                     sb.AppendLine(indent + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
                     sb.AppendLine(indent + IndentUnit + "#endif");

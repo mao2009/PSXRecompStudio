@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
@@ -651,6 +652,23 @@ public sealed class RuntimeCodeGeneratedHostTests
         return snapshot!;
     }
 
+#pragma warning disable AARC003 // Test-only: the ambient opt-in is an environment variable; it is set for the scope and restored.
+    private const string AmbientGuardStatsVariable = "PSXRECOMP_NATIVE_GUARD_STATS";
+
+    // Sets the ambient opt-in for the scope and restores the value the process had (Issue #797: the OFF run must not inherit it).
+    private static IDisposable AmbientGuardStats(string? value)
+    {
+        var before = Environment.GetEnvironmentVariable(AmbientGuardStatsVariable);
+        Environment.SetEnvironmentVariable(AmbientGuardStatsVariable, value);
+        return new AmbientRestore(before);
+    }
+
+    private sealed class AmbientRestore(string? before) : IDisposable
+    {
+        public void Dispose() => Environment.SetEnvironmentVariable(AmbientGuardStatsVariable, before);
+    }
+#pragma warning restore AARC003
+
     [Fact]
     public void GuardStats_OnAndOff_LeaveTheGuestInTheSameState()
     {
@@ -658,9 +676,15 @@ public sealed class RuntimeCodeGeneratedHostTests
 #pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
         using var dir = new TempDirectory();
         var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        using var ambient = AmbientGuardStats("1");
         var fixture = GuardStatsFixture();
         var on = RunWithGuardStats(statsPath, dir.FullPath, fixture, budget: 20_000);
-        var off = RunWithoutGuardStats(dir.FullPath, fixture, budget: 20_000);
+        RecompilerStateSnapshot off;
+        using (AmbientGuardStats(null)) // the OFF run is isolated from the ambient opt-in (Issue #797)
+        {
+            GuardStatsScope.Enabled.Should().BeFalse("the OFF run must be OFF, not inherit PSXRECOMP_NATIVE_GUARD_STATS");
+            off = RunWithoutGuardStats(dir.FullPath, fixture, budget: 20_000);
+        }
 
         File.Exists(statsPath).Should().BeTrue("the ON run wrote its report");
         off.Gpr.Should().Equal(on.Gpr, "the same general registers");
@@ -668,6 +692,46 @@ public sealed class RuntimeCodeGeneratedHostTests
         off.LO.Should().Be(on.LO);
         off.PC.Should().Be(on.PC);
         off.Termination.Should().Be(on.Termination);
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_EachRun_WritesItsOwnRunId_SoAnEarlierReportIsNotMistakenForThisOne()
+    {
+        // Issue #797 review M4: two runs replace the same report path; the second report must carry a different run id.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var fixture = GuardStatsFixture();
+
+        RunWithGuardStats(statsPath, dir.FullPath, fixture);
+        var first = File.ReadAllLines(statsPath);
+        first[1].Should().StartWith("run ", "the second line names the run that wrote the report");
+
+        RunWithGuardStats(statsPath, dir.FullPath, fixture);
+        var second = File.ReadAllLines(statsPath);
+        second[1].Should().StartWith("run ");
+        second[1].Should().NotBe(first[1], "a later run's report carries its own run id");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_HitCount_EqualsTheUnitsThatRan_AtEveryBudget()
+    {
+        // Issue #797 review M5: the hit is counted before the budget check, so a unit the budget refuses is counted as a hit.
+        // Every arrival here is a hit, and the entry adds 1 to S2 only when it runs, so counted hits must equal S2 for each budget.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        for (uint budget = 1; budget <= 24; budget++)
+        {
+            var snapshot = RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(6), budget);
+            // The entry at 80001000 is the one that adds to S2; the return entry at 80001004 does not touch S2 and is not checked.
+            // No slot line means no arrival was counted (the generated dump skips slots with no arrivals): zero hits.
+            var slot = File.ReadAllLines(statsPath).SingleOrDefault(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal));
+            var hits = slot is null ? 0ul : ulong.Parse(Regex.Match(slot, @" v0 hit (\d+) ").Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            hits.Should().Be(snapshot.Gpr[(int)S2], $"budget {budget}: a hit is counted only for a unit that ran");
+        }
 #pragma warning restore AARC003
     }
 
