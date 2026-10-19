@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Cli;
+using PSXRecomp.Infrastructure.Execution;
 using PSXRecomp.Infrastructure.Runtime.Gpu;
 using PSXRecomp.Tests.RealRomAnalysis;
 
@@ -63,12 +64,51 @@ public sealed class ScreenshotCommandBoundedStopTests
     [InlineData(TitleExecutionState.RuntimeFailure, "runtime_failure")]
     [InlineData(TitleExecutionState.InvalidState, "invalid_state")]
     [InlineData(TitleExecutionState.UnsupportedTransfer, "unsupported_transfer")]
-    [InlineData(TitleExecutionState.RuntimeHandoff, "guest_stopped")]
-    [InlineData(TitleExecutionState.Completed, "guest_stopped")]
-    [InlineData(TitleExecutionState.Returned, "guest_stopped")]
+    [InlineData(TitleExecutionState.RuntimeHandoff, "runtime_handoff")]
+    [InlineData(TitleExecutionState.Completed, "completed")]
+    [InlineData(TitleExecutionState.Returned, "returned")]
     public void StopReasonOf_KeepsFailureStatesDistinctFromCleanGuestStops(TitleExecutionState state, string expected)
     {
+        // M2 (review of 4ffdfe5): a Runtime-boundary stop is no longer reported as a guest stop, and Completed is
+        // separated from Returned. Previously all three mapped to "guest_stopped".
         ScreenshotCommand.StopReasonOf(state).Should().Be(expected);
+    }
+
+    [Theory]
+    // (state, goalReached, screenshotsTaken, writeFailures, expected success)
+    [InlineData(TitleExecutionState.Completed, false, 0, 0, false)]          // M1: clean end but nothing saved
+    [InlineData(TitleExecutionState.BudgetExhausted, false, 0, 0, false)]    // M1: budget stop with zero PNGs
+    [InlineData(TitleExecutionState.BudgetExhausted, false, 2, 0, false)]    // partial capture is not success
+    [InlineData(TitleExecutionState.RuntimeHandoff, false, 2, 0, false)]     // M2: runtime boundary, guest not finished
+    [InlineData(TitleExecutionState.RuntimeHandoff, true, 2, 0, true)]       // capture cap reached (goal_reached)
+    [InlineData(TitleExecutionState.Completed, true, 2, 1, false)]           // a write failure always fails the run
+    [InlineData(TitleExecutionState.RuntimeFailure, true, 2, 0, false)]
+    public void IsSuccess_RequiresGoalReachedAndNoWriteFailure(
+        TitleExecutionState state, bool goalReached, int screenshotsTaken, int writeFailures, bool expected)
+    {
+        var result = new HeadlessRunResult(
+            new TitleExecutionResult(state, null, 0, InterpreterTitleExecutionEngine.EngineName, null, null),
+            screenshotsTaken, 0, [], TimeSpan.Zero, "x", null, goalReached, writeFailures);
+
+        ScreenshotCommand.IsSuccess(result).Should().Be(expected);
+    }
+
+    [Fact]
+    public void ExistingPng_IsPreservedAndTheFrameFailsInsteadOfOverwriting()
+    {
+        // M3: a user PNG with the same name as a target frame is never replaced by this run.
+        using var dir = new TempDirectory();
+        var existing = Path.Combine(dir.FullPath, "persona_vblank_0001.png");
+        File.WriteAllBytes(existing, [9, 9, 9]);
+
+        var result = ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 100_000, segments: 50,
+            vblankInterval: 1, maxScreenshots: 2, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        File.ReadAllBytes(existing).Should().Equal(new byte[] { 9, 9, 9 });
+        result.WriteFailures.Should().Be(1);
+        result.StopReason.Should().Be("capture_write_failed");
+        result.SavedFiles.Should().NotContain(p => p.EndsWith("persona_vblank_0001.png"));
     }
 
     [Theory]

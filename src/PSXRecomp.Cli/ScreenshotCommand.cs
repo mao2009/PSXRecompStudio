@@ -594,11 +594,13 @@ public static class ScreenshotCommand
         state is TitleExecutionState.RuntimeFailure or TitleExecutionState.InvalidState or TitleExecutionState.UnsupportedTransfer;
 
     /// <summary>
-    /// Overall success needs both halves: the execution ended cleanly (BudgetExhausted is clean) and no requested PNG
-    /// failed to write. Execution and image results are reported separately in JSON and manifest.json.
+    /// Overall success needs the execution to end cleanly, every requested PNG to be saved (goal reached) and no PNG
+    /// write failure. A run that stops at the wall-clock timeout, the execution budget or a Runtime boundary before
+    /// that is not success, even when it saved some frames (review of #751: a zero-PNG run must not exit 0).
+    /// Execution and image results are reported separately in JSON and manifest.json.
     /// </summary>
     internal static bool IsSuccess(HeadlessRunResult result) =>
-        !IsFailureState(result.ExecutionResult.State) && result.WriteFailures == 0;
+        !IsFailureState(result.ExecutionResult.State) && result.GoalReached && result.WriteFailures == 0;
 
     /// <summary>
     /// Records that this run has started. If the process is killed before FinishCapture, the leftover manifest says
@@ -610,6 +612,7 @@ public static class ScreenshotCommand
     /// <summary>
     /// Maps an orchestrator terminal state to the stop-reason vocabulary shared by stdout, JSON and manifest.json.
     /// Failure states keep their own name so a crash-like end is never reported as a clean guest stop (Issue #751).
+    /// A Runtime-boundary handoff is its own reason: the guest did not finish (review of #751).
     /// </summary>
     internal static string StopReasonOf(TitleExecutionState state) => state switch
     {
@@ -617,7 +620,9 @@ public static class ScreenshotCommand
         TitleExecutionState.RuntimeFailure => "runtime_failure",
         TitleExecutionState.InvalidState => "invalid_state",
         TitleExecutionState.UnsupportedTransfer => "unsupported_transfer",
-        TitleExecutionState.Completed or TitleExecutionState.Returned or TitleExecutionState.RuntimeHandoff => "guest_stopped",
+        TitleExecutionState.Completed => "completed",
+        TitleExecutionState.Returned => "returned",
+        TitleExecutionState.RuntimeHandoff => "runtime_handoff",
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unmapped terminal state."),
     };
 
@@ -721,7 +726,8 @@ public static class ScreenshotCommand
         string stopReason,
         string? exceptionType = null)
     {
-        if (capture is not null && !capture.IsComplete)
+        // Not after a write failure: a write_failed run must not gain a final PNG (review of #751).
+        if (capture is not null && !capture.IsComplete && capture.WriteFailures == 0)
             capture.ForceCapture("persona_vblank_final.png");
 
         // Only the PNGs this run wrote: a reused output directory may hold stale files that the manifest does not list.

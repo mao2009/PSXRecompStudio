@@ -229,11 +229,17 @@ public sealed class ScreenshotCapture : IDisposable
         var filePath = Path.Combine(_outputDirectory, fileName);
 
         // Write beside the target and rename so an interrupted run never leaves a truncated PNG (Issue #751).
+        // An existing final file is never replaced: a user PNG with the same name is preserved and the frame fails (review of #751).
         var tempPath = filePath + ".tmp";
+        string pngSha256;
         try
         {
+            if (File.Exists(filePath))
+                throw new IOException($"refusing to overwrite existing file: {fileName}");
             PngWriter.Save(tempPath, bgra, frame.Width, frame.Height);
-            File.Move(tempPath, filePath, overwrite: true);
+            File.Move(tempPath, filePath);
+            // pngSha256 is the hash of the bytes actually on disk, so it covers every displayed byte (including 24-bit tails).
+            pngSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filePath))).ToLowerInvariant();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -245,8 +251,6 @@ public sealed class ScreenshotCapture : IDisposable
             return false;
         }
 
-        // pngSha256 is the hash of the bytes actually on disk, so it covers every displayed byte (including 24-bit tails).
-        var pngSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filePath))).ToLowerInvariant();
         var mode = _gpuDevice.GetState().DisplayMode;
         _frames.Add(new CapturedFrame(fileName, vblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
         return true;
