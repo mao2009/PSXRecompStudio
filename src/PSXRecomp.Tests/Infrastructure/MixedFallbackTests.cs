@@ -515,6 +515,24 @@ public sealed class MixedFallbackTests
         report["incomplete"]!.GetValue<bool>().Should().BeFalse("nothing was refused, skipped or unobserved");
     }
 
+    // Issue #786 review (round 3, MAJOR): a real run that ends in a failure, with no refusal to count, must not read as complete.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_ARunThatEndsInAFailure_IsNotExecuted()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, 0x80100000u), [Jr(T0), Nop]); // out of the image, no fallback: the transfer is declined and the run fails
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        var run = RunArtifact(Image(main), dir, mixedFallback: null, loadedCodeMismatch: diagnostics);
+        run.Result.State.Should().NotBe(TitleExecutionState.Completed, "the run must end in a failure for this check to mean anything");
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(diagnostics, run.Result);
+
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["executed"]!.GetValue<bool>().Should().BeFalse();
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue();
+    }
+
     [Fact]
     public void PatchedBiosTarget_ToUncompiledImageCode_StaysFailClosed()
     {

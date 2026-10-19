@@ -261,6 +261,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
             return Decision.Ineligible;
         }
 
+        // Set once the RAM comparison has been reached (or the handoff was counted as unobserved), so an exception that
+        // escapes earlier counts the handoff as a gap and never twice.
+        var comparisonReached = false;
         _transferClock.Start();
         try
         {
@@ -293,6 +296,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
             {
                 _loadedCodeMismatch.Observe(pc, _loadedCode.VersionsAt(pc), LoadedCodeWordAt, _loadedCode.OriginsAt(pc));
             }
+
+            comparisonReached = true;
 
             _transitions++;
             _pagesToInterpreter += (ulong)incoming.Count;
@@ -349,6 +354,12 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
             _lastReturnPc = outcome.State.Pc;
             return Decision.Resumed;
+        }
+        catch
+        {
+            // Issue #786 review (round 3, MEDIUM-2): a failure before the RAM comparison leaves this handoff unobserved.
+            if (!comparisonReached) NoteUnobserved(pc);
+            throw;
         }
         finally
         {

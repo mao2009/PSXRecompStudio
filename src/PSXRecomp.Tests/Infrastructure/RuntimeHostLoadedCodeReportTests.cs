@@ -81,16 +81,41 @@ public sealed class RuntimeHostLoadedCodeReportTests
         json["incomplete"]!.GetValue<bool>().Should().BeTrue();
     }
 
-    [Fact]
-    public void MarkLoadedCodeReportFinished_OnAClassifiedEnd_MarksTheReportExecuted()
+    // Issue #786 review (round 3, MAJOR): only a run that reached a completed end is executed. Every other end is an allowlist
+    // miss, so a failed or budget-stopped run never reads as complete.
+    [Theory]
+    [InlineData(TitleExecutionState.Completed)]
+    [InlineData(TitleExecutionState.Returned)]
+    [InlineData(TitleExecutionState.RuntimeHandoff)]
+    public void MarkLoadedCodeReportFinished_OnACompletedEnd_MarksTheReportExecuted(TitleExecutionState state)
     {
         var report = new LoadedCodeMismatchDiagnostics();
-        var completed = new TitleExecutionResult(TitleExecutionState.Completed, null, 1, "engine", null, null);
+        var result = new TitleExecutionResult(state, null, 1, "engine", null, null);
 
-        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(report, completed);
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(report, result);
 
         var json = JsonNode.Parse(report.ToJson())!.AsObject();
         json["executed"]!.GetValue<bool>().Should().BeTrue();
         json["incomplete"]!.GetValue<bool>().Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(TitleExecutionState.BudgetExhausted, null)]
+    [InlineData(TitleExecutionState.UnsupportedTransfer, null)]
+    [InlineData(TitleExecutionState.InvalidState, null)]
+    [InlineData(TitleExecutionState.RuntimeFailure, "CPU_EXCEPTION")]
+    [InlineData(TitleExecutionState.RuntimeFailure, "UNRESOLVED_TRANSFER")]
+    [InlineData(TitleExecutionState.RuntimeFailure, "ARTIFACT_HOST_PROTOCOL_FAILED")]
+    [InlineData(TitleExecutionState.RuntimeFailure, "ENGINE_FAILED")]
+    public void MarkLoadedCodeReportFinished_OnAnEndThatIsNotCompleted_LeavesTheReportIncomplete(TitleExecutionState state, string? code)
+    {
+        var report = new LoadedCodeMismatchDiagnostics();
+        var result = new TitleExecutionResult(state, null, 1, "engine", code, "stopped");
+
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(report, result);
+
+        var json = JsonNode.Parse(report.ToJson())!.AsObject();
+        json["executed"]!.GetValue<bool>().Should().BeFalse($"{state}/{code} is not a completed end");
+        json["incomplete"]!.GetValue<bool>().Should().BeTrue();
     }
 }

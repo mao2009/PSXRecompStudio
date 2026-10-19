@@ -101,9 +101,10 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         JsonNode.Parse(diagnostics.ToJson())!["incomplete"]!.GetValue<bool>().Should().BeTrue("a dropped record is a gap in the report");
     }
 
-    // Issue #786 review M-C: a report of a run that did not finish is not complete, whatever it observed.
+    // Contract pin only: the default of a report nobody marked is incomplete. It passes before and after any fix, so it is
+    // not the regression guard for M-C; that is the parse-failure test in RuntimeHostLoadedCodeReportTests.
     [Fact]
-    public void ToJson_IsIncomplete_WhenTheRunDidNotExecute()
+    public void ToJson_DefaultsToIncomplete_UntilARunIsMarked()
     {
         var report = JsonNode.Parse(new LoadedCodeMismatchDiagnostics().ToJson())!.AsObject();
 

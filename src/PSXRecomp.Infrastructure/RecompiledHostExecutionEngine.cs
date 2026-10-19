@@ -110,12 +110,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public const string TimeoutDiagnosticCode = "ARTIFACT_TIMEOUT";
 
     /// <summary>
-    /// Marks a loaded-code report as finished once the run returned. A host timeout cut the run short, so the report
-    /// stays incomplete (Issue #786 review MEDIUM-1).
+    /// Marks a loaded-code report as executed only when the run reached a completed end: <c>Completed</c>,
+    /// <c>Returned</c> or <c>RuntimeHandoff</c>. Every other end (a failure, a timeout, an exhausted budget, an
+    /// unsupported transfer) leaves the report incomplete (Issue #786 review, allowlist of completed ends).
     /// </summary>
     public static void MarkLoadedCodeReportFinished(LoadedCodeMismatchDiagnostics? report, TitleExecutionResult result)
     {
-        report?.MarkExecuted(result.DiagnosticCode != TimeoutDiagnosticCode);
+        report?.MarkExecuted(result.State is TitleExecutionState.Completed or TitleExecutionState.Returned or TitleExecutionState.RuntimeHandoff);
     }
 
     private const int RunTimeoutMs = 30000;
@@ -1276,6 +1277,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if ((_biosRuntime is null && !_guestFirmware) || parts.Length != TransferFieldCount)
             {
+                // Issue #786 review (round 3, MEDIUM-1): a malformed firmware transfer still names its PC when parts[0] parses. If
+                // that PC is RAM-placed code, the refusal is counted as unobserved instead of disappearing.
+                if (_guestFirmware && _loadedCodeMismatch is not null && parts.Length > 0
+                    && uint.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var malformedPc)
+                    && _loadedCode.Contains(malformedPc))
+                {
+                    _loadedCodeMismatch.NoteUnobservedHandoff();
+                }
+
                 Decline();
                 return;
             }
