@@ -960,11 +960,14 @@ static uint64_t artifact_page_gen[PSX_RAM_SIZE >> 12];
 #define ARTIFACT_WROTE(pa, width) (artifact_page_gen[(pa) >> 12]++, artifact_page_gen[((pa) + (width) - 1u) >> 12]++)
 
 int recompiler_code_current(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen) {
-    uint32_t pa, i;
-    uint64_t gen;
+    uint32_t pa, i, p, last;
+    uint64_t gen = 0;
     (void)core;
+    if (count == 0u) return 1;
     if (!artifact_ram_offset(pc, 4u * count, &pa)) return 0;
-    gen = artifact_page_gen[pa >> 12] + artifact_page_gen[(pa + 4u * count - 1u) >> 12];
+    /* Issue #734: sum every page the block spans, not only its first and last (a middle-page write must change the sum). */
+    last = (pa + 4u * count - 1u) >> 12;
+    for (p = pa >> 12; p <= last; p++) gen += artifact_page_gen[p];
     if (gen == *seen) return 1;
     for (i = 0; i < count; i++) {
         const uint8_t* b = artifact_ram + pa + 4u * i;
