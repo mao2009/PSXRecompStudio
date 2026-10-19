@@ -192,15 +192,7 @@ internal static class IndirectRootDiscovery
             return false;
         }
 
-        try
-        {
-            _ = ReachableProgramBuilder.ReachablePcs(loadAddress, words, [target]);
-            return true;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
+        return ReachableProgramBuilder.IsDiscoverableRoot(loadAddress, words, target);
     }
 
     private static bool LooksLikeFunctionEntry(IReadOnlyList<uint> words, int index)

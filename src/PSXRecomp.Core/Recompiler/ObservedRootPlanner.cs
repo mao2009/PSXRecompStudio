@@ -109,14 +109,17 @@ internal static class ObservedRootPlanner
     public static ObservedRootPlan Plan(
         IReadOnlyList<LoadedImageSpec> images,
         IReadOnlyList<ObservedFallbackTarget> targets,
-        ObservedRootBudget? budget = null)
+        ObservedRootBudget? budget = null,
+        Func<uint, IReadOnlyList<uint>, IEnumerable<uint>, IReadOnlySet<uint>>? walk = null)
     {
         ArgumentNullException.ThrowIfNull(images);
         ArgumentNullException.ThrowIfNull(targets);
         budget ??= ObservedRootBudget.Default;
+        // The reachability walk is a parameter only so a test can make a candidate's walk fail (the guard below); production uses the real walk.
+        walk ??= ReachableProgramBuilder.ReachablePcs;
 
         var roots = images.Select(static image => new List<uint>(image.Roots)).ToArray();
-        var reachable = images.Select(static image => ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, image.Roots)).ToArray();
+        var reachable = images.Select(image => walk(image.LoadAddress, image.Words, image.Roots)).ToArray();
         var baseReachable = reachable.Sum(static set => set.Count);
         var accepted = images.Select(static _ => new List<ObservedRoot>()).ToArray();
         var rejected = new SortedDictionary<string, int>(StringComparer.Ordinal);
@@ -204,7 +207,7 @@ internal static class ObservedRootPlanner
             IReadOnlySet<uint> grown;
             try
             {
-                grown = ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, roots[index].Append(target.Pc));
+                grown = walk(image.LoadAddress, image.Words, roots[index].Append(target.Pc));
             }
             catch (InvalidOperationException)
             {

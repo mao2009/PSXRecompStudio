@@ -1,4 +1,5 @@
 using FluentAssertions;
+using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Recompiler;
 using Xunit;
 
@@ -286,5 +287,37 @@ public sealed class ObservedRootPlannerTests
         var act = () => ObservedRootPlanner.ReadExport(json);
 
         act.Should().Throw<InvalidDataException>();
+    }
+
+    // Issue #773 (review, MEDIUM): a candidate whose combined walk fails is rejected alone with a reason; it must not abort the plan.
+    // The walk is injected here: with real inputs a combined walk fails only where a single walk does too, so the guard is defensive.
+    [Fact]
+    public void ACandidateWhoseCombinedWalkFails_IsRejectedAlone_AndThePlanContinues()
+    {
+        IReadOnlySet<uint> Walk(uint loadAddress, IReadOnlyList<uint> words, IEnumerable<uint> roots)
+        {
+            var list = roots.ToArray();
+            if (list.Contains(A)) throw new InvalidOperationException("the combined walk reaches a structurally invalid transfer");
+            return ReachableProgramBuilder.ReachablePcs(loadAddress, words, list);
+        }
+
+        var plan = ObservedRootPlanner.Plan([Image()], [T(A, 100), T(B, 50)], Open, Walk);
+
+        plan.Images.Single().Roots.Select(static r => r.Pc).Should().Equal(B);
+        plan.Counts.Candidates.Should().Be(2);
+        plan.Counts.Rejected.Should().ContainKey("not-structurally-safe").WhoseValue.Should().Be(1);
+        (plan.Counts.Accepted + plan.Counts.Rejected.Values.Sum()).Should().Be(plan.Counts.Candidates);
+    }
+
+    // Issue #773 (review): only a candidate's walk is isolated. An image whose own entry-driven walk is structurally invalid is
+    // not a candidate and must fail the whole plan.
+    [Fact]
+    public void AnImageWhoseOwnWalkIsStructurallyInvalid_FailsTheWholePlan()
+    {
+        var broken = new LoadedImageSpec("img", Dest, [MipsEncoding.Branch(0x04, 0, 0, Dest, Dest + 0x1000)], [Dest]) { SourceSha256 = Sha };
+
+        var act = () => ObservedRootPlanner.Plan([broken], [T(A, 100)], Open);
+
+        act.Should().Throw<InvalidOperationException>();
     }
 }
