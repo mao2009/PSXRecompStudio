@@ -54,7 +54,7 @@ public static class ScreenshotCommand
             standardOutput.WriteLine(Usage);
             standardOutput.WriteLine();
             standardOutput.WriteLine("options:");
-            standardOutput.WriteLine("  --output <dir>             required: directory to save PNG screenshots");
+            standardOutput.WriteLine("  --output <dir>             required: new or empty directory for PNG screenshots (existing files are never overwritten)");
             standardOutput.WriteLine("  --openbios <rom.bin>       optional: OpenBIOS ROM file (512KB) for real BIOS execution");
             standardOutput.WriteLine("  --disc <image.chd|image.bin>  required with --openbios: CD-ROM image for the game");
             standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 100000)");
@@ -68,6 +68,14 @@ public static class ScreenshotCommand
         }
 
         var outputDirectory = Path.GetFullPath(parsed.OutputDirectory!);
+        // Owner decision (#798): the output directory must be new or empty. Checked before anything is written, so a refused
+        // run leaves every existing file and the manifest untouched and no PNG is ever overwritten.
+        if (Directory.Exists(outputDirectory) && Directory.EnumerateFileSystemEntries(outputDirectory).Any())
+        {
+            standardError.WriteLine($"psxrecomp screenshot: output directory must be new or empty (it already contains files): {outputDirectory}");
+            return RecompiledArtifactExitCode.Failure;
+        }
+
         var segmentBudget = parsed.SegmentBudget ?? 100_000u;
         var segments = parsed.Segments ?? 100u;
         var vblankInterval = parsed.VBlankInterval ?? DefaultVBlankInterval;

@@ -28,6 +28,8 @@ psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>
 psxrecomp package  <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--self-contained] [--json]
 psxrecomp package  <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--self-contained]
 psxrecomp doctor    [--json]
+psxrecomp screenshot <input.exe|input.chd> --output <dir> [--segment-budget <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]
+psxrecomp screenshot --openbios <rom.bin> --disc <image.chd|image.bin> --output <dir> [same options] [--json]
 ```
 
 `psxrecomp --help` prints usage, the option grammar, and the exit-code table.
@@ -115,6 +117,33 @@ is `ok`, `failed`, or `unsupported`; check status is `ok`, `failed`, or
 `unsupported`. Exit code `0` when every check passes, `1` when a tooling check
 failed, `2` when the OS/architecture is unsupported. The Rust toolchain is not
 checked: cargo is only a native-build-time dependency, not needed to run the CLI.
+
+### `screenshot`
+
+Runs a title headless and saves PNG screenshots at VBlank targets (Issue #751).
+`--output <dir>` is required and must be a **new or empty** directory. The
+command checks this before it runs: a directory that already contains anything
+is refused with exit code `1` and a stderr line that names the directory. Nothing
+in it is modified or deleted, and an existing PNG is never overwritten.
+Use a fresh directory for each run.
+
+The run writes `manifest.json` next to the PNGs. It records `stopReason`,
+`goalReached`, `captureStatus` (`complete`, `partial`, `none` or `write_failed`),
+`writeFailures`, the frames (`targetVblank`, the VBlank a frame was scheduled for,
+and `capturedVblank`, the VBlank it was actually taken at, which can be later
+when the counter skipped past the target) and `staleFiles`. Each PNG also
+carries `targetVblank` and `capturedVblank` as `tEXt` metadata.
+
+`stopReason` values: `goal_reached`, `timeout`, `capture_write_failed`,
+`execution_budget`, `completed`, `returned`, `runtime_handoff`,
+`runtime_failure`, `invalid_state`, `unsupported_transfer`, `setup_failed`,
+`in_progress` (a run that was killed before it finished).
+
+Exit code `0` only for a full success: every requested PNG was saved, no PNG
+write failed and the execution did not fail. A partial run (for example one
+that stops at the execution budget, the timeout or a Runtime boundary before the
+last target) exits `1`, even when its execution was clean. The JSON output keeps
+the two apart: `executionOk` reports the execution, `success` the whole run.
 
 ### `package`
 

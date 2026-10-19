@@ -289,62 +289,99 @@ public sealed class ScreenshotCommandBoundedStopTests
     }
 
     [Fact]
-    public void PngWriteFailure_MakesCommandExitNonZeroWhileJsonKeepsExecutionResultApart()
+    public void PopulatedOutputDirectory_IsRefusedBeforeAnyRunAndNoFileIsTouched()
     {
+        // Owner decision (#798): the output directory must be new or empty; the command refuses before it runs.
         using var dir = new TempDirectory();
-        var romPath = Path.Combine(dir.FullPath, "spin.bin");
-        var rom = new byte[OpenBiosFirmware.ImageSize];
-        BitConverter.GetBytes(0x0BF00000u).CopyTo(rom, 0); // j 0xBFC00000
-        File.WriteAllBytes(romPath, rom);
-        var discPath = Path.Combine(dir.FullPath, "blank.bin");
-        File.WriteAllBytes(discPath, new byte[2352 * 16]);
+        var (rom, disc) = WriteSpinInputs(dir.FullPath);
         var outputDirectory = Path.Combine(dir.FullPath, "shots");
-        Directory.CreateDirectory(Path.Combine(outputDirectory, "persona_vblank_0001.png"));
+        Directory.CreateDirectory(outputDirectory);
+        var png = Path.Combine(outputDirectory, "persona_vblank_1000.png");
+        File.WriteAllBytes(png, [9, 9, 9]);
+        var manifestPath = Path.Combine(outputDirectory, "manifest.json");
+        File.WriteAllText(manifestPath, "{\"keep\":true}");
+
+        var stderr = new StringWriter();
+        var code = ScreenshotCommand.Run(CliArgs(rom, disc, outputDirectory), TextWriter.Null, stderr);
+
+        code.Should().NotBe(0);
+        stderr.ToString().Should().Contain("new or empty");
+        File.ReadAllBytes(png).Should().Equal(new byte[] { 9, 9, 9 });
+        File.ReadAllText(manifestPath).Should().Be("{\"keep\":true}");
+        Directory.GetFileSystemEntries(outputDirectory).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void NewOutputDirectory_PartialRunExitsNonZeroAndIsNotSuccess()
+    {
+        // A run that ends at its budget is partial: execution is clean but the command is not a success (exit 1).
+        using var dir = new TempDirectory();
+        var (rom, disc) = WriteSpinInputs(dir.FullPath);
+        var outputDirectory = Path.Combine(dir.FullPath, "shots");
 
         var stdout = new StringWriter();
-        var code = ScreenshotCommand.Run(
-            ["--openbios", romPath, "--disc", discPath, "--output", outputDirectory, "--json",
-             "--segment-budget", "100000", "--segments", "50", "--vblank-interval", "1",
-             "--max-screenshots", "2", "--start-vblank", "1", "--timeout", "60"],
-            stdout, TextWriter.Null);
+        var code = ScreenshotCommand.Run(CliArgs(rom, disc, outputDirectory), stdout, TextWriter.Null);
 
         code.Should().NotBe(0);
         var json = JsonDocument.Parse(stdout.ToString()).RootElement;
         json.GetProperty("executionOk").GetBoolean().Should().BeTrue();
         json.GetProperty("success").GetBoolean().Should().BeFalse();
-        json.GetProperty("stopReason").GetString().Should().Be("capture_write_failed");
-        json.GetProperty("captureStatus").GetString().Should().Be("write_failed");
-        json.GetProperty("writeFailures").GetInt32().Should().Be(1);
+        json.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+        json.GetProperty("captureStatus").GetString().Should().Be("partial");
     }
 
     [Fact]
-    public void CliRun_AfterKilledRun_ReplacesInProgressMarkerAndLeavesStalePngUntouched()
+    public void EmptyExistingOutputDirectory_IsAcceptedAndWritesItsManifest()
     {
         using var dir = new TempDirectory();
-        var romPath = Path.Combine(dir.FullPath, "spin.bin");
+        var (rom, disc) = WriteSpinInputs(dir.FullPath);
+        var outputDirectory = Path.Combine(dir.FullPath, "shots");
+        Directory.CreateDirectory(outputDirectory);
+
+        var stderr = new StringWriter();
+        ScreenshotCommand.Run(CliArgs(rom, disc, outputDirectory), TextWriter.Null, stderr);
+
+        stderr.ToString().Should().NotContain("new or empty");
+        File.Exists(Path.Combine(outputDirectory, "manifest.json")).Should().BeTrue();
+    }
+
+    private static (string Rom, string Disc) WriteSpinInputs(string dir)
+    {
+        var romPath = Path.Combine(dir, "spin.bin");
         var rom = new byte[OpenBiosFirmware.ImageSize];
         BitConverter.GetBytes(0x0BF00000u).CopyTo(rom, 0); // j 0xBFC00000
         File.WriteAllBytes(romPath, rom);
-        var discPath = Path.Combine(dir.FullPath, "blank.bin");
+        var discPath = Path.Combine(dir, "blank.bin");
         File.WriteAllBytes(discPath, new byte[2352 * 16]);
+        return (romPath, discPath);
+    }
+
+    private static string[] CliArgs(string rom, string disc, string output) =>
+        ["--openbios", rom, "--disc", disc, "--output", output, "--json",
+         "--segment-budget", "1000", "--segments", "2", "--vblank-interval", "1000",
+         "--max-screenshots", "10", "--start-vblank", "1000", "--timeout", "60"];
+
+    [Fact]
+    public void CliRun_IntoDirectoryWithKilledRunLeftover_IsRefusedAndLeftoverIsUntouched()
+    {
+        using var dir = new TempDirectory();
+        var (rom, disc) = WriteSpinInputs(dir.FullPath);
         var outputDirectory = Path.Combine(dir.FullPath, "shots");
         Directory.CreateDirectory(outputDirectory);
         var stalePath = Path.Combine(outputDirectory, "persona_vblank_0900.png");
         File.WriteAllBytes(stalePath, [1, 2, 3]);
         // A killed run leaves its start marker behind (no FinishCapture after it).
         ScreenshotCommand.MarkInProgress(outputDirectory);
+        var manifestPath = Path.Combine(outputDirectory, "manifest.json");
+        var markerBytes = File.ReadAllBytes(manifestPath);
 
-        ScreenshotCommand.Run(
-            ["--openbios", romPath, "--disc", discPath, "--output", outputDirectory, "--json",
-             "--segment-budget", "1000", "--segments", "2", "--vblank-interval", "1000",
-             "--max-screenshots", "10", "--start-vblank", "1000", "--timeout", "60"],
-            TextWriter.Null, TextWriter.Null);
+        var stderr = new StringWriter();
+        var code = ScreenshotCommand.Run(CliArgs(rom, disc, outputDirectory), TextWriter.Null, stderr);
 
+        code.Should().NotBe(0);
+        stderr.ToString().Should().Contain("new or empty");
         File.ReadAllBytes(stalePath).Should().Equal(new byte[] { 1, 2, 3 });
-        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(outputDirectory, "manifest.json"))).RootElement;
-        manifest.GetProperty("stopReason").GetString().Should().Be("execution_budget");
-        manifest.GetProperty("staleFiles").EnumerateArray().Select(e => e.GetString())
-            .Should().Equal("persona_vblank_0900.png");
+        File.ReadAllBytes(manifestPath).Should().Equal(markerBytes);
     }
 
     private static string?[] ListedFrameNames(JsonElement manifest) =>
