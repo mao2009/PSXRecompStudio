@@ -247,9 +247,10 @@ public static class Program
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
             wall.Stop();
-            loadedCodeMismatch?.MarkExecuted();
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
+            // Issue #786 review MINOR-1: marked after the run is classified, so a report says executed only once it has an end.
+            RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(loadedCodeMismatch, execution);
 
             // Forward console output for native runs: the guest's C stdout contains
             // the boot/TTY text up to the engine's RSNAPSHOT diagnostic block; the

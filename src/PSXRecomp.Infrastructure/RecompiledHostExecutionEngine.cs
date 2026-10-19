@@ -109,6 +109,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Reported when the runnable artifact exceeds the run timeout (Issue #763 diagnostics).</summary>
     public const string TimeoutDiagnosticCode = "ARTIFACT_TIMEOUT";
 
+    /// <summary>
+    /// Marks a loaded-code report as finished once the run returned. A host timeout cut the run short, so the report
+    /// stays incomplete (Issue #786 review MEDIUM-1).
+    /// </summary>
+    public static void MarkLoadedCodeReportFinished(LoadedCodeMismatchDiagnostics? report, TitleExecutionResult result)
+    {
+        report?.MarkExecuted(result.DiagnosticCode != TimeoutDiagnosticCode);
+    }
+
     private const int RunTimeoutMs = 30000;
     private const int PumpDrainTimeoutMs = 5000;
 
@@ -1437,6 +1446,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                     return;
                 default:
+                    // Issue #786 review MAJOR-1: without a fallback session nothing else sees the refusal, so it is counted here.
+                    // With one, the session already counted its own declines.
+                    if (_fallback is null && _loadedCodeMismatch is not null && _loadedCode.Contains(pc))
+                    {
+                        _loadedCodeMismatch.NoteUnobservedHandoff();
+                    }
+
                     LastDeclinedTransfer = new FallbackDeclinedTransfer(pc, _fallback is not null, _fallback?.RejectReason);
                     Decline();
                     return;

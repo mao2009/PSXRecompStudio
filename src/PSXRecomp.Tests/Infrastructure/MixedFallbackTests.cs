@@ -480,6 +480,41 @@ public sealed class MixedFallbackTests
         report["incomplete"]!.GetValue<bool>().Should().BeTrue("a handoff the report does not describe makes it incomplete");
     }
 
+    // Issue #786 review MAJOR-1: a firmware run with mixed fallback off refuses the RAM-placed handoff in the engine itself,
+    // where no fallback session exists to count it. The refusal must be counted and make the report incomplete.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_FirmwareWithoutMixedFallback_ARefusedRamHandoffIsCountedAsUnobserved()
+    {
+        var (words, loaded) = RefusedRamCode();
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        RunArtifact(words, dir, mixedFallback: null, loadedCode: loaded, loadedCodeMismatch: diagnostics, guestFirmware: true);
+        diagnostics.MarkExecuted(true);
+
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["unobservedHandoffs"]!.GetValue<ulong>().Should().BeGreaterThan(0UL, "the RAM-PC handoff was refused without a fallback to compare it");
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    // Issue #786 review MEDIUM-2: a run that reaches its classified end is executed, and a report with no gaps is complete.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_ASuccessfulRun_IsExecutedAndComplete()
+    {
+        var main = new Block(Entry);
+        main.Emit(End());
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        var run = RunArtifact(Image(main), dir, mixedFallback: null, loadedCodeMismatch: diagnostics);
+        run.Result.State.Should().Be(TitleExecutionState.Completed);
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(diagnostics, run.Result);
+
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["executed"]!.GetValue<bool>().Should().BeTrue();
+        report["incomplete"]!.GetValue<bool>().Should().BeFalse("nothing was refused, skipped or unobserved");
+    }
+
     [Fact]
     public void PatchedBiosTarget_ToUncompiledImageCode_StaysFailClosed()
     {

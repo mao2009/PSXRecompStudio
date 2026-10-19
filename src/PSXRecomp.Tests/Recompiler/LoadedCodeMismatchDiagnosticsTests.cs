@@ -273,7 +273,7 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         var diagnostics = new LoadedCodeMismatchDiagnostics(maxComparedWords: ulong.MaxValue);
         diagnostics.Observe(Pc, [Version(Pc, 1, 2), Version(Pc, 3)], _ => 0u);
         diagnostics.Observe(Pc, [Version(Pc, 1, 2), Version(Pc, 3)], _ => 0u);
-        diagnostics.MarkExecuted();
+        diagnostics.MarkExecuted(true);
 
         diagnostics.ComparedWords.Should().Be(6);
         diagnostics.SkippedVersions.Should().Be(0);

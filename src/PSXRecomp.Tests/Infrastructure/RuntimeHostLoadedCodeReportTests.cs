@@ -1,6 +1,9 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
 
@@ -61,5 +64,33 @@ public sealed class RuntimeHostLoadedCodeReportTests
         #pragma warning restore AARC003
         json["executed"]!.GetValue<bool>().Should().BeFalse("the run never started");
         json["incomplete"]!.GetValue<bool>().Should().BeTrue("a run that did not execute is not a complete report");
+    }
+
+    // Issue #786 review MEDIUM-1: a host timeout cut the run short, so its report is not complete even with no gaps.
+    [Fact]
+    public void MarkLoadedCodeReportFinished_OnAHostTimeout_LeavesTheReportIncomplete()
+    {
+        var report = new LoadedCodeMismatchDiagnostics();
+        var timedOut = new TitleExecutionResult(
+            TitleExecutionState.RuntimeFailure, null, 0, "engine", RecompiledHostExecutionEngine.TimeoutDiagnosticCode, "timed out");
+
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(report, timedOut);
+
+        var json = JsonNode.Parse(report.ToJson())!.AsObject();
+        json["executed"]!.GetValue<bool>().Should().BeFalse("the run was stopped by the host, not classified");
+        json["incomplete"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    [Fact]
+    public void MarkLoadedCodeReportFinished_OnAClassifiedEnd_MarksTheReportExecuted()
+    {
+        var report = new LoadedCodeMismatchDiagnostics();
+        var completed = new TitleExecutionResult(TitleExecutionState.Completed, null, 1, "engine", null, null);
+
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(report, completed);
+
+        var json = JsonNode.Parse(report.ToJson())!.AsObject();
+        json["executed"]!.GetValue<bool>().Should().BeTrue();
+        json["incomplete"]!.GetValue<bool>().Should().BeFalse();
     }
 }

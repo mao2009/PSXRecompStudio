@@ -73,8 +73,11 @@ public sealed class LoadedCodeMismatchDiagnostics
     /// <summary>Whether the run finished its execution. A report written without it (a failed or killed run) is not complete.</summary>
     public bool Executed { get; private set; }
 
-    /// <summary>Marks the run as having executed to its classified end.</summary>
-    public void MarkExecuted() => Executed = true;
+    /// <summary>
+    /// Records whether the run reached a classified end. False when the host stopped it (for example a timeout): the
+    /// report then stays incomplete, whatever it observed.
+    /// </summary>
+    public void MarkExecuted(bool classifiedEnd) => Executed = classifiedEnd;
 
     /// <summary>Counts one handoff at a versioned PC that was returned before <see cref="Observe"/>.</summary>
     public void NoteUnobservedHandoff() => UnobservedHandoffs++;

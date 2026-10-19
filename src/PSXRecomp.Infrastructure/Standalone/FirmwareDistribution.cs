@@ -646,7 +646,6 @@ public static class FirmwareRuntimeLauncher
                 new TitleExecutionRequest(
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
             wall.Stop();
-            loadedCodeMismatch?.MarkExecuted();
 
             if (frameOutPath is not null)
             {
@@ -655,6 +654,8 @@ public static class FirmwareRuntimeLauncher
 
             var evidence = engine.FallbackEvidence;
             var exitCode = RecompiledArtifactExitCode.ExitCodeFor(result.State);
+            // Issue #786 review MINOR-1 / MEDIUM-1: marked once the run is classified; a host timeout stays incomplete.
+            RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(loadedCodeMismatch, result);
             if (engine.IpcProfile is { } ipcProfile && IpcProfile.OutputPathFromEnvironment() is { } ipcPath)
             {
                 ipcProfile.TryWrite(ipcPath, error, new Dictionary<string, object?>
