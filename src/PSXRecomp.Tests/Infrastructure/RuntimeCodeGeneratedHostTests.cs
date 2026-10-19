@@ -536,6 +536,68 @@ public sealed class RuntimeCodeGeneratedHostTests
 #pragma warning restore AARC003
     }
 
+    private static RecompilerStateSnapshot RunWithoutGuardStats(string workDir,
+        (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) fixture, uint budget)
+    {
+        var (rom, romCode, loaded) = fixture;
+        using var engine = new RecompiledHostExecutionEngine(
+            romCode, rom, RomBase, new GeneratedHostBuildService(), workDir,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+        var snapshot = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(budget)).FinalSnapshot;
+        snapshot.Should().NotBeNull();
+        return snapshot!;
+    }
+
+    [Fact]
+    public void GuardStats_OnAndOff_LeaveTheGuestInTheSameState()
+    {
+        // Issue #773 diagnostics ON vs OFF: the counters observe the dispatcher and change nothing the guest can observe.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var fixture = GuardStatsFixture();
+        var on = RunWithGuardStats(statsPath, dir.FullPath, fixture, budget: 20_000);
+        var off = RunWithoutGuardStats(dir.FullPath, fixture, budget: 20_000);
+
+        File.Exists(statsPath).Should().BeTrue("the ON run wrote its report");
+        off.Gpr.Should().Equal(on.Gpr, "the same general registers");
+        off.HI.Should().Be(on.HI);
+        off.LO.Should().Be(on.LO);
+        off.PC.Should().Be(on.PC);
+        off.Termination.Should().Be(on.Termination);
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_PerVersionTables_AreFlat_AndAManyVersionEntryDoesNotWidenOthers()
+    {
+        // Issue #773 review: a slot with many versions must not pad the other slots to its width.
+        const uint small = 0x80001000u, many = 0x80001100u;
+        uint[] a = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        uint[] b1 = [Addiu(S2, S2, 0x10), Jr(Ra), Nop];
+        uint[] b2 = [Addiu(S2, S2, 0x20), Jr(Ra), Nop];
+        uint[] b3 = [Addiu(S2, S2, 0x30), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Call(reset, small);
+        Call(reset, many);
+        var rom = Rom(reset);
+        var romCode = ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program;
+        var loaded = new LoadedCodeTable([
+            ReachableProgramBuilder.BuildLoadedImage(small, a, [small], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(many, b1, [many], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(many, b2, [many], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(many, b3, [many], new HashSet<uint>()),
+        ]);
+
+        var source = RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source!;
+
+        // The loaded table has 4 entry PCs (the call entry and the return entry of each image) and 6 versions in all.
+        // Padding every slot to the widest one would need 4 * 3 = 12 cells; the flat table needs exactly 6.
+        source.Should().Contain("#define PSX_GS_N 4u").And.Contain("#define PSX_GS_T 6u");
+        source.Should().Contain("static const uint32_t psx_gs_off[PSX_GS_N + 1u] = { 0u, 1u, 2u, 5u, 6u };",
+            "each slot takes exactly its own versions; the three-version entry does not widen the others");
+    }
+
     [Fact]
     public async Task GuardStatsScope_IsPerAsyncContext_NestsAndRestores()
     {
