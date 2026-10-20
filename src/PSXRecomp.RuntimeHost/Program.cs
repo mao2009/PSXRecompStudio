@@ -127,6 +127,18 @@ public static class Program
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
 
+        // Issue #786 (PR review): the stop diagnostic is an output too, so it never replaces an input. Refused by path before anything runs.
+        if (diagnosticsPath is not null)
+        {
+            var conflict = ReportTargetInput(diagnosticsPath, ReadInputPaths(manifestPath, manifestDirectory));
+            if (conflict is not null)
+            {
+                Console.Error.WriteLine(
+                    $"runtime host: refusing --diagnostics {diagnosticsPath}: it is the input {conflict}, and no report is written over an input.");
+                return 78;
+            }
+        }
+
         // Issue #786 review M-A: only a firmware distribution carries the RAM-placed code table this report describes. Anywhere
         // else the report would be empty and look complete, so the flag fails closed before the run instead.
         if (loadedCodeMismatchPath is not null && !FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))

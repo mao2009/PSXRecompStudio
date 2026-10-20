@@ -447,4 +447,78 @@ public sealed class RuntimeHostLoadedCodeReportTests
         Exists(dir.Combine("loaded.json.tmp")).Should().BeFalse();
         ReadText(manifest).Should().Be("not json");
     }
+
+    // Issue #786 (PR review): --diagnostics is an output too. Its target is refused by path before anything runs, so the run exits
+    // 78 and every input keeps its content.
+    private const string DiagnosticsFlag = "--diagnostics";
+
+    private static (string Manifest, string Boot, string Artifact) WriteDistribution(TempDirectory dir)
+    {
+        var boot = dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
+        var artifact = dir.WriteFile("game.exe", Bytes("artifact bytes"));
+        return (manifest, boot, artifact);
+    }
+
+    private static void AssertDiagnosticsRefused(string target, string manifest, params string[] inputs)
+    {
+        var before = inputs.Select(path => (Path: path, Text: ReadText(path))).ToList();
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([DiagnosticsFlag, target, manifest]);
+
+        code.Should().Be(78, "a diagnostics target that is an input is refused before the run");
+        foreach (var (path, text) in before)
+        {
+            ReadText(path).Should().Be(text, $"{path} is an input and must survive");
+        }
+    }
+
+    [Fact]
+    public void Diagnostics_TargetIsTheManifest_IsRefused_AndTheInputsSurvive()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+
+        AssertDiagnosticsRefused(manifest, manifest, manifest, boot, artifact);
+    }
+
+    [Fact]
+    public void Diagnostics_TargetIsFirmwareBoot_IsRefused_AndTheInputsSurvive()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+
+        AssertDiagnosticsRefused(boot, manifest, manifest, boot, artifact);
+    }
+
+    [Fact]
+    public void Diagnostics_TargetIsTheArtifact_IsRefused_AndTheInputsSurvive()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+
+        AssertDiagnosticsRefused(artifact, manifest, manifest, boot, artifact);
+    }
+
+    [SkippableFact]
+    public void Diagnostics_TargetIsTheManifestInOtherCase_IsRefused_AndTheInputsSurvive_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "case-insensitive path identity is a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+
+        AssertDiagnosticsRefused(manifest.ToUpperInvariant(), manifest, manifest, boot, artifact);
+    }
+
+    [SkippableFact]
+    public void Diagnostics_TargetIsTheManifestThroughAJunction_IsRefused_AndTheInputsSurvive_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "directory junctions are a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+        var junction = dir.Combine("alias");
+        CreateJunctionOrSkip(junction, dir.Combine("runtime"));
+
+        AssertDiagnosticsRefused(Path.Combine(junction, "runtime-host.json"), manifest, manifest, boot, artifact);
+    }
 }
