@@ -314,13 +314,13 @@ public sealed class InterpreterFallbackEngineTests
     }
 
     [Fact]
-    public void ReturnCheck_RamVersionAtAPcOutsideRam_IsRefusedAsOwnerNotInRam()
+    public void ReturnCheck_RamVersionAtAPcOutsideRam_IsRefusedAsPcNotRamMapped()
     {
         var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(0xBFC00000u, [Nop, Nop], [0xBFC00000u], new HashSet<uint>())]);
 
         var verdict = FallbackReturnCheck.Classify(0xBFC00000u, new HashSet<uint>(), loaded, _ => Nop);
 
-        verdict.Should().Be(FallbackReturnVerdict.RefusedOwnerNotInRam, "no RAM word can be compared, so no version can be shown to own the PC");
+        verdict.Should().Be(FallbackReturnVerdict.RefusedPcNotRamMapped, "no RAM word can be compared, so no version can be shown to own the PC");
     }
 
     [Fact]
@@ -393,7 +393,7 @@ public sealed class InterpreterFallbackEngineTests
         outcome.Status.Should().Be(FallbackSegmentStatus.BudgetExhausted, "the guest handler runs to the budget");
         outcome.RetiredInstructions.Should().BeGreaterThan(0UL, "the handler's addiu instructions retired");
         var snapshot = diagnostics.Snapshot();
-        snapshot.SuppressedByInterruptHandler.Should().BeGreaterThan(0UL, "the handler stepped while the check was suppressed");
+        snapshot.StepsInInterruptHandler.Should().BeGreaterThan(0UL, "the handler stepped while the check was suppressed");
         snapshot.RefusedPipelineNotClean.Should().Be(0UL);
         snapshot.ReturnChecks.Should().Be(0UL, "no check reached the predicate: every step was inside the handler");
     }
@@ -442,7 +442,7 @@ public sealed class InterpreterFallbackEngineTests
         stats.NoteVerdict(Entry, FallbackReturnVerdict.AcceptedAotEntry);
         stats.NoteVerdict(Entry, FallbackReturnVerdict.AcceptedRamVersion);
         stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedNoAotEntry);
-        stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedOwnerNotInRam);
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedPcNotRamMapped);
         stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedRamWordMismatch);
         stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedNoComparableVersion);
 
@@ -450,7 +450,7 @@ public sealed class InterpreterFallbackEngineTests
         s.AotEntryHits.Should().Be(1UL);
         s.RamVersionHits.Should().Be(1UL);
         s.RefusedNoAotEntry.Should().Be(1UL);
-        s.RefusedOwnerNotInRam.Should().Be(1UL);
+        s.RefusedPcNotRamMapped.Should().Be(1UL);
         s.RefusedRamWordMismatch.Should().Be(1UL);
         s.RefusedNoComparableVersion.Should().Be(1UL);
         s.ReturnChecks.Should().Be(6UL);

@@ -283,7 +283,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>
     /// Counts the return checks the fallback step loop refuses for a reason other than the predicate (Issue #806): a pipeline
-    /// that is not clean, and steps run while the guest's interrupt handler is active. Null keeps the loop unobserved.
+    /// that is not clean. It also counts steps run while the guest's interrupt handler is active, which are not refused checks.
+    /// Null keeps the loop unobserved.
     /// </summary>
     public FallbackReturnDiagnostics? ReturnDiagnostics { get; set; }
 
@@ -582,7 +583,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 else
                 {
                     // Issue #806: no return check is made while the guest's handler runs, so none is evaluated here.
-                    ReturnDiagnostics?.NoteSuppressedByInterruptHandler();
+                    ReturnDiagnostics?.NoteStepInInterruptHandler();
                 }
             }
 

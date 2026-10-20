@@ -19,8 +19,8 @@ public enum FallbackReturnVerdict
     /// <summary>No static block entry and no RAM-placed version registered at the PC (<c>!loadedCode.Contains</c>).</summary>
     RefusedNoAotEntry,
 
-    /// <summary>Versions are registered at the PC, but it is outside the 2 MiB RAM mapping, so no RAM word can be compared.</summary>
-    RefusedOwnerNotInRam,
+    /// <summary>Versions are registered at the PC, but it is outside the RAM mapping (addresses fold into the 8 MiB mirror window), so no RAM word can be compared.</summary>
+    RefusedPcNotRamMapped,
 
     /// <summary>Versions are registered and comparable, but RAM differs from every one of them at the PC.</summary>
     RefusedRamWordMismatch,
@@ -59,7 +59,7 @@ public static class FallbackReturnCheck
     {
         if (blockEntryPcs.Contains(pc)) return FallbackReturnVerdict.AcceptedAotEntry;
         if (!loadedCode.Contains(pc)) return FallbackReturnVerdict.RefusedNoAotEntry;
-        if (!TryRamOffset(pc, out var physical)) return FallbackReturnVerdict.RefusedOwnerNotInRam;
+        if (!TryRamOffset(pc, out var physical)) return FallbackReturnVerdict.RefusedPcNotRamMapped;
 
         var compared = false;
         foreach (var version in loadedCode.VersionsAt(pc))
@@ -92,11 +92,11 @@ public sealed record FallbackPcCount(uint Pc, ulong Count);
 /// <param name="AotEntryHits">Evaluations accepted by a static compiled block entry.</param>
 /// <param name="RamVersionHits">Evaluations accepted by a RAM-placed version whose words equal RAM.</param>
 /// <param name="RefusedNoAotEntry">No static block entry and no RAM-placed version registered at the PC.</param>
-/// <param name="RefusedOwnerNotInRam">Versions registered, but the PC has no RAM mapping to compare against.</param>
+/// <param name="RefusedPcNotRamMapped">Versions registered, but the PC has no RAM mapping to compare against.</param>
 /// <param name="RefusedRamWordMismatch">Versions registered and comparable, none equal to RAM.</param>
 /// <param name="RefusedNoComparableVersion">Versions registered, none comparable (empty or too long for the RAM left).</param>
 /// <param name="RefusedPipelineNotClean">The predicate accepted the PC, but the CPU had a pending branch or load (not clean).</param>
-/// <param name="SuppressedByInterruptHandler">Steps the guest's interrupt handler ran, where no return check is made (the condition is not evaluated).</param>
+/// <param name="StepsInInterruptHandler">Steps the guest's interrupt handler ran. Counted, not refused: no return check is made there, so the return condition is not evaluated.</param>
 /// <param name="Segments">Fallback segments the run executed.</param>
 /// <param name="SuccessfulReturns">Segments that returned to a compiled block.</param>
 /// <param name="BudgetExhaustedSegments">Segments that retired their whole instruction budget without a return.</param>
@@ -111,11 +111,11 @@ public sealed record FallbackReturnStats(
     ulong AotEntryHits,
     ulong RamVersionHits,
     ulong RefusedNoAotEntry,
-    ulong RefusedOwnerNotInRam,
+    ulong RefusedPcNotRamMapped,
     ulong RefusedRamWordMismatch,
     ulong RefusedNoComparableVersion,
     ulong RefusedPipelineNotClean,
-    ulong SuppressedByInterruptHandler,
+    ulong StepsInInterruptHandler,
     ulong Segments,
     ulong SuccessfulReturns,
     ulong BudgetExhaustedSegments,
@@ -149,11 +149,11 @@ public sealed class FallbackReturnDiagnostics
     private ulong _aotEntryHits;
     private ulong _ramVersionHits;
     private ulong _refusedNoAotEntry;
-    private ulong _refusedOwnerNotInRam;
+    private ulong _refusedPcNotRamMapped;
     private ulong _refusedRamWordMismatch;
     private ulong _refusedNoComparableVersion;
     private ulong _refusedPipelineNotClean;
-    private ulong _suppressedByInterruptHandler;
+    private ulong _stepsInInterruptHandler;
     private ulong _segments;
     private ulong _successfulReturns;
     private ulong _budgetExhaustedSegments;
@@ -177,8 +177,8 @@ public sealed class FallbackReturnDiagnostics
             case FallbackReturnVerdict.RefusedNoAotEntry:
                 _refusedNoAotEntry++;
                 break;
-            case FallbackReturnVerdict.RefusedOwnerNotInRam:
-                _refusedOwnerNotInRam++;
+            case FallbackReturnVerdict.RefusedPcNotRamMapped:
+                _refusedPcNotRamMapped++;
                 break;
             case FallbackReturnVerdict.RefusedRamWordMismatch:
                 _refusedRamWordMismatch++;
@@ -201,7 +201,7 @@ public sealed class FallbackReturnDiagnostics
     }
 
     /// <summary>A step ran while the guest's interrupt handler was active: no return check was made there.</summary>
-    public void NoteSuppressedByInterruptHandler() => _suppressedByInterruptHandler++;
+    public void NoteStepInInterruptHandler() => _stepsInInterruptHandler++;
 
     /// <summary>Records how one fallback segment ended, and keeps the longest one's PCs.</summary>
     public void NoteSegment(uint entryPc, uint exitPc, ulong retired, FallbackSegmentStatus status)
@@ -229,8 +229,8 @@ public sealed class FallbackReturnDiagnostics
 
         top.Sort(static (a, b) => a.Count != b.Count ? b.Count.CompareTo(a.Count) : a.Pc.CompareTo(b.Pc));
         return new FallbackReturnStats(
-            _returnChecks, _aotEntryHits, _ramVersionHits, _refusedNoAotEntry, _refusedOwnerNotInRam,
-            _refusedRamWordMismatch, _refusedNoComparableVersion, _refusedPipelineNotClean, _suppressedByInterruptHandler,
+            _returnChecks, _aotEntryHits, _ramVersionHits, _refusedNoAotEntry, _refusedPcNotRamMapped,
+            _refusedRamWordMismatch, _refusedNoComparableVersion, _refusedPipelineNotClean, _stepsInInterruptHandler,
             _segments, _successfulReturns, _budgetExhaustedSegments, _longestRetired,
             _longestEntryPc, _longestExitPc, _longestStatus, top);
     }
