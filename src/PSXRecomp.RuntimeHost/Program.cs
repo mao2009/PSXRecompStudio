@@ -30,9 +30,16 @@ public static class Program
     /// unchanged) for HLE and firmware distributions alike. Returns the classified run result code
     /// (0 success, 1 tooling/failure, 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
     /// </summary>
-    public static int Main(string[] args)
+    public static int Main(string[] args) => Run(args, new FileSystemIdentityProbe());
+
+    /// <summary>
+    /// The entry point with its identity probe supplied by the caller (the composition root passes the file system adapter; a test may pass
+    /// a probe that reports an unverified identity, to exercise the fail-closed path of a host whose identity cannot be verified).
+    /// </summary>
+    public static int Run(string[] args, IFileIdentityProbe probe)
     {
         ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(probe);
 
         if (args.Length == 0)
         {
@@ -144,8 +151,6 @@ public static class Program
         // The files the run reads, listed once for both report targets. A listing that fails (I/O or access) is a classified setup
         // failure: no report is written, and nothing beyond the listing is read.
         IReadOnlyList<string>? reportInputs = null;
-        // The composition root supplies the file system adapter for the Domain port that answers "what does this path name".
-        IFileIdentityProbe probe = new FileSystemIdentityProbe();
         if (diagnosticsPath is not null || loadedCodeMismatchPath is not null)
         {
             try

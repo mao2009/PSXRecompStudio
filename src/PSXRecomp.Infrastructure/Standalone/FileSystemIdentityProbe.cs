@@ -11,6 +11,30 @@ namespace PSXRecomp.Infrastructure.Standalone;
 [Infrastructure]
 public sealed class FileSystemIdentityProbe : IFileIdentityProbe
 {
+    private readonly bool _identityVerified;
+
+    /// <summary>The probe for this host: identities are read wherever this build can read them.</summary>
+    public FileSystemIdentityProbe() : this(IdentityVerifiedOnThisHost)
+    {
+    }
+
+    /// <summary>
+    /// A probe whose identity reads are verified (<paramref name="identityVerified"/> true) or not. When they are not verified, an existing
+    /// name is reported Unreadable, so that every replacement of an existing file is refused (fail-closed). Used for hosts whose identity
+    /// path cannot be checked here, and by tests that simulate such a host.
+    /// </summary>
+    public FileSystemIdentityProbe(bool identityVerified)
+    {
+        _identityVerified = identityVerified;
+    }
+
+    /// <summary>
+    /// False on macOS x86-64: the identity is read through the stat$INODE64 symbol, whose layout is not verified on any x86-64 Mac here. Every
+    /// other host is verified: Linux (x86-64 and arm64), macOS arm64, and Windows.
+    /// </summary>
+    public static bool IdentityVerifiedOnThisHost =>
+        !(OperatingSystem.IsMacOS() && System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X64);
+
     private const int NoSuchFile = 2;      // ENOENT on Linux and macOS.
     private const int NotADirectory = 20;  // ENOTDIR on Linux and macOS.
     private const uint FileTypeMask = 0xF000;
@@ -29,9 +53,9 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     {
         try
         {
-            if (OperatingSystem.IsWindows()) return ProbeWindows(path);
-            if (OperatingSystem.IsLinux()) return FromPosix(LinuxFileStatInterop.Stat(path));
-            if (OperatingSystem.IsMacOS()) return FromPosix(MacOsFileStatInterop.Stat(path));
+            if (OperatingSystem.IsWindows()) return ProbeWindows(path, _identityVerified);
+            if (OperatingSystem.IsLinux()) return FromPosix(LinuxFileStatInterop.Stat(path), _identityVerified);
+            if (OperatingSystem.IsMacOS()) return FromPosix(MacOsFileStatInterop.Stat(path), _identityVerified);
             return Unreadable;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
@@ -42,12 +66,15 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
 
     private static FileProbe Unreadable => new(FileKind.Unreadable, null);
 
-    private static FileProbe FromPosix(PosixStatResult stat)
+    private static FileProbe FromPosix(PosixStatResult stat, bool identityVerified)
     {
         if (!stat.Succeeded)
         {
             return stat.Errno is NoSuchFile or NotADirectory ? new FileProbe(FileKind.Absent, null) : Unreadable;
         }
+
+        // An existing name on a host whose identity is unverified cannot be shown to be no input: Unreadable, fail-closed.
+        if (!identityVerified) return Unreadable;
 
         var type = stat.Mode & FileTypeMask;
         var kind = type switch
@@ -59,7 +86,7 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
         return new FileProbe(kind, new FileIdentity(stat.Device, stat.Inode));
     }
 
-    private static FileProbe ProbeWindows(string path)
+    private static FileProbe ProbeWindows(string path, bool identityVerified)
     {
         if (IsDeviceName(path)) return new FileProbe(FileKind.Other, null);
 
@@ -76,6 +103,9 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
         }
 
         if (attributes.HasFlag(FileAttributes.Directory)) return new FileProbe(FileKind.Directory, null);
+
+        // An existing file on a host whose identity is unverified is Unreadable, fail-closed, before any open.
+        if (!identityVerified) return Unreadable;
 
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         return FileIdentityInterop.TryGetIdentity(stream.SafeFileHandle, out var volume, out var index)

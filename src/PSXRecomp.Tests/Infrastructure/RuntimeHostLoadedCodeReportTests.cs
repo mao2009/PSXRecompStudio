@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using PSXRecomp.Core;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure;
@@ -1013,6 +1014,62 @@ public sealed class RuntimeHostLoadedCodeReportTests
         {
             return false;
         }
+    }
+
+    // Runs the host with a supplied identity probe, and returns its exit code with its stderr (as RunCapturingStderr does).
+    private static (int Code, string Stderr) RunCapturingStderrWithProbe(IFileIdentityProbe probe, params string[] args)
+    {
+#pragma warning disable AARC003
+        var original = Console.Error;
+        using var captured = new StringWriter();
+        Console.SetError(captured);
+        try
+        {
+            var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Run(args, probe);
+            return (code, captured.ToString());
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+#pragma warning restore AARC003
+    }
+
+    // Issue #786 (final round 17): on a host whose identity path is unverified (macOS x86-64, which no real host here can check), an existing
+    // report target is refused before any write, and the existing report and inputs keep their bytes. Fail-closed, with no fallback.
+    [Fact]
+    public void AnExistingReportTarget_OnAnUnverifiedIdentityHost_IsRefused_AndTheReportAndInputsSurvive()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        const string earlier = "{\"earlier\":true}";
+        var report = dir.WriteFile("report.json", Bytes(earlier));
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderrWithProbe(new FileSystemIdentityProbe(identityVerified: false), DiagnosticsFlag, report, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("refusing " + DiagnosticsFlag, "an existing report is refused by the unverified identity, not reached by a run");
+        ReadText(report).Should().Be(earlier, "the existing report is not replaced");
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
+    }
+
+    // Issue #786 (final round 17): on the same unverified host, a report where no file exists yet still proceeds (creating a new file is not a
+    // replacement). This guard checks that the refusal is not over-broad.
+    [Fact]
+    public void AnAbsentReportTarget_OnAnUnverifiedIdentityHost_StillProceeds()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var report = dir.Combine("new-report.json");
+
+        var (code, stderr) = RunCapturingStderrWithProbe(new FileSystemIdentityProbe(identityVerified: false), DiagnosticsFlag, report, manifest);
+
+        code.Should().Be(78, "the run itself fails: the ROM is absent in this layout");
+        stderr.Should().NotContain("refusing", "a report where no file exists is not refused by the unverified identity");
+        #pragma warning disable AARC003
+        File.Exists(report).Should().BeTrue("the diagnostic is written where no file existed");
+        #pragma warning restore AARC003
     }
 
     // The listing of a file from dir /r: its own directory entry and its $DATA lines, in listing order. A failed dir call fails the test,
