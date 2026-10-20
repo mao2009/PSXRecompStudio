@@ -18,7 +18,22 @@ public sealed record GuardedImageProgram(IReadOnlyList<GuardedBlock> Blocks, IRe
 {
     /// <summary>Image words covered by a block.</summary>
     public int NativeInstructionCount => Blocks.Sum(static b => b.Words.Count);
+
+    /// <summary>The manifest's declaration of the image (Issue #773); null when the caller did not declare one. Not proof of the loaded file.</summary>
+    public LoadedImageOrigin? Origin { get; init; }
 }
+
+/// <summary>
+/// The manifest's declaration of one loaded code image, fixed when the image is registered (Issue #773). It repeats the
+/// label and directive the manifest gave; it is not a check of the file's bytes or of what the game loaded at run time, so
+/// it proves no more than the manifest does. It never holds a host path. Diagnostics only.
+/// </summary>
+/// <param name="Name">The manifest label (for a disc image, the normalized ISO path under its prefix).</param>
+/// <param name="Kind">The manifest directive it was declared with: <c>rom-image</c>, <c>exe-file</c>, <c>boot-exe</c>, <c>disc-exe</c>.</param>
+/// <param name="LoadAddress">The guest address the image is loaded at.</param>
+/// <param name="WordCount">The image size in words.</param>
+[Domain]
+public sealed record LoadedImageOrigin(string Name, string Kind, uint LoadAddress, int WordCount);
 
 /// <summary>
 /// Every pre-generated version of RAM-placed code, linked into one guest address space (Issue #732). Several images may
@@ -30,18 +45,21 @@ public sealed record GuardedImageProgram(IReadOnlyList<GuardedBlock> Blocks, IRe
 public sealed class LoadedCodeTable
 {
     private readonly Dictionary<uint, GuardedBlock[]> _versions;
+    private readonly Dictionary<uint, IReadOnlyList<LoadedImageOrigin>[]> _origins;
 
     /// <param name="images">The image builds to link. A version identical to an earlier one (same entry, same words) is
-    /// the same code and is kept once.</param>
+    /// the same code and is kept once; its <see cref="OriginsAt"/> lists every image that carried it.</param>
     public LoadedCodeTable(IEnumerable<GuardedImageProgram> images)
     {
         ArgumentNullException.ThrowIfNull(images);
-        _versions = images
-            .SelectMany(static image => image.Blocks)
-            .GroupBy(static b => b.Block.EntryPc)
-            .ToDictionary(
-                static g => g.Key,
-                static g => g.DistinctBy(static b => string.Join(',', b.Words)).ToArray());
+        var perPc = images
+            .SelectMany(static image => image.Blocks.Select(block => (Block: block, image.Origin)))
+            .GroupBy(static b => b.Block.Block.EntryPc)
+            .ToDictionary(static g => g.Key, static g => g.GroupBy(static b => string.Join(',', b.Block.Words)).ToArray());
+        _versions = perPc.ToDictionary(static e => e.Key, static e => e.Value.Select(static g => g.First().Block).ToArray());
+        _origins = perPc.ToDictionary(
+            static e => e.Key,
+            static e => e.Value.Select(static g => (IReadOnlyList<LoadedImageOrigin>)g.Select(static b => b.Origin).OfType<LoadedImageOrigin>().ToArray()).ToArray());
         Blocks = _versions.OrderBy(static e => e.Key).SelectMany(static e => e.Value).ToArray();
     }
 
@@ -53,6 +71,12 @@ public sealed class LoadedCodeTable
 
     /// <summary>The versions registered for <paramref name="pc"/>, in link order (empty when none).</summary>
     public IReadOnlyList<GuardedBlock> VersionsAt(uint pc) => _versions.TryGetValue(pc, out var v) ? v : [];
+
+    /// <summary>
+    /// For each version at <paramref name="pc"/> (aligned with <see cref="VersionsAt"/>), the images that registered exactly
+    /// that code. An image without a recorded origin contributes nothing, so a version may have an empty list.
+    /// </summary>
+    public IReadOnlyList<IReadOnlyList<LoadedImageOrigin>> OriginsAt(uint pc) => _origins.TryGetValue(pc, out var o) ? o : [];
 
     /// <summary>Whether any version is registered for <paramref name="pc"/>.</summary>
     public bool Contains(uint pc) => _versions.ContainsKey(pc);

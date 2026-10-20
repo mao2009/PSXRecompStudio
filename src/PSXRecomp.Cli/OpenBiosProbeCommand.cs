@@ -446,7 +446,7 @@ internal static class OpenBiosProbeCommand
         var observedPcs = new HashSet<uint>(manifest.Interpreted) { OpenBiosBootMonitor.ShellLoadAddress, ExecutableBoundary, 0x80000080, 0x000026A4 };
         observedPcs.UnionWith(probe.CompareAt);
         if (probe.StopAt is { } stopPc) observedPcs.Add(stopPc);
-        var loadedImages = manifest.Images.Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observedPcs))).ToArray();
+        var loadedImages = manifest.Images.Select(i => (i.Name, Build: ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observedPcs) with { Origin = i.Origin })).ToArray();
         var loadedCode = new LoadedCodeTable(loadedImages.Select(static i => i.Build));
         var buildMs = clock.Elapsed.TotalMilliseconds;
         var boundaryPcs = RequiredBoundaries(probe.CompareAt, probe.StopAt);

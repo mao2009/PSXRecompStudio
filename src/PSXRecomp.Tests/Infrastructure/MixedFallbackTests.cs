@@ -400,6 +400,155 @@ public sealed class MixedFallbackTests
         AssertSameCpuAsInterpreter(run.Result, RunInterpreter(words));
     }
 
+    // Issue #773: the mismatch report only observes. Off and on, the same program ends in the same state; the on run records
+    // the handoff at a RAM-placed PC that had one version the RAM did not match.
+    // Issue #786 review M-B: the program overwrites the RAM at Target with code no version holds, then jumps there, so the
+    // artifact refuses every version at that handoff and the transfer goes to the fallback.
+    private static (uint[] Words, LoadedCodeTable Loaded) RefusedRamCode()
+    {
+        const uint done = Target + 0x100u;
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), Li(T1, Ori(S1, Zero, 0x55)), [Sw(T1, T0, 0)], Li(T1, MipsEncoding.Jump(done)), [Sw(T1, T0, 4)]);
+        // Register-indirect, so the static build does not reach Target and the image version stays a RAM-placed one.
+        main.Emit(Li(T1, Nop), [Sw(T1, T0, 8)], [Jr(T0)], [Nop]);
+        var tail = new Block(Target);
+        tail.Emit(Ori(S1, Zero, 0x77), MipsEncoding.Jump(done), Nop);
+        var doneBlock = new Block(done);
+        doneBlock.Emit(End());
+        var words = Image(main, tail, doneBlock);
+        var tailStart = (int)((Target - Entry) / 4);
+        var ramWords = words[tailStart..(tailStart + 3)];
+        // Two RAM-placed images at Target. The program overwrites Target with other code, so neither version matches the RAM
+        // at the handoff: both are refused and recorded.
+        var otherWords = new[] { Ori(S1, Zero, 0x99), MipsEncoding.Jump(done), Nop };
+        var loaded = new LoadedCodeTable([
+            ReachableProgramBuilder.BuildLoadedImage(Target, otherWords, [Target], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(Target, ramWords, [Target], new HashSet<uint>()),
+        ]);
+        return (words, loaded);
+    }
+
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_OffAndOn_EndInTheSameState()
+    {
+        var (words, loaded) = RefusedRamCode();
+        using var offDir = new TempDirectory();
+        using var onDir = new TempDirectory();
+
+        var off = RunArtifact(words, offDir, On, loadedCode: loaded);
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+        var on = RunArtifact(words, onDir, On, loadedCode: loaded, loadedCodeMismatch: diagnostics);
+
+        on.Result.State.Should().Be(off.Result.State);
+        on.Result.FinalSnapshot!.Gpr.Should().Equal(off.Result.FinalSnapshot!.Gpr);
+        Gpr(on.Result, S1).Should().Be(Gpr(off.Result, S1));
+        on.Evidence!.Transitions.Should().Be(off.Evidence!.Transitions);
+        Gpr(on.Result, S1).Should().Be(0x55u, "the code the program wrote at Target ran");
+        diagnostics.TotalObservations.Should().BeGreaterThan(0UL, "the handoff at Target was observed");
+        diagnostics.DistinctRecords.Should().Be(2, "both versions at Target were compared and refused");
+    }
+
+    // Issue #786 review M-B: a handoff the fallback stops before comparing (here the transition budget) is never observed, so
+    // it must be counted and make the report incomplete instead of disappearing from it.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_ATransitionBudgetStopAtARamPc_IsCountedAsUnobserved()
+    {
+        // The first handoff is an in-image target with no block (it spends the one allowed transition); the second is the
+        // refused RAM-placed code at Target, which the budget stops before it is compared.
+        const uint helper = Target + 0x80u;
+        const uint done = Target + 0x100u;
+        var main = new Block(Entry);
+        main.Emit(Li(T0, helper), [Jalr(T0), Nop]);
+        main.Emit(Li(T0, Target), Li(T1, Ori(S1, Zero, 0x55)), [Sw(T1, T0, 0)], Li(T1, MipsEncoding.Jump(done)), [Sw(T1, T0, 4)]);
+        main.Emit(Li(T1, Nop), [Sw(T1, T0, 8)], [Jr(T0)], [Nop]);
+        var helperBlock = new Block(helper);
+        helperBlock.Emit(Jr(Ra), Nop);
+        var tail = new Block(Target);
+        tail.Emit(Ori(S1, Zero, 0x77), MipsEncoding.Jump(done), Nop);
+        var doneBlock = new Block(done);
+        doneBlock.Emit(End());
+        var words = Image(main, helperBlock, tail, doneBlock);
+        var (_, loaded) = RefusedRamCode();
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        var run = RunArtifact(words, dir, new MixedFallbackOptions(MaxTransitions: 1), loadedCode: loaded, loadedCodeMismatch: diagnostics);
+
+        run.Result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.TransitionBudgetExhausted);
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["unobservedHandoffs"]!.GetValue<ulong>().Should().BeGreaterThan(0UL, "the RAM-PC handoff was stopped before it was compared");
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue("a handoff the report does not describe makes it incomplete");
+    }
+
+    // Issue #786 review MAJOR-1: a firmware run with mixed fallback off refuses the RAM-placed handoff in the engine itself,
+    // where no fallback session exists to count it. The refusal must be counted and make the report incomplete.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_FirmwareWithoutMixedFallback_ARefusedRamHandoffIsCountedAsUnobserved()
+    {
+        var (words, loaded) = RefusedRamCode();
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        RunArtifact(words, dir, mixedFallback: null, loadedCode: loaded, loadedCodeMismatch: diagnostics, guestFirmware: true);
+        diagnostics.MarkExecuted(true);
+
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["unobservedHandoffs"]!.GetValue<ulong>().Should().BeGreaterThan(0UL, "the RAM-PC handoff was refused without a fallback to compare it");
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    // Issue #786 review MEDIUM-2: a run that reaches its classified end is executed, and a report with no gaps is complete.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_ASuccessfulRun_IsExecutedAndComplete()
+    {
+        var main = new Block(Entry);
+        main.Emit(End());
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        var run = RunArtifact(Image(main), dir, mixedFallback: null, loadedCodeMismatch: diagnostics);
+        run.Result.State.Should().Be(TitleExecutionState.Completed);
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(diagnostics, run.Result);
+
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["executed"]!.GetValue<bool>().Should().BeTrue();
+        report["incomplete"]!.GetValue<bool>().Should().BeFalse("nothing was refused, skipped or unobserved");
+    }
+
+    // Issue #786 B3: the diagnostics are observation only. A run with the report on ends exactly as the same run with it off.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_OnOrOff_TheGuestResultIsIdentical()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, 0x12345678u), Li(T1, 0x9ABCDEF0u), End());
+        var words = Image(main);
+        using var offDir = new TempDirectory();
+        using var onDir = new TempDirectory();
+
+        var off = RunArtifact(words, offDir, mixedFallback: null, loadedCodeMismatch: null);
+        var on = RunArtifact(words, onDir, mixedFallback: null, loadedCodeMismatch: new LoadedCodeMismatchDiagnostics());
+
+        on.Result.Should().BeEquivalentTo(off.Result, "the report must not change the guest's result");
+    }
+
+    // Issue #786 review (round 3, MAJOR): a real run that ends in a failure, with no refusal to count, must not read as complete.
+    [Fact]
+    public void LoadedCodeMismatchDiagnostics_ARunThatEndsInAFailure_IsNotExecuted()
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, 0x80100000u), [Jr(T0), Nop]); // out of the image, no fallback: the transfer is declined and the run fails
+        using var dir = new TempDirectory();
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+
+        var run = RunArtifact(Image(main), dir, mixedFallback: null, loadedCodeMismatch: diagnostics);
+        run.Result.State.Should().NotBe(TitleExecutionState.Completed, "the run must end in a failure for this check to mean anything");
+        RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(diagnostics, run.Result);
+
+        var report = System.Text.Json.Nodes.JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+        report["executed"]!.GetValue<bool>().Should().BeFalse();
+        report["incomplete"]!.GetValue<bool>().Should().BeTrue();
+    }
+
     [Fact]
     public void PatchedBiosTarget_ToUncompiledImageCode_StaysFailClosed()
     {
