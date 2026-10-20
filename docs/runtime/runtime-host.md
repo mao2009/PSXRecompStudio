@@ -215,6 +215,38 @@ Residual risk: a link swapped in between the check and the later open/launch
 (TOCTOU) is not prevented; the distribution directory is trusted to be writable
 only by its owner.
 
+### Report target protection and known limitations
+
+`--diagnostics` and `--loaded-code-diagnostics` write a report to a caller-named
+path. Before anything is read or written, the host refuses a report target that
+names an input (the manifest, `firmware-boot.json`, the artifact, the image, the
+disc, the roots, the load images or an AOT input), an alternate data stream, or
+the other report target, whether by path, by file identity or through a link. A
+refusal exits 78 and writes nothing, so no input is changed. A report replaces
+an existing file only by a move from a fresh temporary name, so a temporary name
+that already exists is never written through.
+
+Known limitations, not verified on this host:
+
+- **glibc before 2.33.** On Linux the file identity is read with `stat`. A libc
+  that does not export `stat` gives no identity, so every diagnostics target is
+  refused with exit 78 before any write, and the message names the cause
+  (`identity unavailable: ...`). No input is changed. The diagnostics-OFF path (no
+  report flag) is unaffected. There is no `__xstat` fallback. The minimum glibc
+  to verify is 2.33; no glibc before 2.33 was run here.
+- **Windows dangling symbolic link.** A dangling link at the report path is
+  refused on Windows as on POSIX. The test host lacks the symbolic-link
+  privilege, so this rule has no failing-first (RED) test on that host; it is
+  verified by code review only, pending a run with the privilege.
+- **macOS x86-64.** Identity is treated as unverified on x86-64 macOS, including
+  processes translated by Rosetta, so an existing report target is refused there.
+  The behaviour is covered by simulation only; no run on real x86-64 hardware has
+  been done.
+- **Administrator test host, ACL-based directory test.** The Main-level test for
+  a directory whose read access is denied is skipped on the administrator test
+  host, because traverse checks are bypassed for that account. The same decision
+  is covered at the probe level.
+
 ### Exit Code 78 Contract
 
 Exit code 78 means "the packaged runtime cannot be set up". The **native
