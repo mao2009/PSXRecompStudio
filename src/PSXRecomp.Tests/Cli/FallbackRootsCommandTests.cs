@@ -59,6 +59,24 @@ public sealed class FallbackRootsCommandTests
         planned.Images.Single().Roots.Should().Equal(Dest, Callee);
     }
 
+    // Issue #773 (Persona real run): the file word at the PC is not the word the interpreter fetched from RAM. The root is not a
+    // valid native route, so the plan reports it rejected, and no roots file or roots directive is written for it.
+    [Fact]
+    public void ATargetWhoseRamWordDiffersFromTheFile_IsNotAccepted_AndWritesNoRoot()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(run, ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40, ramWord: 0xDEADBEEFu)));
+        var output = dir.Combine("images-observed.txt");
+
+        var code = Run(fixture, output, out var stdout, out var stderr);
+
+        code.Should().Be(0, stderr);
+        stdout.Should().Contain("\"accepted\": 0");
+        stdout.Should().Contain("\"ram-word-mismatch\": 1");
+        var planned = LoadImageManifest.Read(output, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
+        planned.Images.Single().Roots.Should().Equal(Dest);
+    }
+
     [Fact]
     public void TheInputManifest_IsNeverChanged()
     {
@@ -283,8 +301,9 @@ public sealed class FallbackRootsCommandTests
         Leftovers(dir).Should().BeEmpty();
     }
 
+    // A target whose RAM word is the word of IntegratedRootSourcesTests.Text at the PC (the image these tests plan over).
     private static string Target(uint pc, ulong instructions) =>
-        $$"""{"pc":"0x{{pc:X8}}","cause":"unknown-code","entries":1,"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""";
+        ObservedRootsFixtures.TargetObject(pc, "unknown-code", 1, instructions, IntegratedRootSourcesTests.Text[(pc - Dest) / 4]);
 
     [Fact]
     public void AnUnfinishedProbeRun_WritesNoExport()
@@ -294,7 +313,7 @@ public sealed class FallbackRootsCommandTests
         var fixture = Create(dir, _ => "{}");
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
 
-        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null)
+        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, _ => null)
             .Should().BeNull();
     }
 
@@ -308,7 +327,7 @@ public sealed class FallbackRootsCommandTests
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
 
-        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null);
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, _ => ObservedRootsFixtures.Text[4]);
 
         json.Should().NotBeNull();
         var export = ObservedRootPlanner.ReadExport(json!);
@@ -340,7 +359,7 @@ public sealed class FallbackRootsCommandTests
         result.State.Should().Be(TitleExecutionState.BudgetExhausted);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
         var partial = fixture with { Targets = dir.WriteFile("partial.json", Encoding.UTF8.GetBytes(
-            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State, null, 0, [], null)!)) };
+            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State, null, 0, [], null, _ => ObservedRootsFixtures.Text[4])!)) };
         var output = dir.Combine("images-observed.txt");
 
         var code = Run(partial, output, out _, out var stderr);

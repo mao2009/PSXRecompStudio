@@ -525,6 +525,8 @@ internal static class OpenBiosProbeCommand
             double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
             uint? lastFallbackFetch = null;
+            // Issue #773: the RAM word the interpreter fetched at each fallback PC, first seen (the observation the planner checks against the file).
+            var ramWords = new Dictionary<uint, uint>();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
@@ -552,6 +554,7 @@ internal static class OpenBiosProbeCommand
                 {
                     current = interpreter;
                     lastFallbackFetch = pc;
+                    if (!ramWords.ContainsKey(pc)) ramWords[pc] = interpreter.ReadGuestWord(pc);
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
                     if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
@@ -610,7 +613,8 @@ internal static class OpenBiosProbeCommand
                 // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
                 // report above is unchanged; this file is written only when requested. A run that did not finish has no
                 // evidence, and an export of it would read as "no targets" to the planner, so none is written.
-                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt);
+                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt,
+                    pc => ramWords.TryGetValue(pc, out var word) ? word : (uint?)null);
                 if (exportJson is null)
                 {
                     error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
@@ -889,7 +893,7 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     internal static string? BuildFallbackTargetsDocument(
         MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state,
-        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt)
+        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt, Func<uint, uint?> ramWordOf)
     {
         if (evidence is null)
         {
@@ -903,6 +907,7 @@ internal static class OpenBiosProbeCommand
             entries = t.Entries,
             instructions = t.Instructions,
             lastReturnPc = Hex(t.LastReturnPc),
+            ramWord = ramWordOf(t.Target) is { } word ? Hex(word) : null,
         }).ToArray();
         return JsonSerializer.Serialize(new
         {

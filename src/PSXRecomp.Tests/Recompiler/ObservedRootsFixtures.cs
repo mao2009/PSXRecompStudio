@@ -40,8 +40,15 @@ internal static class ObservedRootsFixtures
     /// <summary>A run identity that is well formed but describes no real input (for tests that only parse an export).</summary>
     internal static ObservedRunIdentity PlaceholderRun { get; } = new(new string('0', 64), [], [], null, new string('0', 64));
 
-    internal static string TargetObject(uint pc, string cause, ulong entries, ulong instructions) =>
-        $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":{{entries}},"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""";
+    /// <summary>
+    /// One export target. Its <c>ramWord</c> is the word <see cref="Text"/> holds at the PC (what a run over these fixtures fetches),
+    /// unless <paramref name="ramWord"/> says otherwise.
+    /// </summary>
+    internal static string TargetObject(uint pc, string cause, ulong entries, ulong instructions, uint? ramWord = null)
+    {
+        var word = ramWord ?? (pc >= Dest && (pc - Dest) / 4 < Text.Length ? Text[(pc - Dest) / 4] : 0u);
+        return $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":{{entries}},"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}","ramWord":"0x{{word:X8}}"}""";
+    }
 
     internal static string TargetsJson(uint pc, string cause, ulong instructions, ObservedRunIdentity? run = null) =>
         TargetsJson(run, TargetObject(pc, cause, 1, instructions));

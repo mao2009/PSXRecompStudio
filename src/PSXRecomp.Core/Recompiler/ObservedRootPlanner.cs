@@ -24,8 +24,10 @@ internal sealed record ObservedRootBudget(int MaxRootsPerImage, int MaxRootsTota
 /// <param name="Cause">The probe's classification of the target; only <c>unknown-code</c> and <c>aot-coverage-gap:loaded-image</c> may become a root.</param>
 /// <param name="Entries">How many times control was handed to the interpreter at the PC.</param>
 /// <param name="Instructions">Guest instructions the interpreter retired from the PC.</param>
+/// <param name="RamWord">The instruction word the interpreter fetched from guest RAM at the PC, or null when the probe did not observe it.
+/// A root is planned only when this equals the word the EXE file places there (see <see cref="ObservedRootPlanner.Plan"/>).</param>
 [Domain]
-internal sealed record ObservedFallbackTarget(uint Pc, string Cause, ulong Entries, ulong Instructions);
+internal sealed record ObservedFallbackTarget(uint Pc, string Cause, ulong Entries, ulong Instructions, uint? RamWord);
 
 /// <summary>One image of the run that produced a fallback-target export, as the run's manifest described it.</summary>
 /// <param name="SourceSha256">The SHA-256 of the file an EXE image was read from; null for a ROM image.</param>
@@ -169,6 +171,14 @@ internal static class ObservedRootPlanner
             if (!IsRepresentableName(image.Name))
             {
                 Reject("unrepresentable-image-name");
+                continue;
+            }
+
+            // The native block is built from the file's words and runs only while RAM holds them (the loaded-image guard), so a
+            // target whose RAM word differs from the file's word, or was not observed, is not a valid native route: it is not planned.
+            if (target.RamWord != image.Words[(int)((target.Pc - image.LoadAddress) / 4)])
+            {
+                Reject("ram-word-mismatch");
                 continue;
             }
 
@@ -374,7 +384,8 @@ internal static class ObservedRootPlanner
             {
                 var pc = ParsePc(element.GetProperty("pc").GetString());
                 var cause = element.GetProperty("cause").GetString() ?? throw new InvalidDataException("fallback targets: a cause is null.");
-                var target = new ObservedFallbackTarget(pc, cause, element.GetProperty("entries").GetUInt64(), element.GetProperty("instructions").GetUInt64());
+                var ramWord = element.GetProperty("ramWord") is { ValueKind: not JsonValueKind.Null } w ? ParsePc(w.GetString()) : (uint?)null;
+                var target = new ObservedFallbackTarget(pc, cause, element.GetProperty("entries").GetUInt64(), element.GetProperty("instructions").GetUInt64(), ramWord);
                 if (!seen.Add(pc))
                 {
                     throw new InvalidDataException($"fallback targets: 0x{pc:X8} is listed more than once.");

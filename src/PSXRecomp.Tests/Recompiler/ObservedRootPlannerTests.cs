@@ -28,8 +28,16 @@ public sealed class ObservedRootPlannerTests
 
     private static LoadedImageSpec Image(string name = "img") => new(name, Dest, Words(), [Dest]) { SourceSha256 = Sha };
 
+    // The RAM word a target reports by default: the word the image holds there (0 outside the image, which is rejected anyway).
+    private static uint WordAt(uint pc)
+    {
+        var words = Words();
+        var index = (pc - Dest) / 4;
+        return pc >= Dest && index < words.Length ? words[index] : 0u;
+    }
+
     private static ObservedFallbackTarget T(uint pc, ulong instructions, string cause = "unknown-code", ulong entries = 1) =>
-        new(pc, cause, entries, instructions);
+        new(pc, cause, entries, instructions, WordAt(pc));
 
     [Fact]
     public void OnlySafeUnknownCodeTargetsInOneImage_BecomeRoots_AndEveryCandidateIsCountedOnce()
@@ -58,6 +66,32 @@ public sealed class ObservedRootPlannerTests
             ["cause-not-candidate"] = 1,
         });
         (plan.Counts.Accepted + plan.Counts.Rejected.Values.Sum()).Should().Be(plan.Counts.Candidates);
+    }
+
+    // Issue #773 (Persona real run): the file places one word at the PC, the interpreter fetched another from RAM. Native code for
+    // the file word would not be the code that runs, so the root is not planned.
+    [Fact]
+    public void ATargetWhoseRamWordDiffersFromTheFileImage_IsNotPlannedAsARoot()
+    {
+        var mismatched = new ObservedFallbackTarget(A, "unknown-code", 1, 100, WordAt(A) ^ 0x0000FFFFu);
+
+        var plan = ObservedRootPlanner.Plan([Image()], [mismatched], Open);
+
+        plan.Images.Should().BeEmpty();
+        plan.Counts.Accepted.Should().Be(0);
+        plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
+    }
+
+    // A target whose RAM word the probe did not observe cannot be checked against the file, so it is not planned either.
+    [Fact]
+    public void ATargetWithoutAnObservedRamWord_IsNotPlannedAsARoot()
+    {
+        var unobserved = new ObservedFallbackTarget(A, "unknown-code", 1, 100, RamWord: null);
+
+        var plan = ObservedRootPlanner.Plan([Image()], [unobserved], Open);
+
+        plan.Images.Should().BeEmpty();
+        plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
     }
 
     [Fact]
@@ -140,10 +174,10 @@ public sealed class ObservedRootPlannerTests
 
         var targets = ObservedRootPlanner.ReadTargets(json);
 
-        targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100));
+        targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, ObservedRootsFixtures.Text[2]));
     }
 
-    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1}""";
+    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1,"ramWord":"0x00000000"}""";
 
     public static TheoryData<string> Malformed => new()
     {
