@@ -17,9 +17,12 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     private const uint RegularFileType = 0x8000;
     private const uint DirectoryType = 0x4000;
 
+    // The documented reserved device names, with the console handles (CONIN$, CONOUT$) and the COM0/LPT0 and superscript-digit forms
+    // (U+00B9, U+00B2, U+00B3) that Win32 documents alongside them. Refusing a name a host does not treat as a device is fail-closed.
     private static readonly string[] DeviceNames =
-        ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+        ["CON", "CONIN$", "CONOUT$", "PRN", "AUX", "NUL",
+         "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM¹", "COM²", "COM³",
+         "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³"];
 
     /// <inheritdoc />
     public FileProbe Probe(string path)

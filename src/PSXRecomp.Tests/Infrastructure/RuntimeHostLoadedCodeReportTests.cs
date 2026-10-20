@@ -939,4 +939,23 @@ public sealed class RuntimeHostLoadedCodeReportTests
         ReadText(report).Should().Be(previous, "a replace that is refused leaves the previous report's bytes, not a truncated copy");
         leftovers.Should().BeEmpty("the temp file this write created is removed when the replace fails");
     }
+
+    // Issue #786 (review round 8): the further Windows device names, each refused as a diagnostics target before any open. The
+    // superscript digits are the reserved COM and LPT forms (U+00B9, U+00B2, U+00B3).
+    [SkippableTheory]
+    [InlineData("CONIN$")]
+    [InlineData("CONOUT$")]
+    [InlineData("COM0")]
+    [InlineData("LPT0")]
+    [InlineData("COM¹")]
+    [InlineData("LPT²")]
+    [InlineData("COM³")]
+    public void Diagnostics_TargetIsAFurtherWindowsDeviceName_IsRefused(string name)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+
+        AssertRefused(DiagnosticsFlag, dir.Combine(name), manifest, manifest, boot, artifact, disc);
+    }
 }

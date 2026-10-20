@@ -140,6 +140,25 @@ public sealed class FileSystemIdentityProbeTests
         probe.Kind.Should().Be(FileKind.Other, "a device name is never a regular file, whatever spaces or dots follow it");
     }
 
+    // Issue #786 (review round 8): the further device names, typed as Other by the probe.
+    [SkippableTheory]
+    [InlineData("CONIN$")]
+    [InlineData("CONOUT$")]
+    [InlineData("COM0")]
+    [InlineData("LPT0")]
+    [InlineData("COM¹")]
+    [InlineData("LPT²")]
+    [InlineData("COM³")]
+    public void AFurtherWindowsDeviceName_IsTypedAsOther(string name)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+
+        var probe = new FileSystemIdentityProbe().Probe(dir.Combine(name));
+
+        probe.Kind.Should().Be(FileKind.Other, "this name is documented as a reserved device name, so it is refused rather than treated as a file");
+    }
+
     private static string CurrentAccount()
     {
 #pragma warning disable AARC003
