@@ -1,3 +1,5 @@
+using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
@@ -346,6 +348,596 @@ public sealed class RuntimeCodeGeneratedHostTests
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == p).Which.Instructions.Should().Be(1ul);
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == r).Which.Instructions.Should().Be(3ul);
         host.Evidence.Targets.Should().ContainSingle(t => t.Target == q + 12).Which.Instructions.Should().Be(1ul);
+    }
+
+    // Issue #773 measurement fixture: a registered one-instruction entry at `slot` matches RAM for 20 calls, then RAM holds other code.
+    private const uint GuardSlot = 0x80001000u;
+
+    private static (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) GuardStatsFixture()
+    {
+        const int loops = 20;
+        uint[] registered = [Addiu(S2, S2, 1)];
+        uint[] whole = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        uint[] replaced = [Addiu(S2, S2, 0x100), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, GuardSlot, whole);
+        for (var i = 0; i < loops; i++) Call(reset, GuardSlot);
+        Install(reset, GuardSlot, replaced);
+        for (var i = 0; i < loops; i++) Call(reset, GuardSlot);
+        var rom = Rom(reset);
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(GuardSlot, registered, [GuardSlot], new HashSet<uint>())]);
+        return (rom, ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program, loaded);
+    }
+
+    // A ROM loop that calls the RAM-placed entry `calls` times, then spins in the reset block (the run ends on its budget).
+    private static (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) GuardLoopFixture(uint calls)
+    {
+        uint[] whole = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Install(reset, GuardSlot, whole);
+        reset.Emit(Li(S0, calls));
+        var loop = reset.Here;
+        Call(reset, GuardSlot);
+        reset.Emit(Addiu(S0, S0, -1));
+        reset.Emit(MipsEncoding.Branch(0x05, (byte)S0, 0, reset.Here, loop), Nop);
+        var rom = Rom(reset);
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(GuardSlot, whole, [GuardSlot], new HashSet<uint>())]);
+        return (rom, ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program, loaded);
+    }
+
+    // The counters are selected through GuardStatsScope, never through process-wide environment variables.
+    private static RecompilerStateSnapshot RunWithGuardStats(string statsPath, string workDir,
+        (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) fixture, uint budget = 20_000)
+    {
+        var (rom, romCode, loaded) = fixture;
+        using var scope = GuardStatsScope.Begin(statsPath);
+        using var engine = new RecompiledHostExecutionEngine(
+            romCode, rom, RomBase, new GeneratedHostBuildService(), workDir,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+        var snapshot = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(budget)).FinalSnapshot;
+        snapshot.Should().NotBeNull();
+        return snapshot!;
+    }
+
+    private static void RunWithGuardStats(string statsPath, string workDir) => RunWithGuardStats(statsPath, workDir, GuardStatsFixture());
+
+    [Fact]
+    public void GuardStats_CountArrivalsHitsAndMisses_OfARegisteredEntry_AndStayOffByDefault()
+    {
+        // Issue #773 measurement: a registered one-instruction entry that matches RAM is a guard hit; once RAM holds other
+        // code, the same arrival is a guard miss that keeps its previous PC and RAM word. Counters exist only when asked for.
+        var (_, romCode, loaded) = GuardStatsFixture();
+        RecompilerHostCodeGen.Generate(romCode, loaded).Source.Should().NotContain("PSX_GS_", "the default text is unchanged");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should().Contain("PSX_GS_ARRIVE(0)").And.Contain("psx_gs_off").And.NotContain("PSX_GS_V", "per-version tables are flat, not padded to the widest slot");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should()
+            .Contain("psx_gs_replace(tmp, path)").And.Contain("MoveFileExA").And.Contain("MOVEFILE_REPLACE_EXISTING").And.NotContain("<windows.h>", "windows.h defines exception_code and breaks the generated state")
+            .And.NotContain("remove(path)", "the previous report is never removed before the new one is in place (Issue #773 review M1)");
+
+#pragma warning disable AARC003 // Test-only: the artifact writes its counters to a file named by an environment variable (set for the child only).
+        var envBefore = (Environment.GetEnvironmentVariable("PSX_GUARD_STATS_FILE"), Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"));
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        RunWithGuardStats(statsPath, dir.FullPath);
+        (Environment.GetEnvironmentVariable("PSX_GUARD_STATS_FILE"), Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"))
+            .Should().Be(envBefore, "the test selects the counters through a scope and leaves the process environment as it found it");
+        GuardStatsScope.CurrentPath.Should().BeNull("the scope ends with the run");
+
+        var line = File.ReadAllLines(statsPath).Single(static l => l.StartsWith("slot ", StringComparison.Ordinal));
+        line.Should().Contain("slot 80001000 nver 1 arrive 40 miss 20");
+        line.Should().Contain("v0 hit 20 len 1");
+        line.Should().Contain($"missram {Addiu(S2, S2, 0x100):X8}");
+        line.Should().Contain("missprevdispatch");
+        File.ReadAllLines(statsPath).Should().Contain(static l => l.StartsWith("snap slot 80001000", StringComparison.Ordinal));
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1", "a complete exit dump says so; a partial file would lack it");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the dump is renamed into place");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_ReplacesThePreviousReport_AndNeverLeavesNoReport_WhileAReaderHoldsIt()
+    {
+        // Issue #773 review M1: the dump must not remove the previous report before the new one is in place. A reader that
+        // holds the report open with FILE_SHARE_DELETE (the weakest sharing a viewer needs) must still leave a valid report:
+        // either the previous one (replacement refused) or the new complete one. Removing first would leave none on Windows,
+        // where the held name stays pending-delete and the rename onto it fails.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+
+        using (var reader = new FileStream(statsPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            RunWithGuardStats(statsPath, dir.FullPath);
+            new StreamReader(reader).ReadToEnd().Should().Be(previous, "an open reader keeps seeing the report it opened");
+        }
+
+        File.Exists(statsPath).Should().BeTrue("a report always remains");
+        var lines = File.ReadAllLines(statsPath);
+        (lines[^1] == "end final 1").Should().BeTrue("the remaining report is complete");
+        (lines.Any(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal))
+            || lines.Contains("previous complete report")).Should().BeTrue("it is either the new report or the untouched previous one");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("a refused replacement removes its temporary file");
+
+        // With no reader, the previous report is replaced by the new complete one.
+        RunWithGuardStats(statsPath, dir.FullPath);
+        File.ReadAllLines(statsPath).Should().Contain(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal));
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1");
+        File.Exists(statsPath + ".tmp").Should().BeFalse();
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_WhenReplacementFails_KeepsTheExistingDestination_AndRemovesTheTemporaryFile()
+    {
+        // Issue #773 review M1: a destination that cannot be replaced (here a directory, refused by rename and MoveFileEx alike)
+        // stays as it was, and the temporary file does not remain. The diagnostic failure does not change the guest outcome.
+#pragma warning disable AARC003 // Test-only: the report path is a file system location.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        Directory.CreateDirectory(statsPath);
+        File.WriteAllText(Path.Combine(statsPath, "keep.txt"), "x");
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        File.Exists(Path.Combine(statsPath, "keep.txt")).Should().BeTrue("the existing destination is preserved");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("a failed replacement removes its temporary file");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_WhenTheTemporaryFileCannotBeCreated_KeepsThePreviousReport()
+    {
+        // Issue #773 review M1 (failure injection): a dump that cannot create <path>.tmp returns before the destination is touched.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        Directory.CreateDirectory(statsPath + ".tmp");
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        File.ReadAllText(statsPath).Should().Be(previous, "the previous complete report survives a dump that never started");
+        Directory.Exists(statsPath + ".tmp").Should().BeTrue("the blocking entry belongs to the user and is not removed");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void GuardStats_Dump_WhenTheDestinationIsHeldWithoutFileShareDelete_KeepsThePreviousBytes_AndRemovesTheTemporaryFile()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing semantics (FILE_SHARE_DELETE): on POSIX a rename is not refused while the file is held open.");
+        // Issue #797 (owner decision): fault injection on Windows. The destination is held open with FileShare.Read only, so the
+        // generated MoveFileExA(MOVEFILE_REPLACE_EXISTING) is refused. The refusal is first proven from this process with the
+        // same kind of replacement (File.Move overwrite) that must throw. The dump's own failure is then seen as an unchanged
+        // destination and no .tmp left behind; the replace return value itself is not observable without changing the generated code.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var probePath = Path.Combine(dir.FullPath, "probe.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        File.WriteAllText(probePath, "probe");
+        var previousBytes = File.ReadAllBytes(statsPath);
+
+        using var held = new FileStream(statsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        Exception? refusal = null;
+        try { File.Move(probePath, statsPath, overwrite: true); }
+        catch (Exception e) { refusal = e; }
+        refusal.Should().NotBeNull("a destination held without FILE_SHARE_DELETE cannot be replaced");
+        (refusal is IOException or UnauthorizedAccessException).Should().BeTrue("the refusal is the sharing/access failure, got " + refusal);
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        using var after = new MemoryStream();
+        held.Position = 0;
+        held.CopyTo(after);
+        after.ToArray().Should().Equal(previousBytes, "a refused replacement leaves the previous report byte-identical");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the failing branch removes the temporary file");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void GuardStats_Dump_WhenTheTemporaryFileCannotBeMoved_KeepsThePreviousReport_AndTheNextRunReplacesIt()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing semantics (FILE_SHARE_DELETE): on POSIX a rename is not refused while the file is held open.");
+        // Issue #797 (owner decision): fault injection on the source side. The dump writes <path>.tmp while this process holds
+        // it with FileShare.ReadWrite (no FILE_SHARE_DELETE), so the move onto <path> is refused. The destination must keep
+        // the previous report byte-identical: a remove-first replacement would already have deleted it. The refusal is proven
+        // first by a move of the held temporary file from this process. The leftover .tmp holds the complete new report,
+        // which shows the dump reached the replacement step. Releasing the hold and running again replaces the report and
+        // consumes the .tmp.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var tmpPath = statsPath + ".tmp";
+        var probePath = Path.Combine(dir.FullPath, "probe.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        var previousBytes = File.ReadAllBytes(statsPath);
+
+        using (var heldTmp = new FileStream(tmpPath, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite))
+        {
+            Exception? refusal = null;
+            try { File.Move(tmpPath, probePath); }
+            catch (Exception e) { refusal = e; }
+            refusal.Should().NotBeNull("a temporary file held without FILE_SHARE_DELETE cannot be moved");
+            (refusal is IOException or UnauthorizedAccessException).Should().BeTrue("the refusal is the sharing/access failure, got " + refusal);
+
+            RunWithGuardStats(statsPath, dir.FullPath);
+
+            File.Exists(statsPath).Should().BeTrue("a refused move must not have removed the previous report first");
+            File.ReadAllBytes(statsPath).Should().Equal(previousBytes, "a refused move keeps the previous report byte-identical");
+            using var tmpContent = new MemoryStream();
+            heldTmp.Position = 0;
+            heldTmp.CopyTo(tmpContent);
+            var tmpText = System.Text.Encoding.ASCII.GetString(tmpContent.ToArray());
+            tmpText.Should().Contain("end final 1", "the dump wrote a complete new report to the temporary file before the refused move");
+            tmpText.Should().Contain("slot 80001000 nver 1 arrive 40");
+        }
+
+        // The leftover .tmp (now released) is ignored and overwritten by the next run.
+        RunWithGuardStats(statsPath, dir.FullPath);
+        var lines = File.ReadAllLines(statsPath);
+        lines[0].Should().Be("guardstats 1");
+        lines[^1].Should().Be("end final 1");
+        lines.Should().Contain(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal));
+        File.Exists(tmpPath).Should().BeFalse("the next run replaces the leftover temporary file and consumes it");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
+    public void GuardStats_Dump_OnPosix_WhenTheReplacementIsRefused_KeepsThePreviousReportFileByteForByte()
+    {
+        // Issue #797 (POSIX fault injection, no generated-code seam): the report directory is read-only while the dump runs. The
+        // temporary file already exists and is writable, so the dump writes it, but rename() onto <path> needs write permission
+        // on the directory and is refused. The previous report must stay byte-identical. A remove-first or in-place write
+        // would change it. Permissions are restored before the directory is disposed; root bypasses them, so it is skipped.
+        Skip.If(OperatingSystem.IsWindows(), "POSIX directory permissions; Windows sharing is covered by the Windows-only tests.");
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes; the directory mode is set for this test only.
+        Skip.If(Environment.UserName == "root", "root bypasses directory write permission, so the refusal cannot be injected.");
+        using var dir = new TempDirectory();
+        using var work = new TempDirectory();
+        var reportDir = Path.Combine(dir.FullPath, "reports");
+        Directory.CreateDirectory(reportDir);
+        var statsPath = Path.Combine(reportDir, "guard-stats.txt");
+        var tmpPath = statsPath + ".tmp";
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        File.WriteAllText(tmpPath, "stale");
+        var previousBytes = File.ReadAllBytes(statsPath);
+
+        try
+        {
+            File.SetUnixFileMode(reportDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            RunWithGuardStats(statsPath, work.FullPath);
+        }
+        finally
+        {
+            File.SetUnixFileMode(reportDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        File.ReadAllBytes(statsPath).Should().Equal(previousBytes, "a refused replacement keeps the previous report byte for byte");
+        // The dump reached the replacement: the temporary file holds the complete new report and the refused rename left it in place.
+        File.Exists(tmpPath).Should().BeTrue("a refused replacement leaves the temporary file in place");
+        File.ReadAllLines(tmpPath)[^1].Should().Be("end final 1", "the dump wrote the complete report before the refused rename");
+
+        // With the directory writable again, the next dump replaces the report and consumes the temporary file.
+        RunWithGuardStats(statsPath, work.FullPath);
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1");
+        File.Exists(tmpPath).Should().BeFalse("the next dump replaces the leftover temporary file and consumes it");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Dump_OverwritesAStaleTemporaryFile_AndLeavesOnlyTheNewCompleteReport()
+    {
+        // Issue #797 (owner decision): a leftover <path>.tmp with garbage (from a killed earlier run) must not leak into the
+        // report: the next dump overwrites it, the final file is the new complete report, and no .tmp remains.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        File.WriteAllText(statsPath, "guardstats 1\nprevious complete report\nend final 1\n");
+        File.WriteAllText(statsPath + ".tmp", "garbage {\"half\": ");
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[0].Should().Be("guardstats 1");
+        lines[^1].Should().Be("end final 1", "the final file is a complete dump");
+        lines.Should().Contain(static l => l.StartsWith("slot 80001000 nver 1 arrive 40", StringComparison.Ordinal));
+        File.ReadAllText(statsPath).Should().NotContain("garbage").And.NotContain("previous complete report");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the stale temporary file is replaced by the dump and then consumed");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_WithoutABlockingEntry_ReplacesThePreviousReport_SoTheFailureTestIsNotVacuous()
+    {
+        // Control for the failure injection above: the same previous report IS replaced when nothing blocks the dump,
+        // so the surviving report in that test can only mean the dump was attempted and refused.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+
+        RunWithGuardStats(statsPath, dir.FullPath);
+
+        File.ReadAllText(statsPath).Should().NotBe(previous, "a complete dump replaces the previous report");
+        File.ReadAllText(statsPath).Should().Contain("slot 80001000 ");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_CountsEveryCall_OfALoop_AsArrivalsAndHits()
+    {
+        // Issue #773 counting check: N calls from ROM are N arrivals and N guard hits, no misses, and the guest ran all N.
+        const uint calls = 300;
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var final = RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(calls), budget: 200_000);
+
+        final.Gpr[(int)S2].Should().Be(calls, "the guest executed every call");
+        var line = File.ReadAllLines(statsPath).Single(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal));
+        line.Should().Contain($"arrive {calls} miss 0");
+        line.Should().Contain($"v0 hit {calls} len 1");
+#pragma warning restore AARC003
+    }
+
+    private static RecompilerStateSnapshot RunWithoutGuardStats(string workDir,
+        (uint[] Rom, RecompilerIrProgram RomCode, LoadedCodeTable Loaded) fixture, uint budget)
+    {
+        var (rom, romCode, loaded) = fixture;
+        using var engine = new RecompiledHostExecutionEngine(
+            romCode, rom, RomBase, new GeneratedHostBuildService(), workDir,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+        var snapshot = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(budget)).FinalSnapshot;
+        snapshot.Should().NotBeNull();
+        return snapshot!;
+    }
+
+#pragma warning disable AARC003 // Test-only: the ambient opt-in is an environment variable; it is set for the scope and restored.
+    private const string AmbientGuardStatsVariable = "PSXRECOMP_NATIVE_GUARD_STATS";
+
+    // Sets the ambient opt-in for the scope and restores the value the process had (Issue #797: the OFF run must not inherit it).
+    private static IDisposable AmbientGuardStats(string? value)
+    {
+        var before = Environment.GetEnvironmentVariable(AmbientGuardStatsVariable);
+        Environment.SetEnvironmentVariable(AmbientGuardStatsVariable, value);
+        return new AmbientRestore(before);
+    }
+
+    private sealed class AmbientRestore(string? before) : IDisposable
+    {
+        public void Dispose() => Environment.SetEnvironmentVariable(AmbientGuardStatsVariable, before);
+    }
+#pragma warning restore AARC003
+
+    [Fact]
+    public void GuardStats_OnAndOff_LeaveTheGuestInTheSameState()
+    {
+        // Issue #773 diagnostics ON vs OFF: the counters observe the dispatcher and change nothing the guest can observe.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        using var ambient = AmbientGuardStats("1");
+        var fixture = GuardStatsFixture();
+        var on = RunWithGuardStats(statsPath, dir.FullPath, fixture, budget: 20_000);
+        RecompilerStateSnapshot off;
+        using (AmbientGuardStats(null)) // the OFF run is isolated from the ambient opt-in (Issue #797)
+        {
+            GuardStatsScope.Enabled.Should().BeFalse("the OFF run must be OFF, not inherit PSXRECOMP_NATIVE_GUARD_STATS");
+            off = RunWithoutGuardStats(dir.FullPath, fixture, budget: 20_000);
+        }
+
+        File.Exists(statsPath).Should().BeTrue("the ON run wrote its report");
+        off.Gpr.Should().Equal(on.Gpr, "the same general registers");
+        off.HI.Should().Be(on.HI);
+        off.LO.Should().Be(on.LO);
+        off.PC.Should().Be(on.PC);
+        off.Termination.Should().Be(on.Termination);
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_EachRun_WritesItsOwnRunId_SoAnEarlierReportIsNotMistakenForThisOne()
+    {
+        // Issue #797 review M4: two runs replace the same report path; the second report must carry a different run id.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var fixture = GuardStatsFixture();
+
+        RunWithGuardStats(statsPath, dir.FullPath, fixture);
+        var first = File.ReadAllLines(statsPath);
+        first[1].Should().StartWith("run ", "the second line names the run that wrote the report");
+
+        RunWithGuardStats(statsPath, dir.FullPath, fixture);
+        var second = File.ReadAllLines(statsPath);
+        second[1].Should().StartWith("run ");
+        second[1].Should().NotBe(first[1], "a later run's report carries its own run id");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_PeriodicDump_IsCompleteAndNotFinal_WhenTheProcessEndsBeforeItsFinalDump()
+    {
+        // Issue #797 (periodic observation): the period is 1000 units and the child ends without its final dump after 1500 units
+        // (test hooks in the scope). The report left at <path> is therefore the periodic dump taken at 1000 units: complete,
+        // and marked as not final.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var (rom, romCode, loaded) = GuardLoopFixture(2_000);
+
+        using (GuardStatsScope.Begin(statsPath, periodUnits: 1000, abortAfterUnits: 1500))
+        {
+            using var engine = new RecompiledHostExecutionEngine(
+                romCode, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
+                mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+            _ = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(20_000));
+        }
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[0].Should().Be("guardstats 1");
+        lines.Should().Contain("iter 1000", "the periodic dump is taken at the first multiple of the period");
+        lines.Should().Contain(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal), "the dump carries the counters");
+        lines[^1].Should().Be("end final 0", "a periodic dump says it is not the final one");
+        lines.Should().OnlyContain(static l => l.StartsWith("guardstats ", StringComparison.Ordinal) || l.StartsWith("run ", StringComparison.Ordinal)
+            || l.StartsWith("iter ", StringComparison.Ordinal) || l.StartsWith("slot ", StringComparison.Ordinal)
+            || l.StartsWith("snap", StringComparison.Ordinal) || l.StartsWith("end ", StringComparison.Ordinal), "every line of the dump is complete and well formed");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the periodic dump is renamed into place");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_AStrayParentAbortValue_DoesNotEndAGuardStatsChild()
+    {
+        // Issue #797 (review): the scope always hands the child its hook values (0 when unset), so an abort point left in the
+        // parent environment cannot end a guard-stats run. The parent value is set for this test only and restored in finally.
+#pragma warning disable AARC003 // Test-only: a stray parent value is set for this process for the duration of the test and restored.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var before = Environment.GetEnvironmentVariable("PSX_GUARD_STATS_ABORT_AFTER");
+        try
+        {
+            Environment.SetEnvironmentVariable("PSX_GUARD_STATS_ABORT_AFTER", "1500");
+            RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(2_000), 5_000_000);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PSX_GUARD_STATS_ABORT_AFTER", before);
+        }
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[^1].Should().Be("end final 1", "the scope passes 0 for the abort point, so the stray parent value is not used");
+        var iter = ulong.Parse(lines.Single(static l => l.StartsWith("iter ", StringComparison.Ordinal))["iter ".Length..],
+            System.Globalization.CultureInfo.InvariantCulture);
+        iter.Should().BeGreaterThan(1500ul, "the run went past the stray abort point");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_RunPastThePeriodicDumpInterval_EndsWithItsCompleteFinalReport()
+    {
+        // Issue #797 coverage: a run of more than the default period (0x400000 units, PSX_GS_TICK) crosses the periodic dump. The
+        // periodic write is observed by GuardStats_PeriodicDump_IsCompleteAndNotFinal_...; this checks that a run crossing the
+        // default interval still ends with a complete final report of that run.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+
+        RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(2_000_000), 5_000_000);
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[^1].Should().Be("end final 1");
+        var iter = ulong.Parse(lines.Single(static l => l.StartsWith("iter ", StringComparison.Ordinal))["iter ".Length..],
+            System.Globalization.CultureInfo.InvariantCulture);
+        iter.Should().BeGreaterThanOrEqualTo(0x400000ul, "the run crossed the periodic dump interval");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_HitCount_EqualsTheUnitsThatRan_AtEveryBudget()
+    {
+        // Issue #797 review M5: the hit is counted before the budget check, so a unit the budget refuses is counted as a hit.
+        // Every arrival here is a hit, and the entry adds 1 to S2 only when it runs, so counted hits must equal S2 for each budget.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        for (uint budget = 1; budget <= 24; budget++)
+        {
+            var snapshot = RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(6), budget);
+            // The entry at 80001000 is the one that adds to S2; the return entry at 80001004 does not touch S2 and is not checked.
+            // No slot line means no arrival was counted (the generated dump skips slots with no arrivals): zero hits.
+            var slot = File.ReadAllLines(statsPath).SingleOrDefault(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal));
+            var hits = slot is null ? 0ul : ulong.Parse(Regex.Match(slot, @" v0 hit (\d+) ").Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            hits.Should().Be(snapshot.Gpr[(int)S2], $"budget {budget}: a hit is counted only for a unit that ran");
+        }
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_Arrivals_EqualHitsPlusMissesPlusBudgetRefusals_AtEveryBudget()
+    {
+        // Issue #773 review: an arrival is counted before the budget check, so a unit the budget refuses was an arrival that is
+        // neither a hit nor a miss. Refusals are now counted separately; every arrival is accounted for at every budget.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var sawRefusal = false;
+        for (uint budget = 1; budget <= 24; budget++)
+        {
+            RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(6), budget);
+            var slot = File.ReadAllLines(statsPath).SingleOrDefault(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal));
+            if (slot is null) continue; // no arrival at all at this budget
+            static ulong Count(string line, string pattern)
+            {
+                var match = Regex.Match(line, pattern);
+                match.Success.Should().BeTrue($"the report has the field {pattern}");
+                return ulong.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            var arrive = Count(slot, @" arrive (\d+) ");
+            var miss = Count(slot, @" miss (\d+) ");
+            var refuse = Count(slot, @" refuse (\d+) ");
+            var hit = Count(slot, @" v0 hit (\d+) ");
+            (hit + miss + refuse).Should().Be(arrive, $"budget {budget}: each arrival is a hit, a miss, or a budget refusal");
+            sawRefusal |= refuse != 0;
+        }
+        sawRefusal.Should().BeTrue("some budget in the range refuses an arrival, so the accounting is not checked only where nothing is refused");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_PerVersionTables_AreFlat_AndAManyVersionEntryDoesNotWidenOthers()
+    {
+        // Issue #773 review: a slot with many versions must not pad the other slots to its width.
+        const uint small = 0x80001000u, many = 0x80001100u;
+        uint[] a = [Addiu(S2, S2, 1), Jr(Ra), Nop];
+        uint[] b1 = [Addiu(S2, S2, 0x10), Jr(Ra), Nop];
+        uint[] b2 = [Addiu(S2, S2, 0x20), Jr(Ra), Nop];
+        uint[] b3 = [Addiu(S2, S2, 0x30), Jr(Ra), Nop];
+        var reset = new Block(RomBase);
+        Call(reset, small);
+        Call(reset, many);
+        var rom = Rom(reset);
+        var romCode = ReachableProgramBuilder.BuildFirmwareImage(RomBase, rom, RomBase, []).Program;
+        var loaded = new LoadedCodeTable([
+            ReachableProgramBuilder.BuildLoadedImage(small, a, [small], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(many, b1, [many], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(many, b2, [many], new HashSet<uint>()),
+            ReachableProgramBuilder.BuildLoadedImage(many, b3, [many], new HashSet<uint>()),
+        ]);
+
+        var source = RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source!;
+
+        // The loaded table has 4 entry PCs (the call entry and the return entry of each image) and 6 versions in all.
+        // Padding every slot to the widest one would need 4 * 3 = 12 cells; the flat table needs exactly 6.
+        source.Should().Contain("#define PSX_GS_N 4u").And.Contain("#define PSX_GS_T 6u");
+        source.Should().Contain("static const uint32_t psx_gs_off[PSX_GS_N + 1u] = { 0u, 1u, 2u, 5u, 6u };",
+            "each slot takes exactly its own versions; the three-version entry does not widen the others");
+    }
+
+    [Fact]
+    public async Task GuardStatsScope_IsPerAsyncContext_NestsAndRestores()
+    {
+        // Issue #773 review M2: the scope is not process-wide, so parallel tests never see each other's switches.
+        GuardStatsScope.CurrentPath.Should().BeNull();
+        using (GuardStatsScope.Begin("outer"))
+        {
+            GuardStatsScope.CurrentPath.Should().Be("outer");
+            using (GuardStatsScope.Begin("inner")) GuardStatsScope.CurrentPath.Should().Be("inner");
+            GuardStatsScope.CurrentPath.Should().Be("outer");
+            (await Task.Run(static () => GuardStatsScope.CurrentPath)).Should().Be("outer", "child tasks of the context inherit it");
+        }
+        GuardStatsScope.CurrentPath.Should().BeNull();
+        var other = await Task.Run(() => { using var s = GuardStatsScope.Begin("elsewhere"); return GuardStatsScope.CurrentPath; });
+        other.Should().Be("elsewhere");
+        GuardStatsScope.CurrentPath.Should().BeNull("a scope begun on another context does not leak back");
     }
 
     [Fact]
