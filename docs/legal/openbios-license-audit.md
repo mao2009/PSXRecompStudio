@@ -8,6 +8,16 @@
 
 ---
 
+## Distribution scope versus local development (Issue #794)
+
+**Current PSXRecompStudio delivery contract:** The project does not vendor or distribute Nugget OpenBIOS source, `openbios.bin`, or BIOS-bearing prebuilt standalone binaries. Developers and end users obtain the pinned upstream Nugget source themselves and build the firmware locally for their own development, testing, and execution. The project may provide build instructions or tooling that fetches the upstream revision; those operations are distinct from publishing the third-party firmware as part of a release.
+
+The following audit is **a gate for PSXRecompStudio's redistribution of firmware-containing artifacts**, not a requirement that a local developer finish binary redistribution clearance before building or running a locally acquired ROM. If a generated standalone executable embeds the firmware, distributing that executable must be reviewed as distribution of the embedded OpenBIOS components; generating and running it locally does not itself mean the maintainers distribute it.
+
+Any future **direct copy, port, or translation of Nugget source into the project** is separately subject to the file-level provenance and notice gate in [References and Prior Art](../REFERENCES.md). MIT headers observed in the five candidate files do not clear unrelated binary assets or bundled dependencies. Unknown cases stay PENDING. Issue [#794](https://github.com/mao2009/PSXRecompStudio/issues/794) tracks those future decisions; the documentation-only #793 and the current local-use workflow do not depend on granting a redistribution approval.
+
+---
+
 ## 1. Linked objects (from openbios.map)
 
 All `.o` files confirmed linked into `openbios.elf`/`openbios.bin`:
@@ -60,7 +70,7 @@ Spot-checked files and their observed copyright years:
 | File / group | Year in header | Verdict |
 |---|---|---|
 | `boot/psx.s`, `openbios/main/main.c` | 2019 | APPROVED |
-| `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, `cdrom/statemachine.c` | 2020–2021 | APPROVED |
+| `openbios/card/backupunit.c`, `sio0/driver.c`, `sio0/card.c`, `kernel/events.c`, `cdrom/statemachine.c` | 2020–2021 | MIT header observed; direct/ported use PENDING (REFERENCES.md, no reviewer decision recorded) |
 | `openbios/charset/sjis.c` | 2021 | APPROVED |
 | `openbios/shell/shell.c`, `handlers/irq.c` | 2020 | APPROVED |
 | `common/psxlibc/fastmemset.s` | 2020 | APPROVED |
@@ -174,7 +184,7 @@ hashed and compared independently before claiming agreement.
 
 | Group | Components | License observed | Verdict |
 |---|---|---|---|
-| OpenBIOS C/S source | All `.c`/`.s` in openbios/* and common/psxlibc/fastmemset.s | MIT (PCSX-Redux authors 2019–2025) — explicit per-file header | **APPROVED** |
+| OpenBIOS C/S source | All `.c`/`.s` in openbios/* and common/psxlibc/fastmemset.s | MIT (PCSX-Redux authors 2019–2025) — explicit per-file header | **Header observed; file-level direct reuse PENDING** (REFERENCES.md) |
 | Shell C/S source | shell/*.c, crt0, syscalls | MIT (PCSX-Redux authors 2021) — explicit per-file header | **APPROVED** |
 | modplayer.c | modplayer/modplayer.c | MIT (PCSX-Redux authors 2021); RE provenance noted | **APPROVED** |
 | patches | patches/*.c | MIT (PCSX-Redux authors 2021) — explicit per-file header | **APPROVED** |
@@ -189,7 +199,7 @@ hashed and compared independently before claiming agreement.
 
 ## 10. Overall redistribution verdict
 
-**NOT APPROVED for redistribution of openbios.bin until all NEEDS-HUMAN-REVIEW items are resolved:**
+**NOT APPROVED for PSXRecompStudio to redistribute `openbios.bin` or firmware-embedded standalone artifacts until the applicable NEEDS-HUMAN-REVIEW items are resolved:**
 
 1. **blip.hit** — origin and license must be documented and confirmed.
 2. **Font binaries (font1.raw, font2.raw)** — /efont/ license terms must be confirmed and recorded.

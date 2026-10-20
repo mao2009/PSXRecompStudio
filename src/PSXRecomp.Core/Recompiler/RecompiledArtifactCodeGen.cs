@@ -960,11 +960,18 @@ static uint64_t artifact_page_gen[PSX_RAM_SIZE >> 12];
 #define ARTIFACT_WROTE(pa, width) (artifact_page_gen[(pa) >> 12]++, artifact_page_gen[((pa) + (width) - 1u) >> 12]++)
 
 int recompiler_code_current(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen) {
-    uint32_t pa, i;
-    uint64_t gen;
+    uint32_t pa, i, p, last;
+    uint64_t gen = 0;
     (void)core;
+    /* Issue #734 review: fail closed on a zero-length load (no words to vouch for) and on a count the RAM cannot hold.
+       With count <= PSX_RAM_SIZE / 4, 4u * count and pa + 4u * count - 1u cannot wrap, and the page sum is bounded. */
+    if (count == 0u || count > PSX_RAM_SIZE / 4u) return 0;
     if (!artifact_ram_offset(pc, 4u * count, &pa)) return 0;
-    gen = artifact_page_gen[pa >> 12] + artifact_page_gen[(pa + 4u * count - 1u) >> 12];
+    /* Issue #734: sum every page the block spans, not only its first and last (a middle-page write must change the sum).
+       Overflow: the span is at most PSX_RAM_SIZE / 4096 = 512 pages. One write event (ARTIFACT_WROTE or one page of a K
+       commit) raises the sum by at most 512, so a uint64 wrap that could hide a change needs >= 2^64 / 512 = 2^55 events. */
+    last = (pa + 4u * count - 1u) >> 12;
+    for (p = pa >> 12; p <= last; p++) gen += artifact_page_gen[p];
     if (gen == *seen) return 1;
     for (i = 0; i < count; i++) {
         const uint8_t* b = artifact_ram + pa + 4u * i;
