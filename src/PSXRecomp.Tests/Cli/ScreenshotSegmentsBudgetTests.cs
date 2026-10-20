@@ -61,6 +61,32 @@ public sealed class ScreenshotSegmentsBudgetTests
     }
 
     [Fact]
+    public void OpenBiosRun_WithoutSegments_GoesThroughTheRealEntryAndAppliesTheDefaultOf100()
+    {
+        // PR #798 review: the direct RunScreenshotCaptureOpenBios calls bypass the default in ScreenshotCommand.Run. This
+        // test enters through Run with no --segments, so the 100-segment default is what bounds the run.
+        using var dir = new TempDirectory();
+        var rom = new byte[OpenBiosFirmware.ImageSize];
+        BitConverter.GetBytes(0x0BF00000u).CopyTo(rom, 0); // j 0xBFC00000: a spin loop
+        var romPath = Path.Combine(dir.FullPath, "spin.bin");
+        File.WriteAllBytes(romPath, rom);
+        var discPath = Path.Combine(dir.FullPath, "blank.bin");
+        File.WriteAllBytes(discPath, new byte[2352 * 16]);
+
+        var stdout = new StringWriter();
+        ScreenshotCommand.Run(
+            ["--openbios", romPath, "--disc", discPath, "--output", Path.Combine(dir.FullPath, "shots"), "--json",
+             "--vblank-interval", "1000", "--max-screenshots", "10", "--start-vblank", "1000", "--timeout", "600"],
+            stdout, TextWriter.Null);
+
+        var json = JsonDocument.Parse(stdout.ToString()).RootElement;
+        json.GetProperty("stopReason").GetString().Should().Be("execution_budget");
+        json.GetProperty("executionResult").GetProperty("state").GetString().Should().Be("BudgetExhausted");
+        json.GetProperty("maxVblankReached").GetUInt64().Should().BeInRange(16UL, 18UL,
+            "100 segments of 100,000 instructions is about 17 frames; a default of 64 would be about 11");
+    }
+
+    [Fact]
     public void OpenBiosRun_ExplicitSegments_IsTheWholeRunBudget()
     {
         using var dir = new TempDirectory();

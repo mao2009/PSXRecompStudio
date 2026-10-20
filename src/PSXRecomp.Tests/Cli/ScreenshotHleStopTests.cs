@@ -120,6 +120,29 @@ public sealed class ScreenshotHleStopTests : IDisposable
         ScreenshotCommand.IsSuccess(result).Should().BeFalse("a budget-exhausted run is not a success");
     }
 
+    [Fact]
+    public void LastPermittedSegmentEndingAtAHandoff_IsBudgetExhaustedNotSuccess()
+    {
+        // PR #798 review (boundary): the only permitted segment ends at a Runtime handoff. The orchestrator returns the
+        // handoff with no budget left, the continuation gets zero budget and stops at once. Not a success, and not a
+        // handoff either: the state is BudgetExhausted and the stop reason is execution_budget.
+        using var dir = new TempDirectory();
+        var engine = new ScriptedEngine((segment, request) =>
+            RecompilerExecutionResult.Completed(new RecompilerStateSnapshot(
+                request.Gpr.ToArray(), request.Hi, request.Lo, Entry + 0x40,
+                termination: RecompilerIrTerminationReason.UnresolvedIndirectFlow)));
+
+        var result = ScreenshotCommand.RunScreenshotCaptureHle(
+            engine, () => (_gpu, _scheduler), new ExitHandoff(), Request(outerBudget: 1), segmentBudget: 1000,
+            dir.FullPath, vblankInterval: 1000, maxScreenshots: 10, startVblank: 1000, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        engine.Segments.Should().HaveCount(1, "the single permitted segment is the only one that runs");
+        result.ExecutionResult.State.Should().Be(TitleExecutionState.BudgetExhausted);
+        result.StopReason.Should().Be("execution_budget");
+        result.GoalReached.Should().BeFalse();
+        ScreenshotCommand.IsSuccess(result).Should().BeFalse("a run that ends on its budget is never a success");
+    }
+
     private static TitleExecutionRequest Request(uint outerBudget = 10) =>
         new(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget, 1000);
 

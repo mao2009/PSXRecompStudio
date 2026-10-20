@@ -65,7 +65,7 @@ public static class ScreenshotCommand
             standardOutput.WriteLine("  --openbios <rom.bin>       optional: OpenBIOS ROM file (512KB) for real BIOS execution");
             standardOutput.WriteLine("  --disc <image.chd|image.bin>  required with --openbios: CD-ROM image for the game");
             standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 100000)");
-            standardOutput.WriteLine("  --segments <n>             whole-run segment budget on both paths; the run stops when it is spent (default: 64 HLE, 100 with --openbios)");
+            standardOutput.WriteLine($"  --segments <n>             whole-run segment budget on both paths; the run stops when it is spent (default: {DefaultHleSegments} HLE, {DefaultOpenBiosSegments} with --openbios)");
             standardOutput.WriteLine("  --vblank-interval <n>      VBlank interval between captures (default: 300)");
             standardOutput.WriteLine("  --max-screenshots <n>      maximum screenshots to capture (default: 10)");
             standardOutput.WriteLine("  --start-vblank <n>         first VBlank to capture (default: 300)");
