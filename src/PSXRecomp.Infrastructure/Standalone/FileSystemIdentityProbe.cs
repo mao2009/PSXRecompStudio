@@ -79,7 +79,7 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     private static bool IsDeviceName(string path)
     {
         var full = Path.GetFullPath(path);
-        if (IsDeviceNamespace(path) || IsDeviceNamespace(full)) return true;
+        if (IsDeviceNamespacePath(path) || IsDeviceNamespacePath(full)) return true;
 
         foreach (var spelling in new[] { path, full })
         {
@@ -94,13 +94,20 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
         return false;
     }
 
-    // The Win32 device namespace (\\.\), the extended-length form (\\?\) and the NT object namespace (\??\, which names the same devices).
-    // Any slash spelling counts. Every path in these namespaces is refused, so none is opened.
-    private static bool IsDeviceNamespace(string path)
+    /// <summary>
+    /// The single device-namespace rule, applied to a path as given and to its full form (no I/O). Slashes are read as backslashes and
+    /// every leading separator is collapsed. The path is in a device namespace when its server component is "??" (the NT object
+    /// namespace, \??\ and \\??\ alike), or when it is "." or "?" behind a doubled leading separator (\\.\, \\?\, ///./, //?/ and any
+    /// number of extra separators). A UNC path such as \\server\share is not, and stays an ordinary path.
+    /// </summary>
+    public static bool IsDeviceNamespacePath(string path)
     {
         var normalised = path.Replace('/', '\\');
-        return normalised.StartsWith(@"\\.\", StringComparison.Ordinal)
-            || normalised.StartsWith(@"\\?\", StringComparison.Ordinal)
-            || normalised.StartsWith(@"\??\", StringComparison.Ordinal);
+        var doubled = normalised.StartsWith("\\\\", StringComparison.Ordinal);
+        var rooted = normalised.StartsWith('\\');
+        var server = normalised.TrimStart('\\').Split('\\')[0];
+
+        if (rooted && server == "??") return true;
+        return doubled && (server == "." || server == "?");
     }
 }

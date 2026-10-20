@@ -124,8 +124,9 @@ public sealed class FileSystemIdentityProbeTests
         probe.Identity.Should().Be(new FileIdentity(ulong.Parse(parts[0]), ulong.Parse(parts[1])), "the offsets must match the kernel's stat");
     }
 
-    // Issue #786 (review round 7): Win32 ignores trailing spaces and dots in a name, so "CON " and "NUL." are the reserved names (NUL is a
-    // device on this host; CON was not confirmed). The probe is called with the raw spelling, so it must type them itself.
+    // Issue #786 (review round 7): Win32 ignores trailing spaces and dots in a name, so "CON " and "NUL." are the reserved names. Confirmed on
+    // this host: NUL. did not create a file (a device). Bare CON and AUX writes created regular files here, so for those two the refusal is
+    // conservative (fail-closed), not a confirmed device. The probe is called with the raw spelling, so it must type them itself.
     [SkippableTheory]
     [InlineData("CON ")]
     [InlineData("NUL.")]
@@ -137,7 +138,7 @@ public sealed class FileSystemIdentityProbeTests
 
         var probe = new FileSystemIdentityProbe().Probe(dir.Combine(name));
 
-        probe.Kind.Should().Be(FileKind.Other, "a device name is never a regular file, whatever spaces or dots follow it");
+        probe.Kind.Should().Be(FileKind.Other, "refused: NUL. is a confirmed device here; CON and AUX are refused conservatively (fail-closed), not confirmed as devices");
     }
 
     // Issue #786 (review round 8): the further device names, typed as Other by the probe.
@@ -167,6 +168,10 @@ public sealed class FileSystemIdentityProbeTests
     [InlineData("//?/GLOBALROOT/Device/HarddiskVolume1")]
     [InlineData("\\??\\PhysicalDrive0")]
     [InlineData("/??/PhysicalDrive0")]
+    [InlineData("///./PhysicalDrive0")]
+    [InlineData("//??/PhysicalDrive0")]
+    [InlineData("\\\\\\.\\PhysicalDrive0")]
+    [InlineData("\\\\??\\PhysicalDrive0")]
     public void ADeviceNamespacePath_InAnySlashSpelling_IsTypedAsOther(string path)
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "the device namespace is a Windows rule");
@@ -214,6 +219,15 @@ public sealed class FileSystemIdentityProbeTests
         var probe = new FileSystemIdentityProbe().Probe(dir.Combine(name));
 
         probe.Kind.Should().Be(FileKind.Other, "conservative refusal: a reserved name with an extension is refused, fail-closed");
+    }
+
+    // Issue #786 (final review, round 11): the one device-namespace rule must not catch an ordinary UNC path. This is a pure function, so
+    // no network path is touched.
+    [Fact]
+    public void AnOrdinaryUncPath_IsNotADeviceNamespacePath()
+    {
+        FileSystemIdentityProbe.IsDeviceNamespacePath("\\\\server\\share\\file.bin").Should().BeFalse("a UNC server is an ordinary path");
+        FileSystemIdentityProbe.IsDeviceNamespacePath("//server/share/file.bin").Should().BeFalse("a UNC server is an ordinary path");
     }
 
     private static string CurrentAccount()
