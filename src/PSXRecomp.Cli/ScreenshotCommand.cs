@@ -265,12 +265,15 @@ public static class ScreenshotCommand
                     startVblank);
             });
             // A RuntimeHandoff is continued on the same live engine (no Load: RAM, GPU and scheduler are kept, review of #751).
+            // The request's outer budget bounds the whole run: each continuation gets only what the earlier slices left.
+            var remainingBudget = request.OuterBudget - Math.Min(request.OuterBudget, executionResult.SegmentsRetired);
             while (executionResult.State == TitleExecutionState.RuntimeHandoff && executionResult.FinalSnapshot is { } snapshot)
             {
                 boundaryStop = CleanBoundaryStop(screenshotCapture, stopwatch, timeout);
                 if (boundaryStop is not null)
                     break;
-                executionResult = orchestrator.Resume(engine, handoff, snapshot, 1000u, segmentBudget, Segment);
+                executionResult = orchestrator.Resume(engine, handoff, snapshot, remainingBudget, segmentBudget, Segment);
+                remainingBudget -= Math.Min(remainingBudget, executionResult.SegmentsRetired);
             }
             stopReason = boundaryStop ?? StopReasonOf(executionResult.State);
         }

@@ -95,8 +95,33 @@ public sealed class ScreenshotHleStopTests : IDisposable
         manifest.GetProperty("stopReason").GetString().Should().Be("runtime_failure");
     }
 
-    private static TitleExecutionRequest Request() =>
-        new(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], 10, 1000);
+    [Fact]
+    public void RuntimeHandoffChain_IsBoundedByTheRequestBudgetForTheWholeRun()
+    {
+        // PR #798 review (MEDIUM): every continuation must spend the request's outer budget, not a fresh per-call budget.
+        // With an outer budget of 3 and an engine that hands off forever, the run must stop after exactly 3 segments.
+        using var dir = new TempDirectory();
+        var engine = new ScriptedEngine((segment, request) =>
+        {
+            if (segment > 20) throw new InvalidOperationException("guard: the continuation ran past the request budget");
+            return RecompilerExecutionResult.Completed(new RecompilerStateSnapshot(
+                request.Gpr.ToArray(), request.Hi, request.Lo, Entry + 0x40,
+                termination: RecompilerIrTerminationReason.UnresolvedIndirectFlow));
+        });
+
+        var result = ScreenshotCommand.RunScreenshotCaptureHle(
+            engine, () => (_gpu, _scheduler), new ExitHandoff(), Request(outerBudget: 3), segmentBudget: 1000,
+            dir.FullPath, vblankInterval: 1000, maxScreenshots: 10, startVblank: 1000, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        engine.Segments.Should().HaveCount(3, "the request budget (3 segments) bounds the whole run, not each continuation");
+        result.ExecutionResult.State.Should().Be(TitleExecutionState.BudgetExhausted);
+        result.StopReason.Should().Be("execution_budget");
+        result.GoalReached.Should().BeFalse();
+        ScreenshotCommand.IsSuccess(result).Should().BeFalse("a budget-exhausted run is not a success");
+    }
+
+    private static TitleExecutionRequest Request(uint outerBudget = 10) =>
+        new(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget, 1000);
 
     private sealed class ExitHandoff : ITitleExecutionHandoff
     {
