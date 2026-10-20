@@ -4,21 +4,53 @@ using PSXRecomp.Architecture;
 namespace PSXRecomp.Infrastructure.Standalone;
 
 /// <summary>
-/// Writes a runtime host report (Issue #786 review round 4): through a temp name, then a move onto the target. A link at the target
-/// is therefore replaced, never written through, and a failed write leaves the previous report in place.
+/// Writes a runtime host report (Issue #786): the text goes to a fresh temp file, which then replaces the target by a move. A failed
+/// write leaves the previous report in place, and a link at the target is replaced, never written through.
 /// </summary>
 [Infrastructure]
 public static class RuntimeHostReportFile
 {
     /// <summary>
-    /// Writes <paramref name="text"/> to <paramref name="path"/>. A stale temp is removed by name first, so a hard link at that name is
-    /// only a name and the write cannot reach the file it links to.
+    /// Writes <paramref name="text"/> to <paramref name="path"/>. The temp name is unguessable and is created with
+    /// <see cref="FileMode.CreateNew"/>, so no existing file or link at any name is truncated or written through. Only the temp file
+    /// this call created is ever deleted; a temp that already existed is left alone and the write fails.
     /// </summary>
     public static void WriteAtomically(string path, string text)
     {
-        var temp = path + ".tmp";
-        File.Delete(temp);
-        File.WriteAllText(temp, text, new UTF8Encoding(false));
-        File.Move(temp, path, overwrite: true);
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        var bytes = new UTF8Encoding(false).GetBytes(text);
+        var created = false;
+        try
+        {
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                created = true;
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temp, path, overwrite: true);
+            created = false;
+        }
+        finally
+        {
+            if (created) TryDelete(temp);
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // The temp file is ours and is only a leftover; a failed cleanup must not hide the write's own outcome.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // As above.
+        }
     }
 }

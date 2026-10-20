@@ -150,7 +150,7 @@ public static class Program
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
-                    $"runtime host: refusing --diagnostics {diagnosticsPath}: it is the input {conflict}, and no report is written over an input.");
+                    $"runtime host: refusing --diagnostics {diagnosticsPath}: {conflict}");
                 return 78;
             }
         }
@@ -172,7 +172,7 @@ public static class Program
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
-                    $"runtime host: refusing --loaded-code-diagnostics {loadedCodeMismatchPath}: it is the input {conflict}, and no report is written over an input.");
+                    $"runtime host: refusing --loaded-code-diagnostics {loadedCodeMismatchPath}: {conflict}");
                 return 78;
             }
 
@@ -385,7 +385,17 @@ public static class Program
     private static string? ReportTargetInput(string reportPath, IReadOnlyList<string> inputs)
     {
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        var targets = new[] { ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp") };
+        string[] targets;
+        try
+        {
+            targets = [ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp")];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // A target that cannot be inspected cannot be shown to be no input: refused as a classified setup failure, never thrown past the host.
+            return $"the report target {reportPath} cannot be inspected ({ex.Message}), so it cannot be shown to be no input.";
+        }
+
         // Path comparison for every input first: a refusal by path opens no input at all.
         var candidates = new List<string>(inputs.Count);
         foreach (var input in inputs)
@@ -401,23 +411,37 @@ public static class Program
                 continue;
             }
 
-            if (targets.Any(target => comparer.Equals(target, resolved))) return input;
+            if (targets.Any(target => comparer.Equals(target, resolved))) return InputConflict(input);
             candidates.Add(input);
         }
 
-        // Then file identity, which sees what a path cannot: a hard link, a chain of links, an 8.3 name. Each file is opened
-        // read-only for its identity (metadata only, no content), and only when no path matched.
-        var targetIdentities = new[] { reportPath, reportPath + ".tmp" }
-            .Select(RuntimeHostFileIdentity.Of)
-            .OfType<RuntimeHostFileIdentity.Key>()
-            .ToHashSet();
+        // Then file identity, which sees what a path cannot: a hard link, a chain of links, an 8.3 name. A name that exists but whose
+        // identity cannot be read is refused: safety of the write cannot be established then.
+        var targetIdentities = new HashSet<RuntimeHostFileIdentity.Key>();
+        foreach (var name in new[] { reportPath, reportPath + ".tmp" })
+        {
+            if (!RuntimeHostFileIdentity.TryOf(name, out var identity))
+            {
+                return $"the file identity of {name} cannot be read here, so it cannot be shown to be no input.";
+            }
+
+            if (identity is { } known) targetIdentities.Add(known);
+        }
+
         foreach (var input in candidates)
         {
-            if (RuntimeHostFileIdentity.Of(input) is { } identity && targetIdentities.Contains(identity)) return input;
+            if (!RuntimeHostFileIdentity.TryOf(input, out var identity))
+            {
+                return $"the file identity of the input {input} cannot be read here, so the report target cannot be shown to be no input.";
+            }
+
+            if (identity is { } known && targetIdentities.Contains(known)) return InputConflict(input);
         }
 
         return null;
     }
+
+    private static string InputConflict(string input) => $"it is the input {input}, and no report is written over an input.";
 
     /// <summary>
     /// The files this run reads, derived from the paths the code reads them from: the manifest, the firmware boot manifest (its

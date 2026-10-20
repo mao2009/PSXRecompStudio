@@ -123,18 +123,57 @@ public sealed class RuntimeHostLoadedCodeReportTests
     }
 
     // Issue #786 B1: a write that fails leaves the previous valid report in place (the temp file cannot be created).
-    [Fact]
-    public void LoadedCodeDiagnostics_AFailedWrite_LeavesThePreviousReportIntact()
+    // The write fails at the final replace: Windows refuses to move over a read-only file. The temp it made must be removed, and the
+    // previous report must be untouched. (POSIX rename ignores the file's own mode, so this failure is Windows-only.)
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_AFailedWrite_LeavesThePreviousReportIntact_AndNoTempBehind_OnWindows()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a read-only destination refuses the final replace on Windows only");
         using var dir = new TempDirectory();
         dir.WriteFile(FirmwareBootManifest.FileName, Encoding.UTF8.GetBytes("{}"));
         var manifest = dir.WriteFile("runtime-host.json", Encoding.UTF8.GetBytes("not json"));
         var report = dir.WriteFile("loaded.json", Encoding.UTF8.GetBytes("{\"previous\":true}"));
-        dir.CreateSubdirectory("loaded.json.tmp");
-
-        PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, report, manifest]);
+#pragma warning disable AARC003
+        File.SetAttributes(report, FileAttributes.ReadOnly);
+        try
+        {
+            PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, report, manifest]);
+        }
+        finally
+        {
+            File.SetAttributes(report, FileAttributes.Normal);
+        }
+        var leftovers = Directory.GetFiles(dir.FullPath, "*.tmp");
+#pragma warning restore AARC003
 
         ReadText(report).Should().Be("{\"previous\":true}", "a report that could not be written must not destroy the previous one");
+        leftovers.Should().BeEmpty("the temp file this write created is removed when the replace fails");
+    }
+
+    // Issue #786 (review round 5): a report target that cannot be inspected is refused as a classified setup failure. On Windows,
+    // denying write access to the directory makes the target inspection fail, which used to escape the host as an exception.
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_WhenTheReportTargetCannotBeInspected_IsRefused_AndThePreviousReportSurvives()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the inspection failure here is a Windows access rule");
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Encoding.UTF8.GetBytes("{}"));
+        var manifest = dir.WriteFile("runtime-host.json", Encoding.UTF8.GetBytes("not json"));
+        var previous = "{\"previous\":true}";
+        var report = dir.WriteFile("loaded.json", Encoding.UTF8.GetBytes(previous));
+        Skip.IfNot(RunProcess("icacls.exe", $"\"{dir.FullPath}\" /deny \"{CurrentAccount()}\":(W)"), "this account cannot change the directory's access rule");
+        try
+        {
+            var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, report, manifest]);
+
+            code.Should().Be(78, "a target that cannot be inspected is refused, not run past");
+        }
+        finally
+        {
+            RestoreWriting(dir.FullPath);
+        }
+
+        ReadText(report).Should().Be(previous);
     }
 
     // Issue #786 B1: an exception in the run (here a manifest that does not parse) leaves the inputs intact.
@@ -282,15 +321,74 @@ public sealed class RuntimeHostLoadedCodeReportTests
 #pragma warning restore AARC003
     }
 
+    // A hard link is mklink /H on Windows and ln on POSIX; both name the same file under a second name.
     private static void CreateHardLinkOrSkip(string link, string target)
     {
 #pragma warning disable AARC003
-        using var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-            "cmd.exe", $"/c mklink /H \"{link}\" \"{target}\"") { UseShellExecute = false, CreateNoWindow = true })!;
-        mklink.WaitForExit();
-        Skip.IfNot(mklink.ExitCode == 0, "could not create a hard link on this machine");
+        var info = OperatingSystem.IsWindows()
+            ? new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /H \"{link}\" \"{target}\"")
+            : new System.Diagnostics.ProcessStartInfo("ln", $"\"{target}\" \"{link}\"");
+        info.UseShellExecute = false;
+        info.CreateNoWindow = true;
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.WaitForExit();
+        var created = process.ExitCode == 0;
+#pragma warning restore AARC003
+        Skip.IfNot(created, "could not create a hard link on this machine");
+    }
+
+    // Runs a tool and reports whether it exited 0. Used for the access rules these tests put on a directory.
+    private static bool RunProcess(string file, string arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo(file, arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+#pragma warning disable AARC003
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var succeeded = process.ExitCode == 0;
+#pragma warning restore AARC003
+        return succeeded;
+    }
+
+    // Restores the write access RunProcess-based denial removed: the Windows deny entry for this account.
+    private static void RestoreWriting(string directory)
+    {
+        RunProcess("icacls.exe", $"\"{directory}\" /remove:d \"{CurrentAccount()}\"");
+    }
+
+    private static string CurrentAccount()
+    {
+#pragma warning disable AARC003
+        return Environment.UserName;
 #pragma warning restore AARC003
     }
+
+    // Runs the host and returns its exit code with what it wrote to stderr: a refusal names itself there, and an exit code alone
+    // cannot tell a refusal from a run that failed later.
+#pragma warning disable AARC003
+    private static (int Code, string Stderr) RunCapturingStderr(params string[] args)
+    {
+        var original = Console.Error;
+        using var captured = new StringWriter();
+        Console.SetError(captured);
+        try
+        {
+            var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main(args);
+            return (code, captured.ToString());
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+    }
+#pragma warning restore AARC003
 
     [Fact]
     public void LoadedCodeDiagnostics_TargetIsTheManifestWhoseContentHasTheReportSchema_IsRefused()
@@ -542,9 +640,10 @@ public sealed class RuntimeHostLoadedCodeReportTests
     {
         var before = inputs.Select(path => (Path: path, Text: ReadText(path))).ToList();
 
-        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([flag, target, manifest]);
+        var (code, stderr) = RunCapturingStderr(flag, target, manifest);
 
         code.Should().Be(78, $"{flag} naming {target} is an input and is refused before the run");
+        stderr.Should().Contain("refusing " + flag, "the refusal, not a later run failure, is what turned it away");
         foreach (var (path, text) in before)
         {
             ReadText(path).Should().Be(text, $"{path} is an input and must survive");
@@ -572,21 +671,21 @@ public sealed class RuntimeHostLoadedCodeReportTests
     }
 
     [SkippableFact]
-    public void Diagnostics_TargetIsAHardLinkToTheManifest_IsRefused_AndTheManifestSurvives_OnWindows()
+    // A valid firmware boot manifest keeps the input list exact: an unparseable one would fall back to listing the whole distribution
+    // root, which would refuse the link by path and hide whether identity works.
+    public void Diagnostics_TargetIsAHardLinkToTheManifest_IsRefused_AndTheManifestSurvives()
     {
-        Skip.IfNot(OperatingSystem.IsWindows(), "hard links are checked as Windows file identity");
         using var dir = new TempDirectory();
-        var (manifest, boot, artifact) = WriteDistribution(dir);
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
         var link = dir.Combine("hardlink.json");
         CreateHardLinkOrSkip(link, manifest);
 
-        AssertRefused(DiagnosticsFlag, link, manifest, manifest, boot, artifact);
+        AssertRefused(DiagnosticsFlag, link, manifest, manifest, boot, artifact, disc);
     }
 
     [SkippableFact]
-    public void Diagnostics_TargetIsAHardLinkToTheDisc_IsRefused_AndTheDiscSurvives_OnWindows()
+    public void Diagnostics_TargetIsAHardLinkToTheDisc_IsRefused_AndTheDiscSurvives()
     {
-        Skip.IfNot(OperatingSystem.IsWindows(), "hard links are checked as Windows file identity");
         using var dir = new TempDirectory();
         var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
         var link = dir.Combine("hardlink.bin");
@@ -692,5 +791,49 @@ public sealed class RuntimeHostLoadedCodeReportTests
         {
             RunIcacls($"\"{firmwareDirectory}\" /remove:d \"{user}\"");
         }
+    }
+
+    // Issue #786 (review round 5): a symbolic link is followed to its file on every OS (POSIX always; Windows where the account may
+    // create one). The link itself is not the input, so the refusal must come from the file it leads to.
+    [SkippableFact]
+    public void Diagnostics_TargetIsASymlinkToTheManifest_IsRefused_AndTheManifestSurvives()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var link = dir.Combine("symlink.json");
+        CreateFileSymlinkOrSkip(link, manifest);
+
+        AssertRefused(DiagnosticsFlag, link, manifest, manifest, boot, artifact, disc);
+    }
+
+    // The report's temp name is unguessable and fresh per write, so a file already at the old fixed name is someone else's and must
+    // survive the write untouched.
+    [Fact]
+    public void WriteAtomically_ALeftoverFileAtTheOldTempName_IsLeftAlone()
+    {
+        using var dir = new TempDirectory();
+        var report = dir.Combine("loaded.json");
+        var leftover = dir.WriteFile("loaded.json.tmp", Bytes("someone else's bytes"));
+
+        RuntimeHostReportFile.WriteAtomically(report, "{\"new\":true}");
+
+        ReadText(report).Should().Be("{\"new\":true}", "the write lands at the report path");
+        ReadText(leftover).Should().Be("someone else's bytes", "only a temp file this call created is ever deleted");
+    }
+
+    // A link at the old temp name must not carry the write into its input, and must not be deleted by the write either.
+    [SkippableFact]
+    public void WriteAtomically_AHardLinkAtTheOldTempName_LeavesTheInputIntact()
+    {
+        using var dir = new TempDirectory();
+        var input = dir.WriteFile("input.json", Bytes("input bytes"));
+        var report = dir.Combine("loaded.json");
+        CreateHardLinkOrSkip(dir.Combine("loaded.json.tmp"), input);
+
+        RuntimeHostReportFile.WriteAtomically(report, "{\"new\":true}");
+
+        ReadText(input).Should().Be("input bytes", "the input is written through by no link");
+        ReadText(report).Should().Be("{\"new\":true}");
+        Exists(dir.Combine("loaded.json.tmp")).Should().BeTrue("the write did not create that name, so it does not delete it");
     }
 }
