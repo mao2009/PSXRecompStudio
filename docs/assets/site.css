@@ -122,6 +122,70 @@ h2 { font-size: clamp(1.5rem, 4vw, 2.1rem); }
   background: var(--surface);
 }
 
+/* Whole-card navigation links for the Pages landing pages. */
+.link-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 1rem;
+}
+
+.link-card {
+  display: flex;
+  flex-direction: column;
+  gap: .55rem;
+  min-height: 10.5rem;
+  padding: 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: .65rem;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color .15s ease, transform .15s ease;
+}
+
+.link-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.link-card:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.link-card-kicker {
+  color: var(--accent-strong);
+  font-size: .76rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.link-card-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .5rem;
+  font-size: 1.16rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.link-card-title [aria-hidden] {
+  color: var(--accent-strong);
+  flex: none;
+}
+
+.link-card-summary {
+  color: var(--muted);
+  font-size: .94rem;
+  line-height: 1.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .link-card { transition: none; }
+  .link-card:hover { transform: none; }
+}
+
 pre {
   overflow-x: auto;
   padding: 1rem;
