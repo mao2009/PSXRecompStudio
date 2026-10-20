@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -130,6 +131,8 @@ public static class Program
         // The files the run reads, listed once for both report targets. A listing that fails (I/O or access) is a classified setup
         // failure: no report is written, and nothing beyond the listing is read.
         IReadOnlyList<string>? reportInputs = null;
+        // The composition root supplies the file system adapter for the Domain port that answers "what does this path name".
+        IFileIdentityProbe probe = new FileSystemIdentityProbe();
         if (diagnosticsPath is not null || loadedCodeMismatchPath is not null)
         {
             try
@@ -146,7 +149,7 @@ public static class Program
         // Issue #786 (PR review): the stop diagnostic is an output too, so it never replaces an input. Refused by path before anything runs.
         if (diagnosticsPath is not null)
         {
-            var conflict = ReportTargetInput(diagnosticsPath, reportInputs!);
+            var conflict = ReportTargetInput(diagnosticsPath, reportInputs!, probe);
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
@@ -168,7 +171,7 @@ public static class Program
         var runId = Guid.NewGuid().ToString("N");
         if (loadedCodeMismatchPath is not null)
         {
-            var conflict = ReportTargetInput(loadedCodeMismatchPath, reportInputs!);
+            var conflict = ReportTargetInput(loadedCodeMismatchPath, reportInputs!, probe);
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
@@ -382,13 +385,13 @@ public static class Program
     /// spelling, case, or a link to the same file cannot pass. The report's temp file is compared too. An earlier run's report
     /// is not in <paramref name="inputs"/>, so it is replaced.
     /// </summary>
-    private static string? ReportTargetInput(string reportPath, IReadOnlyList<string> inputs)
+    private static string? ReportTargetInput(string reportPath, IReadOnlyList<string> inputs, IFileIdentityProbe probe)
     {
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        string[] targets;
+        string target;
         try
         {
-            targets = [ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp")];
+            target = ResolvedFullPath(reportPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -411,31 +414,30 @@ public static class Program
                 continue;
             }
 
-            if (targets.Any(target => comparer.Equals(target, resolved))) return InputConflict(input);
+            if (comparer.Equals(target, resolved)) return InputConflict(input);
             candidates.Add(input);
         }
 
-        // Then file identity, which sees what a path cannot: a hard link, a chain of links, an 8.3 name. A name that exists but whose
-        // identity cannot be read is refused: safety of the write cannot be established then.
-        var targetIdentities = new HashSet<RuntimeHostFileIdentity.Key>();
-        foreach (var name in new[] { reportPath, reportPath + ".tmp" })
+        // Then file identity, which sees what a path cannot: a hard link, a chain of links, an 8.3 name. The report only ever lands at its
+        // own path (its temp name is fresh per write), so only that path is identified. A report target that exists must be a regular
+        // file whose identity can be read; a candidate input that exists must be too. Anything else is refused: safety is not shown.
+        var reportFile = probe.Probe(reportPath);
+        if (reportFile.Kind == FileKind.Absent) return null;
+        if (reportFile.Kind != FileKind.RegularFile || reportFile.Identity is not { } targetIdentity)
         {
-            if (!RuntimeHostFileIdentity.TryOf(name, out var identity))
-            {
-                return $"the file identity of {name} cannot be read here, so it cannot be shown to be no input.";
-            }
-
-            if (identity is { } known) targetIdentities.Add(known);
+            return $"the report target {reportPath} is not a regular file whose identity can be read, so it cannot be shown to be no input.";
         }
 
         foreach (var input in candidates)
         {
-            if (!RuntimeHostFileIdentity.TryOf(input, out var identity))
+            var inputFile = probe.Probe(input);
+            if (inputFile.Kind == FileKind.Absent) continue;
+            if (inputFile.Kind != FileKind.RegularFile || inputFile.Identity is not { } identity)
             {
-                return $"the file identity of the input {input} cannot be read here, so the report target cannot be shown to be no input.";
+                return $"the input {input} is not a regular file whose identity can be read, so the report target cannot be shown to be no input.";
             }
 
-            if (identity is { } known && targetIdentities.Contains(known)) return InputConflict(input);
+            if (identity == targetIdentity) return InputConflict(input);
         }
 
         return null;

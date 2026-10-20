@@ -486,7 +486,7 @@ public sealed class RuntimeHostLoadedCodeReportTests
     // The report's temp file is the artifact the manifest names (../loaded.json.tmp from runtime/): a temp write must never
     // replace an input.
     [Fact]
-    public void LoadedCodeDiagnostics_TempSiblingThatIsAnInputWithTheReportSchema_IsRefused()
+    public void LoadedCodeDiagnostics_TempSiblingThatIsAnInputWithTheReportSchema_IsNotWrittenThrough()
     {
         using var dir = new TempDirectory();
         dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
@@ -835,5 +835,68 @@ public sealed class RuntimeHostLoadedCodeReportTests
         ReadText(input).Should().Be("input bytes", "the input is written through by no link");
         ReadText(report).Should().Be("{\"new\":true}");
         Exists(dir.Combine("loaded.json.tmp")).Should().BeTrue("the write did not create that name, so it does not delete it");
+    }
+
+    // Issue #786 (review round 6): a FIFO is a file whose open blocks until a writer appears. Its type is read without opening it,
+    // so a FIFO named as the diagnostics target is refused and the host never blocks.
+    [SkippableFact]
+    public void Diagnostics_TargetIsAFifo_IsRefusedWithoutBlocking()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a FIFO is a POSIX file type");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var fifo = dir.Combine("report.fifo");
+        Skip.IfNot(RunProcess("mkfifo", $"\"{fifo}\""), "could not create a FIFO on this machine");
+
+        var run = Task.Run(() => PSXRecomp.Infrastructure.RuntimeHost.Program.Main([DiagnosticsFlag, fifo, manifest]));
+        var finished = run.Wait(TimeSpan.FromSeconds(10));
+
+        finished.Should().BeTrue("a FIFO must be refused by its type, before any open that would block");
+        run.Result.Should().Be(78);
+        ReadText(disc).Should().Be("disc bytes");
+    }
+
+    // Issue #786 (review round 6): POSIX failed write, with the report directory read-only. Creating the new temp file is refused,
+    // so the previous report stays byte-for-byte and no temp is left behind. Root bypasses directory permissions, so it is skipped.
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_AFailedWriteOnPosix_LeavesThePreviousReportIntact_AndNoTempBehind()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX directory permissions; Windows has its own failed-write test");
+        Skip.If(CurrentAccount() == "root", "root bypasses directory write permission, so the failed write cannot be injected");
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var manifest = dir.WriteFile("runtime-host.json", Bytes("not json"));
+        const string previous = "{\"previous\":true}";
+        var report = dir.WriteFile("loaded.json", Bytes(previous));
+        Skip.IfNot(RunProcess("chmod", $"u-w \"{dir.FullPath}\""), "could not make the directory read-only");
+        try
+        {
+            PSXRecomp.Infrastructure.RuntimeHost.Program.Main([LoadedCodeFlag, report, manifest]);
+        }
+        finally
+        {
+            RunProcess("chmod", $"u+w \"{dir.FullPath}\"");
+        }
+
+        ReadText(report).Should().Be(previous, "a report that could not be written must not destroy the previous one");
+        #pragma warning disable AARC003
+        Directory.GetFiles(dir.FullPath, "*.tmp").Should().BeEmpty("no temp file is left behind by a failed write");
+        #pragma warning restore AARC003
+    }
+
+    // Issue #786 (review round 6): the report's temp name is now unguessable, so a file at the old fixed "<report>.tmp" name is an
+    // ordinary name. The run must not write through it, and the report lands at its own path.
+    [Fact]
+    public void LoadedCodeDiagnostics_AFileAtTheOldTempName_IsNeverWrittenThrough()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var content = "someone else's bytes";
+        dir.WriteFile("loaded.json.tmp", Bytes(content));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("loaded.json.tmp")));
+
+        PSXRecomp.Infrastructure.RuntimeHost.Program.Main([LoadedCodeFlag, dir.Combine("loaded.json"), manifest]);
+
+        ReadText(dir.Combine("loaded.json.tmp")).Should().Be(content, "the old temp name is an ordinary file the report never writes to");
     }
 }

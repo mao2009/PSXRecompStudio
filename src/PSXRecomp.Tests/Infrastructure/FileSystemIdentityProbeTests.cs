@@ -1,0 +1,170 @@
+using System.Text;
+using FluentAssertions;
+using PSXRecomp.Core;
+using PSXRecomp.Infrastructure.Standalone;
+using PSXRecomp.Tests.RealRomAnalysis;
+
+namespace PSXRecomp.Tests.Infrastructure;
+
+/// <summary>
+/// Issue #786 (review round 6): the file identity probe, called directly. Hard links must share an identity, distinct files must not,
+/// an unreadable path must yield no identity, and a FIFO must be typed without being opened. The Linux and macOS layouts are checked
+/// against the operating system's own <c>stat</c>, so a wrong offset fails here rather than in a refusal that happens to be right.
+/// </summary>
+[Test]
+public sealed class FileSystemIdentityProbeTests
+{
+    private static byte[] Bytes(string text) => Encoding.UTF8.GetBytes(text);
+
+    [Fact]
+    public void AHardLink_HasTheSameIdentityAsItsFile()
+    {
+        using var dir = new TempDirectory();
+        var file = dir.WriteFile("a.bin", Bytes("x"));
+        var link = dir.Combine("b.bin");
+        CreateHardLinkOrSkip(link, file);
+
+        var probe = new FileSystemIdentityProbe();
+        var original = probe.Probe(file);
+        var alias = probe.Probe(link);
+
+        original.Kind.Should().Be(FileKind.RegularFile);
+        original.Identity.Should().NotBeNull("a regular file's identity must be readable here");
+        alias.Identity.Should().Be(original.Identity, "a hard link is the same file under another name");
+    }
+
+    [Fact]
+    public void DistinctFiles_HaveDifferentIdentities()
+    {
+        using var dir = new TempDirectory();
+        var first = dir.WriteFile("a.bin", Bytes("x"));
+        var second = dir.WriteFile("b.bin", Bytes("x"));
+
+        var probe = new FileSystemIdentityProbe();
+
+        probe.Probe(first).Identity.Should().NotBeNull();
+        probe.Probe(second).Identity.Should().NotBe(probe.Probe(first).Identity, "two files with equal bytes are still two files");
+    }
+
+    [Fact]
+    public void AMissingPath_IsAbsent_AndHasNoIdentity()
+    {
+        using var dir = new TempDirectory();
+
+        var probe = new FileSystemIdentityProbe().Probe(dir.Combine("nothing-here.bin"));
+
+        probe.Kind.Should().Be(FileKind.Absent);
+        probe.Identity.Should().BeNull();
+    }
+
+    [SkippableFact]
+    public void AnUnreadablePath_OnPosix_YieldsNoIdentity()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "POSIX directory permissions");
+        Skip.If(CurrentAccount() == "root", "root reads through directory permissions, so the path cannot be made unreadable");
+        using var dir = new TempDirectory();
+        var child = dir.WriteFile(Path.Combine("locked", "a.bin"), Bytes("x"));
+        var locked = Path.GetDirectoryName(child)!;
+        Skip.IfNot(RunProcess("chmod", $"000 \"{locked}\""), "could not remove the directory's permissions");
+        try
+        {
+            var probe = new FileSystemIdentityProbe().Probe(child);
+
+            probe.Kind.Should().Be(FileKind.Unreadable, "a path whose status cannot be read is not shown to be no input");
+            probe.Identity.Should().BeNull();
+        }
+        finally
+        {
+            RunProcess("chmod", $"755 \"{locked}\"");
+        }
+    }
+
+    [SkippableFact]
+    public void AFifo_IsTypedAsOther_WithoutBeingOpened()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a FIFO is a POSIX file type");
+        using var dir = new TempDirectory();
+        var fifo = dir.Combine("pipe");
+        Skip.IfNot(RunProcess("mkfifo", $"\"{fifo}\""), "could not create a FIFO on this machine");
+
+        var probing = Task.Run(() => new FileSystemIdentityProbe().Probe(fifo));
+        var finished = probing.Wait(TimeSpan.FromSeconds(10));
+
+        finished.Should().BeTrue("typing a FIFO must not open it, and an open would block");
+        probing.Result.Kind.Should().Be(FileKind.Other);
+    }
+
+    [SkippableFact]
+    public void TheLinuxLayout_MatchesTheKernelsOwnStat()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the glibc struct stat layout is Linux's");
+        using var dir = new TempDirectory();
+        var file = dir.WriteFile("layout.bin", Bytes("x"));
+
+        var kernel = RunProcessOutput("stat", $"-c \"%d %i\" \"{file}\"");
+        var probe = new FileSystemIdentityProbe().Probe(file);
+
+        kernel.Should().NotBeNull("stat must be available on Linux");
+        var parts = kernel!.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        probe.Identity.Should().Be(new FileIdentity(ulong.Parse(parts[0]), ulong.Parse(parts[1])), "the offsets must match the kernel's stat");
+    }
+
+    [SkippableFact]
+    public void TheMacOsLayout_MatchesTheKernelsOwnStat()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "the macOS struct stat layout is macOS's");
+        using var dir = new TempDirectory();
+        var file = dir.WriteFile("layout.bin", Bytes("x"));
+
+        var kernel = RunProcessOutput("stat", $"-f \"%d %i\" \"{file}\"");
+        var probe = new FileSystemIdentityProbe().Probe(file);
+
+        kernel.Should().NotBeNull("stat must be available on macOS");
+        var parts = kernel!.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        probe.Identity.Should().Be(new FileIdentity(ulong.Parse(parts[0]), ulong.Parse(parts[1])), "the offsets must match the kernel's stat");
+    }
+
+    private static string CurrentAccount()
+    {
+#pragma warning disable AARC003
+        return Environment.UserName;
+#pragma warning restore AARC003
+    }
+
+    private static void CreateHardLinkOrSkip(string link, string target)
+    {
+#pragma warning disable AARC003
+        var info = OperatingSystem.IsWindows()
+            ? new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /H \"{link}\" \"{target}\"")
+            : new System.Diagnostics.ProcessStartInfo("ln", $"\"{target}\" \"{link}\"");
+        info.UseShellExecute = false;
+        info.CreateNoWindow = true;
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.WaitForExit();
+        var created = process.ExitCode == 0;
+#pragma warning restore AARC003
+        Skip.IfNot(created, "could not create a hard link on this machine");
+    }
+
+    private static bool RunProcess(string file, string arguments) => RunProcessOutput(file, arguments) is not null;
+
+    // Runs a tool; returns its standard output when it exits 0, otherwise null.
+    private static string? RunProcessOutput(string file, string arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo(file, arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+#pragma warning disable AARC003
+        using var process = System.Diagnostics.Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var succeeded = process.ExitCode == 0;
+#pragma warning restore AARC003
+        return succeeded ? output.Trim() : null;
+    }
+}
