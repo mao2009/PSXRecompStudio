@@ -899,4 +899,44 @@ public sealed class RuntimeHostLoadedCodeReportTests
 
         ReadText(dir.Combine("loaded.json.tmp")).Should().Be(content, "the old temp name is an ordinary file the report never writes to");
     }
+
+    // Issue #786 (review round 7): Win32 ignores trailing spaces and dots in a name, so "CON " and "NUL." are the console and the null
+    // device. Each must be refused as a diagnostics target, before any open. (Created names with these spellings are only refused here.)
+    [SkippableTheory]
+    [InlineData("CON ")]
+    [InlineData("NUL.")]
+    [InlineData("AUX  ")]
+    public void Diagnostics_TargetIsAWindowsDeviceNameWithTrailingSpacesOrDots_IsRefused(string name)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+
+        AssertRefused(DiagnosticsFlag, dir.Combine(name), manifest, manifest, boot, artifact, disc);
+    }
+
+    // Issue #786 (review round 7): a read-only previous report refuses the replace, but it does not stop an in-place writer, which would
+    // truncate it. This holds the previous report open so that others may write it but not replace or delete it. The replace must fail,
+    // the previous bytes must survive, and the temp must be removed. An in-place write would change the bytes and fail this test.
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_AReplaceRefusedWhileTheReportIsHeld_KeepsItsBytes_AndNoTempBehind_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a sharing mode that refuses a replace but allows writes is a Windows rule");
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var manifest = dir.WriteFile("runtime-host.json", Bytes("not json"));
+        const string previous = "{\"previous\":true,\"note\":\"a complete earlier report that must not be truncated\"}";
+        var report = dir.WriteFile("loaded.json", Bytes(previous));
+        var leftovers = Array.Empty<string>();
+#pragma warning disable AARC003
+        using (var holder = new FileStream(report, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+        {
+            PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, report, manifest]);
+        }
+        leftovers = Directory.GetFiles(dir.FullPath, "*.tmp");
+#pragma warning restore AARC003
+
+        ReadText(report).Should().Be(previous, "a replace that is refused leaves the previous report's bytes, not a truncated copy");
+        leftovers.Should().BeEmpty("the temp file this write created is removed when the replace fails");
+    }
 }

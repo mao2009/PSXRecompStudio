@@ -124,6 +124,22 @@ public sealed class FileSystemIdentityProbeTests
         probe.Identity.Should().Be(new FileIdentity(ulong.Parse(parts[0]), ulong.Parse(parts[1])), "the offsets must match the kernel's stat");
     }
 
+    // Issue #786 (review round 7): Win32 ignores trailing spaces and dots in a name, so "CON " and "NUL." name the console and the null
+    // device. The probe is called with the raw spelling here (the host normalises paths earlier), so it must type them itself.
+    [SkippableTheory]
+    [InlineData("CON ")]
+    [InlineData("NUL.")]
+    [InlineData("AUX  ")]
+    public void AWindowsDeviceName_WithTrailingSpacesOrDots_IsTypedAsOther(string name)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+
+        var probe = new FileSystemIdentityProbe().Probe(dir.Combine(name));
+
+        probe.Kind.Should().Be(FileKind.Other, "a device name is never a regular file, whatever spaces or dots follow it");
+    }
+
     private static string CurrentAccount()
     {
 #pragma warning disable AARC003

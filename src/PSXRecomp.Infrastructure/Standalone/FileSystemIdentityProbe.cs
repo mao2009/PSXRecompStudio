@@ -73,8 +73,9 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     {
         if (path.StartsWith(@"\\.\", StringComparison.Ordinal) || path.StartsWith(@"\\?\", StringComparison.Ordinal)) return true;
 
-        var leaf = Path.GetFileName(path);
-        var stem = leaf.Split('.')[0];
+        // Win32 ignores trailing spaces and dots of the name, and of the stem before the first dot: "CON ", "NUL." and "AUX .txt" are devices.
+        var leaf = Path.GetFileName(path).TrimEnd(' ', '.');
+        var stem = leaf.Split('.')[0].TrimEnd(' ');
         return DeviceNames.Any(name => string.Equals(name, stem, StringComparison.OrdinalIgnoreCase));
     }
 }
