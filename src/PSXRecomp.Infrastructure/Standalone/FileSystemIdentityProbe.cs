@@ -20,10 +20,10 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
 
     /// <summary>
     /// A probe whose identity reads are verified (<paramref name="identityVerified"/> true) or not. When they are not verified, an existing
-    /// name is reported Unreadable, so that every replacement of an existing file is refused (fail-closed). Used for hosts whose identity
-    /// path cannot be checked here, and by tests that simulate such a host.
+    /// name is reported Unreadable, so that every replacement of an existing file is refused (fail-closed). Private: the only unverified probe
+    /// outside this class is the test decorator in the RuntimeHost project, so this seam is not exposed to any other assembly.
     /// </summary>
-    internal FileSystemIdentityProbe(bool identityVerified)
+    private FileSystemIdentityProbe(bool identityVerified)
     {
         _identityVerified = identityVerified;
     }
@@ -86,9 +86,10 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
         {
             if (stat.Errno is not (NoSuchFile or NotADirectory)) return Unreadable;
 
-            // stat follows a symbolic link, so a dangling link reports ENOENT as if nothing were there. On an unverified host the link entry itself
-            // exists and a write would replace it: it is an existing name, Unreadable, fail-closed. A verified host keeps the not-found answer.
-            return !identityVerified && IsSymbolicLinkOrUnknown(path) ? Unreadable : new FileProbe(FileKind.Absent, null);
+            // stat follows a symbolic link, so a dangling link reports ENOENT as if nothing were there. The link entry itself exists, and a write
+            // would replace it, so on every POSIX host (verified or not) it is an existing name: Unreadable, refused before any write. A regular
+            // missing path is still Absent, so a new report can be created.
+            return IsSymbolicLinkOrUnknown(path) ? Unreadable : new FileProbe(FileKind.Absent, null);
         }
 
         // An existing name on a host whose identity is unverified cannot be shown to be no input: Unreadable, fail-closed.

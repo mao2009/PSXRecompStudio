@@ -1046,7 +1046,7 @@ public sealed class RuntimeHostLoadedCodeReportTests
         var report = dir.WriteFile("report.json", Bytes(earlier));
         var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
 
-        var (code, stderr) = RunCapturingStderrWithProbe(new FileSystemIdentityProbe(identityVerified: false), DiagnosticsFlag, report, manifest);
+        var (code, stderr) = RunCapturingStderrWithProbe(new PSXRecomp.Infrastructure.RuntimeHost.UnverifiedIdentityProbe(new FileSystemIdentityProbe()), DiagnosticsFlag, report, manifest);
 
         code.Should().Be(78);
         stderr.Should().Contain("refusing " + DiagnosticsFlag, "an existing report is refused by the unverified identity, not reached by a run");
@@ -1072,10 +1072,38 @@ public sealed class RuntimeHostLoadedCodeReportTests
         Skip.If(linkTargetBefore is null, "the link was not created as a link on this machine");
         var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
 
-        var (code, stderr) = RunCapturingStderrWithProbe(new FileSystemIdentityProbe(identityVerified: false), DiagnosticsFlag, link, manifest);
+        var (code, stderr) = RunCapturingStderrWithProbe(new PSXRecomp.Infrastructure.RuntimeHost.UnverifiedIdentityProbe(new FileSystemIdentityProbe()), DiagnosticsFlag, link, manifest);
 
         code.Should().Be(78);
         stderr.Should().Contain("refusing " + DiagnosticsFlag, "a dangling link is an existing name on an unverified host, so it is refused");
+        #pragma warning disable AARC003
+        new FileInfo(link).LinkTarget.Should().Be(linkTargetBefore, "the link entry is not replaced");
+        File.Exists(missingTarget).Should().BeFalse("nothing is written through or created at the link's target");
+        #pragma warning restore AARC003
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
+    }
+
+    // Issue #786 (final review, round 19, item 1): a dangling symbolic link at the report path is refused on every POSIX host, verified or not. The
+    // link entry is never replaced. On a verified host the link is not "absent": its existence is the fact that matters.
+    [SkippableFact]
+    public void ADanglingSymlinkAtTheReportPath_OnAVerifiedPosixHost_IsRefused_AndTheLinkSurvives()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a dangling link at the report path is a POSIX case");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var link = dir.Combine("report.json");
+        var missingTarget = dir.Combine("missing-target.json");
+        CreateFileSymlinkOrSkip(link, missingTarget);
+        #pragma warning disable AARC003
+        var linkTargetBefore = new FileInfo(link).LinkTarget;
+        #pragma warning restore AARC003
+        Skip.If(linkTargetBefore is null, "the link was not created as a link on this machine");
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderr(DiagnosticsFlag, link, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("refusing " + DiagnosticsFlag, "a dangling link is an existing name, refused before any write");
         #pragma warning disable AARC003
         new FileInfo(link).LinkTarget.Should().Be(linkTargetBefore, "the link entry is not replaced");
         File.Exists(missingTarget).Should().BeFalse("nothing is written through or created at the link's target");
@@ -1092,7 +1120,7 @@ public sealed class RuntimeHostLoadedCodeReportTests
         var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
         var report = dir.Combine("new-report.json");
 
-        var (code, stderr) = RunCapturingStderrWithProbe(new FileSystemIdentityProbe(identityVerified: false), DiagnosticsFlag, report, manifest);
+        var (code, stderr) = RunCapturingStderrWithProbe(new PSXRecomp.Infrastructure.RuntimeHost.UnverifiedIdentityProbe(new FileSystemIdentityProbe()), DiagnosticsFlag, report, manifest);
 
         code.Should().Be(78, "the run itself fails: the ROM is absent in this layout");
         stderr.Should().NotContain("refusing", "a report where no file exists is not refused by the unverified identity");
