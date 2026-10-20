@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
-using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Diagnostics;
@@ -299,42 +300,65 @@ public static class ScreenshotCommand
             exceptionType);
     }
 
-    private static string SerializeResult(string? inputSha256, HeadlessRunResult result)
+    /// <summary>
+    /// The <c>--json</c> result. Serialized with <see cref="JsonSerializer"/> so any text (diagnostics, paths, control
+    /// characters) is escaped; numbers use the serializer's invariant formatting. Optional execution fields are omitted
+    /// when absent, <c>exceptionType</c> is always present (null when none).
+    /// </summary>
+    internal static string SerializeResult(string? inputSha256, HeadlessRunResult result)
     {
-        var sb = new StringBuilder();
-        sb.Append("{");
-        sb.Append($"\"kind\":\"screenshot\",");
-        sb.Append($"\"success\":{IsSuccess(result).ToString().ToLowerInvariant()},");
-        sb.Append($"\"executionOk\":{(!IsFailureState(result.ExecutionResult.State)).ToString().ToLowerInvariant()},");
-        sb.Append($"\"captureStatus\":\"{ScreenshotCapture.CaptureStatusOf(result.GoalReached, result.ScreenshotsTaken, result.WriteFailures)}\",");
-        sb.Append($"\"writeFailures\":{result.WriteFailures},");
-        sb.Append($"\"screenshotsTaken\":{result.ScreenshotsTaken},");
-        sb.Append($"\"maxVblankReached\":{result.MaxVblankReached},");
-        sb.Append($"\"elapsedMs\":{result.ElapsedTime.TotalMilliseconds:F0},");
-        sb.Append($"\"stopReason\":\"{result.StopReason}\",");
-        sb.Append($"\"goalReached\":{(result.GoalReached ? "true" : "false")},");
-        sb.Append(result.ExceptionType is { } exceptionType
-            ? $"\"exceptionType\":\"{exceptionType}\","
-            : "\"exceptionType\":null,");
-        sb.Append($"\"files\":[");
-        for (int i = 0; i < result.SavedFiles.Count; i++)
-        {
-            if (i > 0) sb.Append(",");
-            sb.Append($"\"{result.SavedFiles[i].Replace("\\", "\\\\")}\"");
-        }
-        sb.Append("],");
-        sb.Append($"\"executionResult\":{{");
-        sb.Append($"\"state\":\"{result.ExecutionResult.State}\",");
-        sb.Append($"\"engine\":\"{result.ExecutionResult.EngineName}\",");
-        if (result.ExecutionResult.DiagnosticCode is { } code)
-            sb.Append($"\"diagnosticCode\":\"{code}\",");
-        if (result.ExecutionResult.DiagnosticMessage is { } msg)
-            sb.Append($"\"diagnosticMessage\":\"{msg.Replace("\"", "\\\"")}\",");
-        if (result.ExecutionResult.FinalSnapshot is { } snap)
-            sb.Append($"\"guestPc\":\"0x{snap.PC:X8}\"");
-        sb.Append("}}");
-        return sb.ToString();
+        var execution = result.ExecutionResult;
+        var document = new ScreenshotResultJson(
+            Kind: "screenshot",
+            Success: IsSuccess(result),
+            ExecutionOk: !IsFailureState(execution.State),
+            CaptureStatus: ScreenshotCapture.CaptureStatusOf(result.GoalReached, result.ScreenshotsTaken, result.WriteFailures),
+            WriteFailures: result.WriteFailures,
+            ScreenshotsTaken: result.ScreenshotsTaken,
+            MaxVblankReached: result.MaxVblankReached,
+            ElapsedMs: (long)Math.Round(result.ElapsedTime.TotalMilliseconds, MidpointRounding.AwayFromZero),
+            StopReason: result.StopReason,
+            GoalReached: result.GoalReached,
+            ExceptionType: result.ExceptionType,
+            Files: result.SavedFiles,
+            ExecutionResult: new ScreenshotExecutionJson(
+                State: execution.State.ToString(),
+                Engine: execution.EngineName ?? string.Empty,
+                DiagnosticCode: execution.DiagnosticCode,
+                DiagnosticMessage: execution.DiagnosticMessage,
+                GuestPc: execution.FinalSnapshot is { } snap ? $"0x{snap.PC:X8}" : null));
+        return JsonSerializer.Serialize(document, ResultJsonOptions);
     }
+
+    private static readonly JsonSerializerOptions ResultJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    private sealed record ScreenshotResultJson(
+        string Kind,
+        bool Success,
+        bool ExecutionOk,
+        string CaptureStatus,
+        int WriteFailures,
+        int ScreenshotsTaken,
+        ulong MaxVblankReached,
+        long ElapsedMs,
+        string StopReason,
+        bool GoalReached,
+        string? ExceptionType,
+        IReadOnlyList<string> Files,
+        ScreenshotExecutionJson ExecutionResult);
+
+    private sealed record ScreenshotExecutionJson(
+        string State,
+        string Engine,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? DiagnosticCode,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? DiagnosticMessage,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? GuestPc);
 
     private static void WriteHumanResult(HeadlessRunResult result, TextWriter standardOutput)
     {
