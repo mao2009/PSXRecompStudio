@@ -62,8 +62,20 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     private static FileProbe ProbeWindows(string path)
     {
         if (IsDeviceName(path)) return new FileProbe(FileKind.Other, null);
-        if (Directory.Exists(path)) return new FileProbe(FileKind.Directory, null);
-        if (!File.Exists(path)) return new FileProbe(FileKind.Absent, null);
+
+        // Absent is only a not-found answer. File.Exists and Directory.Exists return false on an access denial as well, which would make an
+        // unreadable name look absent; the attributes call throws the denial instead, and the caller's catch makes it Unreadable.
+        FileAttributes attributes;
+        try
+        {
+            attributes = File.GetAttributes(path);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new FileProbe(FileKind.Absent, null);
+        }
+
+        if (attributes.HasFlag(FileAttributes.Directory)) return new FileProbe(FileKind.Directory, null);
 
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         return FileIdentityInterop.TryGetIdentity(stream.SafeFileHandle, out var volume, out var index)

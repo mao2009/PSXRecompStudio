@@ -995,11 +995,40 @@ public sealed class RuntimeHostLoadedCodeReportTests
         #pragma warning restore AARC003
     }
 
-    // The stream names of a file, from dir /r ($DATA lines, in listing order). Compared before and after a refused run.
+    // True when the attributes of the path are refused by access control (not merely not found).
+    private static bool DeniesAttributesOf(string path)
+    {
+        try
+        {
+#pragma warning disable AARC003
+            _ = File.GetAttributes(path);
+#pragma warning restore AARC003
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    // The listing of a file from dir /r: its own directory entry and its $DATA lines, in listing order. A failed dir call fails the test,
+    // and an empty listing, or one without the file's own entry, is refused, so a before/after comparison cannot pass by comparing nothing.
     private static string StreamListing(string file)
     {
-        var output = RunProcessStdout("cmd.exe", $"/c dir /r \"{file}\"") ?? string.Empty;
-        return string.Join("\n", output.Split('\n').Where(line => line.Contains("$DATA")).Select(line => line.Trim()));
+        var output = RunProcessStdout("cmd.exe", $"/c dir /r \"{file}\"");
+        output.Should().NotBeNull("dir /r must run on the input, so that its streams can be listed");
+        var leaf = Path.GetFileName(file);
+        var lines = output!.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && (line.Contains(leaf, StringComparison.OrdinalIgnoreCase) || line.Contains("$DATA", StringComparison.Ordinal)))
+            .ToList();
+        lines.Should().NotBeEmpty("the listing must have content to compare");
+        lines.Should().Contain(line => line.Contains(leaf, StringComparison.OrdinalIgnoreCase), "the input's own directory entry is in the listing");
+        return string.Join("\n", lines);
     }
 
     private static string? RunProcessStdout(string file, string arguments)
@@ -1038,6 +1067,39 @@ public sealed class RuntimeHostLoadedCodeReportTests
         code.Should().Be(78, "a colon after the drive letter is never a report path");
         stderr.Should().Contain("alternate data stream", "the refusal, not a later failure, is what turned it away");
         new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(before, "every input keeps its bytes");
+    }
+
+    // Issue #786 (final review, round 16, item 1): a target whose directory denies traverse is not "absent": File.Exists would report false on
+    // the access denial. The same-file check must refuse it as unverifiable, and the inputs must survive.
+    [SkippableFact]
+    public void TwoReportFlags_WhenATargetDirectoryDeniesAccess_AreRefusedAsUnverifiable_AndTheInputsSurvive_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the access rule used here is a Windows ACL");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        const string earlier = "{\"earlier\":true}";
+        var first = dir.WriteFile("first.json", Bytes(earlier));
+        var locked = dir.CreateSubdirectory("locked");
+        var second = dir.WriteFile(Path.Combine("locked", "second.json"), Bytes(earlier));
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+        Skip.IfNot(RunProcess("icacls.exe", $"\"{locked}\" /deny \"{CurrentAccount()}\":(X)"), "this account cannot change the directory's access rule");
+        try
+        {
+            // Precondition: the denial must be effective for this account. Traverse checks can be bypassed for a user (SeChangeNotifyPrivilege),
+            // in which case the target is readable and this case is not the one under test; the test then skips rather than passing vacuously.
+            Skip.IfNot(DeniesAttributesOf(second), "this account is not denied the target's attributes here (traverse is not enforced for it)");
+            var (code, stderr) = RunCapturingStderr(DiagnosticsFlag, first, LoadedCodeFlag, second, manifest);
+
+            code.Should().Be(78);
+            stderr.Should().Contain("cannot be shown to be different files", "an access denial is unverifiable, not an absent name");
+        }
+        finally
+        {
+            RestoreWriting(locked);
+        }
+
+        ReadText(first).Should().Be(earlier, "a refused report writes nothing");
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
     }
 
     // Issue #786 (final review, round 15, M2): a report target whose identity cannot be read (here, a file held open without sharing) is

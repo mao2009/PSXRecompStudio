@@ -264,6 +264,42 @@ public sealed class FileSystemIdentityProbeTests
         FileSystemIdentityProbe.IsDeviceNamespacePath(path).Should().BeTrue("the server component is trimmed of leading and trailing spaces before the test");
     }
 
+    // Issue #786 (final review, round 16, item 1): an access denial is not a not-found answer. File.Exists returns false for both, so the
+    // probe must not type a denied name as Absent. The path is only queried for its attributes: it is never opened, written or listed.
+    // The test skips when this host does not deny access to that path.
+    [SkippableFact]
+    public void AnAccessDeniedName_IsUnreadable_NotAbsent()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "access denial on a Windows path");
+        const string denied = @"C:\System Volume Information\WPSettings.dat";
+        Skip.IfNot(DeniesAttributes(denied), "this host does not deny access to the probe path");
+
+        var probe = new FileSystemIdentityProbe().Probe(denied);
+
+        probe.Kind.Should().Be(FileKind.Unreadable, "an access denial is unverifiable, not an absent name");
+        probe.Identity.Should().BeNull();
+    }
+
+    // True when the attributes of the path are refused by access control (not merely not found).
+    private static bool DeniesAttributes(string path)
+    {
+        try
+        {
+#pragma warning disable AARC003
+            _ = File.GetAttributes(path);
+#pragma warning restore AARC003
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
     private static string CurrentAccount()
     {
 #pragma warning disable AARC003
