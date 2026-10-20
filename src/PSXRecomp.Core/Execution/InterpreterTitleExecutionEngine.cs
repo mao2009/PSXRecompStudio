@@ -283,7 +283,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
     /// <summary>
     /// The fallback segment in flight (Issue #806): scalars the stepping thread publishes, so a host that is stuck inside a
-    /// segment can say where it is without reading the device graph. Null when no segment is running.
+    /// segment can say where it is without reading the device graph. Null when no segment is running. The PC and the retired
+    /// count are read separately, so they may come from adjacent steps (diagnostic only).
     /// </summary>
     public FallbackSegmentProgress? FallbackProgress => _fallbackActive
         ? new FallbackSegmentProgress(_fallbackEntryPc, Volatile.Read(ref _fallbackPc), Volatile.Read(ref _fallbackRetired), _fallbackBudget)
@@ -453,6 +454,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         bool returned;
         ulong retired;
         RecompilerExecutionResult result;
+        // The previous segment's progress must not show through before this segment's first step publishes (Issue #806 review).
+        Volatile.Write(ref _fallbackPc, _core.Pc);
+        Volatile.Write(ref _fallbackRetired, 0);
         _fallbackActive = true;
         try
         {
