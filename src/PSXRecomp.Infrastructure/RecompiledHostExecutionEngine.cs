@@ -843,6 +843,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         if (GuardStatsScope.CurrentPath is { } guardStatsFile)
         {
             psi.Environment[GuardStatsScope.FileEnvironmentVariable] = guardStatsFile;
+            var (periodUnits, abortAfterUnits) = GuardStatsScope.CurrentTiming;
+            if (periodUnits != 0) psi.Environment[GuardStatsScope.PeriodEnvironmentVariable] = periodUnits.ToString(CultureInfo.InvariantCulture);
+            if (abortAfterUnits != 0) psi.Environment[GuardStatsScope.AbortAfterEnvironmentVariable] = abortAfterUnits.ToString(CultureInfo.InvariantCulture);
         }
 
         using var process = Process.Start(psi)!;

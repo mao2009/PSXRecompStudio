@@ -957,6 +957,8 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("static uint64_t psx_gs_snapdropped = 0u;");
         sb.AppendLine("static uint32_t psx_gs_cur = 0u, psx_gs_prev = 0u;");
         sb.AppendLine("static uint64_t psx_gs_iter = 0u;");
+        // Periodic interval and abort point (Issue #797 test hooks), read from the environment the scope hands to the child.
+        sb.AppendLine("static uint64_t psx_gs_period = 0x400000u, psx_gs_abort = 0u;");
         sb.AppendLine("static unsigned long long psx_gs_runid = 0ull;");
         // The file is written whole to <path>.tmp and then replaced over <path>. The previous report is never removed first, so
         // a refused replacement keeps the report that was there and removes the .tmp. The content is complete before the rename
@@ -1003,7 +1005,16 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("}");
         sb.AppendLine("static void psx_gs_dump_final(void) { psx_gs_dump(1); }");
         sb.AppendLine("/* psx_gs_prev is the entry PC of the previous dispatch-loop iteration, not necessarily the guest source of the transfer. */");
-        sb.AppendLine("#define PSX_GS_TICK(st) do { if (!psx_gs_registered) { psx_gs_registered = 1; atexit(psx_gs_dump_final); } psx_gs_prev = psx_gs_cur; psx_gs_cur = (st)->pc; if ((++psx_gs_iter & 0x3FFFFFu) == 0u) psx_gs_dump(0); } while (0)");
+        sb.AppendLine("static void psx_gs_init_timing(void) {");
+        sb.AppendLine("  const char* e = getenv(\"PSX_GUARD_STATS_PERIOD\");");
+        sb.AppendLine("  unsigned long long v;");
+        sb.AppendLine("  if (e != (const char*)0 && (v = strtoull(e, (char**)0, 10)) != 0ull) psx_gs_period = v;");
+        sb.AppendLine("  e = getenv(\"PSX_GUARD_STATS_ABORT_AFTER\");");
+        sb.AppendLine("  if (e != (const char*)0) psx_gs_abort = strtoull(e, (char**)0, 10);");
+        sb.AppendLine("}");
+        // The period is a run-time value (the default 0x400000 is unchanged), so the tick uses a modulo. An abort point ends the
+        // child with _Exit, which skips atexit: the final dump does not run, and the report left is the last periodic one.
+        sb.AppendLine("#define PSX_GS_TICK(st) do { if (!psx_gs_registered) { psx_gs_registered = 1; psx_gs_init_timing(); atexit(psx_gs_dump_final); } psx_gs_prev = psx_gs_cur; psx_gs_cur = (st)->pc; if ((++psx_gs_iter % psx_gs_period) == 0u) psx_gs_dump(0); if (psx_gs_abort != 0u && psx_gs_iter >= psx_gs_abort) _Exit(86); } while (0)");
         sb.AppendLine("#define PSX_GS_ARRIVE(slot) (psx_gs_arrive[slot]++)");
         sb.AppendLine("#define PSX_GS_REFUSE(slot) (psx_gs_refuse[slot]++)");
         sb.AppendLine("#define PSX_GS_HIT(slot, ver) (psx_gs_hit[psx_gs_off[slot] + (ver)]++)");

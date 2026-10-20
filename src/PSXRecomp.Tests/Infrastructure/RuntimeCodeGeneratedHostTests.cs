@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using PSXRecomp.Core.Cpu;
@@ -586,6 +587,8 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [SkippableFact]
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
     public void GuardStats_Dump_OnPosix_WhenTheReplacementIsRefused_KeepsThePreviousReportFileByteForByte()
     {
         // Issue #797 (POSIX fault injection, no generated-code seam): the report directory is read-only while the dump runs. The
@@ -617,6 +620,9 @@ public sealed class RuntimeCodeGeneratedHostTests
         }
 
         File.ReadAllBytes(statsPath).Should().Equal(previousBytes, "a refused replacement keeps the previous report byte for byte");
+        // The dump reached the replacement: the temporary file holds the complete new report and the refused rename left it in place.
+        File.Exists(tmpPath).Should().BeTrue("a refused replacement leaves the temporary file in place");
+        File.ReadAllLines(tmpPath)[^1].Should().Be("end final 1", "the dump wrote the complete report before the refused rename");
 
         // With the directory writable again, the next dump replaces the report and consumes the temporary file.
         RunWithGuardStats(statsPath, work.FullPath);
@@ -758,12 +764,42 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [Fact]
+    public void GuardStats_PeriodicDump_IsCompleteAndNotFinal_WhenTheProcessEndsBeforeItsFinalDump()
+    {
+        // Issue #797 (periodic observation): the period is 1000 units and the child ends without its final dump after 1500 units
+        // (test hooks in the scope). The report left at <path> is therefore the periodic dump taken at 1000 units: complete,
+        // and marked as not final.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var (rom, romCode, loaded) = GuardLoopFixture(2_000);
+
+        using (GuardStatsScope.Begin(statsPath, periodUnits: 1000, abortAfterUnits: 1500))
+        {
+            using var engine = new RecompiledHostExecutionEngine(
+                romCode, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
+                mixedFallback: new MixedFallbackOptions(), guestFirmware: true, loadedCode: loaded);
+            _ = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(20_000));
+        }
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[0].Should().Be("guardstats 1");
+        lines.Should().Contain("iter 1000", "the periodic dump is taken at the first multiple of the period");
+        lines.Should().Contain(static l => l.StartsWith("slot 80001000 ", StringComparison.Ordinal), "the dump carries the counters");
+        lines[^1].Should().Be("end final 0", "a periodic dump says it is not the final one");
+        lines.Should().OnlyContain(static l => l.StartsWith("guardstats ", StringComparison.Ordinal) || l.StartsWith("run ", StringComparison.Ordinal)
+            || l.StartsWith("iter ", StringComparison.Ordinal) || l.StartsWith("slot ", StringComparison.Ordinal)
+            || l.StartsWith("snap", StringComparison.Ordinal) || l.StartsWith("end ", StringComparison.Ordinal), "every line of the dump is complete and well formed");
+        File.Exists(statsPath + ".tmp").Should().BeFalse("the periodic dump is renamed into place");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
     public void GuardStats_RunPastThePeriodicDumpInterval_EndsWithItsCompleteFinalReport()
     {
-        // Issue #797 coverage: a run of more than 0x400000 units crosses the periodic dump interval (PSX_GS_TICK). The periodic
-        // write itself is not observable here, because the final dump at exit replaces the same path; this checks that crossing
-        // the interval leaves a complete final report of that run. Not closed: observing the periodic write before the final
-        // one needs a configurable interval or an abnormal exit, and neither exists.
+        // Issue #797 coverage: a run of more than the default period (0x400000 units, PSX_GS_TICK) crosses the periodic dump. The
+        // periodic write is observed by GuardStats_PeriodicDump_IsCompleteAndNotFinal_...; this checks that a run crossing the
+        // default interval still ends with a complete final report of that run.
 #pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
         using var dir = new TempDirectory();
         var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
