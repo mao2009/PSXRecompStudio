@@ -36,7 +36,7 @@ that:
    reported in `skippedVersions`/`skippedWords`, and `incomplete: true` marks a
    report cut short by the budget or the record cap; `origins` repeats the
    manifest's declaration (`originBasis: manifest-declared`), not a check of the
-   file the game loaded), and `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   file the game loaded). 報告先、またはその `.tmp` が、この実行が読む入力（manifest、firmware-boot.json、artifact、ROM、disc、firmware の AOT 入力）と同じパスの場合は、何も書かずに終了コード 78 で拒否する。入力でない前回の報告は置き換える。`--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
    run's wall time, the host round trips the native code made (MMIO accesses,
    guest-time reports), the mixed-fallback time split, and the last observations
    of a run stopped from outside (last fallback entry/return PC, last relayed

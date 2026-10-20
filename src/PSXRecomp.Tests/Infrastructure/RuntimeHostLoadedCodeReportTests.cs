@@ -241,4 +241,210 @@ public sealed class RuntimeHostLoadedCodeReportTests
         json["executed"]!.GetValue<bool>().Should().BeFalse($"{state}/{code} is not a completed end");
         json["incomplete"]!.GetValue<bool>().Should().BeTrue();
     }
+
+    // Issue #786 B1 (PR review): input protection is by path, never by content. A file that already carries the report schema
+    // is still an input when the run reads it, so the report must not replace it.
+    private static string ReportText(string runId) => $"{{\"schema\":\"{LoadedCodeMismatchDiagnostics.SchemaName}\",\"runId\":\"{runId}\"}}";
+
+    private static byte[] Bytes(string text) => Encoding.UTF8.GetBytes(text);
+
+    // A valid firmware manifest: its artifact sits one level above runtime/, and its image is always artifact-image.bin.
+    private static string ManifestText(string artifactLeaf) => RuntimeHostManifestJson.Serialize(new RuntimeHostManifest(
+        RuntimeHostManifest.CurrentSchemaVersion, "../" + artifactLeaf, true, false, 0, 0, 0x80010000u,
+        RuntimeHostLayout.ImageFileName, [], 0x80020000u, null, 1000, 0x80010000u));
+
+    private static string BootText(string discFile) => FirmwareBootManifestJson.Serialize(new FirmwareBootManifest(
+        FirmwareBootManifest.CurrentSchemaVersion, "openbios", new string('a', 64), 64, "firmware/rom.roots", "firmware/images.txt",
+        discFile, new string('b', 64),
+        [new FirmwareAotInput("firmware/rom.roots", new string('c', 64)), new FirmwareAotInput("firmware/images.txt", new string('d', 64))]));
+
+    private static void CreateFileSymlinkOrSkip(string link, string target)
+    {
+#pragma warning disable AARC003
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Skip.If(true, $"this machine does not allow a symbolic link here: {ex.Message}");
+        }
+#pragma warning restore AARC003
+    }
+
+    private static void CreateJunctionOrSkip(string link, string target)
+    {
+#pragma warning disable AARC003
+        using var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"") { UseShellExecute = false, CreateNoWindow = true })!;
+        mklink.WaitForExit();
+        Skip.IfNot(mklink.ExitCode == 0, "could not create a junction on this machine");
+#pragma warning restore AARC003
+    }
+
+    private static void CreateHardLinkOrSkip(string link, string target)
+    {
+#pragma warning disable AARC003
+        using var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "cmd.exe", $"/c mklink /H \"{link}\" \"{target}\"") { UseShellExecute = false, CreateNoWindow = true })!;
+        mklink.WaitForExit();
+        Skip.IfNot(mklink.ExitCode == 0, "could not create a hard link on this machine");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void LoadedCodeDiagnostics_TargetIsTheManifestWhoseContentHasTheReportSchema_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var content = ReportText("planted");
+        var manifest = dir.WriteFile("runtime-host.json", Bytes(content));
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, manifest, manifest]);
+
+        code.Should().Be(78);
+        ReadText(manifest).Should().Be(content, "a file with the report schema is still the manifest, an input, and must survive");
+    }
+
+    [Fact]
+    public void LoadedCodeDiagnostics_TargetIsFirmwareBootWithTheReportSchema_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var content = ReportText("planted");
+        var boot = dir.WriteFile(FirmwareBootManifest.FileName, Bytes(content));
+        var manifest = dir.WriteFile("runtime-host.json", Bytes("not json"));
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, boot, manifest]);
+
+        code.Should().Be(78);
+        ReadText(boot).Should().Be(content, "firmware-boot.json is an input and must survive whatever it contains");
+    }
+
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_TargetInOtherCaseWithTheReportSchema_IsRefused_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "case-insensitive path identity is a Windows rule");
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var content = ReportText("planted");
+        var manifest = dir.WriteFile("runtime-host.json", Bytes(content));
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, manifest.ToUpperInvariant(), manifest]);
+
+        code.Should().Be(78);
+        ReadText(manifest).Should().Be(content);
+    }
+
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_SymlinkToTheManifestWithTheReportSchema_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var content = ReportText("planted");
+        var manifest = dir.WriteFile("runtime-host.json", Bytes(content));
+        var link = dir.Combine("loaded.json");
+        CreateFileSymlinkOrSkip(link, manifest);
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, link, manifest]);
+
+        code.Should().Be(78);
+        ReadText(manifest).Should().Be(content, "the symlink names the manifest, so the manifest must survive");
+    }
+
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_JunctionToTheDistributionWithTheManifestSchema_IsRefused_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "directory junctions are a Windows rule");
+        using var dir = new TempDirectory();
+        var distribution = dir.CreateSubdirectory("dist");
+        dir.WriteFile(Path.Combine("dist", FirmwareBootManifest.FileName), Bytes("{}"));
+        var content = ReportText("planted");
+        var manifest = dir.WriteFile(Path.Combine("dist", "runtime-host.json"), Bytes(content));
+        var junction = dir.Combine("junction");
+        CreateJunctionOrSkip(junction, distribution);
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, Path.Combine(junction, "runtime-host.json"), manifest]);
+
+        code.Should().Be(78);
+        ReadText(manifest).Should().Be(content);
+    }
+
+    // A hard link is the input under another name, so the temp name matches no path. A stale temp is removed by name before the
+    // write, so the write cannot reach the input through that link.
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_StaleTempThatIsAHardLinkToAnInput_LeavesTheInputIntact_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "mklink /H is a Windows command");
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var manifest = dir.WriteFile("runtime-host.json", Bytes("not json"));
+        CreateHardLinkOrSkip(dir.Combine("loaded.json.tmp"), manifest);
+
+        PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, dir.Combine("loaded.json"), manifest]);
+
+        ReadText(manifest).Should().Be("not json", "a hard link is the manifest under another name, and the manifest must survive");
+    }
+
+    // The report's temp file is the artifact the manifest names (../loaded.json.tmp from runtime/): a temp write must never
+    // replace an input.
+    [Fact]
+    public void LoadedCodeDiagnostics_TempSiblingThatIsAnInputWithTheReportSchema_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var content = ReportText("planted");
+        dir.WriteFile("loaded.json.tmp", Bytes(content));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("loaded.json.tmp")));
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, dir.Combine("loaded.json"), manifest]);
+
+        code.Should().Be(78);
+        ReadText(dir.Combine("loaded.json.tmp")).Should().Be(content, "the temp file is the artifact input and must survive");
+    }
+
+    // The firmware run reads the disc; a disc that carries the schema is an input all the same.
+    [Fact]
+    public void LoadedCodeDiagnostics_TargetIsTheDiscWithTheReportSchema_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var content = ReportText("planted");
+        dir.WriteFile(Path.Combine("runtime", "disc", "game.bin"), Bytes(content));
+        dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes(BootText("disc/game.bin")));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, dir.Combine("runtime", "disc", "game.bin"), manifest]);
+
+        code.Should().Be(78);
+        ReadText(dir.Combine("runtime", "disc", "game.bin")).Should().Be(content, "the disc is an input the firmware run reads");
+    }
+
+    [Fact]
+    public void LoadedCodeDiagnostics_APreviousReportWithTheSchema_IsNotAnInput_AndIsReplaced()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var manifest = dir.WriteFile("runtime-host.json", Bytes("not json"));
+        var report = dir.WriteFile("loaded.json", Bytes(ReportText("earlier")));
+
+        PSXRecomp.Infrastructure.RuntimeHost.Program.Main([Flag, report, manifest]);
+
+        var json = JsonNode.Parse(ReadText(report))!.AsObject();
+        json["runId"]!.GetValue<string>().Should().NotBe("earlier", "an earlier report that is not an input is replaced by this run's report");
+    }
+
+    [Fact]
+    public void LoadedCodeDiagnostics_Off_WritesNoReportAndLeavesTheDirectoryAsItWas()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(FirmwareBootManifest.FileName, Bytes("{}"));
+        var manifest = dir.WriteFile("runtime-host.json", Bytes("not json"));
+        var earlier = ReportText("earlier");
+        dir.WriteFile("loaded.json", Bytes(earlier));
+
+        PSXRecomp.Infrastructure.RuntimeHost.Program.Main([manifest]);
+
+        ReadText(dir.Combine("loaded.json")).Should().Be(earlier, "without the flag no report is touched");
+        Exists(dir.Combine("loaded.json.tmp")).Should().BeFalse();
+        ReadText(manifest).Should().Be("not json");
+    }
 }

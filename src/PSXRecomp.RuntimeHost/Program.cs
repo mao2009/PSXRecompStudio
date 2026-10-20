@@ -140,7 +140,7 @@ public static class Program
         var runId = Guid.NewGuid().ToString("N");
         if (loadedCodeMismatchPath is not null)
         {
-            var conflict = ReportTargetInput(loadedCodeMismatchPath, manifestDirectory);
+            var conflict = ReportTargetInput(loadedCodeMismatchPath, ReadInputPaths(manifestPath, manifestDirectory));
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
@@ -349,42 +349,73 @@ public static class Program
     }
 
     /// <summary>
-    /// Issue #786 B1: the input the report target names, or null. The inputs are the files of the distribution directory (the
-    /// manifest, artifact, image and firmware files are confined there), except an earlier run's report, which is replaced and
-    /// is not an input. Compared by resolved path, case-insensitively on Windows, so another spelling, case or a junction to the
-    /// same file cannot pass. The report's temp file is compared too.
+    /// Issue #786 B1: the input the report target names, or null. Input protection is by path only: a file is protected because
+    /// this run reads it, never because of its content. Compared by resolved path, case-insensitively on Windows, so another
+    /// spelling, case, or a link to the same file cannot pass. The report's temp file is compared too. An earlier run's report
+    /// is not in <paramref name="inputs"/>, so it is replaced.
     /// </summary>
-    private static string? ReportTargetInput(string reportPath, string manifestDirectory)
+    private static string? ReportTargetInput(string reportPath, IReadOnlyList<string> inputs)
     {
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var targets = new[] { ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp") };
-        foreach (var input in Directory.EnumerateFiles(manifestDirectory, "*", SearchOption.AllDirectories))
+        foreach (var input in inputs)
         {
-            var resolved = ResolvedFullPath(input);
-            if (targets.Any(target => comparer.Equals(target, resolved)) && !IsPreviousLoadedCodeReport(input)) return input;
+            // An input that names no valid path cannot be the report's target, which exists; the run itself fails on it.
+            string resolved;
+            try
+            {
+                resolved = ResolvedFullPath(input);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException)
+            {
+                continue;
+            }
+
+            if (targets.Any(target => comparer.Equals(target, resolved))) return input;
         }
 
         return null;
     }
 
-    /// <summary>True for a small file that is an earlier run's loaded-code report (the schema tag is the test).</summary>
-    private static bool IsPreviousLoadedCodeReport(string path)
+    /// <summary>
+    /// The files this run reads, derived from the paths the code reads them from: the manifest, the firmware boot manifest (its
+    /// presence selects the firmware run), the artifact and image the manifest names, and for a firmware run the disc, roots,
+    /// load images and AOT inputs the boot manifest names. A manifest or boot manifest that does not parse stops the run before
+    /// anything beyond it is read, so only the names known so far are listed then.
+    /// </summary>
+    private static List<string> ReadInputPaths(string manifestPath, string manifestDirectory)
     {
-        if (new FileInfo(path).Length > MaxPreviousReportBytes) return false;
+        var inputs = new List<string> { manifestPath, Path.Combine(manifestDirectory, FirmwareBootManifest.FileName) };
+        RuntimeHostManifest manifest;
         try
         {
-            return JsonNode.Parse(File.ReadAllText(path)) is JsonObject root
-                && root["schema"] is JsonValue schema
-                && schema.TryGetValue<string>(out var name)
-                && name == LoadedCodeMismatchDiagnostics.SchemaName;
+            manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+        catch (Exception)
         {
-            return false;
+            return inputs;
         }
-    }
 
-    private const long MaxPreviousReportBytes = 16L * 1024 * 1024;
+        inputs.Add(Path.Combine(manifestDirectory, manifest.Artifact));
+        inputs.Add(Path.Combine(manifestDirectory, manifest.Image));
+        if (!FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory)) return inputs;
+
+        FirmwareBootManifest boot;
+        try
+        {
+            boot = FirmwareBootManifestJson.Parse(File.ReadAllText(Path.Combine(manifestDirectory, FirmwareBootManifest.FileName)));
+        }
+        catch (Exception)
+        {
+            return inputs;
+        }
+
+        inputs.Add(Path.Combine(manifestDirectory, boot.DiscFile));
+        inputs.Add(Path.Combine(manifestDirectory, boot.RootsFile));
+        inputs.Add(Path.Combine(manifestDirectory, boot.LoadImagesFile));
+        inputs.AddRange(boot.AotInputs.Select(input => Path.Combine(manifestDirectory, input.Path)));
+        return inputs;
+    }
 
     /// <summary>The full path with every directory and the file itself resolved through symbolic links and junctions.</summary>
     private static string ResolvedFullPath(string path)
@@ -423,6 +454,8 @@ public static class Program
             // Temp file then move: a reader never sees a half-written report, and a failed write leaves the previous report in place.
             var temp = path + ".tmp";
             var json = report.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n";
+            // A stale temp is removed by name first: a hard link at that name is then only a name, so the write cannot reach the file it links to.
+            File.Delete(temp);
             File.WriteAllText(temp, json, new System.Text.UTF8Encoding(false));
             File.Move(temp, path, overwrite: true);
         }
