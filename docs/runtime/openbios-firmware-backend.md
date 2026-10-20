@@ -304,7 +304,10 @@ words. The planner rejects a `null` `ramWord` as `ram-word-mismatch`. The planne
 equals the word the EXE file places at that PC; any other target is rejected with the reason `ram-word-mismatch` and is not reported
 as a native route. This check compares what the run fetched with the file, so it can refuse a root whose native block would not run,
 but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that at run time. A `v2` export
-without `ramWord` is malformed and refused. Output safety: the
+without `ramWord` is malformed and refused. This note records what this repository does not show. Earlier commit
+messages on the observed-roots branch (d164590 and 366b0c1) cite an observation from a Persona real run and loaded-code counts from
+the same work. Neither is recorded in this repository (no run log, export, or measurement is committed), so both are unverified and
+are not evidence for any result here. The `ramWord` check is a code path; its effect on any real run has not been measured. Output safety: the
 output manifest must sit beside the input; no existing file or directory is overwritten; every output is first written
 under a run-unique `.<name>.<guid>.tmp` name in the same directory (exclusive create), the staged manifest is read back
 through the manifest parser, then the roots files are renamed into place (no overwrite) and the manifest last (the commit
