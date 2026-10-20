@@ -585,6 +585,46 @@ public sealed class RuntimeCodeGeneratedHostTests
 #pragma warning restore AARC003
     }
 
+    [SkippableFact]
+    public void GuardStats_Dump_OnPosix_WhenTheReplacementIsRefused_KeepsThePreviousReportFileByteForByte()
+    {
+        // Issue #797 (POSIX fault injection, no generated-code seam): the report directory is read-only while the dump runs. The
+        // temporary file already exists and is writable, so the dump writes it, but rename() onto <path> needs write permission
+        // on the directory and is refused. The previous report must stay byte-identical. A remove-first or in-place write
+        // would change it. Permissions are restored before the directory is disposed; root bypasses them, so it is skipped.
+        Skip.If(OperatingSystem.IsWindows(), "POSIX directory permissions; Windows sharing is covered by the Windows-only tests.");
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes; the directory mode is set for this test only.
+        Skip.If(Environment.UserName == "root", "root bypasses directory write permission, so the refusal cannot be injected.");
+        using var dir = new TempDirectory();
+        using var work = new TempDirectory();
+        var reportDir = Path.Combine(dir.FullPath, "reports");
+        Directory.CreateDirectory(reportDir);
+        var statsPath = Path.Combine(reportDir, "guard-stats.txt");
+        var tmpPath = statsPath + ".tmp";
+        const string previous = "guardstats 1\nprevious complete report\nend final 1\n";
+        File.WriteAllText(statsPath, previous);
+        File.WriteAllText(tmpPath, "stale");
+        var previousBytes = File.ReadAllBytes(statsPath);
+
+        try
+        {
+            File.SetUnixFileMode(reportDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            RunWithGuardStats(statsPath, work.FullPath);
+        }
+        finally
+        {
+            File.SetUnixFileMode(reportDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        File.ReadAllBytes(statsPath).Should().Equal(previousBytes, "a refused replacement keeps the previous report byte for byte");
+
+        // With the directory writable again, the next dump replaces the report and consumes the temporary file.
+        RunWithGuardStats(statsPath, work.FullPath);
+        File.ReadAllLines(statsPath)[^1].Should().Be("end final 1");
+        File.Exists(tmpPath).Should().BeFalse("the next dump replaces the leftover temporary file and consumes it");
+#pragma warning restore AARC003
+    }
+
     [Fact]
     public void GuardStats_Dump_OverwritesAStaleTemporaryFile_AndLeavesOnlyTheNewCompleteReport()
     {
@@ -714,6 +754,27 @@ public sealed class RuntimeCodeGeneratedHostTests
         var second = File.ReadAllLines(statsPath);
         second[1].Should().StartWith("run ");
         second[1].Should().NotBe(first[1], "a later run's report carries its own run id");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void GuardStats_RunPastThePeriodicDumpInterval_EndsWithItsCompleteFinalReport()
+    {
+        // Issue #797 coverage: a run of more than 0x400000 units crosses the periodic dump interval (PSX_GS_TICK). The periodic
+        // write itself is not observable here, because the final dump at exit replaces the same path; this checks that crossing
+        // the interval leaves a complete final report of that run. Not closed: observing the periodic write before the final
+        // one needs a configurable interval or an abnormal exit, and neither exists.
+#pragma warning disable AARC003 // Test-only: the report is a file the artifact writes.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+
+        RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(2_000_000), 5_000_000);
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[^1].Should().Be("end final 1");
+        var iter = ulong.Parse(lines.Single(static l => l.StartsWith("iter ", StringComparison.Ordinal))["iter ".Length..],
+            System.Globalization.CultureInfo.InvariantCulture);
+        iter.Should().BeGreaterThanOrEqualTo(0x400000ul, "the run crossed the periodic dump interval");
 #pragma warning restore AARC003
     }
 
