@@ -159,6 +159,60 @@ public sealed class FileSystemIdentityProbeTests
         probe.Kind.Should().Be(FileKind.Other, "this name is documented as a reserved device name, so it is refused rather than treated as a file");
     }
 
+    // Issue #786 (final review): a device namespace path is a device whichever slash spelling names it. The probe must not open or
+    // type it as a file, so these are refused without touching the device.
+    [SkippableTheory]
+    [InlineData("//./PhysicalDrive0")]
+    [InlineData("\\\\.\\PhysicalDrive0")]
+    [InlineData("//?/GLOBALROOT/Device/HarddiskVolume1")]
+    public void ADeviceNamespacePath_InAnySlashSpelling_IsTypedAsOther(string path)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the device namespace is a Windows rule");
+
+        var probe = new FileSystemIdentityProbe().Probe(path);
+
+        probe.Kind.Should().Be(FileKind.Other, "a device namespace path names a device, never a regular file");
+    }
+
+    // Issue #786 (final review): a reserved name as any component, not only the last, is a device (C:\x\CON\. is C:\x\CON).
+    [SkippableFact]
+    public void AReservedNameWithTrailingDotsInAnInnerComponent_IsTypedAsOther()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+
+        var probe = new FileSystemIdentityProbe().Probe(dir.Combine("x", "CON", "."));
+
+        probe.Kind.Should().Be(FileKind.Other, "Win32 strips the trailing dot, so the path names the console device");
+    }
+
+    // Issue #786 (final review): an alternate data stream of a reserved name names the device (CON:stream is the console).
+    [SkippableFact]
+    public void AnAlternateDataStreamOfAReservedName_IsTypedAsOther()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+
+        var probe = new FileSystemIdentityProbe().Probe(dir.Combine("CON:stream"));
+
+        probe.Kind.Should().Be(FileKind.Other, "the stream is named after the reserved device, so it is refused");
+    }
+
+    // Guard (already refused before this change): a reserved name with an extension is refused, fail-closed. Win32 documents such names
+    // as devices; this host was not checked to confirm it (a .NET write created CON.txt as a file here).
+    [SkippableTheory]
+    [InlineData("CON.txt")]
+    [InlineData("NUL.log")]
+    public void AReservedNameWithAnExtension_IsTypedAsOther(string name)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
+        using var dir = new TempDirectory();
+
+        var probe = new FileSystemIdentityProbe().Probe(dir.Combine(name));
+
+        probe.Kind.Should().Be(FileKind.Other, "conservative refusal: a reserved name with an extension is refused, fail-closed");
+    }
+
     private static string CurrentAccount()
     {
 #pragma warning disable AARC003
