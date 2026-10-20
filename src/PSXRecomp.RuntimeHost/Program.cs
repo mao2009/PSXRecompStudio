@@ -452,7 +452,10 @@ public static class Program
         if (reportFile.Kind == FileKind.Absent) return null;
         if (reportFile.Kind != FileKind.RegularFile || reportFile.Identity is not { } targetIdentity)
         {
-            return $"the report target {reportPath} is not a regular file whose identity can be read, so it cannot be shown to be no input.";
+            // The probe names the cause when it can (for example, a libc that does not export stat), so the refusal is diagnosable.
+            return reportFile.Cause is { } cause
+                ? $"identity unavailable: {cause}; the report target {reportPath} cannot be shown to be no input."
+                : $"the report target {reportPath} is not a regular file whose identity can be read, so it cannot be shown to be no input.";
         }
 
         foreach (var input in candidates)
@@ -461,7 +464,9 @@ public static class Program
             if (inputFile.Kind == FileKind.Absent) continue;
             if (inputFile.Kind != FileKind.RegularFile || inputFile.Identity is not { } identity)
             {
-                return $"the input {input} is not a regular file whose identity can be read, so the report target cannot be shown to be no input.";
+                return inputFile.Cause is { } inputCause
+                    ? $"identity unavailable: {inputCause}; the input {input} cannot be shown to be no input for the report target."
+                    : $"the input {input} is not a regular file whose identity can be read, so the report target cannot be shown to be no input.";
             }
 
             if (identity == targetIdentity) return InputConflict(input);

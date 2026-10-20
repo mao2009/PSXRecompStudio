@@ -1111,6 +1111,78 @@ public sealed class RuntimeHostLoadedCodeReportTests
         new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
     }
 
+    // Issue #786 (final review, round 20, item 2): a dangling reparse point at the report path on Windows is refused as the POSIX dangling link is,
+    // before any write. A symbolic link needs a privilege this host lacks, so the case uses a directory junction whose target has been removed:
+    // also a reparse point that dangles. The junction must survive the refused run.
+    [SkippableFact]
+    public void ADanglingWindowsLinkAtTheReportPath_IsRefused_AndTheLinkSurvives_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a Windows reparse point");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var target = dir.CreateSubdirectory("gone");
+        var link = dir.Combine("report.json");
+        CreateJunctionOrSkip(link, target);
+        #pragma warning disable AARC003
+        Directory.Delete(target);
+        var linkTargetBefore = new DirectoryInfo(link).LinkTarget;
+        #pragma warning restore AARC003
+        Skip.If(linkTargetBefore is null, "the junction was not created as a reparse point here");
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderr(DiagnosticsFlag, link, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("refusing " + DiagnosticsFlag, "a dangling reparse point is an existing name, refused before any write");
+        #pragma warning disable AARC003
+        new DirectoryInfo(link).LinkTarget.Should().Be(linkTargetBefore, "the reparse point is not replaced");
+        #pragma warning restore AARC003
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
+    }
+
+    // Issue #786 (final review, round 20, item 1): the production probe class, on a simulated macOS x86-64 host, refuses an existing report
+    // target before any write, with the report unchanged. It is the same construction the public constructor uses, not the test decorator.
+    [Fact]
+    public void AnExistingReportTarget_OnASimulatedMacOsX64Host_IsRefusedByTheProductionProbe_AndTheReportSurvives()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        const string earlier = "{\"earlier\":true}";
+        var report = dir.WriteFile("report.json", Bytes(earlier));
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderrWithProbe(
+            new FileSystemIdentityProbe(() => true, () => System.Runtime.InteropServices.Architecture.X64), DiagnosticsFlag, report, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("refusing " + DiagnosticsFlag, "the production probe refuses the replacement before any write");
+        ReadText(report).Should().Be(earlier, "the existing report is not replaced");
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
+    }
+
+    // A probe that reports every name Unreadable with a named cause: the shape of a host whose libc does not export stat.
+    private sealed class CausedUnreadableProbe(string cause) : IFileIdentityProbe
+    {
+        public FileProbe Probe(string path) => new(FileKind.Unreadable, null, cause);
+    }
+
+    // Issue #786 (final review, round 20, item 3): when the identity cannot be read because the libc does not export stat, the refusal names that
+    // cause and the glibc minimum to verify (2.33, unverified), so it can be diagnosed. The identity logic is unchanged; only the message names the cause.
+    [Fact]
+    public void AnUnavailableIdentity_RefusalNamesTheCause_AndTheGlibcMinimum()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var report = dir.Combine("report.json");
+
+        var (code, stderr) = RunCapturingStderrWithProbe(
+            new CausedUnreadableProbe(PosixStatResult.StatNotExportedCause), DiagnosticsFlag, report, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("identity unavailable: " + PosixStatResult.StatNotExportedCause);
+        stderr.Should().Contain("glibc 2.33", "the minimum to verify is named, so the refusal can be diagnosed");
+    }
+
     // Issue #786 (final round 17): on the same unverified host, a report where no file exists yet still proceeds (creating a new file is not a
     // replacement). This guard checks that the refusal is not over-broad.
     [Fact]

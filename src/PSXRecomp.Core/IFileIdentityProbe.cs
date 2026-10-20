@@ -28,7 +28,7 @@ public readonly record struct FileIdentity(ulong Device, ulong Index);
 
 /// <summary>What a path names, and its identity when one could be read.</summary>
 [Domain]
-public readonly record struct FileProbe(FileKind Kind, FileIdentity? Identity);
+public readonly record struct FileProbe(FileKind Kind, FileIdentity? Identity, string? Cause = null);
 
 /// <summary>
 /// The Domain port for asking what a path names. Hard links, junctions, symbolic links and 8.3 names all report one identity. The

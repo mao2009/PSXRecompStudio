@@ -7,7 +7,7 @@ namespace PSXRecomp.Core;
 /// The <c>stat</c> call on macOS (Issue #786 review round 6), for the file type, device and inode of a path. It takes the path, not an
 /// open handle, so a FIFO is typed without being opened. The symbol is <c>stat$INODE64</c> on x86-64 and <c>stat</c> on arm64. The
 /// fields read are <c>st_dev</c> (32-bit, offset 0), <c>st_mode</c> (16-bit, offset 4) and <c>st_ino</c> (64-bit, offset 8). Other
-/// hosts and a libc without either symbol report <see cref="PosixStatResult.Unsupported"/>.
+/// hosts and a libc without either symbol report <see cref="PosixStatResult.Unsupported"/> with the cause named.
 /// </summary>
 [Domain]
 public static class MacOsFileStatInterop
@@ -18,7 +18,7 @@ public static class MacOsFileStatInterop
     /// <summary>Stats the path, following links.</summary>
     public static PosixStatResult Stat(string path)
     {
-        if (!OperatingSystem.IsMacOS() || !BitConverter.IsLittleEndian) return PosixStatResult.Unsupported;
+        if (!OperatingSystem.IsMacOS() || !BitConverter.IsLittleEndian) return PosixStatResult.Unsupported("this host is not little-endian macOS: the stat layout is not verified here");
 
         var buffer = new byte[StatBufferBytes];
         int result;
@@ -34,7 +34,7 @@ public static class MacOsFileStatInterop
             }
             catch (Exception fallback) when (fallback is EntryPointNotFoundException or DllNotFoundException)
             {
-                return PosixStatResult.Unsupported;
+                return PosixStatResult.Unsupported(PosixStatResult.StatNotExportedCause);
             }
         }
 

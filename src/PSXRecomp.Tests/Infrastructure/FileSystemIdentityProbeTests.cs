@@ -300,6 +300,35 @@ public sealed class FileSystemIdentityProbeTests
         }
     }
 
+    // Issue #786 (final review, round 20, item 1): the production construction, with the architecture injected. A simulated macOS x86-64 host
+    // reports an existing name Unreadable, so no replacement of it is allowed. This runs on any machine: the rule is the same one the public
+    // constructor uses, which passes the real OS and architecture readers. It is not a claim that an x86-64 Mac behaves this way on real hardware.
+    [Fact]
+    public void ASimulatedMacOsX64Host_ReportsAnExistingNameUnreadable_AndAMissingNameAbsent()
+    {
+        using var dir = new TempDirectory();
+        var existing = dir.WriteFile("existing.json", Bytes("x"));
+        var probe = new FileSystemIdentityProbe(() => true, () => System.Runtime.InteropServices.Architecture.X64);
+
+        probe.Probe(existing).Kind.Should().Be(FileKind.Unreadable, "an unverified identity cannot show that the name is no input");
+        probe.Probe(dir.Combine("missing.json")).Kind.Should().Be(FileKind.Absent, "a new name can still be created");
+    }
+
+    // The guard for the same rule: a verified host keeps reading identities. macOS arm64 (native) and Linux x86-64 are both verified.
+    [Theory]
+    [InlineData(true, System.Runtime.InteropServices.Architecture.Arm64)]
+    [InlineData(false, System.Runtime.InteropServices.Architecture.X64)]
+    public void AVerifiedHost_StillReadsTheIdentityOfAnExistingName(bool macOS, System.Runtime.InteropServices.Architecture architecture)
+    {
+        using var dir = new TempDirectory();
+        var existing = dir.WriteFile("existing.json", Bytes("x"));
+
+        var probe = new FileSystemIdentityProbe(() => macOS, () => architecture).Probe(existing);
+
+        probe.Kind.Should().Be(FileKind.RegularFile);
+        probe.Identity.Should().NotBeNull("a verified host reads the identity");
+    }
+
     private static string CurrentAccount()
     {
 #pragma warning disable AARC003
