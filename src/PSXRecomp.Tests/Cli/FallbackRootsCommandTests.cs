@@ -182,6 +182,48 @@ public sealed class FallbackRootsCommandTests
         return ObservedRootPlanner.ReadExport(json!);
     }
 
+    // Issue #773 (review): the probe's observer also drives the boot monitor and the fallback accounting. The tests run the
+    // installed observer with real monitor and accounting objects (the code the probe runs), not a stand-in rest.
+    [Fact]
+    public void TheInstalledObserver_CountsEachFallbackFetchOnce_InTheAccounting()
+    {
+        using var engine = new InterpreterTitleExecutionEngine([MipsEncoding.Nop], Entry);
+        var monitor = new OpenBiosBootMonitor(() => (engine.Cop0Diagnostics.Cause, engine.Cop0Diagnostics.Epc, engine.Cop0Diagnostics.BadVAddr));
+        var accounting = new OpenBiosProbeAccounting();
+        ProbeGuestState? host = null;
+        var observer = OpenBiosProbeCommand.CreateFallbackFetchObserver(new FallbackRamWordLog(), (interpreter, pc) =>
+            OpenBiosProbeCommand.ObserveFallbackFetchAccounting(monitor, accounting, () => (engine.Cop0Diagnostics.Cause, engine.Cop0Diagnostics.Epc), engine.ReadGuestWord, interpreter, pc, ref host));
+
+        observer(engine, Entry);
+        observer(engine, Entry);
+        observer(engine, Entry);
+
+        accounting.FallbackFetches.Should().Be(3);
+        host.Should().BeNull("no exception-vector entry was fetched");
+    }
+
+    [Fact]
+    public void TheInstalledObserver_ForwardsAnExceptionVectorEntry_ToTheMonitor_AndCapturesTheFirstHostInterrupt()
+    {
+        using var engine = new InterpreterTitleExecutionEngine([MipsEncoding.Nop], Entry);
+        var monitor = new OpenBiosBootMonitor(() => (engine.Cop0Diagnostics.Cause, engine.Cop0Diagnostics.Epc, engine.Cop0Diagnostics.BadVAddr));
+        var accounting = new OpenBiosProbeAccounting();
+        ProbeGuestState? host = null;
+        var observer = OpenBiosProbeCommand.CreateFallbackFetchObserver(new FallbackRamWordLog(), (interpreter, pc) =>
+            OpenBiosProbeCommand.ObserveFallbackFetchAccounting(monitor, accounting, () => (engine.Cop0Diagnostics.Cause, engine.Cop0Diagnostics.Epc), engine.ReadGuestWord, interpreter, pc, ref host));
+        const uint vector = 0x80000080u;
+
+        observer(engine, vector);
+        monitor.Evaluate(_ => 0u).InterruptEntries.Should().Be(1, "the monitor sees the vector entry once");
+        host.Should().NotBeNull("the first vector entry with no pending cause is captured");
+        host!.Pc.Should().Be(vector);
+        host.AtFetch.Should().Be(1);
+
+        observer(engine, vector);
+        monitor.Evaluate(_ => 0u).InterruptEntries.Should().Be(2, "every vector entry reaches the monitor");
+        host.AtFetch.Should().Be(1, "only the first host interrupt is kept");
+    }
+
     [Fact]
     public void TheInputManifest_IsNeverChanged()
     {

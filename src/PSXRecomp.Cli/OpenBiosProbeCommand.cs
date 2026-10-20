@@ -554,10 +554,7 @@ internal static class OpenBiosProbeCommand
                 {
                     current = interpreter;
                     lastFallbackFetch = pc;
-                    monitor.OnFetch(pc);
-                    accounting.OnFetch(pc, readCop0, readWord);
-                    if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
-                        hostInterrupt = ProbeGuestState.Capture(interpreter, pc, accounting.FallbackFetches);
+                    ObserveFallbackFetchAccounting(monitor, accounting, readCop0, readWord, interpreter, pc, ref hostInterrupt);
                     var fetches = accounting.FallbackFetches;
                     if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
@@ -884,6 +881,21 @@ internal static class OpenBiosProbeCommand
             .ToArray();
 
     private static string Hex(uint v) => $"0x{v:X8}";
+
+    /// <summary>
+    /// The per-fetch accounting the probe's fallback fetch observer performs: the boot monitor and the fallback accounting each see the
+    /// fetch once, and the first exception-vector entry with no pending cause is captured as the host interrupt. Shared by the probe and
+    /// the tests, so the forwarding is exercised by the same code that runs.
+    /// </summary>
+    internal static void ObserveFallbackFetchAccounting(
+        OpenBiosBootMonitor monitor, OpenBiosProbeAccounting accounting, Func<(uint Cause, uint Epc)> readCop0, Func<uint, uint> readWord,
+        InterpreterTitleExecutionEngine interpreter, uint pc, ref ProbeGuestState? hostInterrupt)
+    {
+        monitor.OnFetch(pc);
+        accounting.OnFetch(pc, readCop0, readWord);
+        if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
+            hostInterrupt = ProbeGuestState.Capture(interpreter, pc, accounting.FallbackFetches);
+    }
 
     /// <summary>
     /// The fallback fetch observer the probe installs (Issue #773): records the RAM word at each fetched PC, then runs the probe's own

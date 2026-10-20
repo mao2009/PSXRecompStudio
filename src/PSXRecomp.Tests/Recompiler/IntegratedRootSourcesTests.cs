@@ -87,8 +87,8 @@ public sealed class IntegratedRootSourcesTests
     }
 
     // The registered (guarded) version of an observed root runs only while RAM holds the file's words. A RAM word that differs
-    // (the Persona 0x80030C44 shape: file words and the executed words disagree) leaves the PC to the interpreter; adding the root
-    // does not make the build run code the file does not hold.
+    // leaves the PC to the interpreter; adding the root does not make the build run code the file does not hold. The file and RAM
+    // words here are a synthetic test fixture shaped like a mismatch; this is not an observed Persona result.
     [Fact]
     public void TheGuardedBlockOfAnObservedRoot_MatchesOnlyWhileRamHoldsTheFileWords()
     {
