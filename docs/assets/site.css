@@ -1,12 +1,12 @@
 :root {
-  color-scheme: light dark;
-  --bg: #0b1020;
-  --surface: #141b2d;
-  --text: #e8edf6;
-  --muted: #aeb8c9;
-  --border: #2c3650;
-  --accent: #6ea8fe;
-  --accent-strong: #9ec5fe;
+  color-scheme: dark;
+  --bg: #090e17;
+  --surface: #111b29;
+  --text: #eff7ff;
+  --muted: #bacadc;
+  --border: #2a3c50;
+  --accent: #80f0d8;
+  --accent-strong: #a1f8e6;
   --max: 72rem;
 }
 
@@ -18,7 +18,7 @@ body {
   margin: 0;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.65;
-  background: var(--bg);
+  background: radial-gradient(ellipse 65% 37% at 83% 3%, #102b38 0%, transparent 76%), radial-gradient(ellipse 55% 50% at -18% 42%, #141c36 0%, transparent 75%), var(--bg);
   color: var(--text);
 }
 
@@ -27,7 +27,11 @@ a:hover { text-decoration-thickness: 2px; }
 
 .site-header {
   border-bottom: 1px solid var(--border);
-  background: rgba(11, 16, 32, 0.96);
+  background: rgba(9, 14, 23, 0.93);
+  backdrop-filter: blur(16px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .nav {
@@ -210,16 +214,60 @@ footer {
   .hero { padding-top: 2.5rem; }
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #ffffff;
-    --surface: #f6f8fa;
-    --text: #1f2328;
-    --muted: #59636e;
-    --border: #d0d7de;
-    --accent: #0969da;
-    --accent-strong: #0969da;
-  }
 
-  .site-header { background: rgba(255, 255, 255, 0.96); }
+/* Fixed dark theme and contributor-first landing sections, inspired by the sister
+   oss-pce-cd-bios site's mission/progress/contribute information architecture.
+   The PSX-specific claims and evidence remain independent. */
+html { scroll-padding-top: 5rem; }
+a { text-underline-offset: .2em; }
+a:focus-visible { outline: 3px solid #ffd29a; outline-offset: 3px; border-radius: .2rem; }
+.skip-link { position: absolute; left: 1rem; top: -6rem; z-index: 30; padding: .65rem 1rem; background: #fff; color: #07101a; }
+.skip-link:focus { top: 1rem; }
+.brand { letter-spacing: -.03em; }
+.brand::before {
+  content: "PSX";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: .65rem;
+  width: 2.15rem;
+  height: 2.15rem;
+  border: 1px solid #3b6171;
+  border-radius: .55rem;
+  color: var(--accent);
+  font-size: .7rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #142b3c, #0b1521);
+  letter-spacing: -.03em;
 }
+.hero { position: relative; }
+.hero h1 { letter-spacing: -.06em; }
+.hero .lead { font-size: clamp(1.1rem, 2.1vw, 1.36rem); }
+.eyebrow, .card-number, .progress-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.eyebrow { color: var(--accent); font-size: .79rem; }
+.section-intro { color: var(--muted); max-width: 64rem; margin-bottom: 1.55rem; }
+.card { background: linear-gradient(150deg, #152233, var(--surface)); }
+.card-number { display: block; color: var(--accent); font-size: .76rem; margin-bottom: .65rem; letter-spacing: .06em; }
+.feature-grid .card { padding: 1.45rem; }
+.feature-grid h3 { margin-bottom: .6rem; }
+.feature-grid p { margin-bottom: 0; color: var(--muted); }
+.button { font-weight: 700; transition: background .18s, transform .18s; }
+.button.primary { color: #072225; background: var(--accent); border-color: var(--accent); }
+.button.primary:hover { background: #b7ffee; color: #072225; transform: translateY(-2px); }
+.button.ghost { background: #162332; border-color: var(--border); }
+.progress-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.progress-card { padding: 1.45rem; background: linear-gradient(145deg, #142334, #101824); border: 1px solid var(--border); border-radius: .8rem; }
+.progress-card h3 { font-size: 1.15rem; margin: .7rem 0; }
+.progress-card p { color: var(--muted); margin: 0; font-size: .95rem; }
+.progress-card.verified { border-top: 3px solid var(--accent); }
+.progress-card.investigating { border-top: 3px solid #ffd29a; }
+.progress-card.blocked { border-top: 3px solid #ffb6bd; }
+.progress-tag { color: var(--accent); font-size: .71rem; letter-spacing: .035em; font-weight: 700; }
+.progress-card.investigating .progress-tag { color: #ffd29a; }
+.progress-card.blocked .progress-tag { color: #ffb6bd; }
+.progress-foot, .micro-note { color: var(--muted); font-size: .9rem; }
+.link-card { background: linear-gradient(145deg, #152233, #101824); }
+.link-card:hover { background: #1a2c3b; }
+@media (prefers-reduced-motion: reduce) { .button { transition: none; } .button:hover { transform: none; } }
