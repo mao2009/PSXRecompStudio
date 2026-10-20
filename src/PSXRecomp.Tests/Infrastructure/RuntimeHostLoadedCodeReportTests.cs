@@ -982,15 +982,87 @@ public sealed class RuntimeHostLoadedCodeReportTests
         using var dir = new TempDirectory();
         var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
         var stream = disc + ":report";
+        var streamsBefore = StreamListing(disc);
 
         var (code, stderr) = RunCapturingStderr(flag, stream, manifest);
 
         code.Should().Be(78, "a report never names a stream");
         stderr.Should().Contain("alternate data stream", "the refusal, not a run failure, is what turned it away");
         ReadText(disc).Should().Be("disc bytes", "the input keeps its data");
+        StreamListing(disc).Should().Be(streamsBefore, "the input's full stream list is unchanged, not only the named stream");
         #pragma warning disable AARC003
         File.Exists(stream).Should().BeFalse("no stream named report is created on the input");
         #pragma warning restore AARC003
+    }
+
+    // The stream names of a file, from dir /r ($DATA lines, in listing order). Compared before and after a refused run.
+    private static string StreamListing(string file)
+    {
+        var output = RunProcessStdout("cmd.exe", $"/c dir /r \"{file}\"") ?? string.Empty;
+        return string.Join("\n", output.Split('\n').Where(line => line.Contains("$DATA")).Select(line => line.Trim()));
+    }
+
+    private static string? RunProcessStdout(string file, string arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo(file, arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+#pragma warning disable AARC003
+        using var process = System.Diagnostics.Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var succeeded = process.ExitCode == 0;
+#pragma warning restore AARC003
+        return succeeded ? output : null;
+    }
+
+    // Issue #786 (final review, round 15, M1): a ':' in a directory component (C:\a:b\x.json), not only in the file name, is refused before
+    // anything is read or written. The name is literal: the refusal happens before any I/O, so nothing on disk is touched.
+    [SkippableTheory]
+    [InlineData(DiagnosticsFlag)]
+    [InlineData(LoadedCodeFlag)]
+    public void AReportTargetWithAColonInADirectory_IsRefused_BeforeAnyRead_OnWindows(string flag)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a drive letter and a colon in a directory are a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var before = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderr(flag, "C:\\a:b\\x.json", manifest);
+
+        code.Should().Be(78, "a colon after the drive letter is never a report path");
+        stderr.Should().Contain("alternate data stream", "the refusal, not a later failure, is what turned it away");
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(before, "every input keeps its bytes");
+    }
+
+    // Issue #786 (final review, round 15, M2): a report target whose identity cannot be read (here, a file held open without sharing) is
+    // refused, not treated as a different file. The two report flags are refused before any write, and the inputs survive.
+    [SkippableFact]
+    public void TwoReportFlags_WhenATargetsIdentityCannotBeRead_AreRefused_AndTheInputsSurvive_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "a sharing violation that blocks the identity read is a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        const string earlier = "{\"earlier\":true}";
+        var first = dir.WriteFile("first.json", Bytes(earlier));
+        var second = dir.WriteFile("second.json", Bytes(earlier));
+#pragma warning disable AARC003
+        using var holder = new FileStream(second, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+#pragma warning restore AARC003
+
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderr(DiagnosticsFlag, first, LoadedCodeFlag, second, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("cannot be shown to be different files", "an unreadable identity is treated as the same file, so the run is refused");
+        ReadText(first).Should().Be(earlier, "a refused report writes nothing");
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
     }
 
     // Issue #786 (final review, round 14): the two report flags never name one file. The same name, or two names for one file, is refused

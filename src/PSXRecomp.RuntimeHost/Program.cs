@@ -133,10 +133,10 @@ public static class Program
         // or written, for both report flags.
         foreach (var target in new[] { diagnosticsPath, loadedCodeMismatchPath })
         {
-            if (target is not null && OperatingSystem.IsWindows() && Path.GetFileName(target).Contains(':'))
+            if (target is not null && OperatingSystem.IsWindows() && NamesAStream(target))
             {
                 Console.Error.WriteLine(
-                    $"runtime host: refusing report target {target}: a ':' in its file name names an alternate data stream, and no report is written to a stream.");
+                    $"runtime host: refusing report target {target}: a ':' after the drive letter names an alternate data stream (or an invalid path), and no report is written to one.");
                 return 78;
             }
         }
@@ -164,7 +164,7 @@ public static class Program
         if (diagnosticsPath is not null && loadedCodeMismatchPath is not null && NamesOneFile(diagnosticsPath, loadedCodeMismatchPath, probe))
         {
             Console.Error.WriteLine(
-                $"runtime host: refusing --diagnostics {diagnosticsPath} with --loaded-code-diagnostics {loadedCodeMismatchPath}: both would be written to one file.");
+                $"runtime host: refusing --diagnostics {diagnosticsPath} with --loaded-code-diagnostics {loadedCodeMismatchPath}: both would be written to one file, or cannot be shown to be different files.");
             return 78;
         }
 
@@ -466,8 +466,31 @@ public static class Program
     }
 
     /// <summary>
-    /// True when two report targets are one file: the same resolved path (case-insensitively on Windows), or two regular files with the same
-    /// identity. A name that cannot be resolved is treated as the same file, so the run is refused rather than guessed at.
+    /// On Windows, true when the name has a ':' after its drive letter (or after a \\?\ or \??\ prefix): an alternate data stream, or a colon
+    /// in a directory, which is not a valid report path. A name that cannot be normalised counts as one (fail-closed).
+    /// </summary>
+    private static bool NamesAStream(string target)
+    {
+        string full;
+        try
+        {
+            full = Path.GetFullPath(target);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return true;
+        }
+
+        var rest = full;
+        if (rest.StartsWith(@"\\?\", StringComparison.Ordinal) || rest.StartsWith(@"\??\", StringComparison.Ordinal)) rest = rest[4..];
+        if (rest.Length >= 2 && char.IsAsciiLetter(rest[0]) && rest[1] == ':') rest = rest[2..];
+        return rest.Contains(':');
+    }
+
+    /// <summary>
+    /// True when two report targets are one file, or cannot be shown to be two: the same resolved path (case-insensitively on Windows); or,
+    /// for two names that exist, an identity that matches, or an identity that cannot be read on either side (fail-closed, as the target
+    /// check does). Only a name that does not exist, or two readable identities that differ, shows two different files.
     /// </summary>
     private static bool NamesOneFile(string first, string second, IFileIdentityProbe probe)
     {
@@ -478,7 +501,9 @@ public static class Program
 
             var a = probe.Probe(first);
             var b = probe.Probe(second);
-            return a.Kind == FileKind.RegularFile && b.Kind == FileKind.RegularFile && a.Identity is { } x && b.Identity is { } y && x == y;
+            if (a.Kind == FileKind.Absent || b.Kind == FileKind.Absent) return false;
+            if (a.Identity is null || b.Identity is null) return true;
+            return a.Identity == b.Identity;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
         {
