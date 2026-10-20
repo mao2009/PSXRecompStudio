@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.Gpu;
@@ -19,6 +21,7 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly int _maxScreenshots;
     private readonly List<ulong> _targetVblanks;
     private readonly HashSet<ulong> _capturedVblanks = new();
+    private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
     private ulong _lastVblank = 0;
     private bool _disposed;
@@ -86,8 +89,12 @@ public sealed class ScreenshotCapture : IDisposable
             if (_capturedVblanks.Contains(currentVblank))
                 return false; // Already captured this VBlank (duplicate notification)
 
+            if (!CaptureAndSave(currentVblank, currentVblank))
+            {
+                _lastVblank = currentVblank; // unsaved target is dropped, not retried (not counted, not consumed)
+                return false;
+            }
             _capturedVblanks.Add(currentVblank);
-            CaptureAndSave(currentVblank);
             _screenshotsTaken++;
             _lastVblank = currentVblank;
             return true;
@@ -99,8 +106,10 @@ public sealed class ScreenshotCapture : IDisposable
         {
             if (targetVblank <= currentVblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
             {
+                // A3: the frame is the picture at the actual VBlank; the target is only the schedule it was due for.
+                if (!CaptureAndSave(targetVblank, currentVblank))
+                    continue; // nothing saved: this target is not counted or consumed
                 _capturedVblanks.Add(targetVblank);
-                CaptureAndSave(targetVblank);
                 _screenshotsTaken++;
                 _lastVblank = targetVblank;
                 return true;
@@ -120,8 +129,8 @@ public sealed class ScreenshotCapture : IDisposable
             return;
 
         var currentVblank = _scheduler.VblankCount;
-        CaptureAndSave(currentVblank, customName);
-        _screenshotsTaken++;
+        if (CaptureAndSave(null, currentVblank, customName))
+            _screenshotsTaken++;
     }
 
     /// <summary>
@@ -141,8 +150,12 @@ public sealed class ScreenshotCapture : IDisposable
             if (_capturedVblanks.Contains(vblank))
                 return false; // Already captured this VBlank
 
+            if (!CaptureAndSave(vblank, vblank))
+            {
+                _lastVblank = vblank; // unsaved target is dropped, not retried (not counted, not consumed)
+                return false;
+            }
             _capturedVblanks.Add(vblank);
-            CaptureAndSave(vblank);
             _screenshotsTaken++;
             _lastVblank = vblank;
             return true;
@@ -153,8 +166,9 @@ public sealed class ScreenshotCapture : IDisposable
         {
             if (targetVblank <= vblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
             {
+                if (!CaptureAndSave(targetVblank, vblank))
+                    continue; // nothing saved: this target is not counted or consumed
                 _capturedVblanks.Add(targetVblank);
-                CaptureAndSave(targetVblank);
                 _screenshotsTaken++;
                 _lastVblank = targetVblank;
                 return true;
@@ -176,6 +190,12 @@ public sealed class ScreenshotCapture : IDisposable
     public bool IsComplete => _screenshotsTaken >= _maxScreenshots;
 
     /// <summary>
+    /// True only when every target VBlank was saved. Unlike <see cref="IsComplete"/>, the forced final frame and a
+    /// target whose PNG failed to write do not count (Issue #751).
+    /// </summary>
+    public bool AllTargetsSaved => _capturedVblanks.Count == _maxScreenshots;
+
+    /// <summary>
     /// Gets the next target VBlank, or null if all targets have been passed.
     /// </summary>
     public ulong? NextTargetVblank
@@ -192,21 +212,145 @@ public sealed class ScreenshotCapture : IDisposable
         }
     }
 
-    private void CaptureAndSave(ulong vblank, string? customName = null)
+    /// <summary>
+    /// Saves one frame as PNG and records it in the manifest. Returns false (and writes nothing) when the frame has no
+    /// displayable pixels, so callers count only frames that really exist on disk (Issue #751).
+    /// </summary>
+    private bool CaptureAndSave(ulong? targetVblank, ulong capturedVblank, string? customName = null)
     {
         var frame = _gpuDevice.CaptureFrame();
-        var frameHash = frame.ComputeStableHash();
-        var frameHashStr = Convert.ToHexString(frameHash)[..16];
+        // Native 16-bit halfword hash of the snapshot: kept as diagnostics only, not as evidence of the PNG (Issue #751).
+        var vramSha256 = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant();
         var bgra = ConvertToBgra32(frame);
 
         if (bgra.Length == 0)
-            return; // Nothing to save
+            return false; // Nothing to save
 
-        var fileName = customName ?? $"persona_vblank_{vblank:D4}.png";
+        var fileName = customName ?? $"persona_vblank_{targetVblank ?? capturedVblank:D4}.png";
         var filePath = Path.Combine(_outputDirectory, fileName);
 
-        PngWriter.Save(filePath, bgra, frame.Width, frame.Height);
+        // Write beside the target and rename so an interrupted run never leaves a truncated PNG (Issue #751).
+        // An existing final file is never replaced: a user PNG with the same name is preserved and the frame fails (review of #751).
+        var tempPath = filePath + ".tmp";
+        string pngSha256;
+        try
+        {
+            if (File.Exists(filePath))
+                throw new IOException($"refusing to overwrite existing file: {fileName}");
+            // A3: the PNG carries the same split as the manifest (a forced final frame has no target).
+            var text = new List<KeyValuePair<string, string>>();
+            if (targetVblank is { } target)
+                text.Add(new("targetVblank", $"{target}"));
+            text.Add(new("capturedVblank", $"{capturedVblank}"));
+            PngWriter.Save(tempPath, bgra, frame.Width, frame.Height, text);
+            File.Move(tempPath, filePath);
+            // pngSha256 is the hash of the bytes actually on disk, so it covers every displayed byte (including 24-bit tails).
+            pngSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filePath))).ToLowerInvariant();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A failed frame is not in the manifest and not counted. Only this run's temp file is removed;
+            // the target path and any earlier PNG are left untouched.
+            DeleteQuietly(tempPath);
+            WriteFailures++;
+            LastWriteError = ex.Message;
+            return false;
+        }
+
+        var mode = _gpuDevice.GetState().DisplayMode;
+        _frames.Add(new CapturedFrame(fileName, targetVblank, capturedVblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
+        return true;
     }
+
+    /// <summary>Number of frames whose PNG could not be written (not in the manifest, not counted).</summary>
+    public int WriteFailures { get; private set; }
+
+    /// <summary>Message of the most recent PNG write failure, or null.</summary>
+    public string? LastWriteError { get; private set; }
+
+    /// <summary>Full paths of the PNG files this session actually wrote, in capture order (matches the manifest).</summary>
+    public IReadOnlyList<string> SavedFiles =>
+        _frames.Select(f => Path.GetFullPath(Path.Combine(_outputDirectory, f.File))).ToList();
+
+    /// <summary>
+    /// Writes <c>manifest.json</c> into the output directory: the stop reason, the final guest PC (when known) and, per
+    /// saved PNG, the VBlank (guest frame) index, size, display mode, pixel hash and whether the 24-bit path was used
+    /// (false means the frame was converted as legacy 15-bit). Each frame carries <c>pngSha256</c> (SHA-256 of the saved
+    /// file) and <c>vramSha256</c> (native halfword hash, diagnostics only). Written atomically; safe after a partial run.
+    /// </summary>
+    public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc,
+        string? exceptionType = null, bool goalReached = false) =>
+        WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames,
+            exceptionType, goalReached, WriteFailures, _frames.Select(f => f.File));
+
+    /// <summary>
+    /// Writes <c>manifest.json</c> without a capture session, so a run that failed before capture was set up still
+    /// records its stop reason (Issue #751). <paramref name="stopReason"/> is the stop vocabulary only;
+    /// <paramref name="exceptionType"/> is the .NET exception name when the stop came from an exception.
+    /// <paramref name="goalReached"/> is true only when every target frame was captured.
+    /// <paramref name="ownPngNames"/> are the PNG names this run wrote. Any other PNG in the directory is listed as
+    /// <c>staleFiles</c>: it is kept on disk and marked as not produced by this run, never deleted.
+    /// </summary>
+    public static void WriteManifestFile(
+        string outputDirectory, string stopReason, int screenshotsTaken, ulong maxVblankReached, TimeSpan elapsed,
+        uint? lastGuestPc, IEnumerable<object> frames, string? exceptionType = null, bool goalReached = false,
+        int writeFailures = 0, IEnumerable<string>? ownPngNames = null)
+    {
+        Directory.CreateDirectory(outputDirectory);
+        var own = new HashSet<string>(ownPngNames ?? [], StringComparer.OrdinalIgnoreCase);
+        var staleFiles = Directory.EnumerateFiles(outputDirectory, "*.png")
+            .Where(p => string.Equals(Path.GetExtension(p), ".png", StringComparison.OrdinalIgnoreCase))
+            .Select(p => Path.GetFileName(p))
+            .Where(name => !own.Contains(name))
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var manifest = new
+        {
+            stopReason,
+            goalReached,
+            captureStatus = CaptureStatusOf(goalReached, screenshotsTaken, writeFailures),
+            writeFailures,
+            exceptionType,
+            screenshotsTaken,
+            maxVblankReached,
+            elapsedMs = (long)elapsed.TotalMilliseconds,
+            lastGuestPc = lastGuestPc is { } pc ? $"0x{pc:X8}" : null,
+            frames,
+            staleFiles,
+        };
+        var path = Path.Combine(outputDirectory, "manifest.json");
+        var tempPath = path + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(manifest, ManifestOptions));
+        File.Move(tempPath, path, overwrite: true);
+    }
+
+    private static readonly JsonSerializerOptions ManifestOptions = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    /// <summary>
+    /// Image result, kept apart from the stop reason: <c>complete</c> (every target saved), <c>partial</c> (some frames
+    /// saved, no write failure), <c>none</c> (no frame saved) or <c>write_failed</c> (at least one PNG could not be written).
+    /// </summary>
+    public static string CaptureStatusOf(bool goalReached, int screenshotsTaken, int writeFailures) =>
+        writeFailures > 0 ? "write_failed"
+        : goalReached ? "complete"
+        : screenshotsTaken > 0 ? "partial"
+        : "none";
+
+    private static void DeleteQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best effort: a leftover .tmp file is not listed in the manifest.
+        }
+    }
+
+    private sealed record CapturedFrame(string File, ulong? TargetVblank, ulong CapturedVblank, string VramSha256, string PngSha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
 
     /// <summary>
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
