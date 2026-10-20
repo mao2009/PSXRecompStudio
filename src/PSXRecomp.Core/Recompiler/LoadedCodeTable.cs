@@ -67,7 +67,7 @@ public sealed class LoadedCodeTable
         ArgumentNullException.ThrowIfNull(readWord);
         foreach (var version in VersionsAt(pc))
         {
-            var current = true;
+            var current = version.Words.Count > 0; // an empty version vouches for nothing: fail closed, as the C guard does
             for (var i = 0; i < version.Words.Count && current; i++)
             {
                 current = readWord(pc + (uint)i * 4u) == version.Words[i];

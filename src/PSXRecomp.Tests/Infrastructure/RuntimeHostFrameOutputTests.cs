@@ -3,6 +3,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using FluentAssertions;
+using PSXRecomp.Core.Cpu;
+using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Runtime.Gpu;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Runtime.Gpu;
@@ -183,6 +185,170 @@ public sealed class RuntimeHostFrameOutputTests
         bgra[1].Should().Be(0xBB);
         bgra[2].Should().Be(0xAA);
         bgra[3].Should().Be(0xFF);
+    }
+
+    [Fact]
+    public void TryWrite_TwentyFourBitDisplay_PngCarriesRgbInChannelOrder()
+    {
+        // Synthetic GPU frame (no guest run): a 24-bit display goes through the shared capture conversion into the PNG.
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(0x08000010u); // 24-bit color depth
+        gpu.Vram[0, 0] = 0x3412;   // pixel 0 bytes: R=0x12 G=0x34
+        gpu.Vram[1, 0] = 0x0056;   // pixel 0 byte B=0x56
+        var frame = gpu.CaptureFrame();
+        SetLastFrameBgra32(engine, (ScreenshotCapture.ToBgra32(frame, gpu), frame.Width, frame.Height));
+        var output = dir.Combine("frame24.png");
+
+        RuntimeHostFrameOutput.TryWrite(engine, output, new StringWriter()).Should().BeTrue();
+
+        #pragma warning disable AARC003
+        var png24 = File.ReadAllBytes(output);
+        #pragma warning restore AARC003
+        ReadFirstPixelsRgba(png24, 1).Should().Equal(0x12, 0x34, 0x56, 0xFF);
+    }
+
+    [Fact]
+    public void TryWrite_FifteenBitDisplay_PngExpandsEachChannelToEightBits()
+    {
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(0x08000000u); // 15-bit color depth
+        gpu.Vram[0, 0] = 0x001F;   // R=31 only -> RGB(0xFF, 0, 0)
+        gpu.Vram[1, 0] = 0x7C00;   // B=31 only -> RGB(0, 0, 0xFF)
+        var frame = gpu.CaptureFrame();
+        SetLastFrameBgra32(engine, (ScreenshotCapture.ToBgra32(frame, gpu), frame.Width, frame.Height));
+        var output = dir.Combine("frame15.png");
+
+        RuntimeHostFrameOutput.TryWrite(engine, output, new StringWriter()).Should().BeTrue();
+
+        #pragma warning disable AARC003
+        var png15 = File.ReadAllBytes(output);
+        #pragma warning restore AARC003
+        ReadFirstPixelsRgba(png15, 2).Should().Equal(
+            0xFF, 0x00, 0x00, 0xFF,
+            0x00, 0x00, 0xFF, 0xFF);
+    }
+
+    [Fact]
+    public void EndToEnd_TwentyFourBitDisplay_GuestWritesReachTheFrameThroughTheBridge_AndPngCarriesRgb()
+    {
+        // 24-bit: pixel 0 is bytes R=0x12 G=0x34 (halfword 0) and B=0x56 (low byte of halfword 1).
+        var run = RunGuestDisplay(gp1DisplayMode: 0x08000010u, vramWord: 0x00563412u, pngName: "e2e24.png");
+
+        run.Frame.Should().NotBeNull("the bridge must relay the guest's GP0/GP1 writes and propagate the frame to LastFrameBgra32");
+        run.Frame!.Value.Bgra.Length.Should().Be(run.Frame.Value.Width * run.Frame.Value.Height * 4);
+        run.Frame.Value.Bgra[..4].Should().Equal(new byte[] { 0x56, 0x34, 0x12, 0xFF }, "BGRA of the displayed pixel 0");
+        run.Written.Should().BeTrue(run.Error);
+        ReadFirstPixelsRgba(run.Png!, 1).Should().Equal(0x12, 0x34, 0x56, 0xFF);
+    }
+
+    [Fact]
+    public void EndToEnd_FifteenBitDisplay_GuestWritesReachTheFrameThroughTheBridge_AndPngExpandsEachChannel()
+    {
+        // 15-bit: pixel 0 is R=31 only, pixel 1 is B=31 only; each 5-bit channel expands to 8 bits.
+        var run = RunGuestDisplay(gp1DisplayMode: 0x08000000u, vramWord: 0x7C00001Fu, pngName: "e2e15.png");
+
+        run.Frame.Should().NotBeNull("the bridge must relay the guest's GP0/GP1 writes and propagate the frame to LastFrameBgra32");
+        run.Frame!.Value.Bgra[..8].Should().Equal(
+            0x00, 0x00, 0xFF, 0xFF,   // pixel 0: R=31 -> BGRA(00,00,FF,FF)
+            0xFF, 0x00, 0x00, 0xFF);  // pixel 1: B=31 -> BGRA(FF,00,00,FF)
+        run.Written.Should().BeTrue(run.Error);
+        ReadFirstPixelsRgba(run.Png!, 2).Should().Equal(
+            0xFF, 0x00, 0x00, 0xFF,
+            0x00, 0x00, 0xFF, 0xFF);
+    }
+
+    /// <summary>
+    /// Runs a guest that programs the display only through the host-transfer bridge: GP1 display mode, GP1 display
+    /// start (0,0), then a CPU-to-VRAM copy of two halfwords (<paramref name="vramWord"/>) at (0,0). The frame reaches
+    /// <see cref="RecompiledHostExecutionEngine.LastFrameBgra32"/> only through the bridge's propagation at the end of
+    /// the run, and <see cref="RuntimeHostFrameOutput.TryWrite"/> is called on the same engine before it is disposed.
+    /// </summary>
+    private static GuestDisplayRun RunGuestDisplay(uint gp1DisplayMode, uint vramWord, string pngName)
+    {
+        const uint gp0 = 0x1F801810u;
+        const uint gp1 = 0x1F801814u;
+        const R3000aRegister t0 = R3000aRegister.T0;
+        const R3000aRegister t1 = R3000aRegister.T1;
+        const R3000aRegister t2 = R3000aRegister.T2;
+        var words = RecompiledArtifactMmioBridgeTests.Program(
+            RecompiledArtifactMmioBridgeTests.Li(t0, gp0),
+            RecompiledArtifactMmioBridgeTests.Li(t1, gp1),
+            RecompiledArtifactMmioBridgeTests.Li(t2, gp1DisplayMode),
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t1, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0x05000000u),
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t1, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0xA0000000u),  // GP0 CPU-to-VRAM copy
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0x00000000u),  // destination x=0, y=0
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, 0x00010002u),  // 2 halfwords wide, 1 row high
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)],
+            RecompiledArtifactMmioBridgeTests.Li(t2, vramWord),     // the two halfwords
+            [RecompiledArtifactMmioBridgeTests.Mem(R3000aOpcode.Sw, t2, t0, 0)]);
+
+        using var dir = new TempDirectory();
+        var png = dir.Combine(pngName);
+        var error = new StringWriter();
+        var run = new GuestDisplayRun();
+        var result = RecompiledArtifactMmioBridgeTests.Run(words, dir, withRuntime: true, segmentBudget: 4096, observe: engine =>
+        {
+            run.Frame = engine.LastFrameBgra32;
+            run.Written = RuntimeHostFrameOutput.TryWrite(engine, png, error);
+        });
+        result.State.Should().Be(TitleExecutionState.Completed, result.DiagnosticMessage);
+        run.Error = error.ToString();
+        #pragma warning disable AARC003
+        if (run.Written) run.Png = File.ReadAllBytes(png);
+        #pragma warning restore AARC003
+        return run;
+    }
+
+    private sealed class GuestDisplayRun
+    {
+        public (byte[] Bgra, int Width, int Height)? Frame { get; set; }
+        public bool Written { get; set; }
+        public byte[]? Png { get; set; }
+        public string Error { get; set; } = "";
+    }
+
+    [Fact]
+    public void Dispose_CalledTwiceAfterAFrameWasHeld_DoesNotThrow()
+    {
+        // Shutdown path: the run's engine is disposed after the frame has been read; a repeated dispose must be harmless.
+        using var dir = new TempDirectory();
+        var artifact = dir.WriteFile("artifact.bin", [0]);
+        var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            artifact, new HashSet<uint>(), imageWords: [0u], imageLoadAddress: 0x80010000u);
+        SetLastFrameBgra32(engine, CreateTestFrame(16, 16));
+
+        Action act = () =>
+        {
+            engine.Dispose();
+            engine.Dispose();
+        };
+
+        act.Should().NotThrow();
+    }
+
+    /// <summary>Decodes the first <paramref name="pixelCount"/> pixels of row 0 of a PNG written by <see cref="RuntimeHostFrameOutput"/> as RGBA bytes.</summary>
+    private static byte[] ReadFirstPixelsRgba(byte[] png, int pixelCount)
+    {
+        var idatLength = checked((int)BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(33, 4)));
+        Encoding.ASCII.GetString(png, 37, 4).Should().Be("IDAT");
+        using var idat = new MemoryStream(png, 41, idatLength, writable: false);
+        using var inflater = new ZLibStream(idat, CompressionMode.Decompress);
+        var scanline = new byte[1 + pixelCount * 4];
+        inflater.ReadExactly(scanline);
+        scanline[0].Should().Be(0); // PNG filter: none
+        return scanline[1..];
     }
 
     private static (byte[] Bgra, int Width, int Height) CreateTestFrame(int width, int height)
