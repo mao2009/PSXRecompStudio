@@ -21,6 +21,25 @@ It can already analyze PS-X EXE / CHD inputs, lower MIPS code into a determinist
 
 **[Get involved — choose a first contribution](https://mao2009.github.io/PSXRecompStudio/get-involved.html#first-contributions)** · [日本語で参加](https://mao2009.github.io/PSXRecompStudio/ja/get-involved.html) · [Proposed RRS ecosystem](docs/community/rrs-vision.md) · [Contributor guide](CONTRIBUTING.md) · [Current evidence](docs/status/capabilities.md)
 
+## October 20, 2026 — evidence-based progress snapshot
+
+This is a **dated snapshot of `main` at [`551f50ab`](https://github.com/mao2009/PSXRecompStudio/commit/551f50ab6ad5a502376719974db34868206ff356)**, not a live compatibility report or an assertion about open draft PRs. The [Persona E2E evidence](docs/v0.1.0/persona-e2e-status.md), [capability matrix](docs/status/capabilities.md), and [open Issues](https://github.com/mao2009/PSXRecompStudio/issues) give the detailed, scope-limited picture.
+
+| Path / gate | Observed | Still unverified or blocked |
+| --- | --- | --- |
+| OpenBIOS **interpreter** | Persona ATLUS logo and opening narrative rendered; VBlank captures below | Title screen, full intro, gameplay |
+| Synthetic native recompilation | Five-instruction PS-X EXE can be recompiled and run with the released alpha CLI | Complete commercial-title AOT support |
+| Persona **standalone / generated host** | Bounded AOT + interpreter fallback execution and diagnostics; IPC round trips measured as a major throughput cost ([#768](https://github.com/mao2009/PSXRecompStudio/issues/768)) | Long runs still time out; post-fix visual parity with the interpreter has **not** been confirmed ([#774](https://github.com/mao2009/PSXRecompStudio/issues/774)) |
+| Loaded-code roots / fallback | Diagnostic evidence distinguishes loaded EXE versions and runtime RAM mismatches | General root discovery, guard agreement, and a verified AOT return path remain under investigation ([#773](https://github.com/mao2009/PSXRecompStudio/issues/773), [#806](https://github.com/mao2009/PSXRecompStudio/issues/806), [#807](https://github.com/mao2009/PSXRecompStudio/issues/807)) |
+
+**v0.1 gate:** A verified Persona title screen is **not yet reached**. Passing synthetic tests, generating native code, or rendering the opening with the interpreter must not be described as a playable native port. Draft PRs and preliminary diagnostics are not merged capabilities.
+
+### Where contributors can make an impact
+
+Pick an [open, scoped Issue](https://github.com/mao2009/PSXRecompStudio/issues), check for an existing PR, and contribute one reproducible observation, bounded synthetic regression test, hardware/MIPS review, or documentation fix. Particularly useful areas are [fallback/root discovery](https://github.com/mao2009/PSXRecompStudio/issues/773), [IPC performance](https://github.com/mao2009/PSXRecompStudio/issues/768), and [visual parity evidence](https://github.com/mao2009/PSXRecompStudio/issues/774). Start with the [human contribution guide](CONTRIBUTING.md) or [first contributions](docs/get-involved.html#first-contributions).
+
+Use only legitimately obtained local game data; **never include game images, Sony BIOS, proprietary EXEs, private logs, or personal data in Issues, PRs, or CI artifacts**. Report scope and limits, including AI assistance; human review is especially welcome.
+
 ## Milestone: OpenBIOS interpreter reaches Persona opening imagery (October 2026)
 
 **The OpenBIOS interpreter execution path has visibly reached the opening sequence of *Megami Ibunroku Persona*.** VBlank-accurate screenshots show the ATLUS logo followed by the opening text inspired by Zhuangzi's butterfly dream. This is a real game-rendering milestone, not proof of complete static recompilation or a playable native port.
