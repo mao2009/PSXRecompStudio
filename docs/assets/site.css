@@ -206,6 +206,8 @@ footer {
 }
 
 @media (max-width: 42rem) {
+  /* Keep long contributor navigation from covering small screens when scrolling. */
+  .site-header { position: static; }
   .nav {
     align-items: flex-start;
     flex-direction: column;
