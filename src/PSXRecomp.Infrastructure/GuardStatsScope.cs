@@ -14,6 +14,9 @@ public static class GuardStatsScope
     /// <summary>The environment variable the generated artifact reads for the report path.</summary>
     public const string FileEnvironmentVariable = "PSX_GUARD_STATS_FILE";
 
+    /// <summary>The environment variable that carries this child's run id (16 hex digits), drawn by the parent for each child (Issue #804).</summary>
+    public const string RunIdEnvironmentVariable = "PSX_GUARD_STATS_RUN_ID";
+
     /// <summary>The environment variable that sets the periodic dump interval, in dispatch units (scope-only, test hook).</summary>
     public const string PeriodEnvironmentVariable = "PSX_GUARD_STATS_PERIOD";
 

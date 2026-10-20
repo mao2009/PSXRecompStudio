@@ -412,6 +412,8 @@ public sealed class RuntimeCodeGeneratedHostTests
         RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should()
             .Contain("psx_gs_replace(tmp, path)").And.Contain("MoveFileExA").And.Contain("MOVEFILE_REPLACE_EXISTING").And.NotContain("<windows.h>", "windows.h defines exception_code and breaks the generated state")
             .And.NotContain("remove(path)", "the previous report is never removed before the new one is in place (Issue #773 review M1)");
+        RecompilerHostCodeGen.Generate(romCode, loaded, guardStats: true).Source.Should()
+            .Contain("getenv(\"PSX_GUARD_STATS_RUN_ID\")", "each child's run id is drawn by the parent, not derived from time and clock() (Issue #804)");
 
 #pragma warning disable AARC003 // Test-only: the artifact writes its counters to a file named by an environment variable (set for the child only).
         var envBefore = (Environment.GetEnvironmentVariable("PSX_GUARD_STATS_FILE"), Environment.GetEnvironmentVariable("PSXRECOMP_NATIVE_GUARD_STATS"));
@@ -752,14 +754,16 @@ public sealed class RuntimeCodeGeneratedHostTests
         var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
         var fixture = GuardStatsFixture();
 
-        RunWithGuardStats(statsPath, dir.FullPath, fixture);
-        var first = File.ReadAllLines(statsPath);
-        first[1].Should().StartWith("run ", "the second line names the run that wrote the report");
-
-        RunWithGuardStats(statsPath, dir.FullPath, fixture);
-        var second = File.ReadAllLines(statsPath);
-        second[1].Should().StartWith("run ");
-        second[1].Should().NotBe(first[1], "a later run's report carries its own run id");
+        // Back-to-back runs (same second, short gap) must each get their own id (Issue #804: the time/clock id collided on Windows).
+        var runIds = new List<string>();
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            RunWithGuardStats(statsPath, dir.FullPath, fixture);
+            var report = File.ReadAllLines(statsPath);
+            report[1].Should().StartWith("run ", "the second line names the run that wrote the report");
+            runIds.Add(report[1]);
+        }
+        runIds.Should().OnlyHaveUniqueItems("a later run's report carries its own run id, even when runs start in the same second");
 #pragma warning restore AARC003
     }
 
