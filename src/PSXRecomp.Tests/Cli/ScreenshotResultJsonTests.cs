@@ -25,7 +25,8 @@ public sealed class ScreenshotResultJsonTests
         string? exceptionType = null,
         IReadOnlyList<string>? files = null,
         TimeSpan? elapsed = null,
-        bool withSnapshot = false)
+        bool withSnapshot = false,
+        ulong maxVblankReached = 1000)
     {
         var snapshot = withSnapshot
             ? new RecompilerStateSnapshot(new uint[32], 0, 0, 0x80030000u)
@@ -35,7 +36,7 @@ public sealed class ScreenshotResultJsonTests
         return new HeadlessRunResult(
             execution,
             screenshotsTaken,
-            MaxVblankReached: 1000,
+            MaxVblankReached: maxVblankReached,
             SavedFiles: files ?? [],
             ElapsedTime: elapsed ?? TimeSpan.FromMilliseconds(1234),
             StopReason: stopReason,
@@ -160,11 +161,20 @@ public sealed class ScreenshotResultJsonTests
         try
         {
             CultureInfo.CurrentCulture = new CultureInfo(culture);
-            var root = Parse(ScreenshotCommand.SerializeResult(null, Result(
-                elapsed: TimeSpan.FromMilliseconds(1234567), screenshotsTaken: 1200, writeFailures: 0)));
+            // withSnapshot: the no-snapshot path has a trailing comma on the pre-PR serializer, which would fail for
+            // a reason other than culture. The snapshot path isolates the numeric formatting.
+            var json = ScreenshotCommand.SerializeResult(null, Result(
+                elapsed: TimeSpan.FromMilliseconds(1234567), screenshotsTaken: 1200, writeFailures: 0,
+                maxVblankReached: 987654, withSnapshot: true));
 
+            // Raw text: numbers must be plain digits with '.' never used as a grouping/decimal mark.
+            json.Should().Contain("\"elapsedMs\":1234567,");
+            json.Should().Contain("\"screenshotsTaken\":1200,");
+            json.Should().Contain("\"maxVblankReached\":987654,");
+            var root = Parse(json);
             root.GetProperty("elapsedMs").GetInt64().Should().Be(1234567);
             root.GetProperty("screenshotsTaken").GetInt32().Should().Be(1200);
+            root.GetProperty("maxVblankReached").GetUInt64().Should().Be(987654);
         }
         finally
         {
