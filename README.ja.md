@@ -21,6 +21,25 @@ PSXRecompStudio は、PlayStation 1（PS1 / PSX）の静的再コンパイルと
 
 **[日本語で協力・参加](https://mao2009.github.io/PSXRecompStudio/ja/get-involved.html)** · [英語版の参加案内](https://mao2009.github.io/PSXRecompStudio/get-involved.html) · [RRS将来構想（英語）](docs/community/rrs-vision.md) · [CONTRIBUTING（英語）](CONTRIBUTING.md) · [検証状況](docs/status/capabilities.md)
 
+## 2026年10月20日 — 証拠に基づく進捗
+
+この表は [`main@551f50ab`](https://github.com/mao2009/PSXRecompStudio/commit/551f50ab6ad5a502376719974db34868206ff356) 時点の**日付付きスナップショット**です。Draft PR の成果を実装済みとは数えません。詳細は [Persona E2E 検証記録](docs/v0.1.0/persona-e2e-status.md)、[機能・検証マトリクス](docs/status/capabilities.md)、[Issue](https://github.com/mao2009/PSXRecompStudio/issues) を参照してください。
+
+| 実行経路・マイルストーン | 確認できたこと | 未達・未確認のこと |
+| --- | --- | --- |
+| OpenBIOS **インタープリタ** | 『女神異聞録ペルソナ』のATLUSロゴとオープニング文章を描画。下記のVBlankキャプチャあり | タイトル画面、オープニング完走、操作可能な状態 |
+| 合成入力のネイティブ再コンパイル | リリース済みalpha CLIで5命令のPS-X EXEを再コンパイル・実行 | 市販タイトル全体のAOT互換性 |
+| Persona **standalone / generated host** | AOTとfallbackによる限定実行・診断。同期IPCの往復が速度制約と確認（[#768](https://github.com/mao2009/PSXRecompStudio/issues/768)） | 長時間実行はタイムアウト。修正後のインタープリタとの映像一致は**未検証**（[#774](https://github.com/mao2009/PSXRecompStudio/issues/774)） |
+| ロード済みコード・fallback | EXE版と実RAMの不一致を診断できる基盤 | root検出、guard一致、AOT復帰経路の一般的な解決は調査中（[#773](https://github.com/mao2009/PSXRecompStudio/issues/773)、[#806](https://github.com/mao2009/PSXRecompStudio/issues/806)、[#807](https://github.com/mao2009/PSXRecompStudio/issues/807)） |
+
+**v0.1の達成条件：** Personaのタイトル画面には**まだ到達していません**。合成テスト成功、ネイティブ成果物の生成、インタープリタでの冒頭描画は、市販ゲームのネイティブ移植成功とは異なります。
+
+### コントリビューターの参加方法
+
+[Open Issue](https://github.com/mao2009/PSXRecompStudio/issues) を確認し、既存PRと重複しない小さな範囲から始めてください。コードだけでなく、独立レビュー、再現手順、合成テスト、ドキュメントの改善を歓迎します。特に [root/fallback](https://github.com/mao2009/PSXRecompStudio/issues/773)、[IPC性能](https://github.com/mao2009/PSXRecompStudio/issues/768)、[映像比較](https://github.com/mao2009/PSXRecompStudio/issues/774) の検証が重要です。[参加ガイド](docs/ja/get-involved.html#first-contributions) と [CONTRIBUTING](CONTRIBUTING.md) に手順があります。
+
+ゲームのROM・ディスクイメージ・Sony BIOS・市販EXE・個人情報をリポジトリやIssueに添付しないでください。AI利用の有無と実測範囲も明示してください。
+
 ## 最新の成果：OpenBIOSインタープリタでPersonaのオープニング画像を確認（2026年10月）
 
 **OpenBIOSを用いたインタープリタ実行経路で、『女神異聞録ペルソナ』のオープニング冒頭を実際に描画できました。** VBlank単位のスクリーンショットでATLUSロゴと、荘子の「胡蝶の夢」を題材とする冒頭の文章を確認しています。ゲーム全体の静的再コンパイルや、遊べるネイティブ移植の達成を意味するものではありません。
