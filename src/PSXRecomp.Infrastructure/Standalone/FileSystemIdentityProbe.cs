@@ -102,12 +102,17 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     /// </summary>
     public static bool IsDeviceNamespacePath(string path)
     {
-        var normalised = path.Replace('/', '\\');
+        // Leading spaces are not part of the path; Win32 does not start a device namespace after them, so they are removed first. A
+        // server component has its trailing spaces and dots removed the way Win32 does ("? " is "?", "??." is "??"), except that a server
+        // made only of dots and spaces ("." or ". ") is the dot server, which is the one case that trimming would otherwise erase.
+        var normalised = path.Replace('/', '\\').TrimStart(' ');
         var doubled = normalised.StartsWith("\\\\", StringComparison.Ordinal);
         var rooted = normalised.StartsWith('\\');
         var server = normalised.TrimStart('\\').Split('\\')[0];
+        var trimmed = server.TrimEnd(' ', '.');
+        var dotServer = server.Length > 0 && server.Contains('.') && server.All(c => c is '.' or ' ');
 
-        if (rooted && server == "??") return true;
-        return doubled && (server == "." || server == "?");
+        if (rooted && trimmed == "??") return true;
+        return doubled && (dotServer || trimmed == "?");
     }
 }

@@ -172,6 +172,10 @@ public sealed class FileSystemIdentityProbeTests
     [InlineData("//??/PhysicalDrive0")]
     [InlineData("\\\\\\.\\PhysicalDrive0")]
     [InlineData("\\\\??\\PhysicalDrive0")]
+    [InlineData("\\\\. \\PhysicalDrive0")]
+    [InlineData("\\\\? \\X")]
+    [InlineData("\\\\?  \\X")]
+    [InlineData("  //./PhysicalDrive0")]
     public void ADeviceNamespacePath_InAnySlashSpelling_IsTypedAsOther(string path)
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "the device namespace is a Windows rule");
@@ -228,6 +232,16 @@ public sealed class FileSystemIdentityProbeTests
     {
         FileSystemIdentityProbe.IsDeviceNamespacePath("\\\\server\\share\\file.bin").Should().BeFalse("a UNC server is an ordinary path");
         FileSystemIdentityProbe.IsDeviceNamespacePath("//server/share/file.bin").Should().BeFalse("a UNC server is an ordinary path");
+    }
+
+    // Issue #786 (final review, round 12): the extended UNC forms (\\?\UNC\server\share, \??\UNC\...) are refused. This is a conservative
+    // refusal of extended UNC paths, fail-closed. It is NOT a claim that Windows types them as devices; the assertion records the choice.
+    [Theory]
+    [InlineData("\\\\?\\UNC\\server\\share\\f.bin")]
+    [InlineData("\\??\\UNC\\server\\share\\f.bin")]
+    public void AnExtendedUncPath_IsRefusedConservatively_NotAClaimOfADevice(string path)
+    {
+        FileSystemIdentityProbe.IsDeviceNamespacePath(path).Should().BeTrue("an extended UNC form is refused conservatively (fail-closed), not classified as a device");
     }
 
     private static string CurrentAccount()
