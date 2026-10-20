@@ -68,8 +68,8 @@ public sealed class ObservedRootPlannerTests
         (plan.Counts.Accepted + plan.Counts.Rejected.Values.Sum()).Should().Be(plan.Counts.Candidates);
     }
 
-    // Issue #773 (Persona real run): the file places one word at the PC, the interpreter fetched another from RAM. Native code for
-    // the file word would not be the code that runs, so the root is not planned.
+    // Issue #773 (synthetic case, not an observed Persona result): the file places one word at the PC, the interpreter fetched
+    // another from RAM. Native code for the file word would not be the code that runs, so the root is not planned.
     [Fact]
     public void ATargetWhoseRamWordDiffersFromTheFileImage_IsNotPlannedAsARoot()
     {

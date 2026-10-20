@@ -62,8 +62,9 @@ public sealed class FallbackRootsCommandTests
         planned.Images.Single().Roots.Should().Equal(Dest, Callee);
     }
 
-    // Issue #773 (Persona real run): the file word at the PC is not the word the interpreter fetched from RAM. The root is not a
-    // valid native route, so the plan reports it rejected, and no roots file or roots directive is written for it.
+    // Issue #773 (synthetic case, not an observed Persona result): the file word at the PC is not the word the interpreter fetched
+    // from RAM. The root is not a valid native route, so the plan reports it rejected, and no roots file or roots directive is
+    // written for it.
     [Fact]
     public void ATargetWhoseRamWordDiffersFromTheFile_IsNotAccepted_AndWritesNoRoot()
     {
