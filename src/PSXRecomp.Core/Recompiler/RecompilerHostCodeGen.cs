@@ -52,6 +52,9 @@ public static class RecompilerHostCodeGen
     private const string ExceptionEntryHelper = "recompiler_exception_entry";
     private const string CodeGuardHelper = "recompiler_code_current";
     private const string UnknownPcLabel = "recompiler_unknown_pc";
+
+    // Set for the duration of one Generate call (single-threaded codegen); false emits the historical text.
+    [ThreadStatic] private static bool s_guardStats;
     private const int IndentSpaces = 2;
     private const string IndentUnit = "  ";
 
@@ -65,7 +68,7 @@ public static class RecompilerHostCodeGen
     /// single-argument overload.
     /// </summary>
     public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode)
-        => Generate(program, loadedCode, traceUnits: false);
+        => Generate(program, loadedCode, traceUnits: false, guardStats: false);
 
     /// <summary>
     /// <see cref="Generate(RecompilerIrProgram, LoadedCodeTable?)"/>, plus the opt-in unit retirement trace (Issue #774).
@@ -75,9 +78,13 @@ public static class RecompilerHostCodeGen
     /// (interrupted, guest exception) and termination. The same build also contains <c>recompiler_trace_attach</c>, which
     /// writes the trace to the file named by the PSX_UNIT_TRACE_FILE environment variable. False generates the same
     /// source byte for byte as the overload without the flag, so the default artifact is unchanged.
+    /// With <paramref name="guardStats"/> the dispatcher also counts, per RAM-placed entry PC, arrivals, guard hits per version
+    /// and guard misses, and writes them to the file named by PSX_GUARD_STATS_FILE (measurement only, Issue #773). Off, the
+    /// emitted text is exactly what it was.
     /// </summary>
-    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool traceUnits)
+    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool traceUnits = false, bool guardStats = false)
     {
+        s_guardStats = guardStats;
         ArgumentNullException.ThrowIfNull(program);
         loadedCode ??= LoadedCodeTable.Empty;
         var entries = program.Blocks.Select(static block => block.EntryPc).ToHashSet();
@@ -271,6 +278,7 @@ public static class RecompilerHostCodeGen
             EmitGteHelperDeclarations(sb);
         }
         EmitStateStruct(sb, traceUnits);
+        if (s_guardStats && loadedCode.Blocks.Count != 0) EmitGuardStatsSupport(sb, loadedCode);
         EmitSra32Helper(sb);
         EmitMulDivHelpers(sb);
 
@@ -920,6 +928,100 @@ public static class RecompilerHostCodeGen
         sb.AppendLine(indent + "return (int32_t)RECOMPILER_REASON_EXECUTION_BUDGET_EXCEEDED;");
     }
 
+
+    private static void EmitGuardStatsSupport(StringBuilder sb, LoadedCodeTable loadedCode)
+    {
+        var groups = loadedCode.Blocks.GroupBy(static v => v.Block.EntryPc).OrderBy(static g => g.Key).ToList();
+        // Per-version tables are flat (one cell per registered version, indexed by psx_gs_off[slot] + version): a slot with
+        // many versions no longer pads every other slot to the same width.
+        var versions = groups.SelectMany(static g => g).ToList();
+        var offsets = new List<int> { 0 };
+        foreach (var g in groups) offsets.Add(offsets[^1] + g.Count());
+        string Cells(Func<GuardedBlock, string> cell) => string.Join(", ", versions.Select(cell));
+        sb.AppendLine("/* Measurement only (PSX_GUARD_STATS_FILE): per RAM-placed entry, arrivals, guard hits per version, guard misses. */");
+        sb.AppendLine("#include <stdio.h>");
+        sb.AppendLine("#include <stdlib.h>");
+        sb.AppendLine("#include <time.h>");
+        sb.AppendLine($"#define PSX_GS_N {groups.Count}u");
+        sb.AppendLine($"#define PSX_GS_T {versions.Count}u");
+        sb.AppendLine($"static const uint32_t psx_gs_pc[PSX_GS_N] = {{ {string.Join(", ", groups.Select(g => FormatHex(g.Key)))} }};");
+        sb.AppendLine($"static const uint32_t psx_gs_off[PSX_GS_N + 1u] = {{ {string.Join(", ", offsets.Select(o => o.ToString(System.Globalization.CultureInfo.InvariantCulture) + "u"))} }};");
+        sb.AppendLine($"static const uint32_t psx_gs_len[PSX_GS_T] = {{ {Cells(v => v.Words.Count + "u")} }};");
+        sb.AppendLine($"static const uint32_t psx_gs_w0[PSX_GS_T] = {{ {Cells(v => v.Words.Count != 0 ? FormatHex(v.Words[0]) : "0u")} }};");
+        sb.AppendLine("static uint64_t psx_gs_arrive[PSX_GS_N], psx_gs_hit[PSX_GS_T], psx_gs_miss[PSX_GS_N], psx_gs_refuse[PSX_GS_N];");
+        sb.AppendLine("static uint32_t psx_gs_missprev[PSX_GS_N], psx_gs_missram[PSX_GS_N];");
+        // CPU state (32 GPRs, pc, prev, slot, RAM word) of the first miss of each entry, at most 16 records in all. A first miss
+        // beyond that is only counted in psx_gs_snapdropped and has no CPU registers in the report.
+        sb.AppendLine("static uint32_t psx_gs_snap[16][36];");
+        sb.AppendLine("static int psx_gs_nsnap = 0, psx_gs_registered = 0;");
+        sb.AppendLine("static uint64_t psx_gs_snapdropped = 0u;");
+        sb.AppendLine("static uint32_t psx_gs_cur = 0u, psx_gs_prev = 0u;");
+        sb.AppendLine("static uint64_t psx_gs_iter = 0u;");
+        // Periodic interval and abort point (Issue #797 test hooks), read from the environment the scope hands to the child.
+        sb.AppendLine("static uint64_t psx_gs_period = 0x400000u, psx_gs_abort = 0u;");
+        sb.AppendLine("static unsigned long long psx_gs_runid = 0ull;");
+        // The file is written whole to <path>.tmp and then replaced over <path>. The previous report is never removed first, so
+        // a refused replacement keeps the report that was there and removes the .tmp. The content is complete before the rename
+        // (fclose is checked). Replacement is platform specific: POSIX rename() replaces atomically; Windows
+        // MoveFileExA(MOVEFILE_REPLACE_EXISTING) is a same-volume rename in practice but not documented as atomic, so a reader
+        // may not see <path> for an instant, and it is refused (keeping the old file) while the destination is open without
+        // FILE_SHARE_DELETE. A killed process leaves the report of an earlier run or of this one (told apart by the run line)
+        // and may leave the .tmp of the dump in progress; durability across power loss is not promised (no fsync).
+        // The last line says whether this is the process's final dump; a file without "end final 1" comes from a periodic
+        // dump of a run that did not exit normally and is incomplete.
+        sb.AppendLine("#ifdef _WIN32");
+        // Declared by hand: <windows.h> (excpt.h) #defines exception_code, which the generated state uses as a member name.
+        sb.AppendLine("__declspec(dllimport) int __stdcall MoveFileExA(const char*, const char*, unsigned long);");
+        sb.AppendLine("static int psx_gs_replace(const char* tmp, const char* path) { return MoveFileExA(tmp, path, 0x1ul /* MOVEFILE_REPLACE_EXISTING */ | 0x8ul /* MOVEFILE_WRITE_THROUGH */) ? 0 : -1; }");
+        sb.AppendLine("#else");
+        sb.AppendLine("static int psx_gs_replace(const char* tmp, const char* path) { return rename(tmp, path); }");
+        sb.AppendLine("#endif");
+        sb.AppendLine("static void psx_gs_dump(int final_dump) {");
+        sb.AppendLine("  const char* path = getenv(\"PSX_GUARD_STATS_FILE\");");
+        sb.AppendLine("  char tmp[1024]; FILE* f; unsigned i, v; int ok;");
+        sb.AppendLine("  if (path == (const char*)0 || path[0] == '\\0') return;");
+        sb.AppendLine("  if (snprintf(tmp, sizeof tmp, \"%s.tmp\", path) >= (int)sizeof tmp) return;");
+        sb.AppendLine("  f = fopen(tmp, \"w\");");
+        sb.AppendLine("  if (f == (FILE*)0) return;");
+        // The run id is fixed at the first dump of the process: a report of this run and its periodic dumps share it, and a
+        // report left by an earlier run (not yet replaced) has another one (Issue #797).
+        sb.AppendLine("  if (psx_gs_runid == 0ull) psx_gs_runid = ((unsigned long long)time(0) << 20) ^ (unsigned long long)clock() ^ 1ull;");
+        sb.AppendLine("  fprintf(f, \"guardstats 1\\nrun %016llx\\niter %llu\\n\", psx_gs_runid, (unsigned long long)psx_gs_iter);");
+        sb.AppendLine("  for (i = 0u; i < PSX_GS_N; i++) {");
+        sb.AppendLine("    if (psx_gs_arrive[i] == 0u) continue;");
+        sb.AppendLine("    fprintf(f, \"slot %08X nver %u arrive %llu miss %llu refuse %llu missprevdispatch %08X missram %08X\", (unsigned)psx_gs_pc[i], (unsigned)(psx_gs_off[i + 1u] - psx_gs_off[i]), (unsigned long long)psx_gs_arrive[i], (unsigned long long)psx_gs_miss[i], (unsigned long long)psx_gs_refuse[i], (unsigned)psx_gs_missprev[i], (unsigned)psx_gs_missram[i]);");
+        sb.AppendLine("    for (v = psx_gs_off[i]; v < psx_gs_off[i + 1u]; v++) fprintf(f, \" v%u hit %llu len %u w0 %08X\", v - psx_gs_off[i], (unsigned long long)psx_gs_hit[v], (unsigned)psx_gs_len[v], (unsigned)psx_gs_w0[v]);");
+        sb.AppendLine("    fprintf(f, \"\\n\");");
+        sb.AppendLine("  }");
+        sb.AppendLine("  for (i = 0u; i < (unsigned)psx_gs_nsnap; i++) {");
+        sb.AppendLine("    fprintf(f, \"snap slot %08X prevdispatch %08X ram %08X pc %08X gpr\", (unsigned)psx_gs_pc[psx_gs_snap[i][34]], (unsigned)psx_gs_snap[i][33], (unsigned)psx_gs_snap[i][35], (unsigned)psx_gs_snap[i][32]);");
+        sb.AppendLine("    for (v = 0u; v < 32u; v++) fprintf(f, \" %08X\", (unsigned)psx_gs_snap[i][v]);");
+        sb.AppendLine("    fprintf(f, \"\\n\");");
+        sb.AppendLine("  }");
+        sb.AppendLine("  fprintf(f, \"snapdropped %llu\\nend final %d\\n\", (unsigned long long)psx_gs_snapdropped, final_dump ? 1 : 0);");
+        sb.AppendLine("  ok = ferror(f) == 0;");
+        sb.AppendLine("  if (fclose(f) != 0) ok = 0;");
+        sb.AppendLine("  if (!ok || psx_gs_replace(tmp, path) != 0) remove(tmp);");
+        sb.AppendLine("}");
+        sb.AppendLine("static void psx_gs_dump_final(void) { psx_gs_dump(1); }");
+        sb.AppendLine("/* psx_gs_prev is the entry PC of the previous dispatch-loop iteration, not necessarily the guest source of the transfer. */");
+        sb.AppendLine("static void psx_gs_init_timing(void) {");
+        sb.AppendLine("  const char* e = getenv(\"PSX_GUARD_STATS_PERIOD\");");
+        sb.AppendLine("  unsigned long long v;");
+        sb.AppendLine("  if (e != (const char*)0 && (v = strtoull(e, (char**)0, 10)) != 0ull) psx_gs_period = v;");
+        sb.AppendLine("  e = getenv(\"PSX_GUARD_STATS_ABORT_AFTER\");");
+        sb.AppendLine("  if (e != (const char*)0) psx_gs_abort = strtoull(e, (char**)0, 10);");
+        sb.AppendLine("}");
+        // The period is a run-time value (the default 0x400000 is unchanged), so the tick uses a modulo. An abort point ends the
+        // child with _Exit, which skips atexit: the final dump does not run, and the report left is the last periodic one.
+        sb.AppendLine("#define PSX_GS_TICK(st) do { if (!psx_gs_registered) { psx_gs_registered = 1; psx_gs_init_timing(); atexit(psx_gs_dump_final); } psx_gs_prev = psx_gs_cur; psx_gs_cur = (st)->pc; if ((++psx_gs_iter % psx_gs_period) == 0u) psx_gs_dump(0); if (psx_gs_abort != 0u && psx_gs_iter >= psx_gs_abort) _Exit(86); } while (0)");
+        sb.AppendLine("#define PSX_GS_ARRIVE(slot) (psx_gs_arrive[slot]++)");
+        sb.AppendLine("#define PSX_GS_REFUSE(slot) (psx_gs_refuse[slot]++)");
+        sb.AppendLine("#define PSX_GS_HIT(slot, ver) (psx_gs_hit[psx_gs_off[slot] + (ver)]++)");
+        sb.AppendLine("#define PSX_GS_MISS(slot, st) do { unsigned k_; if (psx_gs_miss[slot]++ == 0u) { psx_gs_missprev[slot] = psx_gs_prev; psx_gs_missram[slot] = recompiler_read_mem32((st)->core, (st)->pc); if (psx_gs_nsnap < 16) { for (k_ = 0u; k_ < 32u; k_++) psx_gs_snap[psx_gs_nsnap][k_] = (st)->gpr[k_]; psx_gs_snap[psx_gs_nsnap][32] = (st)->pc; psx_gs_snap[psx_gs_nsnap][33] = psx_gs_prev; psx_gs_snap[psx_gs_nsnap][34] = (uint32_t)(slot); psx_gs_snap[psx_gs_nsnap][35] = psx_gs_missram[slot]; psx_gs_nsnap++; } else { psx_gs_snapdropped++; } } } while (0)");
+        sb.AppendLine();
+    }
+
     // Issue #774: the unit trace writer, emitted only in a trace build. One JSON object per line:
     //   {"v":1,"kind":"header",...} once, {"v":1,"kind":"unit",...} per unit, then either
     //   {"v":1,"kind":"end","complete":true} at a normal exit, or {"v":1,"kind":"truncated",...} when the output
@@ -1101,6 +1203,7 @@ int recompiler_trace_attach(struct RecompilerState* state) {
             sb.AppendLine(IndentUnit + "{ static int trace_started = 0; if (!trace_started) { trace_started = 1; recompiler_trace_attach(state); } }");
         sb.AppendLine(IndentUnit + "for (;;) {");
         sb.AppendLine(IndentUnit + IndentUnit + "uint32_t retired = 0;");
+        if (s_guardStats && loadedCode.Blocks.Count != 0) sb.AppendLine(IndentUnit + IndentUnit + $"PSX_GS_TICK({StateParam});");
         sb.AppendLine(IndentUnit + IndentUnit + "state->partial_retired = 0u; state->unit_interrupted = 0u;");
         // Issue #680: the interrupt boundary. Every iteration starts between dispatch units, and a unit
         // fuses a branch with its delay slot, so this is never inside a branch + delay-slot pair —
@@ -1121,6 +1224,10 @@ int recompiler_trace_attach(struct RecompilerState* state) {
         // state; budget == 0 executes nothing.
         // Clang -O0 lowers a sparse cross-image switch to thousands of linear comparisons.
         // Bound each inner switch to a 4 KiB PC page; preserve full addresses and version guards.
+        // Measurement only: the slot numbering EmitGuardStatsSupport uses (entry PCs ascending).
+        var guardSlots = s_guardStats
+            ? loadedCode.Blocks.Select(static v => v.Block.EntryPc).Distinct().Order().Select(static (pc, i) => (pc, i)).ToDictionary(static t => t.pc, static t => t.i)
+            : [];
         var splitDispatch = loadedCode.Blocks.Count != 0;
         var pages = splitDispatch
             ? program.Blocks.Select(static b => b.EntryPc >> 12).Concat(loadedCode.Blocks.Select(static b => b.Block.EntryPc >> 12)).Distinct().Order().ToArray()
@@ -1159,6 +1266,9 @@ int recompiler_trace_attach(struct RecompilerState* state) {
             {
                 var indent = IndentUnit + IndentUnit + IndentUnit;
                 sb.AppendLine(IndentUnit + IndentUnit + $"case {FormatImmediate(group.Key)}: {{");
+                var guardSlot = s_guardStats ? guardSlots[group.Key] : -1;
+                // arrive = hit + miss + refuse: an arrival whose budget check refuses it ran nothing and is counted as a refusal.
+                if (s_guardStats) sb.AppendLine(indent + $"PSX_GS_ARRIVE({guardSlot});");
                 var version = 0;
                 foreach (var loaded in group)
                 {
@@ -1166,8 +1276,11 @@ int recompiler_trace_attach(struct RecompilerState* state) {
                     sb.AppendLine(indent + $"static uint64_t seen{version} = UINT64_MAX;");
                     sb.AppendLine(indent + $"if ({CodeGuardHelper}({StateParam}->{CoreField}, {StateParam}->{PcField}, code{version}, {loaded.Words.Count}u, &seen{version})) {{");
                     sb.AppendLine(indent + IndentUnit + "if (steps >= budget) {");
+                    if (s_guardStats) sb.AppendLine(indent + IndentUnit + IndentUnit + $"PSX_GS_REFUSE({guardSlot});");
                     EmitBudgetExceededReturn(sb, 5);
                     sb.AppendLine(indent + IndentUnit + "}");
+                    // Counted after the budget check: a unit the budget refuses did not run and is not a hit (Issue #797).
+                    if (s_guardStats) sb.AppendLine(indent + IndentUnit + $"PSX_GS_HIT({guardSlot}, {version});");
                     sb.AppendLine(indent + IndentUnit + "#ifdef RECOMPILER_CHECKPOINTS");
                     sb.AppendLine(indent + IndentUnit + IndentUnit + $"printf(\"CKPT 0x%08X\\n\", {StateParam}->{PcField});");
                     sb.AppendLine(indent + IndentUnit + "#endif");
@@ -1178,6 +1291,7 @@ int recompiler_trace_attach(struct RecompilerState* state) {
                     version++;
                 }
 
+                if (s_guardStats) sb.AppendLine(indent + $"PSX_GS_MISS({guardSlot}, {StateParam});");
                 sb.AppendLine(indent + $"goto {UnknownPcLabel};");
                 sb.AppendLine(IndentUnit + IndentUnit + "}");
             }
