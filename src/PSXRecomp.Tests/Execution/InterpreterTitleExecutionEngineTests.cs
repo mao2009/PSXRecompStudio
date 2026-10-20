@@ -17,6 +17,17 @@ public sealed class InterpreterTitleExecutionEngineTests
     // Reached through the engine's own fields (no product-code test hook added);
     // each adapter throws ObjectDisposedException once disposed, which proves
     // the engine's Dispose() actually reached it.
+    // Issue #773: an address outside RAM and ROM has no word to observe, so it is reported as not readable, never as a zero word.
+    [Fact]
+    public void TryReadGuestWord_OutsideRamAndRom_IsNotReadable_AndRamIsReadable()
+    {
+        using var engine = new InterpreterTitleExecutionEngine([MipsEncoding.Nop], Entry);
+
+        engine.TryReadGuestWord(0x1F000000u, out _).Should().BeFalse("the expansion region is neither RAM nor ROM");
+        engine.TryReadGuestWord(Entry, out var word).Should().BeTrue();
+        word.Should().Be(MipsEncoding.Nop);
+    }
+
     [Fact]
     public void Dispose_DisposesOwnedMmioAdapters()
     {

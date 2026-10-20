@@ -77,6 +77,49 @@ public sealed class FallbackRootsCommandTests
         planned.Images.Single().Roots.Should().Equal(Dest);
     }
 
+    // Issue #773 (review): every fallback fetch at a PC is observed. A later fetch that reads a different word leaves the PC
+    // unobserved, so the planner refuses it even though the first fetch matched the file.
+    [Fact]
+    public void ALaterDifferingFetch_AtTheSamePc_LeavesThePcUnobserved_AndTheRootIsRejected()
+    {
+        var log = new FallbackRamWordLog();
+        log.Observe(Callee, ObservedRootsFixtures.Text[4]);
+        log.Observe(Callee, 0x12345678u);
+        var image = new LoadedImageSpec("test.exe", Dest, ObservedRootsFixtures.Text, [Dest]) { SourceSha256 = ObservedRootsFixtures.Sha256Hex(ObservedRootsFixtures.Exe(ObservedRootsFixtures.Text)) };
+
+        log.Get(Callee).Should().BeNull();
+        var plan = ObservedRootPlanner.Plan([image], [new ObservedFallbackTarget(Callee, "unknown-code", 1, 40, log.Get(Callee))], ObservedRootBudget.Default);
+        plan.Images.Should().BeEmpty();
+        plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
+    }
+
+    [Fact]
+    public void FetchesThatAllReadTheFileWord_KeepThePcObserved()
+    {
+        var log = new FallbackRamWordLog();
+        log.Observe(Callee, ObservedRootsFixtures.Text[4]);
+        log.Observe(Callee, ObservedRootsFixtures.Text[4]);
+
+        log.Get(Callee).Should().Be(ObservedRootsFixtures.Text[4]);
+    }
+
+    // Issue #773 (review): a fetch that cannot be read (outside RAM and ROM) is unobserved, not the zero word. The file word at
+    // this PC is 0, so reading it as 0 would wrongly match.
+    [Fact]
+    public void AnUnreadableFetch_LeavesThePcUnobserved_EvenWhenTheFileWordIsZero()
+    {
+        var log = new FallbackRamWordLog();
+        var zeroPc = Dest + 8;
+        log.Observe(zeroPc, null);
+        var image = new LoadedImageSpec("test.exe", Dest, ObservedRootsFixtures.Text, [Dest]) { SourceSha256 = ObservedRootsFixtures.Sha256Hex(ObservedRootsFixtures.Exe(ObservedRootsFixtures.Text)) };
+        ObservedRootsFixtures.Text[2].Should().Be(0u, "the file word at this PC is zero");
+
+        var plan = ObservedRootPlanner.Plan([image], [new ObservedFallbackTarget(zeroPc, "unknown-code", 1, 40, log.Get(zeroPc))], ObservedRootBudget.Default);
+
+        plan.Images.Should().BeEmpty();
+        plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
+    }
+
     [Fact]
     public void TheInputManifest_IsNeverChanged()
     {

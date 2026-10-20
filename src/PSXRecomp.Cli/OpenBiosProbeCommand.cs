@@ -525,8 +525,8 @@ internal static class OpenBiosProbeCommand
             double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
             uint? lastFallbackFetch = null;
-            // Issue #773: the RAM word the interpreter fetched at each fallback PC, first seen (the observation the planner checks against the file).
-            var ramWords = new Dictionary<uint, uint>();
+            // Issue #773: the RAM word the interpreter fetched at each fallback PC (the observation the planner checks against the file).
+            var ramWords = new FallbackRamWordLog();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
@@ -554,7 +554,7 @@ internal static class OpenBiosProbeCommand
                 {
                     current = interpreter;
                     lastFallbackFetch = pc;
-                    if (!ramWords.ContainsKey(pc)) ramWords[pc] = interpreter.ReadGuestWord(pc);
+                    ramWords.Observe(pc, interpreter.TryReadGuestWord(pc, out var fetched) ? fetched : (uint?)null);
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
                     if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
@@ -614,7 +614,7 @@ internal static class OpenBiosProbeCommand
                 // report above is unchanged; this file is written only when requested. A run that did not finish has no
                 // evidence, and an export of it would read as "no targets" to the planner, so none is written.
                 var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt,
-                    pc => ramWords.TryGetValue(pc, out var word) ? word : (uint?)null);
+                    ramWords.Get);
                 if (exportJson is null)
                 {
                     error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
@@ -956,4 +956,30 @@ internal static class OpenBiosProbeCommand
             lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{Hex(t.From.Word)}->{Hex(t.To)}").ToArray()
         };
     }
+}
+
+/// <summary>
+/// The RAM word observed at each fallback PC (Issue #773). Every fallback fetch is observed. A PC keeps its word only while every
+/// fetch at it reads that same word; a fetch that cannot be read (outside RAM and ROM), or that reads a different word, leaves the PC
+/// unobserved (null) for the rest of the run, so the planner refuses it. Nothing is inferred from a missing read.
+/// </summary>
+[Infrastructure]
+internal sealed class FallbackRamWordLog
+{
+    private readonly Dictionary<uint, uint?> words = new();
+
+    public void Observe(uint pc, uint? word)
+    {
+        if (!words.TryGetValue(pc, out var seen))
+        {
+            words[pc] = word;
+        }
+        else if (seen is not null && seen != word)
+        {
+            words[pc] = null;
+        }
+    }
+
+    /// <summary>The PC's word, or null when it was never observed or its fetches disagreed.</summary>
+    public uint? Get(uint pc) => words.TryGetValue(pc, out var word) ? word : null;
 }

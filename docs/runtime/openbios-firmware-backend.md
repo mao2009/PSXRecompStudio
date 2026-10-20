@@ -297,7 +297,14 @@ execution that a different export would show. A v1 export carries no identity an
 `outcome` (its terminal `TitleExecutionState` and `complete`). Only a run that reached a classified end (`Completed`,
 `Returned`, `RuntimeHandoff`) is planned from; an export of a run that exhausted its budget, failed, or hit an unsupported
 transfer is partial and is refused, and an export without `outcome` is malformed. The probe still writes such an export
-(with its outcome) and reports it on stderr. Output safety: the
+(with its outcome) and reports it on stderr. Each target also carries `ramWord`: the instruction word the interpreter read from guest
+RAM or ROM at that PC, observed at every fallback fetch there. It is `null` when the PC is outside RAM and ROM (the probe reads no
+word there, so a zero is never recorded for it), when a fetch could not be read, or when two fetches at the same PC read different
+words. A `null` `ramWord` is refused as unverified. The planner reads a target as a candidate root only when its `ramWord`
+equals the word the EXE file places at that PC; any other target is rejected with the reason `ram-word-mismatch` and is not reported
+as a native route. This check compares what the run fetched with the file, so it can refuse a root whose native block would not run,
+but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that at run time. A `v2` export
+without `ramWord` is malformed and refused. Output safety: the
 output manifest must sit beside the input; no existing file or directory is overwritten; every output is first written
 under a run-unique `.<name>.<guid>.tmp` name in the same directory (exclusive create), the staged manifest is read back
 through the manifest parser, then the roots files are renamed into place (no overwrite) and the manifest last (the commit

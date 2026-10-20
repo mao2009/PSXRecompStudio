@@ -278,7 +278,23 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public uint ReadGuestGpr(int index) => _core.GetGpr(index);
 
     /// <summary>Reads an aligned guest RAM/ROM word without side effects; 0 outside RAM and ROM.</summary>
-    public uint ReadGuestWord(uint address) => FetchWordForTrace(address);
+    public uint ReadGuestWord(uint address) => TryReadGuestWord(address, out var word) ? word : 0u;
+
+    /// <summary>
+    /// Reads an aligned guest RAM/ROM word without side effects. Returns false outside RAM and ROM (Issue #773): there is no
+    /// word to observe there, so a caller must not treat it as a zero word.
+    /// </summary>
+    public bool TryReadGuestWord(uint address, out uint word)
+    {
+        if (Ps1AddressTranslation.TryTranslate(address, out var physical) && (physical < 0x00800000u || physical is >= 0x1FC00000u and < 0x1FC80000u))
+        {
+            word = _core.ReadMemory32(physical);
+            return true;
+        }
+
+        word = 0u;
+        return false;
+    }
 
     /// <summary>COP0 SR/CAUSE/EPC/BadVAddr as the CPU holds them now (diagnostic only).</summary>
     public (uint Sr, uint Cause, uint Epc, uint BadVAddr) Cop0Diagnostics =>
@@ -808,10 +824,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         GC.SuppressFinalize(this);
     }
 
-    private uint FetchWordForTrace(uint pc) =>
-        Ps1AddressTranslation.TryTranslate(pc, out var physical) && (physical < 0x00800000u || physical is >= 0x1FC00000u and < 0x1FC80000u)
-            ? _core.ReadMemory32(physical)
-            : 0u;
+    private uint FetchWordForTrace(uint pc) => TryReadGuestWord(pc, out var word) ? word : 0u;
 
     private uint[] ReadGpr()
     {
