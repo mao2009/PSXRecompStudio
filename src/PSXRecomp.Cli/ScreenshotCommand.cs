@@ -27,7 +27,13 @@ namespace PSXRecomp.Infrastructure.Cli;
 [Infrastructure]
 public static class ScreenshotCommand
 {
-    internal const string Usage = "usage: psxrecomp screenshot <input.exe|input.chd> --output <dir> [--openbios <rom.bin>] [--disc <image.chd|image.bin>] [--segment-budget <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]";
+    internal const string Usage = "usage: psxrecomp screenshot <input.exe|input.chd> --output <dir> [--openbios <rom.bin>] [--disc <image.chd|image.bin>] [--segment-budget <n>] [--segments <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]";
+
+    /// <summary>Default whole-run segment budget for the HLE path (`--segments` overrides it).</summary>
+    public const uint DefaultHleSegments = 64u;
+
+    /// <summary>Default whole-run segment budget for the OpenBIOS path (`--segments` overrides it).</summary>
+    public const uint DefaultOpenBiosSegments = 100u;
 
     /// <summary>Default VBlank interval between screenshots.</summary>
     public const uint DefaultVBlankInterval = 300;
@@ -59,6 +65,7 @@ public static class ScreenshotCommand
             standardOutput.WriteLine("  --openbios <rom.bin>       optional: OpenBIOS ROM file (512KB) for real BIOS execution");
             standardOutput.WriteLine("  --disc <image.chd|image.bin>  required with --openbios: CD-ROM image for the game");
             standardOutput.WriteLine("  --segment-budget <n>       per-segment instruction budget (default: 100000)");
+            standardOutput.WriteLine("  --segments <n>             whole-run segment budget on both paths; the run stops when it is spent (default: 64 HLE, 100 with --openbios)");
             standardOutput.WriteLine("  --vblank-interval <n>      VBlank interval between captures (default: 300)");
             standardOutput.WriteLine("  --max-screenshots <n>      maximum screenshots to capture (default: 10)");
             standardOutput.WriteLine("  --start-vblank <n>         first VBlank to capture (default: 300)");
@@ -78,7 +85,8 @@ public static class ScreenshotCommand
         }
 
         var segmentBudget = parsed.SegmentBudget ?? 100_000u;
-        var segments = parsed.Segments ?? 100u;
+        var segments = parsed.Segments ?? DefaultOpenBiosSegments;
+        var hleSegments = parsed.Segments ?? DefaultHleSegments;
         var vblankInterval = parsed.VBlankInterval ?? DefaultVBlankInterval;
         var maxScreenshots = parsed.MaxScreenshots ?? DefaultMaxScreenshots;
         var startVblank = parsed.StartVBlank ?? DefaultStartVBlank;
@@ -128,13 +136,13 @@ public static class ScreenshotCommand
                 PsxExeTitleExecution input;
                 if (Path.GetExtension(parsed.Input).Equals(".chd", StringComparison.OrdinalIgnoreCase))
                 {
-                    var resolved = CliInput.LoadWithIdentity(parsed.Input!, outerBudget: 64, segmentBudget);
+                    var resolved = CliInput.LoadWithIdentity(parsed.Input!, outerBudget: hleSegments, segmentBudget);
                     input = resolved.Execution;
                     inputSha256 = resolved.Sha256;
                 }
                 else
                 {
-                    input = CliInput.Load(parsed.Input!, outerBudget: 64, segmentBudget);
+                    input = CliInput.Load(parsed.Input!, outerBudget: hleSegments, segmentBudget);
                 }
 
                 result = RunScreenshotCapture(

@@ -28,7 +28,7 @@ psxrecomp run       <input.exe|input.chd> [--output <dir>] [--segment-budget <n>
 psxrecomp package  <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>] [--self-contained] [--json]
 psxrecomp package  <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--self-contained]
 psxrecomp doctor    [--json]
-psxrecomp screenshot <input.exe|input.chd> --output <dir> [--segment-budget <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]
+psxrecomp screenshot <input.exe|input.chd> --output <dir> [--segment-budget <n>] [--segments <n>] [--vblank-interval <n>] [--max-screenshots <n>] [--start-vblank <n>] [--timeout <seconds>] [--json]
 psxrecomp screenshot --openbios <rom.bin> --disc <image.chd|image.bin> --output <dir> [same options] [--json]
 ```
 
@@ -133,6 +133,11 @@ The run writes `manifest.json` next to the PNGs. It records `stopReason`,
 and `capturedVblank`, the VBlank it was actually taken at, which can be later
 when the counter skipped past the target) and `staleFiles`. Each PNG also
 carries `targetVblank` and `capturedVblank` as `tEXt` metadata.
+
+`--segments <n>` is the whole-run segment budget on **both** paths: the run stops
+with `execution_budget` once that many segments have run, counting every continuation.
+Without it the path default applies: **64** segments on the HLE path (exe or CHD input),
+**100** with `--openbios`. The per-segment instruction budget is `--segment-budget`.
 
 `stopReason` values: `goal_reached`, `timeout`, `capture_write_failed`,
 `execution_budget`, `completed`, `returned`, `runtime_handoff`,
