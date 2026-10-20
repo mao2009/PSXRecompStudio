@@ -795,6 +795,33 @@ public sealed class RuntimeCodeGeneratedHostTests
     }
 
     [Fact]
+    public void GuardStats_AStrayParentAbortValue_DoesNotEndAGuardStatsChild()
+    {
+        // Issue #797 (review): the scope always hands the child its hook values (0 when unset), so an abort point left in the
+        // parent environment cannot end a guard-stats run. The parent value is set for this test only and restored in finally.
+#pragma warning disable AARC003 // Test-only: a stray parent value is set for this process for the duration of the test and restored.
+        using var dir = new TempDirectory();
+        var statsPath = Path.Combine(dir.FullPath, "guard-stats.txt");
+        var before = Environment.GetEnvironmentVariable("PSX_GUARD_STATS_ABORT_AFTER");
+        try
+        {
+            Environment.SetEnvironmentVariable("PSX_GUARD_STATS_ABORT_AFTER", "1500");
+            RunWithGuardStats(statsPath, dir.FullPath, GuardLoopFixture(2_000), 5_000_000);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PSX_GUARD_STATS_ABORT_AFTER", before);
+        }
+
+        var lines = File.ReadAllLines(statsPath);
+        lines[^1].Should().Be("end final 1", "the scope passes 0 for the abort point, so the stray parent value is not used");
+        var iter = ulong.Parse(lines.Single(static l => l.StartsWith("iter ", StringComparison.Ordinal))["iter ".Length..],
+            System.Globalization.CultureInfo.InvariantCulture);
+        iter.Should().BeGreaterThan(1500ul, "the run went past the stray abort point");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
     public void GuardStats_RunPastThePeriodicDumpInterval_EndsWithItsCompleteFinalReport()
     {
         // Issue #797 coverage: a run of more than the default period (0x400000 units, PSX_GS_TICK) crosses the periodic dump. The
