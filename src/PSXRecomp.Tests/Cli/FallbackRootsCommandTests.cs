@@ -123,10 +123,10 @@ public sealed class FallbackRootsCommandTests
         plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
     }
 
-    // Issue #773 (review): the probe's per-fetch wiring (FallbackRamWordLog.ObserveFetch) feeds the export. Two fallback fetches at
-    // one PC read different RAM words, so the exported target carries no ramWord, and the planner reads it back as unobserved.
+    // Issue #773 (review): the fetch observer the probe installs (OpenBiosProbeCommand.CreateFallbackFetchObserver) feeds the export.
+    // Two fallback fetches at one PC read different RAM words, so the exported target carries no ramWord.
     [Fact]
-    public void TheProbePath_ExportsNoRamWord_WhenTheSamePcReadsDifferentWords()
+    public void TheInstalledFetchObserver_ExportsNoRamWord_WhenTheSamePcReadsDifferentWords()
     {
         var export = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.JumpRegister(31) });
 
@@ -134,15 +134,31 @@ public sealed class FallbackRootsCommandTests
     }
 
     [Fact]
-    public void TheProbePath_ExportsTheRamWord_WhenEveryFetchReadsTheSameWord()
+    public void TheInstalledFetchObserver_ExportsTheRamWord_WhenEveryFetchReadsTheSameWord()
     {
         var export = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.Nop });
 
         export.Targets.Should().ContainSingle().Which.RamWord.Should().Be(MipsEncoding.Nop);
     }
 
-    // Runs the probe's fetch wiring for two fallback fetches at Pc (each on an interpreter whose RAM holds the given word), then
-    // builds the export the probe would write and reads it back through the planner's parser.
+    [Fact]
+    public void TheInstalledFetchObserver_StillRunsTheProbesOwnObservation_OncePerFetch()
+    {
+        var log = new FallbackRamWordLog();
+        var calls = 0;
+        var observer = OpenBiosProbeCommand.CreateFallbackFetchObserver(log, (_, _) => calls++);
+        using var graph = new PsxDeviceGraph();
+        var scheduler = new DeviceScheduler(graph.Core, graph.InterruptControllerAdapter, graph.GpuAdapter, graph.CdRomDevice, graph.CdRomDmaTransfer);
+        using var engine = InterpreterTitleExecutionEngine.Attach([MipsEncoding.Nop], Entry, graph, scheduler);
+
+        observer(engine, Entry);
+        observer(engine, Entry);
+
+        calls.Should().Be(2);
+    }
+
+    // Drives the observer the probe installs for two fallback fetches at Pc (the RAM word at Pc changes between them), then builds
+    // the export the probe would write and reads it back through the planner's parser.
     private static ObservedFallbackExport ProbeExportAt(uint pc, uint[] firstRam, uint[] secondRam)
     {
         using var dir = new TempDirectory();
@@ -155,9 +171,10 @@ public sealed class FallbackRootsCommandTests
         using var graph = new PsxDeviceGraph();
         var scheduler = new DeviceScheduler(graph.Core, graph.InterruptControllerAdapter, graph.GpuAdapter, graph.CdRomDevice, graph.CdRomDmaTransfer);
         graph.Core.CopyRamFrom(pc & 0x1FFFFFFFu, BitConverter.GetBytes(firstRam[0]));
-        using (var first = InterpreterTitleExecutionEngine.Attach(firstRam, pc, graph, scheduler)) log.ObserveFetch(first, pc);
+        var observer = OpenBiosProbeCommand.CreateFallbackFetchObserver(log, (_, _) => { });
+        using (var first = InterpreterTitleExecutionEngine.Attach(firstRam, pc, graph, scheduler)) observer(first, pc);
         graph.Core.CopyRamFrom(pc & 0x1FFFFFFFu, BitConverter.GetBytes(secondRam[0]));
-        using (var second = InterpreterTitleExecutionEngine.Attach(secondRam, pc, graph, scheduler)) log.ObserveFetch(second, pc);
+        using (var second = InterpreterTitleExecutionEngine.Attach(secondRam, pc, graph, scheduler)) observer(second, pc);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(pc, Entries: 2, Instructions: 2, LastReturnPc: Dest)]);
 
         var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, log.Get);

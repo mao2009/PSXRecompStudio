@@ -550,11 +550,10 @@ internal static class OpenBiosProbeCommand
                 // over the existing --host-transfer path.
                 embedImage: probe.Standalone)
             {
-                FallbackFetchObserver = (interpreter, pc) =>
+                FallbackFetchObserver = CreateFallbackFetchObserver(ramWords, (interpreter, pc) =>
                 {
                     current = interpreter;
                     lastFallbackFetch = pc;
-                    ramWords.ObserveFetch(interpreter, pc);
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
                     if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
@@ -576,7 +575,7 @@ internal static class OpenBiosProbeCommand
                     {
                         error.WriteLine($"openbios-probe: generated host: {fetches} fallback fetches, {clock.Elapsed.TotalSeconds:F0} s");
                     }
-                },
+                }),
                 FallbackTransitionObserver = transition =>
                 {
                     accounting.OnTransition(transition);
@@ -885,6 +884,18 @@ internal static class OpenBiosProbeCommand
             .ToArray();
 
     private static string Hex(uint v) => $"0x{v:X8}";
+
+    /// <summary>
+    /// The fallback fetch observer the probe installs (Issue #773): records the RAM word at each fetched PC, then runs the probe's own
+    /// observation. The probe installs exactly this result, so a test that drives it exercises the probe's wiring.
+    /// </summary>
+    internal static Action<InterpreterTitleExecutionEngine, uint> CreateFallbackFetchObserver(
+        FallbackRamWordLog ramWords, Action<InterpreterTitleExecutionEngine, uint> observeRest) =>
+        (interpreter, pc) =>
+        {
+            ramWords.ObserveFetch(interpreter, pc);
+            observeRest(interpreter, pc);
+        };
 
     /// <summary>
     /// The <c>fallback-targets/v2</c> document for a run (Issue #773), or null when the run has no fallback evidence (it did not
