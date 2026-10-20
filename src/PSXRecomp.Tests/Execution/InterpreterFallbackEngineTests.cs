@@ -156,6 +156,38 @@ public sealed class InterpreterFallbackEngineTests
     }
 
     [Fact]
+    public void FallbackProgress_IsPublishedWhileTheSegmentRuns_AndClearedAfterIt()
+    {
+        // Issue #806: a host that is stuck inside a segment reads these scalars (never the graph) to say where it is.
+        // An endless loop that the observer stops after five fetches: each fetch sees the PC it is about to execute and
+        // the instructions retired before it.
+        var code = new Block(Entry).Emit(Addiu(S0, S0, 1), Addiu(S0, S0, 1), PSXRecomp.Tests.Recompiler.MipsEncoding.Jump(Entry), Nop);
+        var (graph, _, engine) = Attached(Image(code));
+        using var _ = graph;
+        using var __ = engine;
+        engine.FallbackProgress.Should().BeNull("no segment is running");
+        var fetches = 0;
+        var seen = new List<(uint Pc, ulong Retired, uint EntryPc, uint Budget)>();
+        engine.FetchObserver = pc =>
+        {
+            fetches++;
+            var progress = engine.FallbackProgress;
+            progress.Should().NotBeNull("a fetch inside a segment sees the segment in flight");
+            seen.Add((progress!.Pc, progress.RetiredInstructions, progress.EntryPc, progress.InstructionBudget));
+            pc.Should().Be(progress.Pc, "the published PC is the one about to be fetched");
+            if (fetches == 5) engine.StopRequested = true;
+        };
+
+        var outcome = engine.RunFallbackSegment(Entering(Entry), Returns, instructionBudget: 50);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.Stopped);
+        seen.Should().HaveCount(5);
+        seen.Select(s => s.Retired).Should().Equal(new ulong[] { 0, 1, 2, 3, 4 }, "one instruction retires per fetch in this loop");
+        seen.Should().OnlyContain(s => s.EntryPc == Entry && s.Budget == 50u);
+        engine.FallbackProgress.Should().BeNull("the segment ended");
+    }
+
+    [Fact]
     public void AnUnservicedException_StopsFailClosed()
     {
         var code = new Block(Entry).Emit(PSXRecomp.Tests.Recompiler.MipsEncoding.Break(), Nop);

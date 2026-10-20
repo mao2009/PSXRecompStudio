@@ -220,6 +220,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
     public MixedFallbackTimings Timings => new(_transferClock.Elapsed.TotalMilliseconds, _fallbackClock.Elapsed.TotalMilliseconds);
 
+    /// <summary>The fallback segment in flight as published by its stepping thread (Issue #806); null when none runs.</summary>
+    public FallbackSegmentProgress? InFlightSegment => _interpreter.FallbackProgress;
+
     public void Dispose() => _interpreter.Dispose();
 
     /// <summary>

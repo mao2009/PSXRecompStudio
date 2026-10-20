@@ -111,6 +111,14 @@ public sealed record FallbackSegmentOutcome(
     string? DiagnosticCode,
     string? DiagnosticMessage);
 
+/// <summary>The fallback segment in flight, as its stepping thread last published it (Issue #806).</summary>
+/// <param name="EntryPc">The PC the segment started at (the artifact's transfer target).</param>
+/// <param name="Pc">The PC the interpreter was about to execute at the last published step.</param>
+/// <param name="RetiredInstructions">Instructions retired by the segment as of that step.</param>
+/// <param name="InstructionBudget">The segment's instruction budget.</param>
+[Domain]
+public sealed record FallbackSegmentProgress(uint EntryPc, uint Pc, ulong RetiredInstructions, uint InstructionBudget);
+
 /// <summary>One distinct fallback target and what the run spent there (Issue #693).</summary>
 /// <param name="Target">The in-image PC the artifact had no block for.</param>
 /// <param name="Entries">How many times control was handed to the interpreter at it.</param>

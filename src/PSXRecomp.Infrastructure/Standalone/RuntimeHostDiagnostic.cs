@@ -152,7 +152,8 @@ public sealed record RuntimeHostRunMetrics(
     uint? LastFallbackEntryPc = null,
     uint? LastFallbackReturnPc = null,
     uint? LastMmioPhysicalAddress = null,
-    bool? LastMmioWasWrite = null)
+    bool? LastMmioWasWrite = null,
+    FallbackSegmentProgress? FallbackInFlight = null)
 {
     /// <summary>
     /// Assembles the metrics from the engine's own surfaces; any of them may be absent (no protocol, no mixed fallback). The
@@ -163,7 +164,8 @@ public sealed record RuntimeHostRunMetrics(
         (ulong MmioAccesses, ulong TimeReports)? roundTrips,
         MixedFallbackTimings? timings,
         MixedFallbackEvidence? evidence = null,
-        HostMmioAccess? lastMmio = null) =>
+        HostMmioAccess? lastMmio = null,
+        FallbackSegmentProgress? fallbackInFlight = null) =>
         new(
             wallMilliseconds,
             roundTrips?.MmioAccesses,
@@ -173,7 +175,8 @@ public sealed record RuntimeHostRunMetrics(
             evidence?.LastEntryPc,
             evidence?.LastReturnPc,
             lastMmio?.PhysicalAddress,
-            lastMmio?.IsWrite);
+            lastMmio?.IsWrite,
+            fallbackInFlight);
 }
 
 /// <summary>Canonical JSON writing for <see cref="RuntimeHostDiagnostic"/>, matching the manifest's style.</summary>
