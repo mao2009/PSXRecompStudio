@@ -27,7 +27,16 @@ that:
    the guest left in the shared GPU/VRAM state when the run ends, reusing the
    headless screenshot capture; when the guest drew nothing it reports "no
    frame" and writes nothing — there is no live window, see Issue #630), and
-   `--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
+   `--loaded-code-diagnostics <path>` (Issue #773: writes a JSON report,
+   `loaded-code-mismatch/1`, of host-side RAM comparisons at fallback handoffs to
+   RAM-placed code; off by default and observation only. `rejections` counts the
+   host's RAM comparison at the handoff, not a confirmed native guard refusal
+   (`guardDecisionRecorded` is `false`). The comparison is bounded by a word
+   budget, enforced per version; a version that does not fit is skipped whole and
+   reported in `skippedVersions`/`skippedWords`, and `incomplete: true` marks a
+   report cut short by the budget or the record cap; `origins` repeats the
+   manifest's declaration (`originBasis: manifest-declared`), not a check of the
+   file the game loaded). 報告先、またはその `.tmp` が、この実行が読む入力（manifest、firmware-boot.json、artifact、ROM、disc、firmware の AOT 入力）と同じパスの場合は、何も書かずに終了コード 78 で拒否する。入力でない前回の報告は置き換える。`--help`/`-h`. The diagnostic's `metrics` object (Issue #769) reports the
    run's wall time, the host round trips the native code made (MMIO accesses,
    guest-time reports), the mixed-fallback time split, and the last observations
    of a run stopped from outside (last fallback entry/return PC, last relayed
@@ -205,6 +214,38 @@ checks finish before the image is read or anything is launched; a violation exit
 Residual risk: a link swapped in between the check and the later open/launch
 (TOCTOU) is not prevented; the distribution directory is trusted to be writable
 only by its owner.
+
+### Report target protection and known limitations
+
+`--diagnostics` and `--loaded-code-diagnostics` write a report to a caller-named
+path. Before anything is read or written, the host refuses a report target that
+names an input (the manifest, `firmware-boot.json`, the artifact, the image, the
+disc, the roots, the load images or an AOT input), an alternate data stream, or
+the other report target, whether by path, by file identity or through a link. A
+refusal exits 78 and writes nothing, so no input is changed. A report replaces
+an existing file only by a move from a fresh temporary name, so a temporary name
+that already exists is never written through.
+
+Known limitations, not verified on this host:
+
+- **glibc before 2.33.** On Linux the file identity is read with `stat`. A libc
+  that does not export `stat` gives no identity, so every diagnostics target is
+  refused with exit 78 before any write, and the message names the cause
+  (`identity unavailable: ...`). No input is changed. The diagnostics-OFF path (no
+  report flag) is unaffected. There is no `__xstat` fallback. The minimum glibc
+  to verify is 2.33; no glibc before 2.33 was run here.
+- **Windows dangling symbolic link.** A dangling link at the report path is
+  refused on Windows as on POSIX. The test host lacks the symbolic-link
+  privilege, so this rule has no failing-first (RED) test on that host; it is
+  verified by code review only, pending a run with the privilege.
+- **macOS x86-64.** Identity is treated as unverified on x86-64 macOS, including
+  processes translated by Rosetta, so an existing report target is refused there.
+  The behaviour is covered by simulation only; no run on real x86-64 hardware has
+  been done.
+- **Administrator test host, ACL-based directory test.** The Main-level test for
+  a directory whose read access is denied is skipped on the administrator test
+  host, because traverse checks are bypassed for that account. The same decision
+  is covered at the probe level.
 
 ### Exit Code 78 Contract
 

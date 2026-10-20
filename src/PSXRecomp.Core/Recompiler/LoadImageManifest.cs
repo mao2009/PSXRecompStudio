@@ -15,8 +15,11 @@ namespace PSXRecomp.Core.Recompiler;
 /// or the load address itself). Nothing here is derived at run time.
 /// </summary>
 [Domain]
-public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words, IReadOnlyList<uint> Roots)
+public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words, IReadOnlyList<uint> Roots, string Kind = "unknown")
 {
+    /// <summary>The provenance recorded when the image is registered (Issue #773).</summary>
+    public LoadedImageOrigin Origin => new(Name, Kind, LoadAddress, Words.Length);
+
     /// <summary>
     /// The SHA-256 (lower-case hex) of the file the image was read from, for an EXE-based image (Issue #773). It is the source
     /// identity an observed-roots directive must match; null for a ROM image, which takes no observed roots.
@@ -88,7 +91,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     }
                     iso ??= OpenIso(disc);
                     exeImages.Add(images.Count);
-                    images.Add(FromExeBytes(fields[1], iso.ReadFile(NormalizeBootPath(iso)), []));
+                    images.Add(FromExeBytes(fields[1], iso.ReadFile(NormalizeBootPath(iso)), [], "boot-exe"));
                     break;
                 case "disc-exes":
                     if (fields.Length != 2)
@@ -288,7 +291,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             words[i] = firmware.Words[(int)(offset / 4) + i];
         }
 
-        return new LoadedImageSpec(name, loadAddress, words, roots);
+        return new LoadedImageSpec(name, loadAddress, words, roots, "rom-image");
     }
 
     private static LoadedImageSpec ParseExeImage(IReadOnlyList<string> fields, string? baseDirectory)
@@ -300,10 +303,10 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         var roots = fields.Count == 4 ? ReadRoots(fields[3], baseDirectory) : [];
-        return FromExeBytes(fields[1], File.ReadAllBytes(Resolve(fields[2], baseDirectory)), roots);
+        return FromExeBytes(fields[1], File.ReadAllBytes(Resolve(fields[2], baseDirectory)), roots, "exe-file");
     }
 
-    private static LoadedImageSpec FromExeBytes(string name, byte[] bytes, IReadOnlyList<uint> roots)
+    private static LoadedImageSpec FromExeBytes(string name, byte[] bytes, IReadOnlyList<uint> roots, string kind)
     {
         var exe = PsxExe.Load(bytes, name);
         var words = new uint[exe.TextSegment.Length / 4];
@@ -313,7 +316,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         var entries = roots.Append(exe.Header.EntryPoint).Distinct().Order().ToArray();
-        return new LoadedImageSpec(name, exe.Header.TextStart, words, entries)
+        return new LoadedImageSpec(name, exe.Header.TextStart, words, entries, kind)
         {
             SourceSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
         };
@@ -357,7 +360,7 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             if (bytes.Length >= 8 && System.Text.Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
             {
                 var imagePath = ambiguousPaths.Contains(file.NormalizedPath) ? file.VersionedPath : file.NormalizedPath;
-                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, []);
+                yield return FromExeBytes($"{prefix}:{imagePath}", bytes, [], "disc-exe");
             }
         }
     }

@@ -11,7 +11,9 @@ internal static class PngWriter
 {
     private static readonly byte[] Signature = [137, 80, 78, 71, 13, 10, 26, 10];
 
-    internal static void Save(string path, ReadOnlySpan<byte> bgra, int width, int height)
+    /// <summary>Writes the image; each <paramref name="text"/> pair becomes a tEXt chunk before the pixel data.</summary>
+    internal static void Save(string path, ReadOnlySpan<byte> bgra, int width, int height,
+        IReadOnlyList<KeyValuePair<string, string>>? text = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "PNG dimensions must be positive.");
@@ -28,6 +30,11 @@ internal static class PngWriter
         header[8] = 8; // 8 bits per channel
         header[9] = 6; // RGBA
         WriteChunk(output, "IHDR", header);
+        if (text is not null)
+        {
+            foreach (var (key, value) in text)
+                WriteChunk(output, "tEXt", Encoding.Latin1.GetBytes(key + "\0" + value));
+        }
 
         // Each scanline starts with PNG filter 0. PNG stores channels as RGBA.
         using var compressed = new MemoryStream();

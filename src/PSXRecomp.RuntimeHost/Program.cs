@@ -1,4 +1,5 @@
 using PSXRecomp.Architecture;
+using PSXRecomp.Core;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -6,6 +7,7 @@ using PSXRecomp.Core.Runtime;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Standalone;
 using System.Buffers.Binary;
+using System.Text.Json.Nodes;
 
 namespace PSXRecomp.Infrastructure.RuntimeHost;
 
@@ -28,9 +30,16 @@ public static class Program
     /// unchanged) for HLE and firmware distributions alike. Returns the classified run result code
     /// (0 success, 1 tooling/failure, 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
     /// </summary>
-    public static int Main(string[] args)
+    public static int Main(string[] args) => Run(args, new FileSystemIdentityProbe());
+
+    /// <summary>
+    /// The entry point with its identity probe supplied by the caller (the composition root passes the file system adapter; a test may pass
+    /// a probe that reports an unverified identity, to exercise the fail-closed path of a host whose identity cannot be verified).
+    /// </summary>
+    internal static int Run(string[] args, IFileIdentityProbe probe)
     {
         ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(probe);
 
         if (args.Length == 0)
         {
@@ -42,6 +51,8 @@ public static class Program
         // manifest path. Off by default, so the run's exit code and output are unchanged.
         string? diagnosticsPath = null;
         string? frameOutPath = null;
+        // Issue #773 Phase B: opt-in report of RAM-placed code the artifact refused. Off by default.
+        string? loadedCodeMismatchPath = null;
         var positionals = new List<string>(args.Length);
         for (var i = 0; i < args.Length; i++)
         {
@@ -55,6 +66,29 @@ public static class Program
                 }
 
                 diagnosticsPath = Path.GetFullPath(args[++i]);
+                continue;
+            }
+
+            if (args[i] == "--loaded-code-diagnostics")
+            {
+                if (i + 1 >= args.Length)
+                {
+                    Console.Error.WriteLine("runtime host: --loaded-code-diagnostics requires a path.");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
+                try
+                {
+                    loadedCodeMismatchPath = Path.GetFullPath(args[++i]);
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    Console.Error.WriteLine($"runtime host: --loaded-code-diagnostics path is not valid: {ex.Message}");
+                    WriteUsage(Console.Error);
+                    return 78;
+                }
+
                 continue;
             }
 
@@ -89,6 +123,7 @@ public static class Program
         }
 
         var manifestPath = Path.GetFullPath(positionals[0]);
+
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
@@ -100,7 +135,84 @@ public static class Program
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
 
+        // Issue #786 (final review, round 14): a report never names an alternate data stream. On Windows a ':' in the file name (after the
+        // drive letter) is a stream, and a stream of an input is written through as a stream on that input. Refused before anything is read
+        // or written, for both report flags.
+        foreach (var target in new[] { diagnosticsPath, loadedCodeMismatchPath })
+        {
+            if (target is not null && OperatingSystem.IsWindows() && NamesAStream(target))
+            {
+                Console.Error.WriteLine(
+                    $"runtime host: refusing report target {target}: a ':' after the drive letter names an alternate data stream (or an invalid path), and no report is written to one.");
+                return 78;
+            }
+        }
+
+        // The files the run reads, listed once for both report targets. A listing that fails (I/O or access) is a classified setup
+        // failure: no report is written, and nothing beyond the listing is read.
+        IReadOnlyList<string>? reportInputs = null;
+        if (diagnosticsPath is not null || loadedCodeMismatchPath is not null)
+        {
+            try
+            {
+                reportInputs = ReadInputPaths(manifestPath, manifestDirectory);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"runtime host: could not list the distribution's files to check the report target: {ex.Message}");
+                return 78;
+            }
+        }
+
+        // Issue #786 (final review, round 14): the two report flags never name one file. Two reports written to one file would overwrite each
+        // other, so a shared name (or a shared identity, through a link) is refused before any write.
+        if (diagnosticsPath is not null && loadedCodeMismatchPath is not null && NamesOneFile(diagnosticsPath, loadedCodeMismatchPath, probe))
+        {
+            Console.Error.WriteLine(
+                $"runtime host: refusing --diagnostics {diagnosticsPath} with --loaded-code-diagnostics {loadedCodeMismatchPath}: both would be written to one file, or cannot be shown to be different files.");
+            return 78;
+        }
+
+        // Issue #786 (PR review): the stop diagnostic is an output too, so it never replaces an input. Refused by path before anything runs.
+        if (diagnosticsPath is not null)
+        {
+            var conflict = ReportTargetInput(diagnosticsPath, reportInputs!, probe);
+            if (conflict is not null)
+            {
+                Console.Error.WriteLine(
+                    $"runtime host: refusing --diagnostics {diagnosticsPath}: {conflict}");
+                return 78;
+            }
+        }
+
+        // Issue #786 review M-A: only a firmware distribution carries the RAM-placed code table this report describes. Anywhere
+        // else the report would be empty and look complete, so the flag fails closed before the run instead.
+        if (loadedCodeMismatchPath is not null && !FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
+        {
+            Console.Error.WriteLine(
+                "runtime host: --loaded-code-diagnostics needs a firmware distribution (firmware-boot.json); this manifest has no RAM-placed code table to report on.");
+            return 78;
+        }
+
+        // Issue #786 B1: the report never names an input. Checked before anything is written, so a refusal leaves every input as it was.
+        var runId = Guid.NewGuid().ToString("N");
+        if (loadedCodeMismatchPath is not null)
+        {
+            var conflict = ReportTargetInput(loadedCodeMismatchPath, reportInputs!, probe);
+            if (conflict is not null)
+            {
+                Console.Error.WriteLine(
+                    $"runtime host: refusing --loaded-code-diagnostics {loadedCodeMismatchPath}: {conflict}");
+                return 78;
+            }
+
+            // The id ties a report to this run: a report left by an earlier run, or by one that was killed, carries another id.
+            Console.Error.WriteLine($"runtime host: loaded-code report run id {runId}");
+        }
+
         RuntimeHostManifest? manifest = null;
+        // Issue #773: written from the finally below, so a failed or stopped run still leaves its refusals behind.
+        var loadedCodeMismatch = loadedCodeMismatchPath is null ? null : new LoadedCodeMismatchDiagnostics();
         try
         {
             manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
@@ -123,7 +235,7 @@ public static class Program
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
                 return FirmwareRuntimeLauncher.Run(
-                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath);
+                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
             }
 
             // Read the program image for the host-transfer bridge / interpreter fallback
@@ -178,6 +290,7 @@ public static class Program
                 imageWords: imageWords,
                 imageLoadAddress: manifest.ImageLoadAddress,
                 launchMode: launchMode);
+            engine.LoadedCodeMismatchDiagnostics = loadedCodeMismatch;
 
             var request = new TitleExecutionRequest(
                 entryPc: manifest.EntryPc,
@@ -194,9 +307,10 @@ public static class Program
                 new ProgramEndHandoff(manifest.ProgramEnd),
                 request);
             wall.Stop();
-
             var result = RecompiledArtifactResult.From(
                 execution, manifest.ResultRegister);
+            // Issue #786 review MINOR-1: marked after the run is classified, so a report says executed only once it has an end.
+            RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(loadedCodeMismatch, execution);
 
             // Forward console output for native runs: the guest's C stdout contains
             // the boot/TTY text up to the engine's RSNAPSHOT diagnostic block; the
@@ -257,13 +371,18 @@ public static class Program
 
             return 78;
         }
+        finally
+        {
+            WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch, runId);
+        }
     }
 
     private static void WriteUsage(TextWriter error)
     {
-        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] [--frame-out <path.png>] <runtime-host.json>");
+        error.WriteLine("usage: PSXRecomp.RuntimeHost [--diagnostics <path>] [--loaded-code-diagnostics <path>] [--frame-out <path.png>] <runtime-host.json>");
         error.WriteLine("  Executes the packaged game distribution described by the manifest.");
         error.WriteLine("  --diagnostics writes a machine-readable stop diagnostic (off by default).");
+        error.WriteLine("  --loaded-code-diagnostics writes the RAM-placed code refusals as JSON (off by default).");
         error.WriteLine("  --frame-out writes the display the guest left in VRAM at the end of the run as a PNG (off by default).");
         error.WriteLine("  Returns 0 on a completed run, 1 for tooling failure, 2 for an " +
             "explicit runtime stop, and 78 when the manifest, the runtime host,");
@@ -278,12 +397,231 @@ public static class Program
     {
         try
         {
-            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
+            RuntimeHostReportFile.WriteAtomically(path, RuntimeHostDiagnosticJson.Serialize(build()));
         }
         catch (Exception ex)
         {
             // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
             Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Issue #786 B1: the input the report target names, or null. Input protection is by path only: a file is protected because
+    /// this run reads it, never because of its content. Compared by resolved path, case-insensitively on Windows, so another
+    /// spelling, case, or a link to the same file cannot pass. The report's temp file is compared too. An earlier run's report
+    /// is not in <paramref name="inputs"/>, so it is replaced.
+    /// </summary>
+    private static string? ReportTargetInput(string reportPath, IReadOnlyList<string> inputs, IFileIdentityProbe probe)
+    {
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        string target;
+        try
+        {
+            target = ResolvedFullPath(reportPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // A target that cannot be inspected cannot be shown to be no input: refused as a classified setup failure, never thrown past the host.
+            return $"the report target {reportPath} cannot be inspected ({ex.Message}), so it cannot be shown to be no input.";
+        }
+
+        // Path comparison for every input first: a refusal by path opens no input at all.
+        var candidates = new List<string>(inputs.Count);
+        foreach (var input in inputs)
+        {
+            // An input that names no valid path cannot be the report's target, which exists; the run itself fails on it.
+            string resolved;
+            try
+            {
+                resolved = ResolvedFullPath(input);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException)
+            {
+                continue;
+            }
+
+            if (comparer.Equals(target, resolved)) return InputConflict(input);
+            candidates.Add(input);
+        }
+
+        // Then file identity, which sees what a path cannot: a hard link, a chain of links, an 8.3 name. The report only ever lands at its
+        // own path (its temp name is fresh per write), so only that path is identified. A report target that exists must be a regular
+        // file whose identity can be read; a candidate input that exists must be too. Anything else is refused: safety is not shown.
+        var reportFile = probe.Probe(reportPath);
+        if (reportFile.Kind == FileKind.Absent) return null;
+        if (reportFile.Kind != FileKind.RegularFile || reportFile.Identity is not { } targetIdentity)
+        {
+            // The probe names the cause when it can (for example, a libc that does not export stat), so the refusal is diagnosable.
+            return reportFile.Cause is { } cause
+                ? $"identity unavailable: {cause}; the report target {reportPath} cannot be shown to be no input."
+                : $"the report target {reportPath} is not a regular file whose identity can be read, so it cannot be shown to be no input.";
+        }
+
+        foreach (var input in candidates)
+        {
+            var inputFile = probe.Probe(input);
+            if (inputFile.Kind == FileKind.Absent) continue;
+            if (inputFile.Kind != FileKind.RegularFile || inputFile.Identity is not { } identity)
+            {
+                return inputFile.Cause is { } inputCause
+                    ? $"identity unavailable: {inputCause}; the input {input} cannot be shown to be no input for the report target."
+                    : $"the input {input} is not a regular file whose identity can be read, so the report target cannot be shown to be no input.";
+            }
+
+            if (identity == targetIdentity) return InputConflict(input);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// On Windows, true when the name has a ':' after its drive letter (or after a \\?\ or \??\ prefix): an alternate data stream, or a colon
+    /// in a directory, which is not a valid report path. A name that cannot be normalised counts as one (fail-closed).
+    /// </summary>
+    private static bool NamesAStream(string target)
+    {
+        string full;
+        try
+        {
+            full = Path.GetFullPath(target);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return true;
+        }
+
+        var rest = full;
+        if (rest.StartsWith(@"\\?\", StringComparison.Ordinal) || rest.StartsWith(@"\??\", StringComparison.Ordinal)) rest = rest[4..];
+        if (rest.Length >= 2 && char.IsAsciiLetter(rest[0]) && rest[1] == ':') rest = rest[2..];
+        return rest.Contains(':');
+    }
+
+    /// <summary>
+    /// True when two report targets are one file, or cannot be shown to be two: the same resolved path (case-insensitively on Windows); or,
+    /// for two names that exist, an identity that matches, or an identity that cannot be read on either side (fail-closed, as the target
+    /// check does). Only a name that does not exist, or two readable identities that differ, shows two different files.
+    /// </summary>
+    private static bool NamesOneFile(string first, string second, IFileIdentityProbe probe)
+    {
+        try
+        {
+            var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            if (comparer.Equals(ResolvedFullPath(first), ResolvedFullPath(second))) return true;
+
+            var a = probe.Probe(first);
+            var b = probe.Probe(second);
+            if (a.Kind == FileKind.Absent || b.Kind == FileKind.Absent) return false;
+            if (a.Identity is null || b.Identity is null) return true;
+            return a.Identity == b.Identity;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return true;
+        }
+    }
+
+    private static string InputConflict(string input) => $"it is the input {input}, and no report is written over an input.";
+
+    /// <summary>
+    /// The files this run reads, derived from the paths the code reads them from: the manifest, the firmware boot manifest (its
+    /// presence selects the firmware run), the artifact and image the manifest names, and for a firmware run the disc, roots,
+    /// load images and AOT inputs the boot manifest names. A manifest or boot manifest that does not parse stops the run before
+    /// anything beyond it is read, so only the names known so far are listed then.
+    /// </summary>
+    private static List<string> ReadInputPaths(string manifestPath, string manifestDirectory)
+    {
+        var inputs = new List<string> { manifestPath, Path.Combine(manifestDirectory, FirmwareBootManifest.FileName) };
+        RuntimeHostManifest manifest;
+        try
+        {
+            manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+        }
+        catch (Exception)
+        {
+            return ConservativeInputs(manifestDirectory, inputs);
+        }
+
+        inputs.Add(Path.Combine(manifestDirectory, manifest.Artifact));
+        inputs.Add(Path.Combine(manifestDirectory, manifest.Image));
+        if (!FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory)) return inputs;
+
+        FirmwareBootManifest boot;
+        try
+        {
+            boot = FirmwareBootManifestJson.Parse(File.ReadAllText(Path.Combine(manifestDirectory, FirmwareBootManifest.FileName)));
+        }
+        catch (Exception)
+        {
+            return ConservativeInputs(manifestDirectory, inputs);
+        }
+
+        inputs.Add(Path.Combine(manifestDirectory, boot.DiscFile));
+        inputs.Add(Path.Combine(manifestDirectory, boot.RootsFile));
+        inputs.Add(Path.Combine(manifestDirectory, boot.LoadImagesFile));
+        inputs.AddRange(boot.AotInputs.Select(input => Path.Combine(manifestDirectory, input.Path)));
+        return inputs;
+    }
+
+    /// <summary>
+    /// Fail closed (Issue #786 review round 4): when the manifest or the firmware boot manifest cannot be parsed, the names it would
+    /// have given are unknown, so every file the run could read is an input: the ROM image, every file under the disc and firmware
+    /// directories, and every file directly in the parent directory, where the artifact sits.
+    /// </summary>
+    private static List<string> ConservativeInputs(string manifestDirectory, List<string> inputs)
+    {
+        inputs.Add(Path.Combine(manifestDirectory, RuntimeHostLayout.ImageFileName));
+        foreach (var directory in new[] { FirmwareBootManifest.DiscDirectory, FirmwareBootManifest.FirmwareDirectory })
+        {
+            var path = Path.Combine(manifestDirectory, directory);
+            if (Directory.Exists(path)) inputs.AddRange(Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories));
+        }
+
+        var parent = Path.GetDirectoryName(manifestDirectory);
+        if (parent is not null) inputs.AddRange(Directory.EnumerateFiles(parent));
+        return inputs;
+    }
+
+    /// <summary>The full path with every directory and the file itself resolved through symbolic links and junctions.</summary>
+    private static string ResolvedFullPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var parent = Path.GetDirectoryName(full);
+        if (parent is null) return full;
+
+        var candidate = Path.Combine(ResolvedDirectory(parent), Path.GetFileName(full));
+        // ResolveLinkTarget throws for a path that does not exist (the report and its temp file usually do not yet).
+        var file = new FileInfo(candidate);
+        return (file.Exists ? file.ResolveLinkTarget(returnFinalTarget: true)?.FullName : null) ?? candidate;
+    }
+
+    private static string ResolvedDirectory(string directory)
+    {
+        var parent = Path.GetDirectoryName(directory);
+        if (parent is null) return directory;
+
+        var candidate = Path.Combine(ResolvedDirectory(parent), Path.GetFileName(directory));
+        var resolvable = new DirectoryInfo(candidate);
+        return (resolvable.Exists ? resolvable.ResolveLinkTarget(returnFinalTarget: true)?.FullName : null) ?? candidate;
+    }
+
+    /// <summary>
+    /// Writes the Issue #773 loaded-code report when it was requested. Best-effort like <see cref="WriteDiagnostics"/>: a write
+    /// failure is reported on stderr and never changes the run's exit code.
+    /// </summary>
+    private static void WriteLoadedCodeMismatch(string? path, LoadedCodeMismatchDiagnostics? diagnostics, string runId)
+    {
+        if (path is null || diagnostics is null) return;
+        try
+        {
+            var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
+            report["runId"] = runId;
+            // Temp file then move: a reader never sees a half-written report, and a failed write leaves the previous report in place.
+            RuntimeHostReportFile.WriteAtomically(path, report.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"runtime host: could not write loaded-code diagnostics to {path}: {ex.Message}");
         }
     }
 

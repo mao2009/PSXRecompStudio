@@ -109,6 +109,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Reported when the runnable artifact exceeds the run timeout (Issue #763 diagnostics).</summary>
     public const string TimeoutDiagnosticCode = "ARTIFACT_TIMEOUT";
 
+    /// <summary>
+    /// Marks a loaded-code report as executed only when the run reached a completed end: <c>Completed</c>,
+    /// <c>Returned</c> or <c>RuntimeHandoff</c>. Every other end (a failure, a timeout, an exhausted budget, an
+    /// unsupported transfer) leaves the report incomplete (Issue #786 review, allowlist of completed ends).
+    /// </summary>
+    public static void MarkLoadedCodeReportFinished(LoadedCodeMismatchDiagnostics? report, TitleExecutionResult result)
+    {
+        report?.MarkExecuted(result.State is TitleExecutionState.Completed or TitleExecutionState.Returned or TitleExecutionState.RuntimeHandoff);
+    }
+
     private const int RunTimeoutMs = 30000;
     private const int PumpDrainTimeoutMs = 5000;
 
@@ -149,8 +159,22 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public Action<InterpreterTitleExecutionEngine, uint>? FallbackFetchObserver { get; set; }
 
+    /// <summary>
+    /// Builds the artifact with per-entry loaded-code guard counters, written to the file named by PSX_GUARD_STATS_FILE
+    /// (measurement only, Issue #773). Opt-in through <see cref="GuardStatsScope"/> or PSXRECOMP_NATIVE_GUARD_STATS (the
+    /// artifact is generated at construction, or at the first RunSegment of an embedded image, so the scope must be in effect then); off, the
+    /// generated text is unchanged.
+    /// </summary>
+    private static bool GuardStats => GuardStatsScope.Enabled;
+
     /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
     public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
+
+    /// <summary>
+    /// Opt-in record of RAM-placed code the artifact refused at a handoff (Issue #773). Set before the run; null (the default)
+    /// keeps the run exactly as it was. Only read on the handoff path, so it does not change what executes.
+    /// </summary>
+    public LoadedCodeMismatchDiagnostics? LoadedCodeMismatchDiagnostics { get; set; }
 
     private IReadOnlyList<RecompilerInitialMemoryItem> _initialMemory =
         Array.Empty<RecompilerInitialMemoryItem>();
@@ -335,7 +359,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             return;
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null);
+        var dispatch = RecompilerHostCodeGen.Generate(program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null, guardStats: GuardStats);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -552,7 +576,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode, LoadedCodeMismatchDiagnostics);
         _bridge = bridge;
 
         // Build the launch arguments. A prebuilt artifact in RuntimeHost mode gets
@@ -749,7 +773,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 $"{RecompiledArtifactCodeGen.MaxInitEntries}-entry limit.");
         }
 
-        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null);
+        var dispatch = RecompilerHostCodeGen.Generate(_program, _loadedCode, traceUnits: UnitTraceScope.CurrentPath is not null, guardStats: GuardStats);
         if (!dispatch.Success)
         {
             throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -829,6 +853,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 psi.Environment[name] = value;
             }
+        }
+
+        // Issue #773: a guard-stats scope names the report for this child only; without one the environment passes through.
+        if (GuardStatsScope.CurrentPath is { } guardStatsFile)
+        {
+            psi.Environment[GuardStatsScope.FileEnvironmentVariable] = guardStatsFile;
+            var (periodUnits, abortAfterUnits) = GuardStatsScope.CurrentTiming;
+            // Always set (0 when unset), so a stray value in the parent cannot leak into a guard-stats child.
+            psi.Environment[GuardStatsScope.PeriodEnvironmentVariable] = periodUnits.ToString(CultureInfo.InvariantCulture);
+            psi.Environment[GuardStatsScope.AbortAfterEnvironmentVariable] = abortAfterUnits.ToString(CultureInfo.InvariantCulture);
         }
 
         using var process = Process.Start(psi)!;
@@ -985,6 +1019,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         private readonly Action<MixedFallbackTransition>? _fallbackTransitionObserver;
         private readonly ICdSectorSource? _disc;
         private readonly LoadedCodeTable _loadedCode;
+        private readonly LoadedCodeMismatchDiagnostics? _loadedCodeMismatch;
 
         private TextReader? _fromArtifact;
         private TextWriter? _toArtifact;
@@ -1118,11 +1153,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             Action<InterpreterTitleExecutionEngine, uint>? fallbackFetchObserver,
             ICdSectorSource? disc,
             Action<MixedFallbackTransition>? fallbackTransitionObserver,
-            LoadedCodeTable loadedCode)
+            LoadedCodeTable loadedCode,
+            LoadedCodeMismatchDiagnostics? loadedCodeMismatch)
         {
             _fallbackTransitionObserver = fallbackTransitionObserver;
             _disc = disc;
             _loadedCode = loadedCode;
+            _loadedCodeMismatch = loadedCodeMismatch;
             _guestFirmware = guestFirmware;
             _fallbackFetchObserver = fallbackFetchObserver;
             _memoryCardSlots = memoryCardSlots;
@@ -1180,7 +1217,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode, _loadedCodeMismatch);
                 }
                 Send(string.Create(CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
@@ -1258,6 +1295,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             var parts = fields.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if ((_biosRuntime is null && !_guestFirmware) || parts.Length != TransferFieldCount)
             {
+                // Issue #786 review (round 3, MEDIUM-1): a malformed firmware transfer still names its PC when parts[0] parses. If
+                // that PC is RAM-placed code, the refusal is counted as unobserved instead of disappearing.
+                if (_guestFirmware && _loadedCodeMismatch is not null && parts.Length > 0
+                    && uint.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var malformedPc)
+                    && _loadedCode.Contains(malformedPc))
+                {
+                    _loadedCodeMismatch.NoteUnobservedHandoff();
+                }
+
                 Decline();
                 return;
             }
@@ -1428,6 +1474,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                     return;
                 default:
+                    // Issue #786 review MAJOR-1: without a fallback session nothing else sees the refusal, so it is counted here.
+                    // With one, the session already counted its own declines.
+                    if (_fallback is null && _loadedCodeMismatch is not null && _loadedCode.Contains(pc))
+                    {
+                        _loadedCodeMismatch.NoteUnobservedHandoff();
+                    }
+
                     LastDeclinedTransfer = new FallbackDeclinedTransfer(pc, _fallback is not null, _fallback?.RejectReason);
                     Decline();
                     return;

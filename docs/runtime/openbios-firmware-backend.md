@@ -566,6 +566,41 @@ indicative only). Not adopted: coalescing the host's reply lines into one write 
 read): two interleaved 40 s runs each showed no difference beyond noise. Not attempted: skipping the report after a read whose
 access did not change the scheduler (it would defer a device advance past dispatch boundaries; needs its own proof).
 
+**Native guard counters and the integrated Persona run (Issue #773; measurement only).** `PSXRECOMP_NATIVE_GUARD_STATS=1` at
+package time builds the artifact with counters per RAM-placed entry PC (arrivals, hits per version, misses, and budget refusals) and, for each entry's
+first miss, the entry PC of the previous dispatch-loop iteration (not necessarily the guest source of the transfer), the RAM word and
+the CPU registers (at most 16 such records in all, `psx_gs_snap[16][36]`; a first miss beyond them is only counted in `snapdropped` and has no CPU registers); per-version tables are flat (no padding to the widest slot). At run time `PSX_GUARD_STATS_FILE=<path>` receives
+them (every 4 M dispatch units and at exit), written whole to `<path>.tmp` and then replaced over `<path>` in one step; the previous
+report is not removed before the replacement, so a refused replacement keeps the report that was there and deletes the `.tmp`. Platform
+difference: POSIX uses `rename()` (atomic replace); Windows uses `MoveFileExA(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` (declared by hand, not via `<windows.h>`),
+a same-volume rename in practice but not documented as atomic and not guaranteed to be one step (a reader may see no `<path>` for an
+instant); it is refused (keeping the old report) while the destination is open without `FILE_SHARE_DELETE`. Each slot line satisfies `arrive = hit + miss + refuse`: `refuse` counts an arrival whose budget check refused it (the unit did not run). Each report starts with
+a `run <id>` line (line 2) that names the run which wrote it. Guarantee on a killed or timed-out run: `<path>` holds nothing, or a
+complete report, either of this run's last dump or of an earlier run not yet replaced (told apart by `run`). Its content is never a
+truncated dump, because the content is complete before the rename. A `<path>.tmp` of the dump in progress may remain (the next dump
+overwrites it). Not promised: a single-step replacement on Windows and survival across power loss (no `fsync`). The last line is `end final 1` only for the exit dump; a file without it comes from a
+run that did not exit normally and must not be read as complete. Tests select the counters with `GuardStatsScope.Begin(path)`
+(a per-async-context switch handed to the child process only) instead of process-wide environment variables. The generated text is byte-for-byte unchanged without the option. Values are produced
+inside the generated code, so they are native-side observations, unlike the host-side attribution of fallback entries.
+Persona CHD, `disc-exes` + `indirect-roots` (#792) on main with the fused report (#796), Windows, 600 s, one run (CPU 20-53 %, other
+agents' processes present): `0x80084C88` had **1,655,795 native arrivals, all guard hits on version 0 (the ATLUS.EXE version),
+0 misses, 0 fallback entries**; `0x80084C78` (1,655,795 hits) and `0x8008AECC` (1,727,352 hits) likewise. Misses overall: 1,190 at 30
+entries (kernel and loader code that is rewritten), matching the 1,190 host-side `guard-mismatch` entries. Executed native
+instructions are spread over many regions (OpenBIOS shell 0x80030000-0x80032FFF about 42 %, 0x80084xxx 19 %, 0x8008Axxx 10 %,
+0x80081xxx 9 %, 0x80025xxx 8 %), not one loop. Same host and ROM, 600 s each (no title evidence in any, black frame):
+
+| Configuration | native instr | fallback instr | fallback transitions | native instr/s | last fallback entry |
+|---|---:|---:|---:|---:|---|
+| main before #796, no `indirect-roots` | 311,988,244 | 4,834,914 | 108,778 | 519,914 | `0x80084C88` |
+| + #792 `indirect-roots` | 379,787,396 | 143,672 | 4,513 | 632,897 | `0x800828B0` |
+| + #796 fused report | 420,132,321 | 143,672 | 4,513 | 700,148 | `0x800828B0` |
+| + #795 attribution, IPC profile, guard counters ON | 428,675,041 | 143,672 | 4,513 | 714,340 | `0x800828B0` |
+
+The 254,095-transition figure above therefore came from the missing registration: without #792, `0x80084C88` is a fallback
+entry (108,778 transitions here); with it, the entry is native. The four runs cover different amounts of AOT code, so the
+rates are not a pure IPC comparison, and instruction counts at 600 s are not the same guest position. Diagnostics ON vs OFF
+differ by +2 % (within run-to-run noise). IPC remains the limit: 31.3 M messages in 600 s (52,000/s), wait 73 % of wall time.
+
 Profile of the same Persona disc with `openbios-probe --standalone` on the merged #764 main (30 min bound): kernel
 booted and `titleStarted:true`, but 275,017,697 native vs 11,066,526,413 fallback instructions, 9,118 transitions,
 `ARTIFACT_TIMEOUT`. 99.9% of the fallback is `user-ram`/`ps-x-exe` code classified `unknown-code` (in no AOT image):

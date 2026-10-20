@@ -71,11 +71,39 @@ public sealed class ExecutionOrchestrator
         engine.Load(request);
         postLoadAction?.Invoke();
 
-        var gpr = request.InitialGpr.ToArray();
-        uint hi = request.InitialHi;
-        uint lo = request.InitialLo;
-        uint pc = request.EntryPc;
-        uint outer = request.OuterBudget;
+        return Run(engine, handoff, request.InitialGpr.ToArray(), request.InitialHi, request.InitialLo, request.EntryPc,
+            request.OuterBudget, request.SegmentBudget, segmentCallback);
+    }
+
+    /// <summary>
+    /// Continues a run from a segment snapshot on an engine that is already loaded (a Runtime-boundary handoff, review
+    /// of #751). <see cref="IRecompiledExecutionEngine.Load"/> is not called again, so the engine keeps its live guest
+    /// RAM, GPU and scheduler; the snapshot's registers, HI/LO and PC carry over.
+    /// </summary>
+    public TitleExecutionResult Resume(
+        IRecompiledExecutionEngine engine,
+        ITitleExecutionHandoff? handoff,
+        RecompilerStateSnapshot from,
+        uint outerBudget,
+        uint segmentBudget,
+        Action<RecompilerStateSnapshot>? segmentCallback = null)
+    {
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(from);
+        return Run(engine, handoff, from.Gpr.ToArray(), from.HI, from.LO, from.PC, outerBudget, segmentBudget, segmentCallback);
+    }
+
+    private static TitleExecutionResult Run(
+        IRecompiledExecutionEngine engine,
+        ITitleExecutionHandoff? handoff,
+        uint[] gpr,
+        uint hi,
+        uint lo,
+        uint pc,
+        uint outer,
+        uint segmentBudget,
+        Action<RecompilerStateSnapshot>? segmentCallback)
+    {
         uint segments = 0;
         RecompilerStateSnapshot? last = null;
 
@@ -92,7 +120,7 @@ public sealed class ExecutionOrchestrator
                     "The outer execution budget expired while the guest was still running.");
             }
 
-            var result = engine.RunSegment(new TitleExecutionSegmentRequest(gpr, hi, lo, pc, request.SegmentBudget));
+            var result = engine.RunSegment(new TitleExecutionSegmentRequest(gpr, hi, lo, pc, segmentBudget));
             segments++;
             last = result.Snapshot;
 

@@ -46,7 +46,7 @@ public sealed record FirmwareAotPlan(
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
-            i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed)));
+            i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
         return new FirmwareAotPlan(image.Program, loaded, observed);
     }
 }
@@ -380,7 +380,9 @@ public static class FirmwareDistributionBuilder
                     disc.Source);
             }
 
-            var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode);
+            // Measurement only (Issue #773): PSXRECOMP_NATIVE_GUARD_STATS at package time builds the artifact with guard counters.
+            var dispatch = RecompilerHostCodeGen.Generate(
+                plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled);
             if (!dispatch.Success)
             {
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -584,7 +586,8 @@ public static class FirmwareRuntimeLauncher
         string imagePath,
         TextWriter error,
         string? diagnosticsPath = null,
-        string? frameOutPath = null)
+        string? frameOutPath = null,
+        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null)
     {
         try
         {
@@ -632,6 +635,7 @@ public static class FirmwareRuntimeLauncher
                 imageLoadAddress: host.ImageLoadAddress,
                 launchMode: RecompiledHostExecutionEngine.PrebuiltArtifactLaunchMode.RuntimeHost,
                 disc: disc.Source);
+            engine.LoadedCodeMismatchDiagnostics = loadedCodeMismatch;
 
             // Opt-in transition attribution (measurement only): absent the environment variable, no observer is installed.
             var attribution = TransitionAttributionRecorder.FromEnvironment();
@@ -652,6 +656,8 @@ public static class FirmwareRuntimeLauncher
 
             var evidence = engine.FallbackEvidence;
             var exitCode = RecompiledArtifactExitCode.ExitCodeFor(result.State);
+            // Issue #786 review MINOR-1 / MEDIUM-1: marked once the run is classified; a host timeout stays incomplete.
+            RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(loadedCodeMismatch, result);
             if (engine.IpcProfile is { } ipcProfile && IpcProfile.OutputPathFromEnvironment() is { } ipcPath)
             {
                 ipcProfile.TryWrite(ipcPath, error, new Dictionary<string, object?>
@@ -733,7 +739,7 @@ public static class FirmwareRuntimeLauncher
 
         try
         {
-            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
+            RuntimeHostReportFile.WriteAtomically(path, RuntimeHostDiagnosticJson.Serialize(build()));
         }
         catch (Exception exception)
         {
