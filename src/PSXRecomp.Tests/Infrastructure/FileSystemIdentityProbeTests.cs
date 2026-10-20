@@ -234,14 +234,34 @@ public sealed class FileSystemIdentityProbeTests
         FileSystemIdentityProbe.IsDeviceNamespacePath("//server/share/file.bin").Should().BeFalse("a UNC server is an ordinary path");
     }
 
-    // Issue #786 (final review, round 12): the extended UNC forms (\\?\UNC\server\share, \??\UNC\...) are refused. This is a conservative
-    // refusal of extended UNC paths, fail-closed. It is NOT a claim that Windows types them as devices; the assertion records the choice.
+    // Issue #786 (final review, round 12): the extended UNC forms (\\?\UNC\server\share, \??\UNC\...) are refused as a device namespace path,
+    // conservatively (fail-closed). This records that choice; it is NOT a claim that Windows types these paths as devices.
     [Theory]
     [InlineData("\\\\?\\UNC\\server\\share\\f.bin")]
     [InlineData("\\??\\UNC\\server\\share\\f.bin")]
-    public void AnExtendedUncPath_IsRefusedConservatively_NotAClaimOfADevice(string path)
+    public void AnExtendedUncPath_IsRefusedAsADeviceNamespace_Conservatively(string path)
     {
-        FileSystemIdentityProbe.IsDeviceNamespacePath(path).Should().BeTrue("an extended UNC form is refused conservatively (fail-closed), not classified as a device");
+        FileSystemIdentityProbe.IsDeviceNamespacePath(path).Should().BeTrue("refused as a device namespace path, conservatively (fail-closed)");
+    }
+
+    // Issue #786 (final review, round 13): an extended-length path with a drive letter (\\?\C:\..., \??\C:\...) is an ordinary local path,
+    // not a device. It must not be refused as one.
+    [Theory]
+    [InlineData("\\\\?\\C:\\Windows\\x.bin")]
+    [InlineData("\\??\\C:\\x.bin")]
+    public void AnExtendedLengthDrivePath_IsANormalPath_NotADeviceNamespace(string path)
+    {
+        FileSystemIdentityProbe.IsDeviceNamespacePath(path).Should().BeFalse("an extended-length local path with a drive letter is an ordinary path");
+    }
+
+    // Issue #786 (final review, round 13): a server component with a leading space (\\ ?\X, \\ ??\X) is trimmed the same way as the others,
+    // so it is still refused as a device namespace path.
+    [Theory]
+    [InlineData("\\\\ ?\\X")]
+    [InlineData("\\\\ ??\\X")]
+    public void ASpacedServerComponent_IsRefusedAsADeviceNamespace(string path)
+    {
+        FileSystemIdentityProbe.IsDeviceNamespacePath(path).Should().BeTrue("the server component is trimmed of leading and trailing spaces before the test");
     }
 
     private static string CurrentAccount()

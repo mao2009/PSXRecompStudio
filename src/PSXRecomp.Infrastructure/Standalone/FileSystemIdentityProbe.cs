@@ -95,24 +95,30 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     }
 
     /// <summary>
-    /// The single device-namespace rule, applied to a path as given and to its full form (no I/O). Slashes are read as backslashes and
-    /// every leading separator is collapsed. The path is in a device namespace when its server component is "??" (the NT object
-    /// namespace, \??\ and \\??\ alike), or when it is "." or "?" behind a doubled leading separator (\\.\, \\?\, ///./, //?/ and any
-    /// number of extra separators). A UNC path such as \\server\share is not, and stays an ordinary path.
+    /// The single device-namespace rule, applied to a path as given and to its full form (no I/O). Slashes are read as backslashes, and
+    /// leading spaces and separators are skipped. The server component is the first component, with leading and trailing spaces removed,
+    /// and trailing dots removed as Win32 does ("? " is "?", "??." is "??"). The path is a device namespace path when:
+    /// the server is "." behind a doubled separator (\\.\, ///./, \\. \X and the like: a server made only of dots and spaces, such as "."
+    /// or ". ", is the dot server); or the server is "?" behind a doubled separator (\\?\, //?/, \\ ?\X); or the server is "??" (the NT
+    /// object namespace, \??\ and \\??\ alike). Exception: for "?" and "??", a first component that is a drive letter and colon (\\?\C:\...,
+    /// \??\C:\...) is an ordinary local path, and is not refused. A UNC path such as \\server\share is not a device namespace path.
     /// </summary>
     public static bool IsDeviceNamespacePath(string path)
     {
-        // Leading spaces are not part of the path; Win32 does not start a device namespace after them, so they are removed first. A
-        // server component has its trailing spaces and dots removed the way Win32 does ("? " is "?", "??." is "??"), except that a server
-        // made only of dots and spaces ("." or ". ") is the dot server, which is the one case that trimming would otherwise erase.
+        // Leading spaces are not part of the path, so they are removed before the separators are read.
         var normalised = path.Replace('/', '\\').TrimStart(' ');
         var doubled = normalised.StartsWith("\\\\", StringComparison.Ordinal);
         var rooted = normalised.StartsWith('\\');
-        var server = normalised.TrimStart('\\').Split('\\')[0];
-        var trimmed = server.TrimEnd(' ', '.');
+        var parts = normalised.TrimStart('\\').Split('\\');
+        var server = parts[0].Trim(' ');
+        var key = server.TrimEnd(' ', '.');
         var dotServer = server.Length > 0 && server.Contains('.') && server.All(c => c is '.' or ' ');
 
-        if (rooted && trimmed == "??") return true;
-        return doubled && (dotServer || trimmed == "?");
+        var extendedOrNt = (key == "?" && doubled) || (key == "??" && rooted);
+        if (extendedOrNt) return !(parts.Length > 1 && IsDriveLetterAndColon(parts[1]));
+        return doubled && dotServer;
     }
+
+    private static bool IsDriveLetterAndColon(string component) =>
+        component.Length == 2 && char.IsAsciiLetter(component[0]) && component[1] == ':';
 }
