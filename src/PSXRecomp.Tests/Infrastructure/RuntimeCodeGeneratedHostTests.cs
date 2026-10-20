@@ -502,9 +502,10 @@ public sealed class RuntimeCodeGeneratedHostTests
 #pragma warning restore AARC003
     }
 
-    [Fact]
+    [SkippableFact]
     public void GuardStats_Dump_WhenTheDestinationIsHeldWithoutFileShareDelete_KeepsThePreviousBytes_AndRemovesTheTemporaryFile()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing semantics (FILE_SHARE_DELETE): on POSIX a rename is not refused while the file is held open.");
         // Issue #797 (owner decision): fault injection on Windows. The destination is held open with FileShare.Read only, so the
         // generated MoveFileExA(MOVEFILE_REPLACE_EXISTING) is refused. The refusal is first proven from this process with the
         // same kind of replacement (File.Move overwrite) that must throw. The dump's own failure is then seen as an unchanged
@@ -535,9 +536,10 @@ public sealed class RuntimeCodeGeneratedHostTests
 #pragma warning restore AARC003
     }
 
-    [Fact]
+    [SkippableFact]
     public void GuardStats_Dump_WhenTheTemporaryFileCannotBeMoved_KeepsThePreviousReport_AndTheNextRunReplacesIt()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing semantics (FILE_SHARE_DELETE): on POSIX a rename is not refused while the file is held open.");
         // Issue #797 (owner decision): fault injection on the source side. The dump writes <path>.tmp while this process holds
         // it with FileShare.ReadWrite (no FILE_SHARE_DELETE), so the move onto <path> is refused. The destination must keep
         // the previous report byte-identical: a remove-first replacement would already have deleted it. The refusal is proven
