@@ -128,6 +128,19 @@ public static class Program
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
 
+        // Issue #786 (final review, round 14): a report never names an alternate data stream. On Windows a ':' in the file name (after the
+        // drive letter) is a stream, and a stream of an input is written through as a stream on that input. Refused before anything is read
+        // or written, for both report flags.
+        foreach (var target in new[] { diagnosticsPath, loadedCodeMismatchPath })
+        {
+            if (target is not null && OperatingSystem.IsWindows() && Path.GetFileName(target).Contains(':'))
+            {
+                Console.Error.WriteLine(
+                    $"runtime host: refusing report target {target}: a ':' in its file name names an alternate data stream, and no report is written to a stream.");
+                return 78;
+            }
+        }
+
         // The files the run reads, listed once for both report targets. A listing that fails (I/O or access) is a classified setup
         // failure: no report is written, and nothing beyond the listing is read.
         IReadOnlyList<string>? reportInputs = null;
@@ -144,6 +157,15 @@ public static class Program
                 Console.Error.WriteLine($"runtime host: could not list the distribution's files to check the report target: {ex.Message}");
                 return 78;
             }
+        }
+
+        // Issue #786 (final review, round 14): the two report flags never name one file. Two reports written to one file would overwrite each
+        // other, so a shared name (or a shared identity, through a link) is refused before any write.
+        if (diagnosticsPath is not null && loadedCodeMismatchPath is not null && NamesOneFile(diagnosticsPath, loadedCodeMismatchPath, probe))
+        {
+            Console.Error.WriteLine(
+                $"runtime host: refusing --diagnostics {diagnosticsPath} with --loaded-code-diagnostics {loadedCodeMismatchPath}: both would be written to one file.");
+            return 78;
         }
 
         // Issue #786 (PR review): the stop diagnostic is an output too, so it never replaces an input. Refused by path before anything runs.
@@ -441,6 +463,27 @@ public static class Program
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// True when two report targets are one file: the same resolved path (case-insensitively on Windows), or two regular files with the same
+    /// identity. A name that cannot be resolved is treated as the same file, so the run is refused rather than guessed at.
+    /// </summary>
+    private static bool NamesOneFile(string first, string second, IFileIdentityProbe probe)
+    {
+        try
+        {
+            var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            if (comparer.Equals(ResolvedFullPath(first), ResolvedFullPath(second))) return true;
+
+            var a = probe.Probe(first);
+            var b = probe.Probe(second);
+            return a.Kind == FileKind.RegularFile && b.Kind == FileKind.RegularFile && a.Identity is { } x && b.Identity is { } y && x == y;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return true;
+        }
     }
 
     private static string InputConflict(string input) => $"it is the input {input}, and no report is written over an input.";

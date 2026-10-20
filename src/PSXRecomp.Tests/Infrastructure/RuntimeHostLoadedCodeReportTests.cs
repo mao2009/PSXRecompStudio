@@ -970,4 +970,65 @@ public sealed class RuntimeHostLoadedCodeReportTests
 
         AssertRefused(DiagnosticsFlag, "\\??\\PhysicalDrive0", manifest, manifest, boot, artifact, disc);
     }
+
+    // Issue #786 (final review, round 14): a report target that is an alternate data stream of an input (input.json:report) is refused before
+    // anything is read or written. The input keeps its data, and no stream named "report" is created on it.
+    [SkippableTheory]
+    [InlineData(DiagnosticsFlag)]
+    [InlineData(LoadedCodeFlag)]
+    public void AReportTargetThatIsAStreamOfAnInput_IsRefused_AndTheInputKeepsItsDataAndStreams_OnWindows(string flag)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "alternate data streams are an NTFS rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var stream = disc + ":report";
+
+        var (code, stderr) = RunCapturingStderr(flag, stream, manifest);
+
+        code.Should().Be(78, "a report never names a stream");
+        stderr.Should().Contain("alternate data stream", "the refusal, not a run failure, is what turned it away");
+        ReadText(disc).Should().Be("disc bytes", "the input keeps its data");
+        #pragma warning disable AARC003
+        File.Exists(stream).Should().BeFalse("no stream named report is created on the input");
+        #pragma warning restore AARC003
+    }
+
+    // Issue #786 (final review, round 14): the two report flags never name one file. The same name, or two names for one file, is refused
+    // before any write: the second report would overwrite the first.
+    [Fact]
+    public void TwoReportFlagsNamingOneFile_AreRefused_BeforeAnyWrite()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
+        var report = dir.Combine("same.json");
+
+        var (code, stderr) = RunCapturingStderr(DiagnosticsFlag, report, LoadedCodeFlag, report, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("both would be written to one file");
+        #pragma warning disable AARC003
+        File.Exists(report).Should().BeFalse("the refusal happens before any report is written");
+        #pragma warning restore AARC003
+    }
+
+    // Issue #786 (final review, round 14): two names for one file (a hard link) are refused too, and neither report overwrites the other's file.
+    [SkippableFact]
+    public void TwoReportFlagsOnHardLinkedFiles_AreRefused_AndNeitherFileIsWritten()
+    {
+        using var dir = new TempDirectory();
+        dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
+        const string earlier = "{\"earlier\":true}";
+        var first = dir.WriteFile("first.json", Bytes(earlier));
+        var second = dir.Combine("second.json");
+        CreateHardLinkOrSkip(second, first);
+
+        var (code, stderr) = RunCapturingStderr(DiagnosticsFlag, first, LoadedCodeFlag, second, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("both would be written to one file");
+        ReadText(first).Should().Be(earlier);
+        ReadText(second).Should().Be(earlier);
+    }
 }
