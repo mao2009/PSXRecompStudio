@@ -351,7 +351,7 @@ public static class Program
     {
         try
         {
-            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
+            RuntimeHostReportFile.WriteAtomically(path, RuntimeHostDiagnosticJson.Serialize(build()));
         }
         catch (Exception ex)
         {
@@ -370,6 +370,11 @@ public static class Program
     {
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var targets = new[] { ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp") };
+        // File identity sees what a path cannot: a hard link, a chain of links, an 8.3 name. An existing target is compared by it.
+        var targetIdentities = new[] { reportPath, reportPath + ".tmp" }
+            .Select(RuntimeHostFileIdentity.Of)
+            .OfType<RuntimeHostFileIdentity.Key>()
+            .ToHashSet();
         foreach (var input in inputs)
         {
             // An input that names no valid path cannot be the report's target, which exists; the run itself fails on it.
@@ -384,6 +389,7 @@ public static class Program
             }
 
             if (targets.Any(target => comparer.Equals(target, resolved))) return input;
+            if (RuntimeHostFileIdentity.Of(input) is { } identity && targetIdentities.Contains(identity)) return input;
         }
 
         return null;
@@ -405,7 +411,7 @@ public static class Program
         }
         catch (Exception)
         {
-            return inputs;
+            return ConservativeInputs(manifestDirectory, inputs);
         }
 
         inputs.Add(Path.Combine(manifestDirectory, manifest.Artifact));
@@ -419,13 +425,32 @@ public static class Program
         }
         catch (Exception)
         {
-            return inputs;
+            return ConservativeInputs(manifestDirectory, inputs);
         }
 
         inputs.Add(Path.Combine(manifestDirectory, boot.DiscFile));
         inputs.Add(Path.Combine(manifestDirectory, boot.RootsFile));
         inputs.Add(Path.Combine(manifestDirectory, boot.LoadImagesFile));
         inputs.AddRange(boot.AotInputs.Select(input => Path.Combine(manifestDirectory, input.Path)));
+        return inputs;
+    }
+
+    /// <summary>
+    /// Fail closed (Issue #786 review round 4): when the manifest or the firmware boot manifest cannot be parsed, the names it would
+    /// have given are unknown, so every file the run could read is an input: the ROM image, every file under the disc and firmware
+    /// directories, and every file directly in the parent directory, where the artifact sits.
+    /// </summary>
+    private static List<string> ConservativeInputs(string manifestDirectory, List<string> inputs)
+    {
+        inputs.Add(Path.Combine(manifestDirectory, RuntimeHostLayout.ImageFileName));
+        foreach (var directory in new[] { FirmwareBootManifest.DiscDirectory, FirmwareBootManifest.FirmwareDirectory })
+        {
+            var path = Path.Combine(manifestDirectory, directory);
+            if (Directory.Exists(path)) inputs.AddRange(Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories));
+        }
+
+        var parent = Path.GetDirectoryName(manifestDirectory);
+        if (parent is not null) inputs.AddRange(Directory.EnumerateFiles(parent));
         return inputs;
     }
 
@@ -464,12 +489,7 @@ public static class Program
             var report = JsonNode.Parse(diagnostics.ToJson())!.AsObject();
             report["runId"] = runId;
             // Temp file then move: a reader never sees a half-written report, and a failed write leaves the previous report in place.
-            var temp = path + ".tmp";
-            var json = report.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n";
-            // A stale temp is removed by name first: a hard link at that name is then only a name, so the write cannot reach the file it links to.
-            File.Delete(temp);
-            File.WriteAllText(temp, json, new System.Text.UTF8Encoding(false));
-            File.Move(temp, path, overwrite: true);
+            RuntimeHostReportFile.WriteAtomically(path, report.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
         }
         catch (Exception ex)
         {

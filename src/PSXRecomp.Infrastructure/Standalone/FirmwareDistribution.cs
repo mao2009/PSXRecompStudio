@@ -737,7 +737,7 @@ public static class FirmwareRuntimeLauncher
 
         try
         {
-            File.WriteAllText(path, RuntimeHostDiagnosticJson.Serialize(build()));
+            RuntimeHostReportFile.WriteAtomically(path, RuntimeHostDiagnosticJson.Serialize(build()));
         }
         catch (Exception exception)
         {

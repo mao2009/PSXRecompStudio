@@ -521,4 +521,128 @@ public sealed class RuntimeHostLoadedCodeReportTests
 
         AssertDiagnosticsRefused(Path.Combine(junction, "runtime-host.json"), manifest, manifest, boot, artifact);
     }
+
+    // Issue #786 review (round 4): path comparison cannot see a hard link, a chain of links, or an 8.3 short name. Each names an input's
+    // file identity, so each must be refused, and the inputs must keep their bytes.
+    private const string LoadedCodeFlag = "--loaded-code-diagnostics";
+
+    private static string WriteRomImage(TempDirectory dir) =>
+        dir.WriteFile(Path.Combine("runtime", RuntimeHostLayout.ImageFileName), Bytes("rom bytes"));
+
+    private static (string Manifest, string Boot, string Artifact, string Disc) WriteDiscDistribution(TempDirectory dir)
+    {
+        var disc = dir.WriteFile(Path.Combine("runtime", "disc", "disc.bin"), Bytes("disc bytes"));
+        var boot = dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes(BootText("disc/disc.bin")));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
+        var artifact = dir.WriteFile("game.exe", Bytes("artifact bytes"));
+        return (manifest, boot, artifact, disc);
+    }
+
+    private static void AssertRefused(string flag, string target, string manifest, params string[] inputs)
+    {
+        var before = inputs.Select(path => (Path: path, Text: ReadText(path))).ToList();
+
+        var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([flag, target, manifest]);
+
+        code.Should().Be(78, $"{flag} naming {target} is an input and is refused before the run");
+        foreach (var (path, text) in before)
+        {
+            ReadText(path).Should().Be(text, $"{path} is an input and must survive");
+        }
+    }
+
+    // cmd's for-loop expands the 8.3 name; a path with spaces would need quoting that cmd echoes back, so those give no name.
+    private static string? ShortNameOf(string path)
+    {
+        if (path.Contains(' ')) return null;
+        var info = new System.Diagnostics.ProcessStartInfo(
+            "cmd.exe", $"/c for %I in ({path}) do @echo %~sI")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+        };
+        #pragma warning disable AARC003
+        using var process = System.Diagnostics.Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit();
+        var named = process.ExitCode == 0 && output.Length > 0 ? output : null;
+        #pragma warning restore AARC003
+        return named;
+    }
+
+    [SkippableFact]
+    public void Diagnostics_TargetIsAHardLinkToTheManifest_IsRefused_AndTheManifestSurvives_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "hard links are checked as Windows file identity");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+        var link = dir.Combine("hardlink.json");
+        CreateHardLinkOrSkip(link, manifest);
+
+        AssertRefused(DiagnosticsFlag, link, manifest, manifest, boot, artifact);
+    }
+
+    [SkippableFact]
+    public void Diagnostics_TargetIsAHardLinkToTheDisc_IsRefused_AndTheDiscSurvives_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "hard links are checked as Windows file identity");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var link = dir.Combine("hardlink.bin");
+        CreateHardLinkOrSkip(link, disc);
+
+        AssertRefused(DiagnosticsFlag, link, manifest, manifest, boot, artifact, disc);
+    }
+
+    [Fact]
+    public void Diagnostics_TargetIsTheDiscWhenFirmwareBootDoesNotParse_IsRefused_AndTheDiscSurvives()
+    {
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+        var disc = dir.WriteFile(Path.Combine("runtime", "disc", "disc.bin"), Bytes("disc bytes"));
+
+        AssertRefused(DiagnosticsFlag, disc, manifest, manifest, boot, artifact, disc);
+    }
+
+    [Theory]
+    [InlineData("game.exe")]
+    [InlineData("runtime/artifact-image.bin")]
+    public void LoadedCodeDiagnostics_WhenTheManifestDoesNotParse_TheArtifactAndTheRomAreRefused(string relativeTarget)
+    {
+        using var dir = new TempDirectory();
+        var boot = dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes("not json"));
+        var artifact = dir.WriteFile("game.exe", Bytes("artifact bytes"));
+        var rom = WriteRomImage(dir);
+
+        AssertRefused(LoadedCodeFlag, dir.Combine(relativeTarget), manifest, manifest, boot, artifact, rom);
+    }
+
+    [SkippableFact]
+    public void Diagnostics_TargetThroughAChainOfJunctionsToTheDisc_IsRefused_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "directory junctions are a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var first = dir.Combine("first");
+        CreateJunctionOrSkip(first, dir.Combine("runtime"));
+        var second = dir.Combine("second");
+        CreateJunctionOrSkip(second, first);
+
+        AssertRefused(DiagnosticsFlag, Path.Combine(second, "disc", "disc.bin"), manifest, manifest, boot, artifact, disc);
+    }
+
+    [SkippableFact]
+    public void Diagnostics_TargetByItsEightPointThreeName_IsRefused_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "8.3 short names are a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact) = WriteDistribution(dir);
+        var shortName = ShortNameOf(manifest);
+        Skip.If(shortName is null || string.Equals(shortName, manifest, StringComparison.OrdinalIgnoreCase),
+            "this volume gives the manifest no 8.3 short name");
+
+        AssertRefused(DiagnosticsFlag, shortName!, manifest, manifest, boot, artifact);
+    }
 }
