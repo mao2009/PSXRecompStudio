@@ -645,4 +645,52 @@ public sealed class RuntimeHostLoadedCodeReportTests
 
         AssertRefused(DiagnosticsFlag, shortName!, manifest, manifest, boot, artifact);
     }
+
+    // Issue #786 (PR review, round 5): an input listing that throws is a classified setup failure, not an escaped exception. The
+    // fallback lists the firmware directory, which is denied read for this account for the duration of the run.
+    private static bool RunIcacls(string arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("icacls.exe", arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+#pragma warning disable AARC003
+        using var process = System.Diagnostics.Process.Start(info)!;
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var succeeded = process.ExitCode == 0;
+#pragma warning restore AARC003
+        return succeeded;
+    }
+
+    [SkippableFact]
+    public void LoadedCodeDiagnostics_WhenAListingThrows_ExitsClassified78_AndTheInputsSurvive_OnWindows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the access rule used here is a Windows ACL");
+        using var dir = new TempDirectory();
+        var boot = dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
+        var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes("not json"));
+        var firmwareDirectory = Path.GetDirectoryName(dir.WriteFile(Path.Combine("runtime", "firmware", "rom.roots"), Bytes("roots")))!;
+#pragma warning disable AARC003
+        var user = Environment.UserName;
+#pragma warning restore AARC003
+        Skip.IfNot(RunIcacls($"\"{firmwareDirectory}\" /deny \"{user}\":(OI)(CI)(R)"),
+            "this account cannot change the directory's access rule here");
+        try
+        {
+            var code = PSXRecomp.Infrastructure.RuntimeHost.Program.Main([LoadedCodeFlag, dir.Combine("loaded.json"), manifest]);
+
+            code.Should().Be(78, "a listing that cannot be read is a classified setup failure, not an escaped exception");
+            ReadText(manifest).Should().Be("not json");
+            ReadText(boot).Should().Be("{}");
+        }
+        finally
+        {
+            RunIcacls($"\"{firmwareDirectory}\" /remove:d \"{user}\"");
+        }
+    }
 }

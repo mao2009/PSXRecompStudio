@@ -127,10 +127,26 @@ public static class Program
             ?? throw new InvalidOperationException(
                 "The runtime host manifest has no directory component.");
 
+        // The files the run reads, listed once for both report targets. A listing that fails (I/O or access) is a classified setup
+        // failure: no report is written, and nothing beyond the listing is read.
+        IReadOnlyList<string>? reportInputs = null;
+        if (diagnosticsPath is not null || loadedCodeMismatchPath is not null)
+        {
+            try
+            {
+                reportInputs = ReadInputPaths(manifestPath, manifestDirectory);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"runtime host: could not list the distribution's files to check the report target: {ex.Message}");
+                return 78;
+            }
+        }
+
         // Issue #786 (PR review): the stop diagnostic is an output too, so it never replaces an input. Refused by path before anything runs.
         if (diagnosticsPath is not null)
         {
-            var conflict = ReportTargetInput(diagnosticsPath, ReadInputPaths(manifestPath, manifestDirectory));
+            var conflict = ReportTargetInput(diagnosticsPath, reportInputs!);
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
@@ -152,7 +168,7 @@ public static class Program
         var runId = Guid.NewGuid().ToString("N");
         if (loadedCodeMismatchPath is not null)
         {
-            var conflict = ReportTargetInput(loadedCodeMismatchPath, ReadInputPaths(manifestPath, manifestDirectory));
+            var conflict = ReportTargetInput(loadedCodeMismatchPath, reportInputs!);
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
@@ -370,11 +386,8 @@ public static class Program
     {
         var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
         var targets = new[] { ResolvedFullPath(reportPath), ResolvedFullPath(reportPath + ".tmp") };
-        // File identity sees what a path cannot: a hard link, a chain of links, an 8.3 name. An existing target is compared by it.
-        var targetIdentities = new[] { reportPath, reportPath + ".tmp" }
-            .Select(RuntimeHostFileIdentity.Of)
-            .OfType<RuntimeHostFileIdentity.Key>()
-            .ToHashSet();
+        // Path comparison for every input first: a refusal by path opens no input at all.
+        var candidates = new List<string>(inputs.Count);
         foreach (var input in inputs)
         {
             // An input that names no valid path cannot be the report's target, which exists; the run itself fails on it.
@@ -389,6 +402,17 @@ public static class Program
             }
 
             if (targets.Any(target => comparer.Equals(target, resolved))) return input;
+            candidates.Add(input);
+        }
+
+        // Then file identity, which sees what a path cannot: a hard link, a chain of links, an 8.3 name. Each file is opened
+        // read-only for its identity (metadata only, no content), and only when no path matched.
+        var targetIdentities = new[] { reportPath, reportPath + ".tmp" }
+            .Select(RuntimeHostFileIdentity.Of)
+            .OfType<RuntimeHostFileIdentity.Key>()
+            .ToHashSet();
+        foreach (var input in candidates)
+        {
             if (RuntimeHostFileIdentity.Of(input) is { } identity && targetIdentities.Contains(identity)) return input;
         }
 
