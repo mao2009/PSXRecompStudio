@@ -23,7 +23,7 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
     /// name is reported Unreadable, so that every replacement of an existing file is refused (fail-closed). Used for hosts whose identity
     /// path cannot be checked here, and by tests that simulate such a host.
     /// </summary>
-    public FileSystemIdentityProbe(bool identityVerified)
+    internal FileSystemIdentityProbe(bool identityVerified)
     {
         _identityVerified = identityVerified;
     }
@@ -54,8 +54,8 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
         try
         {
             if (OperatingSystem.IsWindows()) return ProbeWindows(path, _identityVerified);
-            if (OperatingSystem.IsLinux()) return FromPosix(LinuxFileStatInterop.Stat(path), _identityVerified);
-            if (OperatingSystem.IsMacOS()) return FromPosix(MacOsFileStatInterop.Stat(path), _identityVerified);
+            if (OperatingSystem.IsLinux()) return FromPosix(LinuxFileStatInterop.Stat(path), _identityVerified, path);
+            if (OperatingSystem.IsMacOS()) return FromPosix(MacOsFileStatInterop.Stat(path), _identityVerified, path);
             return Unreadable;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
@@ -66,11 +66,29 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
 
     private static FileProbe Unreadable => new(FileKind.Unreadable, null);
 
-    private static FileProbe FromPosix(PosixStatResult stat, bool identityVerified)
+    // True when the path is itself a symbolic link (whatever its target), or when the link entry cannot be read: an unknown entry is treated as
+    // present (fail-closed). FileInfo.LinkTarget reads the link entry, not what it points to.
+    private static bool IsSymbolicLinkOrUnknown(string path)
+    {
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return true;
+        }
+    }
+
+    private static FileProbe FromPosix(PosixStatResult stat, bool identityVerified, string path)
     {
         if (!stat.Succeeded)
         {
-            return stat.Errno is NoSuchFile or NotADirectory ? new FileProbe(FileKind.Absent, null) : Unreadable;
+            if (stat.Errno is not (NoSuchFile or NotADirectory)) return Unreadable;
+
+            // stat follows a symbolic link, so a dangling link reports ENOENT as if nothing were there. On an unverified host the link entry itself
+            // exists and a write would replace it: it is an existing name, Unreadable, fail-closed. A verified host keeps the not-found answer.
+            return !identityVerified && IsSymbolicLinkOrUnknown(path) ? Unreadable : new FileProbe(FileKind.Absent, null);
         }
 
         // An existing name on a host whose identity is unverified cannot be shown to be no input: Unreadable, fail-closed.

@@ -25,4 +25,8 @@
     <ProjectReference Include="../PSXRecomp.Infrastructure/PSXRecomp.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="PSXRecomp.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -1054,6 +1054,35 @@ public sealed class RuntimeHostLoadedCodeReportTests
         new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
     }
 
+    // Issue #786 (final review, round 18, item 1): on an unverified host, a dangling symbolic link at the report path is an existing name. stat
+    // follows the link to a missing target and reports ENOENT, so the probe must not call it absent: the write would replace the link entry.
+    // The refusal must come before any write, with the link and its (absent) target unchanged. POSIX only: the Windows probe is verified.
+    [SkippableFact]
+    public void ADanglingSymlinkAtTheReportPath_OnAnUnverifiedIdentityHost_IsRefused_AndTheLinkSurvives()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a dangling link at the report path is a POSIX case: the Windows probe is verified");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+        var link = dir.Combine("report.json");
+        var missingTarget = dir.Combine("missing-target.json");
+        CreateFileSymlinkOrSkip(link, missingTarget);
+        #pragma warning disable AARC003
+        var linkTargetBefore = new FileInfo(link).LinkTarget;
+        #pragma warning restore AARC003
+        Skip.If(linkTargetBefore is null, "the link was not created as a link on this machine");
+        var inputsBefore = new[] { manifest, boot, artifact, disc }.Select(ReadText).ToList();
+
+        var (code, stderr) = RunCapturingStderrWithProbe(new FileSystemIdentityProbe(identityVerified: false), DiagnosticsFlag, link, manifest);
+
+        code.Should().Be(78);
+        stderr.Should().Contain("refusing " + DiagnosticsFlag, "a dangling link is an existing name on an unverified host, so it is refused");
+        #pragma warning disable AARC003
+        new FileInfo(link).LinkTarget.Should().Be(linkTargetBefore, "the link entry is not replaced");
+        File.Exists(missingTarget).Should().BeFalse("nothing is written through or created at the link's target");
+        #pragma warning restore AARC003
+        new[] { manifest, boot, artifact, disc }.Select(ReadText).Should().Equal(inputsBefore, "every input keeps its bytes");
+    }
+
     // Issue #786 (final round 17): on the same unverified host, a report where no file exists yet still proceeds (creating a new file is not a
     // replacement). This guard checks that the refusal is not over-broad.
     [Fact]

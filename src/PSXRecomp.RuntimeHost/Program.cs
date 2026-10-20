@@ -36,7 +36,7 @@ public static class Program
     /// The entry point with its identity probe supplied by the caller (the composition root passes the file system adapter; a test may pass
     /// a probe that reports an unverified identity, to exercise the fail-closed path of a host whose identity cannot be verified).
     /// </summary>
-    public static int Run(string[] args, IFileIdentityProbe probe)
+    internal static int Run(string[] args, IFileIdentityProbe probe)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(probe);
