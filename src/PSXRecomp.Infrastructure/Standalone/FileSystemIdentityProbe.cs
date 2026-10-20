@@ -71,10 +71,11 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
             : Unreadable;
     }
 
-    // A device is named by a device namespace path (\\.\ or \\?\, in any slash spelling, raw or normalised), or by any component of the
-    // path that is a reserved name. Win32 ignores trailing spaces and dots of a component, and everything after a ':' (an alternate data
-    // stream), so each component is reduced the same way before it is compared. A reserved name with an extension (CON.txt) is refused
-    // as well: Win32 documents such names as devices, and refusing them is the conservative choice (not confirmed on this host).
+    // A path is refused as a device when it is in a device namespace (\\.\, \\?\ or \??\, in any slash spelling, raw or normalised), or when
+    // a component is a reserved name. Win32 ignores trailing spaces and dots of a component, so each component is reduced the same way
+    // before it is compared. Two forms are refused conservatively, fail-closed, and are NOT confirmed to be devices on this host: a
+    // reserved name with an extension (CON.txt), and a reserved name with an alternate data stream after ':' (CON:stream). A .NET write
+    // created both as ordinary files here, so the refusal may be stricter than Windows; it is kept because the cost is only a refusal.
     private static bool IsDeviceName(string path)
     {
         var full = Path.GetFullPath(path);
@@ -93,9 +94,13 @@ public sealed class FileSystemIdentityProbe : IFileIdentityProbe
         return false;
     }
 
+    // The Win32 device namespace (\\.\), the extended-length form (\\?\) and the NT object namespace (\??\, which names the same devices).
+    // Any slash spelling counts. Every path in these namespaces is refused, so none is opened.
     private static bool IsDeviceNamespace(string path)
     {
         var normalised = path.Replace('/', '\\');
-        return normalised.StartsWith(@"\\.\", StringComparison.Ordinal) || normalised.StartsWith(@"\\?\", StringComparison.Ordinal);
+        return normalised.StartsWith(@"\\.\", StringComparison.Ordinal)
+            || normalised.StartsWith(@"\\?\", StringComparison.Ordinal)
+            || normalised.StartsWith(@"\??\", StringComparison.Ordinal);
     }
 }

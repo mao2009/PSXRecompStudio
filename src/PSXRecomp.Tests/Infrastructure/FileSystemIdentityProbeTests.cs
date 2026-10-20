@@ -124,8 +124,8 @@ public sealed class FileSystemIdentityProbeTests
         probe.Identity.Should().Be(new FileIdentity(ulong.Parse(parts[0]), ulong.Parse(parts[1])), "the offsets must match the kernel's stat");
     }
 
-    // Issue #786 (review round 7): Win32 ignores trailing spaces and dots in a name, so "CON " and "NUL." name the console and the null
-    // device. The probe is called with the raw spelling here (the host normalises paths earlier), so it must type them itself.
+    // Issue #786 (review round 7): Win32 ignores trailing spaces and dots in a name, so "CON " and "NUL." are the reserved names (NUL is a
+    // device on this host; CON was not confirmed). The probe is called with the raw spelling, so it must type them itself.
     [SkippableTheory]
     [InlineData("CON ")]
     [InlineData("NUL.")]
@@ -165,6 +165,8 @@ public sealed class FileSystemIdentityProbeTests
     [InlineData("//./PhysicalDrive0")]
     [InlineData("\\\\.\\PhysicalDrive0")]
     [InlineData("//?/GLOBALROOT/Device/HarddiskVolume1")]
+    [InlineData("\\??\\PhysicalDrive0")]
+    [InlineData("/??/PhysicalDrive0")]
     public void ADeviceNamespacePath_InAnySlashSpelling_IsTypedAsOther(string path)
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "the device namespace is a Windows rule");
@@ -183,19 +185,20 @@ public sealed class FileSystemIdentityProbeTests
 
         var probe = new FileSystemIdentityProbe().Probe(dir.Combine("x", "CON", "."));
 
-        probe.Kind.Should().Be(FileKind.Other, "Win32 strips the trailing dot, so the path names the console device");
+        probe.Kind.Should().Be(FileKind.Other, "Win32 strips the trailing dot, so the path names the reserved CON name, which is refused");
     }
 
-    // Issue #786 (final review): an alternate data stream of a reserved name names the device (CON:stream is the console).
+    // Issue #786 (final review, corrected): CON:stream is refused conservatively, fail-closed. It is NOT confirmed to be a device on this host:
+    // a .NET write created CON:stream as an ordinary file stream here. The refusal is kept; it is not a claim about Windows behaviour.
     [SkippableFact]
-    public void AnAlternateDataStreamOfAReservedName_IsTypedAsOther()
+    public void AnAlternateDataStreamOfAReservedName_IsRefusedConservatively_NotConfirmedAsADevice()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "Windows device names are a Windows rule");
         using var dir = new TempDirectory();
 
         var probe = new FileSystemIdentityProbe().Probe(dir.Combine("CON:stream"));
 
-        probe.Kind.Should().Be(FileKind.Other, "the stream is named after the reserved device, so it is refused");
+        probe.Kind.Should().Be(FileKind.Other, "refused conservatively (fail-closed); not confirmed to be a device on this host");
     }
 
     // Guard (already refused before this change): a reserved name with an extension is refused, fail-closed. Win32 documents such names

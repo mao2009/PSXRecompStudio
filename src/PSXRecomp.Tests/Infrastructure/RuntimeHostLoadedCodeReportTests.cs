@@ -958,4 +958,16 @@ public sealed class RuntimeHostLoadedCodeReportTests
 
         AssertRefused(DiagnosticsFlag, dir.Combine(name), manifest, manifest, boot, artifact, disc);
     }
+
+    // Issue #786 (final review, round 10): the NT object form of a device path. It must be refused before anything is opened. The
+    // device is never written: a refusal leaves the disc and every other input as they were.
+    [SkippableFact]
+    public void Diagnostics_TargetIsAnNtDevicePath_IsRefused()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the NT device namespace is a Windows rule");
+        using var dir = new TempDirectory();
+        var (manifest, boot, artifact, disc) = WriteDiscDistribution(dir);
+
+        AssertRefused(DiagnosticsFlag, "\\??\\PhysicalDrive0", manifest, manifest, boot, artifact, disc);
+    }
 }
