@@ -300,7 +300,7 @@ transfer is partial and is refused, and an export without `outcome` is malformed
 (with its outcome) and reports it on stderr. Each target also carries `ramWord`: the instruction word the interpreter read from guest
 RAM or ROM at that PC, observed at every fallback fetch there. It is `null` when the PC is outside RAM and ROM (the probe reads no
 word there, so a zero is never recorded for it), when a fetch could not be read, or when two fetches at the same PC read different
-words. A `null` `ramWord` is refused as unverified. The planner reads a target as a candidate root only when its `ramWord`
+words. The planner rejects a `null` `ramWord` as `ram-word-mismatch`. The planner reads a target as a candidate root only when its `ramWord`
 equals the word the EXE file places at that PC; any other target is rejected with the reason `ram-word-mismatch` and is not reported
 as a native route. This check compares what the run fetched with the file, so it can refuse a root whose native block would not run,
 but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that at run time. A `v2` export

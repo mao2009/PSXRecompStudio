@@ -1,6 +1,8 @@
 using System.Text;
 using FluentAssertions;
+using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Tests.Recompiler;
@@ -16,6 +18,7 @@ public sealed class FallbackRootsCommandTests
 {
     private const uint Dest = ObservedRootsFixtures.Dest;
     private const uint Callee = ObservedRootsFixtures.Callee;
+    private const uint Entry = 0x80001000u;
 
     private sealed record Fixture(TempDirectory Dir, string Rom, string Manifest, string Targets);
 
@@ -118,6 +121,48 @@ public sealed class FallbackRootsCommandTests
 
         plan.Images.Should().BeEmpty();
         plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
+    }
+
+    // Issue #773 (review): the probe's per-fetch wiring (FallbackRamWordLog.ObserveFetch) feeds the export. Two fallback fetches at
+    // one PC read different RAM words, so the exported target carries no ramWord, and the planner reads it back as unobserved.
+    [Fact]
+    public void TheProbePath_ExportsNoRamWord_WhenTheSamePcReadsDifferentWords()
+    {
+        var export = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.JumpRegister(31) });
+
+        export.Targets.Should().ContainSingle().Which.RamWord.Should().BeNull();
+    }
+
+    [Fact]
+    public void TheProbePath_ExportsTheRamWord_WhenEveryFetchReadsTheSameWord()
+    {
+        var export = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.Nop });
+
+        export.Targets.Should().ContainSingle().Which.RamWord.Should().Be(MipsEncoding.Nop);
+    }
+
+    // Runs the probe's fetch wiring for two fallback fetches at Pc (each on an interpreter whose RAM holds the given word), then
+    // builds the export the probe would write and reads it back through the planner's parser.
+    private static ObservedFallbackExport ProbeExportAt(uint pc, uint[] firstRam, uint[] secondRam)
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
+        var hash = ObservedRootsFixtures.Sha256Hex(firmwareBytes);
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
+        var log = new FallbackRamWordLog();
+        // One shared guest RAM: the word at pc is what the first fetch reads; the RAM is then changed before the second fetch.
+        using var graph = new PsxDeviceGraph();
+        var scheduler = new DeviceScheduler(graph.Core, graph.InterruptControllerAdapter, graph.GpuAdapter, graph.CdRomDevice, graph.CdRomDmaTransfer);
+        graph.Core.CopyRamFrom(pc & 0x1FFFFFFFu, BitConverter.GetBytes(firstRam[0]));
+        using (var first = InterpreterTitleExecutionEngine.Attach(firstRam, pc, graph, scheduler)) log.ObserveFetch(first, pc);
+        graph.Core.CopyRamFrom(pc & 0x1FFFFFFFu, BitConverter.GetBytes(secondRam[0]));
+        using (var second = InterpreterTitleExecutionEngine.Attach(secondRam, pc, graph, scheduler)) log.ObserveFetch(second, pc);
+        var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(pc, Entries: 2, Instructions: 2, LastReturnPc: Dest)]);
+
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, log.Get);
+
+        return ObservedRootPlanner.ReadExport(json!);
     }
 
     [Fact]

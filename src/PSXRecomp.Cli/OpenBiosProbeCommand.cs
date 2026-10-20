@@ -554,7 +554,7 @@ internal static class OpenBiosProbeCommand
                 {
                     current = interpreter;
                     lastFallbackFetch = pc;
-                    ramWords.Observe(pc, interpreter.TryReadGuestWord(pc, out var fetched) ? fetched : (uint?)null);
+                    ramWords.ObserveFetch(interpreter, pc);
                     monitor.OnFetch(pc);
                     accounting.OnFetch(pc, readCop0, readWord);
                     if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
@@ -967,6 +967,10 @@ internal static class OpenBiosProbeCommand
 internal sealed class FallbackRamWordLog
 {
     private readonly Dictionary<uint, uint?> words = new();
+
+    /// <summary>The probe's per-fetch wiring: observes the word the interpreter reads at <paramref name="pc"/> (null when it cannot be read).</summary>
+    public void ObserveFetch(InterpreterTitleExecutionEngine interpreter, uint pc) =>
+        Observe(pc, interpreter.TryReadGuestWord(pc, out var fetched) ? fetched : (uint?)null);
 
     public void Observe(uint pc, uint? word)
     {
