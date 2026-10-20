@@ -1,3 +1,4 @@
+using PSXRecomp.Core.Recompiler;
 using System.Buffers.Binary;
 using FluentAssertions;
 using PSXRecomp.Core;
@@ -272,5 +273,186 @@ public sealed class InterpreterFallbackEngineTests
         engine.Dispose();
 
         graph.Core.ReadMemory32(Entry & 0x1FFFFFFFu).Should().Be(0u, "the graph was not disposed by the attached engine");
+    }
+
+    // Issue #806 (return classification): every refusal of a return check is counted in the bucket its condition names.
+
+    [Fact]
+    public void ReturnCheck_ABlockEntry_IsAnAotEntryHit_AndAccepted()
+    {
+        var verdict = FallbackReturnCheck.Classify(Entry, new HashSet<uint> { Entry }, LoadedCodeTable.Empty, _ => 0);
+
+        verdict.Should().Be(FallbackReturnVerdict.AcceptedAotEntry);
+    }
+
+    [Fact]
+    public void ReturnCheck_NoBlockEntryAndNoRamVersion_IsRefusedAsNoAotEntry()
+    {
+        var verdict = FallbackReturnCheck.Classify(Entry + 8, new HashSet<uint>(), LoadedCodeTable.Empty, _ => 0);
+
+        verdict.Should().Be(FallbackReturnVerdict.RefusedNoAotEntry);
+    }
+
+    [Fact]
+    public void ReturnCheck_RamVersionWhoseWordsMatchRam_IsAcceptedAsARamVersion()
+    {
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(Target, [Nop, Nop], [Target], new HashSet<uint>())]);
+
+        var verdict = FallbackReturnCheck.Classify(Target, new HashSet<uint>(), loaded, _ => Nop);
+
+        verdict.Should().Be(FallbackReturnVerdict.AcceptedRamVersion);
+    }
+
+    [Fact]
+    public void ReturnCheck_RamVersionWhoseWordsDifferFromRam_IsRefusedAsARamWordMismatch()
+    {
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(Target, [Nop, Nop], [Target], new HashSet<uint>())]);
+
+        var verdict = FallbackReturnCheck.Classify(Target, new HashSet<uint>(), loaded, _ => 0xDEADBEEFu);
+
+        verdict.Should().Be(FallbackReturnVerdict.RefusedRamWordMismatch);
+    }
+
+    [Fact]
+    public void ReturnCheck_RamVersionAtAPcOutsideRam_IsRefusedAsOwnerNotInRam()
+    {
+        var loaded = new LoadedCodeTable([ReachableProgramBuilder.BuildLoadedImage(0xBFC00000u, [Nop, Nop], [0xBFC00000u], new HashSet<uint>())]);
+
+        var verdict = FallbackReturnCheck.Classify(0xBFC00000u, new HashSet<uint>(), loaded, _ => Nop);
+
+        verdict.Should().Be(FallbackReturnVerdict.RefusedOwnerNotInRam, "no RAM word can be compared, so no version can be shown to own the PC");
+    }
+
+    [Fact]
+    public void ReturnCheck_RamVersionThatDoesNotFitInRam_IsRefusedAsNoComparableVersion()
+    {
+        // Two words at the last RAM word: the version is longer than the RAM left at that PC, so none is compared.
+        // The version is written as two words explicitly: the builder may cut a unit shorter, and the fixture must not fit.
+        var block = new RecompilerIrBlock(0x801FFFFCu, [], new RecompilerIrExit(RecompilerIrTerminationReason.Success, 0x80200004u));
+        var loaded = new LoadedCodeTable([new GuardedImageProgram([new GuardedBlock(block, [Nop, Nop])], [])]);
+
+        var verdict = FallbackReturnCheck.Classify(0x801FFFFCu, new HashSet<uint>(), loaded, _ => Nop);
+
+        verdict.Should().Be(FallbackReturnVerdict.RefusedNoComparableVersion);
+    }
+
+    [Fact]
+    public void ReturnCheck_AcceptedExactlyForTheTwoAcceptedVerdicts()
+    {
+        FallbackReturnCheck.IsAccepted(FallbackReturnVerdict.AcceptedAotEntry).Should().BeTrue();
+        FallbackReturnCheck.IsAccepted(FallbackReturnVerdict.AcceptedRamVersion).Should().BeTrue();
+        FallbackReturnCheck.IsAccepted(FallbackReturnVerdict.RefusedRamWordMismatch).Should().BeFalse();
+        FallbackReturnCheck.IsAccepted(FallbackReturnVerdict.RefusedNoAotEntry).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ReturnCheck_PipelineNotClean_IsCountedAsARefusal_AtTheDelaySlot()
+    {
+        // The delay slot of the BEQ is a return point, but the pipeline holds a pending branch: a refused check.
+        var code = new Block(Entry);
+        code.Emit(PSXRecomp.Tests.Recompiler.MipsEncoding.Branch(0x04, 0, 0, Entry, ReturnPc), Addiu(S0, Zero, 5));
+        var (graph, _, engine) = Attached(Image(code));
+        using var _ = graph;
+        using var __ = engine;
+        var diagnostics = new FallbackReturnDiagnostics();
+        engine.ReturnDiagnostics = diagnostics;
+
+        var outcome = engine.RunFallbackSegment(Entering(Entry), new HashSet<uint> { Entry + 4, ReturnPc }, 100);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.Returned);
+        diagnostics.Snapshot().RefusedPipelineNotClean.Should().Be(1UL);
+        diagnostics.Snapshot().TopRefusedPcs.Should().ContainSingle(p => p.Pc == Entry + 4 && p.Count == 1UL);
+    }
+
+    [Fact]
+    public void ReturnCheck_WhileAnInterruptHandlerRuns_IsCountedAsSuppressed()
+    {
+        // A hardware IRQ 0 is pending and unmasked (I_MASK, I_STAT) with SR IEc|IM2, so the CPU takes it into the general
+        // exception vector, outside the image. The vector holds a guest handler (non-zero words; an empty vector would be
+        // the kernel's), and the step loop suppresses every return check while that handler runs. (A software interrupt
+        // ends the segment instead: see SoftwareInterruptBackendDivergenceTests.)
+        var (graph, _, engine) = Attached(Image(new Block(Entry).Emit(Nop, Nop, Nop, Nop)));
+        using var _ = graph;
+        using var __ = engine;
+        // The handler loops inside the vector (addiu; j vector; nop), so only the budget ends it and it never reaches the A0 table.
+        var handler = new byte[3 * 4];
+        var handlerWords = new[] { Addiu(S0, S0, 1), PSXRecomp.Tests.Recompiler.MipsEncoding.Jump(0x80000080u), Nop };
+        for (var i = 0; i < handlerWords.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(handler.AsSpan(i * 4), handlerWords[i]);
+        }
+
+        graph.Core.CopyRamFrom(0x80000080u & 0x1FFFFFFFu, handler);
+        graph.Core.WriteInterruptControllerRegister(0x1F801074u, 1u);
+        graph.Core.RaiseInterrupt(0);
+        var diagnostics = new FallbackReturnDiagnostics();
+        engine.ReturnDiagnostics = diagnostics;
+
+        var outcome = engine.RunFallbackSegment(Entering(Entry, sr: 0x401), new HashSet<uint> { 0x80000080u }, 40);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.BudgetExhausted, "the guest handler runs to the budget");
+        outcome.RetiredInstructions.Should().BeGreaterThan(0UL, "the handler's addiu instructions retired");
+        var snapshot = diagnostics.Snapshot();
+        snapshot.SuppressedByInterruptHandler.Should().BeGreaterThan(0UL, "the handler stepped while the check was suppressed");
+        snapshot.RefusedPipelineNotClean.Should().Be(0UL);
+        snapshot.ReturnChecks.Should().Be(0UL, "no check reached the predicate: every step was inside the handler");
+    }
+
+    [Fact]
+    public void FallbackReturns_CountsTheSegmentsAndTheLongestOne_AndTheBudgetExhaustion()
+    {
+        var stats = new FallbackReturnDiagnostics();
+
+        stats.NoteSegment(entryPc: 0x80001000u, exitPc: 0x80001010u, retired: 10, FallbackSegmentStatus.Returned);
+        stats.NoteSegment(entryPc: 0x80002000u, exitPc: 0x80002004u, retired: 500, FallbackSegmentStatus.BudgetExhausted);
+        stats.NoteSegment(entryPc: 0x80003000u, exitPc: 0x80003008u, retired: 3, FallbackSegmentStatus.Stopped);
+
+        var snapshot = stats.Snapshot();
+        snapshot.Segments.Should().Be(3UL);
+        snapshot.SuccessfulReturns.Should().Be(1UL);
+        snapshot.BudgetExhaustedSegments.Should().Be(1UL);
+        snapshot.LongestSegmentRetired.Should().Be(500UL);
+        snapshot.LongestSegmentEntryPc.Should().Be(0x80002000u);
+        snapshot.LongestSegmentExitPc.Should().Be(0x80002004u);
+        snapshot.LongestSegmentStatus.Should().Be("BudgetExhausted");
+    }
+
+    [Fact]
+    public void FallbackReturns_TopRefusedPcs_IsBounded_AndKeepsTheHottestPc()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        const uint hot = 0x80001234u;
+        for (var i = 0; i < 100; i++)
+        {
+            stats.NoteVerdict(hot, FallbackReturnVerdict.RefusedNoAotEntry);
+            stats.NoteVerdict(0x80010000u + (uint)i * 4u, FallbackReturnVerdict.RefusedRamWordMismatch);
+        }
+
+        var snapshot = stats.Snapshot();
+        snapshot.TopRefusedPcs.Count.Should().BeLessThanOrEqualTo(FallbackReturnDiagnostics.TopN, "the table is bounded");
+        snapshot.TopRefusedPcs[0].Pc.Should().Be(hot);
+        snapshot.TopRefusedPcs[0].Count.Should().BeGreaterThanOrEqualTo(100UL, "a space-saving count never undercounts the hottest PC");
+        snapshot.ReturnChecks.Should().Be(200UL);
+    }
+
+    [Fact]
+    public void FallbackReturns_EveryVerdictIsCountedInExactlyItsOwnBucket()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.AcceptedAotEntry);
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.AcceptedRamVersion);
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedNoAotEntry);
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedOwnerNotInRam);
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedRamWordMismatch);
+        stats.NoteVerdict(Entry, FallbackReturnVerdict.RefusedNoComparableVersion);
+
+        var s = stats.Snapshot();
+        s.AotEntryHits.Should().Be(1UL);
+        s.RamVersionHits.Should().Be(1UL);
+        s.RefusedNoAotEntry.Should().Be(1UL);
+        s.RefusedOwnerNotInRam.Should().Be(1UL);
+        s.RefusedRamWordMismatch.Should().Be(1UL);
+        s.RefusedNoComparableVersion.Should().Be(1UL);
+        s.ReturnChecks.Should().Be(6UL);
     }
 }

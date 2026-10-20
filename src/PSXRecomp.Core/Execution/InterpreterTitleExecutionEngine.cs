@@ -282,6 +282,12 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public Action<uint>? FetchObserver { get; set; }
 
     /// <summary>
+    /// Counts the return checks the fallback step loop refuses for a reason other than the predicate (Issue #806): a pipeline
+    /// that is not clean, and steps run while the guest's interrupt handler is active. Null keeps the loop unobserved.
+    /// </summary>
+    public FallbackReturnDiagnostics? ReturnDiagnostics { get; set; }
+
+    /// <summary>
     /// The fallback segment in flight (Issue #806): scalars the stepping thread publishes, so a host that is stuck inside a
     /// segment can say where it is without reading the device graph. Null when no segment is running. The PC and the retired
     /// count are read separately, so they may come from adjacent steps (diagnostic only).
@@ -557,11 +563,27 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // previous instruction.
             // A guest firmware (Issue #732) owns its handlers in its own image and permits every PC, so being inside one
             // is no reason to keep interpreting; its SYSCALL handler returns to EPC + 4, never to the EPC tracked below.
-            if (returnPcs is not null && step > 0 && (!_inInterruptHandler || _allowRuntimeRamExecution)
-                && returnPcs(_core.Pc) && _core.IsPipelineClean)
+            if (returnPcs is not null && step > 0)
             {
-                returned = true;
-                break;
+                if (!_inInterruptHandler || _allowRuntimeRamExecution)
+                {
+                    if (returnPcs(_core.Pc))
+                    {
+                        if (_core.IsPipelineClean)
+                        {
+                            returned = true;
+                            break;
+                        }
+
+                        // Issue #806: a return point the pipeline is not clean at is refused here, and counted as such.
+                        ReturnDiagnostics?.NotePipelineRefusal(_core.Pc);
+                    }
+                }
+                else
+                {
+                    // Issue #806: no return check is made while the guest's handler runs, so none is evaluated here.
+                    ReturnDiagnostics?.NoteSuppressedByInterruptHandler();
+                }
             }
 
             // A vector dispatch costs a step from the same budget that bounds

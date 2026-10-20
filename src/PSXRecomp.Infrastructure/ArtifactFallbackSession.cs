@@ -55,6 +55,10 @@ internal sealed class ArtifactFallbackSession : IDisposable
     private readonly Stopwatch _transferClock = new();
     private readonly Stopwatch _fallbackClock = new();
 
+    // Issue #806: the return classification of this run; the step loop and the predicate write it, the host reads a snapshot.
+    private readonly FallbackReturnDiagnostics _returnStats = new();
+    private readonly Func<uint, uint> _ramWordAtPhysical;
+
     private uint _transitions;
     private uint _returns;
     private ulong _fallbackInstructions;
@@ -93,6 +97,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
         _readReply = readReply;
         _interpreter = InterpreterTitleExecutionEngine.Attach(
             imageWords, imageLoadAddress, devices, scheduler, biosRuntimeFactory, exceptionChain, guestFirmware);
+        _interpreter.ReturnDiagnostics = _returnStats;
+        _ramWordAtPhysical = RamWordAtPhysical;
         if (fetchObserver is not null)
         {
             var interpreter = _interpreter;
@@ -110,44 +116,18 @@ internal sealed class ArtifactFallbackSession : IDisposable
     private readonly LoadedCodeMismatchDiagnostics? _loadedCodeMismatch;
 
     /// <summary>
-    /// The artifact's translation of a guest PC to a RAM offset (artifact_translate / artifact_ram_offset): KUSEG as is,
-    /// KSEG0/1 masked, the low 8 MiB mirroring the 2 MiB RAM; false when the PC is not RAM (so there is nothing to compare).
-    /// </summary>
-    private static bool TryRamOffset(uint address, out uint physical)
-    {
-        physical = address <= 0x7FFFFFFFu ? address : address & 0x1FFFFFFFu;
-        if (address >= 0xC0000000u || physical >= 0x00800000u) return false;
-        physical &= PSXCoreWrapper.RamSize - 1;
-        return true;
-    }
-
-    /// <summary>
     /// Whether the artifact may resume at <paramref name="pc"/>: it has a static block there, or a version of RAM-placed
     /// code whose words the interpreter's RAM (equal to <c>artifact_ram</c> once written back) holds now. Stale or unknown
     /// RAM code is no return point; the artifact makes the same check and would only offer the PC back.
     /// </summary>
     private bool IsReturnPoint(uint pc)
     {
-        if (_blockEntryPcs.Contains(pc)) return true;
-        if (!_loadedCode.Contains(pc)) return false;
-        // A PC outside RAM is not RAM code.
-        if (!TryRamOffset(pc, out var physical)) return false;
-        foreach (var version in _loadedCode.VersionsAt(pc))
-        {
-            // Match the artifact's per-version byte span without overflowing the size calculation. A longer
-            // version must not hide a current shorter version at the same entry.
-            if (version.Words.Count == 0 || (ulong)version.Words.Count * 4ul > PSXCoreWrapper.RamSize - physical) continue;
-            var current = true;
-            for (var i = 0; i < version.Words.Count && current; i++)
-            {
-                current = _devices.Core.ReadMemory32(physical + (uint)i * 4u) == version.Words[i];
-            }
-
-            if (current) return true;
-        }
-
-        return false;
+        var verdict = FallbackReturnCheck.Classify(pc, _blockEntryPcs, _loadedCode, _ramWordAtPhysical);
+        _returnStats.NoteVerdict(pc, verdict);
+        return FallbackReturnCheck.IsAccepted(verdict);
     }
+
+    private uint RamWordAtPhysical(uint physical) => _devices.Core.ReadMemory32(physical);
 
     /// <summary>
     /// The guest word at a virtual address, through the artifact's translation (as in <see cref="IsReturnPoint"/>). Outside
@@ -156,7 +136,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
     /// </summary>
     private uint LoadedCodeWordAt(uint address)
     {
-        if (!TryRamOffset(address, out var physical)) return 0;
+        if (!FallbackReturnCheck.TryRamOffset(address, out var physical)) return 0;
         return physical + 4 > PSXCoreWrapper.RamSize ? 0 : _devices.Core.ReadMemory32(physical);
     }
 
@@ -164,7 +144,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
     {
         var versions = _loadedCode.VersionsAt(pc);
         var matched = -1;
-        if (versions.Count != 0 && TryRamOffset(pc, out var physical))
+        if (versions.Count != 0 && FallbackReturnCheck.TryRamOffset(pc, out var physical))
         {
             for (var v = 0; v < versions.Count && matched < 0; v++)
             {
@@ -222,6 +202,9 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
     /// <summary>The fallback segment in flight as published by its stepping thread (Issue #806); null when none runs.</summary>
     public FallbackSegmentProgress? InFlightSegment => _interpreter.FallbackProgress;
+
+    /// <summary>The return classification of this run so far (Issue #806); safe to read while the pump owns the graph.</summary>
+    public FallbackReturnStats ReturnStats => _returnStats.Snapshot();
 
     public void Dispose() => _interpreter.Dispose();
 
@@ -332,6 +315,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
             _transferClock.Start();
             _fallbackInstructions += outcome.RetiredInstructions;
+            _returnStats.NoteSegment(pc, outcome.State.Pc, outcome.RetiredInstructions, outcome.Status);
             var previous = _targets.GetValueOrDefault(pc);
             _targets[pc] = (
                 previous.Entries + 1,

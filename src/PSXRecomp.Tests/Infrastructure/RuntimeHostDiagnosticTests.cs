@@ -269,4 +269,38 @@ public sealed class RuntimeHostDiagnosticTests
         root.GetProperty("fallbackRejectReason").GetString().Should().Be(MixedFallbackDiagnostics.IneligibleNotIndirect);
         root.GetProperty("aotRetiredInstructions").GetUInt64().Should().Be(1234);
     }
+
+    [Fact]
+    public void RunMetrics_FallbackReturns_AreAdditiveAndSerializedUnderMetrics()
+    {
+        // Issue #806: the return classification rides in metrics as one additive object; the existing keys are unchanged.
+        var stats = new FallbackReturnDiagnostics();
+        stats.NoteVerdict(0x80030C44u, FallbackReturnVerdict.RefusedRamWordMismatch);
+        stats.NoteSegment(0x80030C44u, 0x80030C44u, 163_124_226UL, FallbackSegmentStatus.BudgetExhausted);
+        var metrics = RuntimeHostRunMetrics.From(1500.5, (MmioAccesses: 40, TimeReports: 90), null, fallbackReturns: stats.Snapshot());
+
+        var diagnostic = RuntimeHostDiagnostic.From(
+            Manifest([Load]),
+            Stop(Load, null, RecompilerIrTerminationReason.Success) with { State = TitleExecutionState.Completed },
+            exitCode: 0,
+            aotRetiredInstructions: 10,
+            fallbackRetiredInstructions: null,
+            fallbackTransitionCount: null,
+            declinedTransfer: null,
+            metrics: metrics);
+
+        using var json = JsonDocument.Parse(RuntimeHostDiagnosticJson.Serialize(diagnostic));
+        var written = json.RootElement.GetProperty("metrics");
+        written.GetProperty("wallMilliseconds").GetDouble().Should().Be(1500.5);
+        var returns = written.GetProperty("fallbackReturns");
+        returns.GetProperty("refusedRamWordMismatch").GetUInt64().Should().Be(1UL);
+        returns.GetProperty("longestSegmentRetired").GetUInt64().Should().Be(163_124_226UL);
+        returns.GetProperty("topRefusedPcs")[0].GetProperty("pc").GetUInt32().Should().Be(0x80030C44u);
+    }
+
+    [Fact]
+    public void RunMetrics_WithoutFallbackReturns_LeaveTheObjectNull()
+    {
+        RuntimeHostRunMetrics.From(1.0, null, null).FallbackReturns.Should().BeNull();
+    }
 }
