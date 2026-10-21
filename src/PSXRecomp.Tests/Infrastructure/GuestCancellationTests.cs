@@ -44,8 +44,10 @@ public sealed class GuestCancellationTests
 
     private static string UniqueArtifactCopy(string binary, TempDirectory dir)
     {
-        // The temp directory's name is random per test, so the copy name is unique across parallel test hosts too.
-        var copy = Path.Combine(dir.FullPath, $"stop-{Path.GetFileName(dir.FullPath)}-{Interlocked.Increment(ref _copyCounter)}{Path.GetExtension(binary)}");
+        // Linux reports a process name truncated to 15 characters, so the name is kept short. The token is the start of this
+        // test's random temp directory name, which keeps the copy unique across tests and parallel test hosts.
+        var token = Path.GetFileNameWithoutExtension(dir.FullPath)[..6];
+        var copy = Path.Combine(dir.FullPath, $"stop{Interlocked.Increment(ref _copyCounter)}-{token}{Path.GetExtension(binary)}");
 #pragma warning disable AARC003 // Test-layer I/O for verification
         File.Copy(binary, copy);
 #pragma warning restore AARC003
