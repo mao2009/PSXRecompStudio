@@ -86,6 +86,20 @@ public sealed class LiveFramePublisherTests
     }
 
     [Fact]
+    public void OneAdvanceOverSeveralVBlanks_RaisesOneCallbackPerVBlank()
+    {
+        // The scheduler contract the live publish relies on: one call that spans N VBlanks invokes the callback N times.
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var calls = new List<ulong>();
+        scheduler.VblankCallback = count => calls.Add(count);
+
+        scheduler.AdvanceExact(3 * DeviceScheduler.VblankIntervalCycles);
+
+        calls.Should().Equal(1UL, 2UL, 3UL);
+    }
+
+    [Fact]
     public void EachVBlank_WithAReader_PublishesTheLatestDisplay_AndOnlyTheLatestIsKept()
     {
         using var graph = new PsxDeviceGraph();
