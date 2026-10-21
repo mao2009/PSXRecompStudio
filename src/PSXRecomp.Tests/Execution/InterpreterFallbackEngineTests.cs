@@ -534,6 +534,19 @@ public sealed class InterpreterFallbackEngineTests
     }
 
     [Fact]
+    public void FallbackPcCount_LowerBound_SaturatesAtZero_WhenAMidEvictionReadSeesErrorAboveCount()
+    {
+        // A snapshot taken during eviction may read an error larger than the count (Issue #806 review, torn read).
+        // The lower bound must not wrap to a huge value.
+        var torn = new FallbackPcCount(Entry, Count: 5, Error: 9);
+        torn.LowerBound.Should().Be(0UL, "a torn read must not make the lower bound wrap");
+
+        var consistent = new FallbackPcCount(Entry, Count: 5, Error: 2);
+        consistent.LowerBound.Should().Be(3UL);
+        consistent.LowerBound.Should().BeLessThanOrEqualTo(consistent.Count, "the lower bound never exceeds the estimate");
+    }
+
+    [Fact]
     public void TopRefusedPcs_EightyPcsTenTimesEach_ReportsBoundedEstimates()
     {
         var stats = new FallbackReturnDiagnostics();

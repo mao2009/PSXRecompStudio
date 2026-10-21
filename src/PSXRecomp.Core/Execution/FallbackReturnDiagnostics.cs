@@ -89,7 +89,7 @@ public static class FallbackReturnCheck
 public sealed record FallbackPcCount(uint Pc, ulong Count, ulong Error)
 {
     /// <summary>The guaranteed minimum refusal count for this PC (estimate minus error).</summary>
-    public ulong LowerBound => Count - Error;
+    public ulong LowerBound => Count > Error ? Count - Error : 0;
 }
 
 /// <summary>
@@ -233,7 +233,11 @@ public sealed class FallbackReturnDiagnostics
         var top = new List<FallbackPcCount>(_topUsed);
         for (var i = 0; i < _topUsed; i++)
         {
-            top.Add(new FallbackPcCount(_topPcs[i], _topCounts[i], _topErrors[i]));
+            // The error is read first: eviction writes the error before the count, so a snapshot taken mid-eviction never
+            // sees an error above its count (Count - Error would wrap). LowerBound also saturates as a second guard.
+            var error = _topErrors[i];
+            var count = _topCounts[i];
+            top.Add(new FallbackPcCount(_topPcs[i], count, error));
         }
 
         top.Sort(static (a, b) => a.Count != b.Count ? b.Count.CompareTo(a.Count) : a.Pc.CompareTo(b.Pc));
