@@ -102,11 +102,13 @@ public sealed class ExecutionOrchestrator
         RecompilerStateSnapshot from,
         uint outerBudget,
         uint segmentBudget,
-        Action<RecompilerStateSnapshot>? segmentCallback = null)
+        Action<RecompilerStateSnapshot>? segmentCallback = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(from);
-        return Run(engine, handoff, from.Gpr.ToArray(), from.HI, from.LO, from.PC, outerBudget, segmentBudget, segmentCallback);
+        using var stopRegistration = cancellationToken.Register(() => (engine as ICancellableExecutionEngine)?.RequestCancel());
+        return Run(engine, handoff, from.Gpr.ToArray(), from.HI, from.LO, from.PC, outerBudget, segmentBudget, segmentCallback, cancellationToken);
     }
 
     private static TitleExecutionResult Run(
@@ -148,8 +150,9 @@ public sealed class ExecutionOrchestrator
 
             if (result.Status != RecompilerExecutionStatus.Completed)
             {
-                // A stop request ends the run as Cancelled, never as a RuntimeFailure: the failure is the stop itself (Issue #820).
-                if (result.Status == RecompilerExecutionStatus.Cancelled || cancellationToken.IsCancellationRequested)
+                // A stop ends the run as Cancelled, never as a RuntimeFailure. The engine reports Cancelled only when the stop
+                // itself caused the failure, so a failure that happened before the stop keeps its own classification (Issue #820).
+                if (result.Status == RecompilerExecutionStatus.Cancelled)
                 {
                     return Terminal(TitleExecutionState.Cancelled, last, segments, engine.Name, CancelledCode, CancelledMessage);
                 }

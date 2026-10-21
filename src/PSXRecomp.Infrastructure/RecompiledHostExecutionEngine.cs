@@ -221,6 +221,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             // The engine was disposed after its run: there is nothing left to stop.
         }
+        catch (AggregateException exception)
+        {
+            // A stop callback failed. The child kill already logs its own failures; this keeps a pool thread from dying.
+            Trace.WriteLine($"Stop request failed: {exception}");
+        }
     }
 
     /// <summary>
@@ -667,7 +672,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
         }
 
-        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, _stopRequested.Token);
+        // Set only when a stop reached a child that was still running (see StopChild). It alone decides a Cancelled result.
+        var stopDelivered = new System.Runtime.CompilerServices.StrongBox<bool>();
+        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, _stopRequested.Token, stopDelivered);
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
         // guest's console output (the boot/TTY text before the engine's
@@ -690,8 +697,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         var classified = ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge);
 
-        // Issue #820: a stop request ends the run as Cancelled, unless the child had already produced a completed result.
-        if (classified.Status != RecompilerExecutionStatus.Completed && _stopRequested.IsCancellationRequested)
+        // Issue #820: a failure caused by stopping a live child is Cancelled. A child that had already finished on its own keeps
+        // its own result, and so does a completed run, whatever stop request arrives afterwards.
+        if (classified.Status != RecompilerExecutionStatus.Completed && stopDelivered.Value)
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.");
@@ -775,7 +783,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public void Dispose()
     {
         GC.SuppressFinalize(this);
-        // A stop requested after this point finds the source disposed and does nothing (see CancelStopSource).
+        // A run still in progress is stopped rather than left to its timeout. After a finished run this does nothing.
+        try
+        {
+            _stopRequested.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already disposed.
+        }
+
         _stopRequested.Dispose();
     }
 
@@ -906,7 +923,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// pump outlived its drain budget and still owns the bridge's devices: the
     /// caller then neither reads nor disposes those devices (Issue #762).</returns>
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
-        string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge, CancellationToken stopToken)
+        string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge, CancellationToken stopToken,
+        System.Runtime.CompilerServices.StrongBox<bool> stopDelivered)
     {
         var psi = new ProcessStartInfo(fileName)
         {
@@ -946,7 +964,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stop request kills the child tree. That closes its pipes, so a read blocked on the RHOST
         // protocol (or on stderr) returns, and the existing timeout path below does the cleanup and classification.
         // If the request arrived before this point, the registration runs at once and the child is killed here.
-        using var stopRegistration = stopToken.Register(() => StopChild(process));
+        using var stopRegistration = stopToken.Register(() => StopChild(process, stopDelivered));
         var stderrTask = process.StandardError.ReadToEndAsync();
 
         if (bridge is null)
@@ -1084,16 +1102,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Kills a child on a stop request (Issue #820). The request may come from any thread, so a failure to kill (an access
-    /// error from the OS) is dropped here rather than surfacing in the caller; the run's own wait then reports the outcome.
+    /// Kills a child on a stop request (Issue #820). It runs on whatever thread requested the stop, so it never throws: a child
+    /// that already exited is left alone, and an OS failure to kill is traced. <paramref name="stopDelivered"/> records that a
+    /// stop reached a live child, which is what makes the run's failure a Cancelled result.
     /// </summary>
-    private static void StopChild(Process process)
+    private static void StopChild(Process process, System.Runtime.CompilerServices.StrongBox<bool> stopDelivered)
     {
         try
         {
+            if (process.HasExited)
+            {
+                return;
+            }
+
+            stopDelivered.Value = true;
             process.Kill(true);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception exception)
         {
             Trace.WriteLine($"Stopping the artifact process failed: {exception.Message}");
         }

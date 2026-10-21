@@ -37,9 +37,21 @@ public sealed class GuestCancellationTests
     }
 
     /// <summary>
-    /// True while a process named like the artifact exists. The check is by name only: each test uses its own temp
-    /// directory, and the artifact's file name is the only handle the test has on the child.
+    /// A private copy of the built artifact under a unique name. Every test builds the same artifact, so the process name of a
+    /// shared binary would match other tests' children; a unique name makes the child this test launched the only match.
     /// </summary>
+    private static int _copyCounter;
+
+    private static string UniqueArtifactCopy(string binary, TempDirectory dir)
+    {
+        var copy = Path.Combine(dir.FullPath, $"stop-{Interlocked.Increment(ref _copyCounter)}{Path.GetExtension(binary)}");
+#pragma warning disable AARC003 // Test-layer I/O for verification
+        File.Copy(binary, copy);
+#pragma warning restore AARC003
+        return copy;
+    }
+
+    /// <summary>True while a process named like the artifact copy exists.</summary>
     private static bool ArtifactProcessRunning(string binaryPath) =>
         ProcessNameProbe.IsRunning(Path.GetFileNameWithoutExtension(binaryPath));
 
@@ -79,9 +91,10 @@ public sealed class GuestCancellationTests
         {
             SegmentCalls++;
             _started.TrySetResult();
-            // Bounded: a test that never receives the stop fails here instead of hanging.
+            // Bounded: a test that never receives the stop fails here instead of hanging. A stopped segment reports Cancelled,
+            // as the real engine does when the stop reached its live child.
             _stop.Wait(StopWait).Should().BeTrue("the stop request must reach the running segment");
-            return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.ExecutionFailed, "STOPPED_BY_TEST", "stopped");
+            return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.Cancelled, "ARTIFACT_CANCELLED", "stopped");
         }
 
         public void RequestCancel()
@@ -151,7 +164,7 @@ public sealed class GuestCancellationTests
                 .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
         }
 
-        var binary = BuiltBinary(dir);
+        var binary = UniqueArtifactCopy(BuiltBinary(dir), dir);
         using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
             binary,
             blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
@@ -178,7 +191,7 @@ public sealed class GuestCancellationTests
                 .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
         }
 
-        var binary = BuiltBinary(dir);
+        var binary = UniqueArtifactCopy(BuiltBinary(dir), dir);
         using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
             binary,
             blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
@@ -186,8 +199,8 @@ public sealed class GuestCancellationTests
             imageLoadAddress: Entry);
         using var cts = new CancellationTokenSource();
 
-        // The budget is effectively unbounded, so only the stop can end this run. The stop is sent only once the child is
-        // seen running, so this test exercises the kill of a live child rather than the pre-launch check.
+        // The budget is effectively unbounded, so only the stop can end this run. The stop is sent only once this test's own
+        // child is seen running, so the kill of a live child is what ends the run.
         var artifactName = Path.GetFileNameWithoutExtension(binary);
         var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
         WaitUntil(() => ProcessNameProbe.IsRunning(artifactName), StopWait);
@@ -227,5 +240,39 @@ public sealed class GuestCancellationTests
         completed.FinalSnapshot.Should().NotBeNull($"{completed.DiagnosticCode} {completed.DiagnosticMessage}");
         completed.FinalSnapshot!.Gpr[(int)T0].Should().Be(0x1234u);
         completed.State.Should().NotBe(TitleExecutionState.Cancelled, "a run that finished before the stop keeps its result");
+    }
+
+    /// <summary>An engine whose one segment fails on its own, then records a stop request that arrives after the failure.</summary>
+    private sealed class FailingThenStoppedEngine(CancellationTokenSource stop) : IRecompiledExecutionEngine
+    {
+        public string Name => "failing-test-engine";
+
+        public void Load(TitleExecutionRequest request)
+        {
+        }
+
+        public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest)
+        {
+            var failure = RecompilerExecutionResult.Failed(RecompilerExecutionStatus.ExecutionFailed, "ARTIFACT_FAILED", "crashed");
+            // The stop arrives after the failure is already known: the failure keeps its own classification.
+            stop.Cancel();
+            return failure;
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    [Fact]
+    public void FailureBeforeAStop_KeepsItsOwnClassification()
+    {
+        using var stop = new CancellationTokenSource();
+        using var engine = new FailingThenStoppedEngine(stop);
+
+        var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(0x80001000u, 64), cancellationToken: stop.Token);
+
+        result.State.Should().Be(TitleExecutionState.RuntimeFailure, "the crash happened before the stop, so it is not a cancellation");
+        result.DiagnosticCode.Should().Be("ARTIFACT_FAILED");
     }
 }
