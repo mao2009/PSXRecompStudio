@@ -40,6 +40,39 @@ public sealed class LiveFrameSlotTests
         act.Should().Throw<ArgumentException>();
     }
 
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(1, 0)]
+    [InlineData(-1, 1)]
+    public void Publish_RejectsNonPositiveDimensions(int width, int height)
+    {
+        var slot = new LiveFrameSlot();
+
+        var act = () => slot.Publish(width, height, []);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Publish_RejectsAFrameTooLargeForAnArray()
+    {
+        var slot = new LiveFrameSlot();
+
+        var act = () => slot.Publish(int.MaxValue, int.MaxValue, []);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void TryGetNewer_WithNothingNewer_ReturnsNullFrame()
+    {
+        var slot = new LiveFrameSlot();
+        slot.Publish(1, 1, [0, 0, 0, 255]);
+
+        slot.TryGetNewer(1, out var frame).Should().BeFalse();
+        frame.Should().BeNull();
+    }
+
     [Fact]
     public async Task ConcurrentPublisherAndReader_SeeMonotonicSequences_AndTheFinalFrame()
     {

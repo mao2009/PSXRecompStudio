@@ -4,8 +4,8 @@ using PSXRecomp.Architecture;
 namespace PSXRecomp.Infrastructure.Standalone;
 
 /// <summary>
-/// One displayable frame published by the Runtime (Issue #630). <see cref="Bgra32"/> is immutable once published:
-/// the publisher must not write to it again, and readers must not write to it either.
+/// One displayable frame published by the Runtime (Issue #630). The array is not copied on publish: the publisher must not
+/// write to <see cref="Bgra32"/> after <see cref="LiveFrameSlot.Publish"/>, and readers must not write to it either.
 /// </summary>
 [Infrastructure]
 public sealed record LiveFrame(long Sequence, int Width, int Height, byte[] Bgra32);
@@ -31,7 +31,14 @@ public sealed class LiveFrameSlot
         ArgumentNullException.ThrowIfNull(bgra32);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
-        if (bgra32.LongLength != (long)width * height * 4)
+        // Area is checked first so the byte count below cannot overflow, whatever the dimensions.
+        var area = (long)width * height;
+        if (area > Array.MaxLength / 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "The frame is too large to hold as BGRA32.");
+        }
+
+        if (bgra32.LongLength != area * 4)
         {
             throw new ArgumentException("BGRA32 length must equal width * height * 4.", nameof(bgra32));
         }
@@ -43,15 +50,21 @@ public sealed class LiveFrameSlot
     }
 
     /// <summary>
-    /// Returns the latest frame when it is newer than <paramref name="lastSeenSequence"/>; false when nothing newer exists.
-    /// Pass 0 before the first frame has been seen.
+    /// Returns the latest frame when it is newer than <paramref name="lastSeenSequence"/>; otherwise false, with
+    /// <paramref name="frame"/> set to null. Pass 0 before the first frame has been seen.
     /// </summary>
     public bool TryGetNewer(long lastSeenSequence, [NotNullWhen(true)] out LiveFrame? frame)
     {
         lock (_gate)
         {
-            frame = _latest;
-            return frame is not null && frame.Sequence > lastSeenSequence;
+            if (_latest is { } latest && latest.Sequence > lastSeenSequence)
+            {
+                frame = latest;
+                return true;
+            }
+
+            frame = null;
+            return false;
         }
     }
 }
