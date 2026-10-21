@@ -355,6 +355,86 @@ public sealed class FallbackRootsCommandTests
             .Images.Single().Roots.Should().Equal(Dest, Callee);
     }
 
+    // PR #784 review (MAJOR): the roots file names do not depend on --out, so the directory is the shared namespace. A run that
+    // targets another output name must still be refused while a run holds the directory's publish lock.
+    [Fact]
+    public void AHeldDirectoryLock_RefusesAnotherOutputName_AndPublishesNothing()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        using var held = new FileStream(dir.Combine(".observed-roots.lock"), FileMode.CreateNew, FileAccess.Write, FileShare.None);
+
+        var code = Run(fixture, dir.Combine("images-other.txt"), out _, out _);
+
+        code.Should().Be(1);
+        Leftovers(dir).Should().Equal(".observed-roots.lock");
+    }
+
+    // Parallel runs with different --out names in one directory: exactly one publishes, and what it publishes reads back.
+    [Fact]
+    public void ParallelRunsWithDifferentOutputNames_InOneDirectory_PublishExactlyOnce()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        var outputs = Enumerable.Range(0, 4).Select(i => dir.Combine($"images-{i}.txt")).ToArray();
+
+        var codes = outputs.AsParallel().WithDegreeOfParallelism(4)
+            .Select(output => Run(fixture, output, out _, out _)).ToArray();
+
+        codes.Count(static c => c == 0).Should().Be(1);
+        var published = Leftovers(dir).Where(static name => name.StartsWith("images-", StringComparison.Ordinal)).Single();
+        Leftovers(dir).Should().BeEquivalentTo([published, "observed-roots-000.txt"]);
+        LoadImageManifest.Read(dir.Combine(published), OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null)
+            .Images.Single().Roots.Should().Equal(Dest, Callee);
+    }
+
+    // An existing roots file is never overwritten, whatever --out the run names; the run publishes nothing.
+    [Fact]
+    public void AnExistingRootsFile_IsNeverOverwritten_ByAnotherOutputName()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        File.WriteAllText(dir.Combine("observed-roots-000.txt"), "foreign");
+
+        var code = Run(fixture, dir.Combine("images-other.txt"), out _, out _);
+
+        code.Should().Be(1);
+        File.ReadAllText(dir.Combine("observed-roots-000.txt")).Should().Be("foreign");
+        Leftovers(dir).Should().Equal("observed-roots-000.txt");
+    }
+
+    // An existing manifest is never replaced, and the roots file of the refused run is not created.
+    [Fact]
+    public void AnExistingManifest_IsNeverReplaced_AndItsRunPublishesNoRoots()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        File.WriteAllText(dir.Combine("images-other.txt"), "old");
+
+        var code = Run(fixture, dir.Combine("images-other.txt"), out _, out _);
+
+        code.Should().Be(1);
+        File.ReadAllText(dir.Combine("images-other.txt")).Should().Be("old");
+        Leftovers(dir).Should().Equal("images-other.txt");
+    }
+
+    // A refused run for another output leaves a published manifest and its roots file intact and readable.
+    [Fact]
+    public void AFailedRunForAnotherOutput_KeepsTheFilesOfTheSuccessfulRun()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        Run(fixture, dir.Combine("images-a.txt"), out _, out _).Should().Be(0);
+        var before = File.ReadAllText(dir.Combine("observed-roots-000.txt"));
+
+        var code = Run(fixture, dir.Combine("images-b.txt"), out _, out _);
+
+        code.Should().Be(1);
+        File.ReadAllText(dir.Combine("observed-roots-000.txt")).Should().Be(before);
+        LoadImageManifest.Read(dir.Combine("images-a.txt"), OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null)
+            .Images.Single().Roots.Should().Equal(Dest, Callee);
+    }
+
     [Fact]
     public void AnExportFromADifferentFirmware_IsRefused_BeforeAnythingIsWritten()
     {
