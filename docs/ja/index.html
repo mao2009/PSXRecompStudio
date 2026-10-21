@@ -20,14 +20,18 @@
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="PSXRecompStudio | PlayStation 1 静的再コンパイル・MIPS解析">
   <meta name="twitter:description" content="PSXRecompStudioは、PlayStation 1の静的再コンパイル、MIPS R3000A解析、リバースエンジニアリング、ネイティブ移植を研究するオープンソースプロジェクトです。">
+  <meta name="theme-color" content="#090e17">
   <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
+  <a class="skip-link" href="#main-content">本文へ移動</a>
   <header class="site-header">
     <nav class="nav" aria-label="メインナビゲーション">
       <a class="brand" href="./">PSXRecompStudio</a>
       <div class="nav-links">
-        <a href="get-involved.html">協力・参加</a>
+        <a href="#mission">ミッション</a>
+        <a href="#progress">進捗</a>
+        <a href="#contribute">協力・参加</a>
         <a href="faq.html">FAQ</a>
         <a href="cli.html">CLI</a>
         <a href="runtime.html">Runtime</a>
@@ -38,7 +42,7 @@
     </nav>
   </header>
 
-  <main>
+  <main id="main-content">
     <section class="hero">
       <p class="eyebrow">オープンソース PlayStation 1 研究</p>
       <h1>PSXRecompStudio</h1>
@@ -46,7 +50,39 @@
       <p><strong>現在できること：</strong>限定的な再コンパイル・インタープリタ比較とPS-X EXE/CHDの解析。</p>
       <p><strong>まだできないこと：</strong>市販ゲーム全体のAOT再コンパイルや、遊べるネイティブ移植。</p>
       <p><strong>最初の一歩：</strong><a href="faq.html">FAQ</a>、<a href="cli.html">CLI</a>、<a href="get-involved.html#first-contributions">最初の貢献3例</a>。</p>
-      <p class="actions"><a class="button" href="get-involved.html#first-contributions">協力・参加</a> <a href="../">English</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p>
+      <p class="actions"><a class="button primary" href="get-involved.html#first-contributions">協力・参加 ↗</a> <a href="../">English</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p>
+    </section>
+
+    <section id="mission" aria-labelledby="mission-title">
+      <p class="eyebrow">01 / ミッション</p>
+      <h2 id="mission-title">検証可能な再コンパイル技術を、公開で育てる。</h2>
+      <p class="section-intro">正当な権利者によるPS1作品の保存・研究・将来の移植に向け、追試可能な解析・再コンパイル・実行基盤を開発しています。早期の「動作保証」より、実測と再現性を重視します。</p>
+      <div class="grid feature-grid">
+        <article class="card"><span class="card-number">01 / 技術</span><h3>公開された研究</h3><p>PS1バイナリ解析、MIPSの意味論、再コンパイル・Runtimeの独立検証。</p></article>
+        <article class="card"><span class="card-number">02 / 検証</span><h3>達成と未達を区別</h3><p>合成テスト、実ROMのインタープリタ描画、ネイティブ実行を混同しません。</p></article>
+        <article class="card"><span class="card-number">03 / 協力</span><h3>小さな貢献も歓迎</h3><p>再現手順、独立レビュー、合成テスト、ドキュメント改善から参加できます。</p></article>
+      </div>
+    </section>
+
+    <section id="progress" aria-labelledby="progress-title">
+      <p class="eyebrow">02 / 進捗 · 2026-10-20時点</p>
+      <h2 id="progress-title">確認済みの成果と、未解決の課題。</h2>
+      <p class="section-intro">基準コミット：<a href="https://github.com/mao2009/PSXRecompStudio/commit/551f50ab6ad5a502376719974db34868206ff356"><code>main@551f50ab</code></a>。日付付きの状態です。Draft PRの内容を実装済みには含めません。</p>
+      <div class="progress-grid">
+        <article class="progress-card verified"><span class="progress-tag">確認済 / インタープリタ</span><h3>Persona冒頭の描画</h3><p>OpenBIOS経路でATLUSロゴと日本語の文章を描画。ネイティブAOTでの達成ではありません。</p></article>
+        <article class="progress-card verified"><span class="progress-tag">確認済 / 合成入力</span><h3>ネイティブ再コンパイルの一部</h3><p>5命令のPS-X EXEをalpha CLIで再コンパイル・実行。市販ゲーム全体の互換性ではありません。</p></article>
+        <article class="progress-card investigating"><span class="progress-tag">調査中 / STANDALONE</span><h3>fallback・速度・映像差</h3><p>タイムアウト、RAM上のコード不一致、映像の再検証を <a href="https://github.com/mao2009/PSXRecompStudio/issues/768">#768</a>、<a href="https://github.com/mao2009/PSXRecompStudio/issues/773">#773</a>、<a href="https://github.com/mao2009/PSXRecompStudio/issues/774">#774</a>、<a href="https://github.com/mao2009/PSXRecompStudio/issues/806">#806</a> で追跡中。</p></article>
+        <article class="progress-card blocked"><span class="progress-tag">未達 / V0.1条件</span><h3>Personaタイトル画面</h3><p>タイトル画面到達・市販ゲームの操作可能なネイティブ移植は未確認。<a href="https://github.com/mao2009/PSXRecompStudio/issues/351">#351</a> は未完了です。</p></article>
+      </div>
+      <p class="progress-foot">詳細：<a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/v0.1.0/persona-e2e-status.md">Persona E2E記録</a> · <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/status/capabilities.md">検証マトリクス</a> · <a href="https://github.com/mao2009/PSXRecompStudio/issues">Open Issue</a></p>
+    </section>
+
+    <section id="contribute" aria-labelledby="contribute-title">
+      <p class="eyebrow">03 / コントリビューター</p>
+      <h2 id="contribute-title">コードを書かなくても協力できます。</h2>
+      <p>特に <a href="https://github.com/mao2009/PSXRecompStudio/issues/773">root/fallback</a>、<a href="https://github.com/mao2009/PSXRecompStudio/issues/768">IPC性能</a>、<a href="https://github.com/mao2009/PSXRecompStudio/issues/774">映像比較</a> の再現と独立レビューを歓迎します。まず既存PRと重複していないか確認し、変更は小さく限定してください。</p>
+      <p class="actions"><a class="button primary" href="get-involved.html#first-contributions">最初の貢献を探す →</a> <a class="button ghost" href="https://github.com/mao2009/PSXRecompStudio/issues">Issueを見る ↗</a></p>
+      <p class="micro-note">市販ROM・BIOS・ディスクイメージは投稿せず、合法的なローカルデータか再配布可能な合成データだけを使ってください。</p>
     </section>
 
     <section id="persona-milestone">

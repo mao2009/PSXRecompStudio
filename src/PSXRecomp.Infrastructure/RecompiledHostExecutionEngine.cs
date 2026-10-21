@@ -70,6 +70,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public MixedFallbackTimings? FallbackTimings { get; private set; }
 
     /// <summary>
+    /// The fallback segment that was in flight when the last run ended, or null (Issue #806). Unlike <see cref="FallbackEvidence"/>
+    /// it is read even when the host-transfer pump did not end (a stuck segment), because it carries scalars only.
+    /// </summary>
+    public FallbackSegmentProgress? FallbackInFlight { get; private set; }
+
+    /// <summary>
+    /// The return classification of the last run (Issue #806): counts only, read even when the host-transfer pump did not
+    /// end, like <see cref="FallbackInFlight"/>. Null without mixed execution.
+    /// </summary>
+    public FallbackReturnStats? FallbackReturns { get; private set; }
+
+    /// <summary>
     /// Guest instructions the last run's compiled blocks retired, as the artifact reported them over the host protocol
     /// (Issue #732); null without the protocol. Never includes fallback instructions (<see cref="FallbackEvidence"/>).
     /// Live while the run is in progress (for example from <see cref="FallbackFetchObserver"/>).
@@ -629,6 +641,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // the pump may still be mutating that state (its VRAM is live native memory it may still draw through).
         FallbackEvidence = pumpEnded ? bridge?.FallbackEvidence : null;
         FallbackTimings = pumpEnded ? bridge?.FallbackTimings : null;
+        FallbackInFlight = bridge?.FallbackInFlight;
+        FallbackReturns = bridge?.FallbackReturns;
         LastFrameBgra32 = pumpEnded ? bridge?.CaptureFrameBgra32() : null;
 
         if (hostProtocolFaulted)
@@ -859,6 +873,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         if (GuardStatsScope.CurrentPath is { } guardStatsFile)
         {
             psi.Environment[GuardStatsScope.FileEnvironmentVariable] = guardStatsFile;
+            // Each child draws its own run id: the generated code cannot tell two processes apart by time and clock() alone (Issue #804).
+            psi.Environment[GuardStatsScope.RunIdEnvironmentVariable] = Random.Shared.NextInt64().ToString("x16", CultureInfo.InvariantCulture);
             var (periodUnits, abortAfterUnits) = GuardStatsScope.CurrentTiming;
             // Always set (0 when unset), so a stray value in the parent cannot leak into a guard-stats child.
             psi.Environment[GuardStatsScope.PeriodEnvironmentVariable] = periodUnits.ToString(CultureInfo.InvariantCulture);
@@ -888,7 +904,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         var output = new StringBuilder();
         var outputGate = new object();
-        var pump = Task.Run(() =>
+        // Issue #815: the pump runs on its own thread, not a thread-pool worker (see ProtocolPump).
+        var pump = ProtocolPump.Start(() =>
         {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)
@@ -1053,6 +1070,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         /// <summary>Wall-clock costs of this run's mixed execution (Issue #693).</summary>
         public MixedFallbackTimings? FallbackTimings => _fallback?.Timings;
+
+        /// <summary>The fallback segment in flight, scalars only and safe to read while the pump owns the graph (Issue #806).</summary>
+        public FallbackSegmentProgress? FallbackInFlight => _fallback?.InFlightSegment;
+
+        /// <summary>The return classification of this run so far (Issue #806).</summary>
+        public FallbackReturnStats? FallbackReturns => _fallback?.ReturnStats;
 
         /// <summary>The sum of every accepted guest-time report: instructions retired by compiled blocks (Issue #732).</summary>
         public ulong NativeRetiredInstructions { get; private set; }

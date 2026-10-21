@@ -10,6 +10,11 @@
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
+    <!-- Issue #813: a runtime host publish sets PsxIsolatedNativeBuild=true and its own ArtifactsPath, so each parallel publish
+         gets its own native build directory. A shared build directory let two parallel publishes regenerate the same
+         build.ninja at once (ninja: failed recompaction). The SDK sets ArtifactsPath for every UseArtifactsOutput build,
+         so the explicit opt-in is what selects the isolated directory. -->
+    <NativeBuildDir Condition="'$(PsxIsolatedNativeBuild)' == 'true' and '$(ArtifactsPath)' != ''">$(ArtifactsPath)/native-build</NativeBuildDir>
     <NativeLibName Condition="'$(OS)' == 'Windows_NT'">PSXRecomp.Native.dll</NativeLibName>
     <NativeLibName Condition="'$(NativeLibName)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libPSXRecomp.Native.dylib</NativeLibName>
     <NativeLibName Condition="'$(NativeLibName)' == '' and '$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
@@ -46,9 +51,9 @@
   -->
   <Target Name="BuildNative" BeforeTargets="AssignTargetPaths;CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
-    <Exec Command="cmake -B $(NativeBuildDir) -S $(NativeProjectDir) -G Ninja -DCMAKE_BUILD_TYPE=Release"
+    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release"
           IgnoreExitCode="false" />
-    <Exec Command="cmake --build $(NativeBuildDir)"
+    <Exec Command="cmake --build &quot;$(NativeBuildDir)&quot;"
           IgnoreExitCode="false" />
     <ItemGroup>
       <None Include="$(NativeBuildDir)/$(NativeLibName)"

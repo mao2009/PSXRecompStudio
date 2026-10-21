@@ -69,6 +69,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private bool _loaded;
     private bool _disposed;
 
+    // Published progress of the fallback segment in flight (Issue #806); written only by RunFallbackSegment's thread.
+    private volatile bool _fallbackActive;
+    private uint _fallbackEntryPc;
+    private uint _fallbackBudget;
+    private uint _fallbackPc;
+    private ulong _fallbackRetired;
+
     // Set when the CPU takes a hardware interrupt, cleared once the handler has
     // actually returned. Entering the program image alone does not clear it: a
     // handler may call a helper there and return to handler code outside it.
@@ -274,6 +281,23 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Called with the PC of every instruction about to be fetched (diagnostic observation only).</summary>
     public Action<uint>? FetchObserver { get; set; }
 
+    /// <summary>
+    /// Counts the return checks the fallback step loop refuses for a reason other than the predicate (Issue #806): a pipeline
+    /// that is not clean. It also counts steps run inside a fallback segment (with a return set) past the first step, while the
+    /// guest's interrupt handler is active and runtime RAM execution is not allowed. Those steps are counted, not refused checks.
+    /// Null keeps the loop unobserved.
+    /// </summary>
+    public FallbackReturnDiagnostics? ReturnDiagnostics { get; set; }
+
+    /// <summary>
+    /// The fallback segment in flight (Issue #806): scalars the stepping thread publishes, so a host that is stuck inside a
+    /// segment can say where it is without reading the device graph. Null when no segment is running. The PC and the retired
+    /// count are read separately, so they may come from adjacent steps (diagnostic only).
+    /// </summary>
+    public FallbackSegmentProgress? FallbackProgress => _fallbackActive
+        ? new FallbackSegmentProgress(_fallbackEntryPc, Volatile.Read(ref _fallbackPc), Volatile.Read(ref _fallbackRetired), _fallbackBudget)
+        : null;
+
     /// <summary>The current value of a general register (diagnostic observation only).</summary>
     public uint ReadGuestGpr(int index) => _core.GetGpr(index);
 
@@ -443,13 +467,30 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         _core.SetCop0(Cop0Cause, entry.Cause);
         _core.SetCop0(Cop0Epc, entry.Epc);
         _core.Pc = entry.Pc; // a fresh dispatch: flushes the native pipeline exactly as a jump must
+        _fallbackEntryPc = entry.Pc;
+        _fallbackBudget = instructionBudget;
         _inInterruptHandler = false;
         _rfePending = false;
         _handlerEpc = 0;
         _blockingCallWait.Reset();
         _resumable = false;
 
-        var result = RunLoop(instructionBudget, returnPcs, out var returned, out var retired);
+        bool returned;
+        ulong retired;
+        RecompilerExecutionResult result;
+        // The previous segment's progress must not show through before this segment's first step publishes (Issue #806 review).
+        Volatile.Write(ref _fallbackPc, _core.Pc);
+        Volatile.Write(ref _fallbackRetired, 0);
+        _fallbackActive = true;
+        try
+        {
+            result = RunLoop(instructionBudget, returnPcs, out returned, out retired);
+        }
+        finally
+        {
+            _fallbackActive = false;
+        }
+
         var snapshot = result.Snapshot!;
         var state = new FallbackCpuState(
             snapshot.Gpr.ToArray(), snapshot.HI, snapshot.LO, snapshot.PC,
@@ -526,6 +567,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         for (uint step = 0; step < budget; step++)
         {
+            // Issue #806: a fallback segment publishes where it is before each step (scalars only; a plain run pays nothing).
+            if (returnPcs is not null)
+            {
+                Volatile.Write(ref _fallbackPc, _core.Pc);
+                Volatile.Write(ref _fallbackRetired, retiredInstructions);
+            }
+
             // Clean-boundary return (Issue #693). The PC must be an entry the artifact compiled, no guest interrupt
             // handler may be running (its out-of-image permission is this engine's alone), and the native CPU must
             // report no pending branch delay slot and no uncommitted load: the artifact only ever starts a block at a
@@ -533,11 +581,27 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // previous instruction.
             // A guest firmware (Issue #732) owns its handlers in its own image and permits every PC, so being inside one
             // is no reason to keep interpreting; its SYSCALL handler returns to EPC + 4, never to the EPC tracked below.
-            if (returnPcs is not null && step > 0 && (!_inInterruptHandler || _allowRuntimeRamExecution)
-                && returnPcs(_core.Pc) && _core.IsPipelineClean)
+            if (returnPcs is not null && step > 0)
             {
-                returned = true;
-                break;
+                if (!_inInterruptHandler || _allowRuntimeRamExecution)
+                {
+                    if (returnPcs(_core.Pc))
+                    {
+                        if (_core.IsPipelineClean)
+                        {
+                            returned = true;
+                            break;
+                        }
+
+                        // Issue #806: a return point the pipeline is not clean at is refused here, and counted as such.
+                        ReturnDiagnostics?.NotePipelineRefusal(_core.Pc);
+                    }
+                }
+                else
+                {
+                    // Issue #806: no return check is made while the guest's handler runs, so none is evaluated here.
+                    ReturnDiagnostics?.NoteStepInInterruptHandler();
+                }
             }
 
             // A vector dispatch costs a step from the same budget that bounds
