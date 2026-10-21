@@ -80,9 +80,17 @@ public static class FallbackReturnCheck
     }
 }
 
-/// <summary>One PC of the most-frequent refused-check table, with its (approximate, never undercounted) refusal count.</summary>
+/// <summary>
+/// One PC of the most-frequent refused-check table (Issue #806). <see cref="Count"/> is the space-saving estimate: an upper
+/// bound on the true refusal count. <see cref="Error"/> is the count inherited when the PC took over a slot (zero if it
+/// never evicted anything), so the true count lies in [<see cref="LowerBound"/>, <see cref="Count"/>].
+/// </summary>
 [Domain]
-public sealed record FallbackPcCount(uint Pc, ulong Count);
+public sealed record FallbackPcCount(uint Pc, ulong Count, ulong Error)
+{
+    /// <summary>The guaranteed minimum refusal count for this PC (estimate minus error).</summary>
+    public ulong LowerBound => Count - Error;
+}
 
 /// <summary>
 /// The aggregate return classification of one run (Issue #806). Counts only, plus the longest segment's PCs and the most
@@ -104,7 +112,7 @@ public sealed record FallbackPcCount(uint Pc, ulong Count);
 /// <param name="LongestSegmentEntryPc">Where the longest segment started.</param>
 /// <param name="LongestSegmentExitPc">Where the longest segment ended.</param>
 /// <param name="LongestSegmentStatus">How the longest segment ended (a <see cref="FallbackSegmentStatus"/> name).</param>
-/// <param name="TopRefusedPcs">Up to <see cref="FallbackReturnDiagnostics.TopN"/> PCs with the most refusals, most frequent first.</param>
+/// <param name="TopRefusedPcs">Up to <see cref="FallbackReturnDiagnostics.TopN"/> PCs with the most refusals, most frequent first. Each carries its estimate, error bound and lower bound.</param>
 [Domain]
 public sealed record FallbackReturnStats(
     ulong ReturnChecks,
@@ -143,6 +151,7 @@ public sealed class FallbackReturnDiagnostics
 
     private readonly uint[] _topPcs = new uint[TopN];
     private readonly ulong[] _topCounts = new ulong[TopN];
+    private readonly ulong[] _topErrors = new ulong[TopN];
     private int _topUsed;
 
     private ulong _returnChecks;
@@ -224,7 +233,7 @@ public sealed class FallbackReturnDiagnostics
         var top = new List<FallbackPcCount>(_topUsed);
         for (var i = 0; i < _topUsed; i++)
         {
-            top.Add(new FallbackPcCount(_topPcs[i], _topCounts[i]));
+            top.Add(new FallbackPcCount(_topPcs[i], _topCounts[i], _topErrors[i]));
         }
 
         top.Sort(static (a, b) => a.Count != b.Count ? b.Count.CompareTo(a.Count) : a.Pc.CompareTo(b.Pc));
@@ -237,7 +246,8 @@ public sealed class FallbackReturnDiagnostics
 
     /// <summary>
     /// Space-saving frequency table (Metwally et al.): a known PC is incremented; an unknown PC takes a free slot or replaces
-    /// the least frequent entry and inherits its count plus one. The counts are therefore upper bounds, never undercounts.
+    /// the least frequent entry and inherits its count plus one, recording the inherited count as its error. Counts are
+    /// therefore upper bounds, and count minus error is a guaranteed lower bound. O(TopN) per call, no allocation.
     /// </summary>
     private void NoteRefusedPc(uint pc)
     {
@@ -252,6 +262,7 @@ public sealed class FallbackReturnDiagnostics
         {
             _topPcs[_topUsed] = pc;
             _topCounts[_topUsed] = 1;
+            _topErrors[_topUsed] = 0;
             _topUsed++;
             return;
         }
@@ -262,7 +273,10 @@ public sealed class FallbackReturnDiagnostics
             if (_topCounts[i] < _topCounts[least]) least = i;
         }
 
+        // The new PC inherits the evicted minimum: that inherited count is its error bound.
+        var inherited = _topCounts[least];
         _topPcs[least] = pc;
-        _topCounts[least]++;
+        _topErrors[least] = inherited;
+        _topCounts[least] = inherited + 1;
     }
 }

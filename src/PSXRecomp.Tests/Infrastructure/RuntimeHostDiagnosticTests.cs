@@ -308,6 +308,12 @@ public sealed class RuntimeHostDiagnosticTests
         returns.GetProperty("refusedRamWordMismatch").GetUInt64().Should().Be(1UL);
         returns.GetProperty("longestSegmentRetired").GetUInt64().Should().Be(163_124_226UL);
         returns.GetProperty("topRefusedPcs")[0].GetProperty("pc").GetUInt32().Should().Be(0x80030C44u);
+        var topEntry = returns.GetProperty("topRefusedPcs")[0];
+        topEntry.GetProperty("count").GetUInt64().Should().Be(1UL, "the existing count keeps its meaning (the estimate)");
+        topEntry.GetProperty("error").GetUInt64().Should().Be(0UL, "no eviction happened, so the error bound is zero");
+        topEntry.GetProperty("lowerBound").GetUInt64().Should().Be(1UL, "the guaranteed lower bound is count minus error");
+        topEntry.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
+            new[] { "pc", "count", "error", "lowerBound" }, "the entry gains fields and loses none");
     }
 
     [Fact]

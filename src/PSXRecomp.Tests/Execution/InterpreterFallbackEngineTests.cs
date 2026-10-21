@@ -480,4 +480,171 @@ public sealed class InterpreterFallbackEngineTests
         s.RefusedNoComparableVersion.Should().Be(1UL);
         s.ReturnChecks.Should().Be(6UL);
     }
+
+    [Fact]
+    public void TopRefusedPcs_SamePcOnly_IsExactWithZeroError()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        for (var i = 0; i < 25; i++) stats.NoteVerdict(0x80001234u, FallbackReturnVerdict.RefusedNoAotEntry);
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        top.Should().ContainSingle();
+        top[0].Pc.Should().Be(0x80001234u);
+        top[0].Count.Should().Be(25UL, "the estimate is the exact count while no eviction happened");
+        top[0].Error.Should().Be(0UL);
+        top[0].LowerBound.Should().Be(25UL);
+    }
+
+    [Fact]
+    public void TopRefusedPcs_AtMostTopNDistinctPcs_AreAllExactWithZeroError()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        const uint basePc = 0x80010000u;
+        for (var k = 0; k < FallbackReturnDiagnostics.TopN; k++)
+        {
+            for (var i = 0; i <= k; i++) stats.NoteVerdict(basePc + (uint)k * 4u, FallbackReturnVerdict.RefusedRamWordMismatch);
+        }
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        top.Count.Should().Be(FallbackReturnDiagnostics.TopN);
+        foreach (var entry in top)
+        {
+            var k = (entry.Pc - basePc) / 4u;
+            entry.Count.Should().Be(k + 1UL);
+            entry.Error.Should().Be(0UL);
+            entry.LowerBound.Should().Be(k + 1UL);
+        }
+    }
+
+    [Fact]
+    public void TopRefusedPcs_NinePlusDistinctPcs_ErrorBoundsHold()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        var truth = new Dictionary<uint, ulong>();
+        for (var k = 0; k < 9; k++)
+        {
+            var pc = 0x80020000u + (uint)k * 4u;
+            stats.NoteVerdict(pc, FallbackReturnVerdict.RefusedNoAotEntry);
+            truth[pc] = 1UL;
+        }
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        top.Should().HaveCount(FallbackReturnDiagnostics.TopN);
+        AssertSpaceSavingBounds(top, truth);
+    }
+
+    [Fact]
+    public void TopRefusedPcs_EightyPcsTenTimesEach_ReportsBoundedEstimates()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        var truth = new Dictionary<uint, ulong>();
+        for (var round = 0; round < 10; round++)
+        {
+            for (var k = 0; k < 80; k++)
+            {
+                var pc = 0x80030000u + (uint)k * 4u;
+                stats.NoteVerdict(pc, FallbackReturnVerdict.RefusedRamWordMismatch);
+                truth[pc] = truth.GetValueOrDefault(pc) + 1UL;
+            }
+        }
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        top.Should().HaveCount(FallbackReturnDiagnostics.TopN);
+        foreach (var entry in top)
+        {
+            entry.Count.Should().BeGreaterThanOrEqualTo(10UL, "every PC occurred 10 times, so no estimate may undercount");
+            entry.LowerBound.Should().BeLessThanOrEqualTo(10UL);
+        }
+
+        AssertSpaceSavingBounds(top, truth);
+    }
+
+    [Fact]
+    public void TopRefusedPcs_HotPcAmongColdPcs_KeepsItsTrueCountInsideItsBounds()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        var truth = new Dictionary<uint, ulong>();
+        const uint hot = 0x80001234u;
+        for (var i = 0; i < 300; i++)
+        {
+            stats.NoteVerdict(hot, FallbackReturnVerdict.RefusedNoAotEntry);
+            truth[hot] = truth.GetValueOrDefault(hot) + 1UL;
+            var cold = 0x80040000u + (uint)i * 4u;
+            stats.NoteVerdict(cold, FallbackReturnVerdict.RefusedNoAotEntry);
+            truth[cold] = 1UL;
+        }
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        var hotEntry = top.Should().ContainSingle(p => p.Pc == hot).Subject;
+        hotEntry.LowerBound.Should().BeLessThanOrEqualTo(300UL);
+        hotEntry.Count.Should().BeGreaterThanOrEqualTo(300UL);
+        AssertSpaceSavingBounds(top, truth);
+    }
+
+    [Fact]
+    public void TopRefusedPcs_Eviction_InheritsTheMinimumCountAsError()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        const uint pcA = 0x80050000u;
+        for (var i = 0; i < 3; i++) stats.NoteVerdict(pcA, FallbackReturnVerdict.RefusedNoAotEntry);
+        for (var k = 1; k < FallbackReturnDiagnostics.TopN; k++)
+        {
+            var pc = 0x80050000u + (uint)k * 4u;
+            stats.NoteVerdict(pc, FallbackReturnVerdict.RefusedNoAotEntry);
+            stats.NoteVerdict(pc, FallbackReturnVerdict.RefusedNoAotEntry);
+        }
+
+        // The table is full: A=3 and seven PCs at 2. A new PC replaces the first minimum (count 2) and inherits it.
+        const uint pcNew = 0x80060000u;
+        stats.NoteVerdict(pcNew, FallbackReturnVerdict.RefusedNoAotEntry);
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        var evicted = top.Should().ContainSingle(p => p.Pc == pcNew).Subject;
+        evicted.Error.Should().Be(2UL, "the inherited minimum count is the error bound");
+        evicted.Count.Should().Be(3UL, "the estimate is the inherited minimum plus one");
+        evicted.LowerBound.Should().Be(1UL, "the new PC occurred once, so the lower bound is exact here");
+        top.Aggregate(0UL, (sum, p) => sum + p.Count).Should().Be(18UL, "every counted refusal stays in the table's estimates");
+    }
+
+    [Fact]
+    public void TopRefusedPcs_Invariants_HoldForEveryEntryOnAMixedSequence()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        var truth = new Dictionary<uint, ulong>();
+        var state = 12345u;
+        for (var n = 0; n < 2000; n++)
+        {
+            state = unchecked(state * 1103515245u + 12345u);
+            var pc = 0x80070000u + ((state >> 16) % 50u) * 4u;
+            stats.NoteVerdict(pc, FallbackReturnVerdict.RefusedNoAotEntry);
+            truth[pc] = truth.GetValueOrDefault(pc) + 1UL;
+        }
+
+        var top = stats.Snapshot().TopRefusedPcs;
+        AssertSpaceSavingBounds(top, truth);
+        top.Aggregate(0UL, (sum, p) => sum + p.Count).Should().Be(2000UL, "the table's estimates sum to the refusals it counted");
+    }
+
+    [Fact]
+    public void TopRefusedPcs_ExactTotalsPerReasonAreUnchangedByTheTable()
+    {
+        var stats = new FallbackReturnDiagnostics();
+        for (var i = 0; i < 40; i++) stats.NoteVerdict(0x80080000u + (uint)(i % 20) * 4u, FallbackReturnVerdict.RefusedRamWordMismatch);
+        stats.NotePipelineRefusal(0x80090000u);
+
+        var s = stats.Snapshot();
+        s.RefusedRamWordMismatch.Should().Be(40UL);
+        s.RefusedPipelineNotClean.Should().Be(1UL);
+    }
+
+    private static void AssertSpaceSavingBounds(IReadOnlyList<FallbackPcCount> top, IReadOnlyDictionary<uint, ulong> truth)
+    {
+        foreach (var entry in top)
+        {
+            var actual = truth[entry.Pc];
+            entry.Error.Should().BeLessThanOrEqualTo(entry.Count, "the error never exceeds the estimate");
+            entry.LowerBound.Should().BeLessThanOrEqualTo(actual, "the lower bound never exceeds the true count");
+            actual.Should().BeLessThanOrEqualTo(entry.Count, "the estimate never undercounts the true count");
+        }
+    }
 }
