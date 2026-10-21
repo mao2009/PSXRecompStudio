@@ -22,6 +22,12 @@ public static class LiveFramePublisher
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(slot);
 
+        // Nothing is copied unless a reader is waiting: a run nobody displays does not read the VRAM at every VBlank.
+        if (!slot.ReaderIsWaiting)
+        {
+            return false;
+        }
+
         // Same gate as the run-end frame output: no evidence means the guest drew nothing, so nothing is published.
         if (!gpu.HasFrameEvidence)
         {

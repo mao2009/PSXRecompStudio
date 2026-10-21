@@ -33,8 +33,20 @@ public sealed class LiveFramePublisherTests
     {
         using var gpu = new GpuDevice();
         var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
 
         LiveFramePublisher.TryPublish(gpu, slot).Should().BeFalse();
+        slot.TryGetNewer(0, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void WithoutAReader_NothingIsCopied()
+    {
+        using var gpu = new GpuDevice();
+        UploadRow(gpu, 0, 0, [0x7C00]);
+        var slot = new LiveFrameSlot();
+
+        LiveFramePublisher.TryPublish(gpu, slot).Should().BeFalse("no reader asked for a frame");
         slot.TryGetNewer(0, out _).Should().BeFalse();
     }
 
@@ -44,6 +56,7 @@ public sealed class LiveFramePublisherTests
         using var gpu = new GpuDevice();
         UploadRow(gpu, 0, 0, [0x7C00, 0x001F]);
         var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
 
         LiveFramePublisher.TryPublish(gpu, slot).Should().BeTrue();
 
@@ -55,33 +68,41 @@ public sealed class LiveFramePublisherTests
     }
 
     [Fact]
-    public void A24BitDisplay_IsPublished_AndMatchesTheScreenshotConversion()
+    public void A24BitDisplay_PixelBytesAreReadAsRedGreenBlue()
     {
         using var gpu = new GpuDevice();
         gpu.WriteGP1(DisplayMode24Bit);
-        UploadRow(gpu, 0, 0, [0x001F, 0x7C00]);
+        // The 24-bit stream is R, G, B bytes in order: halfword 0x2A1F then 0x003F gives R=1F, G=2A, B=3F.
+        UploadRow(gpu, 0, 0, [0x2A1F, 0x003F]);
         var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
 
         LiveFramePublisher.TryPublish(gpu, slot).Should().BeTrue();
 
         slot.TryGetNewer(0, out var frame).Should().BeTrue();
-        frame!.Bgra32.Should().Equal(ScreenshotCapture.ToBgra32(gpu.CaptureFrame(), gpu));
+        // BGRA32 order: B, G, R, A.
+        frame!.Bgra32.Take(4).Should().Equal(0x3F, 0x2A, 0x1F, 0xFF);
+        frame.Bgra32.Should().Equal(ScreenshotCapture.ToBgra32(gpu.CaptureFrame(), gpu));
     }
 
     [Fact]
-    public void EachVBlank_PublishesTheLatestDisplay_AndOnlyTheLatestIsKept()
+    public void EachVBlank_WithAReader_PublishesTheLatestDisplay_AndOnlyTheLatestIsKept()
     {
-        var graph = new PsxDeviceGraph();
+        using var graph = new PsxDeviceGraph();
         var gpu = graph.GpuDevice;
         UploadRow(gpu, 0, 0, [0x7C00]);
         var slot = new LiveFrameSlot();
         var scheduler = graph.CreateScheduler();
         scheduler.VblankCallback = _ => LiveFramePublisher.TryPublish(gpu, slot);
 
-        scheduler.AdvanceExact(3 * DeviceScheduler.VblankIntervalCycles);
+        // A reader polls once before each VBlank, as the GUI does on its timer.
+        for (var i = 0; i < 3; i++)
+        {
+            slot.TryGetNewer(i, out _);
+            scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles);
+        }
 
         slot.TryGetNewer(0, out var frame).Should().BeTrue();
-        frame!.Sequence.Should().Be(3, "three VBlanks published three frames, and only the newest is kept");
-        graph.Dispose();
+        frame!.Sequence.Should().Be(3, "three polled VBlanks published three frames, and only the newest is kept");
     }
 }

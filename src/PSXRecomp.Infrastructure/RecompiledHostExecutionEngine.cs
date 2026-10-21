@@ -1161,9 +1161,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             }
             catch (Exception exception)
             {
-                Trace.WriteLine($"Live frame publish failed: {exception}");
+                // Reported once per run: a persistent failure would otherwise trace at every VBlank for the whole run.
+                if (_livePublishFailureReported) return;
+                _livePublishFailureReported = true;
+                Trace.WriteLine($"Live frame publish failed (later failures in this run are not reported): {exception}");
             }
         }
+
+        private bool _livePublishFailureReported;
 
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()

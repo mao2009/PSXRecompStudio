@@ -24,6 +24,22 @@ public sealed class LiveFrameSlot
 {
     private readonly object _gate = new();
     private LiveFrame? _latest;
+    private bool _readerPolled;
+
+    /// <summary>
+    /// True when a reader has asked for a frame since the last publish. The publisher checks this first, so a run with no
+    /// reader does not copy the display at every VBlank.
+    /// </summary>
+    public bool ReaderIsWaiting
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _readerPolled;
+            }
+        }
+    }
 
     /// <summary>Publishes a frame, replacing any unread one. <paramref name="bgra32"/> is taken over, not copied.</summary>
     public void Publish(int width, int height, byte[] bgra32)
@@ -46,6 +62,7 @@ public sealed class LiveFrameSlot
         lock (_gate)
         {
             _latest = new LiveFrame((_latest?.Sequence ?? 0) + 1, width, height, bgra32);
+            _readerPolled = false;
         }
     }
 
@@ -57,6 +74,7 @@ public sealed class LiveFrameSlot
     {
         lock (_gate)
         {
+            _readerPolled = true;
             if (_latest is { } latest && latest.Sequence > lastSeenSequence)
             {
                 frame = latest;
