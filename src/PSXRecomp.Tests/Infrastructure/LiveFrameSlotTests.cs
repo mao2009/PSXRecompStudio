@@ -87,19 +87,26 @@ public sealed class LiveFrameSlotTests
         });
 
         long last = 0;
+        // The reader also stops once the publisher has finished, so a publisher that faults cannot leave it spinning.
+        // Completion is sampled before the read: a frame published before completion is then always read.
         var reader = Task.Run(() =>
         {
             while (last < publishes)
             {
+                var done = publisher.IsCompleted;
                 if (slot.TryGetNewer(last, out var frame))
                 {
                     frame!.Sequence.Should().BeGreaterThan(last);
                     last = frame.Sequence;
                 }
+                else if (done)
+                {
+                    break;
+                }
             }
         });
 
-        await Task.WhenAll(publisher, reader);
+        await Task.WhenAll(publisher, reader).WaitAsync(TimeSpan.FromSeconds(30));
         last.Should().Be(publishes);
     }
 }
