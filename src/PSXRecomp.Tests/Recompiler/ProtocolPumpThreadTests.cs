@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using FluentAssertions;
+using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
 
 namespace PSXRecomp.Tests.Recompiler;
@@ -47,5 +48,18 @@ public sealed class ProtocolPumpThreadTests
             release.Set();
             Task.WaitAll(tasks);
         }
+    }
+
+    [Fact]
+    public void TheStandalonePump_IsStartedThroughProtocolPump_NotOnThePool()
+    {
+        // The production pump must go through ProtocolPump.Start (Issue #815). A revert to Task.Run would not show in the
+        // helper test above, so this pins the call site as well.
+#pragma warning disable AARC003 // Test-only: pins the call site of the production pump in its source file.
+        var source = File.ReadAllText(Path.Combine(RealRomFixtures.RepositoryRoot,
+            "src", "PSXRecomp.Infrastructure", "RecompiledHostExecutionEngine.cs"));
+#pragma warning restore AARC003
+        source.Should().Contain("ProtocolPump.Start(", "the standalone pump must not run on a thread-pool worker");
+        source.Should().NotContain("var pump = Task.Run(", "a Task.Run pump holds a pool worker for the child's whole life");
     }
 }
