@@ -10,6 +10,9 @@
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
+    <!-- Issue #813: each publish with its own ArtifactsPath gets its own native build directory. A shared build
+         directory let two parallel publishes regenerate the same build.ninja at once (ninja: failed recompaction). -->
+    <NativeBuildDir Condition="'$(ArtifactsPath)' != ''">$(ArtifactsPath)/native-build</NativeBuildDir>
     <NativeLibName Condition="'$(OS)' == 'Windows_NT'">PSXRecomp.Native.dll</NativeLibName>
     <NativeLibName Condition="'$(NativeLibName)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libPSXRecomp.Native.dylib</NativeLibName>
     <NativeLibName Condition="'$(NativeLibName)' == '' and '$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>
