@@ -116,6 +116,11 @@ internal static class FallbackRootsCommand
             var plan = ObservedRootPlanner.Plan(manifest.Images, export.Targets);
 
             var directory = Path.GetDirectoryName(outFull)!;
+            // Runs that target the same output are serialized by an exclusive lock file, held until this run ends. File.Move does
+            // not overwrite on Windows, but on POSIX a name that appears between the exists check and the rename is replaced, so
+            // the check alone let a losing run remove the winner's roots file (CI, Linux).
+            using var publishLock = new FileStream(Path.Combine(directory, $".{Path.GetFileName(outFull)}.lock"), FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
             var planned = plan.Images.Select(entry => (Entry: entry, FileName: $"observed-roots-{entry.ImageIndex:D3}.txt")).ToArray();
             // Path.Exists is true for a file or a directory; a name that is taken in any form is never touched.
             foreach (var path in planned.Select(p => Path.Combine(directory, p.FileName)).Append(outFull))
