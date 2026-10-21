@@ -16,7 +16,7 @@ public sealed class ProtocolPumpThreadTests
     public void AProtocolPump_StartsPromptly_WhileTheThreadPoolWorkersAreHeld()
     {
         ThreadPool.GetMinThreads(out var minWorkers, out _);
-        var holders = minWorkers + 8;
+        var holders = minWorkers * 4;
         var release = new ManualResetEventSlim(false);
         using var allStarted = new CountdownEvent(holders);
         var tasks = new Task[holders];
@@ -36,10 +36,10 @@ public sealed class ProtocolPumpThreadTests
 
             var pumpRan = false;
             var sw = Stopwatch.StartNew();
-            var pump = RecompilerHostExecutor.StartProtocolPump(() => Volatile.Write(ref pumpRan, true));
-            var completed = pump.Wait(TimeSpan.FromSeconds(1));
+            var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() => Volatile.Write(ref pumpRan, true));
+            var completed = pump.Wait(TimeSpan.FromMilliseconds(500));
 
-            completed.Should().BeTrue($"the pump must not wait for a pool worker (started after {sw.ElapsedMilliseconds} ms)");
+            completed.Should().BeTrue($"the pump must not wait for a pool worker (not complete after {sw.ElapsedMilliseconds} ms)");
             pumpRan.Should().BeTrue();
         }
         finally

@@ -890,9 +890,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         var output = new StringBuilder();
         var outputGate = new object();
-        // Issue #815: the pump blocks in ReadLine for the child's whole life. A long-running task gets its own thread, so it
-        // does not hold a thread-pool worker for that time (a small pool starves and delays other work past its budget).
-        var pump = Task.Factory.StartNew(() =>
+        // Issue #815: the pump runs on its own thread, not a thread-pool worker (see ProtocolPump).
+        var pump = ProtocolPump.Start(() =>
         {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)
@@ -902,7 +901,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                     lock (outputGate) output.AppendLine(line);
                 }
             }
-        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        });
         bridge.TrackPump(pump);
 
         bool pumpCompleted;

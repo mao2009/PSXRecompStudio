@@ -382,14 +382,6 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         File.WriteAllText(path, sb.ToString());
     }
 
-    /// <summary>
-    /// Starts the protocol pump on a dedicated thread (Issue #815). A pump blocks in ReadLine for the whole life of the
-    /// child, so on the thread pool it would hold a worker for that time; on a small runner the pool then starves, and
-    /// an unrelated pump or timeout waits past its budget. A long-running task takes its own thread instead.
-    /// </summary>
-    internal static Task StartProtocolPump(Action pumpBody) =>
-        Task.Factory.StartNew(pumpBody, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-
     internal static (int ExitCode, string Stdout, string Stderr) RunProcess(
         string fileName, string arguments, int timeoutMs, out bool timedOut,
         HostTransferSession? session = null)
@@ -435,7 +427,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         session.Attach(process.StandardOutput, process.StandardInput);
 
         var output = new StringBuilder();
-        var pump = StartProtocolPump(() =>
+        var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() =>
         {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)
