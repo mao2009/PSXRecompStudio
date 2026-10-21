@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Globalization;
+using System.Security.Cryptography;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
@@ -17,6 +19,12 @@ public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words
 {
     /// <summary>The provenance recorded when the image is registered (Issue #773).</summary>
     public LoadedImageOrigin Origin => new(Name, Kind, LoadAddress, Words.Length);
+
+    /// <summary>
+    /// The SHA-256 (lower-case hex) of the file the image was read from, for an EXE-based image (Issue #773). It is the source
+    /// identity an observed-roots directive must match; null for a ROM image, which takes no observed roots.
+    /// </summary>
+    internal string? SourceSha256 { get; init; }
 }
 
 /// <summary>
@@ -28,6 +36,7 @@ public sealed record LoadedImageSpec(string Name, uint LoadAddress, uint[] Words
 /// boot-exe &lt;name&gt;                                                                    # the SYSTEM.CNF boot EXE on --disc
 /// disc-exes &lt;prefix&gt;                                                                 # every PS-X EXE file on --disc
 /// interpret &lt;addr-hex&gt;                                                                # an entry that stays interpreted
+/// roots &lt;name&gt; &lt;roots-file&gt; &lt;source-sha256&gt; &lt;load-hex&gt; &lt;words-sha256&gt;                       # observed roots for one EXE image (Issue #773)
 /// indirect-roots                                                             # add function-pointer-table targets to every EXE image
 /// </code>
 /// Blank lines, leading/trailing whitespace and <c>#</c> comments are ignored; numbers are hexadecimal (an optional
@@ -48,12 +57,20 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(firmware);
 
+        // A zero-byte file is never a manifest. A publish holds one as its reservation, between creating and writing it (and a kill
+        // can leave one), so a reader that opens it then fails closed instead of loading zero images.
+        if (new FileInfo(path).Length == 0)
+        {
+            throw new InvalidDataException($"manifest: {path} is empty; it may be a publish in progress or an interrupted one.");
+        }
+
         var baseDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
         var images = new List<LoadedImageSpec>();
         var exeImages = new List<int>(); // indices into images of the PS-X EXE images (Issue #773)
         var interpreted = new HashSet<uint>();
         var indirectRoots = false;
         Iso9660Reader? iso = null;
+        var observedRoots = new List<(string Line, string[] Fields)>();
 
         foreach (var (line, fields) in Directives(path))
         {
@@ -61,6 +78,10 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             {
                 case "image":
                     images.Add(ParseRomImage(fields, firmware, baseDirectory));
+                    break;
+                case "roots":
+                    // Applied after every image is known, so the directive may appear before or after its image (Issue #773).
+                    observedRoots.Add((line, fields));
                     break;
                 case "exe":
                     exeImages.Add(images.Count);
@@ -136,7 +157,52 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             }
         }
 
+        // The code budget is the planner's, applied to the same sums: the reachable words added by all observed roots, over the
+        // reachable words of the images before any were added. A hand-edited roots file cannot grow the code past it.
+        var observedBase = observedRoots.Count == 0 ? 0 : ReachableWordCount(images);
+
+        // The per-image limit is checked per directive, so one image takes at most one: a second would raise it past the budget.
+        var named = new HashSet<string>(StringComparer.Ordinal);
+        var observedTotal = 0;
+        foreach (var directive in observedRoots)
+        {
+            if (directive.Fields.Length > 1 && !named.Add(directive.Fields[1]))
+            {
+                throw new InvalidDataException($"manifest: more than one 'roots' directive names '{directive.Fields[1]}'; an image takes one.");
+            }
+
+            observedTotal += ApplyObservedRoots(images, directive, baseDirectory);
+            if (observedTotal > ObservedRootBudget.Default.MaxRootsTotal)
+            {
+                throw new InvalidDataException($"manifest: the 'roots' directives add {observedTotal} roots; the limit is {ObservedRootBudget.Default.MaxRootsTotal} in total.");
+            }
+        }
+
+        if (observedRoots.Count > 0)
+        {
+            var budget = ObservedRootBudget.Default;
+            var extra = ReachableWordCount(images) - observedBase;
+            var allowance = Math.Max(budget.MinExtraReachable, budget.MaxExtraReachableFraction * observedBase);
+            if (extra > allowance)
+            {
+                throw new InvalidDataException($"manifest: the 'roots' directives make {extra} more code words reachable; the limit is {allowance:0} (Issue #773 code budget).");
+            }
+        }
+
         return new LoadImageManifest(images, interpreted);
+    }
+
+    /// <summary>The sum over the images of the words reachable from each image's roots: the planner's code measure.</summary>
+    private static int ReachableWordCount(IEnumerable<LoadedImageSpec> images)
+    {
+        try
+        {
+            return images.Sum(image => ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, image.Roots).Count);
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new InvalidDataException($"manifest: an image's roots cannot be walked for the code budget: {error.Message}", error);
+        }
     }
 
     /// <summary>
@@ -198,6 +264,13 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
                     {
                         throw new InvalidDataException($"manifest: 'interpret' takes exactly one address; got '{line}'.");
                     }
+                    break;
+                case "roots":
+                    if (fields.Length != 6)
+                    {
+                        throw new InvalidDataException($"manifest: 'roots' is 'roots <image> <roots-file> <source-sha256> <load> <words-sha256>'; got '{line}'.");
+                    }
+                    referenced.Add(fields[2]);
                     break;
                 default:
                     throw new InvalidDataException($"manifest: unknown directive '{fields[0]}'.");
@@ -278,7 +351,10 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         }
 
         var entries = roots.Append(exe.Header.EntryPoint).Distinct().Order().ToArray();
-        return new LoadedImageSpec(name, exe.Header.TextStart, words, entries, kind);
+        return new LoadedImageSpec(name, exe.Header.TextStart, words, entries, kind)
+        {
+            SourceSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+        };
     }
 
     /// <summary>The largest file a PS-X EXE can be: the 2 MiB of main RAM plus its 2 KiB header.</summary>
@@ -350,6 +426,119 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         });
         reader.Initialize();
         return reader;
+    }
+
+    /// <summary>
+    /// Adds the observed roots of one <c>roots</c> directive to the image it names (Issue #773). Fail closed: the directive
+    /// must name exactly one EXE-based image, and its source identity, load address and code-word SHA-256 must match that
+    /// image; every root must be a unique, aligned, in-image PC that is structurally safe and not already a root.
+    /// </summary>
+    private static int ApplyObservedRoots(List<LoadedImageSpec> images, (string Line, string[] Fields) directive, string? baseDirectory)
+    {
+        var (line, fields) = directive;
+        if (fields.Length != 6)
+        {
+            throw new InvalidDataException($"manifest: 'roots' is 'roots <image> <roots-file> <source-sha256> <load> <words-sha256>'; got '{line}'.");
+        }
+
+        var name = fields[1];
+        var matches = images.Count(image => image.Name == name);
+        if (matches != 1)
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' must name exactly one image; found {matches}.");
+        }
+
+        var index = images.FindIndex(image => image.Name == name);
+        var image = images[index];
+        if (image.SourceSha256 is null)
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' names an image with no source identity; only exe, boot-exe and disc-exes images take observed roots.");
+        }
+
+        if (!string.Equals(image.SourceSha256, fields[3], StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' source identity {fields[3]} does not match the image's {image.SourceSha256}.");
+        }
+
+        var load = ParseUint(fields[4]);
+        if (load != image.LoadAddress)
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' load address 0x{load:X8} does not match the image's 0x{image.LoadAddress:X8}.");
+        }
+
+        if (!string.Equals(CodeWordsSha256(image.Words), fields[5], StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' code-word SHA-256 does not match the image's code words.");
+        }
+
+        var roots = ReadStrictRootsFile(Resolve(fields[2], baseDirectory));
+        var imageEnd = (ulong)image.LoadAddress + (ulong)image.Words.Length * 4;
+        if (roots.Length > ObservedRootBudget.Default.MaxRootsPerImage)
+        {
+            throw new InvalidDataException($"manifest: 'roots {name}' lists {roots.Length} roots; the limit is {ObservedRootBudget.Default.MaxRootsPerImage} per image.");
+        }
+
+        var existing = image.Roots.ToHashSet();
+        foreach (var root in roots)
+        {
+            if ((root & 3) != 0 || root < image.LoadAddress || root >= imageEnd)
+            {
+                throw new InvalidDataException($"manifest: 'roots {name}' root 0x{root:X8} is not an aligned PC inside the image.");
+            }
+
+            if (existing.Contains(root))
+            {
+                throw new InvalidDataException($"manifest: 'roots {name}' root 0x{root:X8} is already a root of the image.");
+            }
+
+            if (!ReachableProgramBuilder.IsDiscoverableRoot(image.LoadAddress, image.Words, root))
+            {
+                throw new InvalidDataException($"manifest: 'roots {name}' root 0x{root:X8} is not structurally safe as a block entry.");
+            }
+        }
+
+        images[index] = image with { Roots = image.Roots.Concat(roots).Order().ToArray() };
+        return roots.Length;
+    }
+
+    /// <summary>
+    /// A roots file for an observed-roots directive: one PC per line, comments and blank lines ignored. Unlike
+    /// <see cref="ParseRoots"/> it rejects a duplicate rather than merging it, so an observed set is exactly what was written.
+    /// </summary>
+    private static uint[] ReadStrictRootsFile(string path)
+    {
+        var seen = new HashSet<uint>();
+        var roots = new List<uint>();
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            var text = raw.Split('#')[0].Trim();
+            if (text.Length == 0)
+            {
+                continue;
+            }
+
+            var pc = ParseUint(text);
+            if (!seen.Add(pc))
+            {
+                throw new InvalidDataException($"roots file '{path}' names root 0x{pc:X8} more than once.");
+            }
+
+            roots.Add(pc);
+        }
+
+        return roots.ToArray();
+    }
+
+    /// <summary>The SHA-256 (lower-case hex) of an image's code words as little-endian bytes (Issue #773).</summary>
+    internal static string CodeWordsSha256(IReadOnlyList<uint> words)
+    {
+        var bytes = new byte[words.Count * 4];
+        for (var i = 0; i < words.Count; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(i * 4), words[i]);
+        }
+
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
     private static string Resolve(string path, string? baseDirectory) =>

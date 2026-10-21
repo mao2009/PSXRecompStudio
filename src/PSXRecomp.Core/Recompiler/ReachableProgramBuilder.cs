@@ -52,6 +52,32 @@ public static class ReachableProgramBuilder
         BuildCore(loadAddress, instructionWords, entryPc, additionalRoots, outOfImageTargets: null, out _);
 
     /// <summary>
+    /// Whether <paramref name="pc"/> may be a block entry on its own (Issue #773): it lies in the image, and discovery from
+    /// it alone raises no structural error. A PC that fails here (for example a branch whose delay slot leaves the image)
+    /// is never a safe root, whatever code it names.
+    /// </summary>
+    internal static bool IsDiscoverableRoot(uint loadAddress, IReadOnlyList<uint> instructionWords, uint pc)
+    {
+        ArgumentNullException.ThrowIfNull(instructionWords);
+
+        var imageEnd = (ulong)loadAddress + (ulong)instructionWords.Count * InstructionSize;
+        if (pc < loadAddress || pc >= imageEnd)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = ReachablePcs(loadAddress, instructionWords, [pc]);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Builds a firmware ROM image (Issue #732) — for example the BIOS at <c>0xBFC00000</c> — with exactly the
     /// discovery and lowering of <see cref="Build(uint, IReadOnlyList{uint}, uint, IEnumerable{uint})"/>, and
     /// reports how much of the image is native.

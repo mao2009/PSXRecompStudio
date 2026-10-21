@@ -24,7 +24,7 @@ internal static class OpenBiosProbeCommand
 
     private const int RamBytes = 0x200000;
 
-    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] " +
+    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]";
 
@@ -38,7 +38,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false, standalone = false;
-        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, engineKind = "interpreter";
+        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         string? retireTargetsPath = null, retireOutPath = null;
         string? mdecEventsPath = null, mdecFromText = null, mdecToText = null;
@@ -70,7 +70,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -86,6 +86,7 @@ internal static class OpenBiosProbeCommand
                 else if (option == "--roots") rootsPath = args[i];
                 else if (option == "--symbols") symbolsPath = args[i];
                 else if (option == "--load-images") loadImagesPath = args[i];
+                else if (option == "--fallback-targets") fallbackTargetsPath = args[i];
                 else if (option == "--retire-states") retireTargetsPath = args[i];
                 else if (option == "--retire-out") retireOutPath = args[i];
                 else if (option == "--mdec-events") mdecEventsPath = args[i];
@@ -129,6 +130,27 @@ internal static class OpenBiosProbeCommand
         {
             error.WriteLine("openbios-probe: --pc-histogram is not supported with --engine generated-host (use --engine interpreter for PC histogram)");
             error.WriteLine(Usage);
+            return 1;
+        }
+        if (fallbackTargetsPath is not null && engineKind != "generated-host")
+        {
+            error.WriteLine("openbios-probe: --fallback-targets requires --engine generated-host (the export records the mixed-execution fallback)");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        // Only the probe options the export identity binds (--roots, --code-bytes, --segments, --segment-budget) may shape an export.
+        // --compare-at, --stop-at and --standalone add observed PCs or change the run path, and --differential changes the run's
+        // reference boundaries; none is part of the identity, so an export taken with any of them is refused.
+        if (fallbackTargetsPath is not null && (compareAt.Count != 0 || stopAt is not null || standalone || differential))
+        {
+            error.WriteLine("openbios-probe: --fallback-targets cannot be combined with --compare-at, --stop-at, --standalone or --differential; their runs are not bound by the export identity");
+            error.WriteLine(Usage);
+            return 1;
+        }
+        // Refused before the run starts: an existing export is never replaced, and the run's evidence would be lost at the write.
+        if (fallbackTargetsPath is not null && Path.Exists(fallbackTargetsPath))
+        {
+            error.WriteLine($"openbios-probe: --fallback-targets {fallbackTargetsPath} already exists; choose a new path");
             return 1;
         }
         if (listDiscPath is not null && (dumpRamPath is not null || dumpFramePath is not null || histogramPath is not null))
@@ -187,7 +209,7 @@ internal static class OpenBiosProbeCommand
             {
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
-                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone), json, output, error, mdecLog)
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog)
                     : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog);
             }
             finally
@@ -419,7 +441,7 @@ internal static class OpenBiosProbeCommand
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
         uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath,
-        bool Standalone);
+        bool Standalone, string? FallbackTargetsPath, string? DiscSha256);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
@@ -518,6 +540,8 @@ internal static class OpenBiosProbeCommand
             double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
             uint? lastFallbackFetch = null;
+            // Issue #773: the RAM word the interpreter fetched at each fallback PC (the observation the planner checks against the file).
+            var ramWords = new FallbackRamWordLog();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
@@ -541,14 +565,11 @@ internal static class OpenBiosProbeCommand
                 // over the existing --host-transfer path.
                 embedImage: probe.Standalone)
             {
-                FallbackFetchObserver = (interpreter, pc) =>
+                FallbackFetchObserver = CreateFallbackFetchObserver(ramWords, (interpreter, pc) =>
                 {
                     current = interpreter;
                     lastFallbackFetch = pc;
-                    monitor.OnFetch(pc);
-                    accounting.OnFetch(pc, readCop0, readWord);
-                    if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
-                        hostInterrupt = ProbeGuestState.Capture(interpreter, pc, accounting.FallbackFetches);
+                    ObserveFallbackFetchAccounting(monitor, accounting, readCop0, readWord, interpreter, pc, ref hostInterrupt);
                     var fetches = accounting.FallbackFetches;
                     if (boundaryPcs.Contains(pc) && !boundaries.ContainsKey(pc))
                     {
@@ -566,7 +587,7 @@ internal static class OpenBiosProbeCommand
                     {
                         error.WriteLine($"openbios-probe: generated host: {fetches} fallback fetches, {clock.Elapsed.TotalSeconds:F0} s");
                     }
-                },
+                }),
                 FallbackTransitionObserver = transition =>
                 {
                     accounting.OnTransition(transition);
@@ -598,6 +619,27 @@ internal static class OpenBiosProbeCommand
             var kernelBooted = report.KernelBooted;
             var evidence = engine.FallbackEvidence;
             var costs = engine.FallbackTimings;
+            if (probe.FallbackTargetsPath is not null)
+            {
+                // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
+                // report above is unchanged; this file is written only when requested. A run that did not finish has no
+                // evidence, and an export of it would read as "no targets" to the planner, so none is written.
+                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt,
+                    ramWords.Get, probe.Segments, probe.SegmentBudget);
+                if (exportJson is null)
+                {
+                    error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
+                    return 1;
+                }
+
+                if (!ObservedRootPlanner.IsCompleteOutcome(result.State))
+                {
+                    error.WriteLine($"openbios-probe: --fallback-targets: the run ended in {result.State}; the export is partial and fallback-roots will refuse it.");
+                }
+
+                WriteAtomically(probe.FallbackTargetsPath, exportJson);
+            }
+
             var document = new
             {
                 kind = "openbios-probe",
@@ -845,7 +887,7 @@ internal static class OpenBiosProbeCommand
     }
 
     /// <summary>One hexadecimal block-entry PC per line (blank lines ignored); an explicit input, never guessed.</summary>
-    private static IReadOnlyList<uint> ReadRoots(string path) =>
+    internal static IReadOnlyList<uint> ReadRoots(string path) =>
         File.ReadAllLines(path)
             .Select(static line => line.Trim())
             .Where(static line => line.Length != 0)
@@ -855,7 +897,89 @@ internal static class OpenBiosProbeCommand
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
-    private static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
+    /// <summary>
+    /// The per-fetch accounting the probe's fallback fetch observer performs: the boot monitor and the fallback accounting each see the
+    /// fetch once, and the first exception-vector entry with no pending cause is captured as the host interrupt. Shared by the probe and
+    /// the tests, so the forwarding is exercised by the same code that runs.
+    /// </summary>
+    internal static void ObserveFallbackFetchAccounting(
+        OpenBiosBootMonitor monitor, OpenBiosProbeAccounting accounting, Func<(uint Cause, uint Epc)> readCop0, Func<uint, uint> readWord,
+        InterpreterTitleExecutionEngine interpreter, uint pc, ref ProbeGuestState? hostInterrupt)
+    {
+        monitor.OnFetch(pc);
+        accounting.OnFetch(pc, readCop0, readWord);
+        if (pc == 0x80000080 && ((interpreter.Cop0Diagnostics.Cause >> 2) & 31) == 0 && hostInterrupt is null)
+            hostInterrupt = ProbeGuestState.Capture(interpreter, pc, accounting.FallbackFetches);
+    }
+
+    /// <summary>
+    /// The fallback fetch observer the probe installs (Issue #773): records the RAM word at each fetched PC, then runs the probe's own
+    /// observation. The probe installs exactly this result, so a test that drives it exercises the probe's wiring.
+    /// </summary>
+    internal static Action<InterpreterTitleExecutionEngine, uint> CreateFallbackFetchObserver(
+        FallbackRamWordLog ramWords, Action<InterpreterTitleExecutionEngine, uint> observeRest) =>
+        (interpreter, pc) =>
+        {
+            ramWords.ObserveFetch(interpreter, pc);
+            observeRest(interpreter, pc);
+        };
+
+    /// <summary>
+    /// The <c>fallback-targets/v2</c> document for a run (Issue #773), or null when the run has no fallback evidence (it did not
+    /// finish). Null is never a valid export: the planner would read it as a run with no targets. The run's <c>outcome</c> is
+    /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer).
+    /// </summary>
+    internal static string? BuildFallbackTargetsDocument(
+        MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state,
+        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt, Func<uint, uint?> ramWordOf, uint segments = 10, uint segmentBudget = 100_000)
+    {
+        if (evidence is null)
+        {
+            return null;
+        }
+
+        var targets = evidence.Targets.Select(t => new
+        {
+            pc = Hex(t.Target),
+            cause = causeOf(t.Target),
+            entries = t.Entries,
+            instructions = t.Instructions,
+            lastReturnPc = Hex(t.LastReturnPc),
+            ramWord = ramWordOf(t.Target) is { } word ? Hex(word) : null,
+        }).ToArray();
+        return JsonSerializer.Serialize(new
+        {
+            format = ObservedRootPlanner.TargetFormat,
+            sha256 = hash,
+            run = ObservedRootPlanner.RunDocument(ObservedRootPlanner.DescribeRun(hash, manifest, discSha256, ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots, segments, segmentBudget))),
+            outcome = new { state = state.ToString(), complete = ObservedRootPlanner.IsCompleteOutcome(state), stopAt = stopAt is { } stop ? Hex(stop) : null },
+            targets,
+        }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>Writes the file through a sibling temporary and a rename, so a failed write leaves no partial export behind.</summary>
+    internal static void WriteAtomically(string path, string text)
+    {
+        var temp = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temp, text);
+            File.Move(temp, path, overwrite: false); // an existing export is never replaced (Issue #773 review M2)
+        }
+        finally
+        {
+            File.Delete(temp); // a no-op once the rename has moved it
+        }
+    }
+
+    internal static OpenedDisc OpenDisc(string path) => DiscSectorSourceOpener.Open(path);
+
+    /// <summary>The SHA-256 of a file's bytes, streamed (a disc image can be large); the export and the planner bind to it, never to its path.</summary>
+    internal static string FileSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
 
     private static object BuildStop(InterpreterTitleExecutionEngine engine, RecompilerStateSnapshot? snapshot)
     {
@@ -870,4 +994,34 @@ internal static class OpenBiosProbeCommand
             lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{Hex(t.From.Word)}->{Hex(t.To)}").ToArray()
         };
     }
+}
+
+/// <summary>
+/// The RAM word observed at each fallback PC (Issue #773). Every fallback fetch is observed. A PC keeps its word only while every
+/// fetch at it reads that same word; a fetch that cannot be read (outside RAM and ROM), or that reads a different word, leaves the PC
+/// unobserved (null) for the rest of the run, so the planner refuses it. Nothing is inferred from a missing read.
+/// </summary>
+[Infrastructure]
+internal sealed class FallbackRamWordLog
+{
+    private readonly Dictionary<uint, uint?> words = new();
+
+    /// <summary>The probe's per-fetch wiring: observes the word the interpreter reads at <paramref name="pc"/> (null when it cannot be read).</summary>
+    public void ObserveFetch(InterpreterTitleExecutionEngine interpreter, uint pc) =>
+        Observe(pc, interpreter.TryReadGuestWord(pc, out var fetched) ? fetched : (uint?)null);
+
+    public void Observe(uint pc, uint? word)
+    {
+        if (!words.TryGetValue(pc, out var seen))
+        {
+            words[pc] = word;
+        }
+        else if (seen is not null && seen != word)
+        {
+            words[pc] = null;
+        }
+    }
+
+    /// <summary>The PC's word, or null when it was never observed or its fetches disagreed.</summary>
+    public uint? Get(uint pc) => words.TryGetValue(pc, out var word) ? word : null;
 }

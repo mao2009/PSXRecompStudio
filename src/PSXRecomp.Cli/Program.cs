@@ -58,6 +58,7 @@ public static class Program
             "screenshot" => ScreenshotCommand.Run(rest, standardOutput, standardError),
             "doctor" => Doctor(rest, standardOutput, standardError),
             "openbios-probe" => OpenBiosProbeCommand.Run(rest, standardOutput, standardError),
+            "fallback-roots" => FallbackRootsCommand.Run(rest, standardOutput, standardError),
             "--help" or "-h" => Usage(standardOutput),
             _ => UnknownCommand(command, standardError),
         };
@@ -448,6 +449,7 @@ public static class Program
         writer.WriteLine("  screenshot     run a title headless and capture PNG screenshots at VBlank intervals");
         writer.WriteLine("  doctor         check the OS, .NET, native runtime, and C compiler this CLI needs");
         writer.WriteLine("  openbios-probe execute a locally built OpenBIOS ROM on the shared native CPU (no HLE)");
+        writer.WriteLine("  fallback-roots plan observed AOT roots from a probe's fallback targets into a new manifest");
         writer.WriteLine();
         writer.WriteLine(UsageRecompile);
         writer.WriteLine(UsageRun);
