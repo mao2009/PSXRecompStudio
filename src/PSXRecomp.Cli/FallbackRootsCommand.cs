@@ -127,7 +127,7 @@ internal static class FallbackRootsCommand
                 if (Path.Exists(path))
                 {
                     error.WriteLine($"fallback-roots: {Path.GetFileName(path)} already exists; refusing to overwrite it. " +
-                        "If a run stopped and left it behind, no fallback-roots run is active, and no manifest refers to it, delete it and retry.");
+                        "If a run stopped and left it behind, no fallback-roots run is active, and no manifest refers to it, delete it, any '.tmp' files and '.observed-roots.lock' beside it, and retry.");
                     return 1;
                 }
             }
@@ -172,7 +172,12 @@ internal static class FallbackRootsCommand
                 // file that appeared between the check and the rename. Reserved names are in `published`, so a failure removes them.
                 foreach (var finalPath in planned.Select(p => Path.Combine(directory, p.FileName)).Append(outFull))
                 {
-                    new FileStream(finalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None).Dispose();
+                    // The reservation is not a valid manifest or roots file, so a reader that opens it mid-publish fails closed:
+                    // an empty manifest would load as zero images without an error.
+                    using (var reservation = new FileStream(finalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        reservation.Write("reserved: fallback-roots publish in progress\n"u8);
+                    }
                     published.Add(finalPath);
                 }
 
@@ -203,7 +208,8 @@ internal static class FallbackRootsCommand
             }
             catch
             {
-                foreach (var path in published) TryDelete(path);
+                // Reverse order: the manifest (the commit point) is removed first, so a partial failure leaves only roots files.
+                foreach (var path in Enumerable.Reverse(published)) TryDelete(path);
                 throw;
             }
             finally

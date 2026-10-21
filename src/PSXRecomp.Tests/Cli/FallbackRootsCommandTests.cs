@@ -418,6 +418,18 @@ public sealed class FallbackRootsCommandTests
         Leftovers(dir).Should().Equal("images-other.txt");
     }
 
+    // A reader that opens the manifest name while a publish holds its reservation must fail closed, not load zero images.
+    [Fact]
+    public void AReservationOfAManifest_IsRejectedByTheReader()
+    {
+        using var dir = new TempDirectory();
+        var reservation = dir.WriteFile("images-reserved.txt", "reserved: fallback-roots publish in progress\n"u8.ToArray());
+
+        var act = () => LoadImageManifest.Read(reservation, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
+
+        act.Should().Throw<InvalidDataException>();
+    }
+
     // A refused run for another output leaves a published manifest and its roots file intact and readable.
     [Fact]
     public void AFailedRunForAnotherOutput_KeepsTheFilesOfTheSuccessfulRun()
