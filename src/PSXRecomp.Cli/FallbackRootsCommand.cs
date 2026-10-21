@@ -174,11 +174,13 @@ internal static class FallbackRootsCommand
                 {
                     // The reservation is not a valid manifest or roots file, so a reader that opens it mid-publish fails closed:
                     // an empty manifest would load as zero images without an error.
-                    using (var reservation = new FileStream(finalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    // Registered as soon as it exists, so a failure while writing it still removes it.
+                    var reservation = new FileStream(finalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    published.Add(finalPath);
+                    using (reservation)
                     {
                         reservation.Write("reserved: fallback-roots publish in progress\n"u8);
                     }
-                    published.Add(finalPath);
                 }
 
                 foreach (var (entry, fileName) in planned)

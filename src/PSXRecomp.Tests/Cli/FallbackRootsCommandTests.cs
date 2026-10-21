@@ -430,6 +430,19 @@ public sealed class FallbackRootsCommandTests
         act.Should().Throw<InvalidDataException>();
     }
 
+    // The same reservation text in a roots file is refused too, so a roots reader that opens it mid-publish fails closed.
+    [Fact]
+    public void AReservationOfARootsFile_IsRejectedByTheRootsReader()
+    {
+        using var dir = new TempDirectory();
+        var reservation = dir.WriteFile("roots-reserved.txt", "reserved: fallback-roots publish in progress\n"u8.ToArray());
+
+        var act = () => OpenBiosProbeCommand.ReadRoots(reservation);
+
+        // A FormatException, which the command's outer handler reports as an input error (exit 1).
+        act.Should().Throw<FormatException>();
+    }
+
     // A refused run for another output leaves a published manifest and its roots file intact and readable.
     [Fact]
     public void AFailedRunForAnotherOutput_KeepsTheFilesOfTheSuccessfulRun()
