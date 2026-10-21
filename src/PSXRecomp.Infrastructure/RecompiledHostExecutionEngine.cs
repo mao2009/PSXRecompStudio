@@ -1142,7 +1142,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             _unitTrace?.Dispose();
         }
 
-        /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         /// <summary>
         /// Where VBlank frames are published while the run executes (Issue #818). Null leaves the run unchanged; the
         /// headless path never sets it.
@@ -1150,8 +1149,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         public LiveFrameSlot? LiveFrames { get; init; }
 
         /// <summary>
-        /// Publishes the display at a VBlank. Runs on the pump thread that owns the GPU, so the copy needs no lock. A failure
-        /// only drops this frame: the guest's time and result never depend on it.
+        /// Publishes the display at a VBlank. Runs on the pump thread that owns the GPU, so the copy needs no lock. This is
+        /// observation only: any failure, including an unexpected one, drops this frame and never changes the guest's time,
+        /// result or exit code.
         /// </summary>
         private void PublishLiveFrame(LiveFrameSlot slot)
         {
@@ -1159,12 +1159,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             {
                 LiveFramePublisher.TryPublish(_devices!.GpuDevice, slot);
             }
-            catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or ObjectDisposedException)
+            catch (Exception exception)
             {
                 Trace.WriteLine($"Live frame publish failed: {exception}");
             }
         }
 
+        /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
         {
             if (_resourceLifetime.IsPumpActive)
