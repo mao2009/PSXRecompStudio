@@ -69,14 +69,19 @@
     ]
   }
   </script>
+  <meta name="theme-color" content="#090e17">
   <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="site-header">
     <nav class="nav" aria-label="Primary navigation">
       <a class="brand" href="./">PSXRecompStudio</a>
       <div class="nav-links">
+        <a href="#mission">Mission</a>
+        <a href="#progress">Progress</a>
         <a href="architecture.html">Architecture</a>
+        <a href="#contribute">Contribute</a>
         <a href="get-involved.html">Get involved</a>
         <a href="rrs-vision.html">RRS vision</a>
         <a href="roadmap.html">Roadmap</a>
@@ -87,7 +92,7 @@
     </nav>
   </header>
 
-  <main>
+  <main id="main-content">
     <section class="hero">
       <p class="eyebrow">Open-source PlayStation 1 research</p>
       <h1>PSXRecompStudio</h1>
@@ -95,11 +100,35 @@
       <p><strong>Works today:</strong> Bounded recompilation and interpreter comparison, plus PS-X EXE/CHD analysis.</p>
       <p><strong>Not yet:</strong> Complete commercial-title AOT recompilation or playable native ports.</p>
       <p><strong>Start here:</strong> <a href="faq.html">Read the FAQ</a>, <a href="cli.html">try the CLI</a>, or <a href="get-involved.html#first-contributions">pick a first contribution</a>.</p>
-      <p class="actions"><a class="button" href="get-involved.html#first-contributions">Get involved</a> <a href="ja/">日本語</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p>
+      <p class="actions"><a class="button primary" href="get-involved.html#first-contributions">Get involved ↗</a> <a href="ja/">日本語</a> · <a href="https://github.com/mao2009/PSXRecompStudio">GitHub</a></p>
+    </section>
+
+    <section id="mission" aria-labelledby="mission-title">
+      <p class="eyebrow">01 / Mission</p>
+      <h2 id="mission-title">Preserve the possibility of a native port.</h2>
+      <p class="section-intro">Develop open, reviewable tools for authorized PlayStation game research, preservation and eventual re-releases. A reusable, maintainable recompilation foundation matters more than claiming early compatibility.</p>
+      <div class="grid feature-grid">
+        <article class="card"><span class="card-number">01 / RESEARCH</span><h3>Open engineering</h3><p>PS1 binary analysis, MIPS semantics and an independently reviewable recompiler/runtime.</p></article>
+        <article class="card"><span class="card-number">02 / EVIDENCE</span><h3>Measured progress</h3><p>Separate synthetic validation, real-title interpreter observations and native execution claims.</p></article>
+        <article class="card"><span class="card-number">03 / COMMUNITY</span><h3>Small contributions welcome</h3><p>Reproductions, focused tests, design challenges and documentation are first-class contributions.</p></article>
+      </div>
+    </section>
+
+    <section id="progress" aria-labelledby="progress-title">
+      <p class="eyebrow">02 / Progress · snapshot 2026-10-20</p>
+      <h2 id="progress-title">What the evidence actually shows.</h2>
+      <p class="section-intro">Source baseline: <a href="https://github.com/mao2009/PSXRecompStudio/commit/551f50ab6ad5a502376719974db34868206ff356"><code>main@551f50ab</code></a>. This is a dated summary, not a live CI or compatibility counter. Draft PRs are not counted as landed work.</p>
+      <div class="progress-grid">
+        <article class="progress-card verified"><span class="progress-tag">OBSERVED / INTERPRETER</span><h3>Persona opening imagery</h3><p>ATLUS logo and opening Japanese text rendered with OpenBIOS. Real-title visual evidence is interpreter-only.</p></article>
+        <article class="progress-card verified"><span class="progress-tag">VERIFIED / SYNTHETIC</span><h3>Runnable native slice</h3><p>Five-instruction PS-X EXE recompiles and runs with the alpha CLI. Not whole-game support.</p></article>
+        <article class="progress-card investigating"><span class="progress-tag">INVESTIGATING / STANDALONE</span><h3>Fallback, throughput, display</h3><p>Timed-out standalone runs, loaded-code mismatches and unverified visual parity are tracked in <a href="https://github.com/mao2009/PSXRecompStudio/issues/768">#768</a>, <a href="https://github.com/mao2009/PSXRecompStudio/issues/773">#773</a>, <a href="https://github.com/mao2009/PSXRecompStudio/issues/774">#774</a> and <a href="https://github.com/mao2009/PSXRecompStudio/issues/806">#806</a>.</p></article>
+        <article class="progress-card blocked"><span class="progress-tag">NOT REACHED / V0.1 GATE</span><h3>Persona title screen</h3><p>No confirmed title-screen or playable commercial-title native port. <a href="https://github.com/mao2009/PSXRecompStudio/issues/351">Milestone #351</a> remains open.</p></article>
+      </div>
+      <p class="progress-foot">Detailed, scope-limited evidence: <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/v0.1.0/persona-e2e-status.md">Persona E2E log</a> · <a href="https://github.com/mao2009/PSXRecompStudio/blob/main/docs/status/capabilities.md">Capability matrix</a> · <a href="https://github.com/mao2009/PSXRecompStudio/issues">Open issues</a></p>
     </section>
 
     <section id="collaboration">
-      <h2>Technical collaborators welcome</h2>
+      <h2 id="contribute">Technical collaborators welcome</h2>
       <p>Japanese-language Issues and technical discussions are welcome. <a href="ja/get-involved.html">日本語の参加ガイド</a></p>
       <p><strong>We welcome independent, critical human reviews.</strong> Specialists in PS1 BIOS and hardware, MIPS I, static recompilation, runtime integration, testing, and game preservation can contribute through a focused question, architecture review, or reproducible synthetic test—not only through large code changes.</p>
       <p><strong>Transparent AI use:</strong> the maintainer defines the direction, but AI coding agents are heavily used for coding, investigations, tests, documentation, and preliminary review. Automated CI is important bounded evidence, not a substitute for independent engineering review.</p>

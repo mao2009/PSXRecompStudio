@@ -126,6 +126,8 @@ public static class RuntimeHostBuildService
                 rid,
                 "-p:UseArtifactsOutput=true",
                 $"-p:ArtifactsPath={artifactsPath}",
+                // Issue #813: this publish gets its own native build directory under ArtifactsPath.
+                "-p:PsxIsolatedNativeBuild=true",
             };
             var restoreResult = RunToolchain("dotnet", restoreArgs, timeout);
             if (restoreResult.Outcome != ToolchainOutcome.Success)
@@ -147,6 +149,8 @@ public static class RuntimeHostBuildService
                 Path.GetFullPath(targetDirectory),
                 "-p:UseArtifactsOutput=true",
                 $"-p:ArtifactsPath={artifactsPath}",
+                // Issue #813: this publish gets its own native build directory under ArtifactsPath.
+                "-p:PsxIsolatedNativeBuild=true",
                 // Restore is done explicitly above; --no-restore avoids duplicate work.
                 "--no-restore",
             };
