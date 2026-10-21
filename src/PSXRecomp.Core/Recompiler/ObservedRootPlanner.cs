@@ -248,13 +248,13 @@ internal static class ObservedRootPlanner
     }
 
     /// <summary>
-    /// The SHA-256 of the probe options that change which PCs a run observes: the <c>--code-bytes</c> count and the <c>--roots</c>
-    /// PCs (order and repeats do not matter). The probe and the planner compute it from the same values, so an export is bound to them.
+    /// The SHA-256 of the probe options that change which PCs a run observes: the <c>--code-bytes</c> count, the
+    /// <c>--segments</c> and <c>--segment-budget</c> run limits, and the <c>--roots</c> PCs (order and repeats do not matter). The probe and the planner compute it from the same values, so an export is bound to them.
     /// </summary>
-    public static string ProbeOptionsSha256(uint codeBytes, IEnumerable<uint> roots)
+    public static string ProbeOptionsSha256(uint codeBytes, IEnumerable<uint> roots, uint segments = 10, uint segmentBudget = 100_000)
     {
         ArgumentNullException.ThrowIfNull(roots);
-        var canonical = $"code-bytes={codeBytes}\nroots={string.Join(",", roots.Distinct().Order().Select(static pc => $"0x{pc:X8}"))}\n";
+        var canonical = $"code-bytes={codeBytes}\nsegments={segments}\nsegment-budget={segmentBudget}\nroots={string.Join(",", roots.Distinct().Order().Select(static pc => $"0x{pc:X8}"))}\n";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
@@ -300,7 +300,7 @@ internal static class ObservedRootPlanner
 
         if (recorded.FirmwareSha256 != current.FirmwareSha256) throw Mismatch("firmware SHA-256");
         if (recorded.DiscSha256 != current.DiscSha256) throw Mismatch("disc image SHA-256");
-        if (recorded.ProbeOptionsSha256 != current.ProbeOptionsSha256) throw Mismatch("probe options (--roots, --code-bytes)");
+        if (recorded.ProbeOptionsSha256 != current.ProbeOptionsSha256) throw Mismatch("probe options (--roots, --code-bytes, --segments, --segment-budget)");
         if (!recorded.Interpreted.SequenceEqual(current.Interpreted)) throw Mismatch("interpret points");
         if (recorded.Images.Count != current.Images.Count) throw Mismatch("image count");
         for (var i = 0; i < current.Images.Count; i++)

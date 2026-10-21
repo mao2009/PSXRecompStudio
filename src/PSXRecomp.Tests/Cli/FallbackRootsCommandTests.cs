@@ -518,6 +518,21 @@ public sealed class FallbackRootsCommandTests
         Directory.GetFiles(dir.FullPath, "observed-roots-*").Should().BeEmpty();
     }
 
+    // Issue #773 review M2: an existing export is never replaced; the write fails and the old file is kept byte for byte.
+    [Fact]
+    public void AnExistingExport_IsNeverReplaced()
+    {
+        using var dir = new TempDirectory();
+        var destination = dir.Combine("export.json");
+        File.WriteAllText(destination, "old");
+
+        var act = () => OpenBiosProbeCommand.WriteAtomically(destination, "{}");
+
+        act.Should().Throw<IOException>();
+        File.ReadAllText(destination).Should().Be("old");
+        Directory.GetFileSystemEntries(dir.FullPath, "*.tmp").Should().BeEmpty();
+    }
+
     [Fact]
     public void AFailedExportWrite_LeavesNoTemporaryFile()
     {

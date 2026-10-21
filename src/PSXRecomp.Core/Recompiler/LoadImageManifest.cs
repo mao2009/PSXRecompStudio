@@ -150,6 +150,10 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             }
         }
 
+        // The code budget is the planner's, applied to the same sums: the reachable words added by all observed roots, over the
+        // reachable words of the images before any were added. A hand-edited roots file cannot grow the code past it.
+        var observedBase = observedRoots.Count == 0 ? 0 : ReachableWordCount(images);
+
         // The per-image limit is checked per directive, so one image takes at most one: a second would raise it past the budget.
         var named = new HashSet<string>(StringComparer.Ordinal);
         var observedTotal = 0;
@@ -167,8 +171,23 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
             }
         }
 
+        if (observedRoots.Count > 0)
+        {
+            var budget = ObservedRootBudget.Default;
+            var extra = ReachableWordCount(images) - observedBase;
+            var allowance = Math.Max(budget.MinExtraReachable, budget.MaxExtraReachableFraction * observedBase);
+            if (extra > allowance)
+            {
+                throw new InvalidDataException($"manifest: the 'roots' directives make {extra} more code words reachable; the limit is {allowance:0} (Issue #773 code budget).");
+            }
+        }
+
         return new LoadImageManifest(images, interpreted);
     }
+
+    /// <summary>The sum over the images of the words reachable from each image's roots: the planner's code measure.</summary>
+    private static int ReachableWordCount(IEnumerable<LoadedImageSpec> images) =>
+        images.Sum(image => ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, image.Roots).Count);
 
     /// <summary>
     /// The file paths a manifest's directives reference, exactly as written (Issue #732 P1-3): <c>image</c>'s

@@ -288,6 +288,9 @@ public sealed class ObservedRootPlannerTests
         ObservedRootPlanner.ProbeOptionsSha256(0, [A, B]).Should().Be(ObservedRootPlanner.ProbeOptionsSha256(0, [B, A, A]));
         ObservedRootPlanner.ProbeOptionsSha256(0, [A]).Should().NotBe(baseline);
         ObservedRootPlanner.ProbeOptionsSha256(4096, []).Should().NotBe(baseline);
+        // Issue #773 review M3: the run limits change which PCs a run observes, so they are part of the identity.
+        ObservedRootPlanner.ProbeOptionsSha256(0, [], segments: 3).Should().NotBe(baseline);
+        ObservedRootPlanner.ProbeOptionsSha256(0, [], segmentBudget: 5).Should().NotBe(baseline);
     }
 
     [Fact]

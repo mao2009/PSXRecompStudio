@@ -60,6 +60,25 @@ public sealed class ObservedRootsManifestTests
         act.Should().Throw<InvalidDataException>().WithMessage("*per image*");
     }
 
+    // The code budget applies to the manifest path too, not only to the planner: a hand-written root that makes ~3000 words
+    // reachable (limit 1024 extra) is refused. Word 0 is `jr $ra` with its delay slot, so the entry reaches two words; the
+    // root at word 2 walks the nops after it to the `jr $ra` at word 2998.
+    [Fact]
+    public void ARootsDirective_ThatAddsMoreCodeThanTheBudget_FailsClosed()
+    {
+        using var dir = new TempDirectory();
+        var text = new uint[3000];
+        text[0] = MipsEncoding.JumpRegister(31);
+        text[1] = MipsEncoding.Nop;
+        text[2998] = MipsEncoding.JumpRegister(31);
+        text[2999] = MipsEncoding.Nop;
+        var observed = $"0x{Dest + 8:X8}\n";
+
+        var act = () => Load(dir, text, "exe test test.exe\n" + Directive(text), observed);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*code words reachable*");
+    }
+
     // The total budget is checked across every observed directive: five images at the per-image limit exceed it.
     [Fact]
     public void ObservedRootsAcrossImages_FailClosedAtTheTotalBudget()

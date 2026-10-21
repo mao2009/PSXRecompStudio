@@ -16,7 +16,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 internal static class FallbackRootsCommand
 {
     internal const string Usage =
-        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>]";
+        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>]";
 
     private const string ReportFormat = "psxrecomp.fallback-roots-report/v1";
 
@@ -31,11 +31,11 @@ internal static class FallbackRootsCommand
             }
 
             var romPath = args[0];
-            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null;
+            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null, segmentsText = null, segmentBudgetText = null;
             for (var i = 1; i < args.Count; i++)
             {
                 var option = args[i];
-                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes"))
+                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes" or "--segments" or "--segment-budget"))
                 {
                     error.WriteLine($"fallback-roots: unknown option {option}");
                     error.WriteLine(Usage);
@@ -53,6 +53,8 @@ internal static class FallbackRootsCommand
                 else if (option == "--out") outPath = args[i];
                 else if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
+                else if (option == "--segments") segmentsText = args[i];
+                else if (option == "--segment-budget") segmentBudgetText = args[i];
                 else codeBytesText = args[i];
             }
 
@@ -91,6 +93,14 @@ internal static class FallbackRootsCommand
                 return 1;
             }
 
+            // Defaults match openbios-probe's, so an export taken with default run limits verifies without them.
+            if (!uint.TryParse(segmentsText ?? "10", NumberStyles.None, CultureInfo.InvariantCulture, out var segments)
+                || !uint.TryParse(segmentBudgetText ?? "100000", NumberStyles.None, CultureInfo.InvariantCulture, out var segmentBudget))
+            {
+                error.WriteLine("fallback-roots: --segments and --segment-budget require non-negative integers.");
+                return 1;
+            }
+
             var romBytes = File.ReadAllBytes(romPath);
             var firmware = OpenBiosFirmware.FromBytes(romBytes);
             using var disc = discPath is null ? null : OpenBiosProbeCommand.OpenDisc(discPath);
@@ -102,7 +112,7 @@ internal static class FallbackRootsCommand
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(romBytes)).ToLowerInvariant(),
                 manifest,
                 discPath is null ? null : OpenBiosProbeCommand.FileSha256(discPath),
-                ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots)));
+                ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots, segments, segmentBudget)));
             var plan = ObservedRootPlanner.Plan(manifest.Images, export.Targets);
 
             var directory = Path.GetDirectoryName(outFull)!;
