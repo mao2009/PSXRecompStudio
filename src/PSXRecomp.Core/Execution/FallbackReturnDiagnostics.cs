@@ -83,12 +83,13 @@ public static class FallbackReturnCheck
 /// <summary>
 /// One PC of the most-frequent refused-check table (Issue #806). <see cref="Count"/> is the space-saving estimate: an upper
 /// bound on the true refusal count. <see cref="Error"/> is the count inherited when the PC took over a slot (zero if it
-/// never evicted anything), so the true count lies in [<see cref="LowerBound"/>, <see cref="Count"/>].
+/// never evicted anything), so the true count lies in [<see cref="LowerBound"/>, <see cref="Count"/>]. The bounds hold for a
+/// quiescent snapshot; a snapshot read while the pump runs can pair a PC with a neighbouring slot's error (diagnostic only).
 /// </summary>
 [Domain]
 public sealed record FallbackPcCount(uint Pc, ulong Count, ulong Error)
 {
-    /// <summary>The guaranteed minimum refusal count for this PC (estimate minus error).</summary>
+    /// <summary>The minimum refusal count for this PC (estimate minus error), exact only for a quiescent snapshot.</summary>
     public ulong LowerBound => Count > Error ? Count - Error : 0;
 }
 
