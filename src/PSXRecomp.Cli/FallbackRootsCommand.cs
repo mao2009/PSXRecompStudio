@@ -126,7 +126,8 @@ internal static class FallbackRootsCommand
             {
                 if (Path.Exists(path))
                 {
-                    error.WriteLine($"fallback-roots: {Path.GetFileName(path)} already exists; refusing to overwrite it.");
+                    error.WriteLine($"fallback-roots: {Path.GetFileName(path)} already exists; refusing to overwrite it. " +
+                        "If a run stopped and left it behind, no fallback-roots run is active, and no manifest refers to it, delete it and retry.");
                     return 1;
                 }
             }
@@ -166,6 +167,15 @@ internal static class FallbackRootsCommand
             var published = new List<string>();
             try
             {
+                // Every final name is reserved exclusively before any rename: a name another writer took after the check fails here.
+                // The renames below then replace only this run's own empty reservation, since POSIX rename would otherwise replace a
+                // file that appeared between the check and the rename. Reserved names are in `published`, so a failure removes them.
+                foreach (var finalPath in planned.Select(p => Path.Combine(directory, p.FileName)).Append(outFull))
+                {
+                    new FileStream(finalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None).Dispose();
+                    published.Add(finalPath);
+                }
+
                 foreach (var (entry, fileName) in planned)
                 {
                     var image = manifest.Images[entry.ImageIndex];
@@ -181,15 +191,13 @@ internal static class FallbackRootsCommand
                 foreach (var (_, fileName) in planned)
                 {
                     var finalPath = Path.Combine(directory, fileName);
-                    File.Move(Staged(finalPath), finalPath); // no overwrite: fails if anything took the name since the check
-                    published.Add(finalPath);
+                    File.Move(Staged(finalPath), finalPath, overwrite: true); // replaces this run's reservation only
                 }
 
                 // The manifest text with the final roots names, re-staged so the commit is also a plain rename.
                 var finalStaged = Staged(outFull + ".final");
                 WriteExclusive(finalStaged, stagedFiles, ManifestLines(static name => name));
-                File.Move(finalStaged, outFull);
-                published.Add(outFull);
+                File.Move(finalStaged, outFull, overwrite: true); // replaces this run's reservation: the commit point
                 CheckReadsBack(outFull);
                 checkedReadBack = true;
             }
@@ -251,7 +259,7 @@ internal static class FallbackRootsCommand
         {
             return new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
         }
-        catch (IOException) when (File.Exists(path))
+        catch (IOException) when (Path.Exists(path))
         {
             throw new IOException($"{path} is held by another fallback-roots run, or a run stopped without removing it. " +
                 "Delete it only when no fallback-roots run is active, then retry.");
