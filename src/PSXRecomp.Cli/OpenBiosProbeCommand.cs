@@ -138,6 +138,14 @@ internal static class OpenBiosProbeCommand
             error.WriteLine(Usage);
             return 1;
         }
+        // Only the probe options the export identity binds (--roots, --code-bytes, --segments, --segment-budget) may shape an export:
+        // these change which PCs a run observes without being part of its identity, so an export taken with them is refused.
+        if (fallbackTargetsPath is not null && (compareAt.Count != 0 || standalone || differential))
+        {
+            error.WriteLine("openbios-probe: --fallback-targets cannot be combined with --compare-at, --standalone or --differential; their runs are not bound by the export identity");
+            error.WriteLine(Usage);
+            return 1;
+        }
         // Refused before the run starts: an existing export is never replaced, and the run's evidence would be lost at the write.
         if (fallbackTargetsPath is not null && Path.Exists(fallbackTargetsPath))
         {

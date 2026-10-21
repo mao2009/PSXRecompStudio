@@ -186,8 +186,17 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
     }
 
     /// <summary>The sum over the images of the words reachable from each image's roots: the planner's code measure.</summary>
-    private static int ReachableWordCount(IEnumerable<LoadedImageSpec> images) =>
-        images.Sum(image => ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, image.Roots).Count);
+    private static int ReachableWordCount(IEnumerable<LoadedImageSpec> images)
+    {
+        try
+        {
+            return images.Sum(image => ReachableProgramBuilder.ReachablePcs(image.LoadAddress, image.Words, image.Roots).Count);
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new InvalidDataException($"manifest: an image's roots cannot be walked for the code budget: {error.Message}", error);
+        }
+    }
 
     /// <summary>
     /// The file paths a manifest's directives reference, exactly as written (Issue #732 P1-3): <c>image</c>'s
