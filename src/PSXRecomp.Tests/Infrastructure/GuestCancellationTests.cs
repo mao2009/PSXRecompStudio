@@ -44,7 +44,8 @@ public sealed class GuestCancellationTests
 
     private static string UniqueArtifactCopy(string binary, TempDirectory dir)
     {
-        var copy = Path.Combine(dir.FullPath, $"stop-{Interlocked.Increment(ref _copyCounter)}{Path.GetExtension(binary)}");
+        // The temp directory's name is random per test, so the copy name is unique across parallel test hosts too.
+        var copy = Path.Combine(dir.FullPath, $"stop-{Path.GetFileName(dir.FullPath)}-{Interlocked.Increment(ref _copyCounter)}{Path.GetExtension(binary)}");
 #pragma warning disable AARC003 // Test-layer I/O for verification
         File.Copy(binary, copy);
 #pragma warning restore AARC003

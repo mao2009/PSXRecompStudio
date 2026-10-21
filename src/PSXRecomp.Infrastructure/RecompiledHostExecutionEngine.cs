@@ -674,7 +674,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         // Set only when a stop reached a child that was still running (see StopChild). It alone decides a Cancelled result.
         var stopDelivered = new System.Runtime.CompilerServices.StrongBox<bool>();
-        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, _stopRequested.Token, stopDelivered);
+        CancellationToken stopToken;
+        try
+        {
+            stopToken = _stopRequested.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposed while this segment was being prepared: the run is stopped before any child starts.
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The engine was disposed before the artifact started.");
+        }
+
+        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, stopToken, stopDelivered);
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
         // guest's console output (the boot/TTY text before the engine's
@@ -1115,8 +1127,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return;
             }
 
-            stopDelivered.Value = true;
+            // Recorded only once the kill succeeded: a child that exits on its own just before, or a kill the OS refused,
+            // must not be reported as a failure caused by the stop.
             process.Kill(true);
+            stopDelivered.Value = true;
         }
         catch (Exception exception)
         {
