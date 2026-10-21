@@ -88,13 +88,14 @@ public sealed class LiveFramePublisherTests
     [Fact]
     public void OneAdvanceOverSeveralVBlanks_RaisesOneCallbackPerVBlank()
     {
-        // The scheduler contract the live publish relies on: one call that spans N VBlanks invokes the callback N times.
+        // The scheduler contract the live publish relies on: one Advance call that spans N VBlanks invokes the callback N times.
+        // AdvanceExact is not used here: it splits the time at each VBlank, so no single call would cross several.
         using var graph = new PsxDeviceGraph();
         var scheduler = graph.CreateScheduler();
         var calls = new List<ulong>();
         scheduler.VblankCallback = count => calls.Add(count);
 
-        scheduler.AdvanceExact(3 * DeviceScheduler.VblankIntervalCycles);
+        scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
 
         calls.Should().Equal(1UL, 2UL, 3UL);
     }
