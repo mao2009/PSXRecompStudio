@@ -897,7 +897,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         var output = new StringBuilder();
         var outputGate = new object();
-        var pump = Task.Run(() =>
+        // Issue #815: the pump runs on its own thread, not a thread-pool worker (see ProtocolPump).
+        var pump = ProtocolPump.Start(() =>
         {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)

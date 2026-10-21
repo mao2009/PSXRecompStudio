@@ -427,7 +427,7 @@ public sealed class RecompilerHostExecutor : IRecompilerExecutor
         session.Attach(process.StandardOutput, process.StandardInput);
 
         var output = new StringBuilder();
-        var pump = Task.Run(() =>
+        var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() =>
         {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)
