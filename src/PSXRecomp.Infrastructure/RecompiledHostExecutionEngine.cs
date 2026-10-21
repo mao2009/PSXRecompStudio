@@ -873,6 +873,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         if (GuardStatsScope.CurrentPath is { } guardStatsFile)
         {
             psi.Environment[GuardStatsScope.FileEnvironmentVariable] = guardStatsFile;
+            // Each child draws its own run id: the generated code cannot tell two processes apart by time and clock() alone (Issue #804).
+            psi.Environment[GuardStatsScope.RunIdEnvironmentVariable] = Random.Shared.NextInt64().ToString("x16", CultureInfo.InvariantCulture);
             var (periodUnits, abortAfterUnits) = GuardStatsScope.CurrentTiming;
             // Always set (0 when unset), so a stray value in the parent cannot leak into a guard-stats child.
             psi.Environment[GuardStatsScope.PeriodEnvironmentVariable] = periodUnits.ToString(CultureInfo.InvariantCulture);
@@ -902,7 +904,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         var output = new StringBuilder();
         var outputGate = new object();
-        var pump = Task.Run(() =>
+        // Issue #815: the pump runs on its own thread, not a thread-pool worker (see ProtocolPump).
+        var pump = ProtocolPump.Start(() =>
         {
             string? line;
             while ((line = process.StandardOutput.ReadLine()) is not null)

@@ -60,6 +60,8 @@
   <PropertyGroup>
     <NativeProjectDir>$(MSBuildThisFileDirectory)../PSXRecomp.Native</NativeProjectDir>
     <NativeBuildDir>$(NativeProjectDir)/build</NativeBuildDir>
+    <!-- Mirrors PSXRecomp.Core (Issue #813): the same explicit opt-in selects the isolated native build directory. -->
+    <NativeBuildDir Condition="'$(PsxIsolatedNativeBuild)' == 'true' and '$(ArtifactsPath)' != ''">$(ArtifactsPath)/native-build</NativeBuildDir>
     <NativeLibName Condition="'$(OS)' == 'Windows_NT'">PSXRecomp.Native.dll</NativeLibName>
     <NativeLibName Condition="'$(NativeLibName)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libPSXRecomp.Native.dylib</NativeLibName>
     <NativeLibName Condition="'$(NativeLibName)' == '' and '$(OS)' != 'Windows_NT'">libPSXRecomp.Native.so</NativeLibName>

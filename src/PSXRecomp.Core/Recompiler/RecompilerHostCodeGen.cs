@@ -985,7 +985,13 @@ public static class RecompilerHostCodeGen
         sb.AppendLine("  if (f == (FILE*)0) return;");
         // The run id is fixed at the first dump of the process: a report of this run and its periodic dumps share it, and a
         // report left by an earlier run (not yet replaced) has another one (Issue #797).
-        sb.AppendLine("  if (psx_gs_runid == 0ull) psx_gs_runid = ((unsigned long long)time(0) << 20) ^ (unsigned long long)clock() ^ 1ull;");
+        // The parent scope passes a random id per child (PSX_GUARD_STATS_RUN_ID). The time/clock form is only the fallback for a
+        // report named by hand, where two processes in the same second can collide (Issue #804).
+        sb.AppendLine("  if (psx_gs_runid == 0ull) {");
+        sb.AppendLine("    const char* rid = getenv(\"PSX_GUARD_STATS_RUN_ID\");");
+        sb.AppendLine("    psx_gs_runid = (rid != (const char*)0 && rid[0] != '\\0') ? strtoull(rid, (char**)0, 16)");
+        sb.AppendLine("      : (((unsigned long long)time(0) << 20) ^ (unsigned long long)clock() ^ 1ull);");
+        sb.AppendLine("  }");
         sb.AppendLine("  fprintf(f, \"guardstats 1\\nrun %016llx\\niter %llu\\n\", psx_gs_runid, (unsigned long long)psx_gs_iter);");
         sb.AppendLine("  for (i = 0u; i < PSX_GS_N; i++) {");
         sb.AppendLine("    if (psx_gs_arrive[i] == 0u) continue;");
