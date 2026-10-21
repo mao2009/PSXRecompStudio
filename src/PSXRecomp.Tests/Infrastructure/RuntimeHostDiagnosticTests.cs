@@ -109,6 +109,18 @@ public sealed class RuntimeHostDiagnosticTests
         metrics.TimeReports.Should().BeNull();
         metrics.FallbackTransferMilliseconds.Should().BeNull();
         metrics.FallbackInterpreterMilliseconds.Should().BeNull();
+        metrics.FallbackInFlight.Should().BeNull();
+    }
+
+    [Fact]
+    public void RunMetrics_CarryTheFallbackSegmentInFlight_AsPublished()
+    {
+        // Issue #806: a stuck segment's published scalars reach the diagnostic unchanged.
+        var inFlight = new FallbackSegmentProgress(0x80010000u, 0x80010010u, 42, 1000);
+
+        var metrics = RuntimeHostRunMetrics.From(10, roundTrips: null, timings: null, fallbackInFlight: inFlight);
+
+        metrics.FallbackInFlight.Should().Be(inFlight);
     }
 
     [Fact]

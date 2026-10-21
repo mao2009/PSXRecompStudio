@@ -70,6 +70,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public MixedFallbackTimings? FallbackTimings { get; private set; }
 
     /// <summary>
+    /// The fallback segment that was in flight when the last run ended, or null (Issue #806). Unlike <see cref="FallbackEvidence"/>
+    /// it is read even when the host-transfer pump did not end (a stuck segment), because it carries scalars only.
+    /// </summary>
+    public FallbackSegmentProgress? FallbackInFlight { get; private set; }
+
+    /// <summary>
     /// Guest instructions the last run's compiled blocks retired, as the artifact reported them over the host protocol
     /// (Issue #732); null without the protocol. Never includes fallback instructions (<see cref="FallbackEvidence"/>).
     /// Live while the run is in progress (for example from <see cref="FallbackFetchObserver"/>).
@@ -629,6 +635,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         // the pump may still be mutating that state (its VRAM is live native memory it may still draw through).
         FallbackEvidence = pumpEnded ? bridge?.FallbackEvidence : null;
         FallbackTimings = pumpEnded ? bridge?.FallbackTimings : null;
+        FallbackInFlight = bridge?.FallbackInFlight;
         LastFrameBgra32 = pumpEnded ? bridge?.CaptureFrameBgra32() : null;
 
         if (hostProtocolFaulted)
@@ -1056,6 +1063,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         /// <summary>Wall-clock costs of this run's mixed execution (Issue #693).</summary>
         public MixedFallbackTimings? FallbackTimings => _fallback?.Timings;
+
+        /// <summary>The fallback segment in flight, scalars only and safe to read while the pump owns the graph (Issue #806).</summary>
+        public FallbackSegmentProgress? FallbackInFlight => _fallback?.InFlightSegment;
 
         /// <summary>The sum of every accepted guest-time report: instructions retired by compiled blocks (Issue #732).</summary>
         public ulong NativeRetiredInstructions { get; private set; }
