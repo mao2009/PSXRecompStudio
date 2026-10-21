@@ -19,7 +19,7 @@ public sealed class InterpreterFallbackEngineTests
 {
     private const uint ReturnPc = 0x80001800u;
 
-    private static (PsxDeviceGraph Graph, DeviceScheduler Scheduler, InterpreterTitleExecutionEngine Engine) Attached(uint[] words)
+    private static (PsxDeviceGraph Graph, DeviceScheduler Scheduler, InterpreterTitleExecutionEngine Engine) Attached(uint[] words, Action? beforeFirstStep = null)
     {
         var graph = new PsxDeviceGraph();
         var scheduler = new DeviceScheduler(graph.Core, graph.InterruptControllerAdapter, graph.GpuAdapter, graph.CdRomDevice, graph.CdRomDmaTransfer);
@@ -31,7 +31,11 @@ public sealed class InterpreterFallbackEngineTests
 
         graph.Core.CopyRamFrom(Entry & 0x1FFFFFFFu, bytes);
         var engine = InterpreterTitleExecutionEngine.Attach(
-            words, Entry, graph, scheduler, (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer));
+            words, Entry, graph, scheduler, (reader, writer) =>
+            {
+                beforeFirstStep?.Invoke(); // runs inside each segment, before its first step
+                return new BiosHleRuntime(new NullSink(), reader, writer);
+            });
         return (graph, scheduler, engine);
     }
 
@@ -186,6 +190,27 @@ public sealed class InterpreterFallbackEngineTests
         seen.Select(s => s.Retired).Should().Equal(new ulong[] { 0, 1, 2, 3, 4 }, "one instruction retires per fetch in this loop");
         seen.Should().OnlyContain(s => s.EntryPc == Entry && s.Budget == 50u);
         engine.FallbackProgress.Should().BeNull("the segment ended");
+    }
+
+    [Fact]
+    public void ASecondSegment_BeforeItsFirstStep_DoesNotShowThePreviousSegmentsProgress()
+    {
+        // Issue #806: the previous segment's last published (PC, retired) must not show through at the next segment's start.
+        // The BIOS factory runs inside each segment before its first step, so it reads what a host would read at that moment.
+        InterpreterTitleExecutionEngine? engine = null;
+        var atStart = new List<FallbackSegmentProgress?>();
+        var code = new Block(Entry).Emit(Addiu(S0, S0, 1), Addiu(S0, S0, 1), Jr(Ra), Nop);
+        var (graph, _, attached) = Attached(Image(code), () => atStart.Add(engine!.FallbackProgress));
+        engine = attached;
+        using var _ = graph;
+        using var __ = engine;
+
+        engine.RunFallbackSegment(Entering(Entry), Returns, instructionBudget: 100).Status.Should().Be(FallbackSegmentStatus.Returned);
+        engine.RunFallbackSegment(Entering(Entry), Returns, instructionBudget: 100).Status.Should().Be(FallbackSegmentStatus.Returned);
+
+        atStart.Should().HaveCount(2);
+        atStart[1].Should().Be(new FallbackSegmentProgress(Entry, Entry, 0, 100),
+            "the second segment starts at its own entry with nothing retired, not at the first segment's last published step");
     }
 
     [Fact]
