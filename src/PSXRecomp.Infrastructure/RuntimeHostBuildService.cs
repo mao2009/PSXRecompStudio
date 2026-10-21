@@ -400,7 +400,7 @@ public static class RuntimeHostBuildService
     // dotnet writes MSBuild and NuGet errors to stdout as well as stderr, so a failed step is explained by both (Issue #805).
     private const int DiagnosticTailChars = 8000;
 
-    private static string DescribeToolchainFailure(ToolchainResult result) =>
+    internal static string DescribeToolchainFailure(ToolchainResult result) =>
         $"exit code {result.ExitCode}\nstdout (last {DiagnosticTailChars} chars):\n{Tail(result.Stdout)}\nstderr (last {DiagnosticTailChars} chars):\n{Tail(result.Stderr)}";
 
     private static string Tail(string text) =>
