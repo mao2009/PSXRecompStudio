@@ -695,7 +695,7 @@ public static class FirmwareRuntimeLauncher
                     evidence?.Targets,
                     RuntimeHostRunMetrics.From(
                         wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess,
-                        engine.FallbackInFlight)),
+                        engine.FallbackInFlight, engine.FallbackReturns)),
                 error);
             error.WriteLine(JsonSerializer.Serialize(new
             {

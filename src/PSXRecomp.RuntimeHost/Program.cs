@@ -349,7 +349,7 @@ public static class Program
                         engine.FallbackEvidence?.Targets,
                         RuntimeHostRunMetrics.From(
                         wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess,
-                        engine.FallbackInFlight)));
+                        engine.FallbackInFlight, engine.FallbackReturns)));
             }
 
             return RecompiledArtifactExitCode.ExitCodeFor(execution.State);

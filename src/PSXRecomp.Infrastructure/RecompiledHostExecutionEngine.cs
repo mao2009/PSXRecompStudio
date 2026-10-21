@@ -76,6 +76,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     public FallbackSegmentProgress? FallbackInFlight { get; private set; }
 
     /// <summary>
+    /// The return classification of the last run (Issue #806): counts only, read even when the host-transfer pump did not
+    /// end, like <see cref="FallbackInFlight"/>. Null without mixed execution.
+    /// </summary>
+    public FallbackReturnStats? FallbackReturns { get; private set; }
+
+    /// <summary>
     /// Guest instructions the last run's compiled blocks retired, as the artifact reported them over the host protocol
     /// (Issue #732); null without the protocol. Never includes fallback instructions (<see cref="FallbackEvidence"/>).
     /// Live while the run is in progress (for example from <see cref="FallbackFetchObserver"/>).
@@ -636,6 +642,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         FallbackEvidence = pumpEnded ? bridge?.FallbackEvidence : null;
         FallbackTimings = pumpEnded ? bridge?.FallbackTimings : null;
         FallbackInFlight = bridge?.FallbackInFlight;
+        FallbackReturns = bridge?.FallbackReturns;
         LastFrameBgra32 = pumpEnded ? bridge?.CaptureFrameBgra32() : null;
 
         if (hostProtocolFaulted)
@@ -1066,6 +1073,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         /// <summary>The fallback segment in flight, scalars only and safe to read while the pump owns the graph (Issue #806).</summary>
         public FallbackSegmentProgress? FallbackInFlight => _fallback?.InFlightSegment;
+
+        /// <summary>The return classification of this run so far (Issue #806).</summary>
+        public FallbackReturnStats? FallbackReturns => _fallback?.ReturnStats;
 
         /// <summary>The sum of every accepted guest-time report: instructions retired by compiled blocks (Issue #732).</summary>
         public ulong NativeRetiredInstructions { get; private set; }
