@@ -86,6 +86,40 @@ public sealed class LiveFramePublisherTests
     }
 
     [Fact]
+    public void VBlankPublisher_PublishesWhileHealthy()
+    {
+        using var gpu = new GpuDevice();
+        UploadRow(gpu, 0, 0, [0x7C00]);
+        var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
+        var reports = new List<Exception>();
+        var publisher = new LiveFrameVBlankPublisher(slot, () => gpu, reports.Add);
+
+        publisher.OnVBlank();
+
+        slot.TryGetNewer(0, out var frame).Should().BeTrue();
+        frame!.Sequence.Should().Be(1);
+        reports.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VBlankPublisher_AFailure_StopsPublishingForTheRun_AndIsReportedOnce()
+    {
+        // A null GPU makes every publish throw: the failure path is exercised without touching a real device.
+        var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
+        var reports = new List<Exception>();
+        var publisher = new LiveFrameVBlankPublisher(slot, () => null!, reports.Add);
+
+        publisher.OnVBlank();
+        publisher.OnVBlank();
+        publisher.OnVBlank();
+
+        reports.Should().HaveCount(1, "the first failure stops publishing; later VBlanks neither copy nor report");
+        reports[0].Should().BeOfType<ArgumentNullException>();
+    }
+
+    [Fact]
     public void OneAdvanceOverSeveralVBlanks_RaisesOneCallbackPerVBlank()
     {
         // The scheduler contract the live publish relies on: one Advance call that spans N VBlanks invokes the callback N times.

@@ -1148,28 +1148,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         /// </summary>
         public LiveFrameSlot? LiveFrames { get; init; }
 
-        /// <summary>
-        /// Publishes the display at a VBlank. Runs on the pump thread that owns the GPU, so the copy needs no lock. This is
-        /// observation only: any failure, including an unexpected one, drops this frame and never changes the guest's time,
-        /// result or exit code.
-        /// </summary>
-        private void PublishLiveFrame(LiveFrameSlot slot)
-        {
-            try
-            {
-                LiveFramePublisher.TryPublish(_devices!.GpuDevice, slot);
-            }
-            catch (Exception exception)
-            {
-                // Reported once per run: a persistent failure would otherwise trace at every VBlank for the whole run.
-                if (_livePublishFailureReported) return;
-                _livePublishFailureReported = true;
-                Trace.WriteLine($"Live frame publish failed (later failures in this run are not reported): {exception}");
-            }
-        }
-
-        private bool _livePublishFailureReported;
-
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
         {
@@ -1272,7 +1250,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 // Issue #818: VBlank is raised inside AdvanceExact on the pump thread, the one thread that owns the GPU.
                 if (LiveFrames is { } liveFrames)
                 {
-                    _scheduler.VblankCallback = _ => PublishLiveFrame(liveFrames);
+                    var livePublisher = new LiveFrameVBlankPublisher(
+                        liveFrames,
+                        () => _devices!.GpuDevice,
+                        exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"));
+                    _scheduler.VblankCallback = _ => livePublisher.OnVBlank();
                 }
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);

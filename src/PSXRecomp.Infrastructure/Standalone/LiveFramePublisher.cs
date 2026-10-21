@@ -45,3 +45,43 @@ public static class LiveFramePublisher
         return true;
     }
 }
+
+/// <summary>
+/// The live publish of one run (Issue #818): called at each VBlank on the pump thread. It is observation only. The first
+/// failure, of any kind, turns publishing off for the rest of the run and is reported once, so a persistent failure cannot
+/// copy the VRAM and throw at every VBlank. It never throws, so the guest's time and result are unaffected.
+/// </summary>
+[Infrastructure]
+public sealed class LiveFrameVBlankPublisher
+{
+    private readonly LiveFrameSlot _slot;
+    private readonly Func<GpuDevice> _gpu;
+    private readonly Action<Exception> _report;
+    private bool _stopped;
+
+    public LiveFrameVBlankPublisher(LiveFrameSlot slot, Func<GpuDevice> gpu, Action<Exception> report)
+    {
+        _slot = slot ?? throw new ArgumentNullException(nameof(slot));
+        _gpu = gpu ?? throw new ArgumentNullException(nameof(gpu));
+        _report = report ?? throw new ArgumentNullException(nameof(report));
+    }
+
+    /// <summary>Publishes the display for this VBlank, unless publishing has stopped for the run.</summary>
+    public void OnVBlank()
+    {
+        if (_stopped)
+        {
+            return;
+        }
+
+        try
+        {
+            LiveFramePublisher.TryPublish(_gpu(), _slot);
+        }
+        catch (Exception exception)
+        {
+            _stopped = true;
+            _report(exception);
+        }
+    }
+}
