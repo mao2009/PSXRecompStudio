@@ -1,0 +1,87 @@
+using FluentAssertions;
+using PSXRecomp.Core.Runtime;
+using PSXRecomp.Core.Runtime.Gpu;
+using PSXRecomp.Infrastructure.Runtime.Gpu;
+using PSXRecomp.Infrastructure.Standalone;
+
+namespace PSXRecomp.Tests.Infrastructure;
+
+/// <summary>
+/// Issue #818: a VBlank publishes the display the GPU shows into the live frame slot, reusing the screenshot conversion.
+/// These tests use synthetic VRAM written through the GP0 CPU-to-VRAM transfer, not a real ROM.
+/// </summary>
+[Test]
+public sealed class LiveFramePublisherTests
+{
+    private const uint DisplayMode24Bit = 0x08000010u;
+
+    /// <summary>Uploads <paramref name="halfwords"/> into VRAM at (<paramref name="x"/>, <paramref name="y"/>) as a 1-row strip.</summary>
+    private static void UploadRow(GpuDevice gpu, int x, int y, ushort[] halfwords)
+    {
+        gpu.WriteGP0(0xA0000000u);
+        gpu.WriteGP0((uint)x | ((uint)y << 16));
+        gpu.WriteGP0((uint)halfwords.Length | (1u << 16));
+        for (var i = 0; i < halfwords.Length; i += 2)
+        {
+            var high = i + 1 < halfwords.Length ? halfwords[i + 1] : (ushort)0;
+            gpu.WriteGP0(halfwords[i] | ((uint)high << 16));
+        }
+    }
+
+    [Fact]
+    public void WithoutDrawing_NothingIsPublished()
+    {
+        using var gpu = new GpuDevice();
+        var slot = new LiveFrameSlot();
+
+        LiveFramePublisher.TryPublish(gpu, slot).Should().BeFalse();
+        slot.TryGetNewer(0, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void A15BitDisplay_IsPublished_AndMatchesTheScreenshotConversion()
+    {
+        using var gpu = new GpuDevice();
+        UploadRow(gpu, 0, 0, [0x7C00, 0x001F]);
+        var slot = new LiveFrameSlot();
+
+        LiveFramePublisher.TryPublish(gpu, slot).Should().BeTrue();
+
+        slot.TryGetNewer(0, out var frame).Should().BeTrue();
+        var expected = ScreenshotCapture.ToBgra32(gpu.CaptureFrame(), gpu);
+        frame!.Bgra32.Should().Equal(expected);
+        frame.Bgra32[0].Should().Be(0xFF, "the first pixel is blue (15-bit 0x7C00)");
+        frame.Bgra32[2].Should().Be(0x00, "the first pixel has no red");
+    }
+
+    [Fact]
+    public void A24BitDisplay_IsPublished_AndMatchesTheScreenshotConversion()
+    {
+        using var gpu = new GpuDevice();
+        gpu.WriteGP1(DisplayMode24Bit);
+        UploadRow(gpu, 0, 0, [0x001F, 0x7C00]);
+        var slot = new LiveFrameSlot();
+
+        LiveFramePublisher.TryPublish(gpu, slot).Should().BeTrue();
+
+        slot.TryGetNewer(0, out var frame).Should().BeTrue();
+        frame!.Bgra32.Should().Equal(ScreenshotCapture.ToBgra32(gpu.CaptureFrame(), gpu));
+    }
+
+    [Fact]
+    public void EachVBlank_PublishesTheLatestDisplay_AndOnlyTheLatestIsKept()
+    {
+        var graph = new PsxDeviceGraph();
+        var gpu = graph.GpuDevice;
+        UploadRow(gpu, 0, 0, [0x7C00]);
+        var slot = new LiveFrameSlot();
+        var scheduler = graph.CreateScheduler();
+        scheduler.VblankCallback = _ => LiveFramePublisher.TryPublish(gpu, slot);
+
+        scheduler.AdvanceExact(3 * DeviceScheduler.VblankIntervalCycles);
+
+        slot.TryGetNewer(0, out var frame).Should().BeTrue();
+        frame!.Sequence.Should().Be(3, "three VBlanks published three frames, and only the newest is kept");
+        graph.Dispose();
+    }
+}

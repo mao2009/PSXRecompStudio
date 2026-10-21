@@ -10,6 +10,7 @@ using PSXRecomp.Core.MemoryCard;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.CdRom;
+using PSXRecomp.Infrastructure.Standalone;
 
 namespace PSXRecomp.Infrastructure;
 
@@ -156,6 +157,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
     private readonly bool _prebuilt;
     private string _prebuiltArtifactPath = string.Empty;
     private PrebuiltArtifactLaunchMode _launchMode;
+    private LiveFrameSlot? _liveFrames;
     private string? _consoleOutput;
 
     /// <summary>
@@ -281,7 +283,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         IReadOnlySet<uint>? blockEntryPcs = null,
         string? prebuiltArtifactPath = null,
         PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer,
-        bool embedImage = false)
+        bool embedImage = false,
+        LiveFrameSlot? liveFrames = null)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(imageWords);
@@ -345,6 +348,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         _prebuilt = prebuiltArtifactPath is not null;
         _prebuiltArtifactPath = prebuiltArtifactPath ?? string.Empty;
         _launchMode = launchMode;
+        _liveFrames = liveFrames;
 
         if (_prebuilt)
         {
@@ -459,7 +463,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         IReadOnlyList<uint>? imageWords = null,
         uint? imageLoadAddress = null,
         PrebuiltArtifactLaunchMode launchMode = PrebuiltArtifactLaunchMode.HostTransfer,
-        ICdSectorSource? disc = null)
+        ICdSectorSource? disc = null,
+        LiveFrameSlot? liveFrames = null)
     {
         if (string.IsNullOrWhiteSpace(prebuiltArtifactPath))
         {
@@ -513,7 +518,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
             blockEntryPcs: blockEntryPcs,
             prebuiltArtifactPath: prebuiltArtifactPath,
             launchMode: launchMode,
-            mixedFallback: mixedFallback);
+            mixedFallback: mixedFallback,
+            liveFrames: liveFrames);
     }
 
     public string Name => EngineName;
@@ -588,7 +594,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
 
         using var bridge = _biosRuntimeFactory is null && !_guestFirmware
             ? null
-            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode, LoadedCodeMismatchDiagnostics);
+            : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode, LoadedCodeMismatchDiagnostics)
+            {
+                LiveFrames = _liveFrames,
+            };
         _bridge = bridge;
 
         // Build the launch arguments. A prebuilt artifact in RuntimeHost mode gets
@@ -1134,6 +1143,28 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
         }
 
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
+        /// <summary>
+        /// Where VBlank frames are published while the run executes (Issue #818). Null leaves the run unchanged; the
+        /// headless path never sets it.
+        /// </summary>
+        public LiveFrameSlot? LiveFrames { get; init; }
+
+        /// <summary>
+        /// Publishes the display at a VBlank. Runs on the pump thread that owns the GPU, so the copy needs no lock. A failure
+        /// only drops this frame: the guest's time and result never depend on it.
+        /// </summary>
+        private void PublishLiveFrame(LiveFrameSlot slot)
+        {
+            try
+            {
+                LiveFramePublisher.TryPublish(_devices!.GpuDevice, slot);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or ObjectDisposedException)
+            {
+                Trace.WriteLine($"Live frame publish failed: {exception}");
+            }
+        }
+
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
         {
             if (_resourceLifetime.IsPumpActive)
@@ -1232,6 +1263,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine
                 _scheduler = _devices.CreateScheduler();
                 // Issue #774 (B-7): the MDEC event observer reports this scheduler's time. Diagnostic only.
                 _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
+                // Issue #818: VBlank is raised inside AdvanceExact on the pump thread, the one thread that owns the GPU.
+                if (LiveFrames is { } liveFrames)
+                {
+                    _scheduler.VblankCallback = _ => PublishLiveFrame(liveFrames);
+                }
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)
