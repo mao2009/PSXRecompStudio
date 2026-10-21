@@ -81,7 +81,14 @@ public sealed class LiveFrameVBlankPublisher
         catch (Exception exception)
         {
             _stopped = true;
-            _report(exception);
+            try
+            {
+                _report(exception);
+            }
+            catch (Exception)
+            {
+                // The report itself failed. Dropping it keeps the guest's VBlank path unaffected.
+            }
         }
     }
 }

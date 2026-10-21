@@ -120,6 +120,16 @@ public sealed class LiveFramePublisherTests
     }
 
     [Fact]
+    public void VBlankPublisher_AFailingReport_DoesNotEscapeIntoTheVBlankPath()
+    {
+        var publisher = new LiveFrameVBlankPublisher(new LiveFrameSlot(), () => null!, _ => throw new InvalidOperationException("report"));
+
+        var act = publisher.OnVBlank;
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void OneAdvanceOverSeveralVBlanks_RaisesOneCallbackPerVBlank()
     {
         // The scheduler contract the live publish relies on: one Advance call that spans N VBlanks invokes the callback N times.
