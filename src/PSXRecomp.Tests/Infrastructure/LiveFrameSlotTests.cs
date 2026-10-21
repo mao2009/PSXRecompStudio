@@ -64,6 +64,19 @@ public sealed class LiveFrameSlotTests
     }
 
     [Fact]
+    public void ReaderIsWaiting_IsSetByAPoll_AndClearedByThePublishItAnswers()
+    {
+        var slot = new LiveFrameSlot();
+        slot.ReaderIsWaiting.Should().BeFalse();
+
+        slot.TryGetNewer(0, out _);
+        slot.ReaderIsWaiting.Should().BeTrue();
+
+        slot.Publish(1, 1, [0, 0, 0, 255]);
+        slot.ReaderIsWaiting.Should().BeFalse("a publish answers the poll, so the next frame needs a new poll");
+    }
+
+    [Fact]
     public void TryGetNewer_WithNothingNewer_ReturnsNullFrame()
     {
         var slot = new LiveFrameSlot();
