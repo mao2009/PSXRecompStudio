@@ -172,8 +172,9 @@ internal static class FallbackRootsCommand
                 // file that appeared between the check and the rename. Reserved names are in `published`, so a failure removes them.
                 foreach (var finalPath in planned.Select(p => Path.Combine(directory, p.FileName)).Append(outFull))
                 {
-                    // The reservation is not a valid manifest or roots file, so a reader that opens it mid-publish fails closed:
-                    // an empty manifest would load as zero images without an error.
+                    // The reservation is not a valid manifest or roots file, so a reader that opens it mid-publish fails closed.
+                    // Between CreateNew and the write the file is empty: the manifest reader refuses a zero-byte manifest,
+                    // and a roots reader sees zero roots, which adds no code.
                     // Registered as soon as it exists, so a failure while writing it still removes it.
                     var reservation = new FileStream(finalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
                     published.Add(finalPath);

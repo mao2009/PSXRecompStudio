@@ -430,6 +430,18 @@ public sealed class FallbackRootsCommandTests
         act.Should().Throw<InvalidDataException>();
     }
 
+    // A zero-byte manifest (the reservation state between CreateNew and its write) is refused, not loaded as zero images.
+    [Fact]
+    public void AnEmptyManifest_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var empty = dir.WriteFile("images-empty.txt", Array.Empty<byte>());
+
+        var act = () => LoadImageManifest.Read(empty, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*is empty*");
+    }
+
     // The same reservation text in a roots file is refused too, so a roots reader that opens it mid-publish fails closed.
     [Fact]
     public void AReservationOfARootsFile_IsRejectedByTheRootsReader()

@@ -57,6 +57,13 @@ public sealed record LoadImageManifest(IReadOnlyList<LoadedImageSpec> Images, IR
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(firmware);
 
+        // A zero-byte file is never a manifest. A publish holds one as its reservation, between creating and writing it (and a kill
+        // can leave one), so a reader that opens it then fails closed instead of loading zero images.
+        if (new FileInfo(path).Length == 0)
+        {
+            throw new InvalidDataException($"manifest: {path} is empty; it may be a publish in progress or an interrupted one.");
+        }
+
         var baseDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
         var images = new List<LoadedImageSpec>();
         var exeImages = new List<int>(); // indices into images of the PS-X EXE images (Issue #773)
