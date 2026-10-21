@@ -126,12 +126,14 @@ public static class RuntimeHostBuildService
                 rid,
                 "-p:UseArtifactsOutput=true",
                 $"-p:ArtifactsPath={artifactsPath}",
+                // Issue #813: this publish gets its own native build directory under ArtifactsPath.
+                "-p:PsxIsolatedNativeBuild=true",
             };
             var restoreResult = RunToolchain("dotnet", restoreArgs, timeout);
             if (restoreResult.Outcome != ToolchainOutcome.Success)
             {
                 throw new RuntimeHostProvisionFailed(
-                    restoreResult.Outcome + " while restoring the runtime host (" + string.Join(" ", restoreArgs) + "):\n" + restoreResult.Stderr,
+                    restoreResult.Outcome + " while restoring the runtime host (" + string.Join(" ", restoreArgs) + "):\n" + DescribeToolchainFailure(restoreResult),
                     MapProvisionFailure(restoreResult.Outcome));
             }
 
@@ -147,6 +149,8 @@ public static class RuntimeHostBuildService
                 Path.GetFullPath(targetDirectory),
                 "-p:UseArtifactsOutput=true",
                 $"-p:ArtifactsPath={artifactsPath}",
+                // Issue #813: this publish gets its own native build directory under ArtifactsPath.
+                "-p:PsxIsolatedNativeBuild=true",
                 // Restore is done explicitly above; --no-restore avoids duplicate work.
                 "--no-restore",
             };
@@ -167,7 +171,7 @@ public static class RuntimeHostBuildService
             if (result.Outcome != ToolchainOutcome.Success)
             {
                 throw new RuntimeHostProvisionFailed(
-                    result.Outcome + " while provisioning the runtime host (" + string.Join(" ", args) + "):\n" + result.Stderr,
+                    result.Outcome + " while provisioning the runtime host (" + string.Join(" ", args) + "):\n" + DescribeToolchainFailure(result),
                     MapProvisionFailure(result.Outcome));
             }
 
@@ -246,7 +250,7 @@ public static class RuntimeHostBuildService
             _ => "DOTNET_PUBLISH_FAILED",
         };
 
-    private static ToolchainResult RunToolchain(
+    internal static ToolchainResult RunToolchain(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, int cleanupMs = ToolchainCleanupMs)
     {
         var psi = new ProcessStartInfo(fileName)
@@ -268,7 +272,7 @@ public static class RuntimeHostBuildService
         }
         catch (Win32Exception)
         {
-            return new ToolchainResult(ToolchainOutcome.Unavailable, int.MinValue, string.Empty);
+            return new ToolchainResult(ToolchainOutcome.Unavailable, int.MinValue, string.Empty, string.Empty);
         }
 
         using (process)
@@ -280,14 +284,15 @@ public static class RuntimeHostBuildService
             {
                 TryKill(process);
                 return new ToolchainResult(
-                    ToolchainOutcome.TimedOut, int.MinValue, ReadStreamWithinCleanupBudget(stderrTask, cleanupMs));
+                    ToolchainOutcome.TimedOut, int.MinValue,
+                    ReadStreamWithinCleanupBudget(stdoutTask, cleanupMs), ReadStreamWithinCleanupBudget(stderrTask, cleanupMs));
             }
 
             process.WaitForExit();
-            _ = ReadStreamWithinCleanupBudget(stdoutTask, cleanupMs);
+            var stdout = ReadStreamWithinCleanupBudget(stdoutTask, cleanupMs);
             return process.ExitCode == 0
-                ? new ToolchainResult(ToolchainOutcome.Success, 0, string.Empty)
-                : new ToolchainResult(ToolchainOutcome.Failed, process.ExitCode, ReadStreamWithinCleanupBudget(stderrTask, cleanupMs));
+                ? new ToolchainResult(ToolchainOutcome.Success, 0, string.Empty, string.Empty)
+                : new ToolchainResult(ToolchainOutcome.Failed, process.ExitCode, stdout, ReadStreamWithinCleanupBudget(stderrTask, cleanupMs));
         }
     }
 
@@ -396,7 +401,16 @@ public static class RuntimeHostBuildService
         }
     }
 
-    internal readonly record struct ToolchainResult(ToolchainOutcome Outcome, int ExitCode, string Stderr);
+    // dotnet writes MSBuild and NuGet errors to stdout as well as stderr, so a failed step is explained by both (Issue #805).
+    private const int DiagnosticTailChars = 8000;
+
+    internal static string DescribeToolchainFailure(ToolchainResult result) =>
+        $"exit code {result.ExitCode}\nstdout (last {DiagnosticTailChars} chars):\n{Tail(result.Stdout)}\nstderr (last {DiagnosticTailChars} chars):\n{Tail(result.Stderr)}";
+
+    private static string Tail(string text) =>
+        text.Length <= DiagnosticTailChars ? text : text[^DiagnosticTailChars..];
+
+    internal readonly record struct ToolchainResult(ToolchainOutcome Outcome, int ExitCode, string Stdout, string Stderr);
 
     internal static void TryDeleteDirectory(string? directory)
     {
