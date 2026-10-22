@@ -36,6 +36,7 @@ public sealed class GuiWindowPackageE2E : IDisposable
     [SkippableFact]
     public void GuiPackage_IsWindowsGuiProgram_CarriesItsCompilerLibraries_AndHasAFiniteWindowTimeout()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the window package and its PE checks are Windows-only");
         RuntimePublishGate();
 
         var input = _tempDir.WriteFile("synthetic.exe", SyntheticPsxExe.Build());
@@ -81,6 +82,7 @@ public sealed class GuiWindowPackageE2E : IDisposable
     [SkippableFact]
     public void HeadlessPackage_KeepsConsoleProgram_HeadlessTimeout_AndItsLinkOptions()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the window package and its PE checks are Windows-only");
         RuntimePublishGate();
 
         var input = _tempDir.WriteFile("synthetic.exe", SyntheticPsxExe.Build());
