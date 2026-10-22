@@ -748,7 +748,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             // A stop that began before the child started: there is no child to stop, so nothing is left behind. The diagnostics say so, which keeps
             // the shutdown status in line with the Cancelled result (review round 12).
-            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Leftover: null);
+            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Residuals: []);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the artifact started.");
         }
@@ -833,7 +833,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         catch (ObjectDisposedException)
         {
             // Disposed while this segment was being prepared: the run is stopped before any child starts (no child, nothing left behind).
-            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Leftover: null);
+            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Residuals: []);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The engine was disposed before the artifact started.");
         }
@@ -857,7 +857,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             // Nothing escapes a run that was asked to stop. The failure is the run's result; what the stop could not do is in the diagnostics.
             stopRecord.RefuseIfUnset($"the stop could not be completed for process {stopRecord.ProcessId}, which may still be running: {exception.Message}");
-            LastStopDiagnostics = new StopDiagnostics(stopRecord.ProcessId, false, false, stopRecord.Outcome.Refused, null);
+            LastStopDiagnostics = new StopDiagnostics(stopRecord.ProcessId, false, false, stopRecord.Outcome.Refused, stopRecord.Residuals);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed,
                 "ARTIFACT_RUN_EXCEPTION",
@@ -909,12 +909,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         // What the stop left behind is reported apart from the result (round 10): a refusal or a residual process is in the diagnostics, and the
         // result stays as the run had it.
-        LastStopDiagnostics = stopRecord.StoppedAt is null
-            ? null
-            : new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, stopRecord.Outcome.Confirmed, stopRecord.Outcome.Refused, stopRecord.Leftover);
+        // A stop that was requested but never processed by the record (the registration was sealed before the request arrived) is not reported as
+        // NotStopped: its descendants were not checked, so it is a refusal of the shutdown, never a clean one (Issue #827, round 14).
+        var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
+        LastStopDiagnostics = stopRecord.StoppedAt is not null
+            ? new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, stopRecord.Outcome.Confirmed, stopRecord.Outcome.Refused, stopRecord.Residuals)
+            : stopRequested
+                ? new StopDiagnostics(stopRecord.ProcessId, false, false, "the stop was requested after the run's stop record was sealed, so the child's descendants were not checked", [])
+                : null;
         if (LastStopDiagnostics is { Clean: false } residual)
         {
-            Trace.WriteLine($"Stop of artifact process {residual.ProcessId} left a residual: refused={residual.Refused}; leftover={residual.Leftover}");
+            Trace.WriteLine($"Stop of artifact process {residual.ProcessId} left a residual: refused={residual.Refused}; residuals={residual.ResidualText}");
         }
 
         return ResolveOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, drainTimedOut, OutputBudgetMsForTest ?? _runTimeoutMs);
@@ -929,15 +934,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         stop.Settled && !stop.ChildEndedBeforeStop ? stop.StoppedAt : null;
 
     /// <summary>
-    /// The result of a run after its child ended or was stopped (Issue #827). A confirmed stop decides first (Cancelled). Next, a stdout drain
-    /// that ran out of time is reported as such: the output was not read, so the result cannot be read either. Otherwise the run's own
-    /// result stands; a refusal or residual is in the stop diagnostics, not in the result.
+    /// The result of a run after its child ended or was stopped (Issue #827). A confirmed stop (the live child was killed and its exit seen)
+    /// decides first: Cancelled, whatever residual processes the cleanup left. A drain that timed out under that stop is recorded as a residual
+    /// reason, and the result stays Cancelled. Otherwise a stdout drain that ran out of time is ExecutionFailed with its own code, since the
+    /// output was not read. A refused stop keeps the run's own classification.
     /// </summary>
     internal static RecompilerExecutionResult ResolveOutcome(RecompilerExecutionResult classified, StopRecord stop, bool drainTimedOut, int budgetMs)
     {
         var afterStop = ApplyStopOutcome(classified, stop);
         if (afterStop.Status == RecompilerExecutionStatus.Cancelled)
         {
+            if (drainTimedOut)
+            {
+                stop.AddResidual(new ResidualProcess(
+                    null,
+                    ResidualState.Unverified,
+                    $"the stdout drain timed out after the stop (budget {budgetMs} ms), so the artifact's output was not read"));
+            }
+
             return afterStop;
         }
 
@@ -1251,7 +1265,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var drainStart = Stopwatch.GetTimestamp();
             var stdout = DrainUntil(stdoutTask, outputBudgetMs, stopRecord, drainStart, out drainTimedOut);
             var stderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, drainStart, out _);
-            RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
+            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
             return (process.ExitCode, stdout, stderr, false, true);
         }
 
@@ -1329,7 +1343,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         timedOut = false;
         var bridgeStderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp(), out _);
-        RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
+        RecordPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
 
@@ -1429,15 +1443,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// A stop that reached its child can still leave an output pipe open: a grandchild that outlived the child holds it. Then the
-    /// survivor is not seen by the stop, so the stop is refused with that reason (Issue #827), never confirmed.
+    /// A stop that reached its child can still leave an output pipe open: a grandchild that outlived the child holds it. The child was killed
+    /// (the result is Cancelled), so the holder is a residual, reported with the tracked processes still alive (Issue #827, round 14). The
+    /// holder's id is known only when it is a tracked process; the OS gives no cheap owner lookup for a pipe.
     /// </summary>
-    private static void RefuseIfPipeHeldAfterStop(CancellationToken stopToken, StopRecord stopRecord, params Task<string>[] pipes)
+    private static void RecordPipeHeldAfterStop(CancellationToken stopToken, StopRecord stopRecord, params Task<string>[] pipes)
     {
         // A child that ended before the stop reached it is not a stop's failure: a pipe it leaves to a console host is the drain's business.
         if (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
         {
-            stopRecord.RefuseIfUnset("an output pipe is still held by a process that outlived the child");
+            var alive = stopRecord.Residuals.Where(residual => residual.State == ResidualState.Alive && residual.ProcessId is not null).ToList();
+            var holder = alive.Count == 0
+                ? "its holder is not a tracked process, so no process id is known"
+                : $"tracked process(es) still alive: {string.Join(", ", alive.Select(residual => residual.ProcessId))}";
+            stopRecord.AddResidual(new ResidualProcess(
+                alive.Count == 1 ? alive[0].ProcessId : null,
+                ResidualState.Unverified,
+                $"an output pipe is still held by a process that outlived the child; {holder}"));
         }
     }
 
@@ -1454,7 +1476,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         Func<StopRecord, Process, string, bool, bool>? observe = null,
         Action<Process>? kill = null,
         Func<Process, DateTime?>? startTime = null,
-        int? outputBudgetMs = null)
+        int? outputBudgetMs = null,
+        Action<Process>? descendantKill = null)
     {
         var stopRecord = new StopRecord
         {
@@ -1462,6 +1485,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             ObserveForTest = observe,
             KillForTest = kill,
             StartTimeForTest = startTime,
+            DescendantKillForTest = descendantKill,
         };
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
@@ -1481,7 +1505,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             ? new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null)
             : RecompilerExecutionResult.Failed(RecompilerExecutionStatus.ExecutionFailed, "EXIT_NONZERO", $"exit {run.exit}");
         var result = ResolveOutcome(classified, stopRecord, drainTimedOut, outputBudgetMs ?? timeoutMs);
-        return (run.exit, run.stdout, timedOut, confirmed, refused, stopRecord.Leftover, result);
+        var residualText = new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, confirmed, refused, stopRecord.Residuals).ResidualText;
+        return (run.exit, run.stdout, timedOut, confirmed, refused, residualText, result);
     }
 
     private static string TakeOutput(StringBuilder output, object gate)

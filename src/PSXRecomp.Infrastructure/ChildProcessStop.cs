@@ -38,9 +38,10 @@ internal sealed class StopRecord : IDisposable
     private readonly HashSet<int> _trackedIds = [];
     private IDisposable? _registration;
     private bool _sealed;
-    private bool _confirmed;
+    // The child was killed and its exit was seen (the stop succeeded for the child). Residual processes do not change it (Issue #827, round 14).
+    private bool _rootKilled;
     private string? _refused;
-    private string? _leftover;
+    private readonly List<ResidualProcess> _residuals = [];
     private int _rootId;
     private DateTime? _rootStart;
     private volatile bool _settled;
@@ -64,6 +65,9 @@ internal sealed class StopRecord : IDisposable
 
     /// <summary>Replaces the kill of the child (the test seam): a test injects the OS refusal here. Null kills the process tree.</summary>
     internal Action<Process>? KillForTest { get; init; }
+
+    /// <summary>Replaces the kill of a tracked descendant (the test seam): a test injects the OS refusal for a real grandchild here. Null kills it.</summary>
+    internal Action<Process>? DescendantKillForTest { get; init; }
 
     /// <summary>
     /// Reads the start time of a process (the test seam): every identity comparison of the stop reads through it. Null reads the real
@@ -106,15 +110,24 @@ internal sealed class StopRecord : IDisposable
     /// <summary>True once a stop has finished its decision (confirmed, refused, or found the child already gone).</summary>
     public bool Settled => _settled;
 
-    /// <summary>What was left running after the child ended, or null. Read it after <see cref="Seal"/>.</summary>
-    internal string? Leftover
+    /// <summary>The processes the stop left behind (reaped or still running), read after <see cref="Seal"/>. Each is a residual, not a refusal.</summary>
+    internal IReadOnlyList<ResidualProcess> Residuals
     {
         get
         {
             lock (_gate)
             {
-                return _leftover;
+                return _residuals.ToArray();
             }
+        }
+    }
+
+    /// <summary>Records a process the stop left behind. A residual never changes whether the child's kill was confirmed.</summary>
+    internal void AddResidual(ResidualProcess residual)
+    {
+        lock (_gate)
+        {
+            _residuals.Add(residual);
         }
     }
 
@@ -198,15 +211,17 @@ internal sealed class StopRecord : IDisposable
 
     public void Dispose() => Seal();
 
-    /// <summary>The outcome of the stop. Read it after <see cref="Seal"/>.</summary>
+    /// <summary>
+    /// The outcome of the stop, read after <see cref="Seal"/>. Confirmed means the live child was killed and its exit was seen, and the stop
+    /// itself was not refused. Residual processes do not affect it: the result is decided by the kill, and the residuals are reported apart.
+    /// </summary>
     internal (bool Confirmed, string? Refused) Outcome
     {
         get
         {
             lock (_gate)
             {
-                // A refusal recorded after a confirmation (for example a pipe still held) still makes the stop refused.
-                return (_confirmed && _refused is null, _refused);
+                return (_rootKilled && _refused is null, _refused);
             }
         }
     }
@@ -341,25 +356,16 @@ internal sealed class StopRecord : IDisposable
                 return;
             }
 
-            // The tree kill ends the tracked processes it reaches, but their exit may still be in progress: they get the rest of the bound to
-            // end before anything is judged. Only what still runs after that (children of an intermediate process that already ended) is
-            // reaped through its own handle. Any that stays running refuses the stop.
+            // The child is dead: the stop has succeeded for it (the result is Cancelled). What its tracked descendants leave running is a
+            // residual, reported apart from the result (Issue #827, round 14). The tree kill ends the tracked processes it reaches, but their
+            // exit may still be in progress: they get the rest of the bound to end. Only what still runs after that is reaped through its own
+            // handle; a survivor that cannot be reaped is a residual too.
+            _rootKilled = true;
             WaitForNaturalEnds(Remaining(clock));
             var (reaped, unresolved) = ReapTracked(Remaining(clock));
-            if (reaped.Count > 0)
+            foreach (var residual in reaped.Concat(unresolved))
             {
-                _leftover = string.Join("; ", reaped);
-            }
-
-            if (unresolved.Count > 0)
-            {
-                RefuseIfUnset(string.Join("; ", unresolved));
-                return;
-            }
-
-            if (_refused is null && _leftover is null)
-            {
-                _confirmed = true;
+                _residuals.Add(residual);
             }
         }
         catch (Exception exception)
@@ -385,11 +391,7 @@ internal sealed class StopRecord : IDisposable
     {
         _childEndedBeforeStop = true;
         var (endedLeft, endedUnresolved) = ReapTracked(ConfirmTimeout);
-        var endedAll = endedLeft.Concat(endedUnresolved).ToList();
-        if (endedAll.Count > 0)
-        {
-            _leftover = string.Join("; ", endedAll);
-        }
+        _residuals.AddRange(endedLeft.Concat(endedUnresolved));
     }
 
     /// <summary>
@@ -567,13 +569,15 @@ internal sealed class StopRecord : IDisposable
     /// Reaps every tracked process still running. Each one is killed through its own handle, only when its start time still matches the
     /// claim. Returns the processes reaped and the ones that could not be confirmed gone.
     /// </summary>
-    private (List<string> Reaped, List<string> Unresolved) ReapTracked(TimeSpan wait)
+    private (List<ResidualProcess> Reaped, List<ResidualProcess> Unresolved) ReapTracked(TimeSpan wait)
     {
-        var reaped = new List<string>();
-        var unresolved = new List<string>();
+        var reaped = new List<ResidualProcess>();
+        var unresolved = new List<ResidualProcess>();
         var clock = Stopwatch.StartNew();
+        var kill = DescendantKillForTest ?? (process => process.Kill(true));
         foreach (var tracked in _tracked)
         {
+            var who = $"descendant process {tracked.Pid} ({tracked.Name}, parent {tracked.ParentPid})";
             try
             {
                 if (tracked.Handle.WaitForExit(TimeSpan.Zero))
@@ -583,52 +587,55 @@ internal sealed class StopRecord : IDisposable
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                unresolved.Add($"descendant process {tracked.Pid} could not be checked: {exception.Message}");
+                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Unverified, $"{who} could not be checked: {exception.Message}"));
                 continue;
             }
 
             // A claim without a start time cannot be verified, so the process is not killed (the same rule as for the root).
+            // Identity is the pair (pid, start time). Without a matching start time the pid may belong to another process: the id is not reported.
             if (tracked.Start is null)
             {
-                unresolved.Add($"descendant process {tracked.Pid} still running; its start time is unknown, not killed");
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"{who} still running; its start time is unknown, so its identity is unidentified; not killed"));
                 continue;
             }
 
             if (StartOf(tracked.Handle) != tracked.Start)
             {
-                unresolved.Add($"descendant process {tracked.Pid} still running; identity changed, not killed");
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"{who} identity changed (pid reused?), so the process is unidentified; not killed"));
                 continue;
             }
 
             try
             {
-                tracked.Handle.Kill(true);
+                kill(tracked.Handle);
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                unresolved.Add($"descendant process {tracked.Pid} kill refused: {exception.Message}");
+                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Alive, $"{who} still running; kill refused: {exception.Message}"));
                 continue;
             }
 
+            // The exit of a process just killed gets at least a second, even when the stop's shared budget is spent on the natural ends.
             var left = wait - clock.Elapsed;
             var gone = false;
             try
             {
-                gone = tracked.Handle.WaitForExit(left > TimeSpan.Zero ? left : TimeSpan.Zero);
+                var grace = left > TimeSpan.FromSeconds(1) ? left : TimeSpan.FromSeconds(1);
+                gone = tracked.Handle.WaitForExit(grace);
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                unresolved.Add($"descendant process {tracked.Pid} could not be checked after its kill: {exception.Message}");
+                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Unverified, $"{who} could not be checked after its kill: {exception.Message}"));
                 continue;
             }
 
             if (gone)
             {
-                reaped.Add($"descendant process {tracked.Pid} ({tracked.Name}, parent {tracked.ParentPid}) still running after its owner ended (killed)");
+                reaped.Add(new ResidualProcess(tracked.Pid, ResidualState.EndedAfterKill, $"{who} still running after its owner ended (killed)"));
             }
             else
             {
-                unresolved.Add($"descendant process {tracked.Pid} still running after its kill");
+                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Alive, $"{who} still running after its kill"));
             }
         }
 
@@ -700,15 +707,38 @@ internal enum ShutdownOutcome
 /// </summary>
 /// <param name="ProcessId">The child's process id.</param>
 /// <param name="ChildEndedBeforeStop">True when the child ended on its own before the stop reached it.</param>
-/// <param name="Confirmed">True when a live child's kill was confirmed by its exit, with no residual.</param>
-/// <param name="Refused">The reason the stop was refused, or null.</param>
-/// <param name="Leftover">The descendants still running after the stop, or null.</param>
+/// <param name="Confirmed">True when a live child was killed and its exit was seen. The result is Cancelled on this alone.</param>
+/// <param name="Refused">The reason the stop itself was refused (the kill, the listing, or an identity), or null.</param>
+/// <param name="Residuals">The processes the stop left behind, each with its id, its state, and the reason. Empty when none.</param>
 [Infrastructure]
-internal sealed record StopDiagnostics(int ProcessId, bool ChildEndedBeforeStop, bool Confirmed, string? Refused, string? Leftover)
+internal sealed record StopDiagnostics(int ProcessId, bool ChildEndedBeforeStop, bool Confirmed, string? Refused, IReadOnlyList<ResidualProcess> Residuals)
 {
-    /// <summary>True when the process cleanup of the stop was not refused and left no residual process.</summary>
-    public bool Clean => Refused is null && Leftover is null;
+    /// <summary>True when the stop was not refused and left no residual process.</summary>
+    public bool Clean => Refused is null && Residuals.Count == 0;
+
+    /// <summary>The residual reasons joined into one text, or null when there are none.</summary>
+    public string? ResidualText => Residuals.Count == 0 ? null : string.Join("; ", Residuals.Select(residual => residual.Reason));
 }
+
+/// <summary>What a stop left running or unverified (Issue #827, round 14).</summary>
+internal enum ResidualState
+{
+    /// <summary>The process was still running and the stop could not end it.</summary>
+    Alive,
+
+    /// <summary>The process was still running when the stop began; the stop killed it and saw it exit.</summary>
+    EndedAfterKill,
+
+    /// <summary>The process could not be checked, so its state is not known.</summary>
+    Unverified,
+}
+
+/// <summary>
+/// A process a stop left behind. The id is null when the holder is not a tracked process (for example an output pipe's holder that the stop never
+/// claimed). The reason says what was seen.
+/// </summary>
+[Infrastructure]
+internal sealed record ResidualProcess(int? ProcessId, ResidualState State, string Reason);
 
 /// <summary>
 /// Reads process start times for the stop bookkeeping (Issue #827). The parent links come from <see cref="ProcessTreeInterop"/>.
