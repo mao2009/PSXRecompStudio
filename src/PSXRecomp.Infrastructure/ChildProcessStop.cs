@@ -30,6 +30,15 @@ internal sealed class StopRecord : IDisposable
     /// <summary>The longest a stop (or a reap) waits for a process to be seen exited.</summary>
     internal static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// The one grace pool of a reap, spent only after the reap's budget is gone (round 18, LOW 1). A stop holds the gate for at most
+    /// <see cref="ConfirmTimeout"/> plus this grace, whatever the number of tracked processes.
+    /// </summary>
+    internal static readonly TimeSpan ReapGrace = TimeSpan.FromSeconds(1);
+
+    /// <summary>The bound on the time a stop holds its gate: <see cref="ConfirmTimeout"/> plus <see cref="ReapGrace"/> (6 s).</summary>
+    internal static readonly TimeSpan GateHoldBound = ConfirmTimeout + ReapGrace;
+
     /// <summary>How often a bounded wait re-checks whether the stop has settled, and samples the process tree.</summary>
     internal const int PollMs = 100;
 
@@ -610,7 +619,7 @@ internal sealed class StopRecord : IDisposable
         var reaped = new List<ResidualProcess>();
         var unresolved = new List<ResidualProcess>();
         var clock = Stopwatch.StartNew();
-        var graceSpent = false;
+        var graceLeft = ReapGrace;
         var kill = DescendantKillForTest ?? (process => process.Kill(true));
         foreach (var tracked in _tracked)
         {
@@ -660,13 +669,20 @@ internal sealed class StopRecord : IDisposable
             var gone = false;
             try
             {
-                var grace = left > TimeSpan.Zero ? left : (graceSpent ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(1));
-                if (left <= TimeSpan.Zero)
+                // The budget first; once it is spent, the reap's one grace pool (shared by all tracked processes), so the reap never waits for
+                // longer than its budget plus ReapGrace. A process that exits within the wait, or has exited, counts as gone.
+                TimeSpan slice;
+                if (left > TimeSpan.Zero)
                 {
-                    graceSpent = true;
+                    slice = left;
+                }
+                else
+                {
+                    slice = graceLeft;
+                    graceLeft = TimeSpan.Zero;
                 }
 
-                gone = tracked.Handle.WaitForExit(grace);
+                gone = tracked.Handle.WaitForExit(slice) || HasExitedOrGone(tracked.Handle);
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
