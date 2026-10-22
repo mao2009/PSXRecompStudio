@@ -31,13 +31,16 @@ internal sealed class StopRecord : IDisposable
     internal static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// The one grace pool of a reap, spent only after the reap's budget is gone (round 18, LOW 1). A stop holds the gate for at most
-    /// <see cref="ConfirmTimeout"/> plus this grace, whatever the number of tracked processes.
+    /// The one second pass of a reap (round 19, MEDIUM 1): a window shared by the survivors of the first pass, run once. It is the only grace a reap
+    /// has; a process that is only just dead is judged here, not reported alive on the first pass's zero wait.
     /// </summary>
-    internal static readonly TimeSpan ReapGrace = TimeSpan.FromSeconds(1);
+    internal static readonly TimeSpan ReapSecondPass = TimeSpan.FromMilliseconds(100);
 
-    /// <summary>The bound on the time a stop holds its gate: <see cref="ConfirmTimeout"/> plus <see cref="ReapGrace"/> (6 s).</summary>
-    internal static readonly TimeSpan GateHoldBound = ConfirmTimeout + ReapGrace;
+    /// <summary>
+    /// The bound on the time a stop holds its gate: <see cref="ConfirmTimeout"/> (the shared budget of the root kill, the natural ends and the first
+    /// reap pass) plus <see cref="ReapSecondPass"/> (once). It does not depend on the number of tracked processes: 5.1 s.
+    /// </summary>
+    internal static readonly TimeSpan GateHoldBound = ConfirmTimeout + ReapSecondPass;
 
     /// <summary>How often a bounded wait re-checks whether the stop has settled, and samples the process tree.</summary>
     internal const int PollMs = 100;
@@ -619,8 +622,11 @@ internal sealed class StopRecord : IDisposable
         var reaped = new List<ResidualProcess>();
         var unresolved = new List<ResidualProcess>();
         var clock = Stopwatch.StartNew();
-        var graceLeft = ReapGrace;
         var kill = DescendantKillForTest ?? (process => process.Kill(true));
+
+        // Pass 1 (round 19, MEDIUM 1): each tracked process is killed and waited for within the reap's budget. Once the budget is spent, the wait is
+        // zero; a process that is only just dead is not reported alive on that account. The survivors of pass 1 go to pass 2.
+        var pending = new List<(Tracked Tracked, string Who)>();
         foreach (var tracked in _tracked)
         {
             var who = $"descendant process {tracked.Pid} ({tracked.Name}, parent {tracked.ParentPid})";
@@ -662,41 +668,46 @@ internal sealed class StopRecord : IDisposable
                 continue;
             }
 
-            // The exit of a process just killed gets time even when the stop's shared budget is spent on the natural ends: one second for the
-            // first such process, then 100 ms for each further one. The decision's hold on the gate is therefore bounded by ConfirmTimeout plus
-            // one second and 100 ms per further tracked process (round 17, LOW).
+            // Pass 1: the budget left (zero once it is spent). A process that exits within it counts as gone.
             var left = wait - clock.Elapsed;
-            var gone = false;
             try
             {
-                // The budget first; once it is spent, the reap's one grace pool (shared by all tracked processes), so the reap never waits for
-                // longer than its budget plus ReapGrace. A process that exits within the wait, or has exited, counts as gone.
-                TimeSpan slice;
-                if (left > TimeSpan.Zero)
+                var slice = left > TimeSpan.Zero ? left : TimeSpan.Zero;
+                if (tracked.Handle.WaitForExit(slice) || HasExitedOrGone(tracked.Handle))
                 {
-                    slice = left;
+                    reaped.Add(new ResidualProcess(tracked.Pid, ResidualState.EndedAfterKill, $"{who} still running after its owner ended (killed)"));
                 }
                 else
                 {
-                    slice = graceLeft;
-                    graceLeft = TimeSpan.Zero;
+                    pending.Add((tracked, who));
                 }
-
-                gone = tracked.Handle.WaitForExit(slice) || HasExitedOrGone(tracked.Handle);
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
                 unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"a tracked descendant (unidentified) could not be checked after its kill: {exception.Message}"));
-                continue;
             }
+        }
 
-            if (gone)
+        // Pass 2 (once, for the survivors of pass 1 only): one shared window of ReapSecondPass. Only a process still running after it is alive.
+        var secondPass = Stopwatch.StartNew();
+        foreach (var (tracked, who) in pending)
+        {
+            try
             {
-                reaped.Add(new ResidualProcess(tracked.Pid, ResidualState.EndedAfterKill, $"{who} still running after its owner ended (killed)"));
+                var remaining = ReapSecondPass - secondPass.Elapsed;
+                var slice = remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+                if (tracked.Handle.WaitForExit(slice) || HasExitedOrGone(tracked.Handle))
+                {
+                    reaped.Add(new ResidualProcess(tracked.Pid, ResidualState.EndedAfterKill, $"{who} still running after its owner ended (killed)"));
+                }
+                else
+                {
+                    unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Alive, $"{who} still running after its kill"));
+                }
             }
-            else
+            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Alive, $"{who} still running after its kill"));
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"a tracked descendant (unidentified) could not be checked after its kill: {exception.Message}"));
             }
         }
 

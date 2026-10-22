@@ -924,15 +924,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             OutputBudgetMsForTest ?? _runTimeoutMs);
 
         var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
-        LastStopDiagnostics = stopRecord.StoppedAt is not null
-            ? new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, stopRecord.Outcome.Confirmed, stopRecord.Outcome.Refused, stopRecord.Residuals)
-            : stopRequested
-                // A stop that was requested but never processed by the record: not NotStopped, its descendants were not checked (round 14).
-                ? new StopDiagnostics(stopRecord.ProcessId, false, false, "the stop was requested after the run's stop record was sealed, so the child's descendants were not checked", stopRecord.Residuals)
-                // A natural end that left a residual (an output pipe still held after the child ended): the child ended before any stop.
-                : stopRecord.Residuals.Count > 0
-                    ? new StopDiagnostics(stopRecord.ProcessId, true, false, null, stopRecord.Residuals)
-                    : null;
+        LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested);
         if (LastStopDiagnostics is { Clean: false } residual)
         {
             Trace.WriteLine($"Stop of artifact process {residual.ProcessId} left a residual: refused={residual.Refused}; residuals={residual.ResidualText}");
@@ -1018,6 +1010,69 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         return afterStop;
     }
+
+    /// <summary>
+    /// The facts a run's stop left, as plain values (Issue #827, round 19). The shutdown and its diagnostics are derived from these alone: the engine's
+    /// run and the test harness call the same function, and unit tests state the facts directly, on every platform.
+    /// </summary>
+    /// <param name="ProcessId">The child's process id (0 before it started).</param>
+    /// <param name="StopRecorded">The stop record processed a stop (its instant was set).</param>
+    /// <param name="StopRequested">A stop was requested during the run or before its end.</param>
+    /// <param name="ChildEndedBeforeStop">The child ended on its own before the stop reached it.</param>
+    /// <param name="KillConfirmed">The live child was killed and its exit was seen.</param>
+    /// <param name="Refused">The reason the stop itself failed, or null.</param>
+    /// <param name="Residuals">What the stop or the drains left behind.</param>
+    [Infrastructure]
+    internal sealed record ShutdownEvidence(
+        int ProcessId,
+        bool StopRecorded,
+        bool StopRequested,
+        bool ChildEndedBeforeStop,
+        bool KillConfirmed,
+        string? Refused,
+        IReadOnlyList<ResidualProcess> Residuals);
+
+    /// <summary>
+    /// The shutdown diagnostics of a run (Issue #827, rules 2, 3 and 7): a processed stop reports its own facts; a stop that was requested but not
+    /// processed is a refusal of the shutdown (its descendants were not checked), never NotStopped; a natural end that left a residual reports it with
+    /// the child ended before any stop; otherwise there are no diagnostics (NotStopped). The result of the run is not an input: the diagnostics
+    /// cannot rewrite it.
+    /// </summary>
+    internal static StopDiagnostics? ShutdownDiagnostics(ShutdownEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        if (evidence.StopRecorded)
+        {
+            return new StopDiagnostics(evidence.ProcessId, evidence.ChildEndedBeforeStop, evidence.KillConfirmed, evidence.Refused, evidence.Residuals);
+        }
+
+        if (evidence.StopRequested)
+        {
+            return new StopDiagnostics(
+                evidence.ProcessId,
+                false,
+                false,
+                "the stop was requested after the run's stop record was sealed, so the child's descendants were not checked",
+                evidence.Residuals);
+        }
+
+        if (evidence.Residuals.Count > 0)
+        {
+            return new StopDiagnostics(evidence.ProcessId, true, false, null, evidence.Residuals);
+        }
+
+        return null;
+    }
+
+    private static StopDiagnostics? ShutdownDiagnostics(StopRecord stop, bool stopRequested) =>
+        ShutdownDiagnostics(new ShutdownEvidence(
+            stop.ProcessId,
+            stop.StoppedAt is not null,
+            stopRequested,
+            stop.ChildEndedBeforeStop,
+            stop.Outcome.Confirmed,
+            stop.Outcome.Refused,
+            stop.Residuals));
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
     private static RecompilerExecutionResult ClassifyArtifactRun(
@@ -1572,13 +1627,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         var (confirmed, refused) = stopRecord.Outcome;
-        // The same resolution the engine applies to a segment; the child's exit code stands for its classification here.
-        var classified = run.exit == 0
-            ? new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null)
-            : RecompilerExecutionResult.Failed(RecompilerExecutionStatus.ExecutionFailed, "EXIT_NONZERO", $"exit {run.exit}");
+
+        // The harness classifies its child by the engine's own rule (round 19, MEDIUM 2): an exit 0 without a snapshot is a failure, exactly as in
+        // a segment. Then the same resolution and the same shutdown diagnostics as RunSegment, so the Windows tests check the same contract.
+        var classified = ClassifyArtifactRun(run.exit, run.stdout, run.hostProtocolFaulted, timedOut, bridge: null);
         var result = ResolveOutcome(classified, stopRecord, drainTimedOut, drainCutWhileAlive, outputBudgetMs ?? timeoutMs);
-        var residualText = new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, confirmed, refused, stopRecord.Residuals).ResidualText;
-        return (run.exit, run.stdout, timedOut, confirmed, refused, residualText, result);
+        var diagnostics = ShutdownDiagnostics(stopRecord, stopToken.IsCancellationRequested);
+        return (run.exit, run.stdout, timedOut, confirmed, refused, diagnostics?.ResidualText, result);
     }
 
     private static string TakeOutput(StringBuilder output, object gate)
