@@ -229,7 +229,7 @@ public sealed class GuestCancellationTests
 
         var result = await run.WaitAsync(StopWait);
 
-        result.State.Should().Be(TitleExecutionState.Cancelled);
+        result.State.Should().Be(TitleExecutionState.Cancelled, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
         result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
         ArtifactProcessRunning(binary).Should().BeFalse("the stopped artifact process must be gone when the run returns");
     }
@@ -479,6 +479,10 @@ public sealed class GuestCancellationTests
     private static string[] SleepArguments =>
         OperatingSystem.IsWindows() ? ["-n", "60", "127.0.0.1"] : ["60"];
 
+    /// <summary>The same sleeper for about one second: it ends on its own during a test's stop.</summary>
+    private static string[] ShortSleepArguments =>
+        OperatingSystem.IsWindows() ? ["-n", "2", "127.0.0.1"] : ["1"];
+
     /// <summary>Stops the processes named like a test's private copy (never another process).</summary>
     private static void KillNamed(string copyPath)
     {
@@ -614,8 +618,9 @@ public sealed class GuestCancellationTests
             clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "a pipe held by a grandchild must not hold the stop past its bound");
             stopper.Wait(StopWait);
 
-            outcome.Confirmed.Should().BeFalse("the orphan that holds the pipe was not stopped");
-            outcome.Refused.Should().Contain("output pipe");
+            // The orphan is either found and reaped (a leftover, on Windows) or it keeps the pipe (a refusal). Either way it is recorded.
+            outcome.Confirmed.Should().BeFalse("a leftover or a held pipe is not a clean stop");
+            (outcome.Leftover ?? outcome.Refused).Should().NotBeNull("the surviving orphan must be recorded, not reported as a clean end");
         }
         finally
         {
@@ -753,6 +758,133 @@ public sealed class GuestCancellationTests
         result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
         hostWaits.Should().BeGreaterThanOrEqualTo(3, "the stop was sent while the run was waiting for the host protocol");
         ArtifactProcessRunning(binary).Should().BeFalse("the stopped artifact process must be gone when the run returns");
+    }
+
+    [Fact]
+    public async Task RealArtifact_KillRefusedByTheOs_EndsRefused_NotAsARawException()
+    {
+        // Failure injection (Issue #827 review, MEDIUM 1): the OS refuses every kill (access denied). The injection counts the kill
+        // attempts, so the test shows which paths were reached: the stop's own kill and the kill after the stop. Neither may escape as a
+        // raw exception; the result is a refused stop with the reason.
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+        var artifactName = Path.GetFileNameWithoutExtension(binary);
+        var kills = 0;
+        try
+        {
+            using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+                binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
+            engine.KillOverrideForTest = _ =>
+            {
+                kills++;
+                throw new System.ComponentModel.Win32Exception(5, "Access is denied.");
+            };
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
+            try
+            {
+                WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+                run.IsCompleted.Should().BeFalse("the child must still be running when the stop is sent");
+            }
+            finally
+            {
+                cts.Cancel();
+            }
+
+            var result = await run.WaitAsync(StopWait);
+
+            result.State.Should().NotBe(TitleExecutionState.Cancelled, "a refused kill is not a confirmed stop");
+            result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            result.DiagnosticMessage.Should().Contain("kill was refused");
+            kills.Should().BeGreaterThanOrEqualTo(2, "the stop's own kill and the kill after the stop were both attempted");
+            ArtifactProcessRunning(binary).Should().BeTrue("the OS refused the kill, so the child is still running, and the result says so");
+        }
+        finally
+        {
+            KillNamed(binary);
+        }
+    }
+
+    [Fact]
+    public void ChildEndingWhileItsTreeIsListed_IsNotConfirmedAsCancelled()
+    {
+        // Issue #827 review (MEDIUM 2): the child ends while the stop lists its tree. The stop must see the natural end: nothing is
+        // confirmed, nothing is refused, and the run is not reported as a cancellation. Deterministic: the stop is sent while the child is
+        // alive, and the listing waits for the child to end.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "race");
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                copy,
+                ShortSleepArguments,
+                30_000,
+                cts.Token,
+                descendantsProbe: child =>
+                {
+#pragma warning disable AARC003 // Test-layer observation of the child's end, to place the race exactly (Issue #827 review)
+                    child.WaitForExit();
+#pragma warning restore AARC003
+                    return Array.Empty<Process>();
+                });
+
+            outcome.Confirmed.Should().BeFalse("a child that ended on its own is not a confirmed stop");
+            outcome.Refused.Should().BeNull();
+            outcome.Leftover.Should().BeNull();
+            outcome.TimedOut.Should().BeFalse();
+            outcome.ExitCode.Should().Be(0, "the child ended normally");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void LeftoverDescendantOfARootThatEndedOnItsOwn_IsReapedAndRecorded()
+    {
+        // Issue #827 review (MEDIUM 3): the root ends on its own, and a descendant it started is still running when the stop arrives.
+        // On Windows a child keeps its parent's process id, so the leftover is found and reaped, and the stop records it. Linux reparents
+        // an orphan to init, so this path is not covered on Linux (unverified; see the PR).
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "leftover");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                // The shell exits at once and leaves the sleeper running. The stop is sent a moment later, once the root has ended.
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+                SpinFor(TimeSpan.FromSeconds(1));
+                cts.Cancel();
+            });
+
+            // cmd starts the sleeper detached with its output sent to nul: it holds the error pipe only, so the run waits on it.
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                "cmd.exe",
+                ["/c", "start", "", "/b", copy, "-n", "60", "127.0.0.1", "1>nul"],
+                60_000,
+                cts.Token);
+            stopper.Wait(StopWait);
+
+            outcome.Leftover.Should().NotBeNull("a descendant still running after its root ended must be recorded");
+            outcome.Leftover.Should().Contain("still running");
+            outcome.Confirmed.Should().BeFalse("a leftover is not a clean stop");
+            ProcessNameProbe.IsRunning(name).Should().BeFalse("the leftover is reaped by the stop");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
     }
 
 #pragma warning restore AARC003
