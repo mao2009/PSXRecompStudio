@@ -67,7 +67,7 @@ public sealed class LiveGameRunnerTests
     }
 
     [Fact]
-    public async Task StopDuringTheRun_EndsCancelled_AfterAFrameWasShown()
+    public async Task StopDuringTheRun_EndsCancelled_AfterAFrameReachedTheSlot()
     {
         using var dir = new TempDirectory();
         var slot = new LiveFrameSlot();
@@ -95,11 +95,17 @@ public sealed class LiveGameRunnerTests
         }
 
         stop.Cancel();
-        var result = await run;
-        readerStop.Cancel();
-        await reader;
+        try
+        {
+            var result = await run;
+            pixels.Should().NotBeEmpty("the run must have shown a frame before it was stopped");
+            result.State.Should().Be(TitleExecutionState.Cancelled, "a stop is a Cancelled outcome, never a completed run");
+        }
+        finally
+        {
+            readerStop.Cancel();
+            await reader;
+        }
 
-        pixels.Should().NotBeEmpty("the run must have shown a frame before it was stopped");
-        result.State.Should().Be(TitleExecutionState.Cancelled, "a stop is a Cancelled outcome, never a completed run");
     }
 }

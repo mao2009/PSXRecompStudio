@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     private Task<TitleExecutionResult>? _run;
     private bool _closeWhenRunEnds;
     private bool _stopRequested;
+    private bool _stopTimedOut;
 
     public MainWindow()
     {
@@ -68,6 +69,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        // After a stop has timed out, the user's second close request is honored: the window exits, and the status has already said
+        // that the process may still be running.
+        if (_stopTimedOut)
+        {
+            return;
+        }
+
         e.Cancel = true;
         _closeWhenRunEnds = true;
         if (_stopRequested)
@@ -81,13 +89,17 @@ public partial class MainWindow : Window
         _stopTimeout.Start();
     }
 
-    /// <summary>Reports a stop that has not ended the run within the bound, instead of waiting forever.</summary>
+    /// <summary>
+    /// Reports a stop that has not ended the run within the bound. The window then allows a second close request, so the user is
+    /// never stuck; the status says the process may still be running.
+    /// </summary>
     private void OnStopTimeout()
     {
         _stopTimeout.Stop();
         if (_run is not null && !_run.IsCompleted)
         {
-            Status.Text = $"The stop has not ended the program within {StopTimeout.TotalSeconds:0} s. The process may still be running.";
+            _stopTimedOut = true;
+            Status.Text = $"The stop has not ended the program within {StopTimeout.TotalSeconds:0} s. The process may still be running. Close again to exit anyway.";
         }
     }
 
