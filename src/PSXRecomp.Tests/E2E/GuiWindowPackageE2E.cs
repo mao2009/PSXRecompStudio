@@ -88,6 +88,12 @@ public sealed class GuiWindowPackageE2E : IDisposable
         launcherWaitMs.Should().BeGreaterThan(manifest.RunTimeoutMs);
         launcherSource.Should().NotContain("WaitForSingleObject(pi.hProcess, INFINITE)");
 
+        // The launcher's dialog never blocks the launcher: the only MessageBoxW call is in the helper thread's function, and the launcher
+        // waits for that thread only a bounded time (Issue #830, MEDIUM-1).
+        Regex.Matches(launcherSource, @"MessageBoxW\(").Count.Should().Be(1, "a modal dialog is shown only from the helper thread");
+        Regex.IsMatch(launcherSource, @"static DWORD WINAPI window_message_thread\(LPVOID param\) \{\s*MessageBoxW\(").Should().BeTrue();
+        launcherSource.Should().Contain("WaitForSingleObject(dialog, PSX_LAUNCHER_DIALOG_WAIT_MS);");
+
         // The README describes the window package, not the headless one (Issue #830, LOW-2).
         var readme = File.ReadAllText(Path.Join(outputDir, RuntimeHostLayout.ReadmeFileName));
         readme.Should().Contain("closes after 30 seconds");

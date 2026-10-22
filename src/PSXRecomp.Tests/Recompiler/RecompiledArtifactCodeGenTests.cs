@@ -1022,7 +1022,12 @@ public sealed class RecompiledArtifactCodeGenTests
         source.Should().NotContain("error: cannot build command line");
         source.Should().Contain("report_window_launch_failure(L\"The launcher could not build the window host's command line\"");
         source.Should().Contain("report_window_launch_failure(");
-        source.Should().Contain("MessageBoxW(NULL, message, L\"PSXRecomp\", MB_OK | MB_ICONERROR)");
+        // The dialog is never shown on the launcher's own thread: it runs on a helper thread that the launcher waits for a bounded time
+        // (Issue #830, MEDIUM-1), so an unanswered dialog cannot keep the launcher alive.
+        source.Should().Contain("MessageBoxW(NULL, (const wchar_t*)param, L\"PSXRecomp\", MB_OK | MB_ICONERROR)");
+        source.Should().Contain("dialog = CreateThread(NULL, 0, window_message_thread, (LPVOID)message, 0, NULL);");
+        source.Should().Contain("WaitForSingleObject(dialog, PSX_LAUNCHER_DIALOG_WAIT_MS);");
+        source.Should().Contain("#define PSX_LAUNCHER_DIALOG_WAIT_MS 30000u");
         source.Should().Contain("CloseHandle(job)");
     }
 

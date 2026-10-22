@@ -639,15 +639,37 @@ public static class RecompiledArtifactCodeGen
     {
         // Fail closed (Issue #830): every way the launcher can fail to start the window host shows its reason in a message box and
         // does not start the game. The launcher is a windowed program, so stderr would not be visible.
-        var text = Patch(prologue, "static int run_via_runtime_host(void) {", @"static void report_window_message(const wchar_t* message) {
+        // The dialog is shown on its own thread, and the launcher waits for it only PSX_LAUNCHER_DIALOG_WAIT_MS (Issue #830, MEDIUM-1): a
+        // dialog that nobody answers does not keep the launcher alive, because the launcher's exit closes the dialog with it.
+        var text = Patch(prologue, "static int run_via_runtime_host(void) {", @"#define PSX_LAUNCHER_DIALOG_WAIT_MS 30000u
+#define PSX_LAUNCHER_STOP_WAIT_MS 5000u
+
+static DWORD WINAPI window_message_thread(LPVOID param) {
+    MessageBoxW(NULL, (const wchar_t*)param, L""PSXRecomp"", MB_OK | MB_ICONERROR);
+    return 0;
+}
+
+/* Callers reach this only after the window host and its guest have stopped (or were never started). */
+static void report_window_message(const wchar_t* message) {
+    HANDLE dialog;
     OutputDebugStringW(message);
-    MessageBoxW(NULL, message, L""PSXRecomp"", MB_OK | MB_ICONERROR);
+    dialog = CreateThread(NULL, 0, window_message_thread, (LPVOID)message, 0, NULL);
+    if (dialog) {
+        WaitForSingleObject(dialog, PSX_LAUNCHER_DIALOG_WAIT_MS);
+        CloseHandle(dialog);
+    }
 }
 
 static void report_window_launch_failure(const wchar_t* what, DWORD error) {
     wchar_t text[512];
     swprintf(text, 512, L""%ls (Windows error %lu). The game was not started."", what, (unsigned long)error);
     report_window_message(text);
+}
+
+/* Stops the window host and waits (bounded) until it has ended, so a report never shows while it still runs. */
+static void stop_window_host(HANDLE process) {
+    TerminateProcess(process, 1);
+    WaitForSingleObject(process, PSX_LAUNCHER_STOP_WAIT_MS);
 }
 
     static int run_via_runtime_host(void) {");
@@ -678,50 +700,46 @@ static void report_window_launch_failure(const wchar_t* what, DWORD error) {
             return 1;
         }
         STARTUPINFOW si = { sizeof(si) };");
-        // The job exists from here on, so each failure after it closes it as well.
+        // The job exists from here on, so each failure after it closes it as well. The error is read before any cleanup (LOW-3).
         text = Patch(text, @"fprintf(stderr, ""error: could not start the runtime host (error %lu)\n"", (unsigned long)GetLastError());",
-            @"CloseHandle(job);
-            report_window_launch_failure(L""The window host could not be started"", GetLastError());");
+            @"{
+            DWORD start_error = GetLastError();
+            CloseHandle(job);
+            report_window_launch_failure(L""The window host could not be started"", start_error);
+        }");
         // The window host starts suspended, is placed in the job, and only then runs, so no part of it runs outside the job.
-        // A failed resume leaves the host suspended forever, so it is terminated and reported rather than waited for.
-        // The launcher's wait below has no timeout on purpose: the launcher lives as long as the window host, and the job's
-        // kill-on-close would stop the window if the launcher ended first. The host's own run timeout (4 hours for a window
-        // package) and its window-close stop path bound that wait; it is not an unbounded wait on a silent failure.
+        // The wait below is bounded (Issue #830, MAJOR-1): a host that does not end within the limit is stopped and the reason is shown.
+        // The limit is the window's run timeout plus a margin, so it only ends a host that has stopped responding.
         text = Patch(text, "WaitForSingleObject(pi.hProcess, INFINITE);", @"if (!AssignProcessToJobObject(job, pi.hProcess)) {
             DWORD assign_error = GetLastError();
-            TerminateProcess(pi.hProcess, 1);
+            stop_window_host(pi.hProcess);
+            CloseHandle(job);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
-            CloseHandle(job);
             report_window_launch_failure(L""The window host could not be placed in the job object"", assign_error);
             return 1;
         }
         if (ResumeThread(pi.hThread) == (DWORD)-1) {
             DWORD resume_error = GetLastError();
-            TerminateProcess(pi.hProcess, 1);
+            stop_window_host(pi.hProcess);
+            CloseHandle(job);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
-            CloseHandle(job);
             report_window_launch_failure(L""The window host could not be resumed"", resume_error);
             return 1;
         }
-        // The wait is bounded (Issue #830, MAJOR-1): a window host that does not end within the limit is stopped and the reason is shown.
-        // The limit is the window's run timeout plus a margin, so it only ends a host that has stopped responding.
         DWORD wait_result = WaitForSingleObject(pi.hProcess, __WAIT_LIMIT_MS__u);
-        if (wait_result == WAIT_TIMEOUT) {
-            TerminateProcess(pi.hProcess, 1);
-            CloseHandle(job);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            report_window_message(L""The window host did not end within its wait limit, so the launcher stopped it."");
-            return 1;
-        }
         if (wait_result != WAIT_OBJECT_0) {
-            TerminateProcess(pi.hProcess, 1);
+            DWORD wait_error = (wait_result == WAIT_FAILED) ? GetLastError() : 0;
+            stop_window_host(pi.hProcess);
             CloseHandle(job);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
-            report_window_launch_failure(L""The launcher could not wait for the window host"", GetLastError());
+            if (wait_result == WAIT_TIMEOUT) {
+                report_window_message(L""The window host did not end within its wait limit, so the launcher stopped it."");
+            } else {
+                report_window_launch_failure(L""The launcher could not wait for the window host"", wait_error);
+            }
             return 1;
         }
         // Closing the last handle of the job ends any process still in it, so a child left behind is reaped.
