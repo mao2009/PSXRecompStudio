@@ -380,7 +380,9 @@ internal sealed class StopRecord : IDisposable
             }
 
             killed = true;
-            if (!process.WaitForExit(Remaining(clock)))
+
+            // A wait with no time left still checks once: a child that exited at the deadline is not reported as alive (round 16, LOW 1).
+            if (!process.WaitForExit(Remaining(clock)) && !HasExitedOrGone(process))
             {
                 RefuseIfUnset($"the child {ProcessId} was still running {ConfirmTimeout.TotalSeconds:0} s after the kill");
                 return;
