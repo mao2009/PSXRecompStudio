@@ -892,6 +892,69 @@ public sealed class GuestCancellationTests
         }
     }
 
+    /// <summary>Starts a real child that ends on its own after about one second (the host-transfer case: the child is gone, its output is not).</summary>
+    private static Process StartShortLivedChild(TempDirectory dir)
+    {
+        var copy = NamedCopy(dir, SleepBinary, "pumpchild");
+        var startInfo = new ProcessStartInfo(copy) { UseShellExecute = false, CreateNoWindow = true };
+        foreach (var argument in ShortSleepArguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        return Process.Start(startInfo)!;
+    }
+
+    [Fact]
+    public void HostTransferPump_OpenAfterTheChildEnded_IsReportedAsADrainTimeout()
+    {
+        // Issue #827 review (MEDIUM 1): the bridge path. The child ends, and the pump of its output never reaches its end (a grandchild holds the
+        // pipe; a task that never completes stands for that pipe). The wait ends after the injected output budget (500 ms), reported as a drain
+        // timeout, not as a run timeout, and never after the run's real budget (60 s).
+        using var dir = new TempDirectory();
+        using var child = StartShortLivedChild(dir);
+        using var stop = new StopRecord();
+        var pump = new TaskCompletionSource().Task;
+
+        var clock = Stopwatch.StartNew();
+        var completed = RecompiledHostExecutionEngine.WaitPumpWithinOutputBudget(pump, child, runTimeoutMs: 60_000, outputBudgetMs: 500, stop, out var drainTimedOut);
+
+        completed.Should().BeFalse();
+        drainTimedOut.Should().BeTrue("the child ended and its output did not end in time");
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+        child.HasExited.Should().BeTrue();
+    }
+
+    [Fact]
+    public void HostTransferPump_OpenAfterTheChildEnded_WithAStop_ReturnsWithinTheCleanupBudgetFromTheStop()
+    {
+        // The same case with a stop during the wait: the wait ends five seconds after the stop (the output budget of 60 s is not waited for).
+        using var dir = new TempDirectory();
+        using var child = StartShortLivedChild(dir);
+        using var cts = new CancellationTokenSource();
+        using var stop = new StopRecord();
+        using var stopSeal = stop.Attach(child, cts.Token);
+        var pump = new TaskCompletionSource().Task;
+
+        // The stop lands after the child has ended (about one second in); the pump is still open.
+        var stopper = Task.Run(() =>
+        {
+            WaitUntil(() => child.HasExited, StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(300));
+            cts.Cancel();
+        });
+        var clock = Stopwatch.StartNew();
+        var completed = RecompiledHostExecutionEngine.WaitPumpWithinOutputBudget(pump, child, runTimeoutMs: 60_000, outputBudgetMs: 60_000, stop, out var drainTimedOut);
+        stopper.Wait(StopWait);
+
+        // The stop lands about 0.3 s after the child ends; the cap is five seconds from the stop, so the wait ends about 5.3 s after the child.
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the wait at five seconds; the 60 s budget is not waited for");
+        completed.Should().BeFalse();
+        drainTimedOut.Should().BeTrue("the output did not end before the cleanup budget from the stop ran out");
+        stop.Settled.Should().BeTrue();
+        stop.ChildEndedBeforeStop.Should().BeTrue("the child ended on its own before the stop reached it");
+    }
+
     [Fact]
     public void StoppedTreeWithRealDescendants_IsConfirmedOnlyOnceTheyAreGone()
     {
